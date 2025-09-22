@@ -1,5 +1,5 @@
-<div align="left">
-  <img src="assets/logo.png" alt="AimDB Logo" width="200" height="80" style="object-fit: cover; object-position: center;">
+<div align="center">
+  <img src="assets/logo.png" alt="AimDB Logo" width="300">
 </div>
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/ci.yml?branch=main)](https://github.com/aimdb-dev/aimdb/actions)
