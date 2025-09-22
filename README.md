@@ -11,7 +11,7 @@
 
 > **One codebase. Any hardware. Always in sync.**
 
-AimDB is an **async, in-memory database** that keeps state and streams **consistent across MCU → edge → cloud**—without internal brokers, glue code or vendor lock-in. If you’ve ever juggled MQTT bridges, SQLite caches and custom sync scripts just to move live data, AimDB is here to simplify your world.
+AimDB is an **async, in-memory database** that keeps state and streams **consistent across MCU → edge → cloud** — without internal brokers, glue code or vendor lock-in. If you’ve ever juggled MQTT bridges, SQLite caches and custom sync scripts just to move live data, AimDB is here to simplify your world.
 
 ---
 
@@ -97,4 +97,4 @@ Your voice shapes AimDB — ask questions, share feedback and showcase what you 
 ---
 
 ## ✨ Tagline  
-**Let’s build the future of edge intelligence—together!**
+**Let’s build the future of edge intelligence — together!**
