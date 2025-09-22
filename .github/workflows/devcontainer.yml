@@ -1,0 +1,184 @@
+name: DevContainer CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '.devcontainer/**'
+      - '.github/workflows/devcontainer.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.devcontainer/**'
+      - '.github/workflows/devcontainer.yml'
+  schedule:
+    # Test weekly to catch upstream image changes
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM UTC
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: aimdb-dev/devcontainer
+
+jobs:
+  build-devcontainer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build devcontainer image
+        uses: docker/build-push-action@v5
+        with:
+          context: .devcontainer
+          file: .devcontainer/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            USERNAME=vscode
+            USER_UID=1000
+            USER_GID=1000
+
+  test-devcontainer:
+    runs-on: ubuntu-latest
+    needs: build-devcontainer
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .devcontainer
+          file: .devcontainer/Dockerfile
+          load: true
+          tags: aimdb-devcontainer:test
+          cache-from: type=gha
+          build-args: |
+            USERNAME=vscode
+            USER_UID=1000
+            USER_GID=1000
+
+      - name: Test Rust installation
+        run: |
+          docker run --rm aimdb-devcontainer:test bash -c "
+            rustc --version &&
+            cargo --version &&
+            rustup --version
+          "
+
+      - name: Test embedded targets
+        run: |
+          docker run --rm aimdb-devcontainer:test bash -c "
+            rustup target list --installed | grep -E 'thumbv(6m|7[em])-none-eab[hi]'
+          "
+
+      - name: Test development tools
+        run: |
+          docker run --rm aimdb-devcontainer:test bash -c "
+            cargo audit --version &&
+            cargo watch --version &&
+            cargo expand --version &&
+            (probe-rs --version || echo 'probe-rs not installed - this is OK')
+          "
+
+      - name: Test system dependencies
+        run: |
+          docker run --rm aimdb-devcontainer:test bash -c "
+            gcc --version &&
+            arm-none-eabi-gcc --version &&
+            protoc --version &&
+            pkg-config --version
+          "
+
+      - name: Test user permissions
+        run: |
+          docker run --rm aimdb-devcontainer:test bash -c "
+            whoami &&
+            id &&
+            sudo echo 'sudo works' &&
+            touch /tmp/test-file &&
+            ls -la /tmp/test-file
+          "
+
+      - name: Test AimDB workspace setup
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/aimdb aimdb-devcontainer:test bash -c "
+            cd /aimdb &&
+            ls -la &&
+            # Test if we can run basic cargo commands (if Cargo.toml exists)
+            if [ -f Cargo.toml ]; then
+              cargo check --version || echo 'No Cargo.toml found, skipping cargo check'
+            else
+              echo 'No Cargo.toml found yet - this is expected for early development'
+            fi
+          "
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: build-devcontainer
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: .devcontainer
+          file: .devcontainer/Dockerfile
+          load: true
+          tags: aimdb-devcontainer:scan
+          cache-from: type=gha
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: aimdb-devcontainer:scan
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'

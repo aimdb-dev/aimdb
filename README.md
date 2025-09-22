@@ -41,21 +41,29 @@ AimDB collapses these layers into **one lightweight engine**:
 ---
 
 ## 🏃 Quick Start  
-Clone, build and run your first live stream in **≤15 minutes**:  
+Get up and running in **≤15 minutes** with our pre-configured development environment:
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/your-org/aimdb.git
+git clone https://github.com/aimdb-dev/aimdb.git
 cd aimdb
 
-# 2. Build (requires Rust 1.80+ and cargo)
-cargo build --release
+# 2. Open in VS Code with Dev Containers extension
+code .
+# Then: Ctrl/Cmd+Shift+P → "Dev Containers: Reopen in Container"
 
-# 3. Run a demo stream (simulated edge node)
+# 3. Inside the container, everything is ready:
+cargo build --release
 cargo run --example quickstart
 ```
 
+**✅ Zero Setup**: Rust, embedded targets and development tools pre-installed  
+**✅ Cross-Platform**: Works on macOS, Linux, Windows (with Docker Desktop) or WSL
+**✅ VS Code Ready**: Optimized extensions and settings included  
+
 You should see events syncing between simulated devices and a local edge gateway!  
+
+> **💡 Tip**: The devcontainer includes all embedded targets and tools like `cargo-audit`, `cargo-watch` and debugging support for MCU development.
 
 ---
 

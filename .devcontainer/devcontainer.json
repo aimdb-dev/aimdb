@@ -1,0 +1,52 @@
+{
+  "name": "Rust Dev-Container",
+  "build": {
+    "context": "..",
+    "dockerfile": "Dockerfile",
+    "args": {
+      "USERNAME": "vscode",
+      "USER_UID": "1000",
+      "USER_GID": "1000"
+    }
+  },
+  "workspaceFolder": "/aimdb",
+  "runArgs": [
+    "--privileged",
+    "--network=host",
+    "-v",
+    "/dev/bus/usb:/dev/bus/usb"
+  ],
+  "remoteUser": "vscode",
+  "mounts": [
+    "type=bind,source=${localWorkspaceFolder},target=/aim-dev,consistency=cached"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "ms-vscode.hexdump",
+        "ms-vscode.vscode-embedded-tools"
+      ],
+      "settings": {
+        "terminal.integrated.shell.linux": "/bin/bash",
+        "rust-analyzer.cargo.features": "all",
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.check.extraArgs": [
+          "--all-targets",
+          "--all-features"
+        ],
+        "rust-analyzer.cargo.buildScripts.enable": true,
+        "rust-analyzer.procMacro.enable": true,
+        "files.watcherExclude": {
+          "**/target/**": true
+        }
+      }
+    }
+  },
+  "containerEnv": {
+    "SHELL": "/bin/bash"
+  }
+}
