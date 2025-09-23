@@ -10,7 +10,7 @@
   ],
   "remoteUser": "vscode",
   "mounts": [
-    "type=bind,source=${localWorkspaceFolder},target=/aim-dev,consistency=cached"
+    "type=bind,source=${localWorkspaceFolder},target=/aimdb,consistency=cached"
   ],
   "customizations": {
     "vscode": {
