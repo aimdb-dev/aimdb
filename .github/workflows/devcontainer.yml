@@ -4,12 +4,14 @@ on:
   push:
     branches: [ main, develop ]
     paths:
-      - '.devcontainer/**'
+      - '.devcontainer/Dockerfile'
+      - '.devcontainer/devcontainer.json'
       - '.github/workflows/devcontainer.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - '.devcontainer/**'
+      - '.devcontainer/Dockerfile'
+      - '.devcontainer/devcontainer.json'
       - '.github/workflows/devcontainer.yml'
   schedule:
     # Test weekly to catch upstream image changes
