@@ -2,7 +2,18 @@
   <img src="assets/logo.png" alt="AimDB Logo" width="300">
 </div>
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/ci.yml?branch=main)](https://github.com/aimdb-dev/aimdb/actions)
+[!## 🛣 Roadmap & Help Wanted  
+**Current Status**: Early development - foundational architecture is being implemented.
+
+Core priorities where you can make a huge impact:  
+- 🚧 **Core Database Engine** – implement in-memory storage with async operations  
+- 🚧 **MCU Runtime** – tighten Embassy executor integration and notification system  
+- 🧪 **Connectors** – expand MQTT/Kafka/DDS bridges, add gRPC/WebSocket bridges  
+- 📊 **Observability** – lightweight metrics and health probes  
+- 📚 **Docs & Examples** – more templates, edge-to-cloud demos  
+- 🔐 **Access Control Hooks** – refine built-in identity & metering  
+
+Check the Issues board for "help wanted" labels or propose your own ideas.atus](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/ci.yml?branch=main)](https://github.com/aimdb-dev/aimdb/actions)
 [![Security Audit](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/security.yml?branch=main&label=security)](https://github.com/aimdb-dev/aimdb/actions)
 [![Documentation](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/docs.yml?branch=main&label=docs)](https://github.com/aimdb-dev/aimdb/actions)
 [![Crates.io](https://img.shields.io/crates/v/aimdb.svg)](https://crates.io/crates/aimdb)
@@ -10,6 +21,9 @@
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 [![Docs](https://docs.rs/aimdb/badge.svg)](https://docs.rs/aimdb)
 [![Website](https://img.shields.io/badge/website-aimdb.dev-blue.svg)](https://aimdb.dev)
+
+> **⚠️ EARLY DEVELOPMENT STAGE**  
+> AimDB is currently in **very early development**. The architecture is defined and the foundation is being built, but most features are not yet implemented. This is a work-in-progress project where core functionality is still being developed. Expect breaking changes and incomplete features.
 
 > **One codebase. Any hardware. Always in sync.**
 
@@ -54,16 +68,16 @@ code .
 
 # 3. Inside the container, everything is ready:
 cargo build --release
-cargo run --example quickstart
+cargo run --example quickstart -p aimdb-examples
 ```
 
 **✅ Zero Setup**: Rust, embedded targets and development tools pre-installed  
 **✅ Cross-Platform**: Works on macOS, Linux, Windows (with Docker Desktop) or WSL
 **✅ VS Code Ready**: Optimized extensions and settings included  
 
-You should see events syncing between simulated devices and a local edge gateway!  
+You should see a demo simulation showing the concept of data syncing between devices, edge, and cloud!  
 
-> **💡 Tip**: The devcontainer includes all embedded targets and tools like `cargo-audit`, `cargo-watch` and debugging support for MCU development.
+> **💡 Note**: The current demo is a simple simulation. Real AimDB functionality is still being implemented as part of the early development process.
 
 ---
 
