@@ -1,8 +1,5 @@
-# Configuration for cargo-deny
-# See: https://embarkstudios.github.io/cargo-deny/
-
 [licenses]
-# Allow these licenses for the project
+version = 2
 allow = [
     "Apache-2.0",
     "MIT",
@@ -12,36 +9,17 @@ allow = [
     "Unicode-DFS-2016",
 ]
 
-# Deny these licenses
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-3.0",
-]
-
-# Configuration for license checking
 confidence-threshold = 0.8
 
 [bans]
-# Lint level for when multiple versions of the same crate are detected
 multiple-versions = "warn"
-# Lint level for when a crate version requirement is `*`
 wildcards = "allow"
 
 [advisories]
-# The lint level for security vulnerabilities
-vulnerability = "deny"
-# The lint level for crates that have been yanked from their source registry
+version = 2
 yanked = "warn"
-# The lint level for crates with security notices
-notice = "warn"
 
 [sources]
-# Lint level for what to happen when a crate from a crate registry that is
-# not in the allow list is encountered
 unknown-registry = "warn"
-# Lint level for what to happen when a crate from a git repository that is not
-# in the allow list is encountered
 unknown-git = "warn"
-# List of registries to allow crates from
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
