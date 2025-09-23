@@ -9,6 +9,11 @@ on:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+  schedule:
+    # Run security audit weekly on Sundays at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    # Allow manual triggering of the security audit
 
 jobs:
   audit:
