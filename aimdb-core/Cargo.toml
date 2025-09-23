@@ -1,6 +1,8 @@
 [package]
 name = "aimdb-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core database engine for AimDB - async in-memory storage with real-time synchronization"
 
 [dependencies]

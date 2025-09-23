@@ -1,6 +1,8 @@
 [package]
 name = "aimdb-connectors"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Protocol connectors for AimDB - MQTT, Kafka, DDS, and other communication bridges"
 
 [dependencies]

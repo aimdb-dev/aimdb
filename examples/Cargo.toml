@@ -1,7 +1,9 @@
 [package]
 name = "aimdb-examples"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Example applications and demos for AimDB"
 publish = false
 
 [[example]]
