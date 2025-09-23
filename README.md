@@ -2,18 +2,7 @@
   <img src="assets/logo.png" alt="AimDB Logo" width="300">
 </div>
 
-[!## 🛣 Roadmap & Help Wanted  
-**Current Status**: Early development - foundational architecture is being implemented.
-
-Core priorities where you can make a huge impact:  
-- 🚧 **Core Database Engine** – implement in-memory storage with async operations  
-- 🚧 **MCU Runtime** – tighten Embassy executor integration and notification system  
-- 🧪 **Connectors** – expand MQTT/Kafka/DDS bridges, add gRPC/WebSocket bridges  
-- 📊 **Observability** – lightweight metrics and health probes  
-- 📚 **Docs & Examples** – more templates, edge-to-cloud demos  
-- 🔐 **Access Control Hooks** – refine built-in identity & metering  
-
-Check the Issues board for "help wanted" labels or propose your own ideas.atus](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/ci.yml?branch=main)](https://github.com/aimdb-dev/aimdb/actions)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/ci.yml?branch=main)](https://github.com/aimdb-dev/aimdb/actions)
 [![Security Audit](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/security.yml?branch=main&label=security)](https://github.com/aimdb-dev/aimdb/actions)
 [![Documentation](https://img.shields.io/github/actions/workflow/status/aimdb-dev/aimdb/docs.yml?branch=main&label=docs)](https://github.com/aimdb-dev/aimdb/actions)
 [![Crates.io](https://img.shields.io/crates/v/aimdb.svg)](https://crates.io/crates/aimdb)
@@ -27,12 +16,12 @@ Check the Issues board for "help wanted" labels or propose your own ideas.atus](
 
 > **One codebase. Any hardware. Always in sync.**
 
-AimDB is an **async, in-memory database** that keeps state and streams **consistent across MCU → edge → cloud** — without internal brokers, glue code or vendor lock-in. If you’ve ever juggled MQTT bridges, SQLite caches and custom sync scripts just to move live data, AimDB is here to simplify your world.
+AimDB is an **async, in-memory database** that keeps state and streams **consistent across MCU → edge → cloud** — without internal brokers, glue code or vendor lock-in. If you've ever juggled MQTT bridges, SQLite caches and custom sync scripts just to move live data, AimDB is here to simplify your world.
 
 ---
 
 ## 🚀 Why AimDB Matters  
-Modern devices generate massive real-time data, but today’s stacks are fragmented and slow:  
+Modern devices generate massive real-time data, but today's stacks are fragmented and slow:  
 - Multiple brokers/databases/sync layers to keep MCU, edge and cloud in step.  
 - Device-specific integrations that make hardware swaps risky.  
 - Batch-oriented pipelines that miss millisecond-level insights.  
@@ -82,7 +71,7 @@ You should see a demo simulation showing the concept of data syncing between dev
 ---
 
 ## 🤝 Contributing  
-We love contributions! Here’s how to jump in:  
+We love contributions! Here's how to jump in:  
 1. Clone the repository.
    ```bash
    git clone https://github.com/aimdb-dev/aimdb.git
@@ -95,25 +84,28 @@ We love contributions! Here’s how to jump in:
 4. Open a Pull Request with a concise description and link any related issues.  
 5. Discuss ideas or questions in GitHub Discussions or our chat (see below).  
 
-Bug reports, docs fixes experimental connectors are all welcome — don’t be shy!  
+Bug reports, docs fixes experimental connectors are all welcome — don't be shy!  
 
 ---
 
 ## 🛣 Roadmap & Help Wanted  
-Early priorities where you can make a huge impact:  
-- ✅ **MCU Runtime** – tighten Embassy executor integration and notification system.  
-- 🧪 **Connectors** – expand MQTT/Kafka/DDS bridges, add gRPC/WebSocket bridges.  
-- 📊 **Observability** – lightweight metrics and health probes.  
-- 📚 **Docs & Examples** – more templates, edge-to-cloud demos.  
-- 🔐 **Access Control Hooks** – refine built-in identity & metering.  
+**Current Status**: Early development - foundational architecture is being implemented.
 
-Check the Issues board for “help wanted” labels or propose your own ideas.  
+Core priorities where you can make a huge impact:  
+- 🚧 **Core Database Engine** – implement in-memory storage with async operations  
+- 🚧 **MCU Runtime** – tighten Embassy executor integration and notification system  
+- 🧪 **Connectors** – expand MQTT/Kafka/DDS bridges, add gRPC/WebSocket bridges  
+- 📊 **Observability** – lightweight metrics and health probes  
+- 📚 **Docs & Examples** – more templates, edge-to-cloud demos  
+- 🔐 **Access Control Hooks** – refine built-in identity & metering  
+
+Check the Issues board for "help wanted" labels or propose your own ideas.  
 
 ---
 
 ## 🌐 Community  
-- � **Discussions**: [GitHub Discussions](https://github.com/aimdb-dev/aimdb/discussions)
-- � **Issues**: [Bug Reports & Feature Requests](https://github.com/aimdb-dev/aimdb/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/aimdb-dev/aimdb/discussions)
+- 🐛 **Issues**: [Bug Reports & Feature Requests](https://github.com/aimdb-dev/aimdb/issues)
 - 📖 **Docs**: [Project Wiki](https://github.com/aimdb-dev/aimdb/wiki)
 
 Your voice shapes AimDB — ask questions, share feedback and showcase what you build.  
@@ -121,4 +113,4 @@ Your voice shapes AimDB — ask questions, share feedback and showcase what you 
 ---
 
 ## ✨ Tagline  
-**Let’s build the future of edge intelligence — together!**
+**Let's build the future of edge intelligence — together!**
