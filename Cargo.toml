@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "aimdb-core",
+    "aimdb-connectors",
+    "aimdb-adapters",
+    "tools/aimdb-cli",
+    "examples/quickstart"
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["AimDB Team <team@aimdb.dev>"]
+license = "Apache-2.0"
+repository = "https://github.com/aimdb-dev/aimdb"
+homepage = "https://aimdb.dev"
+description = "Async in-memory database for real-time synchronization across MCU → edge → cloud environments"
+keywords = ["database", "async", "embedded", "real-time", "sync"]
+categories = ["database-implementations", "embedded", "asynchronous"]
+
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# Error handling
+thiserror = "1.0"
+
+# Basic observability
+tracing = "0.1"
+
+# Async utilities
+futures = "0.3"
+
+# CLI (for aimdb-cli)
+clap = { version = "4.0", features = ["derive"] }
+
+# Development dependencies
+tokio-test = "0.4"
+
+[workspace.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
