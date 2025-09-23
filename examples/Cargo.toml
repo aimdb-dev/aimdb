@@ -1,0 +1,12 @@
+[package]
+name = "aimdb-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[example]]
+name = "quickstart"
+path = "quickstart.rs"
+
+[dependencies]
+# Add any dependencies your examples need here
