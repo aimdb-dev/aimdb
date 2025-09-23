@@ -1,0 +1,265 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cargo build",
+            "type": "cargo",
+            "command": "build",
+            "args": [
+                "--all-features"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo build release",
+            "type": "cargo",
+            "command": "build",
+            "args": [
+                "--release",
+                "--all-features"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo test",
+            "type": "cargo",
+            "command": "test",
+            "args": [
+                "--all-features"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo test embedded",
+            "type": "cargo",
+            "command": "test",
+            "args": [
+                "--features",
+                "embedded",
+                "--target",
+                "thumbv7em-none-eabihf"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo clippy",
+            "type": "cargo",
+            "command": "clippy",
+            "args": [
+                "--all-targets",
+                "--all-features",
+                "--",
+                "-D",
+                "warnings"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo fmt",
+            "type": "cargo",
+            "command": "fmt",
+            "args": [
+                "--all"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo bench",
+            "type": "cargo",
+            "command": "bench",
+            "args": [
+                "--all-features"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo doc",
+            "type": "cargo",
+            "command": "doc",
+            "args": [
+                "--all-features",
+                "--no-deps",
+                "--open"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo audit",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "audit"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Quick Start Demo",
+            "type": "cargo",
+            "command": "run",
+            "args": [
+                "--example",
+                "quickstart",
+                "--all-features"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "Protocol Bridge Demo",
+            "type": "cargo",
+            "command": "run",
+            "args": [
+                "--example",
+                "protocol_bridge",
+                "--features",
+                "mqtt,kafka"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "dependsOn": "setup test environment"
+        },
+        {
+            "label": "setup test environment",
+            "type": "shell",
+            "command": "docker-compose",
+            "args": [
+                "-f",
+                "tests/docker-compose.yml",
+                "up",
+                "-d"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Clean All",
+            "type": "cargo",
+            "command": "clean",
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Full CI Check",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "cargo fmt",
+                "cargo clippy",
+                "cargo test",
+                "cargo audit"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            }
+        }
+    ]
+}
