@@ -68,8 +68,8 @@ use thiserror::Error;
 pub enum AimDbError {
     #[error("Stream operation failed: {0}")]
     StreamError(String),
-    #[error("Protocol bridge error: {protocol}")]
-    BridgeError { protocol: String },
+    #[error("Connector error: {protocol}")]
+    ConnectorError { protocol: String },
     #[error("Runtime error")]
     RuntimeError(#[from] RuntimeError),
 }
@@ -98,7 +98,7 @@ where
 - Test error conditions explicitly
 
 ### Integration Tests
-- Test protocol bridges end-to-end
+- Test connectors end-to-end
 - Verify cross-platform compatibility
 - Test performance characteristics
 - Include benchmarks for critical paths
@@ -144,7 +144,7 @@ mod tests {
 /// Processes incoming data streams and maintains synchronized state.
 ///
 /// The `StreamProcessor` handles real-time data ingestion from various
-/// protocol bridges and ensures consistent state across all connected
+/// connectors and ensures consistent state across all connected
 /// nodes in the AimDB network.
 ///
 /// # Examples

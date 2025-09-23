@@ -162,10 +162,10 @@ Risks:
 
 ## Example Task Breakdown
 
-### Feature: MQTT Protocol Bridge Implementation
+### Feature: MQTT Connector Implementation
 
 #### Task 1: MQTT-001-FOUNDATION
-**Title**: MQTT Protocol Bridge Core Structure
+**Title**: MQTT Connector Core Structure
 **Category**: Core  
 **Priority**: High  
 **Effort**: 6 hours  

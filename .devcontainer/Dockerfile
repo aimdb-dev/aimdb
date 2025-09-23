@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y \
     libudev-dev llvm libclang-dev \
     protobuf-compiler libssl-dev \
     cmake ninja-build gcc-arm-none-eabi gdb-multiarch \
-    # AimDB protocol bridge dependencies
+    # AimDB connector dependencies
     mosquitto-clients \
     # Performance profiling tools
     valgrind \

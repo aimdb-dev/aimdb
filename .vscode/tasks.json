@@ -190,12 +190,12 @@
             ]
         },
         {
-            "label": "Protocol Bridge Demo",
+            "label": "Connector Demo",
             "type": "cargo",
             "command": "run",
             "args": [
                 "--example",
-                "protocol_bridge",
+                "connector",
                 "--features",
                 "mqtt,kafka"
             ],
