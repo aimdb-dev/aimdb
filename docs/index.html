@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>AimDB Documentation</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+            line-height: 1.6;
+            color: #333;
+        }
+
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 0.5rem;
+        }
+
+        .intro {
+            background: #f8f9fa;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin: 2rem 0;
+            border-left: 4px solid #3498db;
+        }
+
+        .crates-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        .crate {
+            padding: 1.5rem;
+            border: 1px solid #e1e8ed;
+            border-radius: 12px;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .crate:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        }
+
+        .crate h3 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+
+        .crate p {
+            color: #666;
+            margin-bottom: 1rem;
+        }
+
+        a {
+            color: #3498db;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        a:hover {
+            text-decoration: underline;
+            color: #2980b9;
+        }
+
+        .badge {
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .footer {
+            margin-top: 3rem;
+            padding-top: 2rem;
+            border-top: 1px solid #e1e8ed;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>AimDB Documentation</h1>
+
+    <div class="intro">
+        <p><strong>AimDB</strong> is an async, in-memory database designed for real-time data synchronization across MCU
+            → edge → cloud environments. Built with Rust for millisecond-level reactivity and platform portability.</p>
+        <p><span class="badge">Async-First</span> <span class="badge">Lock-Free</span> <span
+                class="badge">Cross-Platform</span> <span class="badge">Real-Time</span></p>
+    </div>
+
+    <h2>API Documentation</h2>
+
+    <div class="crates-grid">
+        <div class="crate">
+            <h3><a href="aimdb_core/">aimdb-core</a></h3>
+            <p>Core database engine and fundamental data structures. Contains the async database implementation,
+                lock-free data structures, and core APIs.</p>
+            <p><span class="badge">Core Engine</span></p>
+        </div>
+
+        <div class="crate">
+            <h3><a href="aimdb_connectors/">aimdb-connectors</a></h3>
+            <p>Protocol connectors for MQTT, Kafka, DDS and other messaging systems. Enables seamless integration with
+                existing infrastructure.</p>
+            <p><span class="badge">Protocol Bridges</span></p>
+        </div>
+
+        <div class="crate">
+            <h3><a href="aimdb_adapters/">aimdb-adapters</a></h3>
+            <p>Runtime adapters for different async executors including Tokio, Embassy (embedded), and async-std.
+                Platform abstraction layer.</p>
+            <p><span class="badge">Runtime Support</span></p>
+        </div>
+
+        <div class="crate">
+            <h3><a href="aimdb_cli/">aimdb-cli</a></h3>
+            <p>Command-line interface for managing AimDB instances, configuration, and monitoring. Essential tool for
+                operations.</p>
+            <p><span class="badge">CLI Tools</span></p>
+        </div>
+    </div>
+
+    <h2>Quick Links</h2>
+    <ul>
+        <li><a href="https://github.com/aimdb-dev/aimdb">GitHub Repository</a></li>
+        <li><a href="https://github.com/aimdb-dev/aimdb/blob/main/README.md">Getting Started</a></li>
+        <li><a href="https://github.com/aimdb-dev/aimdb/tree/main/examples">Examples</a></li>
+        <li><a href="https://github.com/aimdb-dev/aimdb/issues">Issues & Support</a></li>
+    </ul>
+
+    <div class="footer">
+        <p>Generated from AimDB source code • <a href="https://github.com/aimdb-dev/aimdb">View on GitHub</a></p>
+    </div>
+</body>
+
+</html>

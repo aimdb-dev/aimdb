@@ -34,7 +34,9 @@ jobs:
         key: ${{ runner.os }}-docs-cargo-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Build documentation
-      run: cargo doc --all-features --no-deps
+      run: |
+        cargo doc --all-features --no-deps
+        cp docs/index.html target/doc/index.html
     
     - name: Setup Pages
       if: github.ref == 'refs/heads/main'
