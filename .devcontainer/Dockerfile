@@ -10,6 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # System packages as root + AimDB protocol dependencies
 # --------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
+    gh \
     bash-completion \
     build-essential \
     curl \
