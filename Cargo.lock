@@ -19,5 +19,5 @@ name = "aimdb-core"
 version = "0.1.0"
 
 [[package]]
-name = "quickstart"
+name = "aimdb-examples"
 version = "0.1.0"
