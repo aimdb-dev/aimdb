@@ -1,14 +1,6 @@
 {
   "name": "Rust Dev-Container",
-  "build": {
-    "context": "..",
-    "dockerfile": "Dockerfile",
-    "args": {
-      "USERNAME": "vscode",
-      "USER_UID": "1000",
-      "USER_GID": "1000"
-    }
-  },
+  "image": "ghcr.io/aimdb-dev/devcontainer:latest",
   "workspaceFolder": "/aimdb",
   "runArgs": [
     "--privileged",
