@@ -5,10 +5,12 @@ on:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - 'deny.toml'
   pull_request:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - 'deny.toml'
   schedule:
     # Run security audit weekly on Sundays at 00:00 UTC
     - cron: '0 0 * * 0'
