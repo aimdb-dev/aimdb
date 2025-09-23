@@ -21,37 +21,20 @@ deny = [
 
 # Configuration for license checking
 confidence-threshold = 0.8
-exceptions = []
 
 [bans]
 # Lint level for when multiple versions of the same crate are detected
 multiple-versions = "warn"
 # Lint level for when a crate version requirement is `*`
 wildcards = "allow"
-# The graph highlighting used when creating dotgraphs for crates
-highlight = "all"
-# List of explicitly disallowed crates
-deny = []
-# Certain crates/versions that will be skipped when doing duplicate detection.
-skip = []
-# Similarly to `skip` allows you to skip certain crates from being checked.
-skip-tree = []
 
 [advisories]
-# The path where the advisory database is cloned/fetched into
-db-path = "~/.cargo/advisory-db"
-# The url(s) of the advisory databases to use
-db-urls = ["https://github.com/rustsec/advisory-db"]
 # The lint level for security vulnerabilities
 vulnerability = "deny"
-# The lint level for unmaintained crates
-unmaintained = "warn"
 # The lint level for crates that have been yanked from their source registry
 yanked = "warn"
-# The lint level for crates with security notices.
+# The lint level for crates with security notices
 notice = "warn"
-# A list of advisory IDs to ignore.
-ignore = []
 
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is
@@ -60,7 +43,5 @@ unknown-registry = "warn"
 # Lint level for what to happen when a crate from a git repository that is not
 # in the allow list is encountered
 unknown-git = "warn"
-# List of urls or hosts to allow git sources for
-allow-git = []
 # List of registries to allow crates from
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
