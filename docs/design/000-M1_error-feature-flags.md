@@ -89,7 +89,6 @@ pub enum DbError {
     
     /// Embedded-specific errors (no_std only)
     #[cfg(not(feature = "std"))]
-    #[cfg_attr(feature = "std", error("Hardware error: {error_code}"))]
     HardwareError { error_code: u32 },
 }
 
