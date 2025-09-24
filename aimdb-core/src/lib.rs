@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! AimDB Core Database Engine
+//!
+//! This crate provides the core database engine for AimDB, supporting async
+//! in-memory storage with real-time synchronization across MCU → edge → cloud
+//! environments.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod error;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+// Public API exports
+pub use error::{DbError, DbResult};
