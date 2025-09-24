@@ -558,8 +558,6 @@ impl AsyncDatabase {
   - Preserves causal error relationships across await boundaries
 - **Trade-offs**: Requires tracing integration complexity vs provides rich observability
 
-### Risk Mitigation
-
 ### Risk Assessment & Mitigation
 
 **Architectural Risk: Feature Flag Complexity**
