@@ -105,29 +105,6 @@
 #[cfg(feature = "std")]
 use thiserror::Error;
 
-#[cfg(not(feature = "std"))]
-impl core::fmt::Display for DbError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let message = match self {
-            DbError::NetworkTimeout { .. } => "Network timeout",
-            DbError::ConnectionFailed { .. } => "Connection failed",
-            DbError::ProtocolError { .. } => "Protocol error",
-            DbError::CapacityExceeded { .. } => "Capacity exceeded",
-            DbError::BufferFull { .. } => "Buffer full",
-            DbError::SerializationFailed { .. } => "Serialization failed",
-            DbError::InvalidDataFormat { .. } => "Invalid data format",
-            DbError::InvalidConfiguration { .. } => "Invalid configuration",
-            DbError::MissingConfiguration { .. } => "Missing configuration parameter",
-            DbError::ResourceAllocationFailed { .. } => "Resource allocation failed",
-            DbError::ResourceUnavailable { .. } => "Resource unavailable",
-            DbError::HardwareError { .. } => "Hardware error",
-            DbError::PeripheralInitFailed { .. } => "Peripheral initialization failed",
-            DbError::Internal { .. } => "Internal error",
-        };
-        write!(f, "{}", message)
-    }
-}
-
 /// Unified error type for all AimDB operations across platforms
 ///
 /// This enum covers all error scenarios that can occur during AimDB operations,
@@ -237,7 +214,7 @@ pub enum DbError {
     },
 
     /// Resource allocation failures (memory, file handles, etc.)
-    #[cfg_attr(feature = "std", error("Resource allocation failed: {resource_type}"))]
+    #[cfg_attr(feature = "std", error("Resource allocation failed: {details}"))]
     ResourceAllocationFailed {
         resource_type: u8, // 0=Memory, 1=FileHandle, 2=Socket, etc.
         requested_size: u32,
@@ -290,6 +267,29 @@ pub enum DbError {
         #[cfg(not(feature = "std"))]
         _message: (),
     },
+}
+
+#[cfg(not(feature = "std"))]
+impl core::fmt::Display for DbError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let message = match self {
+            DbError::NetworkTimeout { .. } => "Network timeout",
+            DbError::ConnectionFailed { .. } => "Connection failed",
+            DbError::ProtocolError { .. } => "Protocol error",
+            DbError::CapacityExceeded { .. } => "Capacity exceeded",
+            DbError::BufferFull { .. } => "Buffer full",
+            DbError::SerializationFailed { .. } => "Serialization failed",
+            DbError::InvalidDataFormat { .. } => "Invalid data format",
+            DbError::InvalidConfiguration { .. } => "Invalid configuration",
+            DbError::MissingConfiguration { .. } => "Missing configuration parameter",
+            DbError::ResourceAllocationFailed { .. } => "Resource allocation failed",
+            DbError::ResourceUnavailable { .. } => "Resource unavailable",
+            DbError::HardwareError { .. } => "Hardware error",
+            DbError::PeripheralInitFailed { .. } => "Peripheral initialization failed",
+            DbError::Internal { .. } => "Internal error",
+        };
+        write!(f, "{}", message)
+    }
 }
 
 impl DbError {
