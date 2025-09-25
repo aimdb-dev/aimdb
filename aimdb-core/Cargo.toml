@@ -7,11 +7,13 @@ description = "Core database engine for AimDB - async in-memory storage with rea
 
 [features]
 default = ["std"]
-std = ["thiserror"]
+std = ["thiserror", "anyhow", "serde_json"]
 
 [dependencies]
 # Error handling - only for std environments
 thiserror = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 # For no_std testing
