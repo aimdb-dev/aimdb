@@ -47,6 +47,70 @@
 //! - **Display formatting**: <1μs on embedded, <10μs on std platforms
 //! - **Memory usage**: Zero heap allocation on embedded targets
 //!
+//! # Enhanced Error Features (std only)
+//!
+//! When the `std` feature is enabled (default), AimDB provides rich error handling capabilities:
+//!
+//! - **Error Chaining**: Add context to errors with the `with_context()` method
+//! - **Standard Library Integration**: Automatic conversions from `std::io::Error` and `serde_json::Error`
+//! - **Anyhow Compatibility**: Seamless integration with `anyhow` for application boundaries
+//! - **Rich Error Messages**: Full context and error source chains
+//!
+//! ## Error Chaining Example
+//!
+//! ```rust
+//! # #[cfg(feature = "std")]
+//! # {
+//! use aimdb_core::DbError;
+//!
+//! let error = DbError::network_timeout(5000)
+//!     .with_context("Failed to connect to database server")
+//!     .with_context("During application startup");
+//!
+//! println!("{}", error);
+//! // "Network timeout after 5000ms: During application startup: Failed to connect to database server"
+//! # }
+//! ```
+//!
+//! ## Standard Library Integration
+//!
+//! ```rust
+//! # #[cfg(feature = "std")]
+//! # {
+//! use aimdb_core::DbError;
+//! use std::fs::File;
+//!
+//! // Automatic conversion from std::io::Error
+//! let result: Result<File, DbError> = File::open("nonexistent.txt")
+//!     .map_err(DbError::from);
+//!
+//! // Or using the ? operator in functions
+//! fn read_config() -> Result<String, DbError> {
+//!     let content = std::fs::read_to_string("config.txt")?;
+//!     Ok(content)
+//! }
+//! # }
+//! ```
+//!
+//! ## Anyhow Integration
+//!
+//! ```rust
+//! # #[cfg(feature = "std")]
+//! # {
+//! use aimdb_core::DbError;
+//! use anyhow::Context;
+//!
+//! fn application_main() -> anyhow::Result<()> {
+//!     let db_error = DbError::capacity_exceeded_with_type(1024, 512, "connection pool")
+//!         .with_context("Pool exhausted during high load");
+//!         
+//!     Err(db_error.into_anyhow())
+//!         .context("Database initialization failed")
+//!         .context("Application startup failed")
+//! }
+//! # }
+//! ```
+//!
 //! # Usage Examples
 //!
 //! ## Basic Error Handling
@@ -160,6 +224,10 @@
 // the #[cfg_attr(feature = "std", error("..."))] format strings below
 #[cfg(feature = "std")]
 use thiserror::Error;
+
+// Additional std-only imports for enhanced error handling
+#[cfg(feature = "std")]
+use std::io;
 
 /// Unified error type for all AimDB operations across platforms
 ///
@@ -323,6 +391,22 @@ pub enum DbError {
         #[cfg(not(feature = "std"))]
         _message: (),
     },
+
+    /// I/O operation errors (std only)
+    #[cfg(feature = "std")]
+    #[error("I/O error: {source}")]
+    Io {
+        #[from]
+        source: io::Error,
+    },
+
+    /// JSON serialization errors (std only)
+    #[cfg(feature = "std")]
+    #[error("JSON error: {source}")]
+    Json {
+        #[from]
+        source: serde_json::Error,
+    },
 }
 
 #[cfg(not(feature = "std"))]
@@ -346,6 +430,12 @@ impl core::fmt::Display for DbError {
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
             DbError::PeripheralInitFailed { .. } => (0x6002, "Peripheral initialization failed"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
+
+            // I/O and JSON errors are std-only, so they won't appear in no_std builds
+            #[cfg(feature = "std")]
+            DbError::Io { .. } => (0x8001, "I/O error"),
+            #[cfg(feature = "std")]
+            DbError::Json { .. } => (0x9001, "JSON error"),
         };
         write!(f, "Error 0x{:04X}: {}", code, message)
     }
@@ -506,6 +596,14 @@ impl DbError {
 
             // Internal errors: 0x7000-0x7FFF
             DbError::Internal { .. } => 0x7001,
+
+            // I/O errors: 0x8000-0x8FFF (std only)
+            #[cfg(feature = "std")]
+            DbError::Io { .. } => 0x8001,
+
+            // JSON errors: 0x9000-0x9FFF (std only)
+            #[cfg(feature = "std")]
+            DbError::Json { .. } => 0x9001,
         }
     }
 
@@ -526,7 +624,149 @@ impl DbError {
     pub const fn error_category(&self) -> u32 {
         self.error_code() & 0xF000
     }
+
+    /// Adds additional context to an error (std only)
+    ///
+    /// This method allows chaining additional context information to errors,
+    /// useful for providing more detailed error information in edge and cloud
+    /// environments where memory is not as constrained.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "std")]
+    /// # {
+    /// use aimdb_core::DbError;
+    ///
+    /// let error = DbError::network_timeout(5000)
+    ///     .with_context("Failed to connect to database server")
+    ///     .with_context("During application startup");
+    /// # }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn with_context<S: Into<String>>(mut self, context: S) -> Self {
+        match &mut self {
+            DbError::NetworkTimeout {
+                context: ref mut ctx,
+                ..
+            } => {
+                if ctx.is_empty() {
+                    *ctx = context.into();
+                } else {
+                    *ctx = format!("{}: {}", context.into(), ctx);
+                }
+            }
+            DbError::ConnectionFailed {
+                reason: ref mut r, ..
+            } => {
+                *r = format!("{}: {}", context.into(), r);
+            }
+            DbError::ProtocolError {
+                message: ref mut msg,
+                ..
+            } => {
+                *msg = format!("{}: {}", context.into(), msg);
+            }
+            DbError::CapacityExceeded {
+                resource_type: ref mut rt,
+                ..
+            } => {
+                *rt = format!("{}: {}", context.into(), rt);
+            }
+            DbError::BufferFull {
+                buffer_name: ref mut bn,
+                ..
+            } => {
+                *bn = format!("{}: {}", context.into(), bn);
+            }
+            DbError::SerializationFailed {
+                details: ref mut d, ..
+            } => {
+                *d = format!("{}: {}", context.into(), d);
+            }
+            DbError::InvalidDataFormat {
+                description: ref mut desc,
+                ..
+            } => {
+                *desc = format!("{}: {}", context.into(), desc);
+            }
+            DbError::InvalidConfiguration {
+                parameter: ref mut p,
+                ..
+            } => {
+                *p = format!("{}: {}", context.into(), p);
+            }
+            DbError::MissingConfiguration {
+                parameter: ref mut p,
+                ..
+            } => {
+                *p = format!("{}: {}", context.into(), p);
+            }
+            DbError::ResourceAllocationFailed {
+                details: ref mut d, ..
+            } => {
+                *d = format!("{}: {}", context.into(), d);
+            }
+            DbError::ResourceUnavailable {
+                resource_name: ref mut rn,
+                ..
+            } => {
+                *rn = format!("{}: {}", context.into(), rn);
+            }
+            DbError::HardwareError {
+                description: ref mut desc,
+                ..
+            } => {
+                *desc = format!("{}: {}", context.into(), desc);
+            }
+            DbError::PeripheralInitFailed {
+                peripheral: ref mut p,
+                ..
+            } => {
+                *p = format!("{}: {}", context.into(), p);
+            }
+            DbError::Internal {
+                message: ref mut msg,
+                ..
+            } => {
+                *msg = format!("{}: {}", context.into(), msg);
+            }
+            DbError::Io { .. } | DbError::Json { .. } => {
+                // These errors already have rich context from their source errors
+                // We can't easily add context to them due to thiserror's #[from] handling
+            }
+        }
+        self
+    }
+
+    /// Converts this error into an anyhow::Error (std only)
+    ///
+    /// This method provides seamless integration with anyhow for application
+    /// boundaries, allowing AimDB errors to be used in anyhow error chains.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "std")]
+    /// # {
+    /// use aimdb_core::DbError;
+    /// use anyhow::Context;
+    ///
+    /// fn application_boundary() -> anyhow::Result<()> {
+    ///     let db_error = DbError::network_timeout(5000);
+    ///     Err(db_error.into_anyhow())
+    ///         .context("Failed to initialize database connection")
+    /// }
+    /// # }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn into_anyhow(self) -> anyhow::Error {
+        self.into()
+    }
 }
+
+// Note: anyhow::Error automatically implements From<DbError> via its blanket
+// implementation for any type that implements std::error::Error + Send + Sync + 'static
 
 /// Type alias for Results using DbError
 ///
@@ -830,7 +1070,7 @@ mod tests {
         use std::collections::HashSet;
         let mut codes = HashSet::new();
 
-        let errors = [
+        let mut errors = vec![
             DbError::NetworkTimeout {
                 timeout_ms: 0,
                 #[cfg(feature = "std")]
@@ -868,7 +1108,84 @@ mod tests {
                 #[cfg(not(feature = "std"))]
                 _buffer_name: (),
             },
+            DbError::SerializationFailed {
+                format: 0,
+                #[cfg(feature = "std")]
+                details: String::new(),
+                #[cfg(not(feature = "std"))]
+                _details: (),
+            },
+            DbError::InvalidDataFormat {
+                expected_format: 0,
+                received_format: 0,
+                #[cfg(feature = "std")]
+                description: String::new(),
+                #[cfg(not(feature = "std"))]
+                _description: (),
+            },
+            DbError::InvalidConfiguration {
+                #[cfg(feature = "std")]
+                parameter: String::new(),
+                #[cfg(feature = "std")]
+                value: String::new(),
+                #[cfg(not(feature = "std"))]
+                _parameter: (),
+            },
+            DbError::MissingConfiguration {
+                #[cfg(feature = "std")]
+                parameter: String::new(),
+                #[cfg(not(feature = "std"))]
+                _parameter: (),
+            },
+            DbError::ResourceAllocationFailed {
+                resource_type: 0,
+                requested_size: 0,
+                #[cfg(feature = "std")]
+                details: String::new(),
+                #[cfg(not(feature = "std"))]
+                _details: (),
+            },
+            DbError::ResourceUnavailable {
+                resource_type: 0,
+                #[cfg(feature = "std")]
+                resource_name: String::new(),
+                #[cfg(not(feature = "std"))]
+                _resource_name: (),
+            },
+            DbError::HardwareError {
+                component: 0,
+                error_code: 0,
+                #[cfg(feature = "std")]
+                description: String::new(),
+                #[cfg(not(feature = "std"))]
+                _description: (),
+            },
+            DbError::PeripheralInitFailed {
+                peripheral_id: 0,
+                #[cfg(feature = "std")]
+                peripheral: String::new(),
+                #[cfg(not(feature = "std"))]
+                _peripheral: (),
+            },
+            DbError::Internal {
+                code: 0,
+                #[cfg(feature = "std")]
+                message: String::new(),
+                #[cfg(not(feature = "std"))]
+                _message: (),
+            },
         ];
+
+        // Add std-only errors if the std feature is enabled
+        #[cfg(feature = "std")]
+        {
+            errors.push(DbError::Io {
+                source: std::io::Error::other("test"),
+            });
+            errors.push(DbError::Json {
+                source: serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
+            });
+        }
 
         for error in &errors {
             let code = error.error_code();
@@ -957,6 +1274,220 @@ mod tests {
         assert!(display_msg.contains("2048"));
         assert!(display_msg.contains("1024"));
         assert!(display_msg.contains("memory buffer"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_error_chaining_with_context() {
+        // Test that with_context() properly chains error context
+        let base_error = DbError::network_timeout(5000);
+        let chained_error = base_error
+            .with_context("Failed to connect to database server")
+            .with_context("During application startup");
+
+        if let DbError::NetworkTimeout { context, .. } = chained_error {
+            assert_eq!(
+                context,
+                "During application startup: Failed to connect to database server"
+            );
+        } else {
+            panic!("Expected NetworkTimeout error");
+        }
+
+        // Test chaining on different error types
+        let capacity_error = DbError::capacity_exceeded_with_type(2048, 1024, "memory")
+            .with_context("Buffer allocation failed")
+            .with_context("High memory usage");
+
+        if let DbError::CapacityExceeded { resource_type, .. } = capacity_error {
+            assert_eq!(
+                resource_type,
+                "High memory usage: Buffer allocation failed: memory"
+            );
+        } else {
+            panic!("Expected CapacityExceeded error");
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_std_io_error_conversion() {
+        use std::io::ErrorKind;
+
+        // Test conversion from std::io::Error
+        let io_error = std::io::Error::new(ErrorKind::NotFound, "File not found");
+        let db_error: DbError = io_error.into();
+
+        if let DbError::Io { source } = db_error {
+            assert_eq!(source.kind(), ErrorKind::NotFound);
+        } else {
+            panic!("Expected Io error variant");
+        }
+
+        // Test that the error code is correct for I/O errors
+        let io_db_error = DbError::Io {
+            source: std::io::Error::new(ErrorKind::PermissionDenied, "Permission denied"),
+        };
+        assert_eq!(io_db_error.error_code(), 0x8001);
+        assert_eq!(io_db_error.error_category(), 0x8000);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_serde_json_error_conversion() {
+        // Test conversion from serde_json::Error
+        let invalid_json = r#"{"invalid": json}"#;
+        let json_error: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>(invalid_json).unwrap_err();
+        let db_error: DbError = json_error.into();
+
+        if let DbError::Json { .. } = db_error {
+            // Conversion successful
+        } else {
+            panic!("Expected Json error variant");
+        }
+
+        // Test that the error code is correct for JSON errors
+        let json_db_error = DbError::Json {
+            source: serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
+        };
+        assert_eq!(json_db_error.error_code(), 0x9001);
+        assert_eq!(json_db_error.error_category(), 0x9000);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_anyhow_integration() {
+        use anyhow::Context;
+
+        // Test converting DbError to anyhow::Error
+        let db_error = DbError::network_timeout_with_context(5000, "Connection timeout");
+        let anyhow_error: anyhow::Error = db_error.into_anyhow();
+
+        // Test that the conversion preserves the error message
+        let error_msg = format!("{}", anyhow_error);
+        assert!(error_msg.contains("5000ms"));
+        assert!(error_msg.contains("Connection timeout"));
+
+        // Test error chaining with anyhow
+        fn failing_db_operation() -> Result<(), DbError> {
+            Err(DbError::capacity_exceeded_with_type(2048, 1024, "memory"))
+        }
+
+        let result: anyhow::Result<()> = failing_db_operation()
+            .map_err(|e| e.into_anyhow())
+            .context("Database operation failed")
+            .context("Application startup error");
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let error_chain = format!("{:#}", error);
+        assert!(error_chain.contains("Application startup error"));
+        assert!(error_chain.contains("Database operation failed"));
+        assert!(error_chain.contains("Capacity exceeded"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_std_error_trait_compliance() {
+        use std::error::Error;
+
+        // Test that DbError implements std::error::Error trait correctly
+        let timeout_error = DbError::network_timeout_with_context(3000, "Test timeout");
+        let error_trait: &dyn Error = &timeout_error;
+
+        // Test Display
+        let display_msg = format!("{}", error_trait);
+        assert!(display_msg.contains("3000ms"));
+        assert!(display_msg.contains("Test timeout"));
+
+        // Test Debug
+        let debug_msg = format!("{:?}", error_trait);
+        assert!(debug_msg.contains("NetworkTimeout"));
+
+        // Test error source for errors with sources
+        let io_error = std::io::Error::other("File not found");
+        let db_io_error = DbError::Io { source: io_error };
+        let error_trait: &dyn Error = &db_io_error;
+
+        assert!(error_trait.source().is_some());
+        let source = error_trait.source().unwrap();
+        assert_eq!(source.to_string(), "File not found");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_error_source_chaining() {
+        use std::error::Error;
+
+        // Create a chain: serde_json::Error -> DbError
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let db_error = DbError::Json { source: json_error };
+
+        let error_ref: &dyn Error = &db_error;
+
+        // Verify the source chain
+        assert!(error_ref.source().is_some());
+        let source = error_ref.source().unwrap();
+        assert!(source.to_string().contains("expected"));
+
+        // Create a chain: io::Error -> DbError
+        let io_error = std::io::Error::other("Access denied");
+        let db_io_error = DbError::Io { source: io_error };
+
+        let error_ref: &dyn Error = &db_io_error;
+        assert!(error_ref.source().is_some());
+        let source = error_ref.source().unwrap();
+        assert_eq!(source.to_string(), "Access denied");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_comprehensive_error_scenarios() {
+        // Test realistic error scenarios combining all features
+
+        // Scenario 1: Network operation with I/O failure and context
+        fn simulate_network_failure() -> Result<(), DbError> {
+            // Simulate file read failure that leads to network error
+            let io_error = std::io::Error::other("Config file not found");
+            Err(DbError::Io { source: io_error })
+        }
+
+        let result = simulate_network_failure()
+            .map_err(|e| e.with_context("Failed to read network configuration"))
+            .map_err(|e| e.with_context("Network initialization failed"));
+
+        assert!(result.is_err());
+
+        // Scenario 2: JSON parsing in configuration loading
+        fn parse_config(json: &str) -> Result<serde_json::Value, DbError> {
+            serde_json::from_str(json).map_err(|e| DbError::Json { source: e })
+        }
+
+        let result = parse_config(r#"{"invalid": json syntax}"#);
+        assert!(result.is_err());
+        if let Err(DbError::Json { .. }) = result {
+            // Expected JSON error
+        } else {
+            panic!("Expected JSON error");
+        }
+
+        // Scenario 3: Converting to anyhow for application boundary
+        use anyhow::Context;
+
+        fn application_main() -> anyhow::Result<()> {
+            let db_error = DbError::capacity_exceeded_with_type(1024, 512, "connection pool")
+                .with_context("Pool exhausted during high load");
+
+            Err(db_error.into_anyhow()).context("Application failed to start")
+        }
+
+        let result = application_main();
+        assert!(result.is_err());
+        let error_msg = format!("{:#}", result.unwrap_err());
+        assert!(error_msg.contains("Application failed to start"));
+        assert!(error_msg.contains("Pool exhausted"));
+        assert!(error_msg.contains("connection pool"));
     }
 
     #[test]
