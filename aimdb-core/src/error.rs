@@ -155,6 +155,9 @@
 //! 3. Enable appropriate feature flags for your target platform
 //! 4. Update error matching to use the new error categories
 
+// Rich error messages in std mode are derived from thiserror::Error
+// This import enables automatic Display implementation generation using
+// the #[cfg_attr(feature = "std", error("..."))] format strings below
 #[cfg(feature = "std")]
 use thiserror::Error;
 
