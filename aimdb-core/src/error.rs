@@ -625,6 +625,29 @@ impl DbError {
         self.error_code() & 0xF000
     }
 
+    /// Helper function to prepend context to an existing message string
+    ///
+    /// This function encapsulates the logic for combining new context with existing
+    /// error messages, handling the case where the existing message might be empty.
+    #[cfg(feature = "std")]
+    fn prepend_context<S: Into<String>>(existing: &mut String, new_context: S) {
+        let new_context = new_context.into();
+        if existing.is_empty() {
+            *existing = new_context;
+        } else {
+            *existing = format!("{}: {}", new_context, existing);
+        }
+    }
+
+    /// Helper function to prepend context to a message string (always prepends)
+    ///
+    /// This function always prepends the new context, used for fields that
+    /// always contain some default content.
+    #[cfg(feature = "std")]
+    fn prepend_context_always<S: Into<String>>(existing: &mut String, new_context: S) {
+        *existing = format!("{}: {}", new_context.into(), existing);
+    }
+
     /// Adds additional context to an error (std only)
     ///
     /// This method allows chaining additional context information to errors,
@@ -649,88 +672,56 @@ impl DbError {
             DbError::NetworkTimeout {
                 context: ref mut ctx,
                 ..
-            } => {
-                if ctx.is_empty() {
-                    *ctx = context.into();
-                } else {
-                    *ctx = format!("{}: {}", context.into(), ctx);
-                }
-            }
+            } => Self::prepend_context(ctx, context),
             DbError::ConnectionFailed {
                 reason: ref mut r, ..
-            } => {
-                *r = format!("{}: {}", context.into(), r);
-            }
+            } => Self::prepend_context_always(r, context),
             DbError::ProtocolError {
                 message: ref mut msg,
                 ..
-            } => {
-                *msg = format!("{}: {}", context.into(), msg);
-            }
+            } => Self::prepend_context_always(msg, context),
             DbError::CapacityExceeded {
                 resource_type: ref mut rt,
                 ..
-            } => {
-                *rt = format!("{}: {}", context.into(), rt);
-            }
+            } => Self::prepend_context_always(rt, context),
             DbError::BufferFull {
                 buffer_name: ref mut bn,
                 ..
-            } => {
-                *bn = format!("{}: {}", context.into(), bn);
-            }
+            } => Self::prepend_context_always(bn, context),
             DbError::SerializationFailed {
                 details: ref mut d, ..
-            } => {
-                *d = format!("{}: {}", context.into(), d);
-            }
+            } => Self::prepend_context_always(d, context),
             DbError::InvalidDataFormat {
                 description: ref mut desc,
                 ..
-            } => {
-                *desc = format!("{}: {}", context.into(), desc);
-            }
+            } => Self::prepend_context_always(desc, context),
             DbError::InvalidConfiguration {
                 parameter: ref mut p,
                 ..
-            } => {
-                *p = format!("{}: {}", context.into(), p);
-            }
+            } => Self::prepend_context_always(p, context),
             DbError::MissingConfiguration {
                 parameter: ref mut p,
                 ..
-            } => {
-                *p = format!("{}: {}", context.into(), p);
-            }
+            } => Self::prepend_context_always(p, context),
             DbError::ResourceAllocationFailed {
                 details: ref mut d, ..
-            } => {
-                *d = format!("{}: {}", context.into(), d);
-            }
+            } => Self::prepend_context_always(d, context),
             DbError::ResourceUnavailable {
                 resource_name: ref mut rn,
                 ..
-            } => {
-                *rn = format!("{}: {}", context.into(), rn);
-            }
+            } => Self::prepend_context_always(rn, context),
             DbError::HardwareError {
                 description: ref mut desc,
                 ..
-            } => {
-                *desc = format!("{}: {}", context.into(), desc);
-            }
+            } => Self::prepend_context_always(desc, context),
             DbError::PeripheralInitFailed {
                 peripheral: ref mut p,
                 ..
-            } => {
-                *p = format!("{}: {}", context.into(), p);
-            }
+            } => Self::prepend_context_always(p, context),
             DbError::Internal {
                 message: ref mut msg,
                 ..
-            } => {
-                *msg = format!("{}: {}", context.into(), msg);
-            }
+            } => Self::prepend_context_always(msg, context),
             DbError::Io { .. } | DbError::Json { .. } => {
                 // These errors already have rich context from their source errors
                 // We can't easily add context to them due to thiserror's #[from] handling
@@ -1439,6 +1430,23 @@ mod tests {
         assert!(error_ref.source().is_some());
         let source = error_ref.source().unwrap();
         assert_eq!(source.to_string(), "Access denied");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_helper_functions() {
+        // Test that the helper functions work correctly in isolation
+        let mut empty_string = String::new();
+        DbError::prepend_context(&mut empty_string, "New context");
+        assert_eq!(empty_string, "New context");
+
+        let mut existing_string = String::from("existing content");
+        DbError::prepend_context(&mut existing_string, "New context");
+        assert_eq!(existing_string, "New context: existing content");
+
+        let mut content_string = String::from("some content");
+        DbError::prepend_context_always(&mut content_string, "Always prepend");
+        assert_eq!(content_string, "Always prepend: some content");
     }
 
     #[cfg(feature = "std")]
