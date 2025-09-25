@@ -35,6 +35,8 @@
 //! - **Resource** (0x5000-0x5FFF): Allocation failures, unavailable resources, system limits
 //! - **Hardware** (0x6000-0x6FFF): MCU peripheral errors, device initialization, hardware faults
 //! - **Internal** (0x7000-0x7FFF): Unexpected conditions and system errors
+//! - **I/O Operations** (0x8000-0x8FFF): File system and I/O errors, including context variants
+//! - **JSON Processing** (0x9000-0x9FFF): JSON serialization/deserialization errors, including context variants
 //!
 //! ## Platform-Specific Display Behavior
 //!
@@ -51,10 +53,11 @@
 //!
 //! When the `std` feature is enabled (default), AimDB provides rich error handling capabilities:
 //!
-//! - **Error Chaining**: Add context to errors with the `with_context()` method
+//! - **Error Chaining**: Add context to errors with the `with_context()` method (works on all error types)
 //! - **Standard Library Integration**: Automatic conversions from `std::io::Error` and `serde_json::Error`
 //! - **Anyhow Compatibility**: Seamless integration with `anyhow` for application boundaries
 //! - **Rich Error Messages**: Full context and error source chains
+//! - **Consistent Context API**: All error variants support context chaining, including I/O and JSON errors
 //!
 //! ## Error Chaining Example
 //!
@@ -84,6 +87,11 @@
 //! let result: Result<File, DbError> = File::open("nonexistent.txt")
 //!     .map_err(DbError::from);
 //!
+//! // Adding context to I/O errors now works consistently
+//! let contextualized_result: Result<File, DbError> = File::open("config.txt")
+//!     .map_err(DbError::from)
+//!     .map_err(|e| e.with_context("Loading application configuration"));
+//!
 //! // Or using the ? operator in functions
 //! fn read_config() -> Result<String, DbError> {
 //!     let content = std::fs::read_to_string("config.txt")?;
@@ -101,8 +109,11 @@
 //! use anyhow::Context;
 //!
 //! fn application_main() -> anyhow::Result<()> {
-//!     let db_error = DbError::capacity_exceeded_with_type(1024, 512, "connection pool")
-//!         .with_context("Pool exhausted during high load");
+//!     // Consistent context handling works across all error types
+//!     let io_error = std::io::Error::other("File not found");
+//!     let db_error = DbError::from(io_error)
+//!         .with_context("Loading configuration file")
+//!         .with_context("Application initialization");
 //!         
 //!     Err(db_error.into_anyhow())
 //!         .context("Database initialization failed")
@@ -112,6 +123,36 @@
 //! ```
 //!
 //! # Usage Examples
+//!
+//! ## Consistent Context Handling
+//!
+//! The `with_context()` method now works consistently across all error types:
+//!
+//! ```rust
+//! # #[cfg(feature = "std")]
+//! # {
+//! use aimdb_core::DbError;
+//!
+//! // I/O errors can now receive context
+//! let io_error = std::io::Error::other("Permission denied");
+//! let contextualized = DbError::from(io_error)
+//!     .with_context("Reading configuration file")
+//!     .with_context("Application startup");
+//!
+//! // JSON errors can now receive context  
+//! let json_str = r#"{"invalid": json}"#;
+//! let json_result: Result<serde_json::Value, DbError> =
+//!     serde_json::from_str(json_str)
+//!         .map_err(DbError::from)
+//!         .map_err(|e| e.with_context("Parsing user input"))
+//!         .map_err(|e| e.with_context("Configuration validation"));
+//!
+//! // Context chaining works on all error types
+//! let network_error = DbError::network_timeout(5000)
+//!     .with_context("Connecting to database")
+//!     .with_context("Service initialization");
+//! # }
+//! ```
 //!
 //! ## Basic Error Handling
 //!
@@ -400,11 +441,29 @@ pub enum DbError {
         source: io::Error,
     },
 
+    /// I/O operation errors with additional context (std only)
+    #[cfg(feature = "std")]
+    #[error("I/O error: {context}: {source}")]
+    IoWithContext {
+        context: String,
+        #[source]
+        source: io::Error,
+    },
+
     /// JSON serialization errors (std only)
     #[cfg(feature = "std")]
     #[error("JSON error: {source}")]
     Json {
         #[from]
+        source: serde_json::Error,
+    },
+
+    /// JSON serialization errors with additional context (std only)
+    #[cfg(feature = "std")]
+    #[error("JSON error: {context}: {source}")]
+    JsonWithContext {
+        context: String,
+        #[source]
         source: serde_json::Error,
     },
 }
@@ -600,10 +659,14 @@ impl DbError {
             // I/O errors: 0x8000-0x8FFF (std only)
             #[cfg(feature = "std")]
             DbError::Io { .. } => 0x8001,
+            #[cfg(feature = "std")]
+            DbError::IoWithContext { .. } => 0x8002,
 
             // JSON errors: 0x9000-0x9FFF (std only)
             #[cfg(feature = "std")]
             DbError::Json { .. } => 0x9001,
+            #[cfg(feature = "std")]
+            DbError::JsonWithContext { .. } => 0x9002,
         }
     }
 
@@ -667,67 +730,169 @@ impl DbError {
     /// # }
     /// ```
     #[cfg(feature = "std")]
-    pub fn with_context<S: Into<String>>(mut self, context: S) -> Self {
-        match &mut self {
+    pub fn with_context<S: Into<String>>(self, context: S) -> Self {
+        match self {
             DbError::NetworkTimeout {
-                context: ref mut ctx,
-                ..
-            } => Self::prepend_context(ctx, context),
+                context: mut ctx,
+                timeout_ms,
+            } => {
+                Self::prepend_context(&mut ctx, context);
+                DbError::NetworkTimeout {
+                    timeout_ms,
+                    context: ctx,
+                }
+            }
             DbError::ConnectionFailed {
-                reason: ref mut r, ..
-            } => Self::prepend_context_always(r, context),
+                mut reason,
+                endpoint,
+            } => {
+                Self::prepend_context_always(&mut reason, context);
+                DbError::ConnectionFailed { endpoint, reason }
+            }
             DbError::ProtocolError {
-                message: ref mut msg,
-                ..
-            } => Self::prepend_context_always(msg, context),
+                error_code,
+                mut message,
+            } => {
+                Self::prepend_context_always(&mut message, context);
+                DbError::ProtocolError {
+                    error_code,
+                    message,
+                }
+            }
             DbError::CapacityExceeded {
-                resource_type: ref mut rt,
-                ..
-            } => Self::prepend_context_always(rt, context),
+                current,
+                limit,
+                mut resource_type,
+            } => {
+                Self::prepend_context_always(&mut resource_type, context);
+                DbError::CapacityExceeded {
+                    current,
+                    limit,
+                    resource_type,
+                }
+            }
             DbError::BufferFull {
-                buffer_name: ref mut bn,
-                ..
-            } => Self::prepend_context_always(bn, context),
+                size,
+                mut buffer_name,
+            } => {
+                Self::prepend_context_always(&mut buffer_name, context);
+                DbError::BufferFull { size, buffer_name }
+            }
             DbError::SerializationFailed {
-                details: ref mut d, ..
-            } => Self::prepend_context_always(d, context),
+                format,
+                mut details,
+            } => {
+                Self::prepend_context_always(&mut details, context);
+                DbError::SerializationFailed { format, details }
+            }
             DbError::InvalidDataFormat {
-                description: ref mut desc,
-                ..
-            } => Self::prepend_context_always(desc, context),
+                expected_format,
+                received_format,
+                mut description,
+            } => {
+                Self::prepend_context_always(&mut description, context);
+                DbError::InvalidDataFormat {
+                    expected_format,
+                    received_format,
+                    description,
+                }
+            }
             DbError::InvalidConfiguration {
-                parameter: ref mut p,
-                ..
-            } => Self::prepend_context_always(p, context),
-            DbError::MissingConfiguration {
-                parameter: ref mut p,
-                ..
-            } => Self::prepend_context_always(p, context),
+                mut parameter,
+                value,
+            } => {
+                Self::prepend_context_always(&mut parameter, context);
+                DbError::InvalidConfiguration { parameter, value }
+            }
+            DbError::MissingConfiguration { mut parameter } => {
+                Self::prepend_context_always(&mut parameter, context);
+                DbError::MissingConfiguration { parameter }
+            }
             DbError::ResourceAllocationFailed {
-                details: ref mut d, ..
-            } => Self::prepend_context_always(d, context),
+                resource_type,
+                requested_size,
+                mut details,
+            } => {
+                Self::prepend_context_always(&mut details, context);
+                DbError::ResourceAllocationFailed {
+                    resource_type,
+                    requested_size,
+                    details,
+                }
+            }
             DbError::ResourceUnavailable {
-                resource_name: ref mut rn,
-                ..
-            } => Self::prepend_context_always(rn, context),
+                resource_type,
+                mut resource_name,
+            } => {
+                Self::prepend_context_always(&mut resource_name, context);
+                DbError::ResourceUnavailable {
+                    resource_type,
+                    resource_name,
+                }
+            }
             DbError::HardwareError {
-                description: ref mut desc,
-                ..
-            } => Self::prepend_context_always(desc, context),
+                component,
+                error_code,
+                mut description,
+            } => {
+                Self::prepend_context_always(&mut description, context);
+                DbError::HardwareError {
+                    component,
+                    error_code,
+                    description,
+                }
+            }
             DbError::PeripheralInitFailed {
-                peripheral: ref mut p,
-                ..
-            } => Self::prepend_context_always(p, context),
-            DbError::Internal {
-                message: ref mut msg,
-                ..
-            } => Self::prepend_context_always(msg, context),
-            DbError::Io { .. } | DbError::Json { .. } => {
-                // These errors already have rich context from their source errors
-                // We can't easily add context to them due to thiserror's #[from] handling
+                peripheral_id,
+                mut peripheral,
+            } => {
+                Self::prepend_context_always(&mut peripheral, context);
+                DbError::PeripheralInitFailed {
+                    peripheral_id,
+                    peripheral,
+                }
+            }
+            DbError::Internal { code, mut message } => {
+                Self::prepend_context_always(&mut message, context);
+                DbError::Internal { code, message }
+            }
+
+            // For Io and Json errors, convert to context variants
+            #[cfg(feature = "std")]
+            DbError::Io { source } => DbError::IoWithContext {
+                context: context.into(),
+                source,
+            },
+            #[cfg(feature = "std")]
+            DbError::Json { source } => DbError::JsonWithContext {
+                context: context.into(),
+                source,
+            },
+
+            // For context variants, prepend to existing context
+            #[cfg(feature = "std")]
+            DbError::IoWithContext {
+                context: mut ctx,
+                source,
+            } => {
+                Self::prepend_context_always(&mut ctx, context);
+                DbError::IoWithContext {
+                    context: ctx,
+                    source,
+                }
+            }
+            #[cfg(feature = "std")]
+            DbError::JsonWithContext {
+                context: mut ctx,
+                source,
+            } => {
+                Self::prepend_context_always(&mut ctx, context);
+                DbError::JsonWithContext {
+                    context: ctx,
+                    source,
+                }
             }
         }
-        self
     }
 
     /// Converts this error into an anyhow::Error (std only)
@@ -1173,7 +1338,15 @@ mod tests {
             errors.push(DbError::Io {
                 source: std::io::Error::other("test"),
             });
+            errors.push(DbError::IoWithContext {
+                context: "test context".to_string(),
+                source: std::io::Error::other("test"),
+            });
             errors.push(DbError::Json {
+                source: serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
+            });
+            errors.push(DbError::JsonWithContext {
+                context: "test context".to_string(),
                 source: serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
             });
         }
@@ -1451,6 +1624,136 @@ mod tests {
 
     #[cfg(feature = "std")]
     #[test]
+    fn test_io_json_context_handling() {
+        // Test that Io and Json errors can now properly receive context
+
+        // Test I/O error with context
+        let io_error = std::io::Error::other("File not found");
+        let db_io_error = DbError::Io { source: io_error };
+        let contextualized = db_io_error.with_context("Reading configuration file");
+
+        if let DbError::IoWithContext { context, .. } = contextualized {
+            assert_eq!(context, "Reading configuration file");
+        } else {
+            panic!("Expected IoWithContext error after adding context");
+        }
+
+        // Test JSON error with context
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let db_json_error = DbError::Json { source: json_error };
+        let contextualized = db_json_error.with_context("Parsing user input");
+
+        if let DbError::JsonWithContext { context, .. } = contextualized {
+            assert_eq!(context, "Parsing user input");
+        } else {
+            panic!("Expected JsonWithContext error after adding context");
+        }
+
+        // Test chaining context on already contextualized I/O error
+        let io_error = std::io::Error::other("Permission denied");
+        let io_with_context = DbError::IoWithContext {
+            context: "Initial context".to_string(),
+            source: io_error,
+        };
+        let chained = io_with_context.with_context("Additional context");
+
+        if let DbError::IoWithContext { context, .. } = chained {
+            assert_eq!(context, "Additional context: Initial context");
+        } else {
+            panic!("Expected IoWithContext error with chained context");
+        }
+
+        // Test chaining context on already contextualized JSON error
+        let json_error = serde_json::from_str::<serde_json::Value>("bad json").unwrap_err();
+        let json_with_context = DbError::JsonWithContext {
+            context: "Initial parse context".to_string(),
+            source: json_error,
+        };
+        let chained = json_with_context.with_context("Higher level context");
+
+        if let DbError::JsonWithContext { context, .. } = chained {
+            assert_eq!(context, "Higher level context: Initial parse context");
+        } else {
+            panic!("Expected JsonWithContext error with chained context");
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_context_error_codes_and_categories() {
+        // Test that context variants have correct error codes
+        let io_error = std::io::Error::other("Test error");
+        let io_with_context = DbError::IoWithContext {
+            context: "Test context".to_string(),
+            source: io_error,
+        };
+        assert_eq!(io_with_context.error_code(), 0x8002);
+        assert_eq!(io_with_context.error_category(), 0x8000);
+
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let json_with_context = DbError::JsonWithContext {
+            context: "Test context".to_string(),
+            source: json_error,
+        };
+        assert_eq!(json_with_context.error_code(), 0x9002);
+        assert_eq!(json_with_context.error_category(), 0x9000);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_context_error_display() {
+        // Test that context variants display correctly
+        let io_error = std::io::Error::other("File not accessible");
+        let io_with_context = DbError::IoWithContext {
+            context: "Loading configuration".to_string(),
+            source: io_error,
+        };
+
+        let display_msg = format!("{}", io_with_context);
+        assert!(display_msg.contains("Loading configuration"));
+        assert!(display_msg.contains("File not accessible"));
+
+        let json_error = serde_json::from_str::<serde_json::Value>("malformed").unwrap_err();
+        let json_with_context = DbError::JsonWithContext {
+            context: "Parsing response".to_string(),
+            source: json_error,
+        };
+
+        let display_msg = format!("{}", json_with_context);
+        assert!(display_msg.contains("Parsing response"));
+        // The exact JSON error message may vary, so we just check it contains JSON context
+        assert!(display_msg.contains("JSON error"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_context_error_source_preservation() {
+        use std::error::Error;
+
+        // Test that the original error source is preserved in context variants
+        let io_error = std::io::Error::other("Original I/O error");
+        let io_with_context = DbError::IoWithContext {
+            context: "Added context".to_string(),
+            source: io_error,
+        };
+
+        let error_trait: &dyn Error = &io_with_context;
+        let source = error_trait.source().expect("Should have a source error");
+        assert_eq!(source.to_string(), "Original I/O error");
+
+        let json_error = serde_json::from_str::<serde_json::Value>("bad").unwrap_err();
+        let json_with_context = DbError::JsonWithContext {
+            context: "JSON context".to_string(),
+            source: json_error,
+        };
+
+        let error_trait: &dyn Error = &json_with_context;
+        let source = error_trait.source().expect("Should have a source error");
+        assert!(source.to_string().contains("expected")); // Common part of serde_json error messages
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
     fn test_comprehensive_error_scenarios() {
         // Test realistic error scenarios combining all features
 
@@ -1466,18 +1769,29 @@ mod tests {
             .map_err(|e| e.with_context("Network initialization failed"));
 
         assert!(result.is_err());
+        // After our fix, this should now be an IoWithContext error
+        if let Err(DbError::IoWithContext { context, .. }) = result {
+            assert!(context.contains("Network initialization failed"));
+            assert!(context.contains("Failed to read network configuration"));
+        } else {
+            panic!("Expected IoWithContext error with proper context chain");
+        }
 
-        // Scenario 2: JSON parsing in configuration loading
+        // Scenario 2: JSON parsing in configuration loading with context
         fn parse_config(json: &str) -> Result<serde_json::Value, DbError> {
             serde_json::from_str(json).map_err(|e| DbError::Json { source: e })
         }
 
-        let result = parse_config(r#"{"invalid": json syntax}"#);
+        let result = parse_config(r#"{"invalid": json syntax}"#)
+            .map_err(|e| e.with_context("Parsing user configuration"))
+            .map_err(|e| e.with_context("Configuration loading failed"));
+
         assert!(result.is_err());
-        if let Err(DbError::Json { .. }) = result {
-            // Expected JSON error
+        if let Err(DbError::JsonWithContext { context, .. }) = result {
+            assert!(context.contains("Configuration loading failed"));
+            assert!(context.contains("Parsing user configuration"));
         } else {
-            panic!("Expected JSON error");
+            panic!("Expected JsonWithContext error with proper context chain");
         }
 
         // Scenario 3: Converting to anyhow for application boundary
