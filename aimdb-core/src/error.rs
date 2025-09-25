@@ -692,23 +692,28 @@ impl DbError {
     ///
     /// This function encapsulates the logic for combining new context with existing
     /// error messages, handling the case where the existing message might be empty.
+    /// Uses in-place string modification to avoid unnecessary allocations.
     #[cfg(feature = "std")]
     fn prepend_context<S: Into<String>>(existing: &mut String, new_context: S) {
         let new_context = new_context.into();
         if existing.is_empty() {
             *existing = new_context;
         } else {
-            *existing = format!("{}: {}", new_context, existing);
+            existing.insert_str(0, ": ");
+            existing.insert_str(0, &new_context);
         }
     }
 
     /// Helper function to prepend context to a message string (always prepends)
     ///
     /// This function always prepends the new context, used for fields that
-    /// always contain some default content.
+    /// always contain some default content. Uses in-place string modification
+    /// to avoid unnecessary allocations in the error handling hot path.
     #[cfg(feature = "std")]
     fn prepend_context_always<S: Into<String>>(existing: &mut String, new_context: S) {
-        *existing = format!("{}: {}", new_context.into(), existing);
+        let new_context = new_context.into();
+        existing.insert_str(0, ": ");
+        existing.insert_str(0, &new_context);
     }
 
     /// Adds additional context to an error (std only)
