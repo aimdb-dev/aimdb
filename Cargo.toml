@@ -4,7 +4,7 @@ members = [
     "aimdb-connectors",
     "aimdb-adapters",
     "tools/aimdb-cli",
-    "examples"
+    "examples",
 ]
 resolver = "2"
 
@@ -27,7 +27,7 @@ tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
 
 # Error handling
-thiserror = "1.0"
+thiserror = "2.0.16"
 
 # Basic observability
 tracing = "0.1"

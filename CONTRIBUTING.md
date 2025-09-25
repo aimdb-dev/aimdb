@@ -49,6 +49,16 @@ AimDB is an async, in-memory database designed for real-time data synchronizatio
 - `make doc` - Generate and open documentation
 - `make clean` - Clean build artifacts
 
+### Security and License Auditing
+
+AimDB uses `cargo deny` for dependency auditing:
+
+```bash
+cargo deny check          # Full audit (advisories, licenses, bans)
+cargo deny check licenses # License compliance only
+cargo deny check advisories # Security advisories only
+```
+
 ## Code Standards
 
 ### Rust Guidelines
@@ -170,7 +180,12 @@ cargo test test_name --all-features
    make test
    ```
 
-3. **Check documentation:**
+3. **Check license compliance:**
+   ```bash
+   cargo deny check  # Verify dependencies meet license requirements
+   ```
+
+4. **Check documentation:**
    ```bash
    make doc
    ```
@@ -228,6 +243,38 @@ examples/quickstart/ # Demo application
 - **Issues**: Use GitHub issues for bug reports and feature requests
 - **Discussions**: Use GitHub discussions for general questions
 - **Code Review**: All PRs require review before merging
+
+## License Compliance
+
+### Dependency Licensing
+
+AimDB follows a permissive licensing strategy compatible with commercial use. The project accepts dependencies with these licenses:
+
+- **Primary**: MIT, Apache-2.0 (preferred for new dependencies)
+- **Compatible**: BSD-2-Clause, BSD-3-Clause, ISC
+- **Unicode Data**: Unicode-3.0, Unicode-DFS-2016 (for Unicode processing crates)
+
+### Adding Dependencies
+
+Before adding new dependencies:
+
+1. **Check the license** with `cargo deny check`
+2. **Ensure compatibility** with our allowed licenses in `deny.toml`
+3. **Avoid copyleft licenses** (GPL, LGPL, etc.) that could restrict commercial use
+4. **Document the rationale** for any new license additions in your PR
+
+If you need to add a dependency with a new license:
+- Verify it's OSI-approved and business-friendly
+- Update `deny.toml` to include the new license
+- Explain the necessity in your PR description
+
+### License Audit
+
+Run license checks as part of development:
+```bash
+cargo deny check licenses  # Check license compliance
+make check                 # Includes all development checks
+```
 
 ## Code of Conduct
 

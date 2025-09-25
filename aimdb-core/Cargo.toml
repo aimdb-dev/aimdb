@@ -5,4 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "Core database engine for AimDB - async in-memory storage with real-time synchronization"
 
+[features]
+default = ["std"]
+std = ["thiserror"]
+
 [dependencies]
+# Error handling - only for std environments
+thiserror = { workspace = true, optional = true }
+
+[dev-dependencies]
+# For no_std testing
+heapless = "0.9.1"
