@@ -490,11 +490,15 @@ impl core::fmt::Display for DbError {
             DbError::PeripheralInitFailed { .. } => (0x6002, "Peripheral initialization failed"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
 
-            // I/O and JSON errors are std-only, so they won't appear in no_std builds
+            // Standard library only errors (conditionally compiled)
             #[cfg(feature = "std")]
             DbError::Io { .. } => (0x8001, "I/O error"),
             #[cfg(feature = "std")]
+            DbError::IoWithContext { .. } => (0x8002, "I/O error with context"),
+            #[cfg(feature = "std")]
             DbError::Json { .. } => (0x9001, "JSON error"),
+            #[cfg(feature = "std")]
+            DbError::JsonWithContext { .. } => (0x9002, "JSON error with context"),
         };
         write!(f, "Error 0x{:04X}: {}", code, message)
     }
@@ -656,13 +660,14 @@ impl DbError {
             // Internal errors: 0x7000-0x7FFF
             DbError::Internal { .. } => 0x7001,
 
-            // I/O errors: 0x8000-0x8FFF (std only)
+            // Standard library only errors (conditionally compiled)
+            // I/O errors: 0x8000-0x8FFF
             #[cfg(feature = "std")]
             DbError::Io { .. } => 0x8001,
             #[cfg(feature = "std")]
             DbError::IoWithContext { .. } => 0x8002,
 
-            // JSON errors: 0x9000-0x9FFF (std only)
+            // JSON errors: 0x9000-0x9FFF
             #[cfg(feature = "std")]
             DbError::Json { .. } => 0x9001,
             #[cfg(feature = "std")]
