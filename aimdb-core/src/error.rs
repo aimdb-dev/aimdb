@@ -954,9 +954,21 @@ mod tests {
             "DbError size ({} bytes) exceeds 64-byte limit for embedded targets",
             size
         );
+    }
 
-        // Print size for monitoring
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_error_size_monitoring() {
+        // Monitor error size for performance tracking in std environments
+        let size = core::mem::size_of::<DbError>();
         println!("DbError size: {} bytes", size);
+
+        // Also test that std version is within reasonable bounds (higher than no_std)
+        assert!(
+            size >= 24,
+            "DbError std size ({} bytes) unexpectedly small - check feature compilation",
+            size
+        );
     }
 
     #[test]
@@ -979,15 +991,26 @@ mod tests {
             _resource_type: (),
         };
 
-        // Test that errors can be formatted
-        let timeout_msg = format!("{:?}", timeout_error);
-        let capacity_msg = format!("{:?}", capacity_error);
+        // Test that errors can be formatted (std only)
+        #[cfg(feature = "std")]
+        {
+            let timeout_msg = format!("{:?}", timeout_error);
+            let capacity_msg = format!("{:?}", capacity_error);
 
-        assert!(timeout_msg.contains("NetworkTimeout"));
-        assert!(capacity_msg.contains("CapacityExceeded"));
+            assert!(timeout_msg.contains("NetworkTimeout"));
+            assert!(capacity_msg.contains("CapacityExceeded"));
+        }
+
+        // Prevent unused variable warnings in no_std
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = timeout_error;
+            let _ = capacity_error;
+        }
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_dbresult_usage() {
         // Test DbResult type alias usage
         fn example_operation() -> DbResult<String> {
@@ -1231,6 +1254,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_error_code_uniqueness() {
         // Ensure all error codes are unique
         use std::collections::HashSet;
