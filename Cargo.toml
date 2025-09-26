@@ -3,6 +3,7 @@ members = [
     "aimdb-core",
     "aimdb-connectors",
     "aimdb-adapters",
+    "aimdb-embassy-adapter",
     "tools/aimdb-cli",
     "examples",
 ]
@@ -44,6 +45,15 @@ clap = { version = "4.0", features = ["derive"] }
 
 # Development dependencies
 tokio-test = "0.4"
+
+# Embassy ecosystem for embedded async
+embassy-executor = { version = "0.9.1" }
+embassy-time = "0.5"
+
+# Embedded HAL for peripheral abstractions
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+embedded-hal-nb = "1.0"
 
 [workspace.metadata.docs.rs]
 all-features = true
