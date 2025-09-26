@@ -4,6 +4,8 @@
 //! in-memory storage with real-time synchronization across MCU → edge → cloud
 //! environments.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
 mod error;
 
 // Public API exports
