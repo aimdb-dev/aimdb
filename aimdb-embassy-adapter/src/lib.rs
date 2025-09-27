@@ -25,7 +25,11 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```rust,no_run
+//! // This example only works when std feature is not enabled
+//! // Embassy adapter is designed exclusively for no_std environments
+//! # #[cfg(not(feature = "std"))]
+//! # {
 //! use aimdb_core::DbError;
 //! use aimdb_embassy_adapter::{EmbassyErrorSupport, EmbassyErrorConverter};
 //!
@@ -36,6 +40,7 @@
 //! // Convert from embedded-hal errors using the converter
 //! let hal_error = embedded_hal::spi::ErrorKind::Overrun;
 //! let db_error = EmbassyErrorConverter::from_spi(hal_error);
+//! # }
 //! ```
 //!
 //! # Error Code Ranges
