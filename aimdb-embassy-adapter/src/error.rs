@@ -234,9 +234,9 @@ mod tests {
 
     #[test]
     fn test_embedded_hal_error_conversions() {
-        // This test is simplified since we no longer have SPI/I2C HAL error conversions
-        // We only test nb error conversion functionality
-
+        // This test demonstrates practical nb error conversion:
+        // It converts a nb::Error<DbError> (using a UART hardware error) to a unified hardware error code
+        // via DbError::from_nb_error, and verifies the result.
         // Test nb error conversion with a known error
         let known_error = DbError::from_uart_error(0x42);
         let nb_other_error: nb::Error<DbError> = nb::Error::Other(known_error);
