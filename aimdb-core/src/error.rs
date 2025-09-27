@@ -66,12 +66,15 @@
 //! # {
 //! use aimdb_core::DbError;
 //!
-//! let error = DbError::Internal { code: 500, message: "Database connection lost".to_string() }
+//! let error = DbError::ConnectionFailed {
+//!     endpoint: "database.example.com:5432".to_string(),
+//!     reason: "Connection timeout after 30s".to_string()
+//! }
 //!     .with_context("Failed to connect to database server")
 //!     .with_context("During application startup");
 //!
 //! println!("{}", error);
-//! // "Internal error: During application startup: Failed to connect to database server: Database connection lost"
+//! // "Connection failed to database.example.com:5432: During application startup: Failed to connect to database server: Connection timeout after 30s"
 //! # }
 //! ```
 //!
@@ -211,6 +214,38 @@
 //!         #[cfg(not(feature = "std"))]
 //!         _description: (),
 //!     })
+//! }
+//! ```
+//!
+//! ## Internal Error Handling (System-Level Issues)
+//!
+//! ```rust
+//! # use aimdb_core::{DbError, DbResult};
+//! fn validate_memory_integrity() -> DbResult<()> {
+//!     // Only use Internal errors for unexpected system conditions,
+//!     // not for normal operational failures
+//!     Err(DbError::Internal {
+//!         code: 0x7001,
+//!         #[cfg(feature = "std")]
+//!         message: "Memory corruption detected in buffer pool".to_string(),
+//!         #[cfg(not(feature = "std"))]
+//!         _message: (),
+//!     })
+//! }
+//!
+//! fn process_user_data(data: &[u8]) -> DbResult<()> {
+//!     // DON'T use Internal for validation failures - use appropriate error types
+//!     if data.is_empty() {
+//!         return Err(DbError::InvalidDataFormat {
+//!             expected_format: 1, // Expected non-empty data
+//!             received_format: 0, // Empty data
+//!             #[cfg(feature = "std")]
+//!             description: "Expected non-empty data payload".to_string(),
+//!             #[cfg(not(feature = "std"))]
+//!             _description: (),
+//!         });
+//!     }
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -365,7 +400,22 @@ pub enum DbError {
         _description: (),
     },
 
-    /// Generic internal errors for unexpected conditions
+    /// Generic internal errors for unexpected conditions and system-level failures
+    ///
+    /// **When to use Internal errors:**
+    /// - Assertion failures or invariant violations
+    /// - Memory corruption or invalid state detection  
+    /// - Unexpected system-level errors that don't fit other categories
+    /// - Library bugs or unrecoverable programming errors
+    ///
+    /// **When NOT to use Internal errors:**
+    /// - Network failures (use `ConnectionFailed` instead)
+    /// - Resource exhaustion (use `BufferFull` or `ResourceUnavailable`)
+    /// - Invalid user input (use `InvalidDataFormat` or `SerializationFailed`)
+    /// - Missing configuration (use `MissingConfiguration`)
+    ///
+    /// Internal errors indicate that something unexpected happened within
+    /// AimDB itself, not external conditions that the application should handle.
     #[cfg_attr(feature = "std", error("Internal error: {message}"))]
     Internal {
         code: u32,
@@ -867,12 +917,13 @@ mod tests {
         }
 
         fn failing_operation() -> DbResult<String> {
-            Err(DbError::Internal {
-                code: 500,
+            Err(DbError::ConnectionFailed {
                 #[cfg(feature = "std")]
-                message: "Test error".to_string(),
+                endpoint: "database.test.com:5432".to_string(),
+                #[cfg(feature = "std")]
+                reason: "Connection refused".to_string(),
                 #[cfg(not(feature = "std"))]
-                _message: (),
+                _endpoint: (),
             })
         }
 
