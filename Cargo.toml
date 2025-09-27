@@ -1,12 +1,5 @@
 [workspace]
-members = [
-    "aimdb-core",
-    "aimdb-connectors",
-    "aimdb-adapters",
-    "aimdb-embassy-adapter",
-    "tools/aimdb-cli",
-    "examples",
-]
+members = ["aimdb-core", "aimdb-embassy-adapter", "tools/aimdb-cli", "examples"]
 resolver = "2"
 
 [workspace.package]

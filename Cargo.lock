@@ -3,15 +3,7 @@
 version = 4
 
 [[package]]
-name = "aimdb-adapters"
-version = "0.1.0"
-
-[[package]]
 name = "aimdb-cli"
-version = "0.1.0"
-
-[[package]]
-name = "aimdb-connectors"
 version = "0.1.0"
 
 [[package]]

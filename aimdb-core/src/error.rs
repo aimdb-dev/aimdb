@@ -16,24 +16,24 @@
 //!
 //! The [`DbError`] enum covers all operational scenarios:
 //!
-//! - **Network**: Connection timeouts, protocol errors, endpoint failures
-//! - **Capacity**: Memory limits, buffer overflows, resource exhaustion  
+//! - **Network**: Connection failures, endpoint errors
+//! - **Capacity**: Buffer overflows, resource exhaustion  
 //! - **Serialization**: Format errors, data corruption, encoding failures
-//! - **Configuration**: Invalid settings, missing parameters, validation errors
+//! - **Configuration**: Missing parameters, validation errors
 //! - **Resource**: Allocation failures, unavailable resources, system limits
-//! - **Hardware**: MCU peripheral errors, device initialization, hardware faults
+//! - **Hardware**: MCU hardware errors, device failures
 //!
 //! # Error Code System
 //!
 //! Each error has an associated numeric code for embedded environments where string
 //! formatting is not available or optimal. Error codes are organized by category:
 //!
-//! - **Network** (0x1000-0x1FFF): Connection timeouts, protocol errors, endpoint failures
-//! - **Capacity** (0x2000-0x2FFF): Memory limits, buffer overflows, resource exhaustion
+//! - **Network** (0x1000-0x1FFF): Connection failures, endpoint errors
+//! - **Capacity** (0x2000-0x2FFF): Buffer overflows, resource exhaustion
 //! - **Serialization** (0x3000-0x3FFF): Format errors, data corruption, encoding failures
-//! - **Configuration** (0x4000-0x4FFF): Invalid settings, missing parameters, validation errors
+//! - **Configuration** (0x4000-0x4FFF): Missing parameters, validation errors
 //! - **Resource** (0x5000-0x5FFF): Allocation failures, unavailable resources, system limits
-//! - **Hardware** (0x6000-0x6FFF): MCU peripheral errors, device initialization, hardware faults
+//! - **Hardware** (0x6000-0x6FFF): MCU hardware errors, device failures
 //! - **Internal** (0x7000-0x7FFF): Unexpected conditions and system errors
 //! - **I/O Operations** (0x8000-0x8FFF): File system and I/O errors, including context variants
 //! - **JSON Processing** (0x9000-0x9FFF): JSON serialization/deserialization errors, including context variants
@@ -66,12 +66,15 @@
 //! # {
 //! use aimdb_core::DbError;
 //!
-//! let error = DbError::network_timeout(5000)
+//! let error = DbError::ConnectionFailed {
+//!     endpoint: "database.example.com:5432".to_string(),
+//!     reason: "Connection timeout after 30s".to_string()
+//! }
 //!     .with_context("Failed to connect to database server")
 //!     .with_context("During application startup");
 //!
 //! println!("{}", error);
-//! // "Network timeout after 5000ms: During application startup: Failed to connect to database server"
+//! // "Connection failed to database.example.com:5432: During application startup: Failed to connect to database server: Connection timeout after 30s"
 //! # }
 //! ```
 //!
@@ -148,9 +151,11 @@
 //!         .map_err(|e| e.with_context("Configuration validation"));
 //!
 //! // Context chaining works on all error types
-//! let network_error = DbError::network_timeout(5000)
-//!     .with_context("Connecting to database")
-//!     .with_context("Service initialization");
+//! let network_error = DbError::ConnectionFailed {
+//!     endpoint: "database.example.com".to_string(),
+//!     reason: "Timeout".to_string(),
+//! }.with_context("Connecting to database")
+//!  .with_context("Service initialization");
 //! # }
 //! ```
 //!
@@ -161,21 +166,20 @@
 //!
 //! fn database_operation() -> DbResult<String> {
 //!     // Simulate a capacity error
-//!     Err(DbError::CapacityExceeded {
-//!         current: 1024,
-//!         limit: 1000,
+//!     Err(DbError::BufferFull {
+//!         size: 1024,
 //!         #[cfg(feature = "std")]
-//!         resource_type: "memory".to_string(),
+//!         buffer_name: "memory buffer".to_string(),
 //!         #[cfg(not(feature = "std"))]
-//!         _resource_type: (),
+//!         _buffer_name: (),
 //!     })
 //! }
 //!
 //! // Handle the result
 //! match database_operation() {
 //!     Ok(value) => println!("Success: {}", value),
-//!     Err(DbError::CapacityExceeded { current, limit, .. }) => {
-//!         println!("Over capacity: {}/{}", current, limit);
+//!     Err(DbError::BufferFull { size, .. }) => {
+//!         println!("Buffer full with {} items", size);
 //!     }
 //!     Err(other) => println!("Other error: {:?}", other),
 //! }
@@ -186,12 +190,15 @@
 //! ```rust
 //! # use aimdb_core::{DbError, DbResult};
 //! fn connect_to_database() -> DbResult<()> {
-//!     Err(DbError::NetworkTimeout {
-//!         timeout_ms: 5000,
+//!     Err(DbError::ConnectionFailed {
 //!         #[cfg(feature = "std")]
-//!         context: "Failed to reach database server".to_string(),
+//!         endpoint: "localhost:5432".to_string(),
+//!         #[cfg(feature = "std")]
+//!         reason: "Connection refused".to_string(),
 //!         #[cfg(not(feature = "std"))]
-//!         _context: (),
+//!         _endpoint: (),
+//!         #[cfg(not(feature = "std"))]
+//!         _reason: (),
 //!     })
 //! }
 //! ```
@@ -201,13 +208,46 @@
 //! ```rust
 //! # use aimdb_core::{DbError, DbResult};
 //! fn init_spi_peripheral() -> DbResult<()> {
-//!     Err(DbError::PeripheralInitFailed {
-//!         peripheral_id: 2, // SPI2
+//!     Err(DbError::HardwareError {
+//!         component: 2, // SPI2
+//!         error_code: 0x404,
 //!         #[cfg(feature = "std")]
-//!         peripheral: "SPI2".to_string(),
+//!         description: "SPI2 initialization failed".to_string(),
 //!         #[cfg(not(feature = "std"))]
-//!         _peripheral: (),
+//!         _description: (),
 //!     })
+//! }
+//! ```
+//!
+//! ## Internal Error Handling (System-Level Issues)
+//!
+//! ```rust
+//! # use aimdb_core::{DbError, DbResult};
+//! fn validate_memory_integrity() -> DbResult<()> {
+//!     // Only use Internal errors for unexpected system conditions,
+//!     // not for normal operational failures
+//!     Err(DbError::Internal {
+//!         code: 0x7001,
+//!         #[cfg(feature = "std")]
+//!         message: "Memory corruption detected in buffer pool".to_string(),
+//!         #[cfg(not(feature = "std"))]
+//!         _message: (),
+//!     })
+//! }
+//!
+//! fn process_user_data(data: &[u8]) -> DbResult<()> {
+//!     // DON'T use Internal for validation failures - use appropriate error types
+//!     if data.is_empty() {
+//!         return Err(DbError::InvalidDataFormat {
+//!             expected_format: 1, // Expected non-empty data
+//!             received_format: 0, // Empty data
+//!             #[cfg(feature = "std")]
+//!             description: "Expected non-empty data payload".to_string(),
+//!             #[cfg(not(feature = "std"))]
+//!             _description: (),
+//!         });
+//!     }
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -279,19 +319,6 @@ use std::io;
 #[derive(Debug)]
 #[cfg_attr(feature = "std", derive(Error))]
 pub enum DbError {
-    /// Network-related errors (timeouts, connection failures, protocol errors)
-    #[cfg_attr(
-        feature = "std",
-        error("Network timeout after {timeout_ms}ms: {context}")
-    )]
-    NetworkTimeout {
-        timeout_ms: u64,
-        #[cfg(feature = "std")]
-        context: String,
-        #[cfg(not(feature = "std"))]
-        _context: (),
-    },
-
     /// Network connection establishment failures
     #[cfg_attr(feature = "std", error("Connection failed to {endpoint}: {reason}"))]
     ConnectionFailed {
@@ -301,30 +328,8 @@ pub enum DbError {
         reason: String,
         #[cfg(not(feature = "std"))]
         _endpoint: (),
-    },
-
-    /// Protocol-level network errors
-    #[cfg_attr(feature = "std", error("Protocol error: {message}"))]
-    ProtocolError {
-        error_code: u32,
-        #[cfg(feature = "std")]
-        message: String,
         #[cfg(not(feature = "std"))]
-        _message: (),
-    },
-
-    /// Storage capacity exceeded (memory, disk, or buffer limits)
-    #[cfg_attr(
-        feature = "std",
-        error("Capacity exceeded: {current}/{limit} {resource_type}")
-    )]
-    CapacityExceeded {
-        current: u64,
-        limit: u64,
-        #[cfg(feature = "std")]
-        resource_type: String,
-        #[cfg(not(feature = "std"))]
-        _resource_type: (),
+        _reason: (),
     },
 
     /// Buffer or queue is full
@@ -356,17 +361,6 @@ pub enum DbError {
         description: String,
         #[cfg(not(feature = "std"))]
         _description: (),
-    },
-
-    /// Configuration errors (invalid settings, missing parameters)
-    #[cfg_attr(feature = "std", error("Invalid configuration: {parameter} = {value}"))]
-    InvalidConfiguration {
-        #[cfg(feature = "std")]
-        parameter: String,
-        #[cfg(feature = "std")]
-        value: String,
-        #[cfg(not(feature = "std"))]
-        _parameter: (),
     },
 
     /// Missing required configuration
@@ -410,20 +404,22 @@ pub enum DbError {
         _description: (),
     },
 
-    /// Hardware peripheral not available or failed to initialize
-    #[cfg_attr(
-        feature = "std",
-        error("Peripheral initialization failed: {peripheral}")
-    )]
-    PeripheralInitFailed {
-        peripheral_id: u8,
-        #[cfg(feature = "std")]
-        peripheral: String,
-        #[cfg(not(feature = "std"))]
-        _peripheral: (),
-    },
-
-    /// Generic internal errors for unexpected conditions
+    /// Generic internal errors for unexpected conditions and system-level failures
+    ///
+    /// **When to use Internal errors:**
+    /// - Assertion failures or invariant violations
+    /// - Memory corruption or invalid state detection  
+    /// - Unexpected system-level errors that don't fit other categories
+    /// - Library bugs or unrecoverable programming errors
+    ///
+    /// **When NOT to use Internal errors:**
+    /// - Network failures (use `ConnectionFailed` instead)
+    /// - Resource exhaustion (use `BufferFull` or `ResourceUnavailable`)
+    /// - Invalid user input (use `InvalidDataFormat` or `SerializationFailed`)
+    /// - Missing configuration (use `MissingConfiguration`)
+    ///
+    /// Internal errors indicate that something unexpected happened within
+    /// AimDB itself, not external conditions that the application should handle.
     #[cfg_attr(feature = "std", error("Internal error: {message}"))]
     Internal {
         code: u32,
@@ -475,19 +471,14 @@ impl core::fmt::Display for DbError {
         // Format: "Error 0x1001: Network timeout"
         // This provides both human readability and precise error identification
         let (code, message) = match self {
-            DbError::NetworkTimeout { .. } => (0x1001, "Network timeout"),
             DbError::ConnectionFailed { .. } => (0x1002, "Connection failed"),
-            DbError::ProtocolError { .. } => (0x1003, "Protocol error"),
-            DbError::CapacityExceeded { .. } => (0x2001, "Capacity exceeded"),
             DbError::BufferFull { .. } => (0x2002, "Buffer full"),
             DbError::SerializationFailed { .. } => (0x3001, "Serialization failed"),
             DbError::InvalidDataFormat { .. } => (0x3002, "Invalid data format"),
-            DbError::InvalidConfiguration { .. } => (0x4001, "Invalid configuration"),
             DbError::MissingConfiguration { .. } => (0x4002, "Missing configuration parameter"),
             DbError::ResourceAllocationFailed { .. } => (0x5001, "Resource allocation failed"),
             DbError::ResourceUnavailable { .. } => (0x5002, "Resource unavailable"),
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
-            DbError::PeripheralInitFailed { .. } => (0x6002, "Peripheral initialization failed"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
 
             // Standard library only errors (conditionally compiled)
@@ -519,52 +510,6 @@ impl DbError {
     /// Special resource type code for non-blocking operations that would block
     pub const RESOURCE_TYPE_WOULD_BLOCK: u8 = 255;
 
-    /// Creates a network timeout error with the specified timeout duration
-    pub fn network_timeout(timeout_ms: u64) -> Self {
-        DbError::NetworkTimeout {
-            timeout_ms,
-            #[cfg(feature = "std")]
-            context: String::new(),
-            #[cfg(not(feature = "std"))]
-            _context: (),
-        }
-    }
-
-    /// Creates a network timeout error with context (std only)
-    #[cfg(feature = "std")]
-    pub fn network_timeout_with_context(timeout_ms: u64, context: impl Into<String>) -> Self {
-        DbError::NetworkTimeout {
-            timeout_ms,
-            context: context.into(),
-        }
-    }
-
-    /// Creates a capacity exceeded error
-    pub fn capacity_exceeded(current: u64, limit: u64) -> Self {
-        DbError::CapacityExceeded {
-            current,
-            limit,
-            #[cfg(feature = "std")]
-            resource_type: String::new(),
-            #[cfg(not(feature = "std"))]
-            _resource_type: (),
-        }
-    }
-
-    /// Creates a capacity exceeded error with resource type (std only)
-    #[cfg(feature = "std")]
-    pub fn capacity_exceeded_with_type(
-        current: u64,
-        limit: u64,
-        resource_type: impl Into<String>,
-    ) -> Self {
-        DbError::CapacityExceeded {
-            current,
-            limit,
-            resource_type: resource_type.into(),
-        }
-    }
-
     /// Creates a hardware error for embedded environments
     pub fn hardware_error(component: u8, error_code: u16) -> Self {
         DbError::HardwareError {
@@ -590,28 +535,17 @@ impl DbError {
 
     /// Returns true if this is a network-related error
     pub fn is_network_error(&self) -> bool {
-        matches!(
-            self,
-            DbError::NetworkTimeout { .. }
-                | DbError::ConnectionFailed { .. }
-                | DbError::ProtocolError { .. }
-        )
+        matches!(self, DbError::ConnectionFailed { .. })
     }
 
     /// Returns true if this is a capacity-related error  
     pub fn is_capacity_error(&self) -> bool {
-        matches!(
-            self,
-            DbError::CapacityExceeded { .. } | DbError::BufferFull { .. }
-        )
+        matches!(self, DbError::BufferFull { .. })
     }
 
     /// Returns true if this is a hardware-related error
     pub fn is_hardware_error(&self) -> bool {
-        matches!(
-            self,
-            DbError::HardwareError { .. } | DbError::PeripheralInitFailed { .. }
-        )
+        matches!(self, DbError::HardwareError { .. })
     }
 
     /// Returns a numeric error code for embedded environments
@@ -638,21 +572,33 @@ impl DbError {
     /// ```rust
     /// use aimdb_core::DbError;
     ///
-    /// let error = DbError::network_timeout(5000);
-    /// assert_eq!(error.error_code(), 0x1001);
+    /// let error = DbError::ConnectionFailed {
+    ///     #[cfg(feature = "std")]
+    ///     endpoint: "localhost".to_string(),
+    ///     #[cfg(feature = "std")]
+    ///     reason: "timeout".to_string(),
+    ///     #[cfg(not(feature = "std"))]
+    ///     _endpoint: (),
+    ///     #[cfg(not(feature = "std"))]
+    ///     _reason: (),
+    /// };
+    /// assert_eq!(error.error_code(), 0x1002);
     ///
-    /// let capacity_error = DbError::capacity_exceeded(1024, 512);
-    /// assert_eq!(capacity_error.error_code(), 0x2001);
+    /// let capacity_error = DbError::BufferFull {
+    ///     size: 1024,
+    ///     #[cfg(feature = "std")]
+    ///     buffer_name: "ring buffer".to_string(),
+    ///     #[cfg(not(feature = "std"))]
+    ///     _buffer_name: (),
+    /// };
+    /// assert_eq!(capacity_error.error_code(), 0x2002);
     /// ```
     pub const fn error_code(&self) -> u32 {
         match self {
             // Network errors: 0x1000-0x1FFF
-            DbError::NetworkTimeout { .. } => 0x1001,
             DbError::ConnectionFailed { .. } => 0x1002,
-            DbError::ProtocolError { .. } => 0x1003,
 
             // Capacity errors: 0x2000-0x2FFF
-            DbError::CapacityExceeded { .. } => 0x2001,
             DbError::BufferFull { .. } => 0x2002,
 
             // Serialization errors: 0x3000-0x3FFF
@@ -660,7 +606,6 @@ impl DbError {
             DbError::InvalidDataFormat { .. } => 0x3002,
 
             // Configuration errors: 0x4000-0x4FFF
-            DbError::InvalidConfiguration { .. } => 0x4001,
             DbError::MissingConfiguration { .. } => 0x4002,
 
             // Resource errors: 0x5000-0x5FFF
@@ -669,7 +614,6 @@ impl DbError {
 
             // Hardware errors: 0x6000-0x6FFF
             DbError::HardwareError { .. } => 0x6001,
-            DbError::PeripheralInitFailed { .. } => 0x6002,
 
             // Internal errors: 0x7000-0x7FFF
             DbError::Internal { .. } => 0x7001,
@@ -700,27 +644,20 @@ impl DbError {
     /// ```rust
     /// use aimdb_core::DbError;
     ///
-    /// let error = DbError::network_timeout(1000);
+    /// let error = DbError::ConnectionFailed {
+    ///     #[cfg(feature = "std")]
+    ///     endpoint: "localhost".to_string(),
+    ///     #[cfg(feature = "std")]
+    ///     reason: "timeout".to_string(),
+    ///     #[cfg(not(feature = "std"))]
+    ///     _endpoint: (),
+    ///     #[cfg(not(feature = "std"))]
+    ///     _reason: (),
+    /// };
     /// assert_eq!(error.error_category(), 0x1000);
     /// ```
     pub const fn error_category(&self) -> u32 {
         self.error_code() & 0xF000
-    }
-
-    /// Helper function to prepend context to an existing message string
-    ///
-    /// This function encapsulates the logic for combining new context with existing
-    /// error messages, handling the case where the existing message might be empty.
-    /// Uses in-place string modification to avoid unnecessary allocations.
-    #[cfg(feature = "std")]
-    fn prepend_context<S: Into<String>>(existing: &mut String, new_context: S) {
-        let new_context = new_context.into();
-        if existing.is_empty() {
-            *existing = new_context;
-        } else {
-            existing.insert_str(0, ": ");
-            existing.insert_str(0, &new_context);
-        }
     }
 
     /// Helper function to prepend context to a message string (always prepends)
@@ -748,52 +685,22 @@ impl DbError {
     /// # {
     /// use aimdb_core::DbError;
     ///
-    /// let error = DbError::network_timeout(5000)
-    ///     .with_context("Failed to connect to database server")
-    ///     .with_context("During application startup");
+    /// let error = DbError::ConnectionFailed {
+    ///     endpoint: "database.example.com".to_string(),
+    ///     reason: "timeout".to_string()
+    /// }.with_context("Failed to connect to database server")
+    ///  .with_context("During application startup");
     /// # }
     /// ```
     #[cfg(feature = "std")]
     pub fn with_context<S: Into<String>>(self, context: S) -> Self {
         match self {
-            DbError::NetworkTimeout {
-                context: mut ctx,
-                timeout_ms,
-            } => {
-                Self::prepend_context(&mut ctx, context);
-                DbError::NetworkTimeout {
-                    timeout_ms,
-                    context: ctx,
-                }
-            }
             DbError::ConnectionFailed {
                 mut reason,
                 endpoint,
             } => {
                 Self::prepend_context_always(&mut reason, context);
                 DbError::ConnectionFailed { endpoint, reason }
-            }
-            DbError::ProtocolError {
-                error_code,
-                mut message,
-            } => {
-                Self::prepend_context_always(&mut message, context);
-                DbError::ProtocolError {
-                    error_code,
-                    message,
-                }
-            }
-            DbError::CapacityExceeded {
-                current,
-                limit,
-                mut resource_type,
-            } => {
-                Self::prepend_context_always(&mut resource_type, context);
-                DbError::CapacityExceeded {
-                    current,
-                    limit,
-                    resource_type,
-                }
             }
             DbError::BufferFull {
                 size,
@@ -820,13 +727,6 @@ impl DbError {
                     received_format,
                     description,
                 }
-            }
-            DbError::InvalidConfiguration {
-                mut parameter,
-                value,
-            } => {
-                Self::prepend_context_always(&mut parameter, context);
-                DbError::InvalidConfiguration { parameter, value }
             }
             DbError::MissingConfiguration { mut parameter } => {
                 Self::prepend_context_always(&mut parameter, context);
@@ -864,16 +764,6 @@ impl DbError {
                     component,
                     error_code,
                     description,
-                }
-            }
-            DbError::PeripheralInitFailed {
-                peripheral_id,
-                mut peripheral,
-            } => {
-                Self::prepend_context_always(&mut peripheral, context);
-                DbError::PeripheralInitFailed {
-                    peripheral_id,
-                    peripheral,
                 }
             }
             DbError::Internal { code, mut message } => {
@@ -933,7 +823,10 @@ impl DbError {
     /// use anyhow::Context;
     ///
     /// fn application_boundary() -> anyhow::Result<()> {
-    ///     let db_error = DbError::network_timeout(5000);
+    ///     let db_error = DbError::ConnectionFailed {
+    ///         endpoint: "localhost:5432".to_string(),
+    ///         reason: "timeout".to_string(),
+    ///     };
     ///     Err(db_error.into_anyhow())
     ///         .context("Failed to initialize database connection")
     /// }
@@ -988,38 +881,40 @@ mod tests {
     #[test]
     fn test_error_creation() {
         // Test creating various error types
-        let timeout_error = DbError::NetworkTimeout {
-            timeout_ms: 5000,
+        let connection_error = DbError::ConnectionFailed {
             #[cfg(feature = "std")]
-            context: "Connection to database".to_string(),
+            endpoint: "localhost:5432".to_string(),
+            #[cfg(feature = "std")]
+            reason: "Connection timeout".to_string(),
             #[cfg(not(feature = "std"))]
-            _context: (),
+            _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
         };
 
-        let capacity_error = DbError::CapacityExceeded {
-            current: 1024,
-            limit: 1000,
+        let buffer_error = DbError::BufferFull {
+            size: 1024,
             #[cfg(feature = "std")]
-            resource_type: "memory".to_string(),
+            buffer_name: "memory buffer".to_string(),
             #[cfg(not(feature = "std"))]
-            _resource_type: (),
+            _buffer_name: (),
         };
 
         // Test that errors can be formatted (std only)
         #[cfg(feature = "std")]
         {
-            let timeout_msg = format!("{:?}", timeout_error);
-            let capacity_msg = format!("{:?}", capacity_error);
+            let connection_msg = format!("{:?}", connection_error);
+            let buffer_msg = format!("{:?}", buffer_error);
 
-            assert!(timeout_msg.contains("NetworkTimeout"));
-            assert!(capacity_msg.contains("CapacityExceeded"));
+            assert!(connection_msg.contains("ConnectionFailed"));
+            assert!(buffer_msg.contains("BufferFull"));
         }
 
         // Prevent unused variable warnings in no_std
         #[cfg(not(feature = "std"))]
         {
-            let _ = timeout_error;
-            let _ = capacity_error;
+            let _ = connection_error;
+            let _ = buffer_error;
         }
     }
 
@@ -1032,12 +927,13 @@ mod tests {
         }
 
         fn failing_operation() -> DbResult<String> {
-            Err(DbError::Internal {
-                code: 500,
+            Err(DbError::ConnectionFailed {
                 #[cfg(feature = "std")]
-                message: "Test error".to_string(),
+                endpoint: "database.test.com:5432".to_string(),
+                #[cfg(feature = "std")]
+                reason: "Connection refused".to_string(),
                 #[cfg(not(feature = "std"))]
-                _message: (),
+                _endpoint: (),
             })
         }
 
@@ -1050,22 +946,22 @@ mod tests {
     fn test_no_std_display() {
         use core::fmt::Write;
 
-        let error = DbError::NetworkTimeout {
-            timeout_ms: 1000,
-            _context: (),
+        let error = DbError::ConnectionFailed {
+            _endpoint: (),
+            _reason: (),
         };
 
         let mut buffer = heapless::String::<64>::new();
         write!(&mut buffer, "{}", error).unwrap();
-        assert_eq!(buffer.as_str(), "Error 0x1001: Network timeout");
+        assert_eq!(buffer.as_str(), "Error 0x1002: Connection failed");
     }
 
     #[cfg(feature = "std")]
     #[test]
     fn test_std_error_traits() {
-        let error = DbError::NetworkTimeout {
-            timeout_ms: 1000,
-            context: "Test connection".to_string(),
+        let error = DbError::ConnectionFailed {
+            endpoint: "localhost:5432".to_string(),
+            reason: "Connection timeout".to_string(),
         };
 
         // Test that error implements std::error::Error
@@ -1073,32 +969,32 @@ mod tests {
 
         // Test Display implementation
         let display_msg = format!("{}", error);
-        assert!(display_msg.contains("Network timeout"));
-        assert!(display_msg.contains("1000ms"));
-        assert!(display_msg.contains("Test connection"));
+        assert!(display_msg.contains("Connection failed"));
+        assert!(display_msg.contains("localhost:5432"));
+        assert!(display_msg.contains("Connection timeout"));
     }
 
     #[test]
     fn test_helper_methods() {
         // Test helper constructors
-        let timeout_error = DbError::network_timeout(5000);
-        assert!(matches!(
-            timeout_error,
-            DbError::NetworkTimeout {
-                timeout_ms: 5000,
-                ..
-            }
-        ));
+        let connection_error = DbError::ConnectionFailed {
+            #[cfg(feature = "std")]
+            endpoint: "localhost".to_string(),
+            #[cfg(feature = "std")]
+            reason: "timeout".to_string(),
+            #[cfg(not(feature = "std"))]
+            _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
+        };
 
-        let capacity_error = DbError::capacity_exceeded(1024, 512);
-        assert!(matches!(
-            capacity_error,
-            DbError::CapacityExceeded {
-                current: 1024,
-                limit: 512,
-                ..
-            }
-        ));
+        let buffer_error = DbError::BufferFull {
+            size: 1024,
+            #[cfg(feature = "std")]
+            buffer_name: "buffer".to_string(),
+            #[cfg(not(feature = "std"))]
+            _buffer_name: (),
+        };
 
         let hardware_error = DbError::hardware_error(2, 404);
         assert!(matches!(
@@ -1117,13 +1013,13 @@ mod tests {
         ));
 
         // Test error category methods
-        assert!(timeout_error.is_network_error());
-        assert!(!timeout_error.is_capacity_error());
-        assert!(!timeout_error.is_hardware_error());
+        assert!(connection_error.is_network_error());
+        assert!(!connection_error.is_capacity_error());
+        assert!(!connection_error.is_hardware_error());
 
-        assert!(!capacity_error.is_network_error());
-        assert!(capacity_error.is_capacity_error());
-        assert!(!capacity_error.is_hardware_error());
+        assert!(!buffer_error.is_network_error());
+        assert!(buffer_error.is_capacity_error());
+        assert!(!buffer_error.is_hardware_error());
 
         assert!(!hardware_error.is_network_error());
         assert!(!hardware_error.is_capacity_error());
@@ -1133,30 +1029,26 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn test_std_helper_methods() {
-        let timeout_error = DbError::network_timeout_with_context(3000, "Database connection");
-        if let DbError::NetworkTimeout {
-            timeout_ms,
-            context,
-        } = timeout_error
-        {
-            assert_eq!(timeout_ms, 3000);
-            assert_eq!(context, "Database connection");
+        let connection_error = DbError::ConnectionFailed {
+            endpoint: "localhost:5432".to_string(),
+            reason: "Database connection timeout".to_string(),
+        };
+        if let DbError::ConnectionFailed { endpoint, reason } = connection_error {
+            assert_eq!(endpoint, "localhost:5432");
+            assert_eq!(reason, "Database connection timeout");
         } else {
-            panic!("Expected NetworkTimeout error");
+            panic!("Expected ConnectionFailed error");
         }
 
-        let capacity_error = DbError::capacity_exceeded_with_type(2048, 1024, "memory");
-        if let DbError::CapacityExceeded {
-            current,
-            limit,
-            resource_type,
-        } = capacity_error
-        {
-            assert_eq!(current, 2048);
-            assert_eq!(limit, 1024);
-            assert_eq!(resource_type, "memory");
+        let buffer_error = DbError::BufferFull {
+            size: 2048,
+            buffer_name: "memory buffer".to_string(),
+        };
+        if let DbError::BufferFull { size, buffer_name } = buffer_error {
+            assert_eq!(size, 2048);
+            assert_eq!(buffer_name, "memory buffer");
         } else {
-            panic!("Expected CapacityExceeded error");
+            panic!("Expected BufferFull error");
         }
     }
 
@@ -1165,16 +1057,6 @@ mod tests {
         // Test that all error variants have correct error codes within their ranges
 
         // Network errors: 0x1000-0x1FFF
-        let timeout_error = DbError::NetworkTimeout {
-            timeout_ms: 1000,
-            #[cfg(feature = "std")]
-            context: String::new(),
-            #[cfg(not(feature = "std"))]
-            _context: (),
-        };
-        assert_eq!(timeout_error.error_code(), 0x1001);
-        assert_eq!(timeout_error.error_category(), 0x1000);
-
         let connection_error = DbError::ConnectionFailed {
             #[cfg(feature = "std")]
             endpoint: "localhost".to_string(),
@@ -1182,22 +1064,13 @@ mod tests {
             reason: "timeout".to_string(),
             #[cfg(not(feature = "std"))]
             _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
         };
         assert_eq!(connection_error.error_code(), 0x1002);
         assert_eq!(connection_error.error_category(), 0x1000);
 
         // Capacity errors: 0x2000-0x2FFF
-        let capacity_error = DbError::CapacityExceeded {
-            current: 100,
-            limit: 50,
-            #[cfg(feature = "std")]
-            resource_type: String::new(),
-            #[cfg(not(feature = "std"))]
-            _resource_type: (),
-        };
-        assert_eq!(capacity_error.error_code(), 0x2001);
-        assert_eq!(capacity_error.error_category(), 0x2000);
-
         let buffer_error = DbError::BufferFull {
             size: 1024,
             #[cfg(feature = "std")]
@@ -1220,15 +1093,13 @@ mod tests {
         assert_eq!(serialization_error.error_category(), 0x3000);
 
         // Configuration errors: 0x4000-0x4FFF
-        let config_error = DbError::InvalidConfiguration {
+        let config_error = DbError::MissingConfiguration {
             #[cfg(feature = "std")]
             parameter: String::new(),
-            #[cfg(feature = "std")]
-            value: String::new(),
             #[cfg(not(feature = "std"))]
             _parameter: (),
         };
-        assert_eq!(config_error.error_code(), 0x4001);
+        assert_eq!(config_error.error_code(), 0x4002);
         assert_eq!(config_error.error_category(), 0x4000);
 
         // Resource errors: 0x5000-0x5FFF
@@ -1275,13 +1146,6 @@ mod tests {
         let mut codes = HashSet::new();
 
         let mut errors = vec![
-            DbError::NetworkTimeout {
-                timeout_ms: 0,
-                #[cfg(feature = "std")]
-                context: String::new(),
-                #[cfg(not(feature = "std"))]
-                _context: (),
-            },
             DbError::ConnectionFailed {
                 #[cfg(feature = "std")]
                 endpoint: String::new(),
@@ -1289,21 +1153,6 @@ mod tests {
                 reason: String::new(),
                 #[cfg(not(feature = "std"))]
                 _endpoint: (),
-            },
-            DbError::ProtocolError {
-                error_code: 0,
-                #[cfg(feature = "std")]
-                message: String::new(),
-                #[cfg(not(feature = "std"))]
-                _message: (),
-            },
-            DbError::CapacityExceeded {
-                current: 0,
-                limit: 0,
-                #[cfg(feature = "std")]
-                resource_type: String::new(),
-                #[cfg(not(feature = "std"))]
-                _resource_type: (),
             },
             DbError::BufferFull {
                 size: 0,
@@ -1326,14 +1175,6 @@ mod tests {
                 description: String::new(),
                 #[cfg(not(feature = "std"))]
                 _description: (),
-            },
-            DbError::InvalidConfiguration {
-                #[cfg(feature = "std")]
-                parameter: String::new(),
-                #[cfg(feature = "std")]
-                value: String::new(),
-                #[cfg(not(feature = "std"))]
-                _parameter: (),
             },
             DbError::MissingConfiguration {
                 #[cfg(feature = "std")]
@@ -1363,13 +1204,6 @@ mod tests {
                 description: String::new(),
                 #[cfg(not(feature = "std"))]
                 _description: (),
-            },
-            DbError::PeripheralInitFailed {
-                peripheral_id: 0,
-                #[cfg(feature = "std")]
-                peripheral: String::new(),
-                #[cfg(not(feature = "std"))]
-                _peripheral: (),
             },
             DbError::Internal {
                 code: 0,
@@ -1412,54 +1246,55 @@ mod tests {
         let mut buffer = heapless::String::<64>::new();
 
         // Test that no_std Display includes error codes
-        let error = DbError::NetworkTimeout {
-            timeout_ms: 1000,
-            _context: (),
+        let error = DbError::ConnectionFailed {
+            _endpoint: (),
+            _reason: (),
         };
 
         write!(&mut buffer, "{}", error).unwrap();
-        assert_eq!(buffer.as_str(), "Error 0x1001: Network timeout");
+        assert_eq!(buffer.as_str(), "Error 0x1002: Connection failed");
 
         buffer.clear();
 
-        let capacity_error = DbError::CapacityExceeded {
-            current: 100,
-            limit: 50,
-            _resource_type: (),
+        let capacity_error = DbError::BufferFull {
+            size: 100,
+            _buffer_name: (),
         };
 
         write!(&mut buffer, "{}", capacity_error).unwrap();
-        assert_eq!(buffer.as_str(), "Error 0x2001: Capacity exceeded");
+        assert_eq!(buffer.as_str(), "Error 0x2002: Buffer full");
     }
 
     #[test]
     fn test_const_error_code_performance() {
         // Test that error_code() method provides fast lookup
-        let timeout_error = DbError::NetworkTimeout {
-            timeout_ms: 1000,
+        let connection_error = DbError::ConnectionFailed {
             #[cfg(feature = "std")]
-            context: String::new(),
+            endpoint: String::new(),
+            #[cfg(feature = "std")]
+            reason: String::new(),
             #[cfg(not(feature = "std"))]
-            _context: (),
+            _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
         };
 
-        let capacity_error = DbError::CapacityExceeded {
-            current: 100,
-            limit: 50,
+        let buffer_error = DbError::BufferFull {
+            size: 100,
             #[cfg(feature = "std")]
-            resource_type: String::new(),
+            buffer_name: String::new(),
             #[cfg(not(feature = "std"))]
-            _resource_type: (),
+            _buffer_name: (),
         };
 
         // Test that error codes are correct
-        assert_eq!(timeout_error.error_code(), 0x1001);
-        assert_eq!(capacity_error.error_code(), 0x2001);
+        assert_eq!(connection_error.error_code(), 0x1002);
+        assert_eq!(buffer_error.error_code(), 0x2002);
 
         // Test that the method can be called multiple times efficiently
         for _ in 0..1000 {
-            assert_eq!(timeout_error.error_code(), 0x1001);
-            assert_eq!(capacity_error.error_code(), 0x2001);
+            assert_eq!(connection_error.error_code(), 0x1002);
+            assert_eq!(buffer_error.error_code(), 0x2002);
         }
     }
 
@@ -1467,24 +1302,22 @@ mod tests {
     #[test]
     fn test_std_display_formatting() {
         // Test rich std Display formatting
-        let timeout_error = DbError::NetworkTimeout {
-            timeout_ms: 5000,
-            context: "Database connection timeout".to_string(),
+        let connection_error = DbError::ConnectionFailed {
+            endpoint: "localhost:5432".to_string(),
+            reason: "Database connection timeout".to_string(),
         };
 
-        let display_msg = format!("{}", timeout_error);
-        assert!(display_msg.contains("5000ms"));
+        let display_msg = format!("{}", connection_error);
+        assert!(display_msg.contains("localhost:5432"));
         assert!(display_msg.contains("Database connection timeout"));
 
-        let capacity_error = DbError::CapacityExceeded {
-            current: 2048,
-            limit: 1024,
-            resource_type: "memory buffer".to_string(),
+        let buffer_error = DbError::BufferFull {
+            size: 2048,
+            buffer_name: "memory buffer".to_string(),
         };
 
-        let display_msg = format!("{}", capacity_error);
+        let display_msg = format!("{}", buffer_error);
         assert!(display_msg.contains("2048"));
-        assert!(display_msg.contains("1024"));
         assert!(display_msg.contains("memory buffer"));
     }
 
@@ -1492,32 +1325,38 @@ mod tests {
     #[test]
     fn test_error_chaining_with_context() {
         // Test that with_context() properly chains error context
-        let base_error = DbError::network_timeout(5000);
+        let base_error = DbError::ConnectionFailed {
+            endpoint: "localhost:5432".to_string(),
+            reason: "timeout".to_string(),
+        };
         let chained_error = base_error
             .with_context("Failed to connect to database server")
             .with_context("During application startup");
 
-        if let DbError::NetworkTimeout { context, .. } = chained_error {
+        if let DbError::ConnectionFailed { reason, .. } = chained_error {
             assert_eq!(
-                context,
-                "During application startup: Failed to connect to database server"
+                reason,
+                "During application startup: Failed to connect to database server: timeout"
             );
         } else {
-            panic!("Expected NetworkTimeout error");
+            panic!("Expected ConnectionFailed error");
         }
 
         // Test chaining on different error types
-        let capacity_error = DbError::capacity_exceeded_with_type(2048, 1024, "memory")
-            .with_context("Buffer allocation failed")
-            .with_context("High memory usage");
+        let buffer_error = DbError::BufferFull {
+            size: 2048,
+            buffer_name: "memory".to_string(),
+        }
+        .with_context("Buffer allocation failed")
+        .with_context("High memory usage");
 
-        if let DbError::CapacityExceeded { resource_type, .. } = capacity_error {
+        if let DbError::BufferFull { buffer_name, .. } = buffer_error {
             assert_eq!(
-                resource_type,
+                buffer_name,
                 "High memory usage: Buffer allocation failed: memory"
             );
         } else {
-            panic!("Expected CapacityExceeded error");
+            panic!("Expected BufferFull error");
         }
     }
 
@@ -1573,17 +1412,23 @@ mod tests {
         use anyhow::Context;
 
         // Test converting DbError to anyhow::Error
-        let db_error = DbError::network_timeout_with_context(5000, "Connection timeout");
+        let db_error = DbError::ConnectionFailed {
+            endpoint: "localhost:5432".to_string(),
+            reason: "Connection timeout".to_string(),
+        };
         let anyhow_error: anyhow::Error = db_error.into_anyhow();
 
         // Test that the conversion preserves the error message
         let error_msg = format!("{}", anyhow_error);
-        assert!(error_msg.contains("5000ms"));
+        assert!(error_msg.contains("localhost:5432"));
         assert!(error_msg.contains("Connection timeout"));
 
         // Test error chaining with anyhow
         fn failing_db_operation() -> Result<(), DbError> {
-            Err(DbError::capacity_exceeded_with_type(2048, 1024, "memory"))
+            Err(DbError::BufferFull {
+                size: 2048,
+                buffer_name: "memory buffer".to_string(),
+            })
         }
 
         let result: anyhow::Result<()> = failing_db_operation()
@@ -1596,7 +1441,7 @@ mod tests {
         let error_chain = format!("{:#}", error);
         assert!(error_chain.contains("Application startup error"));
         assert!(error_chain.contains("Database operation failed"));
-        assert!(error_chain.contains("Capacity exceeded"));
+        assert!(error_chain.contains("Buffer full"));
     }
 
     #[cfg(feature = "std")]
@@ -1605,17 +1450,20 @@ mod tests {
         use std::error::Error;
 
         // Test that DbError implements std::error::Error trait correctly
-        let timeout_error = DbError::network_timeout_with_context(3000, "Test timeout");
-        let error_trait: &dyn Error = &timeout_error;
+        let connection_error = DbError::ConnectionFailed {
+            endpoint: "localhost:3000".to_string(),
+            reason: "Test timeout".to_string(),
+        };
+        let error_trait: &dyn Error = &connection_error;
 
         // Test Display
         let display_msg = format!("{}", error_trait);
-        assert!(display_msg.contains("3000ms"));
+        assert!(display_msg.contains("localhost:3000"));
         assert!(display_msg.contains("Test timeout"));
 
         // Test Debug
         let debug_msg = format!("{:?}", error_trait);
-        assert!(debug_msg.contains("NetworkTimeout"));
+        assert!(debug_msg.contains("ConnectionFailed"));
 
         // Test error source for errors with sources
         let io_error = std::io::Error::other("File not found");
@@ -1657,14 +1505,6 @@ mod tests {
     #[test]
     fn test_helper_functions() {
         // Test that the helper functions work correctly in isolation
-        let mut empty_string = String::new();
-        DbError::prepend_context(&mut empty_string, "New context");
-        assert_eq!(empty_string, "New context");
-
-        let mut existing_string = String::from("existing content");
-        DbError::prepend_context(&mut existing_string, "New context");
-        assert_eq!(existing_string, "New context: existing content");
-
         let mut content_string = String::from("some content");
         DbError::prepend_context_always(&mut content_string, "Always prepend");
         assert_eq!(content_string, "Always prepend: some content");
@@ -1846,8 +1686,11 @@ mod tests {
         use anyhow::Context;
 
         fn application_main() -> anyhow::Result<()> {
-            let db_error = DbError::capacity_exceeded_with_type(1024, 512, "connection pool")
-                .with_context("Pool exhausted during high load");
+            let db_error = DbError::BufferFull {
+                size: 1024,
+                buffer_name: "connection pool".to_string(),
+            }
+            .with_context("Pool exhausted during high load");
 
             Err(db_error.into_anyhow()).context("Application failed to start")
         }

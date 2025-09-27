@@ -7,7 +7,7 @@
 //! # Features
 //!
 //! - **Embassy Integration**: Seamless integration with Embassy async executor
-//! - **Hardware Abstraction**: Support for SPI, I2C, UART, ADC, GPIO, and Timer peripherals
+//! - **Hardware Abstraction**: Support for UART, ADC, GPIO, and Timer peripherals
 //! - **Error Handling**: Embassy-specific error conversions and handling
 //! - **No-std Compatible**: Designed for resource-constrained embedded systems
 //!
@@ -34,12 +34,14 @@
 //! use aimdb_embassy_adapter::{EmbassyErrorSupport, EmbassyErrorConverter};
 //!
 //! // Create hardware-specific errors
-//! let spi_error = DbError::from_spi_error(0x42);
-//! let i2c_error = DbError::from_i2c_error(0x10);
+//! let uart_error = DbError::from_uart_error(0x42);
+//! let adc_error = DbError::from_adc_error(0x10);
+//! let gpio_error = DbError::from_gpio_error(0x05);
+//! let timer_error = DbError::from_timer_error(0x20);
 //!
-//! // Convert from embedded-hal errors using the converter
-//! let hal_error = embedded_hal::spi::ErrorKind::Overrun;
-//! let db_error = EmbassyErrorConverter::from_spi(hal_error);
+//! // Convert from nb errors using the converter
+//! let nb_error: embedded_hal_nb::nb::Error<DbError> = embedded_hal_nb::nb::Error::WouldBlock;
+//! let db_error = EmbassyErrorConverter::from_nb(nb_error);
 //! # }
 //! ```
 //!
@@ -47,9 +49,7 @@
 //!
 //! The adapter uses specific error code ranges for different peripherals:
 //!
-//! - **SPI**: 0x6100-0x61FF
 //! - **UART**: 0x6200-0x62FF  
-//! - **I2C**: 0x6300-0x63FF
 //! - **ADC**: 0x6400-0x64FF
 //! - **GPIO**: 0x6500-0x65FF
 //! - **Timer**: 0x6600-0x66FF
