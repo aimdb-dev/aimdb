@@ -51,6 +51,10 @@
 
 #![no_std]
 
+// Only include the implementation when std feature is not enabled
+// Embassy adapter is designed exclusively for no_std environments
+#[cfg(not(feature = "std"))]
 mod error;
 
+#[cfg(not(feature = "std"))]
 pub use error::{EmbassyErrorConverter, EmbassyErrorSupport};
