@@ -139,7 +139,7 @@ impl EmbassyErrorSupport for DbError {
         match error {
             nb::Error::Other(e) => e.into(),
             nb::Error::WouldBlock => DbError::ResourceUnavailable {
-                resource_type: 255, // Special code for "would block"
+                resource_type: DbError::RESOURCE_TYPE_WOULD_BLOCK,
                 _resource_name: (),
             },
         }
@@ -330,7 +330,7 @@ mod tests {
         let db_error = DbError::from_nb_error(would_block);
 
         if let DbError::ResourceUnavailable { resource_type, .. } = db_error {
-            assert_eq!(resource_type, 255); // Special code for would block
+            assert_eq!(resource_type, DbError::RESOURCE_TYPE_WOULD_BLOCK);
         } else {
             panic!("Expected ResourceUnavailable variant");
         }
@@ -412,7 +412,7 @@ mod tests {
         let would_block: nb::Error<DbError> = nb::Error::WouldBlock;
         let db_error = EmbassyErrorConverter::from_nb(would_block);
         if let DbError::ResourceUnavailable { resource_type, .. } = db_error {
-            assert_eq!(resource_type, 255);
+            assert_eq!(resource_type, DbError::RESOURCE_TYPE_WOULD_BLOCK);
         } else {
             panic!("Expected ResourceUnavailable variant");
         }

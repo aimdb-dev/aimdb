@@ -505,6 +505,20 @@ impl core::fmt::Display for DbError {
 }
 
 impl DbError {
+    // Resource type constants for ResourceUnavailable and ResourceAllocationFailed errors
+    pub const RESOURCE_TYPE_MEMORY: u8 = 0;
+    pub const RESOURCE_TYPE_FILE_HANDLE: u8 = 1;
+    pub const RESOURCE_TYPE_SOCKET: u8 = 2;
+    pub const RESOURCE_TYPE_BUFFER: u8 = 3;
+    pub const RESOURCE_TYPE_THREAD: u8 = 4;
+    pub const RESOURCE_TYPE_MUTEX: u8 = 5;
+    pub const RESOURCE_TYPE_SEMAPHORE: u8 = 6;
+    pub const RESOURCE_TYPE_CHANNEL: u8 = 7;
+    // Reserved range for embedded-specific resources: 8-127
+    // Reserved range for connector-specific resources: 128-254
+    /// Special resource type code for non-blocking operations that would block
+    pub const RESOURCE_TYPE_WOULD_BLOCK: u8 = 255;
+
     /// Creates a network timeout error with the specified timeout duration
     pub fn network_timeout(timeout_ms: u64) -> Self {
         DbError::NetworkTimeout {
