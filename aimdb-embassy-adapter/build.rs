@@ -28,7 +28,10 @@ fn main() {
     if target.contains("thumbv") || target.contains("riscv") || target.contains("arm") {
         // For embedded targets, ensure optimizations that help with code size
         // Only add --gc-sections if using GNU ld as the linker
-        let linker_env = format!("CARGO_TARGET_{}_LINKER", target.replace('-', "_").to_uppercase());
+        let linker_env = format!(
+            "CARGO_TARGET_{}_LINKER",
+            target.replace('-', "_").to_uppercase()
+        );
         let linker = env::var(&linker_env)
             .or_else(|_| env::var("RUSTC_LINKER"))
             .unwrap_or_default();
