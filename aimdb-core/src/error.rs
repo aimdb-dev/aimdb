@@ -197,6 +197,8 @@
 //!         reason: "Connection refused".to_string(),
 //!         #[cfg(not(feature = "std"))]
 //!         _endpoint: (),
+//!         #[cfg(not(feature = "std"))]
+//!         _reason: (),
 //!     })
 //! }
 //! ```
@@ -326,6 +328,8 @@ pub enum DbError {
         reason: String,
         #[cfg(not(feature = "std"))]
         _endpoint: (),
+        #[cfg(not(feature = "std"))]
+        _reason: (),
     },
 
     /// Buffer or queue is full
@@ -575,6 +579,8 @@ impl DbError {
     ///     reason: "timeout".to_string(),
     ///     #[cfg(not(feature = "std"))]
     ///     _endpoint: (),
+    ///     #[cfg(not(feature = "std"))]
+    ///     _reason: (),
     /// };
     /// assert_eq!(error.error_code(), 0x1002);
     ///
@@ -645,6 +651,8 @@ impl DbError {
     ///     reason: "timeout".to_string(),
     ///     #[cfg(not(feature = "std"))]
     ///     _endpoint: (),
+    ///     #[cfg(not(feature = "std"))]
+    ///     _reason: (),
     /// };
     /// assert_eq!(error.error_category(), 0x1000);
     /// ```
