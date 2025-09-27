@@ -14,6 +14,38 @@ use embedded_hal::i2c;
 use embedded_hal::spi;
 use embedded_hal_nb::nb;
 
+// Embassy Error Code Base Values
+const SPI_ERROR_BASE: u16 = 0x6100;
+const UART_ERROR_BASE: u16 = 0x6200;
+const I2C_ERROR_BASE: u16 = 0x6300;
+const ADC_ERROR_BASE: u16 = 0x6400;
+const GPIO_ERROR_BASE: u16 = 0x6500;
+const TIMER_ERROR_BASE: u16 = 0x6600;
+
+// Component IDs for Embassy hardware
+const TIMER_COMPONENT_ID: u8 = 0;
+const GPIO_COMPONENT_ID: u8 = 1;
+const SPI_COMPONENT_ID: u8 = 2;
+const I2C_COMPONENT_ID: u8 = 3;
+const UART_COMPONENT_ID: u8 = 4;
+const ADC_COMPONENT_ID: u8 = 5;
+
+// SPI-specific error codes
+const SPI_CHIP_SELECT_FAULT: u8 = 0x01;
+const SPI_MODE_FAULT: u8 = 0x02;
+const SPI_OVERRUN: u8 = 0x04;
+const SPI_FRAME_FORMAT: u8 = 0x05;
+const SPI_UNKNOWN_ERROR: u8 = 0xFF;
+
+// I2C-specific error codes
+const I2C_BUS_ERROR: u8 = 0x01;
+const I2C_ARBITRATION_LOSS: u8 = 0x02;
+const I2C_NACK_ADDRESS: u8 = 0x03;
+const I2C_NACK_DATA: u8 = 0x04;
+const I2C_NACK_UNKNOWN: u8 = 0x05;
+const I2C_OVERRUN: u8 = 0x06;
+const I2C_UNKNOWN_ERROR: u8 = 0xFF;
+
 /// Trait that provides Embassy-specific error constructors for DbError
 ///
 /// This trait provides hardware-specific error creation methods without requiring
@@ -54,8 +86,8 @@ impl EmbassyErrorSupport for DbError {
     /// Creates an SPI error for Embassy environments (error codes 0x6100-0x61FF)
     fn from_spi_error(code: u8) -> Self {
         DbError::HardwareError {
-            component: 2, // SPI component ID
-            error_code: 0x6100 | (code as u16),
+            component: SPI_COMPONENT_ID,
+            error_code: SPI_ERROR_BASE | (code as u16),
             _description: (),
         }
     }
@@ -63,8 +95,8 @@ impl EmbassyErrorSupport for DbError {
     /// Creates a UART error for Embassy environments (error codes 0x6200-0x62FF)
     fn from_uart_error(code: u8) -> Self {
         DbError::HardwareError {
-            component: 4, // UART component ID
-            error_code: 0x6200 | (code as u16),
+            component: UART_COMPONENT_ID,
+            error_code: UART_ERROR_BASE | (code as u16),
             _description: (),
         }
     }
@@ -72,8 +104,8 @@ impl EmbassyErrorSupport for DbError {
     /// Creates an I2C error for Embassy environments (error codes 0x6300-0x63FF)
     fn from_i2c_error(code: u8) -> Self {
         DbError::HardwareError {
-            component: 3, // I2C component ID
-            error_code: 0x6300 | (code as u16),
+            component: I2C_COMPONENT_ID,
+            error_code: I2C_ERROR_BASE | (code as u16),
             _description: (),
         }
     }
@@ -81,8 +113,8 @@ impl EmbassyErrorSupport for DbError {
     /// Creates an ADC error for Embassy environments (error codes 0x6400-0x64FF)
     fn from_adc_error(code: u8) -> Self {
         DbError::HardwareError {
-            component: 5, // ADC component ID
-            error_code: 0x6400 | (code as u16),
+            component: ADC_COMPONENT_ID,
+            error_code: ADC_ERROR_BASE | (code as u16),
             _description: (),
         }
     }
@@ -90,8 +122,8 @@ impl EmbassyErrorSupport for DbError {
     /// Creates a GPIO error for Embassy environments (error codes 0x6500-0x65FF)
     fn from_gpio_error(code: u8) -> Self {
         DbError::HardwareError {
-            component: 1, // GPIO component ID
-            error_code: 0x6500 | (code as u16),
+            component: GPIO_COMPONENT_ID,
+            error_code: GPIO_ERROR_BASE | (code as u16),
             _description: (),
         }
     }
@@ -99,8 +131,8 @@ impl EmbassyErrorSupport for DbError {
     /// Creates a Timer error for Embassy environments (error codes 0x6600-0x66FF)
     fn from_timer_error(code: u8) -> Self {
         DbError::HardwareError {
-            component: 0, // Timer component ID
-            error_code: 0x6600 | (code as u16),
+            component: TIMER_COMPONENT_ID,
+            error_code: TIMER_ERROR_BASE | (code as u16),
             _description: (),
         }
     }
@@ -108,11 +140,11 @@ impl EmbassyErrorSupport for DbError {
     /// Converts an SPI error to DbError
     fn from_spi_hal_error(error: spi::ErrorKind) -> Self {
         let error_code = match error {
-            spi::ErrorKind::ChipSelectFault => 0x01,
-            spi::ErrorKind::ModeFault => 0x02,
-            spi::ErrorKind::Overrun => 0x04,
-            spi::ErrorKind::FrameFormat => 0x05,
-            _ => 0xFF, // Generic/unknown error
+            spi::ErrorKind::ChipSelectFault => SPI_CHIP_SELECT_FAULT,
+            spi::ErrorKind::ModeFault => SPI_MODE_FAULT,
+            spi::ErrorKind::Overrun => SPI_OVERRUN,
+            spi::ErrorKind::FrameFormat => SPI_FRAME_FORMAT,
+            _ => SPI_UNKNOWN_ERROR, // Generic/unknown error
         };
         Self::from_spi_error(error_code)
     }
@@ -120,13 +152,13 @@ impl EmbassyErrorSupport for DbError {
     /// Converts an I2C error to DbError
     fn from_i2c_hal_error(error: i2c::ErrorKind) -> Self {
         let error_code = match error {
-            i2c::ErrorKind::Bus => 0x01,
-            i2c::ErrorKind::ArbitrationLoss => 0x02,
-            i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Address) => 0x03,
-            i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Data) => 0x04,
-            i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Unknown) => 0x05,
-            i2c::ErrorKind::Overrun => 0x06,
-            _ => 0xFF, // Generic/unknown error
+            i2c::ErrorKind::Bus => I2C_BUS_ERROR,
+            i2c::ErrorKind::ArbitrationLoss => I2C_ARBITRATION_LOSS,
+            i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Address) => I2C_NACK_ADDRESS,
+            i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Data) => I2C_NACK_DATA,
+            i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Unknown) => I2C_NACK_UNKNOWN,
+            i2c::ErrorKind::Overrun => I2C_OVERRUN,
+            _ => I2C_UNKNOWN_ERROR, // Generic/unknown error
         };
         Self::from_i2c_error(error_code)
     }
@@ -135,6 +167,7 @@ impl EmbassyErrorSupport for DbError {
     fn from_nb_error<E>(error: nb::Error<E>) -> Self
     where
         E: Into<Self>,
+        Self: Sized,
     {
         match error {
             nb::Error::Other(e) => e.into(),
@@ -185,8 +218,8 @@ mod tests {
             ..
         } = spi_error
         {
-            assert_eq!(component, 2); // SPI component ID
-            assert_eq!(error_code, 0x6142); // 0x6100 | 0x42
+            assert_eq!(component, SPI_COMPONENT_ID);
+            assert_eq!(error_code, SPI_ERROR_BASE | 0x42);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -199,8 +232,8 @@ mod tests {
             ..
         } = uart_error
         {
-            assert_eq!(component, 4); // UART component ID
-            assert_eq!(error_code, 0x6210); // 0x6200 | 0x10
+            assert_eq!(component, UART_COMPONENT_ID);
+            assert_eq!(error_code, UART_ERROR_BASE | 0x10);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -213,8 +246,8 @@ mod tests {
             ..
         } = i2c_error
         {
-            assert_eq!(component, 3); // I2C component ID
-            assert_eq!(error_code, 0x6305); // 0x6300 | 0x05
+            assert_eq!(component, I2C_COMPONENT_ID);
+            assert_eq!(error_code, I2C_ERROR_BASE | 0x05);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -227,8 +260,8 @@ mod tests {
             ..
         } = adc_error
         {
-            assert_eq!(component, 5); // ADC component ID
-            assert_eq!(error_code, 0x6420); // 0x6400 | 0x20
+            assert_eq!(component, ADC_COMPONENT_ID);
+            assert_eq!(error_code, ADC_ERROR_BASE | 0x20);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -241,8 +274,8 @@ mod tests {
             ..
         } = gpio_error
         {
-            assert_eq!(component, 1); // GPIO component ID
-            assert_eq!(error_code, 0x6508); // 0x6500 | 0x08
+            assert_eq!(component, GPIO_COMPONENT_ID);
+            assert_eq!(error_code, GPIO_ERROR_BASE | 0x08);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -255,8 +288,8 @@ mod tests {
             ..
         } = timer_error
         {
-            assert_eq!(component, 0); // Timer component ID
-            assert_eq!(error_code, 0x66FF); // 0x6600 | 0xFF
+            assert_eq!(component, TIMER_COMPONENT_ID);
+            assert_eq!(error_code, TIMER_ERROR_BASE | 0xFF);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -274,8 +307,8 @@ mod tests {
             ..
         } = spi_overrun
         {
-            assert_eq!(component, 2); // SPI component
-            assert_eq!(error_code, 0x6104); // 0x6100 | 0x04
+            assert_eq!(component, SPI_COMPONENT_ID);
+            assert_eq!(error_code, SPI_ERROR_BASE | SPI_OVERRUN as u16);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -287,8 +320,8 @@ mod tests {
             ..
         } = spi_mode_fault
         {
-            assert_eq!(component, 2); // SPI component
-            assert_eq!(error_code, 0x6102); // 0x6100 | 0x02
+            assert_eq!(component, SPI_COMPONENT_ID);
+            assert_eq!(error_code, SPI_ERROR_BASE | SPI_MODE_FAULT as u16);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -301,8 +334,8 @@ mod tests {
             ..
         } = i2c_bus_error
         {
-            assert_eq!(component, 3); // I2C component
-            assert_eq!(error_code, 0x6301); // 0x6300 | 0x01
+            assert_eq!(component, I2C_COMPONENT_ID);
+            assert_eq!(error_code, I2C_ERROR_BASE | I2C_BUS_ERROR as u16);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -316,8 +349,8 @@ mod tests {
             ..
         } = i2c_nack
         {
-            assert_eq!(component, 3); // I2C component
-            assert_eq!(error_code, 0x6303); // 0x6300 | 0x03
+            assert_eq!(component, I2C_COMPONENT_ID);
+            assert_eq!(error_code, I2C_ERROR_BASE | I2C_NACK_ADDRESS as u16);
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -385,8 +418,8 @@ mod tests {
             ..
         } = spi_error
         {
-            assert_eq!(component, 2); // SPI component
-            assert_eq!(error_code, 0x6104); // 0x6100 | 0x04 (Overrun) - component-specific code
+            assert_eq!(component, SPI_COMPONENT_ID);
+            assert_eq!(error_code, SPI_ERROR_BASE | SPI_OVERRUN as u16); // component-specific code
         } else {
             panic!("Expected HardwareError variant");
         }
@@ -400,8 +433,8 @@ mod tests {
             ..
         } = i2c_error
         {
-            assert_eq!(component, 3); // I2C component
-            assert_eq!(error_code, 0x6301); // 0x6300 | 0x01 (Bus) - component-specific code
+            assert_eq!(component, I2C_COMPONENT_ID);
+            assert_eq!(error_code, I2C_ERROR_BASE | I2C_BUS_ERROR as u16); // component-specific code
         } else {
             panic!("Expected HardwareError variant");
         }
