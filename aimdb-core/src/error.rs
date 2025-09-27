@@ -505,6 +505,20 @@ impl core::fmt::Display for DbError {
 }
 
 impl DbError {
+    // Resource type constants for ResourceUnavailable and ResourceAllocationFailed errors
+    pub const RESOURCE_TYPE_MEMORY: u8 = 0;
+    pub const RESOURCE_TYPE_FILE_HANDLE: u8 = 1;
+    pub const RESOURCE_TYPE_SOCKET: u8 = 2;
+    pub const RESOURCE_TYPE_BUFFER: u8 = 3;
+    pub const RESOURCE_TYPE_THREAD: u8 = 4;
+    pub const RESOURCE_TYPE_MUTEX: u8 = 5;
+    pub const RESOURCE_TYPE_SEMAPHORE: u8 = 6;
+    pub const RESOURCE_TYPE_CHANNEL: u8 = 7;
+    // Reserved range for embedded-specific resources: 8-127
+    // Reserved range for connector-specific resources: 128-254
+    /// Special resource type code for non-blocking operations that would block
+    pub const RESOURCE_TYPE_WOULD_BLOCK: u8 = 255;
+
     /// Creates a network timeout error with the specified timeout duration
     pub fn network_timeout(timeout_ms: u64) -> Self {
         DbError::NetworkTimeout {
@@ -954,9 +968,21 @@ mod tests {
             "DbError size ({} bytes) exceeds 64-byte limit for embedded targets",
             size
         );
+    }
 
-        // Print size for monitoring
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_error_size_monitoring() {
+        // Monitor error size for performance tracking in std environments
+        let size = core::mem::size_of::<DbError>();
         println!("DbError size: {} bytes", size);
+
+        // Also test that std version is within reasonable bounds (higher than no_std)
+        assert!(
+            size >= 24,
+            "DbError std size ({} bytes) unexpectedly small - check feature compilation",
+            size
+        );
     }
 
     #[test]
@@ -979,15 +1005,26 @@ mod tests {
             _resource_type: (),
         };
 
-        // Test that errors can be formatted
-        let timeout_msg = format!("{:?}", timeout_error);
-        let capacity_msg = format!("{:?}", capacity_error);
+        // Test that errors can be formatted (std only)
+        #[cfg(feature = "std")]
+        {
+            let timeout_msg = format!("{:?}", timeout_error);
+            let capacity_msg = format!("{:?}", capacity_error);
 
-        assert!(timeout_msg.contains("NetworkTimeout"));
-        assert!(capacity_msg.contains("CapacityExceeded"));
+            assert!(timeout_msg.contains("NetworkTimeout"));
+            assert!(capacity_msg.contains("CapacityExceeded"));
+        }
+
+        // Prevent unused variable warnings in no_std
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = timeout_error;
+            let _ = capacity_error;
+        }
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_dbresult_usage() {
         // Test DbResult type alias usage
         fn example_operation() -> DbResult<String> {
@@ -1231,6 +1268,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_error_code_uniqueness() {
         // Ensure all error codes are unique
         use std::collections::HashSet;

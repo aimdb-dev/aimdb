@@ -1,0 +1,32 @@
+[package]
+name = "aimdb-embassy-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Embassy async runtime adapter for AimDB embedded targets"
+build = "build.rs"
+
+[features]
+default = []
+# Note: std feature is intentionally kept but will cause build.rs to fail if enabled
+# This provides clear error messages when accidentally enabled
+std = []
+
+[dependencies]
+# Core AimDB types - always no_std for Embassy
+aimdb-core = { path = "../aimdb-core", default-features = false, features = [
+    "embedded",
+] }
+
+# Embassy ecosystem for embedded async
+embassy-executor = { workspace = true }
+embassy-time = { workspace = true }
+
+# Embedded HAL for peripheral abstractions
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+embedded-hal-nb = { workspace = true }
+
+[dev-dependencies]
+# For testing on embedded targets
+heapless = "0.9.1"

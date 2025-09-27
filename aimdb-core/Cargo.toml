@@ -6,8 +6,9 @@ license.workspace = true
 description = "Core database engine for AimDB - async in-memory storage with real-time synchronization"
 
 [features]
-default = ["std"]
+default = []
 std = ["thiserror", "anyhow", "serde_json"]
+embedded = []
 
 [dependencies]
 # Error handling - only for std environments
