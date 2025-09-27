@@ -35,7 +35,17 @@ fn main() {
         let linker = env::var(&linker_env)
             .or_else(|_| env::var("RUSTC_LINKER"))
             .unwrap_or_default();
-        if linker.contains("ld") {
+
+        // Check for GNU ld specifically, avoiding false positives with lld or paths containing 'ld'
+        let linker_name = linker
+            .split('/')
+            .last()
+            .unwrap_or(&linker)
+            .split('\\')
+            .last()
+            .unwrap_or(&linker);
+
+        if linker_name == "ld" || linker_name.starts_with("arm-") && linker_name.ends_with("-ld") {
             println!("cargo:rustc-link-arg=-Wl,--gc-sections");
         }
         println!("cargo:rustc-cfg=embedded_target");
