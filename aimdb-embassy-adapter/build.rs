@@ -39,10 +39,10 @@ fn main() {
         // Check for GNU ld specifically, avoiding false positives with lld or paths containing 'ld'
         let linker_name = linker
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or(&linker)
             .split('\\')
-            .last()
+            .next_back()
             .unwrap_or(&linker);
 
         if linker_name == "ld" || linker_name.starts_with("arm-") && linker_name.ends_with("-ld") {
