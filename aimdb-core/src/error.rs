@@ -888,6 +888,8 @@ mod tests {
             reason: "Connection timeout".to_string(),
             #[cfg(not(feature = "std"))]
             _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
         };
 
         let buffer_error = DbError::BufferFull {
@@ -944,7 +946,10 @@ mod tests {
     fn test_no_std_display() {
         use core::fmt::Write;
 
-        let error = DbError::ConnectionFailed { _endpoint: () };
+        let error = DbError::ConnectionFailed {
+            _endpoint: (),
+            _reason: (),
+        };
 
         let mut buffer = heapless::String::<64>::new();
         write!(&mut buffer, "{}", error).unwrap();
@@ -979,6 +984,8 @@ mod tests {
             reason: "timeout".to_string(),
             #[cfg(not(feature = "std"))]
             _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
         };
 
         let buffer_error = DbError::BufferFull {
@@ -1057,6 +1064,8 @@ mod tests {
             reason: "timeout".to_string(),
             #[cfg(not(feature = "std"))]
             _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
         };
         assert_eq!(connection_error.error_code(), 0x1002);
         assert_eq!(connection_error.error_category(), 0x1000);
@@ -1237,7 +1246,10 @@ mod tests {
         let mut buffer = heapless::String::<64>::new();
 
         // Test that no_std Display includes error codes
-        let error = DbError::ConnectionFailed { _endpoint: () };
+        let error = DbError::ConnectionFailed {
+            _endpoint: (),
+            _reason: (),
+        };
 
         write!(&mut buffer, "{}", error).unwrap();
         assert_eq!(buffer.as_str(), "Error 0x1002: Connection failed");
@@ -1263,6 +1275,8 @@ mod tests {
             reason: String::new(),
             #[cfg(not(feature = "std"))]
             _endpoint: (),
+            #[cfg(not(feature = "std"))]
+            _reason: (),
         };
 
         let buffer_error = DbError::BufferFull {
