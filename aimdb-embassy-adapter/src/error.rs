@@ -242,7 +242,7 @@ mod tests {
         let nb_other_error: nb::Error<DbError> = nb::Error::Other(known_error);
         let converted_error = DbError::from_nb_error(nb_other_error);
 
-        // The converted error should have the same code as the original (0x6001 for all hardware errors)
+        // The converted error returns the unified hardware error code (0x6001) regardless of component-specific error_code
         assert_eq!(converted_error.error_code(), 0x6001);
     }
 
@@ -363,7 +363,7 @@ mod tests {
         }
 
         // Example 3: GPIO pin configuration error
-        // Result: DbError::HardwareError { component: 1, error_code: 0x5502, _description: () }
+        // Result: DbError::HardwareError { component: 1, error_code: 0x6502, _description: () }
         let gpio_invalid_pin = DbError::from_gpio_error(0x02); // Invalid pin number
         match gpio_invalid_pin {
             DbError::HardwareError {
@@ -416,7 +416,7 @@ mod tests {
         let nb_wrapped: nb::Error<DbError> = nb::Error::Other(underlying_error);
         let unwrapped_error = DbError::from_nb_error(nb_wrapped);
 
-        // The unwrapped error preserves the original hardware error details
+        // The unwrapped error maintains its hardware error type but returns unified error code
         assert!(unwrapped_error.is_hardware_error());
         assert_eq!(unwrapped_error.error_code(), 0x6001); // Unified hardware error code
                                                           // In practice: extract specific error details and handle according to component
