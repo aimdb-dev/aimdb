@@ -10,4 +10,22 @@ description.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = ["tokio-runtime"]
+tokio-runtime = ["tokio"]
+
 [dependencies]
+# Core AimDB types - std version for Tokio
+aimdb-core = { path = "../aimdb-core", default-features = true, features = [
+    "std",
+] }
+
+# Tokio async runtime
+tokio = { workspace = true, optional = true, features = [
+    "time",
+    "rt-multi-thread",
+] }
+
+[dev-dependencies]
+# For async testing
+tokio-test = { workspace = true }
