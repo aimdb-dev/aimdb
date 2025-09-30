@@ -2,11 +2,13 @@
 members = [
     "aimdb-core",
     "aimdb-embassy-adapter",
+    "aimdb-tokio-adapter",
     "tools/aimdb-cli",
     "examples",
-    "aimdb-tokio-adapter",
 ]
 resolver = "2"
+# Note: build aimdb-core only by default. Use make all to build the full workspace!
+default-members = ["aimdb-core"]
 
 [workspace.package]
 version = "0.1.0"
