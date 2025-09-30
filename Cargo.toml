@@ -1,6 +1,14 @@
 [workspace]
-members = ["aimdb-core", "aimdb-embassy-adapter", "tools/aimdb-cli", "examples"]
+members = [
+    "aimdb-core",
+    "aimdb-embassy-adapter",
+    "aimdb-tokio-adapter",
+    "tools/aimdb-cli",
+    "examples",
+]
 resolver = "2"
+# Note: build aimdb-core only by default. Use make all to build the full workspace!
+default-members = ["aimdb-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,7 +23,7 @@ categories = ["database-implementations", "embedded", "asynchronous"]
 
 [workspace.dependencies]
 # Core async runtime
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

@@ -33,12 +33,12 @@ help:
 ## Core commands
 build:
 	@printf "$(GREEN)Building AimDB (all combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Building default (no_std)$(NC)\n"
+	@printf "$(YELLOW)  → Building aimdb-core$(NC)\n"
 	cargo build
 	@printf "$(YELLOW)  → Building std components with all features$(NC)\n"
 	cargo build --workspace --exclude aimdb-embassy-adapter --all-features
-	@printf "$(YELLOW)  → Building embassy adapter (no_std only)$(NC)\n"
-	cd aimdb-embassy-adapter && cargo build
+	@printf "$(YELLOW)  → Building no-std components with no default features$(NC)\n"
+	cargo build --workspace --exclude aimdb-tokio-adapter --no-default-features
 
 test:
 	@printf "$(GREEN)Running all tests (all combinations)...$(NC)\n"
@@ -46,8 +46,8 @@ test:
 	cargo test
 	@printf "$(YELLOW)  → Testing std components with all features$(NC)\n"
 	cargo test --workspace --exclude aimdb-embassy-adapter --all-features
-	@printf "$(YELLOW)  → Testing embassy adapter (no_std only)$(NC)\n"
-	cd aimdb-embassy-adapter && cargo test
+	@printf "$(YELLOW)  → Testing no-std components with no default features$(NC)\n"
+	cargo test --workspace --exclude aimdb-tokio-adapter --no-default-features
 
 fmt:
 	@printf "$(GREEN)Formatting code...$(NC)\n"
@@ -59,12 +59,17 @@ clippy:
 	cargo clippy --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on std components with all features$(NC)\n"
 	cargo clippy --workspace --exclude aimdb-embassy-adapter --all-targets --all-features -- -D warnings
-	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
-	cd aimdb-embassy-adapter && cargo clippy --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on no-std components with no default features$(NC)\n"
+	cargo clippy --workspace --exclude aimdb-tokio-adapter --all-targets --no-default-features -- -D warnings
 
 doc:
-	@printf "$(GREEN)Generating documentation...$(NC)\n"
-	cargo doc --workspace --exclude aimdb-embassy-adapter --all-features --no-deps --open
+	@printf "$(GREEN)Generating comprehensive documentation...$(NC)\n"
+	@printf "$(YELLOW)  → Documenting all workspace crates with feature annotations$(NC)\n"
+	@# Document everything in one pass to show conditional compilation
+	cargo doc --workspace --all-features --no-deps --open
+	@printf "$(YELLOW)  → Additionally documenting embassy adapter (embedded-only)$(NC)\n"
+	@# Embassy adapter gets separate docs since it's excluded from main workspace build
+	cargo doc --package aimdb-embassy-adapter --no-deps
 
 clean:
 	@printf "$(GREEN)Cleaning...$(NC)\n"
