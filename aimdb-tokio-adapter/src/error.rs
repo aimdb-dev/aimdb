@@ -135,10 +135,11 @@ impl TokioErrorSupport for DbError {
         }
 
     /// Creates a task error for Tokio environments (error codes 0x7300-0x73FF)
-    fn from_task_error(_code: u8, description: &str) -> Self {
-        DbError::ResourceUnavailable {
-            resource_type: TASK_COMPONENT_ID,
-            resource_name: format!("task: {}", description),
+    fn from_task_error(code: u8, description: &str) -> Self {
+        DbError::ResourceError {
+            error_code: (0x7300 | (code as u16)) as u32,
+            resource_type: "task".to_string(),
+            description: format!("Task error: {}", description),
         }
     }
 
