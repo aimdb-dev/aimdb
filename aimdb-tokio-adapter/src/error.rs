@@ -127,12 +127,12 @@ impl TokioErrorSupport for DbError {
     }
 
     /// Creates a timeout error for Tokio environments (error codes 0x7200-0x72FF)
-    fn from_timeout_error(_code: u8, timeout: Duration) -> Self {
-        DbError::ConnectionFailed {
+    fn from_timeout_error(code: u8, timeout: Duration) -> Self {
+        DbError::NetworkError {
+            error_code: (0x7200 | (code as u16)) as u32,
             endpoint: "timeout".to_string(),
-            reason: format!("Operation timed out after {}ms", timeout.as_millis()),
+            description: format!("Operation timed out after {}ms", timeout.as_millis()),
         }
-    }
 
     /// Creates a task error for Tokio environments (error codes 0x7300-0x73FF)
     fn from_task_error(_code: u8, description: &str) -> Self {
