@@ -74,16 +74,26 @@ clippy:
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
 
 doc:
-	@printf "$(GREEN)Generating comprehensive documentation...$(NC)\n"
-	@printf "$(YELLOW)  → Documenting std components with valid features$(NC)\n"
-	cargo doc --package aimdb-core --features "std,tokio-runtime,tracing,metrics" --no-deps
-	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
-	cargo doc --package aimdb-cli --no-deps
-	@printf "$(YELLOW)  → Documenting embassy adapter (embedded-only)$(NC)\n"
-	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime" --no-deps
+	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
+	@# Create directory structure
+	@mkdir -p target/doc-final/{cloud,embedded}
+	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
+	cargo doc --features "std,tokio-runtime,tracing,metrics" --no-deps
+	@cp -r target/doc/* target/doc-final/cloud/
+	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
+	cargo doc --features "embedded,embassy-runtime" --no-deps
+	@cp -r target/doc/* target/doc-final/embedded/
+	@printf "$(YELLOW)  → Creating main index page$(NC)\n"
+	@cp docs/index.html target/doc-final/index.html
 	@printf "$(YELLOW)  → Opening documentation$(NC)\n"
-	@# Open the main core documentation
-	cargo doc --package aimdb-core --features "std,tokio-runtime,tracing,metrics" --no-deps --open
+	@# Open the main documentation index
+	@if command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open target/doc-final/index.html; \
+	elif command -v open >/dev/null 2>&1; then \
+		open target/doc-final/index.html; \
+	else \
+		printf "$(BLUE)Documentation generated at: file://$(PWD)/target/doc-final/index.html$(NC)\n"; \
+	fi
 
 clean:
 	@printf "$(GREEN)Cleaning...$(NC)\n"

@@ -33,8 +33,19 @@ jobs:
     
     - name: Build documentation
       run: |
-        cargo doc --all-features --no-deps
-        cp docs/index.html target/doc/index.html
+        # Create directory structure for dual documentation
+        mkdir -p target/doc-final/{cloud,embedded}
+        
+        # Build cloud/edge documentation 
+        cargo doc --features "std,tokio-runtime,tracing,metrics" --no-deps
+        cp -r target/doc/* target/doc-final/cloud/
+        
+        # Build embedded documentation
+        cargo doc --features "embedded,embassy-runtime" --no-deps  
+        cp -r target/doc/* target/doc-final/embedded/
+        
+        # Copy main index page
+        cp docs/index.html target/doc-final/index.html
     
     - name: Setup Pages
       if: github.ref == 'refs/heads/main'
@@ -44,7 +55,7 @@ jobs:
       if: github.ref == 'refs/heads/main'
       uses: actions/upload-pages-artifact@v3
       with:
-        path: ./target/doc
+        path: ./target/doc-final
     
     - name: Deploy to GitHub Pages
       if: github.ref == 'refs/heads/main'
