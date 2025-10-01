@@ -76,7 +76,8 @@ clippy:
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
 	@# Create directory structure
-	@mkdir -p target/doc-final/{cloud,embedded}
+	@mkdir -p target/doc-final/cloud
+	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
 	cargo doc --features "std,tokio-runtime,tracing,metrics" --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
