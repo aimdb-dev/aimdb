@@ -178,6 +178,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: thumbv7em-none-eabihf
+        components: rustfmt, clippy
     
     - name: Cache dependencies  
       uses: actions/cache@v3
