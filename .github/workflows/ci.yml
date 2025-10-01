@@ -154,7 +154,7 @@ jobs:
         # Test with observability
         cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
         
-        # Test with observability
+        # Test with metrics
         cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
     
     - name: Test embassy adapter
