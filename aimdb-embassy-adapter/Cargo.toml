@@ -8,9 +8,22 @@ build = "build.rs"
 
 [features]
 default = []
+
+# Runtime features
+embassy-runtime = [
+    "embassy-executor",
+    "embassy-time",
+    "aimdb-core/embassy-runtime",
+]
+
+# Observability features (no_std compatible)
+tracing = ["aimdb-core/tracing"]
+
 # Note: std feature is intentionally kept but will cause build.rs to fail if enabled
 # This provides clear error messages when accidentally enabled
 std = []
+
+# Note: metrics feature not supported on embedded - requires std library
 
 [dependencies]
 # Core AimDB types - always no_std for Embassy
@@ -19,8 +32,8 @@ aimdb-core = { path = "../aimdb-core", default-features = false, features = [
 ] }
 
 # Embassy ecosystem for embedded async
-embassy-executor = { workspace = true }
-embassy-time = { workspace = true }
+embassy-executor = { workspace = true, optional = true }
+embassy-time = { workspace = true, optional = true }
 
 # Embedded HAL for peripheral abstractions
 embedded-hal = { workspace = true }
