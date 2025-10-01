@@ -9,10 +9,20 @@ homepage.workspace = true
 description.workspace = true
 keywords.workspace = true
 categories.workspace = true
+build = "build.rs"
 
 [features]
 default = ["tokio-runtime"]
-tokio-runtime = ["tokio"]
+
+# Runtime features
+tokio-runtime = ["tokio", "aimdb-core/tokio-runtime"]
+
+# Observability features
+tracing = ["aimdb-core/tracing"]
+metrics = ["aimdb-core/metrics", "tokio-runtime"]
+
+# Testing features
+test-utils = ["aimdb-core/test-utils", "tokio-runtime"]
 
 [dependencies]
 # Core AimDB types - std version for Tokio
