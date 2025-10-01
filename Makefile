@@ -86,15 +86,7 @@ doc:
 	@cp -r target/doc/* target/doc-final/embedded/
 	@printf "$(YELLOW)  → Creating main index page$(NC)\n"
 	@cp docs/index.html target/doc-final/index.html
-	@printf "$(YELLOW)  → Opening documentation$(NC)\n"
-	@# Open the main documentation index
-	@if command -v xdg-open >/dev/null 2>&1; then \
-		xdg-open target/doc-final/index.html; \
-	elif command -v open >/dev/null 2>&1; then \
-		open target/doc-final/index.html; \
-	else \
-		printf "$(BLUE)Documentation generated at: file://$(PWD)/target/doc-final/index.html$(NC)\n"; \
-	fi
+	@printf "$(BLUE)Documentation generated at: file://$(PWD)/target/doc-final/index.html$(NC)\n"
 
 clean:
 	@printf "$(GREEN)Cleaning...$(NC)\n"
