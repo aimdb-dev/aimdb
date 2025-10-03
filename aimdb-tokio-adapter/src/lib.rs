@@ -6,7 +6,7 @@
 //! # Features
 //!
 //! - **Tokio Integration**: Seamless integration with Tokio async executor
-//! - **Timeout Support**: Comprehensive timeout handling with `tokio::time`
+//! - **Time Support**: Timestamp, sleep, and delayed task capabilities with `tokio::time`
 //! - **Error Handling**: Tokio-specific error conversions and handling
 //! - **Std Compatible**: Designed for environments with full standard library
 //!
@@ -18,26 +18,40 @@
 //! The adapter extends AimDB's core functionality without requiring tokio
 //! dependencies in the core crate. It provides:
 //!
-//! - Runtime error constructors for Tokio-specific failures
-//! - Automatic conversions from tokio error types
+//! - **Runtime Module**: Core async task spawning with `RuntimeAdapter`
+//! - **Time Module**: Time-related capabilities like timestamps and sleep
+//! - **Error Module**: Runtime error constructors and conversions
 //! - Rich error descriptions leveraging std formatting capabilities
 //!
 //! # Usage
 //!
 //! ```rust,no_run
-//! use aimdb_core::DbError;
-//! use aimdb_tokio_adapter::{TokioErrorSupport, TokioErrorConverter};
+//! use aimdb_tokio_adapter::TokioAdapter;
+//! use aimdb_core::{RuntimeAdapter, DelayCapableAdapter, time::{SleepCapable, TimestampProvider}};
 //! use std::time::Duration;
 //!
-//! // Create runtime-specific errors
-//! let timeout_error = DbError::from_timeout_error(0x01, Duration::from_millis(5000));
-//! let runtime_error = DbError::from_runtime_error(0x01, "Runtime not available");
-//! let task_error = DbError::from_task_error(0x02, "Task cancelled");
-//! let io_error = DbError::from_io_error(0x01, "Connection refused");
+//! #[tokio::main]
+//! async fn main() -> aimdb_core::DbResult<()> {
+//!     // Create adapter
+//!     let adapter = TokioAdapter::new()?;
 //!
-//! // Use converter functions
-//! let timeout = TokioErrorConverter::timeout_error(Duration::from_millis(1000));
-//! let unavailable = TokioErrorConverter::runtime_unavailable();
+//!     // Spawn async tasks
+//!     let result = adapter.spawn_task(async {
+//!         Ok::<i32, aimdb_core::DbError>(42)
+//!     }).await?;
+//!
+//!     // Use time capabilities
+//!     let timestamp = adapter.now();
+//!     adapter.sleep(Duration::from_millis(100)).await;
+//!
+//!     // Use delayed task spawning
+//!     adapter.spawn_delayed_task(
+//!         async { Ok::<(), aimdb_core::DbError>(()) },
+//!         Duration::from_millis(500)
+//!     ).await?;
+//!
+//!     Ok(())
+//! }
 //! ```
 //!
 //! # Error Code Ranges
@@ -50,5 +64,11 @@
 //! - **I/O**: 0x7400-0x74FF
 
 mod error;
+mod runtime;
+#[cfg(feature = "tokio-runtime")]
+mod time;
 
 pub use error::{TokioErrorConverter, TokioErrorSupport};
+
+#[cfg(feature = "tokio-runtime")]
+pub use runtime::TokioAdapter;
