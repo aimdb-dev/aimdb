@@ -43,3 +43,5 @@ metrics = { workspace = true, optional = true }
 [dev-dependencies]
 # For no_std testing
 heapless = "0.9.1"
+# For async testing
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
