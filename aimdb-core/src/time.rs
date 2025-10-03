@@ -228,7 +228,8 @@ mod tests {
             };
 
             // This mainly tests that the function compiles and accepts the right types
-            let _ = utils::measure_async(&provider, future);
+            // We explicitly drop the future since we can't await it in no_std tests
+            core::mem::drop(utils::measure_async(&provider, future));
         }
     }
 }

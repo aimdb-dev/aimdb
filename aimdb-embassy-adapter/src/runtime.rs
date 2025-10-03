@@ -151,6 +151,7 @@ impl RuntimeAdapter for EmbassyAdapter {
 impl DelayCapableAdapter for EmbassyAdapter {
     type Duration = Duration;
 
+    #[allow(clippy::manual_async_fn)]
     fn spawn_delayed_task<F, T>(
         &self,
         task: F,

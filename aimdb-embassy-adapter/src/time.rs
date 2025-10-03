@@ -51,6 +51,13 @@ impl TimeProvider {
 }
 
 #[cfg(feature = "embassy-time")]
+impl Default for TimeProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "embassy-time")]
 impl TimestampProvider for TimeProvider {
     type Instant = Instant;
 

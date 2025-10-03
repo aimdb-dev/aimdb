@@ -187,6 +187,7 @@ impl DelayCapableAdapter for TokioAdapter {
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::manual_async_fn)]
     fn spawn_delayed_task<F, T>(
         &self,
         task: F,
