@@ -17,7 +17,7 @@ embassy-runtime = [
 ]
 
 # Observability features (no_std compatible)
-tracing = ["aimdb-core/tracing"]
+tracing = ["aimdb-core/tracing", "dep:tracing"]
 
 # Note: std feature is intentionally kept but will cause build.rs to fail if enabled
 # This provides clear error messages when accidentally enabled
@@ -40,6 +40,18 @@ embedded-hal = { workspace = true }
 embedded-hal-async = { workspace = true }
 embedded-hal-nb = { workspace = true }
 
+# Observability (optional, no_std compatible)
+tracing = { workspace = true, optional = true, default-features = false }
+
 [dev-dependencies]
-# For testing on embedded targets
+# For testing on embedded targets  
 heapless = "0.9.1"
+
+# Utilities for async testing
+futures = "0.3"
+
+# For tracing tests
+tracing-test = "0.2"
+
+# Random number generation for tests
+rand = "0.8"
