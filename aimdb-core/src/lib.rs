@@ -14,3 +14,6 @@ pub mod time;
 pub use error::{DbError, DbResult};
 pub use runtime::{DelayCapableAdapter, RuntimeAdapter};
 pub use time::{SleepCapable, TimestampProvider};
+
+// Re-export procedural macros
+pub use aimdb_macros::service;

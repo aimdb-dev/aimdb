@@ -27,6 +27,9 @@ metrics = ["dep:metrics", "std"]
 test-utils = ["std"]
 
 [dependencies]
+# Procedural macros (always available)
+aimdb-macros = { path = "../aimdb-macros" }
+
 # Error handling - only for std environments
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
