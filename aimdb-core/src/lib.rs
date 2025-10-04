@@ -7,6 +7,13 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod error;
+mod runtime;
+pub mod time;
 
 // Public API exports
 pub use error::{DbError, DbResult};
+pub use runtime::{DelayCapableAdapter, RuntimeAdapter};
+pub use time::{SleepCapable, TimestampProvider};
+
+// Re-export procedural macros
+pub use aimdb_macros::service;

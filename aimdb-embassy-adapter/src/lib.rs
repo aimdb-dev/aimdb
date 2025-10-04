@@ -62,4 +62,13 @@
 mod error;
 
 #[cfg(not(feature = "std"))]
+mod runtime;
+
+#[cfg(all(not(feature = "std"), feature = "embassy-time"))]
+pub mod time;
+
+#[cfg(not(feature = "std"))]
 pub use error::{EmbassyErrorConverter, EmbassyErrorSupport};
+
+#[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]
+pub use runtime::EmbassyAdapter;

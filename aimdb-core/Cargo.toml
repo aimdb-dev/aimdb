@@ -27,6 +27,9 @@ metrics = ["dep:metrics", "std"]
 test-utils = ["std"]
 
 [dependencies]
+# Procedural macros (always available)
+aimdb-macros = { path = "../aimdb-macros" }
+
 # Error handling - only for std environments
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
@@ -43,3 +46,5 @@ metrics = { workspace = true, optional = true }
 [dev-dependencies]
 # For no_std testing
 heapless = "0.9.1"
+# For async testing
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
