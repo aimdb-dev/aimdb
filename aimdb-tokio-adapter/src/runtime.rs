@@ -3,7 +3,7 @@
 //! This module provides the Tokio-specific implementation of AimDB's runtime traits,
 //! enabling async task spawning and execution in std environments using Tokio.
 
-use aimdb_core::{DbError, DbResult, DelayCapableAdapter, RuntimeAdapter};
+use aimdb_core::{DbError, DbResult, DelayCapableAdapter, RuntimeAdapter, SpawnDynamically};
 use core::future::Future;
 use std::time::Duration;
 
@@ -139,20 +139,26 @@ impl Default for TokioAdapter {
 
 #[cfg(feature = "tokio-runtime")]
 impl RuntimeAdapter for TokioAdapter {
-    fn spawn_service<S>(&self, service_params: aimdb_core::runtime::ServiceParams) -> DbResult<()>
-    where
-        S: aimdb_core::runtime::ServiceSpawnable<Self>,
-        Self: Sized,
-    {
-        #[cfg(feature = "tracing")]
-        tracing::info!("Spawning Tokio service: {}", service_params.service_name);
-
-        // Use the ServiceSpawnable trait to spawn the service
-        S::spawn_with_adapter(self, service_params)
-    }
-
     fn new() -> DbResult<Self> {
         Self::new()
+    }
+
+    fn runtime_name() -> &'static str {
+        "tokio"
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl SpawnDynamically for TokioAdapter {
+    fn spawn<F, T>(&self, future: F) -> DbResult<tokio::task::JoinHandle<T>>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        #[cfg(feature = "tracing")]
+        tracing::debug!("Spawning future on Tokio runtime");
+
+        Ok(tokio::spawn(future))
     }
 }
 
