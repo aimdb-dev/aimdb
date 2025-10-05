@@ -13,6 +13,7 @@ default = []
 embassy-runtime = [
     "embassy-executor",
     "embassy-time",
+    "embassy-sync",
     "aimdb-core/embassy-runtime",
 ]
 
@@ -34,6 +35,7 @@ aimdb-core = { path = "../aimdb-core", default-features = false, features = [
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }
 embassy-time = { workspace = true, optional = true }
+embassy-sync = { workspace = true, optional = true }
 
 # Embedded HAL for peripheral abstractions
 embedded-hal = { workspace = true }

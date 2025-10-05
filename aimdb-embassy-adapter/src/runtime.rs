@@ -1,8 +1,9 @@
 //! Embassy Runtime Adapter for AimDB
 //!
 //! This module provides the Embassy-specific implementation of AimDB's runtime traits,
-//! enabling async task spawning and execution in embedded environments using Embassy.
+//! enabling async task execution in embedded environments using Embassy.
 
+use aimdb_core::runtime::{ServiceParams, ServiceSpawnable};
 use aimdb_core::{DbResult, DelayCapableAdapter, RuntimeAdapter};
 use core::future::Future;
 
@@ -12,17 +13,14 @@ use tracing::{debug, warn};
 #[cfg(feature = "embassy-time")]
 use embassy_time::{Duration, Timer};
 
-/// Embassy runtime adapter for async task spawning in embedded systems
+#[cfg(feature = "embassy-runtime")]
+use embassy_executor::Spawner;
+
+/// Embassy runtime adapter for async task execution in embedded systems
 ///
-/// The EmbassyAdapter provides AimDB's runtime interface for Embassy-based embedded
-/// applications, focusing on task spawning capabilities that leverage Embassy's
-/// async executor and scheduling infrastructure.
-///
-/// # Features
-/// - Task spawning with Embassy executor integration
-/// - Delayed task spawning (when `embassy-time` feature enabled)
-/// - Tracing integration for observability (when `tracing` feature enabled)
-/// - Zero-allocation error handling for resource-constrained environments
+/// This adapter provides AimDB's runtime interface for Embassy-based embedded
+/// applications. It can either work standalone or store an Embassy spawner
+/// for integrated task management.
 ///
 /// # Example
 /// ```rust,no_run
@@ -37,91 +35,92 @@ use embassy_time::{Duration, Timer};
 /// let result = adapter.spawn_task(async {
 ///     Ok::<_, aimdb_core::DbError>(42)
 /// }).await?;
-///
-/// // Result: 42
 /// # Ok(())
 /// # }
 /// # }
 /// ```
-#[derive(Debug, Clone, Copy)]
-pub struct EmbassyAdapter;
+pub struct EmbassyAdapter {
+    #[cfg(feature = "embassy-runtime")]
+    spawner: Option<Spawner>,
+    #[cfg(not(feature = "embassy-runtime"))]
+    _phantom: core::marker::PhantomData<()>,
+}
+
+// SAFETY: EmbassyAdapter only contains an Option<Spawner> and Spawner is thread-safe.
+// Embassy executor handles spawner synchronization internally.
+unsafe impl Send for EmbassyAdapter {}
+unsafe impl Sync for EmbassyAdapter {}
+
+impl core::fmt::Debug for EmbassyAdapter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut debug_struct = f.debug_struct("EmbassyAdapter");
+
+        #[cfg(feature = "embassy-runtime")]
+        debug_struct.field("spawner", &self.spawner.is_some());
+
+        #[cfg(not(feature = "embassy-runtime"))]
+        debug_struct.field("_phantom", &"no spawner support");
+
+        debug_struct.finish()
+    }
+}
 
 impl EmbassyAdapter {
-    /// Creates a new EmbassyAdapter
+    /// Creates a new EmbassyAdapter without a spawner
+    ///
+    /// This creates a stateless adapter suitable for basic task execution.
     ///
     /// # Returns
-    /// `Ok(EmbassyAdapter)` - Embassy adapters are lightweight and cannot fail
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// # #[cfg(not(feature = "std"))]
-    /// # {
-    /// use aimdb_embassy_adapter::EmbassyAdapter;
-    /// use aimdb_core::RuntimeAdapter;
-    ///
-    /// # fn example() -> aimdb_core::DbResult<()> {
-    /// let adapter = EmbassyAdapter::new()?;
-    /// # Ok(())
-    /// # }
-    /// # }
-    /// ```
+    /// `Ok(EmbassyAdapter)` - Always succeeds
     pub fn new() -> DbResult<Self> {
         #[cfg(feature = "tracing")]
-        debug!("Creating EmbassyAdapter");
+        debug!("Creating EmbassyAdapter (no spawner)");
 
-        Ok(Self)
+        Ok(Self {
+            #[cfg(feature = "embassy-runtime")]
+            spawner: None,
+            #[cfg(not(feature = "embassy-runtime"))]
+            _phantom: core::marker::PhantomData,
+        })
     }
 
-    /// Spawns an async task on the Embassy executor
+    /// Creates a new EmbassyAdapter with an Embassy spawner
     ///
-    /// This method provides the core task spawning functionality for Embassy-based
-    /// applications. In Embassy environments, tasks are typically spawned using
-    /// the executor's spawn functionality, but since we're in a library context,
-    /// we simply execute the task directly as Embassy handles the scheduling.
+    /// This creates an adapter that can use the Embassy spawner for
+    /// advanced task management operations.
     ///
     /// # Arguments
-    /// * `task` - The async task to spawn
+    /// * `spawner` - The Embassy spawner to use for task management
     ///
     /// # Returns
-    /// `DbResult<T>` where T is the task's success type
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// # #[cfg(not(feature = "std"))]
-    /// # {
-    /// use aimdb_embassy_adapter::EmbassyAdapter;
-    /// use aimdb_core::RuntimeAdapter;
-    ///
-    /// # async fn example() -> aimdb_core::DbResult<()> {
-    /// let adapter = EmbassyAdapter::new()?;
-    ///
-    /// let result = adapter.spawn_task(async {
-    ///     // Some async work
-    ///     Ok::<i32, aimdb_core::DbError>(42)
-    /// }).await?;
-    ///
-    /// // Result: 42
-    /// # Ok(())
-    /// # }
-    /// # }
-    /// ```
-    pub async fn spawn_task<F, T>(&self, task: F) -> DbResult<T>
-    where
-        F: Future<Output = DbResult<T>> + Send + 'static,
-        T: Send + 'static,
-    {
+    /// An EmbassyAdapter configured with the provided spawner
+    #[cfg(feature = "embassy-runtime")]
+    pub fn new_with_spawner(spawner: Spawner) -> Self {
         #[cfg(feature = "tracing")]
-        debug!("Spawning async task");
+        debug!("Creating EmbassyAdapter with spawner");
 
-        let result = task.await;
-
-        #[cfg(feature = "tracing")]
-        match &result {
-            Ok(_) => debug!("Async task completed successfully"),
-            Err(e) => warn!(?e, "Async task failed"),
+        Self {
+            spawner: Some(spawner),
         }
+    }
 
-        result
+    /// Gets a reference to the stored spawner, if any
+    #[cfg(feature = "embassy-runtime")]
+    pub fn spawner(&self) -> Option<&Spawner> {
+        self.spawner.as_ref()
+    }
+
+    /// Gets a reference to the spawner for service macro usage
+    ///
+    /// This method allows services decorated with our service macro to access
+    /// the Embassy spawner for proper task spawning. The service macro generates
+    /// the necessary `#[embassy_executor::task]` decorated functions.
+    ///
+    /// # Returns
+    /// `Option<&embassy_executor::Spawner>` - The spawner if available
+    #[cfg(feature = "embassy-runtime")]
+    pub fn get_spawner(&self) -> Option<&Spawner> {
+        self.spawner.as_ref()
     }
 }
 
@@ -134,12 +133,60 @@ impl Default for EmbassyAdapter {
 // Trait implementations for the core adapter interfaces
 
 impl RuntimeAdapter for EmbassyAdapter {
-    fn spawn_task<F, T>(&self, task: F) -> impl Future<Output = DbResult<T>> + Send
+    fn spawn_service<S>(&self, service_params: ServiceParams) -> DbResult<()>
     where
-        F: Future<Output = DbResult<T>> + Send + 'static,
-        T: Send + 'static,
+        S: ServiceSpawnable<Self>,
     {
-        self.spawn_task(task)
+        #[cfg(feature = "tracing")]
+        debug!(
+            "Embassy service spawning for: {}",
+            service_params.service_name
+        );
+
+        #[cfg(feature = "embassy-runtime")]
+        {
+            if let Some(_spawner) = &self.spawner {
+                // Use the service spawning trait to actually spawn the service
+                match S::spawn_with_adapter(self, service_params) {
+                    Ok(()) => {
+                        #[cfg(feature = "tracing")]
+                        debug!(
+                            "Successfully spawned Embassy service: {}",
+                            core::any::type_name::<S>()
+                        );
+                        Ok(())
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        warn!(
+                            ?e,
+                            "Failed to spawn Embassy service: {}",
+                            core::any::type_name::<S>()
+                        );
+                        Err(e)
+                    }
+                }
+            } else {
+                #[cfg(feature = "tracing")]
+                warn!(
+                    "No spawner available for service: {}",
+                    service_params.service_name
+                );
+
+                // Return error if no spawner is available
+                Err(aimdb_core::DbError::internal(0x1001)) // Custom error code for missing spawner
+            }
+        }
+
+        #[cfg(not(feature = "embassy-runtime"))]
+        {
+            #[cfg(feature = "tracing")]
+            warn!(
+                "Embassy runtime features not enabled, cannot spawn service: {}",
+                service_params.service_name
+            );
+            Err(aimdb_core::DbError::internal(0x1002)) // Custom error code for missing features
+        }
     }
 
     fn new() -> DbResult<Self> {
