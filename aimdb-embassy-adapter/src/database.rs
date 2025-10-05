@@ -26,12 +26,35 @@ impl EmbassyDatabase {
         self.0.record(name)
     }
 
-    /// Spawns a service that operates on the given record
-    pub fn spawn_service<S>(&self, record: Record)
-    where
-        S: aimdb_core::runtime::ServiceSpawnable<crate::runtime::EmbassyAdapter>,
-    {
-        self.0.spawn_service::<S>(record)
+    /// Gets a reference to the runtime adapter for service spawning
+    ///
+    /// Use this with services defined using the `#[service]` macro:
+    /// ```rust,no_run
+    /// # use aimdb_embassy_adapter::EmbassyDatabase;
+    /// # use aimdb_core::{service, AimDbService};
+    ///
+    /// // Define a service using the service macro
+    /// #[service]
+    /// async fn sensor_monitor() -> aimdb_core::DbResult<()> {
+    ///     // Service implementation
+    ///     Ok(())
+    /// }
+    ///
+    /// # async fn example(db: EmbassyDatabase) -> aimdb_core::DbResult<()> {
+    /// // Spawn service through the generated service struct
+    /// SensorMonitorService::spawn_on_embassy(db.adapter())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn spawn_service_on_embassy<S: aimdb_core::AimDbService>(
+        &self,
+    ) -> aimdb_core::DbResult<()> {
+        S::spawn_on_embassy(self.adapter())
+    }
+
+    /// Gets access to the underlying adapter for service spawning
+    pub fn adapter(&self) -> &EmbassyAdapter {
+        self.0.adapter()
     }
 }
 

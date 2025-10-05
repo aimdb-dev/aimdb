@@ -3,8 +3,7 @@
 //! This module provides the Embassy-specific implementation of AimDB's runtime traits,
 //! enabling async task execution in embedded environments using Embassy.
 
-use aimdb_core::runtime::{ServiceParams, ServiceSpawnable};
-use aimdb_core::{DbResult, DelayCapableAdapter, RuntimeAdapter};
+use aimdb_core::{DbResult, DelayCapableAdapter, RuntimeAdapter, SpawnStatically};
 use core::future::Future;
 
 #[cfg(feature = "tracing")]
@@ -109,19 +108,6 @@ impl EmbassyAdapter {
     pub fn spawner(&self) -> Option<&Spawner> {
         self.spawner.as_ref()
     }
-
-    /// Gets a reference to the spawner for service macro usage
-    ///
-    /// This method allows services decorated with our service macro to access
-    /// the Embassy spawner for proper task spawning. The service macro generates
-    /// the necessary `#[embassy_executor::task]` decorated functions.
-    ///
-    /// # Returns
-    /// `Option<&embassy_executor::Spawner>` - The spawner if available
-    #[cfg(feature = "embassy-runtime")]
-    pub fn get_spawner(&self) -> Option<&Spawner> {
-        self.spawner.as_ref()
-    }
 }
 
 impl Default for EmbassyAdapter {
@@ -133,64 +119,19 @@ impl Default for EmbassyAdapter {
 // Trait implementations for the core adapter interfaces
 
 impl RuntimeAdapter for EmbassyAdapter {
-    fn spawn_service<S>(&self, service_params: ServiceParams) -> DbResult<()>
-    where
-        S: ServiceSpawnable<Self>,
-    {
-        #[cfg(feature = "tracing")]
-        debug!(
-            "Embassy service spawning for: {}",
-            service_params.service_name
-        );
-
-        #[cfg(feature = "embassy-runtime")]
-        {
-            if let Some(_spawner) = &self.spawner {
-                // Use the service spawning trait to actually spawn the service
-                match S::spawn_with_adapter(self, service_params) {
-                    Ok(()) => {
-                        #[cfg(feature = "tracing")]
-                        debug!(
-                            "Successfully spawned Embassy service: {}",
-                            core::any::type_name::<S>()
-                        );
-                        Ok(())
-                    }
-                    Err(e) => {
-                        #[cfg(feature = "tracing")]
-                        warn!(
-                            ?e,
-                            "Failed to spawn Embassy service: {}",
-                            core::any::type_name::<S>()
-                        );
-                        Err(e)
-                    }
-                }
-            } else {
-                #[cfg(feature = "tracing")]
-                warn!(
-                    "No spawner available for service: {}",
-                    service_params.service_name
-                );
-
-                // Return error if no spawner is available
-                Err(aimdb_core::DbError::internal(0x1001)) // Custom error code for missing spawner
-            }
-        }
-
-        #[cfg(not(feature = "embassy-runtime"))]
-        {
-            #[cfg(feature = "tracing")]
-            warn!(
-                "Embassy runtime features not enabled, cannot spawn service: {}",
-                service_params.service_name
-            );
-            Err(aimdb_core::DbError::internal(0x1002)) // Custom error code for missing features
-        }
-    }
-
     fn new() -> DbResult<Self> {
         Self::new()
+    }
+
+    fn runtime_name() -> &'static str {
+        "embassy"
+    }
+}
+
+#[cfg(feature = "embassy-runtime")]
+impl SpawnStatically for EmbassyAdapter {
+    fn spawner(&self) -> Option<&embassy_executor::Spawner> {
+        self.spawner.as_ref()
     }
 }
 
