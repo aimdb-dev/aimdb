@@ -54,6 +54,8 @@ tokio-test = "0.4"
 # Embassy ecosystem for embedded async
 embassy-executor = { version = "0.9.1" }
 embassy-time = "0.5"
+embassy-sync = "0.7.2"
+embassy-futures = "0.1.2"
 
 # Embedded HAL for peripheral abstractions
 embedded-hal = "1.0"
