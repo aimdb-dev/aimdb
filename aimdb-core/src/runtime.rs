@@ -15,52 +15,35 @@ use core::future::Future;
 /// # Design Philosophy
 ///
 /// - **Runtime Agnostic**: The core database doesn't depend on specific runtimes
+/// - **Service Focused**: Adapts to different service spawning models
 /// - **Platform Flexible**: Works across std and no_std environments  
 /// - **Performance Focused**: Zero-cost abstractions where possible
 /// - **Error Preserving**: Maintains full error context through async chains
-/// - **Task Spawning**: Uses spawn semantics to leverage runtime schedulers
 ///
 /// # Implementations
 ///
 /// - `TokioAdapter`: For std environments using Tokio runtime
 /// - `EmbassyAdapter`: For no_std embedded environments using Embassy
 ///
-/// # Example
-///
-/// ```rust,no_run
-/// use aimdb_core::{RuntimeAdapter, DbResult};
-///
-/// async fn execute_database_operation<A: RuntimeAdapter>(
-///     adapter: &A,
-/// ) -> DbResult<String> {
-///     adapter.spawn_task(async {
-///         // Database operation here
-///         Ok("Operation completed".to_string())
-///     }).await
-/// }
-/// ```
 pub trait RuntimeAdapter {
-    /// Spawns an async task on the runtime and waits for its completion
+    /// Spawns a service using the runtime's service management system
     ///
-    /// This is the core method that all adapters must implement to provide
-    /// task spawning capabilities with proper error handling and lifecycle management.
-    /// The `'static` lifetime bounds ensure tasks can be safely spawned without
-    /// lifetime dependencies.
+    /// This method handles service spawning in a runtime-appropriate way:
+    /// - **Tokio**: Uses tokio::spawn with the service future
+    /// - **Embassy**: Uses spawner.spawn with pre-defined service tasks
+    ///
+    /// # Type Parameters
+    /// * `S` - The service type that implements ServiceSpawnable for this adapter
     ///
     /// # Arguments
-    /// * `task` - The async task to spawn and execute
+    /// * `service_params` - Parameters needed for service initialization
     ///
     /// # Returns
-    /// `DbResult<T>` where T is the task's success type
-    ///
-    /// # Errors
-    /// - Task spawn failures converted to `DbError`
-    /// - Task cancellation or panic errors
-    /// - Any error propagated from the spawned task
-    fn spawn_task<F, T>(&self, task: F) -> impl Future<Output = DbResult<T>> + Send
+    /// `DbResult<()>` indicating whether the service was successfully started
+    fn spawn_service<S>(&self, service_params: ServiceParams) -> DbResult<()>
     where
-        F: Future<Output = DbResult<T>> + Send + 'static,
-        T: Send + 'static;
+        S: ServiceSpawnable<Self>,
+        Self: Sized;
 
     /// Creates a new adapter instance with default configuration
     ///
@@ -69,6 +52,67 @@ pub trait RuntimeAdapter {
     fn new() -> DbResult<Self>
     where
         Self: Sized;
+}
+
+/// Parameters for service spawning
+///
+/// This struct contains the information needed to spawn a service,
+/// allowing different runtimes to handle service initialization appropriately.
+#[derive(Debug, Clone)]
+pub struct ServiceParams {
+    /// Service identifier/name for logging and debugging
+    pub service_name: &'static str,
+    /// Record that the service should operate on
+    pub record: crate::Record,
+    /// Any additional runtime-specific configuration
+    pub config: ServiceConfig,
+}
+
+/// Configuration for service spawning
+///
+/// This allows runtime-specific configuration to be passed through
+/// the generic service spawning interface.
+#[derive(Debug, Clone)]
+pub enum ServiceConfig {
+    /// No additional configuration needed
+    Default,
+    /// Tokio-specific configuration (if any)
+    #[cfg(feature = "std")]
+    Tokio(TokioServiceConfig),
+    /// Embassy-specific configuration
+    #[cfg(not(feature = "std"))]
+    Embassy(EmbassyServiceConfig),
+}
+
+/// Trait for services that can be spawned on runtime adapters
+///
+/// This trait is implemented by the service macro for each service,
+/// providing a clean interface between the generated service code
+/// and the runtime adapter.
+pub trait ServiceSpawnable<A: RuntimeAdapter> {
+    /// Spawns this service using the provided runtime adapter
+    ///
+    /// # Arguments
+    /// * `adapter` - The runtime adapter to use for spawning
+    /// * `params` - Service parameters and configuration
+    ///
+    /// # Returns
+    /// `DbResult<()>` indicating whether spawning was successful
+    fn spawn_with_adapter(adapter: &A, params: ServiceParams) -> crate::DbResult<()>;
+}
+
+#[cfg(feature = "std")]
+#[derive(Debug, Clone)]
+pub struct TokioServiceConfig {
+    /// Task name for debugging
+    pub task_name: Option<&'static str>,
+}
+
+#[cfg(not(feature = "std"))]
+#[derive(Debug, Clone)]
+pub struct EmbassyServiceConfig {
+    /// Embassy-specific configuration options
+    pub priority: Option<u8>,
 }
 
 /// Trait for adapters that support delayed task spawning
@@ -108,41 +152,4 @@ pub trait DelayCapableAdapter: RuntimeAdapter {
     where
         F: Future<Output = DbResult<T>> + Send + 'static,
         T: Send + 'static;
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "std")]
-    mod std_tests {
-        use crate::{DbResult, RuntimeAdapter};
-        use std::future::Future;
-
-        // Mock adapter for testing trait definitions
-        struct MockAdapter;
-
-        impl RuntimeAdapter for MockAdapter {
-            fn spawn_task<F, T>(&self, task: F) -> impl Future<Output = DbResult<T>> + Send
-            where
-                F: Future<Output = DbResult<T>> + Send + 'static,
-                T: Send + 'static,
-            {
-                task
-            }
-
-            fn new() -> DbResult<Self> {
-                Ok(MockAdapter)
-            }
-        }
-
-        #[tokio::test]
-        async fn test_runtime_adapter_trait() {
-            let adapter = MockAdapter::new().unwrap();
-
-            let result = adapter
-                .spawn_task(async { Ok::<i32, crate::DbError>(42) })
-                .await;
-
-            assert_eq!(result.unwrap(), 42);
-        }
-    }
 }
