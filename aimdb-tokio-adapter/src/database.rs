@@ -43,7 +43,7 @@ pub type TokioDatabaseSpecBuilder = DatabaseSpecBuilder<TokioAdapter>;
 /// #[tokio::main]
 /// async fn main() {
 ///     let spec = TokioDatabaseSpec::builder().build();
-///     let db = new_database(spec).await.unwrap();
+///     let db = new_database(spec).unwrap();
 /// }
 /// ```
 pub fn new_database(spec: TokioDatabaseSpec) -> aimdb_core::DbResult<TokioDatabase> {
