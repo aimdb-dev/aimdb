@@ -63,6 +63,8 @@
 //! - **Task**: 0x7300-0x73FF
 //! - **I/O**: 0x7400-0x74FF
 
+#[cfg(feature = "tokio-runtime")]
+pub mod database;
 mod error;
 mod runtime;
 #[cfg(feature = "tokio-runtime")]
@@ -72,3 +74,6 @@ pub use error::{TokioErrorConverter, TokioErrorSupport};
 
 #[cfg(feature = "tokio-runtime")]
 pub use runtime::TokioAdapter;
+
+#[cfg(feature = "tokio-runtime")]
+pub use database::{new_database, TokioDatabase, TokioDatabaseSpec, TokioDatabaseSpecBuilder};

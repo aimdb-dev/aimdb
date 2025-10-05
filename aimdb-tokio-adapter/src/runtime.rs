@@ -139,12 +139,16 @@ impl Default for TokioAdapter {
 
 #[cfg(feature = "tokio-runtime")]
 impl RuntimeAdapter for TokioAdapter {
-    fn spawn_task<F, T>(&self, task: F) -> impl Future<Output = DbResult<T>> + Send
+    fn spawn_service<S>(&self, service_params: aimdb_core::runtime::ServiceParams) -> DbResult<()>
     where
-        F: Future<Output = DbResult<T>> + Send + 'static,
-        T: Send + 'static,
+        S: aimdb_core::runtime::ServiceSpawnable<Self>,
+        Self: Sized,
     {
-        self.spawn_task(task)
+        #[cfg(feature = "tracing")]
+        tracing::info!("Spawning Tokio service: {}", service_params.service_name);
+
+        // Use the ServiceSpawnable trait to spawn the service
+        S::spawn_with_adapter(self, service_params)
     }
 
     fn new() -> DbResult<Self> {
