@@ -1,8 +1,11 @@
-//! Service Macro Implementation
+//! Service Macro Implementation - Simplified Version
 //!
-//! Generates runtime-appropriate service spawning implementations:
-//! - Embassy: Generates Embassy task with spawner integration
+//! Generates runtime-appropriate service spawning implementations with automatic RuntimeContext injection:
+//! - Embassy: Generates Embassy task with spawner integration  
 //! - Tokio: Generates dynamic spawning shim using tokio::spawn
+//!
+//! **Simplified Approach**: All services automatically receive a RuntimeContext,
+//! providing consistent access to timing and sleep capabilities across runtimes.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -36,22 +39,6 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
         syn::Ident::new(&format!("{}Service", pascal_case_name), fn_name.span());
     let embassy_task_name = syn::Ident::new(&format!("{}_embassy_task", fn_name), fn_name.span());
 
-    // Extract parameter names for forwarding (skip 'self' if present)
-    let param_names: Vec<_> = fn_inputs
-        .iter()
-        .filter_map(|arg| {
-            if let syn::FnArg::Typed(pat_type) = arg {
-                if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
-                    Some(&pat_ident.ident)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
-
     Ok(quote! {
         // Original function (preserved for direct calls)
         #(#fn_attrs)*
@@ -63,21 +50,36 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
         // Embassy task wrapper (only available with embassy-runtime feature)
         #[cfg(feature = "embassy-runtime")]
         #[embassy_executor::task]
-        async fn #embassy_task_name(#fn_inputs) {
-            let _ = #fn_name(#(#param_names),*).await;
+        async fn #embassy_task_name(ctx: aimdb_core::RuntimeContext<aimdb_embassy_adapter::EmbassyAdapter>) {
+            let _ = #fn_name(ctx).await;
         }
 
         // Implement the AimDbService trait for this service
         impl aimdb_core::AimDbService for #service_struct_name {
             fn run() -> impl core::future::Future<Output = aimdb_core::DbResult<()>> + Send + 'static {
-                #fn_name(#(#param_names),*)
+                async {
+                    // Services should be spawned using spawn_on_* methods which provide RuntimeContext
+                    Err(aimdb_core::DbError::internal(0x9000)) // Use spawn_on_tokio or spawn_on_embassy instead
+                }
             }
 
             fn service_name() -> &'static str {
                 stringify!(#fn_name)
             }
 
-            // Override the embassy spawning method when embassy-runtime is enabled
+            // All services receive a RuntimeContext for consistent timing capabilities
+            #[cfg(feature = "tokio-runtime")]
+            fn spawn_on_tokio(adapter: &impl aimdb_core::SpawnDynamically) -> aimdb_core::DbResult<()> {
+                use aimdb_core::{RuntimeContext, time::{SleepCapable, TimestampProvider}};
+
+                // Create a TokioAdapter instance to provide the RuntimeContext
+                let tokio_adapter = aimdb_tokio_adapter::TokioAdapter::new()?;
+                let runtime_ctx = RuntimeContext::from_runtime(tokio_adapter);
+
+                adapter.spawn(#fn_name(runtime_ctx)).map(|_| ())
+            }
+
+            // Embassy spawning method
             #[cfg(feature = "embassy-runtime")]
             fn spawn_on_embassy(adapter: &impl aimdb_core::SpawnStatically) -> aimdb_core::DbResult<()> {
                 if let Some(spawner) = adapter.spawner() {
@@ -87,7 +89,11 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
                     #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
                     defmt::info!("Spawning Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
 
-                    match spawner.spawn(#embassy_task_name(#(#param_names),*)) {
+                    // Create RuntimeContext for Embassy
+                    let embassy_adapter = aimdb_embassy_adapter::EmbassyAdapter::new()?;
+                    let runtime_ctx = aimdb_core::RuntimeContext::from_runtime(embassy_adapter);
+
+                    match spawner.spawn(#embassy_task_name(runtime_ctx)) {
                         Ok(_) => {
                             #[cfg(all(feature = "tracing", not(feature = "embedded")))]
                             tracing::debug!("Successfully spawned Embassy service: {}", stringify!(#fn_name));
@@ -112,7 +118,5 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
                 }
             }
         }
-
-
     })
 }

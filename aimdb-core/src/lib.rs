@@ -6,12 +6,14 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod context;
 pub mod database;
 mod error;
 pub mod runtime;
 pub mod time;
 
 // Public API exports
+pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};
 pub use runtime::{AimDbService, DelayCapableAdapter, RuntimeAdapter, RuntimeInfo};
 

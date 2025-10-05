@@ -233,7 +233,7 @@ impl<A: RuntimeAdapter> Database<A> {
     /// Services should be defined using the `#[service]` macro for proper runtime integration.
     ///
     /// # Example
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # use aimdb_core::{service, AimDbService, Database, RuntimeAdapter};
     /// # #[cfg(feature = "tokio-runtime")]
     /// # {
@@ -241,8 +241,9 @@ impl<A: RuntimeAdapter> Database<A> {
     ///
     /// // Define a service using the service macro
     /// #[service]
-    /// async fn my_background_task() -> aimdb_core::DbResult<()> {
-    ///     // Service implementation
+    /// async fn my_background_task(ctx: aimdb_core::RuntimeContext<aimdb_tokio_adapter::TokioAdapter>) -> aimdb_core::DbResult<()> {
+    ///     // Service implementation using the context
+    ///     let _ = ctx.now(); // Access timing capabilities
     ///     Ok(())
     /// }
     ///

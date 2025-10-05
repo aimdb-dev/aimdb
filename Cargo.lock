@@ -96,6 +96,7 @@ dependencies = [
  "panic-halt",
  "panic-probe",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
