@@ -227,74 +227,32 @@ impl<A: RuntimeAdapter> Database<A> {
         })
     }
 
-    /// Spawns a service that operates on the given record
+    /// Gets a reference to the runtime adapter
     ///
-    /// Services are long-running async functions that process data in records.
-    /// The exact spawning mechanism depends on the runtime implementation.
-    ///
-    /// # Type Parameters
-    /// * `S` - The service type (function pointer or type that implements the service)
-    ///
-    /// # Arguments  
-    /// * `record` - The record that the service will operate on
+    /// This allows users to access the runtime adapter directly for service spawning.
+    /// Services should be defined using the `#[service]` macro for proper runtime integration.
     ///
     /// # Example
     /// ```rust,no_run
-    /// # struct SampleService;
-    /// # impl<A: aimdb_core::RuntimeAdapter> aimdb_core::runtime::ServiceSpawnable<A> for SampleService {
-    /// #     fn spawn_with_adapter(_: &A, _: aimdb_core::runtime::ServiceParams) -> aimdb_core::DbResult<()> { Ok(()) }
+    /// # use aimdb_core::{service, AimDbService, Database, RuntimeAdapter};
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
+    /// # use aimdb_core::SpawnDynamically;
+    ///
+    /// // Define a service using the service macro
+    /// #[service]
+    /// async fn my_background_task() -> aimdb_core::DbResult<()> {
+    ///     // Service implementation
+    ///     Ok(())
+    /// }
+    ///
+    /// # async fn example<A: SpawnDynamically>(db: Database<A>) -> aimdb_core::DbResult<()> {
+    /// // Spawn service through the generated service struct
+    /// MyBackgroundTaskService::spawn_on_tokio(db.adapter())?;
+    /// # Ok(())
     /// # }
-    /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) {
-    /// let sensors = db.record("sensors");
-    /// db.spawn_service::<SampleService>(sensors);
     /// # }
     /// ```
-    pub fn spawn_service<S>(&self, record: Record)
-    where
-        S: crate::runtime::ServiceSpawnable<A>,
-    {
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
-            "Spawning service of type {} through runtime adapter",
-            core::any::type_name::<S>()
-        );
-
-        // Create service parameters for the runtime adapter
-        let service_params = crate::runtime::ServiceParams {
-            service_name: core::any::type_name::<S>(),
-            record: record.clone(),
-            config: crate::runtime::ServiceConfig::Default,
-        };
-
-        // Use the runtime adapter to spawn the service
-        match self.adapter.spawn_service::<S>(service_params) {
-            Ok(()) => {
-                #[cfg(feature = "tracing")]
-                tracing::info!(
-                    "Successfully spawned service: {}",
-                    core::any::type_name::<S>()
-                );
-            }
-            Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!(
-                    ?_e,
-                    "Failed to spawn service: {}",
-                    core::any::type_name::<S>()
-                );
-            }
-        }
-
-        let _ = record; // TODO: Connect record to service
-    }
-
-    /// Provides access to the runtime adapter
-    ///
-    /// This allows adapter-specific implementations to access runtime-specific
-    /// functionality for implementing their own `run()` methods.
-    ///
-    /// # Returns
-    /// Reference to the runtime adapter
     pub fn adapter(&self) -> &A {
         &self.adapter
     }

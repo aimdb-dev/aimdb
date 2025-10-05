@@ -6,45 +6,26 @@
 use crate::DbResult;
 use core::future::Future;
 
-/// Core trait for runtime adapters providing async execution capabilities
+/// Core trait for runtime adapters providing basic metadata and initialization
 ///
-/// This trait defines the essential interface that all AimDB runtime adapters
-/// must implement, enabling the database to run on different async runtimes
-/// while maintaining consistent behavior.
+/// This trait defines the minimal interface that all AimDB runtime adapters
+/// must implement. Specific spawning capabilities are provided by either
+/// `SpawnDynamically` or `SpawnStatically` traits.
 ///
 /// # Design Philosophy
 ///
 /// - **Runtime Agnostic**: The core database doesn't depend on specific runtimes
-/// - **Service Focused**: Adapts to different service spawning models
+/// - **Clear Separation**: Dynamic vs static spawning models are explicit
 /// - **Platform Flexible**: Works across std and no_std environments  
 /// - **Performance Focused**: Zero-cost abstractions where possible
 /// - **Error Preserving**: Maintains full error context through async chains
 ///
 /// # Implementations
 ///
-/// - `TokioAdapter`: For std environments using Tokio runtime
-/// - `EmbassyAdapter`: For no_std embedded environments using Embassy
+/// - `TokioAdapter`: Implements `SpawnDynamically` for std environments
+/// - `EmbassyAdapter`: Implements `SpawnStatically` for no_std embedded environments
 ///
-pub trait RuntimeAdapter {
-    /// Spawns a service using the runtime's service management system
-    ///
-    /// This method handles service spawning in a runtime-appropriate way:
-    /// - **Tokio**: Uses tokio::spawn with the service future
-    /// - **Embassy**: Uses spawner.spawn with pre-defined service tasks
-    ///
-    /// # Type Parameters
-    /// * `S` - The service type that implements ServiceSpawnable for this adapter
-    ///
-    /// # Arguments
-    /// * `service_params` - Parameters needed for service initialization
-    ///
-    /// # Returns
-    /// `DbResult<()>` indicating whether the service was successfully started
-    fn spawn_service<S>(&self, service_params: ServiceParams) -> DbResult<()>
-    where
-        S: ServiceSpawnable<Self>,
-        Self: Sized;
-
+pub trait RuntimeAdapter: Send + Sync + 'static {
     /// Creates a new adapter instance with default configuration
     ///
     /// # Returns
@@ -52,67 +33,90 @@ pub trait RuntimeAdapter {
     fn new() -> DbResult<Self>
     where
         Self: Sized;
+
+    /// Returns the runtime name for debugging and logging
+    fn runtime_name() -> &'static str
+    where
+        Self: Sized;
 }
 
-/// Parameters for service spawning
+/// Trait for runtimes that support dynamic future spawning (like Tokio)
 ///
-/// This struct contains the information needed to spawn a service,
-/// allowing different runtimes to handle service initialization appropriately.
-#[derive(Debug, Clone)]
-pub struct ServiceParams {
-    /// Service identifier/name for logging and debugging
-    pub service_name: &'static str,
-    /// Record that the service should operate on
-    pub record: crate::Record,
-    /// Any additional runtime-specific configuration
-    pub config: ServiceConfig,
-}
-
-/// Configuration for service spawning
-///
-/// This allows runtime-specific configuration to be passed through
-/// the generic service spawning interface.
-#[derive(Debug, Clone)]
-pub enum ServiceConfig {
-    /// No additional configuration needed
-    Default,
-    /// Tokio-specific configuration (if any)
-    #[cfg(feature = "std")]
-    Tokio(TokioServiceConfig),
-    /// Embassy-specific configuration
-    #[cfg(not(feature = "std"))]
-    Embassy(EmbassyServiceConfig),
-}
-
-/// Trait for services that can be spawned on runtime adapters
-///
-/// This trait is implemented by the service macro for each service,
-/// providing a clean interface between the generated service code
-/// and the runtime adapter.
-pub trait ServiceSpawnable<A: RuntimeAdapter> {
-    /// Spawns this service using the provided runtime adapter
+/// This trait is for runtimes that can spawn arbitrary futures at runtime,
+/// typically using a dynamic task scheduler.
+#[cfg(feature = "tokio-runtime")]
+pub trait SpawnDynamically: RuntimeAdapter {
+    /// Spawns a future dynamically on the runtime
+    ///
+    /// # Type Parameters
+    /// * `F` - The future to spawn
+    /// * `T` - The return type of the future
     ///
     /// # Arguments
-    /// * `adapter` - The runtime adapter to use for spawning
-    /// * `params` - Service parameters and configuration
+    /// * `future` - The async task to spawn
     ///
     /// # Returns
-    /// `DbResult<()>` indicating whether spawning was successful
-    fn spawn_with_adapter(adapter: &A, params: ServiceParams) -> crate::DbResult<()>;
+    /// A handle to the spawned task or an error if spawning failed
+    fn spawn<F, T>(&self, future: F) -> DbResult<tokio::task::JoinHandle<T>>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static;
 }
 
-#[cfg(feature = "std")]
-#[derive(Debug, Clone)]
-pub struct TokioServiceConfig {
-    /// Task name for debugging
-    pub task_name: Option<&'static str>,
+/// Trait for runtimes that require compile-time task definition (like Embassy)
+///
+/// This trait is for runtimes that require tasks to be defined at compile time
+/// and spawned through a spawner interface.
+#[cfg(feature = "embassy-runtime")]
+pub trait SpawnStatically: RuntimeAdapter {
+    /// Gets access to the Embassy spawner for task spawning
+    ///
+    /// # Returns
+    /// Reference to the spawner if available, None if no spawner is configured
+    fn spawner(&self) -> Option<&embassy_executor::Spawner>;
 }
 
-#[cfg(not(feature = "std"))]
+/// Information about a runtime adapter
 #[derive(Debug, Clone)]
-pub struct EmbassyServiceConfig {
-    /// Embassy-specific configuration options
-    pub priority: Option<u8>,
+pub struct RuntimeInfo {
+    /// Name of the runtime (e.g., "tokio", "embassy")
+    pub name: &'static str,
+    /// Whether this runtime supports dynamic spawning
+    pub supports_dynamic_spawn: bool,
+    /// Whether this runtime supports static spawning
+    pub supports_static_spawn: bool,
+}
+
+/// Core trait that all AimDB services must implement
+///
+/// This trait defines the essential interface for long-running services.
+/// It is automatically implemented by the `#[service]` macro for service functions.
+pub trait AimDbService: Send + Sync + 'static {
+    /// Runs the service - this is the main service function
+    ///
+    /// Services should typically contain an infinite loop and handle their own
+    /// error recovery. The service should only return if it's meant to terminate.
+    fn run() -> impl Future<Output = DbResult<()>> + Send + 'static;
+
+    /// Get the service name for logging and debugging
+    fn service_name() -> &'static str;
+
+    /// Spawn this service on a dynamic runtime (like Tokio)
+    ///
+    /// This method is automatically implemented by the service macro when
+    /// tokio-runtime feature is enabled.
+    #[cfg(feature = "tokio-runtime")]
+    fn spawn_on_tokio(adapter: &impl SpawnDynamically) -> DbResult<()> {
+        adapter.spawn(Self::run()).map(|_| ())
+    }
+
+    /// Spawn this service on a static runtime (like Embassy)
+    ///
+    /// This method must be implemented by the service macro when
+    /// embassy-runtime feature is enabled, as it requires access to
+    /// compile-time generated task functions.
+    #[cfg(feature = "embassy-runtime")]
+    fn spawn_on_embassy(adapter: &impl SpawnStatically) -> DbResult<()>;
 }
 
 /// Trait for adapters that support delayed task spawning
