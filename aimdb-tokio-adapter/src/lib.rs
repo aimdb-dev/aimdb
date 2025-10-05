@@ -65,10 +65,9 @@
 
 #[cfg(feature = "tokio-runtime")]
 pub mod database;
-mod error;
-mod runtime;
-#[cfg(feature = "tokio-runtime")]
-mod time;
+pub mod error;
+pub mod runtime;
+pub mod time;
 
 pub use error::{TokioErrorConverter, TokioErrorSupport};
 
