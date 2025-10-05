@@ -57,89 +57,62 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
         #(#fn_attrs)*
         #fn_vis async fn #fn_name(#fn_inputs) #fn_output #fn_body
 
-        // Embassy task wrapper (only compiled when embassy-runtime feature is enabled)
+        // Service implementation struct for runtime-neutral spawning
+        pub struct #service_struct_name;
+
+        // Embassy task wrapper (only available with embassy-runtime feature)
         #[cfg(feature = "embassy-runtime")]
         #[embassy_executor::task]
         async fn #embassy_task_name(#fn_inputs) {
-            // Forward to the original function, ignoring the return value
             let _ = #fn_name(#(#param_names),*).await;
         }
 
-        // Service type for runtime-neutral spawning
-        pub struct #service_struct_name;
+        // Implement the AimDbService trait for this service
+        impl aimdb_core::AimDbService for #service_struct_name {
+            fn run() -> impl core::future::Future<Output = aimdb_core::DbResult<()>> + Send + 'static {
+                #fn_name(#(#param_names),*)
+            }
 
-        // Embassy ServiceSpawnable implementation
-        #[cfg(feature = "embassy-runtime")]
-        impl aimdb_core::runtime::ServiceSpawnable<aimdb_embassy_adapter::EmbassyAdapter> for #service_struct_name {
-            fn spawn_with_adapter(
-                adapter: &aimdb_embassy_adapter::EmbassyAdapter,
-                service_params: aimdb_core::runtime::ServiceParams,
-            ) -> aimdb_core::DbResult<()> {
-                use aimdb_core::DbError;
+            fn service_name() -> &'static str {
+                stringify!(#fn_name)
+            }
 
-                #[cfg(feature = "tracing")]
-                tracing::info!("Spawning Embassy service: {}", service_params.service_name);
-
-                // Get the spawner from the adapter
+            // Override the embassy spawning method when embassy-runtime is enabled
+            #[cfg(feature = "embassy-runtime")]
+            fn spawn_on_embassy(adapter: &impl aimdb_core::SpawnStatically) -> aimdb_core::DbResult<()> {
                 if let Some(spawner) = adapter.spawner() {
-                    // TODO: For now we'll spawn a simple task - this needs to be enhanced
-                    // to pass the actual service parameters to the Embassy task
-                    match spawner.spawn(#embassy_task_name()) {
+                    // Use defmt for embedded targets, tracing for std targets
+                    #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                    tracing::info!("Spawning Embassy service: {}", stringify!(#fn_name));
+                    #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                    defmt::info!("Spawning Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
+
+                    match spawner.spawn(#embassy_task_name(#(#param_names),*)) {
                         Ok(_) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::debug!("Successfully spawned Embassy service: {}", service_params.service_name);
+                            #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                            tracing::debug!("Successfully spawned Embassy service: {}", stringify!(#fn_name));
+                            #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                            defmt::debug!("Successfully spawned Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
                             Ok(())
                         }
                         Err(_) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!("Failed to spawn Embassy service: {}", service_params.service_name);
-                            Err(DbError::internal(0x5001))
+                            #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                            tracing::error!("Failed to spawn Embassy service: {}", stringify!(#fn_name));
+                            #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                            defmt::error!("Failed to spawn Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
+                            Err(aimdb_core::DbError::internal(0x5003))
                         }
                     }
                 } else {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("No Embassy spawner available for service: {}", service_params.service_name);
-                    Err(DbError::internal(0x5000))
+                    #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                    tracing::error!("No spawner available for Embassy service: {}", stringify!(#fn_name));
+                    #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                    defmt::error!("No spawner available for Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
+                    Err(aimdb_core::DbError::internal(0x1001))
                 }
             }
         }
 
-        // Tokio ServiceSpawnable implementation
-        #[cfg(feature = "tokio-runtime")]
-        impl aimdb_core::runtime::ServiceSpawnable<aimdb_tokio_adapter::TokioAdapter> for #service_struct_name {
-            fn spawn_with_adapter(
-                _adapter: &aimdb_tokio_adapter::TokioAdapter,
-                service_params: aimdb_core::runtime::ServiceParams,
-            ) -> aimdb_core::DbResult<()> {
-                use aimdb_core::DbError;
 
-                #[cfg(feature = "tracing")]
-                tracing::info!("Spawning Tokio service: {}", service_params.service_name);
-
-                // For Tokio, we spawn the service dynamically using tokio::spawn
-                let service_name = service_params.service_name.to_string();
-                tokio::spawn(async move {
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("Starting Tokio service: {}", service_name);
-
-                    // TODO: For now we call with default parameters - this needs to be enhanced
-                    // to pass the actual service parameters
-                    let result = #fn_name().await;
-
-                    #[cfg(feature = "tracing")]
-                    match &result {
-                        Ok(_) => tracing::info!("Tokio service completed successfully: {}", service_name),
-                        Err(e) => tracing::error!("Tokio service failed: {} - {:?}", service_name, e),
-                    }
-
-                    result
-                });
-
-                #[cfg(feature = "tracing")]
-                tracing::debug!("Successfully spawned Tokio service: {}", service_params.service_name);
-
-                Ok(())
-            }
-        }
     })
 }
