@@ -40,6 +40,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use core::future::Future;
+use core::time::Duration;
 
 // Error handling - use Result<T, E> generically since we can't depend on aimdb-core
 pub type ExecutorResult<T> = Result<T, ExecutorError>;
@@ -101,6 +102,37 @@ pub trait RuntimeAdapter: Send + Sync + 'static {
         Self: Sized;
 }
 
+/// Trait for providing time information
+///
+/// This trait abstracts over different time representations across runtimes.
+/// Implementations should use the most appropriate time type for their platform.
+pub trait TimeSource: RuntimeAdapter {
+    /// The instant type used by this runtime
+    type Instant: Clone + Send + Sync + 'static;
+
+    /// Get the current time instant
+    fn now(&self) -> Self::Instant;
+
+    /// Calculate the duration between two instants
+    ///
+    /// Returns None if `later` is before `earlier`
+    fn duration_since(&self, later: Self::Instant, earlier: Self::Instant) -> Option<Duration>;
+}
+
+/// Trait for async sleep capability
+///
+/// This trait abstracts over different sleep implementations across runtimes.
+pub trait Sleeper: RuntimeAdapter {
+    /// Sleep for the specified duration
+    ///
+    /// # Arguments
+    /// * `duration` - How long to sleep
+    ///
+    /// # Returns
+    /// A future that completes after the duration has elapsed
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send;
+}
+
 /// Trait for runtimes that support dynamic future spawning (like Tokio)
 ///
 /// This trait is for runtimes that can spawn arbitrary futures at runtime,
@@ -158,27 +190,29 @@ pub struct RuntimeInfo {
 ///
 /// This trait defines the essential interface for long-running services.
 /// It is automatically implemented by the `#[service]` macro for service functions.
-pub trait AimDbService: Send + Sync + 'static {
+///
+/// Services receive a RuntimeContext that provides access to time, sleep, and
+/// other runtime capabilities in a platform-agnostic way.
+pub trait AimDbService {
+    /// The runtime type this service is compatible with
+    type Runtime: Runtime;
+
+    /// The error type returned by this service
+    type Error: Send + 'static;
+
     /// Runs the service - this is the main service function
     ///
     /// Services should typically contain an infinite loop and handle their own
     /// error recovery. The service should only return if it's meant to terminate.
-    fn run() -> impl Future<Output = ExecutorResult<()>> + Send + 'static;
+    ///
+    /// # Arguments
+    /// * `ctx` - Runtime context providing time, sleep, and other capabilities
+    fn run(
+        ctx: impl AsRef<Self::Runtime> + Send + 'static,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static;
 
     /// Get the service name for logging and debugging
     fn service_name() -> &'static str;
-
-    /// Spawn this service on a dynamic runtime (like Tokio)
-    ///
-    /// This method is automatically implemented by the service macro.
-    /// The implementation may have additional trait bounds depending on the service requirements.
-    fn spawn_on_dynamic<R: SpawnDynamically>(adapter: &R) -> ExecutorResult<()>;
-
-    /// Spawn this service on a static runtime (like Embassy)  
-    ///
-    /// This method is automatically implemented by the service macro.
-    /// The implementation may have additional trait bounds depending on the service requirements.
-    fn spawn_on_static<R: SpawnStatically>(adapter: &R) -> ExecutorResult<()>;
 }
 
 /// Simplified trait bundle for common runtime operations
@@ -197,6 +231,104 @@ pub trait CommonRuntimeTraits: RuntimeAdapter {
 
     /// Whether this runtime supports static spawning  
     fn supports_static_spawning() -> bool;
+}
+
+/// Unified runtime trait combining all runtime capabilities
+///
+/// This trait is the primary interface for runtime-agnostic code.
+/// It combines time, sleep, and spawning capabilities into one cohesive interface.
+///
+/// # Usage
+///
+/// Services and database components should depend on this trait rather than
+/// concrete adapter types. This enables testing with mock runtimes and
+/// platform flexibility.
+///
+/// # Example
+///
+/// ```ignore
+/// async fn my_service<R: Runtime>(runtime: &R) {
+///     let start = runtime.now();
+///     runtime.sleep(Duration::from_secs(1)).await;
+///     let elapsed = runtime.duration_since(runtime.now(), start);
+/// }
+/// ```
+pub trait Runtime: TimeSource + Sleeper {
+    /// Type-erased runtime information
+    fn info(&self) -> RuntimeInfo
+    where
+        Self: Sized,
+    {
+        RuntimeInfo {
+            name: Self::runtime_name(),
+            supports_dynamic_spawn: self.has_dynamic_spawn(),
+            supports_static_spawn: self.has_static_spawn(),
+        }
+    }
+
+    /// Check if this runtime supports dynamic spawning
+    fn has_dynamic_spawn(&self) -> bool {
+        false
+    }
+
+    /// Check if this runtime supports static spawning
+    fn has_static_spawn(&self) -> bool {
+        false
+    }
+}
+
+/// Helper function to spawn a service on a dynamic runtime
+///
+/// # Type Parameters
+/// * `S` - The service type to spawn
+/// * `R` - The runtime adapter type
+///
+/// # Arguments
+/// * `adapter` - The runtime adapter instance
+/// * `context` - Runtime context to pass to the service
+///
+/// # Returns
+/// `Ok(())` if spawning succeeded, error otherwise
+pub fn spawn_service_dynamic<S, R, Ctx>(
+    adapter: &R,
+    context: Ctx,
+) -> ExecutorResult<R::JoinHandle<Result<(), S::Error>>>
+where
+    S: AimDbService<Runtime = R>,
+    R: SpawnDynamically + Runtime,
+    Ctx: AsRef<R> + Send + 'static,
+{
+    adapter.spawn(S::run(context))
+}
+
+/// Helper function to spawn a service on a static runtime
+///
+/// # Type Parameters  
+/// * `S` - The service type to spawn
+/// * `R` - The runtime adapter type
+///
+/// # Arguments
+/// * `adapter` - The runtime adapter instance
+///
+/// # Returns
+/// `Ok(())` if spawning succeeded, error otherwise
+///
+/// # Note
+/// Static spawning requires compile-time task definitions (e.g., Embassy tasks).
+/// The service macro handles this automatically.
+pub fn spawn_service_static<S, R>(_adapter: &R) -> ExecutorResult<()>
+where
+    S: AimDbService<Runtime = R>,
+    R: SpawnStatically + Runtime,
+{
+    // Static spawning is handled by the macro-generated Embassy task
+    // This is just a placeholder that will be called by the macro
+    Err(ExecutorError::RuntimeUnavailable {
+        #[cfg(feature = "std")]
+        message: "Static spawning must be done through macro-generated Embassy tasks".to_string(),
+        #[cfg(not(feature = "std"))]
+        message: "Static spawning must be done through macro-generated Embassy tasks",
+    })
 }
 
 /// Dynamic runtime trait for runtimes that support dynamic task spawning
