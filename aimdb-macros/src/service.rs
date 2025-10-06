@@ -1,11 +1,13 @@
-//! Service Macro Implementation - Simplified Version
+//! Service Macro Implementation - Clean Runtime-Agnostic Version
 //!
-//! Generates runtime-appropriate service spawning implementations with automatic RuntimeContext injection:
-//! - Embassy: Generates Embassy task with spawner integration  
-//! - Tokio: Generates dynamic spawning shim using tokio::spawn
+//! Generates a simple struct implementing the AimDbService trait.
+//! Services are generic over any Runtime implementation, enabling:
+//! - Testing with MockRuntime
+//! - Runtime flexibility (Tokio, Embassy, custom)
+//! - Clean separation of service logic from spawning mechanism
 //!
-//! **Simplified Approach**: All services automatically receive a RuntimeContext,
-//! providing consistent access to timing and sleep capabilities across runtimes.
+//! The macro only handles service definition. Spawning is delegated to
+//! adapter-specific helper methods, keeping runtime concerns isolated.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -14,6 +16,7 @@ use syn::{ItemFn, Result};
 /// Convert snake_case to PascalCase
 fn to_pascal_case(s: &str) -> String {
     s.split('_')
+        .filter(|word| !word.is_empty())
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
@@ -24,162 +27,102 @@ fn to_pascal_case(s: &str) -> String {
         .collect()
 }
 
+/// Expand the #[service] macro into a clean service implementation
+///
+/// This generates:
+/// 1. Original function (for direct calls if needed)
+/// 2. A zero-sized struct named after the service
+/// 3. AimDbService trait implementation
+///
+/// The generated service is generic over any Runtime implementation.
 pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
     let fn_name = &input_fn.sig.ident;
     let fn_vis = &input_fn.vis;
     let fn_body = &input_fn.block;
-    let fn_inputs = &input_fn.sig.inputs;
-    let fn_output = &input_fn.sig.output;
     let fn_attrs = &input_fn.attrs;
+
+    // Extract the RuntimeContext parameter to determine the Runtime type
+    // We expect: ctx: RuntimeContext<SomeRuntime>
+    let ctx_param = input_fn.sig.inputs.first().ok_or_else(|| {
+        syn::Error::new_spanned(
+            &input_fn.sig,
+            "Service function must have a RuntimeContext parameter",
+        )
+    })?;
 
     // Convert function name to PascalCase for struct name
     let fn_name_str = fn_name.to_string();
     let pascal_case_name = to_pascal_case(&fn_name_str);
-    let service_struct_name =
-        syn::Ident::new(&format!("{}Service", pascal_case_name), fn_name.span());
-    let embassy_task_name = syn::Ident::new(&format!("{}_embassy_task", fn_name), fn_name.span());
+    let service_struct_name = syn::Ident::new(&pascal_case_name, fn_name.span());
 
     Ok(quote! {
-        // Original function (preserved for direct calls)
+        // Original function (preserved for direct calls if needed)
         #(#fn_attrs)*
-        #fn_vis async fn #fn_name(#fn_inputs) #fn_output #fn_body
+        #fn_vis async fn #fn_name(#ctx_param) -> aimdb_core::DbResult<()> #fn_body
 
-        // Service implementation struct for runtime-neutral spawning
+        // Service implementation struct
+        #[derive(Debug, Clone, Copy)]
         pub struct #service_struct_name;
 
-        // Embassy task wrapper (only available with embassy-runtime feature)
-        #[cfg(feature = "embassy-runtime")]
-        #[embassy_executor::task]
-        async fn #embassy_task_name(ctx: aimdb_core::RuntimeContext<aimdb_embassy_adapter::EmbassyAdapter>) {
-            let _ = #fn_name(ctx).await;
-        }
+        impl #service_struct_name {
+            /// Spawn this service on a runtime that supports dynamic spawning (e.g., Tokio)
+            ///
+            /// # Type Parameters
+            /// * `R` - The runtime type (must implement Runtime + SpawnDynamically)
+            ///
+            /// # Arguments
+            /// * `runtime` - The runtime instance to spawn on
+            ///
+            /// # Returns
+            /// A join handle to the spawned service, or an error if spawning failed
+            #[cfg(feature = "tokio-runtime")]
+            pub fn spawn_tokio(
+                runtime: &aimdb_tokio_adapter::TokioAdapter,
+            ) -> aimdb_executor::ExecutorResult<tokio::task::JoinHandle<aimdb_core::DbResult<()>>> {
+                use aimdb_executor::SpawnDynamically;
+                let ctx = aimdb_core::RuntimeContext::from_runtime(runtime.clone());
+                runtime.spawn(#fn_name(ctx))
+            }
 
-        // Implement the AimDbService trait for this service
-        impl aimdb_executor::AimDbService for #service_struct_name {
-            fn run() -> impl core::future::Future<Output = aimdb_executor::ExecutorResult<()>> + Send + 'static {
-                async {
-                    // Services should be spawned using spawn_on_* methods which provide RuntimeContext
+            /// Spawn this service on Embassy runtime (requires static task definition)
+            ///
+            /// This is a placeholder - actual Embassy spawning happens through
+            /// macro-generated #[embassy_executor::task] functions.
+            #[cfg(feature = "embassy-runtime")]
+            pub fn spawn_embassy(
+                adapter: &aimdb_embassy_adapter::EmbassyAdapter,
+            ) -> aimdb_executor::ExecutorResult<()> {
+                if let Some(spawner) = adapter.spawner() {
+                    // The Embassy task wrapper is generated below
+                    spawner.spawn(embassy_task_wrapper(adapter.clone()))
+                        .map_err(|_| aimdb_executor::ExecutorError::SpawnFailed {
+                            #[cfg(feature = "std")]
+                            message: format!("Failed to spawn Embassy service: {}", stringify!(#fn_name)),
+                            #[cfg(not(feature = "std"))]
+                            message: "Failed to spawn Embassy service"
+                        })
+                } else {
                     Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
                         #[cfg(feature = "std")]
-                        message: "Use spawn_on_dynamic or spawn_on_static instead".to_string(),
+                        message: "No Embassy spawner available".to_string(),
                         #[cfg(not(feature = "std"))]
-                        message: "Use spawn_on_dynamic or spawn_on_static instead"
+                        message: "No Embassy spawner available"
                     })
                 }
             }
 
-            fn service_name() -> &'static str {
+            /// Get the service name for logging and debugging
+            pub const fn service_name() -> &'static str {
                 stringify!(#fn_name)
             }
+        }
 
-            // Dynamic spawning method (for Tokio and similar runtimes)
-            fn spawn_on_dynamic<R: aimdb_executor::SpawnDynamically>(adapter: &R) -> aimdb_executor::ExecutorResult<()> {
-                use aimdb_core::{RuntimeContext, time::{SleepCapable, TimestampProvider}};
-
-                #[cfg(feature = "tokio-runtime")]
-                {
-                    // Create a TokioAdapter instance to provide the RuntimeContext
-                    let tokio_adapter = match aimdb_tokio_adapter::TokioAdapter::new() {
-                        Ok(adapter) => adapter,
-                        Err(_) => return Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
-                            #[cfg(feature = "std")]
-                            message: "Failed to create TokioAdapter".to_string(),
-                            #[cfg(not(feature = "std"))]
-                            message: "Failed to create TokioAdapter"
-                        })
-                    };
-                    let runtime_ctx = RuntimeContext::from_runtime(tokio_adapter);
-
-                    match adapter.spawn(#fn_name(runtime_ctx)) {
-                        Ok(_handle) => Ok(()), // Ignore the JoinHandle, just return success
-                        Err(_) => Err(aimdb_executor::ExecutorError::SpawnFailed {
-                            #[cfg(feature = "std")]
-                            message: format!("Failed to spawn service: {}", stringify!(#fn_name)),
-                            #[cfg(not(feature = "std"))]
-                            message: "Failed to spawn service"
-                        })
-                    }
-                }
-                #[cfg(not(feature = "tokio-runtime"))]
-                {
-                    Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
-                        #[cfg(feature = "std")]
-                        message: "Tokio runtime not available".to_string(),
-                        #[cfg(not(feature = "std"))]
-                        message: "Tokio runtime not available"
-                    })
-                }
-            }
-
-            // Static spawning method (for Embassy and similar runtimes)
-            fn spawn_on_static<R: aimdb_executor::SpawnStatically>(adapter: &R) -> aimdb_executor::ExecutorResult<()> {
-                #[cfg(feature = "embassy-runtime")]
-                {
-                    use aimdb_core::RuntimeContext;
-
-                    if let Some(spawner) = adapter.spawner() {
-                        // Use defmt for embedded targets, tracing for std targets
-                        #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                        tracing::info!("Spawning Embassy service: {}", stringify!(#fn_name));
-                        #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                        defmt::info!("Spawning Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
-
-                        // Create RuntimeContext for Embassy
-                        let embassy_adapter = match aimdb_embassy_adapter::EmbassyAdapter::new() {
-                            Ok(adapter) => adapter,
-                            Err(_) => return Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
-                                #[cfg(feature = "std")]
-                                message: "Failed to create EmbassyAdapter".to_string(),
-                                #[cfg(not(feature = "std"))]
-                                message: "Failed to create EmbassyAdapter"
-                            })
-                        };
-                        let runtime_ctx = RuntimeContext::from_runtime(embassy_adapter);
-
-                        match spawner.spawn(#embassy_task_name(runtime_ctx)) {
-                            Ok(_) => {
-                                #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                                tracing::debug!("Successfully spawned Embassy service: {}", stringify!(#fn_name));
-                                #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                                defmt::debug!("Successfully spawned Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
-                                Ok(())
-                            }
-                            Err(_) => {
-                                #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                                tracing::error!("Failed to spawn Embassy service: {}", stringify!(#fn_name));
-                                #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                                defmt::error!("Failed to spawn Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
-                                Err(aimdb_executor::ExecutorError::SpawnFailed {
-                                    #[cfg(feature = "std")]
-                                    message: format!("Failed to spawn Embassy service: {}", stringify!(#fn_name)),
-                                    #[cfg(not(feature = "std"))]
-                                    message: "Failed to spawn Embassy service"
-                                })
-                            }
-                        }
-                    } else {
-                        #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                        tracing::error!("No spawner available for Embassy service: {}", stringify!(#fn_name));
-                        #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                        defmt::error!("No spawner available for Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
-                        Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
-                            #[cfg(feature = "std")]
-                            message: "No spawner available for Embassy service".to_string(),
-                            #[cfg(not(feature = "std"))]
-                            message: "No spawner available for Embassy service"
-                        })
-                    }
-                }
-                #[cfg(not(feature = "embassy-runtime"))]
-                {
-                    Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
-                        #[cfg(feature = "std")]
-                        message: "Embassy runtime not available".to_string(),
-                        #[cfg(not(feature = "std"))]
-                        message: "Embassy runtime not available"
-                    })
-                }
-            }
+        // Embassy task wrapper (only with embassy-runtime feature)
+        #[cfg(feature = "embassy-runtime")]
+        #[embassy_executor::task]
+        async fn embassy_task_wrapper(adapter: aimdb_embassy_adapter::EmbassyAdapter) {
+            let ctx = aimdb_core::RuntimeContext::new(&adapter);
+            let _ = #fn_name(ctx).await;
         }
     })
 }
