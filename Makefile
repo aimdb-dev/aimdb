@@ -34,21 +34,19 @@ help:
 ## Core commands
 build:
 	@printf "$(GREEN)Building AimDB (all valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Building aimdb-core (minimal embedded)$(NC)\n"
-	cargo build --package aimdb-core --features "embedded"
+	@printf "$(YELLOW)  → Building aimdb-core (no_std minimal)$(NC)\n"
+	cargo build --package aimdb-core --no-default-features
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
 	cargo build --package aimdb-core --features "std,tokio-runtime,tracing,metrics"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
-	@printf "$(YELLOW)  → Building embassy adapter$(NC)\n"
-	cargo build --package aimdb-embassy-adapter --features "embassy-runtime"
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
 	cargo build --package aimdb-cli
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-core (embedded platform)$(NC)\n"
-	cargo test --package aimdb-core --features "embedded"
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std minimal)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
 	cargo test --package aimdb-core --features "std,tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
@@ -62,8 +60,8 @@ fmt:
 
 clippy:
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Clippy on aimdb-core (embedded)$(NC)\n"
-	cargo clippy --package aimdb-core --features "embedded" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std)$(NC)\n"
+	cargo clippy --package aimdb-core --no-default-features --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
 	cargo clippy --package aimdb-core --features "std,tokio-runtime,tracing,metrics" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
@@ -95,23 +93,23 @@ clean:
 ## Testing commands
 test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
-	@printf "$(YELLOW)  → Checking aimdb-core (embedded) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --features "embedded"
-	@printf "$(YELLOW)  → Checking aimdb-core (embassy-runtime) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --features "embedded,embassy-runtime"
+	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features
+	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime"
 
 test-feature-validation:
 	@printf "$(BLUE)Testing feature flag validation (invalid combinations should fail)...$(NC)\n"
-	@printf "$(YELLOW)  → Testing invalid combination: std + embedded$(NC)\n"
-	@! cargo build --package aimdb-core --features "std,embedded" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
+	@printf "$(YELLOW)  → Testing invalid combination: std + embassy-runtime$(NC)\n"
+	@! cargo build --package aimdb-core --features "std,embassy-runtime" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
 	@printf "$(GREEN)    ✓ Correctly failed$(NC)\n"
 	@printf "$(YELLOW)  → Testing invalid combination: tokio-runtime + embassy-runtime$(NC)\n"
 	@! cargo build --package aimdb-core --features "tokio-runtime,embassy-runtime" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
 	@printf "$(GREEN)    ✓ Correctly failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing invalid combination: embedded + metrics$(NC)\n"
-	@! cargo build --package aimdb-core --features "embedded,metrics" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
+	@printf "$(YELLOW)  → Testing invalid combination: embassy-runtime + metrics (no_std conflict)$(NC)\n"
+	@! cargo build --package aimdb-core --no-default-features --features "embassy-runtime,metrics" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
 	@printf "$(GREEN)    ✓ Correctly failed$(NC)\n"
 	@printf "$(GREEN)All invalid combinations correctly rejected!$(NC)\n"
 
