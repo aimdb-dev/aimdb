@@ -8,7 +8,7 @@ use aimdb_core::{DbError, DbResult};
 use aimdb_executor::DelayCapableAdapter;
 #[cfg(feature = "embassy-runtime")]
 use aimdb_executor::SpawnStatically;
-use aimdb_executor::{ExecutorResult, RuntimeAdapter};
+use aimdb_executor::{ExecutorResult, Runtime, RuntimeAdapter, Sleeper, TimeSource};
 use core::future::Future;
 
 #[cfg(feature = "tracing")]
@@ -168,5 +168,48 @@ impl DelayCapableAdapter for EmbassyAdapter {
             Timer::after(delay).await;
             task.await
         }
+    }
+}
+
+// New unified Runtime trait implementations
+
+#[cfg(feature = "embassy-time")]
+impl TimeSource for EmbassyAdapter {
+    type Instant = embassy_time::Instant;
+
+    fn now(&self) -> Self::Instant {
+        embassy_time::Instant::now()
+    }
+
+    fn duration_since(
+        &self,
+        later: Self::Instant,
+        earlier: Self::Instant,
+    ) -> Option<core::time::Duration> {
+        if later >= earlier {
+            Some((later - earlier).into())
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(feature = "embassy-time")]
+impl Sleeper for EmbassyAdapter {
+    fn sleep(&self, duration: core::time::Duration) -> impl Future<Output = ()> + Send {
+        embassy_time::Timer::after(embassy_time::Duration::from_micros(
+            duration.as_micros() as u64
+        ))
+    }
+}
+
+#[cfg(all(feature = "embassy-time", feature = "embassy-runtime"))]
+impl Runtime for EmbassyAdapter {
+    fn has_dynamic_spawn(&self) -> bool {
+        false
+    }
+
+    fn has_static_spawn(&self) -> bool {
+        true
     }
 }
