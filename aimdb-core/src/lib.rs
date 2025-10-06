@@ -13,7 +13,7 @@ pub mod runtime;
 pub mod time;
 
 // Public API exports
-pub use context::{create_runtime_context, RuntimeContext};
+pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};
 pub use runtime::{
     AimDbService, DelayCapableAdapter, ExecutorError, ExecutorResult, RuntimeAdapter, RuntimeInfo,
