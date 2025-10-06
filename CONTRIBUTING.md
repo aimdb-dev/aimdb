@@ -144,11 +144,11 @@ embedded = ["no-std-compat"]
 # All tests with all features
 make test
 
-# Embedded target tests
-cargo test --features embedded --target thumbv7em-none-eabihf
+# Embedded target cross-compilation check
+make test-embedded
 
 # Specific test
-cargo test test_name --all-features
+cargo test test_name --features tokio-runtime
 ```
 
 ### Test Requirements

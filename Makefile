@@ -80,7 +80,7 @@ doc:
 	cargo doc --features "std,tokio-runtime,tracing,metrics" --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
-	cargo doc --features "embedded,embassy-runtime" --no-deps
+	cargo doc --no-default-features --features "embassy-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
 	@printf "$(YELLOW)  → Creating main index page$(NC)\n"
 	@cp docs/index.html target/doc-final/index.html

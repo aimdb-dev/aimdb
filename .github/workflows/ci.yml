@@ -110,8 +110,11 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-embedded-${{ hashFiles('**/Cargo.lock') }}
     
-    - name: Check embedded core
-      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --features embedded
+    - name: Check embedded core (no_std minimal)
+      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features
+    
+    - name: Check embedded core (with embassy)
+      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features embassy-runtime
     
     - name: Check embassy adapter
       run: cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features embassy-runtime
