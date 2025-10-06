@@ -46,11 +46,10 @@ version = "0.1.0"
 name = "aimdb-core"
 version = "0.1.0"
 dependencies = [
+ "aimdb-executor",
  "aimdb-macros",
  "anyhow",
  "embassy-executor",
- "embassy-futures",
- "embassy-time",
  "heapless 0.9.1",
  "metrics",
  "serde",
@@ -65,6 +64,7 @@ name = "aimdb-embassy-adapter"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-executor",
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
@@ -84,6 +84,7 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
+ "aimdb-executor",
  "aimdb-macros",
  "aimdb-tokio-adapter",
  "cortex-m",
@@ -97,6 +98,15 @@ dependencies = [
  "panic-probe",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "aimdb-executor"
+version = "0.1.0"
+dependencies = [
+ "embassy-executor",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -114,6 +124,7 @@ name = "aimdb-tokio-adapter"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-executor",
  "futures",
  "tokio",
  "tokio-test",
@@ -364,12 +375,6 @@ name = "embassy-executor-timer-queue"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fc328bf943af66b80b98755db9106bf7e7471b0cf47dc8559cd9a6be504cc9c"
-
-[[package]]
-name = "embassy-futures"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc2d050bdc5c21e0862a89256ed8029ae6c290a93aecefc73084b3002cdebb01"
 
 [[package]]
 name = "embassy-sync"

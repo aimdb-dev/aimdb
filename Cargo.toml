@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "aimdb-executor",
     "aimdb-core",
     "aimdb-embassy-adapter",
     "aimdb-tokio-adapter",
@@ -24,7 +25,10 @@ categories = ["database-implementations", "embedded", "asynchronous"]
 
 [workspace.dependencies]
 # Core async runtime
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.47.1", default-features = false, features = [
+    "macros",
+    "rt-multi-thread",
+] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
