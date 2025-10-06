@@ -32,7 +32,7 @@ fn to_pascal_case(s: &str) -> String {
 /// This generates:
 /// 1. Original function (for direct calls if needed)
 /// 2. A zero-sized struct named after the service
-/// 3. AimDbService trait implementation
+/// 3. Runtime-specific spawning methods
 ///
 /// The generated service is generic over any Runtime implementation.
 pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
@@ -41,8 +41,11 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
     let fn_body = &input_fn.block;
     let fn_attrs = &input_fn.attrs;
 
-    // Extract the RuntimeContext parameter to determine the Runtime type
-    // We expect: ctx: RuntimeContext<SomeRuntime>
+    // Extract function generics (e.g., <R: Runtime>)
+    let fn_generics = &input_fn.sig.generics;
+
+    // Extract the RuntimeContext parameter
+    // We expect: ctx: RuntimeContext<R> where R is generic
     let ctx_param = input_fn.sig.inputs.first().ok_or_else(|| {
         syn::Error::new_spanned(
             &input_fn.sig,
@@ -57,8 +60,9 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
 
     Ok(quote! {
         // Original function (preserved for direct calls if needed)
+        // Retains all generic parameters from the original definition
         #(#fn_attrs)*
-        #fn_vis async fn #fn_name(#ctx_param) -> aimdb_core::DbResult<()> #fn_body
+        #fn_vis async fn #fn_name #fn_generics (#ctx_param) -> aimdb_core::DbResult<()> #fn_body
 
         // Service implementation struct
         #[derive(Debug, Clone, Copy)]
