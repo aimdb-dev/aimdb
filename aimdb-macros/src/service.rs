@@ -55,11 +55,16 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
         }
 
         // Implement the AimDbService trait for this service
-        impl aimdb_core::AimDbService for #service_struct_name {
-            fn run() -> impl core::future::Future<Output = aimdb_core::DbResult<()>> + Send + 'static {
+        impl aimdb_executor::AimDbService for #service_struct_name {
+            fn run() -> impl core::future::Future<Output = aimdb_executor::ExecutorResult<()>> + Send + 'static {
                 async {
                     // Services should be spawned using spawn_on_* methods which provide RuntimeContext
-                    Err(aimdb_core::DbError::internal(0x9000)) // Use spawn_on_tokio or spawn_on_embassy instead
+                    Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                        #[cfg(feature = "std")]
+                        message: "Use spawn_on_dynamic or spawn_on_static instead".to_string(),
+                        #[cfg(not(feature = "std"))]
+                        message: "Use spawn_on_dynamic or spawn_on_static instead"
+                    })
                 }
             }
 
@@ -67,54 +72,112 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
                 stringify!(#fn_name)
             }
 
-            // All services receive a RuntimeContext for consistent timing capabilities
-            #[cfg(feature = "tokio-runtime")]
-            fn spawn_on_tokio(adapter: &impl aimdb_core::SpawnDynamically) -> aimdb_core::DbResult<()> {
+            // Dynamic spawning method (for Tokio and similar runtimes)
+            fn spawn_on_dynamic<R: aimdb_executor::SpawnDynamically>(adapter: &R) -> aimdb_executor::ExecutorResult<()> {
                 use aimdb_core::{RuntimeContext, time::{SleepCapable, TimestampProvider}};
 
-                // Create a TokioAdapter instance to provide the RuntimeContext
-                let tokio_adapter = aimdb_tokio_adapter::TokioAdapter::new()?;
-                let runtime_ctx = RuntimeContext::from_runtime(tokio_adapter);
+                #[cfg(feature = "tokio-runtime")]
+                {
+                    // Create a TokioAdapter instance to provide the RuntimeContext
+                    let tokio_adapter = match aimdb_tokio_adapter::TokioAdapter::new() {
+                        Ok(adapter) => adapter,
+                        Err(_) => return Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                            #[cfg(feature = "std")]
+                            message: "Failed to create TokioAdapter".to_string(),
+                            #[cfg(not(feature = "std"))]
+                            message: "Failed to create TokioAdapter"
+                        })
+                    };
+                    let runtime_ctx = RuntimeContext::from_runtime(tokio_adapter);
 
-                adapter.spawn(#fn_name(runtime_ctx)).map(|_| ())
+                    match adapter.spawn(#fn_name(runtime_ctx)) {
+                        Ok(_handle) => Ok(()), // Ignore the JoinHandle, just return success
+                        Err(_) => Err(aimdb_executor::ExecutorError::SpawnFailed {
+                            #[cfg(feature = "std")]
+                            message: format!("Failed to spawn service: {}", stringify!(#fn_name)),
+                            #[cfg(not(feature = "std"))]
+                            message: "Failed to spawn service"
+                        })
+                    }
+                }
+                #[cfg(not(feature = "tokio-runtime"))]
+                {
+                    Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                        #[cfg(feature = "std")]
+                        message: "Tokio runtime not available".to_string(),
+                        #[cfg(not(feature = "std"))]
+                        message: "Tokio runtime not available"
+                    })
+                }
             }
 
-            // Embassy spawning method
-            #[cfg(feature = "embassy-runtime")]
-            fn spawn_on_embassy(adapter: &impl aimdb_core::SpawnStatically) -> aimdb_core::DbResult<()> {
-                if let Some(spawner) = adapter.spawner() {
-                    // Use defmt for embedded targets, tracing for std targets
-                    #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                    tracing::info!("Spawning Embassy service: {}", stringify!(#fn_name));
-                    #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                    defmt::info!("Spawning Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
+            // Static spawning method (for Embassy and similar runtimes)
+            fn spawn_on_static<R: aimdb_executor::SpawnStatically>(adapter: &R) -> aimdb_executor::ExecutorResult<()> {
+                #[cfg(feature = "embassy-runtime")]
+                {
+                    use aimdb_core::RuntimeContext;
 
-                    // Create RuntimeContext for Embassy
-                    let embassy_adapter = aimdb_embassy_adapter::EmbassyAdapter::new()?;
-                    let runtime_ctx = aimdb_core::RuntimeContext::from_runtime(embassy_adapter);
+                    if let Some(spawner) = adapter.spawner() {
+                        // Use defmt for embedded targets, tracing for std targets
+                        #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                        tracing::info!("Spawning Embassy service: {}", stringify!(#fn_name));
+                        #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                        defmt::info!("Spawning Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
 
-                    match spawner.spawn(#embassy_task_name(runtime_ctx)) {
-                        Ok(_) => {
-                            #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                            tracing::debug!("Successfully spawned Embassy service: {}", stringify!(#fn_name));
-                            #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                            defmt::debug!("Successfully spawned Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
-                            Ok(())
+                        // Create RuntimeContext for Embassy
+                        let embassy_adapter = match aimdb_embassy_adapter::EmbassyAdapter::new() {
+                            Ok(adapter) => adapter,
+                            Err(_) => return Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                                #[cfg(feature = "std")]
+                                message: "Failed to create EmbassyAdapter".to_string(),
+                                #[cfg(not(feature = "std"))]
+                                message: "Failed to create EmbassyAdapter"
+                            })
+                        };
+                        let runtime_ctx = RuntimeContext::from_runtime(embassy_adapter);
+
+                        match spawner.spawn(#embassy_task_name(runtime_ctx)) {
+                            Ok(_) => {
+                                #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                                tracing::debug!("Successfully spawned Embassy service: {}", stringify!(#fn_name));
+                                #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                                defmt::debug!("Successfully spawned Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
+                                Ok(())
+                            }
+                            Err(_) => {
+                                #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                                tracing::error!("Failed to spawn Embassy service: {}", stringify!(#fn_name));
+                                #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                                defmt::error!("Failed to spawn Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
+                                Err(aimdb_executor::ExecutorError::SpawnFailed {
+                                    #[cfg(feature = "std")]
+                                    message: format!("Failed to spawn Embassy service: {}", stringify!(#fn_name)),
+                                    #[cfg(not(feature = "std"))]
+                                    message: "Failed to spawn Embassy service"
+                                })
+                            }
                         }
-                        Err(_) => {
-                            #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                            tracing::error!("Failed to spawn Embassy service: {}", stringify!(#fn_name));
-                            #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                            defmt::error!("Failed to spawn Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
-                            Err(aimdb_core::DbError::internal(0x5003))
-                        }
+                    } else {
+                        #[cfg(all(feature = "tracing", not(feature = "embedded")))]
+                        tracing::error!("No spawner available for Embassy service: {}", stringify!(#fn_name));
+                        #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
+                        defmt::error!("No spawner available for Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
+                        Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                            #[cfg(feature = "std")]
+                            message: "No spawner available for Embassy service".to_string(),
+                            #[cfg(not(feature = "std"))]
+                            message: "No spawner available for Embassy service"
+                        })
                     }
-                } else {
-                    #[cfg(all(feature = "tracing", not(feature = "embedded")))]
-                    tracing::error!("No spawner available for Embassy service: {}", stringify!(#fn_name));
-                    #[cfg(all(not(feature = "tracing"), feature = "embedded"))]
-                    defmt::error!("No spawner available for Embassy service: {}", defmt::Debug2Format(&stringify!(#fn_name)));
-                    Err(aimdb_core::DbError::internal(0x1001))
+                }
+                #[cfg(not(feature = "embassy-runtime"))]
+                {
+                    Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                        #[cfg(feature = "std")]
+                        message: "Embassy runtime not available".to_string(),
+                        #[cfg(not(feature = "std"))]
+                        message: "Embassy runtime not available"
+                    })
                 }
             }
         }
