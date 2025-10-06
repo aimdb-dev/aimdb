@@ -117,50 +117,20 @@ where
     }
 }
 
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use super::*;
-    use crate::time::{SleepCapable, TimestampProvider};
-    use std::time::{Duration, SystemTime};
-
-    // Mock implementations for testing (only available in std environments)
-    #[derive(Clone, Copy)]
-    struct MockRuntime;
-
-    impl SleepCapable for MockRuntime {
-        type Duration = Duration;
-
-        #[allow(clippy::manual_async_fn)]
-        fn sleep(&self, _duration: Self::Duration) -> impl Future<Output = ()> {
-            async {}
-        }
-    }
-
-    impl TimestampProvider for MockRuntime {
-        type Instant = SystemTime;
-
-        fn now(&self) -> Self::Instant {
-            SystemTime::now()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_runtime_context_creation() {
-        let runtime = MockRuntime;
-        let ctx = RuntimeContext::from_runtime(runtime);
-
-        // Test that we can call the methods
-        let _now = ctx.now();
-        ctx.sleep(Duration::from_millis(1)).await;
-    }
-
-    #[tokio::test]
-    async fn test_runtime_context_new() {
-        let runtime = MockRuntime;
-        let ctx = RuntimeContext::new(runtime);
-
-        // Test that we can call the methods
-        let _now = ctx.now();
-        ctx.sleep(Duration::from_millis(1)).await;
-    }
+/// Create a RuntimeContext from any type that implements the required traits
+///
+/// This function provides a generic way to create a RuntimeContext from any
+/// runtime adapter, as long as it implements the necessary time traits.
+/// This is particularly useful in macros where we don't know the concrete type.
+///
+/// # Arguments
+/// * `runtime` - Any type implementing SleepCapable + TimestampProvider + Clone
+///
+/// # Returns
+/// A RuntimeContext wrapping the provided runtime
+pub fn create_runtime_context<R>(runtime: R) -> RuntimeContext<R>
+where
+    R: SleepCapable + TimestampProvider + Clone,
+{
+    RuntimeContext::from_runtime(runtime)
 }

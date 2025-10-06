@@ -13,15 +13,12 @@ pub mod runtime;
 pub mod time;
 
 // Public API exports
-pub use context::RuntimeContext;
+pub use context::{create_runtime_context, RuntimeContext};
 pub use error::{DbError, DbResult};
-pub use runtime::{AimDbService, DelayCapableAdapter, RuntimeAdapter, RuntimeInfo};
-
-#[cfg(feature = "tokio-runtime")]
-pub use runtime::SpawnDynamically;
-
-#[cfg(feature = "embassy-runtime")]
-pub use runtime::SpawnStatically;
+pub use runtime::{
+    AimDbService, DelayCapableAdapter, ExecutorError, ExecutorResult, RuntimeAdapter, RuntimeInfo,
+    SpawnDynamically, SpawnStatically,
+};
 pub use time::{SleepCapable, TimestampProvider};
 
 // Database implementation exports

@@ -429,6 +429,15 @@ pub enum DbError {
         _message: (),
     },
 
+    /// Runtime execution errors (task spawning, scheduling, etc.)
+    #[cfg_attr(feature = "std", error("Runtime error: {message}"))]
+    RuntimeError {
+        #[cfg(feature = "std")]
+        message: String,
+        #[cfg(not(feature = "std"))]
+        _message: (),
+    },
+
     /// I/O operation errors (std only)
     #[cfg(feature = "std")]
     #[error("I/O error: {source}")]
@@ -480,6 +489,7 @@ impl core::fmt::Display for DbError {
             DbError::ResourceUnavailable { .. } => (0x5002, "Resource unavailable"),
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
+            DbError::RuntimeError { .. } => (0xA001, "Runtime error"),
 
             // Standard library only errors (conditionally compiled)
             #[cfg(feature = "std")]
@@ -617,6 +627,9 @@ impl DbError {
 
             // Internal errors: 0x7000-0x7FFF
             DbError::Internal { .. } => 0x7001,
+
+            // Runtime errors: 0xA000-0xAFFF
+            DbError::RuntimeError { .. } => 0xA001,
 
             // Standard library only errors (conditionally compiled)
             // I/O errors: 0x8000-0x8FFF
@@ -769,6 +782,11 @@ impl DbError {
             DbError::Internal { code, mut message } => {
                 Self::prepend_context_always(&mut message, context);
                 DbError::Internal { code, message }
+            }
+
+            DbError::RuntimeError { mut message } => {
+                Self::prepend_context_always(&mut message, context);
+                DbError::RuntimeError { message }
             }
 
             // For Io and Json errors, convert to context variants
