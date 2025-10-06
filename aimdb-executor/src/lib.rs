@@ -108,7 +108,7 @@ pub trait RuntimeAdapter: Send + Sync + 'static {
 /// Implementations should use the most appropriate time type for their platform.
 pub trait TimeSource: RuntimeAdapter {
     /// The instant type used by this runtime
-    type Instant: Clone + Send + Sync + 'static;
+    type Instant: Clone + Send + Sync + core::fmt::Debug + 'static;
 
     /// Get the current time instant
     fn now(&self) -> Self::Instant;
