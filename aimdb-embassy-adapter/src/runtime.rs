@@ -113,6 +113,77 @@ impl EmbassyAdapter {
     pub fn spawner(&self) -> Option<&Spawner> {
         self.spawner.as_ref()
     }
+
+    /// Initialize a global static adapter instance
+    ///
+    /// This provides a cleaner API by managing the static storage internally.
+    /// Only call this once at the start of your application.
+    ///
+    /// # Safety
+    /// Must be called only once during application initialization, before any services are spawned.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # #[cfg(not(feature = "std"))]
+    /// # {
+    /// use aimdb_embassy_adapter::EmbassyAdapter;
+    /// use embassy_executor::Spawner;
+    ///
+    /// #[embassy_executor::main]
+    /// async fn main(spawner: Spawner) -> ! {
+    ///     // Initialize the global adapter
+    ///     EmbassyAdapter::init_global(spawner);
+    ///     
+    ///     // Get a reference to use with services
+    ///     let adapter = EmbassyAdapter::global();
+    ///     
+    ///     // Use adapter to spawn services...
+    ///     # loop {}
+    /// }
+    /// # }
+    /// ```
+    #[cfg(feature = "embassy-runtime")]
+    pub fn init_global(spawner: Spawner) {
+        static mut GLOBAL_ADAPTER: Option<EmbassyAdapter> = None;
+
+        unsafe {
+            use core::ptr;
+            ptr::write(
+                ptr::addr_of_mut!(GLOBAL_ADAPTER),
+                Some(Self::new_with_spawner(spawner)),
+            );
+        }
+    }
+
+    /// Get a reference to the global adapter instance
+    ///
+    /// # Panics
+    /// Panics if `init_global()` has not been called first.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # #[cfg(not(feature = "std"))]
+    /// # {
+    /// use aimdb_embassy_adapter::EmbassyAdapter;
+    ///
+    /// # async fn example() {
+    /// let adapter = EmbassyAdapter::global();
+    /// // Use adapter with services...
+    /// # }
+    /// # }
+    /// ```
+    #[cfg(feature = "embassy-runtime")]
+    pub fn global() -> &'static Self {
+        static mut GLOBAL_ADAPTER: Option<EmbassyAdapter> = None;
+
+        unsafe {
+            use core::ptr;
+            ptr::addr_of!(GLOBAL_ADAPTER)
+                .as_ref()
+                .and_then(|opt| opt.as_ref())
+                .expect("EmbassyAdapter::init_global() must be called first")
+        }
+    }
 }
 
 impl Default for EmbassyAdapter {

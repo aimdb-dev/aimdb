@@ -10,7 +10,7 @@
 //! adapter-specific helper methods, keeping runtime concerns isolated.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{ItemFn, Result};
 
 /// Convert snake_case to PascalCase
@@ -58,6 +58,9 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
     let pascal_case_name = to_pascal_case(&fn_name_str);
     let service_struct_name = syn::Ident::new(&pascal_case_name, fn_name.span());
 
+    // Create unique embassy task wrapper name for this service
+    let embassy_task_name = format_ident!("{}_embassy_task", fn_name);
+
     Ok(quote! {
         // Original function (preserved for direct calls if needed)
         // Retains all generic parameters from the original definition
@@ -94,11 +97,11 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
             /// macro-generated #[embassy_executor::task] functions.
             #[cfg(feature = "embassy-runtime")]
             pub fn spawn_embassy(
-                adapter: &aimdb_embassy_adapter::EmbassyAdapter,
+                adapter: &'static aimdb_embassy_adapter::EmbassyAdapter,
             ) -> aimdb_executor::ExecutorResult<()> {
                 if let Some(spawner) = adapter.spawner() {
-                    // The Embassy task wrapper is generated below
-                    spawner.spawn(embassy_task_wrapper(adapter.clone()))
+                    // The Embassy task wrapper is generated below with unique name
+                    spawner.spawn(#embassy_task_name(adapter))
                         .map_err(|_| aimdb_executor::ExecutorError::SpawnFailed {
                             #[cfg(feature = "std")]
                             message: format!("Failed to spawn Embassy service: {}", stringify!(#fn_name)),
@@ -122,10 +125,13 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
         }
 
         // Embassy task wrapper (only with embassy-runtime feature)
+        // Each service gets a unique task wrapper name to avoid conflicts
+        // The adapter is passed as a reference since RuntimeContext::new() in no_std
+        // requires a 'static reference
         #[cfg(feature = "embassy-runtime")]
         #[embassy_executor::task]
-        async fn embassy_task_wrapper(adapter: aimdb_embassy_adapter::EmbassyAdapter) {
-            let ctx = aimdb_core::RuntimeContext::new(&adapter);
+        async fn #embassy_task_name(adapter: &'static aimdb_embassy_adapter::EmbassyAdapter) {
+            let ctx = aimdb_core::RuntimeContext::new(adapter);
             let _ = #fn_name(ctx).await;
         }
     })
