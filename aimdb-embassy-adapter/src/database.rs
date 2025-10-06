@@ -42,14 +42,14 @@ impl EmbassyDatabase {
     ///
     /// # async fn example(db: EmbassyDatabase) -> aimdb_core::DbResult<()> {
     /// // Spawn service through the generated service struct
-    /// SensorMonitorService::spawn_on_embassy(db.adapter())?;
+    /// SensorMonitorService::spawn_on_static(db.adapter())?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn spawn_service_on_embassy<S: aimdb_core::AimDbService>(
         &self,
     ) -> aimdb_core::DbResult<()> {
-        S::spawn_on_embassy(self.adapter())
+        S::spawn_on_static(self.adapter()).map_err(aimdb_core::DbError::from)
     }
 
     /// Gets access to the underlying adapter for service spawning

@@ -3,7 +3,12 @@
 //! This module provides the Embassy-specific implementation of AimDB's runtime traits,
 //! enabling async task execution in embedded environments using Embassy.
 
-use aimdb_core::{DbResult, DelayCapableAdapter, RuntimeAdapter, SpawnStatically};
+use aimdb_core::{DbError, DbResult};
+#[cfg(feature = "embassy-time")]
+use aimdb_executor::DelayCapableAdapter;
+#[cfg(feature = "embassy-runtime")]
+use aimdb_executor::SpawnStatically;
+use aimdb_executor::{ExecutorResult, RuntimeAdapter};
 use core::future::Future;
 
 #[cfg(feature = "tracing")]
@@ -38,6 +43,7 @@ use embassy_executor::Spawner;
 /// # }
 /// # }
 /// ```
+#[derive(Clone)]
 pub struct EmbassyAdapter {
     #[cfg(feature = "embassy-runtime")]
     spawner: Option<Spawner>,
@@ -71,16 +77,15 @@ impl EmbassyAdapter {
     ///
     /// # Returns
     /// `Ok(EmbassyAdapter)` - Always succeeds
-    pub fn new() -> DbResult<Self> {
-        #[cfg(feature = "tracing")]
-        debug!("Creating EmbassyAdapter (no spawner)");
+    pub fn new() -> ExecutorResult<Self> {
+        <Self as RuntimeAdapter>::new()
+    }
 
-        Ok(Self {
-            #[cfg(feature = "embassy-runtime")]
-            spawner: None,
-            #[cfg(not(feature = "embassy-runtime"))]
-            _phantom: core::marker::PhantomData,
-        })
+    /// Creates a new EmbassyAdapter returning DbResult for backward compatibility
+    ///
+    /// This method provides compatibility with existing code that expects DbResult.
+    pub fn new_db_result() -> DbResult<Self> {
+        Self::new().map_err(DbError::from)
     }
 
     /// Creates a new EmbassyAdapter with an Embassy spawner
@@ -119,8 +124,16 @@ impl Default for EmbassyAdapter {
 // Trait implementations for the core adapter interfaces
 
 impl RuntimeAdapter for EmbassyAdapter {
-    fn new() -> DbResult<Self> {
-        Self::new()
+    fn new() -> ExecutorResult<Self> {
+        #[cfg(feature = "tracing")]
+        debug!("Creating EmbassyAdapter (no spawner)");
+
+        Ok(Self {
+            #[cfg(feature = "embassy-runtime")]
+            spawner: None,
+            #[cfg(not(feature = "embassy-runtime"))]
+            _phantom: core::marker::PhantomData,
+        })
     }
 
     fn runtime_name() -> &'static str {
@@ -130,7 +143,9 @@ impl RuntimeAdapter for EmbassyAdapter {
 
 #[cfg(feature = "embassy-runtime")]
 impl SpawnStatically for EmbassyAdapter {
-    fn spawner(&self) -> Option<&embassy_executor::Spawner> {
+    type Spawner = embassy_executor::Spawner;
+
+    fn spawner(&self) -> Option<&Self::Spawner> {
         self.spawner.as_ref()
     }
 }
@@ -144,9 +159,9 @@ impl DelayCapableAdapter for EmbassyAdapter {
         &self,
         task: F,
         delay: Self::Duration,
-    ) -> impl Future<Output = DbResult<T>> + Send
+    ) -> impl Future<Output = ExecutorResult<T>> + Send
     where
-        F: Future<Output = DbResult<T>> + Send + 'static,
+        F: Future<Output = ExecutorResult<T>> + Send + 'static,
         T: Send + 'static,
     {
         async move {

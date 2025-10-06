@@ -10,12 +10,7 @@ build = "build.rs"
 default = []
 
 # Runtime features
-embassy-runtime = [
-    "embassy-executor",
-    "embassy-time",
-    "embassy-sync",
-    "aimdb-core/embassy-runtime",
-]
+embassy-runtime = ["embassy-executor", "embassy-time", "embassy-sync"]
 
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]
@@ -27,9 +22,14 @@ std = []
 # Note: metrics feature not supported on embedded - requires std library
 
 [dependencies]
-# Core AimDB types - always no_std for Embassy
+# Executor traits
+aimdb-executor = { path = "../aimdb-executor", default-features = false, features = [
+    "embassy-types",
+] }
+
+# Core AimDB types - no_std for Embassy (for DbError integration)
 aimdb-core = { path = "../aimdb-core", default-features = false, features = [
-    "embedded",
+    "embassy-runtime",
 ] }
 
 # Embassy ecosystem for embedded async
