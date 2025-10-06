@@ -27,15 +27,16 @@
 //!
 //! ```rust,no_run
 //! use aimdb_tokio_adapter::TokioAdapter;
-//! use aimdb_core::{RuntimeAdapter, DelayCapableAdapter, time::{SleepCapable, TimestampProvider}};
+//! use aimdb_executor::{RuntimeAdapter, DelayCapableAdapter, ExecutorResult};
+//! use aimdb_core::{DbResult, time::{SleepCapable, TimestampProvider}};
 //! use std::time::Duration;
 //!
 //! #[tokio::main]
-//! async fn main() -> aimdb_core::DbResult<()> {
+//! async fn main() -> DbResult<()> {
 //!     // Create adapter
 //!     let adapter = TokioAdapter::new()?;
 //!
-//!     // Spawn async tasks
+//!     // Spawn async tasks (spawn_task expects DbResult)
 //!     let result = adapter.spawn_task(async {
 //!         Ok::<i32, aimdb_core::DbError>(42)
 //!     }).await?;
@@ -44,9 +45,9 @@
 //!     let timestamp = adapter.now();
 //!     adapter.sleep(Duration::from_millis(100)).await;
 //!
-//!     // Use delayed task spawning
+//!     // Use delayed task spawning (expecting ExecutorResult)
 //!     adapter.spawn_delayed_task(
-//!         async { Ok::<(), aimdb_core::DbError>(()) },
+//!         async { Ok::<(), aimdb_executor::ExecutorError>(()) },
 //!         Duration::from_millis(500)
 //!     ).await?;
 //!

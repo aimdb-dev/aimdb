@@ -3,7 +3,8 @@
 //! This module provides the Tokio-specific implementation of AimDB's runtime traits,
 //! enabling async task spawning and execution in std environments using Tokio.
 
-use aimdb_core::{DbError, DbResult, DelayCapableAdapter, RuntimeAdapter, SpawnDynamically};
+use aimdb_core::{DbError, DbResult};
+use aimdb_executor::{DelayCapableAdapter, ExecutorResult, RuntimeAdapter, SpawnDynamically};
 use core::future::Future;
 use std::time::Duration;
 
@@ -56,16 +57,20 @@ impl TokioAdapter {
     /// # Example
     /// ```rust,no_run
     /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use aimdb_core::RuntimeAdapter;
+    /// use aimdb_executor::RuntimeAdapter;
     ///
     /// let adapter = TokioAdapter::new()?;
-    /// # Ok::<_, aimdb_core::DbError>(())
+    /// # Ok::<_, aimdb_executor::ExecutorError>(())
     /// ```
-    pub fn new() -> DbResult<Self> {
-        #[cfg(feature = "tracing")]
-        debug!("Creating TokioAdapter");
+    pub fn new() -> ExecutorResult<Self> {
+        <Self as RuntimeAdapter>::new()
+    }
 
-        Ok(Self)
+    /// Creates a new TokioAdapter returning DbResult for backward compatibility
+    ///
+    /// This method provides compatibility with existing code that expects DbResult.
+    pub fn new_db_result() -> DbResult<Self> {
+        Self::new().map_err(DbError::from)
     }
 
     /// Spawns an async task on the Tokio executor
@@ -139,8 +144,11 @@ impl Default for TokioAdapter {
 
 #[cfg(feature = "tokio-runtime")]
 impl RuntimeAdapter for TokioAdapter {
-    fn new() -> DbResult<Self> {
-        Self::new()
+    fn new() -> ExecutorResult<Self> {
+        #[cfg(feature = "tracing")]
+        debug!("Creating TokioAdapter");
+
+        Ok(Self)
     }
 
     fn runtime_name() -> &'static str {
@@ -150,7 +158,9 @@ impl RuntimeAdapter for TokioAdapter {
 
 #[cfg(feature = "tokio-runtime")]
 impl SpawnDynamically for TokioAdapter {
-    fn spawn<F, T>(&self, future: F) -> DbResult<tokio::task::JoinHandle<T>>
+    type JoinHandle<T: Send + 'static> = tokio::task::JoinHandle<T>;
+
+    fn spawn<F, T>(&self, future: F) -> ExecutorResult<Self::JoinHandle<T>>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
@@ -181,15 +191,15 @@ impl DelayCapableAdapter for TokioAdapter {
     /// # Example
     /// ```rust,no_run
     /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use aimdb_core::DelayCapableAdapter;
+    /// use aimdb_executor::{DelayCapableAdapter, ExecutorResult};
     /// use std::time::Duration;
     ///
     /// # #[tokio::main]
-    /// # async fn main() -> aimdb_core::DbResult<()> {
+    /// # async fn main() -> ExecutorResult<()> {
     /// let adapter = TokioAdapter::new()?;
     ///
     /// let result = adapter.spawn_delayed_task(
-    ///     async { Ok::<i32, aimdb_core::DbError>(42) },
+    ///     async { Ok::<i32, aimdb_executor::ExecutorError>(42) },
     ///     Duration::from_millis(100)
     /// ).await?;
     ///
@@ -202,9 +212,9 @@ impl DelayCapableAdapter for TokioAdapter {
         &self,
         task: F,
         delay: Self::Duration,
-    ) -> impl Future<Output = DbResult<T>> + Send
+    ) -> impl Future<Output = ExecutorResult<T>> + Send
     where
-        F: Future<Output = DbResult<T>> + Send + 'static,
+        F: Future<Output = ExecutorResult<T>> + Send + 'static,
         T: Send + 'static,
     {
         async move {
