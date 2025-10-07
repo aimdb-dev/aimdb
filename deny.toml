@@ -4,7 +4,7 @@ allow = [
     "Apache-2.0",
     "MIT",
     "BSD-2-Clause",
-    "0BSD",           # BSD Zero Clause License - used by embassy-net dependencies
+    "0BSD",         # BSD Zero Clause License - used by embassy-net dependencies
     "Unicode-3.0",
 ]
 
