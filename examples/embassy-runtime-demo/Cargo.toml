@@ -1,0 +1,88 @@
+[package]
+edition = "2024"
+name = "embassy-runtime-demo"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = ["embassy-runtime"]
+embassy-runtime = []
+# Declare but don't enable these features to silence cfg warnings from the service macro
+tokio-runtime = []
+std = []
+
+[dependencies]
+# AimDB dependencies
+aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
+    "embassy-runtime",
+] }
+aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
+    "embassy-runtime",
+] }
+aimdb-executor = { path = "../../aimdb-executor", default-features = false, features = [
+    "embassy-types",
+] }
+aimdb-macros = { path = "../../aimdb-macros" }
+aimdb-examples-shared = { path = "../shared", default-features = false, features = [
+    "embassy-runtime",
+] }
+
+# Embassy ecosystem - override workspace to use different chip
+embassy-stm32 = { version = "0.4.0", default-features = false, features = [
+    "defmt",
+    "stm32h563zi",
+    "memory-x",
+    "time-driver-any",
+    "exti",
+    "unstable-pac",
+] }
+embassy-sync = { workspace = true, features = ["defmt"] }
+embassy-executor = { workspace = true, features = [
+    "arch-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-time = { workspace = true, features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+    "tick-hz-32_768",
+] }
+embassy-net = { workspace = true, features = [
+    "defmt",
+    "tcp",
+    "dhcpv4",
+    "medium-ethernet",
+] }
+embassy-usb = { workspace = true, features = ["defmt"] }
+embassy-futures = { workspace = true }
+
+# Embedded debugging and logging
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+
+# Cortex-M runtime
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+critical-section = { workspace = true }
+static_cell = { workspace = true }
+
+# Embedded HAL
+embedded-hal = { workspace = true }
+embedded-hal-1 = { workspace = true }
+embedded-hal-async = { workspace = true }
+embedded-io-async = { workspace = true }
+embedded-nal-async = { workspace = true }
+embedded-storage = { workspace = true }
+
+# Embedded utilities  
+heapless = { workspace = true }
+micromath = { workspace = true }
+stm32-fmc = { workspace = true }
+embedded-alloc = "0.6"
+
+[package.metadata.embassy]
+build = [
+    { target = "thumbv8m.main-none-eabihf", artifact-dir = "out/examples/stm32h5" },
+]
