@@ -16,6 +16,9 @@ proc-macro = true
 default = []
 # Enable debug output for macro expansion
 debug = []
+# Runtime feature flags (used for conditional compilation in generated code)
+tokio-runtime = []
+embassy-runtime = []
 
 [dependencies]
 # Procedural macro dependencies

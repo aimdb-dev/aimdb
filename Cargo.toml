@@ -6,7 +6,9 @@ members = [
     "aimdb-tokio-adapter",
     "aimdb-macros",
     "tools/aimdb-cli",
-    "examples",
+    "examples/shared",
+    "examples/tokio-runtime-demo",
+    "examples/embassy-runtime-demo",
 ]
 resolver = "2"
 # Note: build aimdb-core only by default. Use make all to build the full workspace!
@@ -57,15 +59,6 @@ tokio-test = "0.4"
 aimdb-tokio-adapter = { path = "./aimdb-tokio-adapter" }
 
 # Embassy ecosystem for embedded async
-embassy-stm32 = { version = "0.4.0", features = [
-    "defmt",
-    "stm32f429zi",
-    "unstable-pac",
-    "memory-x",
-    "time-driver-tim4",
-    "exti",
-    "chrono",
-] }
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-executor = { version = "0.9.0", features = [
     "arch-cortex-m",
@@ -90,23 +83,33 @@ embassy-futures = { version = "0.1.2" }
 
 # Embedded HAL for peripheral abstractions
 embedded-hal = "0.2.6"
+embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
 embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 embedded-hal-bus = { version = "0.2", features = ["async"] }
 embedded-io = { version = "0.6.0" }
 embedded-io-async = { version = "0.6.1" }
+embedded-nal-async = "0.8.0"
+embedded-storage = "0.3.1"
 
-# Embedded debugging and logging
-defmt = "1.0.1"
-defmt-rtt = "1.0.0"
-panic-halt = "0.2"
-
-# Cortex-M
+# Embedded runtime and utilities
 cortex-m = { version = "0.7.6", features = [
     "inline-asm",
     "critical-section-single-core",
 ] }
 cortex-m-rt = "0.7.0"
+critical-section = "1.1"
+static_cell = "2"
+
+# Embedded debugging and logging
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+# Embedded utilities
+heapless = { version = "0.8", default-features = false }
+micromath = "2.0.0"
+stm32-fmc = "0.3.0"
 
 [workspace.metadata.docs.rs]
 all-features = true
