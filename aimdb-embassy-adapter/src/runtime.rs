@@ -274,6 +274,24 @@ impl Sleeper for EmbassyAdapter {
     }
 }
 
+impl aimdb_executor::Logger for EmbassyAdapter {
+    fn info(&self, message: &str) {
+        defmt::info!("{}", message);
+    }
+
+    fn debug(&self, message: &str) {
+        defmt::debug!("{}", message);
+    }
+
+    fn warn(&self, message: &str) {
+        defmt::warn!("{}", message);
+    }
+
+    fn error(&self, message: &str) {
+        defmt::error!("{}", message);
+    }
+}
+
 #[cfg(all(feature = "embassy-time", feature = "embassy-runtime"))]
 impl Runtime for EmbassyAdapter {
     fn has_dynamic_spawn(&self) -> bool {
