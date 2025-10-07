@@ -133,6 +133,65 @@ pub trait Sleeper: RuntimeAdapter {
     fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send;
 }
 
+/// Trait for logging capabilities across std and no_std environments
+///
+/// This trait provides a unified logging interface that abstracts over different
+/// logging implementations (println!, defmt, log crate, etc.). This allows
+/// runtime-agnostic services to log without conditional compilation.
+///
+/// # Design Philosophy
+///
+/// - **Platform Agnostic**: Works in both std and no_std environments
+/// - **Zero Cost**: Can be optimized away in release builds
+/// - **Flexible**: Adapters choose their logging implementation
+/// - **Simple**: Only core logging levels needed for services
+///
+/// # Example
+///
+/// ```ignore
+/// async fn my_service<R: Runtime + Logger>(ctx: RuntimeContext<R>) {
+///     ctx.info("Service starting");
+///     ctx.debug("Processing data");
+///     ctx.warn("High memory usage");
+///     ctx.error("Connection failed");
+/// }
+/// ```
+pub trait Logger: RuntimeAdapter {
+    /// Log an informational message
+    ///
+    /// Use for general operational messages like service start/stop,
+    /// successful operations, and progress updates.
+    ///
+    /// # Arguments
+    /// * `message` - The message to log
+    fn info(&self, message: &str);
+
+    /// Log a debug message
+    ///
+    /// Use for detailed diagnostic information useful during development.
+    ///
+    /// # Arguments
+    /// * `message` - The message to log
+    fn debug(&self, message: &str);
+
+    /// Log a warning message
+    ///
+    /// Use for potentially problematic situations that don't prevent
+    /// operation but should be noted.
+    ///
+    /// # Arguments
+    /// * `message` - The message to log
+    fn warn(&self, message: &str);
+
+    /// Log an error message
+    ///
+    /// Use for error conditions that indicate failures or critical issues.
+    ///
+    /// # Arguments
+    /// * `message` - The message to log
+    fn error(&self, message: &str);
+}
+
 /// Trait for runtimes that support dynamic future spawning (like Tokio)
 ///
 /// This trait is for runtimes that can spawn arbitrary futures at runtime,
@@ -236,7 +295,7 @@ pub trait CommonRuntimeTraits: RuntimeAdapter {
 /// Unified runtime trait combining all runtime capabilities
 ///
 /// This trait is the primary interface for runtime-agnostic code.
-/// It combines time, sleep, and spawning capabilities into one cohesive interface.
+/// It combines time, sleep, logging, and spawning capabilities into one cohesive interface.
 ///
 /// # Usage
 ///
@@ -248,14 +307,19 @@ pub trait CommonRuntimeTraits: RuntimeAdapter {
 ///
 /// ```ignore
 /// async fn my_service<R: Runtime>(runtime: &R) {
+///     runtime.info("Service starting");
 ///     let start = runtime.now();
 ///     runtime.sleep(Duration::from_secs(1)).await;
 ///     let elapsed = runtime.duration_since(runtime.now(), start);
+///     runtime.info("Service completed");
 /// }
 /// ```
-pub trait Runtime: TimeSource + Sleeper {
-    /// Type-erased runtime information
-    fn info(&self) -> RuntimeInfo
+pub trait Runtime: TimeSource + Sleeper + Logger {
+    /// Get type-erased runtime information
+    ///
+    /// Returns metadata about this runtime adapter including its name
+    /// and spawning capabilities.
+    fn runtime_info(&self) -> RuntimeInfo
     where
         Self: Sized,
     {

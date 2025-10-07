@@ -154,6 +154,55 @@ where
         self.runtime.duration_since(later, earlier)
     }
 
+    /// Log an informational message
+    ///
+    /// This method delegates to the underlying runtime's logging implementation,
+    /// providing a consistent way to log across different runtimes.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The message to log
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// # use aimdb_core::RuntimeContext;
+    /// # use aimdb_tokio_adapter::TokioAdapter;
+    /// # fn example(ctx: &RuntimeContext<TokioAdapter>) {
+    /// ctx.info("Service started successfully");
+    /// # }
+    /// ```
+    pub fn info(&self, message: &str) {
+        self.runtime.info(message)
+    }
+
+    /// Log a debug message
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The message to log
+    pub fn debug(&self, message: &str) {
+        self.runtime.debug(message)
+    }
+
+    /// Log a warning message
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The message to log
+    pub fn warn(&self, message: &str) {
+        self.runtime.warn(message)
+    }
+
+    /// Log an error message
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The message to log
+    pub fn error(&self, message: &str) {
+        self.runtime.error(message)
+    }
+
     /// Get access to the underlying runtime
     ///
     /// This provides direct access to the runtime for advanced use cases.

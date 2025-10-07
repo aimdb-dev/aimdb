@@ -65,6 +65,7 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",
+ "defmt 1.0.1",
  "embassy-executor",
  "embassy-sync",
  "embassy-time",
