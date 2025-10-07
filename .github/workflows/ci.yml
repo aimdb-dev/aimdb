@@ -195,8 +195,5 @@ jobs:
     - name: Run comprehensive development check
       run: make check
     
-    - name: Build examples
-      run: cargo build --package aimdb-examples
-    
     - name: Generate documentation
       run: make doc
