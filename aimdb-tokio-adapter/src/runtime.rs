@@ -250,6 +250,28 @@ impl Sleeper for TokioAdapter {
 }
 
 #[cfg(feature = "tokio-runtime")]
+impl aimdb_executor::Logger for TokioAdapter {
+    fn info(&self, message: &str) {
+        println!("ℹ️  {}", message);
+    }
+
+    fn debug(&self, message: &str) {
+        #[cfg(debug_assertions)]
+        println!("🔍 {}", message);
+        #[cfg(not(debug_assertions))]
+        let _ = message; // Avoid unused variable warning in release
+    }
+
+    fn warn(&self, message: &str) {
+        println!("⚠️  {}", message);
+    }
+
+    fn error(&self, message: &str) {
+        eprintln!("❌ {}", message);
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
 impl Runtime for TokioAdapter {
     fn has_dynamic_spawn(&self) -> bool {
         true
