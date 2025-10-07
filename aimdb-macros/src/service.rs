@@ -93,8 +93,14 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
 
             /// Spawn this service on Embassy runtime (requires static task definition)
             ///
-            /// This is a placeholder - actual Embassy spawning happens through
-            /// macro-generated #[embassy_executor::task] functions.
+            /// This spawns the service as an Embassy task, using the spawner contained
+            /// within the adapter. The adapter must have been created with a spawner.
+            ///
+            /// # Arguments
+            /// * `adapter` - A static reference to the Embassy adapter with spawner
+            ///
+            /// # Returns
+            /// Ok(()) if spawning succeeded, or an error if the spawner is unavailable
             #[cfg(feature = "embassy-runtime")]
             pub fn spawn_embassy(
                 adapter: &'static aimdb_embassy_adapter::EmbassyAdapter,
@@ -126,11 +132,13 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
 
         // Embassy task wrapper (only with embassy-runtime feature)
         // Each service gets a unique task wrapper name to avoid conflicts
-        // The adapter is passed as a reference since RuntimeContext::new() in no_std
-        // requires a 'static reference
+        // The adapter must be a 'static reference because Embassy tasks require 'static lifetime
+        // and RuntimeContext in no_std mode requires a 'static reference to the runtime
         #[cfg(feature = "embassy-runtime")]
         #[embassy_executor::task]
         async fn #embassy_task_name(adapter: &'static aimdb_embassy_adapter::EmbassyAdapter) {
+            // In no_std/embassy mode, RuntimeContext::new() expects &'static R
+            // This is correct - Embassy adapter is passed as &'static
             let ctx = aimdb_core::RuntimeContext::new(adapter);
             let _ = #fn_name(ctx).await;
         }
