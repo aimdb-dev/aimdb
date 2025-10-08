@@ -247,6 +247,7 @@ impl DelayCapableAdapter for EmbassyAdapter {
 #[cfg(feature = "embassy-time")]
 impl TimeSource for EmbassyAdapter {
     type Instant = embassy_time::Instant;
+    type Duration = embassy_time::Duration;
 
     fn now(&self) -> Self::Instant {
         embassy_time::Instant::now()
@@ -256,21 +257,31 @@ impl TimeSource for EmbassyAdapter {
         &self,
         later: Self::Instant,
         earlier: Self::Instant,
-    ) -> Option<core::time::Duration> {
+    ) -> Option<Self::Duration> {
         if later >= earlier {
-            Some((later - earlier).into())
+            Some(later - earlier)
         } else {
             None
         }
+    }
+
+    fn millis(&self, millis: u64) -> Self::Duration {
+        embassy_time::Duration::from_millis(millis)
+    }
+
+    fn secs(&self, secs: u64) -> Self::Duration {
+        embassy_time::Duration::from_secs(secs)
+    }
+
+    fn micros(&self, micros: u64) -> Self::Duration {
+        embassy_time::Duration::from_micros(micros)
     }
 }
 
 #[cfg(feature = "embassy-time")]
 impl Sleeper for EmbassyAdapter {
-    fn sleep(&self, duration: core::time::Duration) -> impl Future<Output = ()> + Send {
-        embassy_time::Timer::after(embassy_time::Duration::from_micros(
-            duration.as_micros() as u64
-        ))
+    fn sleep(&self, duration: <Self as TimeSource>::Duration) -> impl Future<Output = ()> + Send {
+        embassy_time::Timer::after(duration)
     }
 }
 

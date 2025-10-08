@@ -232,19 +232,36 @@ impl DelayCapableAdapter for TokioAdapter {
 #[cfg(feature = "tokio-runtime")]
 impl TimeSource for TokioAdapter {
     type Instant = Instant;
+    type Duration = Duration;
 
     fn now(&self) -> Self::Instant {
         Instant::now()
     }
 
-    fn duration_since(&self, later: Self::Instant, earlier: Self::Instant) -> Option<Duration> {
+    fn duration_since(
+        &self,
+        later: Self::Instant,
+        earlier: Self::Instant,
+    ) -> Option<Self::Duration> {
         later.checked_duration_since(earlier)
+    }
+
+    fn millis(&self, millis: u64) -> Self::Duration {
+        Duration::from_millis(millis)
+    }
+
+    fn secs(&self, secs: u64) -> Self::Duration {
+        Duration::from_secs(secs)
+    }
+
+    fn micros(&self, micros: u64) -> Self::Duration {
+        Duration::from_micros(micros)
     }
 }
 
 #[cfg(feature = "tokio-runtime")]
 impl Sleeper for TokioAdapter {
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send {
+    fn sleep(&self, duration: <Self as TimeSource>::Duration) -> impl Future<Output = ()> + Send {
         tokio::time::sleep(duration)
     }
 }
