@@ -5,7 +5,6 @@
 
 use aimdb_executor::Runtime;
 use core::future::Future;
-use core::time::Duration;
 
 /// Unified runtime context for AimDB services
 ///
@@ -92,38 +91,32 @@ impl<R> RuntimeContext<R>
 where
     R: Runtime,
 {
-    /// Sleep for the specified duration
+    /// Access time utilities
     ///
-    /// This method delegates to the underlying runtime's sleep implementation,
-    /// allowing services to sleep without knowing the specific runtime type.
-    ///
-    /// # Arguments
-    ///
-    /// * `duration` - How long to sleep
+    /// Returns a time accessor that provides duration creation, sleep, and timing operations.
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// # use aimdb_core::RuntimeContext;
     /// # use aimdb_tokio_adapter::TokioAdapter;
-    /// # use std::time::Duration;
     /// # async fn example(ctx: &RuntimeContext<TokioAdapter>) {
-    /// // In a service function
-    /// ctx.sleep(Duration::from_millis(500)).await;
+    /// // Get time accessor
+    /// let time = ctx.time();
+    ///
+    /// // Use it for various operations
+    /// let start = time.now();
+    /// time.sleep(time.millis(500)).await;
+    /// let elapsed = time.duration_since(time.now(), start);
     /// # }
     /// ```
-    pub fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + '_ {
-        self.runtime.sleep(duration)
+    pub fn time(&self) -> Time<'_, R> {
+        Time { ctx: self }
     }
 
-    /// Get the current timestamp
+    /// Access logging utilities
     ///
-    /// This method delegates to the underlying runtime's timestamp implementation,
-    /// providing a consistent way to get time information across different runtimes.
-    ///
-    /// # Returns
-    ///
-    /// Current instant/timestamp from the runtime
+    /// Returns a logger accessor that provides structured logging operations.
     ///
     /// # Example
     ///
@@ -131,76 +124,13 @@ where
     /// # use aimdb_core::RuntimeContext;
     /// # use aimdb_tokio_adapter::TokioAdapter;
     /// # fn example(ctx: &RuntimeContext<TokioAdapter>) {
-    /// let start_time = ctx.now();
-    /// // ... do some work ...
-    /// let end_time = ctx.now();
+    /// ctx.log().info("Service started");
+    /// ctx.log().warn("High memory usage");
+    /// ctx.log().error("Connection failed");
     /// # }
     /// ```
-    pub fn now(&self) -> R::Instant {
-        self.runtime.now()
-    }
-
-    /// Get the duration between two instants
-    ///
-    /// # Arguments
-    ///
-    /// * `later` - The later instant
-    /// * `earlier` - The earlier instant
-    ///
-    /// # Returns
-    ///
-    /// Some(Duration) if later >= earlier, None otherwise
-    pub fn duration_since(&self, later: R::Instant, earlier: R::Instant) -> Option<Duration> {
-        self.runtime.duration_since(later, earlier)
-    }
-
-    /// Log an informational message
-    ///
-    /// This method delegates to the underlying runtime's logging implementation,
-    /// providing a consistent way to log across different runtimes.
-    ///
-    /// # Arguments
-    ///
-    /// * `message` - The message to log
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// # use aimdb_core::RuntimeContext;
-    /// # use aimdb_tokio_adapter::TokioAdapter;
-    /// # fn example(ctx: &RuntimeContext<TokioAdapter>) {
-    /// ctx.info("Service started successfully");
-    /// # }
-    /// ```
-    pub fn info(&self, message: &str) {
-        self.runtime.info(message)
-    }
-
-    /// Log a debug message
-    ///
-    /// # Arguments
-    ///
-    /// * `message` - The message to log
-    pub fn debug(&self, message: &str) {
-        self.runtime.debug(message)
-    }
-
-    /// Log a warning message
-    ///
-    /// # Arguments
-    ///
-    /// * `message` - The message to log
-    pub fn warn(&self, message: &str) {
-        self.runtime.warn(message)
-    }
-
-    /// Log an error message
-    ///
-    /// # Arguments
-    ///
-    /// * `message` - The message to log
-    pub fn error(&self, message: &str) {
-        self.runtime.error(message)
+    pub fn log(&self) -> Log<'_, R> {
+        Log { ctx: self }
     }
 
     /// Get access to the underlying runtime
@@ -251,4 +181,167 @@ where
     R: Runtime,
 {
     RuntimeContext::from_runtime(runtime)
+}
+
+/// Time utilities accessor for RuntimeContext
+///
+/// This accessor provides all time-related operations including duration creation,
+/// sleep, and timing measurements. It encapsulates time functionality separately
+/// from other context capabilities like logging.
+///
+/// # Design Philosophy
+///
+/// - **Separation of Concerns**: Time operations are isolated from logging and other capabilities
+/// - **Clear Intent**: `ctx.time().sleep()` clearly indicates time-based operation
+/// - **Extensible**: Easy to add new time-related methods without cluttering RuntimeContext
+///
+/// # Example
+///
+/// ```rust,ignore
+/// async fn my_service<R: Runtime>(ctx: RuntimeContext<R>) {
+///     let time = ctx.time();
+///     
+///     let start = time.now();
+///     time.sleep(time.millis(100)).await;
+///     let elapsed = time.duration_since(time.now(), start);
+/// }
+/// ```
+pub struct Time<'a, R: Runtime> {
+    ctx: &'a RuntimeContext<R>,
+}
+
+impl<'a, R: Runtime> Time<'a, R> {
+    /// Create a duration from milliseconds
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// time.sleep(time.millis(500)).await;
+    /// ```
+    pub fn millis(&self, millis: u64) -> R::Duration {
+        self.ctx.runtime.millis(millis)
+    }
+
+    /// Create a duration from seconds
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// time.sleep(time.secs(2)).await;
+    /// ```
+    pub fn secs(&self, secs: u64) -> R::Duration {
+        self.ctx.runtime.secs(secs)
+    }
+
+    /// Create a duration from microseconds
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// time.sleep(time.micros(1000)).await;
+    /// ```
+    pub fn micros(&self, micros: u64) -> R::Duration {
+        self.ctx.runtime.micros(micros)
+    }
+
+    /// Sleep for the specified duration
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// time.sleep(time.millis(100)).await;
+    /// ```
+    pub fn sleep(&self, duration: R::Duration) -> impl Future<Output = ()> + Send + '_ {
+        self.ctx.runtime.sleep(duration)
+    }
+
+    /// Get the current timestamp
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let now = time.now();
+    /// ```
+    pub fn now(&self) -> R::Instant {
+        self.ctx.runtime.now()
+    }
+
+    /// Get the duration between two instants
+    ///
+    /// Returns None if `later` is before `earlier`
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let start = time.now();
+    /// // ... do work ...
+    /// let end = time.now();
+    /// let elapsed = time.duration_since(end, start);
+    /// ```
+    pub fn duration_since(&self, later: R::Instant, earlier: R::Instant) -> Option<R::Duration> {
+        self.ctx.runtime.duration_since(later, earlier)
+    }
+}
+
+/// Logging accessor for RuntimeContext
+///
+/// This accessor provides all logging operations, separating them from time and
+/// other context capabilities for better organization and testability.
+///
+/// # Design Philosophy
+///
+/// - **Separation of Concerns**: Logging is isolated from time and other operations
+/// - **Clear Intent**: `ctx.log().info()` clearly indicates logging operation
+/// - **Mockable**: Easy to mock logging separately from other capabilities
+///
+/// # Example
+///
+/// ```rust,ignore
+/// async fn my_service<R: Runtime>(ctx: RuntimeContext<R>) {
+///     let log = ctx.log();
+///     
+///     log.info("Service starting");
+///     log.debug("Debug information");
+///     log.warn("Warning message");
+///     log.error("Error occurred");
+/// }
+/// ```
+pub struct Log<'a, R: Runtime> {
+    ctx: &'a RuntimeContext<R>,
+}
+
+impl<'a, R: Runtime> Log<'a, R> {
+    /// Log an informational message
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// ctx.log().info("Service started");
+    /// ```
+    pub fn info(&self, message: &str) {
+        self.ctx.runtime.info(message)
+    }
+
+    /// Log a debug message
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// ctx.log().debug("Processing item");
+    /// ```
+    pub fn debug(&self, message: &str) {
+        self.ctx.runtime.debug(message)
+    }
+
+    /// Log a warning message
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// ctx.log().warn("High memory usage");
+    /// ```
+    pub fn warn(&self, message: &str) {
+        self.ctx.runtime.warn(message)
+    }
+
+    /// Log an error message
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// ctx.log().error("Connection failed");
+    /// ```
+    pub fn error(&self, message: &str) {
+        self.ctx.runtime.error(message)
+    }
 }
