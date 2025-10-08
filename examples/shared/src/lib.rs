@@ -11,42 +11,45 @@
 use aimdb_core::{DbResult, RuntimeContext};
 use aimdb_executor::Runtime;
 
-#[cfg(not(feature = "std"))]
-use core::time::Duration;
-#[cfg(feature = "std")]
-use std::time::Duration;
-
 /// Background data processing service
 ///
 /// Demonstrates runtime-agnostic service that processes data in batches.
 /// Generic over any Runtime implementation.
+///
+/// This service demonstrates the clean accessor API:
+/// - Store accessors at the beginning: `let log = ctx.log(); let time = ctx.time();`
+/// - Use them throughout the service for clean, efficient code
 pub async fn data_processor_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbResult<()> {
-    ctx.info("🚀 Data processor service started");
+    // Store accessors for reuse throughout the service
+    let log = ctx.log();
+    let time = ctx.time();
+
+    log.info("🚀 Data processor service started");
 
     for i in 1..=5 {
         match i {
-            1 => ctx.info("📊 Processing batch 1/5"),
-            2 => ctx.info("📊 Processing batch 2/5"),
-            3 => ctx.info("📊 Processing batch 3/5"),
-            4 => ctx.info("📊 Processing batch 4/5"),
-            5 => ctx.info("📊 Processing batch 5/5"),
+            1 => log.info("📊 Processing batch 1/5"),
+            2 => log.info("📊 Processing batch 2/5"),
+            3 => log.info("📊 Processing batch 3/5"),
+            4 => log.info("📊 Processing batch 4/5"),
+            5 => log.info("📊 Processing batch 5/5"),
             _ => {}
         }
 
-        // Use the runtime context's sleep capability
-        ctx.sleep(Duration::from_millis(200)).await;
+        // Clean time operations using stored accessor
+        time.sleep(time.millis(200)).await;
 
         match i {
-            1 => ctx.info("✅ Batch 1 completed"),
-            2 => ctx.info("✅ Batch 2 completed"),
-            3 => ctx.info("✅ Batch 3 completed"),
-            4 => ctx.info("✅ Batch 4 completed"),
-            5 => ctx.info("✅ Batch 5 completed"),
+            1 => log.info("✅ Batch 1 completed"),
+            2 => log.info("✅ Batch 2 completed"),
+            3 => log.info("✅ Batch 3 completed"),
+            4 => log.info("✅ Batch 4 completed"),
+            5 => log.info("✅ Batch 5 completed"),
             _ => {}
         }
     }
 
-    ctx.info("🏁 Data processor service completed");
+    log.info("🏁 Data processor service completed");
 
     Ok(())
 }
@@ -55,29 +58,36 @@ pub async fn data_processor_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbRes
 ///
 /// Demonstrates runtime-agnostic service that performs periodic health checks.
 /// Measures timing using the runtime context.
+///
+/// This service demonstrates the clean accessor API with timing measurements.
+/// Accessors are stored once and reused throughout the service.
 pub async fn monitoring_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbResult<()> {
-    ctx.info("📈 Monitoring service started");
+    // Store accessors at the beginning for clean, efficient code
+    let log = ctx.log();
+    let time = ctx.time();
+
+    log.info("📈 Monitoring service started");
 
     for i in 1..=3 {
-        let start_time = ctx.now();
+        let start_time = time.now();
 
         match i {
-            1 => ctx.info("🔍 Health check 1/3"),
-            2 => ctx.info("🔍 Health check 2/3"),
-            3 => ctx.info("🔍 Health check 3/3"),
+            1 => log.info("🔍 Health check 1/3"),
+            2 => log.info("🔍 Health check 2/3"),
+            3 => log.info("🔍 Health check 3/3"),
             _ => {}
         }
 
-        // Use the runtime context's sleep capability
-        ctx.sleep(Duration::from_millis(150)).await;
+        // Clean time operations using stored accessor
+        time.sleep(time.millis(150)).await;
 
-        let end_time = ctx.now();
-        let _duration = ctx.duration_since(end_time, start_time).unwrap();
+        let end_time = time.now();
+        let _duration = time.duration_since(end_time, start_time).unwrap();
 
-        ctx.info("💚 System healthy");
+        log.info("💚 System healthy");
     }
 
-    ctx.info("📈 Monitoring service completed");
+    log.info("📈 Monitoring service completed");
 
     Ok(())
 }
