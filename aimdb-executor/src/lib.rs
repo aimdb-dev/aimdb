@@ -40,7 +40,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use core::future::Future;
-use core::time::Duration;
 
 // Error handling - use Result<T, E> generically since we can't depend on aimdb-core
 pub type ExecutorResult<T> = Result<T, ExecutorError>;
@@ -110,27 +109,79 @@ pub trait TimeSource: RuntimeAdapter {
     /// The instant type used by this runtime
     type Instant: Clone + Send + Sync + core::fmt::Debug + 'static;
 
+    /// The duration type used by this runtime
+    /// - For Tokio/std: std::time::Duration
+    /// - For Embassy: embassy_time::Duration
+    type Duration;
+
     /// Get the current time instant
     fn now(&self) -> Self::Instant;
 
     /// Calculate the duration between two instants
     ///
     /// Returns None if `later` is before `earlier`
-    fn duration_since(&self, later: Self::Instant, earlier: Self::Instant) -> Option<Duration>;
+    fn duration_since(
+        &self,
+        later: Self::Instant,
+        earlier: Self::Instant,
+    ) -> Option<Self::Duration>;
+
+    /// Create a duration from milliseconds
+    ///
+    /// This method enables runtime-agnostic duration construction,
+    /// allowing services to create durations without knowing the concrete type.
+    ///
+    /// # Arguments
+    /// * `millis` - Duration in milliseconds
+    ///
+    /// # Returns
+    /// A duration of the appropriate type for this runtime
+    ///
+    /// # Example
+    /// ```ignore
+    /// async fn my_service<R: Runtime>(ctx: &RuntimeContext<R>) {
+    ///     // Works with both Tokio and Embassy!
+    ///     ctx.sleep(ctx.millis(500)).await;
+    /// }
+    /// ```
+    fn millis(&self, millis: u64) -> Self::Duration;
+
+    /// Create a duration from seconds
+    ///
+    /// This method enables runtime-agnostic duration construction.
+    ///
+    /// # Arguments
+    /// * `secs` - Duration in seconds
+    ///
+    /// # Returns
+    /// A duration of the appropriate type for this runtime
+    fn secs(&self, secs: u64) -> Self::Duration;
+
+    /// Create a duration from microseconds
+    ///
+    /// This method enables runtime-agnostic duration construction.
+    ///
+    /// # Arguments
+    /// * `micros` - Duration in microseconds
+    ///
+    /// # Returns
+    /// A duration of the appropriate type for this runtime
+    fn micros(&self, micros: u64) -> Self::Duration;
 }
 
 /// Trait for async sleep capability
 ///
 /// This trait abstracts over different sleep implementations across runtimes.
-pub trait Sleeper: RuntimeAdapter {
+/// The duration type is defined by the TimeSource trait to avoid ambiguity.
+pub trait Sleeper: TimeSource {
     /// Sleep for the specified duration
     ///
     /// # Arguments
-    /// * `duration` - How long to sleep
+    /// * `duration` - How long to sleep (duration type from TimeSource)
     ///
     /// # Returns
     /// A future that completes after the duration has elapsed
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send;
+    fn sleep(&self, duration: <Self as TimeSource>::Duration) -> impl Future<Output = ()> + Send;
 }
 
 /// Trait for logging capabilities across std and no_std environments
@@ -309,7 +360,7 @@ pub trait CommonRuntimeTraits: RuntimeAdapter {
 /// async fn my_service<R: Runtime>(runtime: &R) {
 ///     runtime.info("Service starting");
 ///     let start = runtime.now();
-///     runtime.sleep(Duration::from_secs(1)).await;
+///     runtime.sleep(R::Duration::from_secs(1)).await;
 ///     let elapsed = runtime.duration_since(runtime.now(), start);
 ///     runtime.info("Service completed");
 /// }
