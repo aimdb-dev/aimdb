@@ -12,6 +12,9 @@ AimDB is in **early development** - the architecture is defined but implementati
 ## Project Architecture Vision
 AimDB is an async, in-memory database for real-time data synchronization across **MCU → edge → cloud** environments, targeting <50ms reactivity.
 
+### Future Usage Vision
+See `docs/vision/future_usage.md` for an aspirational (non-functional) end-user example illustrating the intended ergonomic API across runtimes. Treat it as a guide when designing traits and modules—incremental PRs should converge toward that shape without introducing unused stubs prematurely.
+
 ### Current Workspace Structure
 ```
 aimdb-core/          # Core database engine (skeleton)
