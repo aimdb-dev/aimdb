@@ -55,18 +55,23 @@ cd aimdb
 code .
 # Then: Ctrl/Cmd+Shift+P → "Dev Containers: Reopen in Container"
 
-# 3. Inside the container, everything is ready:
-cargo build --release
-cargo run --example quickstart -p aimdb-examples
+# 3. Inside the container, build and run the Tokio example:
+cargo build
+cargo run --package tokio-runtime-demo
+
+# 4. For embedded target, build the Embassy example:
+cargo build --package embassy-runtime-demo --target thumbv7em-none-eabihf
 ```
 
 **✅ Zero Setup**: Rust, embedded targets and development tools pre-installed  
 **✅ Cross-Platform**: Works on macOS, Linux, Windows (with Docker Desktop) or WSL
 **✅ VS Code Ready**: Optimized extensions and settings included  
 
-You should see a demo simulation showing the concept of data syncing between devices, edge, and cloud!  
+The examples demonstrate the AimDB API with direct spawning patterns:
+- **Tokio example**: Shows std runtime with direct `adapter.spawn()` calls
+- **Embassy example**: Shows embedded runtime with `#[embassy_executor::task]` integration
 
-> **💡 Note**: The current demo is a simple simulation. Real AimDB functionality is still being implemented as part of the early development process.
+> **💡 Architecture**: AimDB uses a clean, flat trait structure instead of complex hierarchies or proc macros, making the codebase easy to understand and extend.
 
 ---
 

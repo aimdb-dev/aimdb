@@ -16,16 +16,12 @@ pub mod time;
 pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};
 pub use runtime::{
-    AimDbService, DelayCapableAdapter, ExecutorError, ExecutorResult, RuntimeAdapter, RuntimeInfo,
-    SpawnDynamically, SpawnStatically,
+    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Spawn,
+    Sleeper, TimeOps, TimeSource,
 };
-pub use time::{SleepCapable, TimestampProvider};
 
 // Database implementation exports
 pub use database::{Database, DatabaseSpec, DatabaseSpecBuilder, Record, Runnable};
-
-// Re-export procedural macros
-pub use aimdb_macros::service;
 
 /// Runs a database instance
 ///

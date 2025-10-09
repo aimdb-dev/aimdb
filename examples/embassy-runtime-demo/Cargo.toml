@@ -23,7 +23,7 @@ aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features
 aimdb-executor = { path = "../../aimdb-executor", default-features = false, features = [
     "embassy-types",
 ] }
-aimdb-macros = { path = "../../aimdb-macros" }
+# aimdb-macros = { path = "../../aimdb-macros" } # No longer used
 aimdb-examples-shared = { path = "../shared", default-features = false, features = [
     "embassy-runtime",
 ] }

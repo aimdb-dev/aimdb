@@ -4,18 +4,11 @@
 //! enabling async task execution in embedded environments using Embassy.
 
 use aimdb_core::{DbError, DbResult};
-#[cfg(feature = "embassy-time")]
-use aimdb_executor::DelayCapableAdapter;
-#[cfg(feature = "embassy-runtime")]
-use aimdb_executor::SpawnStatically;
-use aimdb_executor::{ExecutorResult, Runtime, RuntimeAdapter, Sleeper, TimeSource};
+use aimdb_executor::{ExecutorResult, Logger, RuntimeAdapter, Spawn, TimeOps};
 use core::future::Future;
 
 #[cfg(feature = "tracing")]
 use tracing::{debug, warn};
-
-#[cfg(feature = "embassy-time")]
-use embassy_time::{Duration, Timer};
 
 #[cfg(feature = "embassy-runtime")]
 use embassy_executor::Spawner;
@@ -78,7 +71,15 @@ impl EmbassyAdapter {
     /// # Returns
     /// `Ok(EmbassyAdapter)` - Always succeeds
     pub fn new() -> ExecutorResult<Self> {
-        <Self as RuntimeAdapter>::new()
+        #[cfg(feature = "tracing")]
+        debug!("Creating EmbassyAdapter (no spawner)");
+
+        Ok(Self {
+            #[cfg(feature = "embassy-runtime")]
+            spawner: None,
+            #[cfg(not(feature = "embassy-runtime"))]
+            _phantom: core::marker::PhantomData,
+        })
     }
 
     /// Creates a new EmbassyAdapter returning DbResult for backward compatibility
@@ -192,60 +193,35 @@ impl Default for EmbassyAdapter {
     }
 }
 
-// Trait implementations for the core adapter interfaces
+// Trait implementations for the simplified core adapter interfaces
 
 impl RuntimeAdapter for EmbassyAdapter {
-    fn new() -> ExecutorResult<Self> {
-        #[cfg(feature = "tracing")]
-        debug!("Creating EmbassyAdapter (no spawner)");
-
-        Ok(Self {
-            #[cfg(feature = "embassy-runtime")]
-            spawner: None,
-            #[cfg(not(feature = "embassy-runtime"))]
-            _phantom: core::marker::PhantomData,
-        })
-    }
-
     fn runtime_name() -> &'static str {
         "embassy"
     }
 }
 
+// Implement Spawn trait for Embassy (static spawning)
 #[cfg(feature = "embassy-runtime")]
-impl SpawnStatically for EmbassyAdapter {
-    type Spawner = embassy_executor::Spawner;
+impl Spawn for EmbassyAdapter {
+    type SpawnToken = ();  // Embassy doesn't return a handle from static spawn
 
-    fn spawner(&self) -> Option<&Self::Spawner> {
-        self.spawner.as_ref()
-    }
-}
-
-#[cfg(feature = "embassy-time")]
-impl DelayCapableAdapter for EmbassyAdapter {
-    type Duration = Duration;
-
-    #[allow(clippy::manual_async_fn)]
-    fn spawn_delayed_task<F, T>(
-        &self,
-        task: F,
-        delay: Self::Duration,
-    ) -> impl Future<Output = ExecutorResult<T>> + Send
+    fn spawn<F>(&self, _future: F) -> ExecutorResult<Self::SpawnToken>
     where
-        F: Future<Output = ExecutorResult<T>> + Send + 'static,
-        T: Send + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
-        async move {
-            Timer::after(delay).await;
-            task.await
-        }
+        // Embassy spawning is handled via the #[embassy_executor::task] attribute
+        // and spawner.spawn() at the application level. This method exists for
+        // trait compatibility but spawning must be done through Embassy tasks.
+        Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
+            message: "Embassy requires static task spawning via #[embassy_executor::task]",
+        })
     }
 }
 
-// New unified Runtime trait implementations
-
+// Implement TimeOps trait (combines TimeSource + Sleeper)
 #[cfg(feature = "embassy-time")]
-impl TimeSource for EmbassyAdapter {
+impl TimeOps for EmbassyAdapter {
     type Instant = embassy_time::Instant;
     type Duration = embassy_time::Duration;
 
@@ -276,16 +252,14 @@ impl TimeSource for EmbassyAdapter {
     fn micros(&self, micros: u64) -> Self::Duration {
         embassy_time::Duration::from_micros(micros)
     }
-}
 
-#[cfg(feature = "embassy-time")]
-impl Sleeper for EmbassyAdapter {
-    fn sleep(&self, duration: <Self as TimeSource>::Duration) -> impl Future<Output = ()> + Send {
+    fn sleep(&self, duration: Self::Duration) -> impl Future<Output = ()> + Send {
         embassy_time::Timer::after(duration)
     }
 }
 
-impl aimdb_executor::Logger for EmbassyAdapter {
+// Implement Logger trait
+impl Logger for EmbassyAdapter {
     fn info(&self, message: &str) {
         defmt::info!("{}", message);
     }
@@ -303,13 +277,4 @@ impl aimdb_executor::Logger for EmbassyAdapter {
     }
 }
 
-#[cfg(all(feature = "embassy-time", feature = "embassy-runtime"))]
-impl Runtime for EmbassyAdapter {
-    fn has_dynamic_spawn(&self) -> bool {
-        false
-    }
-
-    fn has_static_spawn(&self) -> bool {
-        true
-    }
-}
+// Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are all implemented

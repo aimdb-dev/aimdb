@@ -3,8 +3,6 @@
 //! These services are runtime-agnostic and can be used with any Runtime implementation
 //! (TokioAdapter, EmbassyAdapter, etc.)
 //!
-//! These are plain async functions that can be wrapped with the #[service] macro
-//! in the consuming crate.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

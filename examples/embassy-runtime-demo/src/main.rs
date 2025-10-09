@@ -3,13 +3,8 @@
 
 //! Example demonstrating full AimDB service integration with Embassy runtime
 
-use aimdb_core::{DatabaseSpec, RuntimeContext, service};
-// Note: DbResult appears unused because the #[service] macro rewrites it to aimdb_core::DbResult
-// but it's needed for the source code to be readable
-#[allow(unused_imports)]
-use aimdb_core::DbResult;
+use aimdb_core::{DatabaseSpec, RuntimeContext};
 use aimdb_embassy_adapter::{EmbassyAdapter, new_database};
-use aimdb_executor::Runtime;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
@@ -21,15 +16,23 @@ use {defmt_rtt as _, panic_probe as _};
 #[global_allocator]
 static ALLOCATOR: embedded_alloc::LlffHeap = embedded_alloc::LlffHeap::empty();
 
-// Wrap shared service implementations with #[service] macro for adapter-specific spawning
-#[service]
-async fn data_processor_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbResult<()> {
-    aimdb_examples_shared::data_processor_service(ctx).await
+// Plain Embassy tasks - no #[service] macro!
+// These wrap the shared implementations for clean separation
+
+#[embassy_executor::task]
+async fn data_processor_task(adapter: &'static EmbassyAdapter) {
+    let ctx = RuntimeContext::new(adapter);
+    if let Err(e) = aimdb_examples_shared::data_processor_service(ctx).await {
+        error!("Data processor error: {:?}", defmt::Debug2Format(&e));
+    }
 }
 
-#[service]
-async fn monitoring_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbResult<()> {
-    aimdb_examples_shared::monitoring_service(ctx).await
+#[embassy_executor::task]
+async fn monitoring_task(adapter: &'static EmbassyAdapter) {
+    let ctx = RuntimeContext::new(adapter);
+    if let Err(e) = aimdb_examples_shared::monitoring_service(ctx).await {
+        error!("Monitoring service error: {:?}", defmt::Debug2Format(&e));
+    }
 }
 
 #[embassy_executor::main]
@@ -59,13 +62,14 @@ async fn main(spawner: Spawner) {
     // Setup LED for visual feedback
     let mut led = Output::new(p.PB0, Level::High, Speed::Low);
 
-    info!("🎯 Spawning services via EmbassyAdapter:");
+    info!("🎯 Spawning services - Embassy style:");
 
-    let adapter = db.adapter();
+    let adapter_ref = db.adapter();
 
-    // Spawn services using the new clean API (spawner is already captured by adapter)
-    let _handle1 = DataProcessorService::spawn_embassy(adapter).unwrap();
-    let _handle2 = MonitoringService::spawn_embassy(adapter).unwrap();
+    // Spawn services using Embassy tasks - simple and direct!
+    // No macro-generated methods, just plain Embassy spawning  
+    spawner.spawn(data_processor_task(adapter_ref).ok().unwrap());
+    spawner.spawn(monitoring_task(adapter_ref).ok().unwrap());
 
     info!("⚡ Services spawned successfully!");
 
@@ -80,9 +84,6 @@ async fn main(spawner: Spawner) {
     }
 
     info!("🎉 All services completed successfully!");
-    info!("🔍 Service names:");
-    info!("  - {}", DataProcessorService::service_name());
-    info!("  - {}", MonitoringService::service_name());
 
     // Keep LED on to signal completion
     led.set_high();

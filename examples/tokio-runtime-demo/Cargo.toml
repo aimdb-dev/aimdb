@@ -25,7 +25,7 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
     "tracing",
 ] }
-aimdb-macros = { path = "../../aimdb-macros", features = ["tokio-runtime"] }
+# aimdb-macros = { path = "../../aimdb-macros", features = ["tokio-runtime"] } # No longer used
 
 # Tokio runtime
 tokio = { workspace = true, features = ["full"] }

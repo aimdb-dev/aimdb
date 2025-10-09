@@ -5,8 +5,7 @@
 
 use aimdb_core::{DbError, DbResult};
 use aimdb_executor::{
-    DelayCapableAdapter, ExecutorResult, Runtime, RuntimeAdapter, Sleeper, SpawnDynamically,
-    TimeSource,
+    ExecutorResult, Logger, RuntimeAdapter, Spawn, TimeOps,
 };
 use core::future::Future;
 use std::time::{Duration, Instant};
@@ -56,17 +55,11 @@ impl TokioAdapter {
     ///
     /// # Returns
     /// `Ok(TokioAdapter)` - Tokio adapters are lightweight and cannot fail
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use aimdb_executor::RuntimeAdapter;
-    ///
-    /// let adapter = TokioAdapter::new()?;
-    /// # Ok::<_, aimdb_executor::ExecutorError>(())
-    /// ```
     pub fn new() -> ExecutorResult<Self> {
-        <Self as RuntimeAdapter>::new()
+        #[cfg(feature = "tracing")]
+        debug!("Creating TokioAdapter");
+
+        Ok(Self)
     }
 
     /// Creates a new TokioAdapter returning DbResult for backward compatibility
@@ -147,26 +140,19 @@ impl Default for TokioAdapter {
 
 #[cfg(feature = "tokio-runtime")]
 impl RuntimeAdapter for TokioAdapter {
-    fn new() -> ExecutorResult<Self> {
-        #[cfg(feature = "tracing")]
-        debug!("Creating TokioAdapter");
-
-        Ok(Self)
-    }
-
     fn runtime_name() -> &'static str {
         "tokio"
     }
 }
 
+// Implement Spawn trait for dynamic task spawning
 #[cfg(feature = "tokio-runtime")]
-impl SpawnDynamically for TokioAdapter {
-    type JoinHandle<T: Send + 'static> = tokio::task::JoinHandle<T>;
+impl Spawn for TokioAdapter {
+    type SpawnToken = tokio::task::JoinHandle<()>;
 
-    fn spawn<F, T>(&self, future: F) -> ExecutorResult<Self::JoinHandle<T>>
+    fn spawn<F>(&self, future: F) -> ExecutorResult<Self::SpawnToken>
     where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
         #[cfg(feature = "tracing")]
         tracing::debug!("Spawning future on Tokio runtime");
@@ -176,61 +162,61 @@ impl SpawnDynamically for TokioAdapter {
 }
 
 #[cfg(feature = "tokio-runtime")]
-impl DelayCapableAdapter for TokioAdapter {
-    type Duration = Duration;
-
-    /// Spawns a task that begins execution after the specified delay
-    ///
-    /// This implementation uses `tokio::time::sleep` to create the delay
-    /// before executing the provided task.
-    ///
-    /// # Arguments
-    /// * `task` - The async task to spawn after the delay
-    /// * `delay` - How long to wait before starting task execution
-    ///
-    /// # Returns
-    /// `DbResult<T>` where T is the task's success type
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use aimdb_executor::{DelayCapableAdapter, ExecutorResult};
-    /// use std::time::Duration;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> ExecutorResult<()> {
-    /// let adapter = TokioAdapter::new()?;
-    ///
-    /// let result = adapter.spawn_delayed_task(
-    ///     async { Ok::<i32, aimdb_executor::ExecutorError>(42) },
-    ///     Duration::from_millis(100)
-    /// ).await?;
-    ///
-    /// assert_eq!(result, 42);
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[allow(clippy::manual_async_fn)]
-    fn spawn_delayed_task<F, T>(
-        &self,
-        task: F,
-        delay: Self::Duration,
-    ) -> impl Future<Output = ExecutorResult<T>> + Send
-    where
-        F: Future<Output = ExecutorResult<T>> + Send + 'static,
-        T: Send + 'static,
-    {
-        async move {
-            tokio::time::sleep(delay).await;
-            task.await
-        }
-    }
-}
+// impl DelayCapableAdapter for TokioAdapter {
+//     type Duration = Duration;
+// 
+//     /// Spawns a task that begins execution after the specified delay
+//     ///
+//     /// This implementation uses `tokio::time::sleep` to create the delay
+//     /// before executing the provided task.
+//     ///
+//     /// # Arguments
+//     /// * `task` - The async task to spawn after the delay
+//     /// * `delay` - How long to wait before starting task execution
+//     ///
+//     /// # Returns
+//     /// `DbResult<T>` where T is the task's success type
+//     ///
+//     /// # Example
+//     /// ```rust,no_run
+//     /// use aimdb_tokio_adapter::TokioAdapter;
+//     /// use aimdb_executor::{DelayCapableAdapter, ExecutorResult};
+//     /// use std::time::Duration;
+//     ///
+//     /// # #[tokio::main]
+//     /// # async fn main() -> ExecutorResult<()> {
+//     /// let adapter = TokioAdapter::new()?;
+//     ///
+//     /// let result = adapter.spawn_delayed_task(
+//     ///     async { Ok::<i32, aimdb_executor::ExecutorError>(42) },
+//     ///     Duration::from_millis(100)
+//     /// ).await?;
+//     ///
+//     /// assert_eq!(result, 42);
+//     /// # Ok(())
+//     /// # }
+//     /// ```
+//     #[allow(clippy::manual_async_fn)]
+//     fn spawn_delayed_task<F, T>(
+//         &self,
+//         task: F,
+//         delay: Self::Duration,
+//     ) -> impl Future<Output = ExecutorResult<T>> + Send
+//     where
+//         F: Future<Output = ExecutorResult<T>> + Send + 'static,
+//         T: Send + 'static,
+//     {
+//         async move {
+//             tokio::time::sleep(delay).await;
+//             task.await
+//         }
+//     }
+// }
 
 // New unified Runtime trait implementations
 
 #[cfg(feature = "tokio-runtime")]
-impl TimeSource for TokioAdapter {
+impl TimeOps for TokioAdapter {
     type Instant = Instant;
     type Duration = Duration;
 
@@ -257,17 +243,14 @@ impl TimeSource for TokioAdapter {
     fn micros(&self, micros: u64) -> Self::Duration {
         Duration::from_micros(micros)
     }
-}
 
-#[cfg(feature = "tokio-runtime")]
-impl Sleeper for TokioAdapter {
-    fn sleep(&self, duration: <Self as TimeSource>::Duration) -> impl Future<Output = ()> + Send {
+    fn sleep(&self, duration: Self::Duration) -> impl Future<Output = ()> + Send {
         tokio::time::sleep(duration)
     }
 }
 
 #[cfg(feature = "tokio-runtime")]
-impl aimdb_executor::Logger for TokioAdapter {
+impl Logger for TokioAdapter {
     fn info(&self, message: &str) {
         println!("ℹ️  {}", message);
     }
@@ -288,13 +271,4 @@ impl aimdb_executor::Logger for TokioAdapter {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
-impl Runtime for TokioAdapter {
-    fn has_dynamic_spawn(&self) -> bool {
-        true
-    }
-
-    fn has_static_spawn(&self) -> bool {
-        false
-    }
-}
+// Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are implemented

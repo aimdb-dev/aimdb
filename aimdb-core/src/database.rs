@@ -234,22 +234,27 @@ impl<A: RuntimeAdapter> Database<A> {
     ///
     /// # Example
     /// ```rust,ignore
-    /// # use aimdb_core::{service, AimDbService, Database, RuntimeAdapter};
+    /// # use aimdb_core::{Database, RuntimeAdapter};
+    /// # use aimdb_executor::Spawn;
     /// # #[cfg(feature = "tokio-runtime")]
     /// # {
-    /// # use aimdb_core::SpawnDynamically;
     ///
-    /// // Define a service using the service macro
-    /// #[service]
-    /// async fn my_background_task(ctx: aimdb_core::RuntimeContext<aimdb_tokio_adapter::TokioAdapter>) -> aimdb_core::DbResult<()> {
+    /// // Define a plain async service function
+    /// async fn my_background_task<R: Runtime>(ctx: aimdb_core::RuntimeContext<R>) -> aimdb_core::DbResult<()> {
     ///     // Service implementation using the context
-    ///     let _ = ctx.now(); // Access timing capabilities
+    ///     let time = ctx.time();
+    ///     let _ = time.now(); // Access timing capabilities
     ///     Ok(())
     /// }
     ///
-    /// # async fn example<A: SpawnDynamically>(db: Database<A>) -> aimdb_core::DbResult<()> {
-    /// // Spawn service through the generated service struct
-    /// MyBackgroundTaskService::spawn_on_tokio(db.adapter())?;
+    /// # async fn example<A: Spawn>(db: Database<A>) -> aimdb_core::DbResult<()> {
+    /// // Spawn service directly using the adapter
+    /// let ctx = RuntimeContext::from_runtime(db.adapter().clone());
+    /// db.adapter().spawn(async move {
+    ///     if let Err(e) = my_background_task(ctx).await {
+    ///         eprintln!("Service error: {:?}", e);
+    ///     }
+    /// })?;
     /// # Ok(())
     /// # }
     /// # }

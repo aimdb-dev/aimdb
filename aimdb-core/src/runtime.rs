@@ -1,13 +1,12 @@
-//! Runtime adapter integration for AimDB
+//! Runtime adapter traits and implementations for AimDB
 //!
-//! This module provides integration with the aimdb-executor trait system,
-//! adapting executor errors to database errors and re-exporting key traits.
+//! This module re-exports the runtime traits from aimdb-executor and provides
+//! additional runtime-related functionality for the core database.
 
-// Re-export executor traits for convenience
+// Re-export simplified executor traits
 pub use aimdb_executor::{
-    AimDbService, CommonRuntimeTraits, DelayCapableAdapter, DynamicRuntimeTraits, ExecutorError,
-    ExecutorResult, RuntimeAdapter, RuntimeInfo, SpawnDynamically, SpawnStatically,
-    StaticRuntimeTraits,
+    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Spawn,
+    Sleeper, TimeOps, TimeSource,
 };
 
 /// Convert executor errors to database errors
