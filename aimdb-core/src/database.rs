@@ -3,43 +3,25 @@
 //! This module provides the core database implementation for AimDB, supporting async
 //! in-memory storage with real-time synchronization across MCU → edge → cloud environments.
 
-use crate::{DbResult, RuntimeAdapter};
-
-/// Core trait for runnable databases - must be implemented by adapter-specific database types
-/// to provide their own runtime-specific `run()` implementations.
-pub trait Runnable {
-    /// Runs the database main loop
-    ///
-    /// This method starts the database runtime and keeps it running indefinitely.
-    /// It handles events, manages services and coordinates record operations.
-    ///
-    /// # Returns
-    /// Never returns - runs indefinitely
-    fn run(self) -> impl core::future::Future<Output = ()> + Send;
-}
+use crate::{DbError, DbResult, RuntimeAdapter, RuntimeContext};
+use aimdb_executor::Spawn;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
-
-/// Service registration function type
-///
-/// This type represents a closure that registers a service with a database instance.
-/// The closure receives a reference to the database and can spawn services as needed.
-pub type ServiceRegistrationFn<A> = Box<dyn FnOnce(&Database<A>) + Send + 'static>;
+use std::{collections::BTreeMap, string::String, vec::Vec};
 
 /// Database specification
 ///
 /// This struct holds the configuration for creating a database instance.
 /// It is runtime-agnostic and works with any RuntimeAdapter implementation.
+#[allow(dead_code)] // Used by adapter crates
 pub struct DatabaseSpec<A: RuntimeAdapter> {
-    records: Vec<String>,
-    services: Vec<ServiceRegistrationFn<A>>,
+    pub(crate) records: Vec<String>,
     _phantom: core::marker::PhantomData<A>,
 }
 
@@ -54,9 +36,11 @@ impl<A: RuntimeAdapter> DatabaseSpec<A> {
 }
 
 /// Builder for database specifications
+///
+/// This builder provides a fluent API for configuring databases.
+/// Runtime-specific build methods are implemented in adapter crates.
 pub struct DatabaseSpecBuilder<A: RuntimeAdapter> {
     records: Vec<String>,
-    services: Vec<ServiceRegistrationFn<A>>,
     _phantom: core::marker::PhantomData<A>,
 }
 
@@ -65,7 +49,6 @@ impl<A: RuntimeAdapter> DatabaseSpecBuilder<A> {
     fn new() -> Self {
         Self {
             records: Vec::new(),
-            services: Vec::new(),
             _phantom: core::marker::PhantomData,
         }
     }
@@ -85,42 +68,16 @@ impl<A: RuntimeAdapter> DatabaseSpecBuilder<A> {
         self
     }
 
-    /// Adds a service to the database specification
+    /// Internal method to convert builder to spec
     ///
-    /// Services are registered as closures that configure how they should
-    /// be spawned when the database is initialized.
-    ///
-    /// # Arguments
-    /// * `service_fn` - A closure that configures the service
-    ///
-    /// # Returns
-    /// Self for method chaining
-    pub fn service<F>(mut self, service_fn: F) -> Self
-    where
-        F: FnOnce(&Database<A>) + Send + 'static,
-    {
+    /// This is used by adapter-specific build methods.
+    #[allow(dead_code)] // Used by adapter crates
+    pub fn into_spec(self) -> DatabaseSpec<A> {
         #[cfg(feature = "tracing")]
-        tracing::debug!("Registering service function");
-
-        self.services.push(Box::new(service_fn));
-        self
-    }
-
-    /// Builds the final database specification
-    ///
-    /// # Returns
-    /// A database specification ready for use in database initialization
-    pub fn build(self) -> DatabaseSpec<A> {
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Building database spec with {} records and {} services",
-            self.records.len(),
-            self.services.len()
-        );
+        tracing::info!("Building database spec with {} records", self.records.len());
 
         DatabaseSpec {
             records: self.records,
-            services: self.services,
             _phantom: core::marker::PhantomData,
         }
     }
@@ -128,33 +85,38 @@ impl<A: RuntimeAdapter> DatabaseSpecBuilder<A> {
 
 /// AimDB Database implementation
 ///
-/// Provides a runtime-agnostic database implementation that uses a RuntimeAdapter
-/// for runtime-specific operations like task spawning and timing.
+/// Provides a runtime-agnostic database implementation that acts as a service
+/// orchestrator, managing records and spawned services.
 ///
 /// # Design Philosophy
 ///
 /// - **Runtime Agnostic**: Core behavior doesn't depend on specific runtimes
 /// - **Async First**: All operations are async for consistency
+/// - **Service Orchestration**: Actually manages spawned services
 /// - **Error Handling**: Comprehensive error propagation
-/// - **Service Management**: Integrated service spawning capabilities
 ///
 /// # Usage
 ///
 /// ```rust,no_run
-/// # async fn example<A: aimdb_core::RuntimeAdapter>(adapter: A) {
-/// use aimdb_core::{Database, DatabaseSpec};
+/// # #[cfg(feature = "tokio-runtime")]
+/// # {
+/// use aimdb_core::Database;
+/// use aimdb_tokio_adapter::TokioAdapter;
 ///
-/// let spec = DatabaseSpec::builder()
+/// # #[tokio::main]
+/// # async fn main() -> aimdb_core::DbResult<()> {
+/// let db = Database::<TokioAdapter>::builder()
 ///     .record("sensors")
 ///     .record("metrics")
-///     .build();
+///     .build()?;
 ///
-/// let db = Database::new(adapter, spec);
-/// let sensors = db.record("sensors");
-///
-/// // Note: To run the database, use adapter-specific implementations:
-/// // - For Embassy: aimdb_embassy_adapter::embassy::init(spawner, spec)
-/// // - For Tokio: aimdb_tokio_adapter::tokio::init(spec)
+/// // Spawn services
+/// let ctx = db.context();
+/// db.spawn(async move {
+///     // Service implementation
+/// })?;
+/// # Ok(())
+/// # }
 /// # }
 /// ```
 pub struct Database<A: RuntimeAdapter> {
@@ -163,21 +125,41 @@ pub struct Database<A: RuntimeAdapter> {
 }
 
 impl<A: RuntimeAdapter> Database<A> {
-    /// Creates a new database instance with the given adapter and specification
+    /// Creates a new database builder
     ///
-    /// # Arguments
-    /// * `adapter` - Runtime adapter for async operations
-    /// * `spec` - Database specification defining records and services
+    /// Use this to start configuring a database. The builder provides
+    /// runtime-specific build methods in the adapter crates.
     ///
     /// # Returns
-    /// A configured database ready for use
+    /// A builder for constructing database specifications
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
+    /// use aimdb_core::Database;
+    /// use aimdb_tokio_adapter::TokioAdapter;
+    ///
+    /// # async fn example() -> aimdb_core::DbResult<()> {
+    /// let db = Database::<TokioAdapter>::builder()
+    ///     .record("sensors")
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// # }
+    /// ```
+    pub fn builder() -> DatabaseSpecBuilder<A> {
+        DatabaseSpecBuilder::new()
+    }
+
+    /// Internal constructor for creating a database from a spec
+    ///
+    /// This is called by adapter-specific build methods and should not
+    /// be used directly.
+    #[allow(dead_code)] // Used by adapter crates
     pub fn new(adapter: A, spec: DatabaseSpec<A>) -> Self {
         #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Initializing database with {} records and {} services",
-            spec.records.len(),
-            spec.services.len()
-        );
+        tracing::info!("Initializing database with {} records", spec.records.len());
 
         let mut records = BTreeMap::new();
 
@@ -189,17 +171,7 @@ impl<A: RuntimeAdapter> Database<A> {
             records.insert(record_name.clone(), Record::new(record_name));
         }
 
-        let db = Self { adapter, records };
-
-        // Register and start services
-        for service_fn in spec.services {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Registering service");
-
-            service_fn(&db);
-        }
-
-        db
+        Self { adapter, records }
     }
 
     /// Gets a record handle by name
@@ -229,33 +201,16 @@ impl<A: RuntimeAdapter> Database<A> {
 
     /// Gets a reference to the runtime adapter
     ///
-    /// This allows users to access the runtime adapter directly for service spawning.
-    /// Services should be defined using the `#[service]` macro for proper runtime integration.
+    /// This allows direct access to the runtime adapter for advanced use cases.
     ///
     /// # Example
     /// ```rust,ignore
-    /// # use aimdb_core::{Database, RuntimeAdapter};
-    /// # use aimdb_executor::Spawn;
+    /// # use aimdb_core::Database;
     /// # #[cfg(feature = "tokio-runtime")]
     /// # {
-    ///
-    /// // Define a plain async service function
-    /// async fn my_background_task<R: Runtime>(ctx: aimdb_core::RuntimeContext<R>) -> aimdb_core::DbResult<()> {
-    ///     // Service implementation using the context
-    ///     let time = ctx.time();
-    ///     let _ = time.now(); // Access timing capabilities
-    ///     Ok(())
-    /// }
-    ///
-    /// # async fn example<A: Spawn>(db: Database<A>) -> aimdb_core::DbResult<()> {
-    /// // Spawn service directly using the adapter
-    /// let ctx = RuntimeContext::from_runtime(db.adapter().clone());
-    /// db.adapter().spawn(async move {
-    ///     if let Err(e) = my_background_task(ctx).await {
-    ///         eprintln!("Service error: {:?}", e);
-    ///     }
-    /// })?;
-    /// # Ok(())
+    /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: Database<A>) {
+    /// let adapter = db.adapter();
+    /// // Use adapter directly
     /// # }
     /// # }
     /// ```
@@ -263,15 +218,90 @@ impl<A: RuntimeAdapter> Database<A> {
         &self.adapter
     }
 
-    /// Consumes the database and returns its components
+    /// Creates a RuntimeContext for this database
     ///
-    /// This is useful for adapter-specific `run()` implementations that need
-    /// to access both the adapter and records.
+    /// The context provides services with access to runtime capabilities
+    /// like timing and logging.
     ///
     /// # Returns
-    /// Tuple of (adapter, records) for use in adapter-specific run methods
-    pub fn into_parts(self) -> (A, BTreeMap<String, Record>) {
-        (self.adapter, self.records)
+    /// A RuntimeContext configured for this database's runtime
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// # use aimdb_core::Database;
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
+    /// # async fn example<A: aimdb_executor::Runtime>(db: Database<A>) {
+    /// let ctx = db.context();
+    /// // Pass ctx to services
+    /// # }
+    /// # }
+    /// ```
+    pub fn context(&self) -> RuntimeContext<A>
+    where
+        A: aimdb_executor::Runtime + Clone,
+    {
+        #[cfg(feature = "std")]
+        {
+            RuntimeContext::from_arc(std::sync::Arc::new(self.adapter.clone()))
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            // For no_std, we need a static reference - this would typically be handled
+            // by the caller storing the adapter in a static cell first
+            // For now, we'll document this limitation
+            panic!("context() not supported in no_std without static reference - use adapter() directly")
+        }
+    }
+}
+
+// Spawn implementation for databases with spawn-capable adapters
+impl<A> Database<A>
+where
+    A: RuntimeAdapter + Spawn,
+{
+    /// Spawns a service on the database's runtime
+    ///
+    /// This method provides a unified interface for spawning services
+    /// across different runtime adapters.
+    ///
+    /// # Arguments
+    /// * `future` - The service future to spawn
+    ///
+    /// # Returns
+    /// `DbResult<()>` indicating whether the spawn succeeded
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// # use aimdb_core::Database;
+    /// # use aimdb_executor::{Runtime, Spawn};
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
+    /// async fn my_service<R: Runtime>(ctx: aimdb_core::RuntimeContext<R>) -> aimdb_core::DbResult<()> {
+    ///     // Service implementation
+    ///     Ok(())
+    /// }
+    ///
+    /// # async fn example<A: Runtime + Spawn>(db: Database<A>) -> aimdb_core::DbResult<()> {
+    /// let ctx = db.context();
+    /// db.spawn(async move {
+    ///     if let Err(e) = my_service(ctx).await {
+    ///         eprintln!("Service error: {:?}", e);
+    ///     }
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// # }
+    /// ```
+    pub fn spawn<F>(&self, future: F) -> DbResult<()>
+    where
+        F: core::future::Future<Output = ()> + Send + 'static,
+    {
+        #[cfg(feature = "tracing")]
+        tracing::debug!("Spawning service on database runtime");
+
+        self.adapter.spawn(future).map_err(DbError::from)?;
+        Ok(())
     }
 }
 

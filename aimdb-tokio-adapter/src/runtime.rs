@@ -4,9 +4,7 @@
 //! enabling async task spawning and execution in std environments using Tokio.
 
 use aimdb_core::{DbError, DbResult};
-use aimdb_executor::{
-    ExecutorResult, Logger, RuntimeAdapter, Spawn, TimeOps,
-};
+use aimdb_executor::{ExecutorResult, Logger, RuntimeAdapter, Spawn, TimeOps};
 use core::future::Future;
 use std::time::{Duration, Instant};
 
@@ -164,7 +162,7 @@ impl Spawn for TokioAdapter {
 #[cfg(feature = "tokio-runtime")]
 // impl DelayCapableAdapter for TokioAdapter {
 //     type Duration = Duration;
-// 
+//
 //     /// Spawns a task that begins execution after the specified delay
 //     ///
 //     /// This implementation uses `tokio::time::sleep` to create the delay
@@ -214,7 +212,6 @@ impl Spawn for TokioAdapter {
 // }
 
 // New unified Runtime trait implementations
-
 #[cfg(feature = "tokio-runtime")]
 impl TimeOps for TokioAdapter {
     type Instant = Instant;

@@ -5,8 +5,8 @@
 
 // Re-export simplified executor traits
 pub use aimdb_executor::{
-    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Spawn,
-    Sleeper, TimeOps, TimeSource,
+    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Sleeper, Spawn,
+    TimeOps, TimeSource,
 };
 
 /// Convert executor errors to database errors

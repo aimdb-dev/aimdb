@@ -204,7 +204,7 @@ impl RuntimeAdapter for EmbassyAdapter {
 // Implement Spawn trait for Embassy (static spawning)
 #[cfg(feature = "embassy-runtime")]
 impl Spawn for EmbassyAdapter {
-    type SpawnToken = ();  // Embassy doesn't return a handle from static spawn
+    type SpawnToken = (); // Embassy doesn't return a handle from static spawn
 
     fn spawn<F>(&self, _future: F) -> ExecutorResult<Self::SpawnToken>
     where

@@ -1,10 +1,10 @@
 #![no_std]
 #![no_main]
 
-//! Example demonstrating full AimDB service integration with Embassy runtime
+//! Example demonstrating full AimDB service integration with unified API
 
-use aimdb_core::{DatabaseSpec, RuntimeContext};
-use aimdb_embassy_adapter::{EmbassyAdapter, new_database};
+use aimdb_core::{Database, RuntimeContext};
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyDatabaseBuilder};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
@@ -51,25 +51,28 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
     info!("🔧 Setting up AimDB with Embassy runtime...");
 
-    // Create database with Embassy runtime (spawner goes first)
+    // Create database using the new unified builder API
     // Use StaticCell to make db live for 'static
     static DB_CELL: StaticCell<aimdb_embassy_adapter::EmbassyDatabase> = StaticCell::new();
-    let spec = DatabaseSpec::<EmbassyAdapter>::builder().build();
-    let db = DB_CELL.init(new_database(spawner, spec));
+    let db = DB_CELL.init(
+        Database::<EmbassyAdapter>::builder()
+            .record("sensors")
+            .record("metrics")
+            .build(spawner),
+    );
 
     info!("✅ AimDB database created successfully");
 
     // Setup LED for visual feedback
     let mut led = Output::new(p.PB0, Level::High, Speed::Low);
 
-    info!("🎯 Spawning services - Embassy style:");
+    info!("🎯 Spawning services with unified API:");
 
     let adapter_ref = db.adapter();
 
-    // Spawn services using Embassy tasks - simple and direct!
-    // No macro-generated methods, just plain Embassy spawning  
-    spawner.spawn(data_processor_task(adapter_ref).ok().unwrap());
-    spawner.spawn(monitoring_task(adapter_ref).ok().unwrap());
+    // Spawn services using Embassy tasks
+    spawner.spawn(data_processor_task(adapter_ref).unwrap());
+    spawner.spawn(monitoring_task(adapter_ref).unwrap());
 
     info!("⚡ Services spawned successfully!");
 

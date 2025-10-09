@@ -1,8 +1,8 @@
-//! Example demonstrating full AimDB service integration with RuntimeContext
+//! Example demonstrating full AimDB service integration with unified API
 
-use aimdb_core::{DatabaseSpec, RuntimeContext, DbResult, Spawn};
+use aimdb_core::{Database, DbResult, RuntimeContext};
 use aimdb_executor::Runtime;
-use aimdb_tokio_adapter::{new_database, TokioAdapter};
+use aimdb_tokio_adapter::{TokioAdapter, TokioDatabaseBuilder};
 use std::time::Duration;
 
 // These wrap the shared implementations for clean separation
@@ -18,32 +18,34 @@ async fn monitoring_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbResult<()> 
 async fn main() -> DbResult<()> {
     println!("🔧 Setting up AimDB with Tokio runtime...");
 
-    // Create database with Tokio runtime
-    let spec = DatabaseSpec::<TokioAdapter>::builder().build();
-    let db = new_database(spec)?;
+    // Create database using the new unified builder API
+    let db = Database::<TokioAdapter>::builder()
+        .record("sensors")
+        .record("metrics")
+        .build()?;
 
     println!("✅ AimDB database created successfully");
 
-    // Run services using the new clean API
-    println!("\n🎯 Spawning services - simple and explicit:");
+    // Get runtime context for services
+    let ctx = db.context();
 
-    let adapter = db.adapter();
-    let ctx1 = RuntimeContext::from_runtime(adapter.clone());
-    let ctx2 = RuntimeContext::from_runtime(adapter.clone());
+    println!("\n🎯 Spawning services with unified API:");
 
-    // Spawn services directly - no macro-generated methods!
-    // This is MUCH simpler: just call adapter.spawn() with the service future
-    let _handle1 = adapter.spawn(async move {
+    // Spawn services using the unified spawn() method
+    // This works the same way across both Tokio and Embassy!
+    let ctx1 = ctx.clone();
+    db.spawn(async move {
         if let Err(e) = data_processor_service(ctx1).await {
             eprintln!("Data processor error: {:?}", e);
         }
-    }).map_err(|e| aimdb_core::DbError::from(e))?;
+    })?;
 
-    let _handle2 = adapter.spawn(async move {
+    let ctx2 = ctx.clone();
+    db.spawn(async move {
         if let Err(e) = monitoring_service(ctx2).await {
             eprintln!("Monitoring service error: {:?}", e);
         }
-    }).map_err(|e| aimdb_core::DbError::from(e))?;
+    })?;
 
     println!("\n⚡ Services spawned successfully!");
 

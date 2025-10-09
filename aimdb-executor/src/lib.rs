@@ -65,7 +65,9 @@ pub enum ExecutorError {
 
 /// Core runtime adapter trait - provides identity
 pub trait RuntimeAdapter: Send + Sync + 'static {
-    fn runtime_name() -> &'static str where Self: Sized;
+    fn runtime_name() -> &'static str
+    where
+        Self: Sized;
 }
 
 /// Time operations trait - enables ctx.time() accessor
@@ -74,7 +76,11 @@ pub trait TimeOps: RuntimeAdapter {
     type Duration: Clone + Send + Sync + core::fmt::Debug + 'static;
 
     fn now(&self) -> Self::Instant;
-    fn duration_since(&self, later: Self::Instant, earlier: Self::Instant) -> Option<Self::Duration>;
+    fn duration_since(
+        &self,
+        later: Self::Instant,
+        earlier: Self::Instant,
+    ) -> Option<Self::Duration>;
     fn millis(&self, ms: u64) -> Self::Duration;
     fn secs(&self, secs: u64) -> Self::Duration;
     fn micros(&self, micros: u64) -> Self::Duration;
@@ -93,7 +99,8 @@ pub trait Logger: RuntimeAdapter {
 pub trait Spawn: RuntimeAdapter {
     type SpawnToken: Send + 'static;
     fn spawn<F>(&self, future: F) -> ExecutorResult<Self::SpawnToken>
-    where F: Future<Output = ()> + Send + 'static;
+    where
+        F: Future<Output = ()> + Send + 'static;
 }
 
 // ============================================================================
@@ -102,8 +109,13 @@ pub trait Spawn: RuntimeAdapter {
 
 /// Complete runtime trait bundle
 pub trait Runtime: RuntimeAdapter + TimeOps + Logger + Spawn {
-    fn runtime_info(&self) -> RuntimeInfo where Self: Sized {
-        RuntimeInfo { name: Self::runtime_name() }
+    fn runtime_info(&self) -> RuntimeInfo
+    where
+        Self: Sized,
+    {
+        RuntimeInfo {
+            name: Self::runtime_name(),
+        }
     }
 }
 

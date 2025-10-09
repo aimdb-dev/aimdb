@@ -76,4 +76,6 @@ pub use error::{TokioErrorConverter, TokioErrorSupport};
 pub use runtime::TokioAdapter;
 
 #[cfg(feature = "tokio-runtime")]
-pub use database::{new_database, TokioDatabase, TokioDatabaseSpec, TokioDatabaseSpecBuilder};
+pub use database::{
+    TokioDatabase, TokioDatabaseBuilder, TokioDatabaseSpec, TokioDatabaseSpecBuilder,
+};
