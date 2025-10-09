@@ -107,13 +107,17 @@ pub fn expand_service_macro(input_fn: ItemFn) -> Result<TokenStream> {
             ) -> aimdb_executor::ExecutorResult<()> {
                 if let Some(spawner) = adapter.spawner() {
                     // The Embassy task wrapper is generated below with unique name
-                    spawner.spawn(#embassy_task_name(adapter))
+                    // Calling an embassy task function with parameters returns Result<SpawnToken, SpawnError>
+                    // If the task pool is full (all instances already running), it returns Err
+                    let token = #embassy_task_name(adapter)
                         .map_err(|_| aimdb_executor::ExecutorError::SpawnFailed {
                             #[cfg(feature = "std")]
-                            message: format!("Failed to spawn Embassy service: {}", stringify!(#fn_name)),
+                            message: format!("Failed to get spawn token for Embassy service: {}", stringify!(#fn_name)),
                             #[cfg(not(feature = "std"))]
-                            message: "Failed to spawn Embassy service"
-                        })
+                            message: "Failed to get spawn token for Embassy service"
+                        })?;
+                    spawner.spawn(token);
+                    Ok(())
                 } else {
                     Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
                         #[cfg(feature = "std")]

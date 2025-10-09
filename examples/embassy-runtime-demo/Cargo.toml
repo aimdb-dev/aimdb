@@ -29,7 +29,7 @@ aimdb-examples-shared = { path = "../shared", default-features = false, features
 ] }
 
 # Embassy ecosystem - override workspace to use different chip
-embassy-stm32 = { version = "0.4.0", default-features = false, features = [
+embassy-stm32 = { workspace = true, features = [
     "defmt",
     "stm32h563zi",
     "memory-x",
