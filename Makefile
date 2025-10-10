@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean fmt clippy doc all check test-embedded test-feature-validation
+.PHONY: help build test clean fmt clippy doc all check test-embedded test-feature-validation examples
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -18,6 +18,7 @@ help:
 	@printf "  $(YELLOW)Core Commands:$(NC)\n"
 	@printf "    build         Build all components (std + embedded)\n"
 	@printf "    test          Run all tests (std + embedded)\n"
+	@printf "    examples      Build all example projects\n"
 	@printf "    fmt           Format code\n"
 	@printf "    clippy        Run linter\n"
 	@printf "    doc           Generate docs\n"
@@ -55,8 +56,12 @@ test:
 	cargo test --package aimdb-cli
 
 fmt:
-	@printf "$(GREEN)Formatting code...$(NC)\n"
-	cargo fmt --all
+	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
+	@for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-macros aimdb-cli aimdb-examples-shared aimdb-tokio-demo embassy-runtime-demo producer-consumer-demo; do \
+		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
+		cargo fmt -p $$pkg 2>/dev/null || true; \
+	done
+	@printf "$(GREEN)✓ Formatting complete!$(NC)\n"
 
 clippy:
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
@@ -112,6 +117,17 @@ test-feature-validation:
 	@! cargo build --package aimdb-core --no-default-features --features "embassy-runtime,metrics" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
 	@printf "$(GREEN)    ✓ Correctly failed$(NC)\n"
 	@printf "$(GREEN)All invalid combinations correctly rejected!$(NC)\n"
+
+## Example projects
+examples:
+	@printf "$(GREEN)Building all example projects...$(NC)\n"
+	@printf "$(YELLOW)  → Building tokio-runtime-demo (native, tokio runtime)$(NC)\n"
+	cargo build --package aimdb-tokio-demo --features tokio-runtime
+	@printf "$(YELLOW)  → Building producer-consumer-demo (native, tokio runtime)$(NC)\n"
+	cargo build --package producer-consumer-demo --features std
+	@printf "$(YELLOW)  → Building embassy-runtime-demo (thumbv8m.main-none-eabihf, embassy runtime)$(NC)\n"
+	cargo build --package embassy-runtime-demo --target thumbv8m.main-none-eabihf --features embassy-runtime
+	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Convenience commands
 check: fmt clippy test test-embedded test-feature-validation
