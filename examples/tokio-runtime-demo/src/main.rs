@@ -19,10 +19,7 @@ async fn main() -> DbResult<()> {
     println!("🔧 Setting up AimDB with Tokio runtime...");
 
     // Create database using the new unified builder API
-    let db = Database::<TokioAdapter>::builder()
-        .record("sensors")
-        .record("metrics")
-        .build()?;
+    let db = Database::<TokioAdapter>::builder().build()?;
 
     println!("✅ AimDB database created successfully");
 

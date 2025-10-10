@@ -1,0 +1,13 @@
+[package]
+name = "producer-consumer-demo"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core" }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter" }
+tokio = { version = "1.43", features = ["full"] }
