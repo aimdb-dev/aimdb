@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -43,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -73,6 +77,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -95,6 +101,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -133,6 +141,8 @@ jobs:
         
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -176,6 +186,8 @@ jobs:
     needs: [format-and-lint, makefile-build, feature-validation, embedded-targets, adapters]
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
