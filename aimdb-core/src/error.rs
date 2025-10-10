@@ -489,7 +489,7 @@ impl core::fmt::Display for DbError {
             DbError::ResourceUnavailable { .. } => (0x5002, "Resource unavailable"),
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
-            DbError::RuntimeError { .. } => (0xA001, "Runtime error"),
+            DbError::RuntimeError { .. } => (0x7002, "Runtime error"),
 
             // Standard library only errors (conditionally compiled)
             #[cfg(feature = "std")]
