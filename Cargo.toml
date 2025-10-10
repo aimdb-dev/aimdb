@@ -9,6 +9,7 @@ members = [
     "examples/shared",
     "examples/tokio-runtime-demo",
     "examples/embassy-runtime-demo",
+    "examples/producer-consumer-demo",
 ]
 exclude = ["_external"]
 resolver = "2"

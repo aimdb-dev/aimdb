@@ -1,0 +1,4 @@
+# AimDB rustfmt configuration
+
+# Standard formatting rules
+edition = "2024"

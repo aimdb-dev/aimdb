@@ -55,23 +55,47 @@ cd aimdb
 code .
 # Then: Ctrl/Cmd+Shift+P → "Dev Containers: Reopen in Container"
 
-# 3. Inside the container, build and run the Tokio example:
-cargo build
-cargo run --package tokio-runtime-demo
+# 3. Inside the container, build and test:
+make check  # Format, lint, and test
 
-# 4. For embedded target, build the Embassy example:
-cargo build --package embassy-runtime-demo --target thumbv7em-none-eabihf
+# 4. Run the examples:
+cargo run --package tokio-runtime-demo          # Std runtime
+cargo run --package embassy-runtime-demo        # Embedded (compile-only)
 ```
 
 **✅ Zero Setup**: Rust, embedded targets and development tools pre-installed  
 **✅ Cross-Platform**: Works on macOS, Linux, Windows (with Docker Desktop) or WSL
 **✅ VS Code Ready**: Optimized extensions and settings included  
 
-The examples demonstrate the AimDB API with direct spawning patterns:
-- **Tokio example**: Shows std runtime with direct `adapter.spawn()` calls
-- **Embassy example**: Shows embedded runtime with `#[embassy_executor::task]` integration
+### Basic Usage
 
-> **💡 Architecture**: AimDB uses a clean, flat trait structure instead of complex hierarchies or proc macros, making the codebase easy to understand and extend.
+```rust
+use aimdb_core::{Database, RecordT};
+use aimdb_tokio_adapter::TokioAdapter;
+
+#[derive(Debug, Clone)]
+struct SensorData(String);
+impl RecordT for SensorData {}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build typed database
+    let db = Database::<TokioAdapter>::builder()
+        .record::<SensorData>(&Default::default())
+        .build()?;
+    
+    // Produce data
+    db.produce(SensorData("temp: 23.5°C".into())).await?;
+    
+    // Check stats
+    let stats = db.producer_stats::<SensorData>();
+    println!("Calls: {}", stats.call_count());
+    
+    Ok(())
+}
+```
+
+> **💡 Architecture**: Type-safe records with `TypeId`-based routing. No string keys, no macros.
 
 ---
 
