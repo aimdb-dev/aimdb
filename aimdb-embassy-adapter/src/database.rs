@@ -4,7 +4,7 @@
 //! including the build() method that requires an Embassy Spawner.
 
 use crate::runtime::EmbassyAdapter;
-use aimdb_core::{Database, DatabaseSpec, DatabaseSpecBuilder, Record};
+use aimdb_core::{Database, DatabaseSpec, DatabaseSpecBuilder};
 
 #[cfg(feature = "embassy-runtime")]
 use embassy_executor::Spawner;
@@ -21,9 +21,6 @@ pub type EmbassyDatabaseSpec = DatabaseSpec<EmbassyAdapter>;
 
 /// Type alias for Embassy-specific database specification builder
 pub type EmbassyDatabaseSpecBuilder = DatabaseSpecBuilder<EmbassyAdapter>;
-
-/// Type alias for Embassy-specific record implementation
-pub type EmbassyRecord = Record;
 
 /// Extension trait for building Embassy databases
 ///
@@ -68,10 +65,12 @@ pub trait EmbassyDatabaseBuilder {
 impl EmbassyDatabaseBuilder for DatabaseSpecBuilder<EmbassyAdapter> {
     fn build(self, spawner: Spawner) -> Database<EmbassyAdapter> {
         #[cfg(feature = "tracing")]
-        tracing::info!("Building Embassy database with spawner");
+        tracing::info!("Building Embassy database with typed records and spawner");
 
         let adapter = EmbassyAdapter::new_with_spawner(spawner);
         let spec = self.into_spec();
-        Database::new(adapter, spec)
+        // Embassy build doesn't return Result, so we panic on error
+        // This is consistent with Embassy's error handling philosophy
+        Database::new(adapter, spec).expect("Failed to build Embassy database")
     }
 }

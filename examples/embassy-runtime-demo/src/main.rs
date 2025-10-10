@@ -54,12 +54,7 @@ async fn main(spawner: Spawner) {
     // Create database using the new unified builder API
     // Use StaticCell to make db live for 'static
     static DB_CELL: StaticCell<aimdb_embassy_adapter::EmbassyDatabase> = StaticCell::new();
-    let db = DB_CELL.init(
-        Database::<EmbassyAdapter>::builder()
-            .record("sensors")
-            .record("metrics")
-            .build(spawner),
-    );
+    let db = DB_CELL.init(Database::<EmbassyAdapter>::builder().build(spawner));
 
     info!("✅ AimDB database created successfully");
 

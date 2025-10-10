@@ -84,13 +84,9 @@ pub use runtime::EmbassyAdapter;
 #[cfg(feature = "embassy-runtime")]
 pub use database::{
     EmbassyDatabase, EmbassyDatabaseBuilder, EmbassyDatabaseSpec, EmbassyDatabaseSpecBuilder,
-    EmbassyRecord,
 };
 
 // Re-export core types for convenience
-#[cfg(not(feature = "std"))]
-pub use aimdb_core::Record;
-
 #[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]
 pub use embassy_executor::Spawner;
 
