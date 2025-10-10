@@ -296,7 +296,7 @@ impl<A: RuntimeAdapter> Database<A> {
             // For no_std, we need a static reference - this would typically be handled
             // by the caller storing the adapter in a static cell first
             // For now, we'll document this limitation
-            panic!("context() not supported in no_std without static reference - use adapter() directly")
+            panic!("context() not supported in no_std without a static reference. To use context(), store your adapter in a static cell (e.g., StaticCell from portable-atomic or embassy-sync), or use adapter() directly.")
         }
     }
 }
