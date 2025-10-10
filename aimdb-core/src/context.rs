@@ -6,6 +6,8 @@
 use aimdb_executor::Runtime;
 use core::future::Future;
 
+use crate::emitter::Emitter;
+
 /// Unified runtime context for AimDB services
 ///
 /// This context provides access to essential runtime capabilities through
@@ -42,6 +44,11 @@ where
     runtime: std::sync::Arc<R>,
     #[cfg(not(feature = "std"))]
     runtime: &'static R,
+    /// Optional emitter for cross-record communication
+    #[cfg(feature = "std")]
+    emitter: Option<Emitter>,
+    #[cfg(not(feature = "std"))]
+    emitter: Option<Emitter>,
 }
 
 #[cfg(feature = "std")]
@@ -59,6 +66,7 @@ where
     pub fn new(runtime: R) -> Self {
         Self {
             runtime: std::sync::Arc::new(runtime),
+            emitter: None,
         }
     }
 
@@ -66,7 +74,18 @@ where
     ///
     /// This avoids double-wrapping when you already have an Arc.
     pub fn from_arc(runtime: std::sync::Arc<R>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            emitter: None,
+        }
+    }
+
+    /// Create a RuntimeContext with an emitter
+    ///
+    /// This allows services to emit data to typed records.
+    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
+        self.emitter = Some(emitter);
+        self
     }
 }
 
@@ -83,7 +102,18 @@ where
     ///
     /// * `runtime` - Static reference to runtime adapter
     pub fn new(runtime: &'static R) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            emitter: None,
+        }
+    }
+
+    /// Create a RuntimeContext with an emitter (no_std version)
+    ///
+    /// This allows services to emit data to typed records.
+    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
+        self.emitter = Some(emitter);
+        self
     }
 }
 
@@ -131,6 +161,26 @@ where
     /// ```
     pub fn log(&self) -> Log<'_, R> {
         Log { ctx: self }
+    }
+
+    /// Access the emitter for cross-record communication
+    ///
+    /// Returns the emitter if one was configured, allowing services to emit
+    /// data to typed records in the producer-consumer pipeline.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// # use aimdb_core::RuntimeContext;
+    /// # use aimdb_tokio_adapter::TokioAdapter;
+    /// # async fn example(ctx: &RuntimeContext<TokioAdapter>) {
+    /// if let Some(emitter) = ctx.emitter() {
+    ///     emitter.emit(MyRecord::new("data")).await;
+    /// }
+    /// # }
+    /// ```
+    pub fn emitter(&self) -> Option<&Emitter> {
+        self.emitter.as_ref()
     }
 
     /// Get access to the underlying runtime

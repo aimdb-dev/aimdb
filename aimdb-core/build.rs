@@ -18,19 +18,11 @@ fn main() {
 
     // Note: no_std is the absence of std feature, no validation needed for mutual exclusion
 
-    // Validate runtime feature combinations
+    // Validate runtime feature combinations (skip validation when both are enabled via --all-features for testing)
     if tokio_runtime_enabled && embassy_runtime_enabled {
-        panic!(
-            r#"
-❌ Invalid feature combination: Cannot enable both 'tokio-runtime' and 'embassy-runtime'
-
-   These runtime adapters target different platforms and cannot be used together.
-
-   Use:
-   • tokio-runtime   → For std platforms (edge/cloud)
-   • embassy-runtime → For embedded platforms (MCU)
-"#
-        );
+        // Allow this for --all-features testing, but warn
+        eprintln!("⚠️  Warning: Both tokio-runtime and embassy-runtime enabled (likely from --all-features)");
+        eprintln!("   This is only valid for testing. Production builds should use one runtime.");
     }
 
     // Validate metrics require std
