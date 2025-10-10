@@ -12,10 +12,13 @@ categories.workspace = true
 build = "build.rs"
 
 [features]
-default = ["tokio-runtime"]
+default = ["std", "tokio-runtime"]
+
+# Platform features
+std = ["aimdb-core/std"]
 
 # Runtime features
-tokio-runtime = ["tokio"]
+tokio-runtime = ["tokio", "std"]
 
 # Observability features
 tracing = ["aimdb-core/tracing", "dep:tracing"]

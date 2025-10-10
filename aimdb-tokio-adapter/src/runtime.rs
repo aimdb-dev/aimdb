@@ -159,58 +159,6 @@ impl Spawn for TokioAdapter {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
-// impl DelayCapableAdapter for TokioAdapter {
-//     type Duration = Duration;
-//
-//     /// Spawns a task that begins execution after the specified delay
-//     ///
-//     /// This implementation uses `tokio::time::sleep` to create the delay
-//     /// before executing the provided task.
-//     ///
-//     /// # Arguments
-//     /// * `task` - The async task to spawn after the delay
-//     /// * `delay` - How long to wait before starting task execution
-//     ///
-//     /// # Returns
-//     /// `DbResult<T>` where T is the task's success type
-//     ///
-//     /// # Example
-//     /// ```rust,no_run
-//     /// use aimdb_tokio_adapter::TokioAdapter;
-//     /// use aimdb_executor::{DelayCapableAdapter, ExecutorResult};
-//     /// use std::time::Duration;
-//     ///
-//     /// # #[tokio::main]
-//     /// # async fn main() -> ExecutorResult<()> {
-//     /// let adapter = TokioAdapter::new()?;
-//     ///
-//     /// let result = adapter.spawn_delayed_task(
-//     ///     async { Ok::<i32, aimdb_executor::ExecutorError>(42) },
-//     ///     Duration::from_millis(100)
-//     /// ).await?;
-//     ///
-//     /// assert_eq!(result, 42);
-//     /// # Ok(())
-//     /// # }
-//     /// ```
-//     #[allow(clippy::manual_async_fn)]
-//     fn spawn_delayed_task<F, T>(
-//         &self,
-//         task: F,
-//         delay: Self::Duration,
-//     ) -> impl Future<Output = ExecutorResult<T>> + Send
-//     where
-//         F: Future<Output = ExecutorResult<T>> + Send + 'static,
-//         T: Send + 'static,
-//     {
-//         async move {
-//             tokio::time::sleep(delay).await;
-//             task.await
-//         }
-//     }
-// }
-
 // New unified Runtime trait implementations
 #[cfg(feature = "tokio-runtime")]
 impl TimeOps for TokioAdapter {

@@ -30,32 +30,17 @@ pub trait TokioDatabaseBuilder {
     /// # Returns
     /// `DbResult<Database<TokioAdapter>>` - The configured database
     ///
-    /// # Example
-    /// ```rust,no_run
-    /// use aimdb_core::Database;
-    /// use aimdb_tokio_adapter::{TokioAdapter, TokioDatabaseBuilder};
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> aimdb_core::DbResult<()> {
-    ///     let db = Database::<TokioAdapter>::builder()
-    ///         .record("sensors")
-    ///         .record("metrics")
-    ///         .build()?;
-    ///     
-    ///     // Use the database
-    ///     Ok(())
-    /// }
-    /// ```
+    /// See the repository examples for complete usage.
     fn build(self) -> DbResult<Database<TokioAdapter>>;
 }
 
 impl TokioDatabaseBuilder for DatabaseSpecBuilder<TokioAdapter> {
     fn build(self) -> DbResult<Database<TokioAdapter>> {
         #[cfg(feature = "tracing")]
-        tracing::info!("Building Tokio database");
+        tracing::info!("Building Tokio database with typed records");
 
         let adapter = TokioAdapter::new()?;
         let spec = self.into_spec();
-        Ok(Database::new(adapter, spec))
+        Database::new(adapter, spec)
     }
 }
