@@ -181,9 +181,7 @@ impl<T: Send + 'static, const N: usize> EmbassySender<T, N> {
     ///
     /// Embassy MPSC senders are cheaply cloneable.
     pub fn clone_sender(&self) -> Self {
-        Self {
-            inner: self.inner,
-        }
+        Self { inner: self.inner }
     }
 }
 
@@ -223,9 +221,7 @@ impl<T: Send + 'static, const N: usize> AnySender for EmbassySender<T, N> {
 // Implement Clone for EmbassySender since embassy Sender is Clone
 impl<T: Send + 'static, const N: usize> Clone for EmbassySender<T, N> {
     fn clone(&self) -> Self {
-        Self {
-            inner: self.inner,
-        }
+        Self { inner: self.inner }
     }
 }
 
