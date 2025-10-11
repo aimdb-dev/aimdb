@@ -49,6 +49,7 @@ dependencies = [
  "aimdb-executor",
  "aimdb-macros",
  "anyhow",
+ "defmt 1.0.1",
  "embassy-executor",
  "heapless 0.9.1",
  "metrics",
