@@ -67,7 +67,12 @@ pub trait BufferBackend<T: Clone + Send>: Send + Sync {
     ///
     /// Each call to `subscribe()` returns an independent reader that can
     /// consume values at its own pace.
-    type Reader: BufferReader<T>;
+    ///
+    /// The reader has a lifetime tied to the buffer that created it,
+    /// allowing implementations to hold references to the buffer.
+    type Reader<'a>: BufferReader<T>
+    where
+        Self: 'a;
 
     /// Creates a new buffer with the given configuration
     ///
@@ -110,15 +115,18 @@ pub trait BufferBackend<T: Clone + Send>: Send + Sync {
     /// values at its own pace. For SPMC ring buffers, readers track their
     /// position independently and may lag if processing is slow.
     ///
+    /// The returned reader has a lifetime tied to the buffer, allowing it to
+    /// hold references to the buffer's internal state.
+    ///
     /// # Returns
-    /// A new reader instance
+    /// A new reader instance with a lifetime bound to `&self`
     ///
     /// # Example
     /// ```rust,ignore
     /// let reader1 = buffer.subscribe(); // Consumer 1
     /// let reader2 = buffer.subscribe(); // Consumer 2 (independent)
     /// ```
-    fn subscribe(&self) -> Self::Reader;
+    fn subscribe(&self) -> Self::Reader<'_>;
 }
 
 /// Reader trait for consuming values from a buffer
@@ -242,7 +250,7 @@ mod tests {
     }
 
     impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for MockBuffer<T> {
-        type Reader = MockReader<T>;
+        type Reader<'a> = MockReader<T> where Self: 'a;
 
         fn new(_cfg: &BufferCfg) -> Self {
             Self {
@@ -254,7 +262,7 @@ mod tests {
             // No-op for testing
         }
 
-        fn subscribe(&self) -> Self::Reader {
+        fn subscribe(&self) -> Self::Reader<'_> {
             MockReader {
                 _phantom: core::marker::PhantomData,
             }
