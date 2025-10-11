@@ -88,6 +88,77 @@ impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
     }
 }
 
+impl<T: Clone + Send + Sync + 'static> TokioBuffer<T> {
+    /// Spawns a dispatcher task that drains the buffer and calls a handler function
+    ///
+    /// This method creates a background task that:
+    /// 1. Subscribes to the buffer
+    /// 2. Continuously receives values
+    /// 3. Calls the provided async handler for each value
+    /// 4. Handles lag and closed buffer errors
+    ///
+    /// # Arguments
+    /// * `handler` - Async function called for each buffered value
+    ///
+    /// # Returns
+    /// A `tokio::task::JoinHandle` that can be used to await task completion
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let handle = buffer.spawn_dispatcher(|value| async move {
+    ///     println!("Processing: {:?}", value);
+    ///     // Call producer and consumers here
+    /// });
+    /// ```
+    pub fn spawn_dispatcher<F, Fut>(&self, handler: F) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn(T) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut reader = self.subscribe();
+
+        tokio::spawn(async move {
+            loop {
+                match reader.recv().await {
+                    Ok(value) => {
+                        handler(value).await;
+                    }
+                    Err(DbError::BufferLagged { lag_count, .. }) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!("Buffer dispatcher lagged by {} messages", lag_count);
+
+                        #[cfg(not(feature = "tracing"))]
+                        eprintln!("Buffer dispatcher lagged by {} messages", lag_count);
+
+                        // Continue processing after lag
+                        continue;
+                    }
+                    Err(DbError::BufferClosed { .. }) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::info!("Buffer closed, dispatcher exiting");
+
+                        #[cfg(not(feature = "tracing"))]
+                        eprintln!("Buffer closed, dispatcher exiting");
+
+                        // Buffer closed, exit gracefully
+                        break;
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("Buffer dispatcher error: {:?}", e);
+
+                        #[cfg(not(feature = "tracing"))]
+                        eprintln!("Buffer dispatcher error: {:?}", e);
+
+                        // Unexpected error, exit
+                        break;
+                    }
+                }
+            }
+        })
+    }
+}
+
 /// Tokio-based buffer reader
 pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
     Broadcast {
@@ -209,5 +280,75 @@ mod tests {
         buffer.push(1);
         buffer.push(2);
         assert_eq!(reader.recv().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_spawning() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::SpmcRing { capacity: 10 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        // Counter to track how many values were processed
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        // Spawn dispatcher
+        let _handle = buffer.spawn_dispatcher(move |value| {
+            let counter = Arc::clone(&counter_clone);
+            async move {
+                counter.fetch_add(value as u32, Ordering::SeqCst);
+            }
+        });
+
+        // Send some values
+        buffer.push(1);
+        buffer.push(2);
+        buffer.push(3);
+
+        // Give dispatcher time to process
+        sleep(Duration::from_millis(100)).await;
+
+        // Verify all values were processed
+        assert_eq!(counter.load(Ordering::SeqCst), 6); // 1 + 2 + 3
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_lag_handling() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use tokio::time::{sleep, Duration};
+
+        // Small buffer to force lagging
+        let cfg = BufferCfg::SpmcRing { capacity: 2 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        // Slow dispatcher that will lag
+        let _handle = buffer.spawn_dispatcher(move |value| {
+            let counter = Arc::clone(&counter_clone);
+            async move {
+                sleep(Duration::from_millis(50)).await; // Slow processing
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = value; // Use value to avoid warning
+            }
+        });
+
+        // Send many values quickly to cause lag
+        for i in 0..10 {
+            buffer.push(i);
+        }
+
+        // Wait for processing
+        sleep(Duration::from_millis(600)).await;
+
+        // Should have processed some values (exact count depends on timing)
+        let count = counter.load(Ordering::SeqCst);
+        assert!(
+            count > 0,
+            "Dispatcher should process at least some values despite lag"
+        );
     }
 }

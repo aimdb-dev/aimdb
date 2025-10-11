@@ -179,6 +179,61 @@ impl<
     }
 }
 
+impl<T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize> EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+{
+    /// Creates a dispatcher task closure for use with Embassy executors
+    ///
+    /// This method returns an async closure that can be spawned as an Embassy task.
+    /// Unlike Tokio's `spawn_dispatcher` which immediately spawns the task, this
+    /// method returns the task for you to spawn with your Embassy executor.
+    ///
+    /// # Arguments
+    /// * `handler` - Async function called for each buffered value
+    ///
+    /// # Returns
+    /// An async closure that can be passed to `embassy_executor::Spawner::spawn()`
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // In your Embassy application:
+    /// #[embassy_executor::task]
+    /// async fn buffer_dispatcher(buffer: &'static EmbassyBuffer<i32, 32, 4, 1, 1>) {
+    ///     let task = buffer.dispatcher_task(|value| async move {
+    ///         // Process value
+    ///         defmt::info!("Received: {}", value);
+    ///     });
+    ///     task.await;
+    /// }
+    /// ```
+    pub async fn dispatcher_task<F, Fut>(&'static self, handler: F)
+    where
+        F: Fn(T) -> Fut + Send + Sync,
+        Fut: core::future::Future<Output = ()> + Send,
+    {
+        let mut reader = self.subscribe();
+
+        loop {
+            match reader.recv().await {
+                Ok(value) => {
+                    handler(value).await;
+                }
+                Err(DbError::BufferLagged { .. }) => {
+                    // Continue processing after lag
+                    continue;
+                }
+                Err(DbError::BufferClosed { .. }) => {
+                    // Buffer closed, exit gracefully
+                    break;
+                }
+                Err(_) => {
+                    // Unexpected error, exit
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// Reader for Embassy buffers
 ///
 /// Each variant holds a reference or owned handle to the appropriate Embassy primitive.
