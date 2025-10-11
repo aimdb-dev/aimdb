@@ -482,10 +482,7 @@ pub enum DbError {
     /// - Verify outbox was initialized before use
     /// - Check that the correct payload type is being used
     /// - Ensure init_outbox() completed successfully
-    #[cfg_attr(
-        feature = "std",
-        error("Outbox not found for type: {type_name}")
-    )]
+    #[cfg_attr(feature = "std", error("Outbox not found for type: {type_name}"))]
     OutboxNotFound {
         #[cfg(feature = "std")]
         type_name: String,
@@ -530,10 +527,7 @@ pub enum DbError {
     /// - Check worker status via WorkerHandle
     /// - Attempt worker restart if auto_restart is enabled
     /// - Log for investigation if unexpected
-    #[cfg_attr(
-        feature = "std",
-        error("Outbox channel closed: {type_name}")
-    )]
+    #[cfg_attr(feature = "std", error("Outbox channel closed: {type_name}"))]
     OutboxClosed {
         #[cfg(feature = "std")]
         type_name: String,
@@ -550,10 +544,7 @@ pub enum DbError {
     /// - Use the existing outbox
     /// - Check for duplicate initialization logic
     /// - Each payload type can only have one outbox
-    #[cfg_attr(
-        feature = "std",
-        error("Outbox already exists for type: {type_name}")
-    )]
+    #[cfg_attr(feature = "std", error("Outbox already exists for type: {type_name}"))]
     OutboxAlreadyExists {
         #[cfg(feature = "std")]
         type_name: String,

@@ -145,7 +145,10 @@ impl EmbassyAdapter {
     pub fn create_outbox_channel<T: Send + 'static>(
         &self,
         capacity: usize,
-    ) -> (crate::outbox::EmbassySender<T, 64>, crate::outbox::OutboxReceiver<T, 64>) {
+    ) -> (
+        crate::outbox::EmbassySender<T, 64>,
+        crate::outbox::OutboxReceiver<T, 64>,
+    ) {
         #[cfg(feature = "tracing")]
         debug!(
             "Creating Embassy outbox channel for type {} with capacity {}",
@@ -177,7 +180,10 @@ impl EmbassyAdapter {
     #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
     pub fn create_outbox_channel_with_capacity<T: Send + 'static, const N: usize>(
         &self,
-    ) -> (crate::outbox::EmbassySender<T, N>, crate::outbox::OutboxReceiver<T, N>) {
+    ) -> (
+        crate::outbox::EmbassySender<T, N>,
+        crate::outbox::OutboxReceiver<T, N>,
+    ) {
         #[cfg(feature = "tracing")]
         debug!(
             "Creating Embassy outbox channel for type {} with capacity {}",
@@ -308,4 +314,3 @@ impl aimdb_core::OutboxRuntimeSupport for EmbassyAdapter {
         )
     }
 }
-

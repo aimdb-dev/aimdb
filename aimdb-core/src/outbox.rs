@@ -388,8 +388,7 @@ impl WorkerHandle {
     ///
     /// `true` if the worker task is active, `false` if it has stopped
     pub fn is_running(&self) -> bool {
-        self.is_running
-            .load(portable_atomic::Ordering::Relaxed)
+        self.is_running.load(portable_atomic::Ordering::Relaxed)
     }
 
     /// Get the worker task ID
@@ -562,7 +561,7 @@ mod tests {
     fn test_worker_handle_creation() {
         let is_running = Arc::new(portable_atomic::AtomicBool::new(true));
         let handle = WorkerHandle::new(42, is_running);
-        
+
         assert_eq!(handle.task_id(), 42);
         assert!(handle.is_running());
     }
@@ -571,7 +570,7 @@ mod tests {
     fn test_worker_handle_restart_without_fn() {
         let is_running = Arc::new(portable_atomic::AtomicBool::new(true));
         let handle = WorkerHandle::new(1, is_running);
-        
+
         // Should fail when no restart function is configured
         assert!(handle.restart().is_err());
     }
@@ -581,11 +580,11 @@ mod tests {
         let is_running = Arc::new(portable_atomic::AtomicBool::new(true));
         let restart_called = Arc::new(portable_atomic::AtomicBool::new(false));
         let restart_called_clone = restart_called.clone();
-        
+
         let handle = WorkerHandle::new(1, is_running).with_restart_fn(move || {
             restart_called_clone.store(true, portable_atomic::Ordering::Relaxed);
         });
-        
+
         // Should succeed and call the function
         assert!(handle.restart().is_ok());
         assert!(restart_called.load(portable_atomic::Ordering::Relaxed));
@@ -595,14 +594,14 @@ mod tests {
     fn test_worker_handle_status_tracking() {
         let is_running = Arc::new(portable_atomic::AtomicBool::new(true));
         let handle = WorkerHandle::new(100, is_running.clone());
-        
+
         // Initially running
         assert!(handle.is_running());
-        
+
         // Simulate worker stopping
         is_running.store(false, portable_atomic::Ordering::Relaxed);
         assert!(!handle.is_running());
-        
+
         // Simulate worker restarting
         is_running.store(true, portable_atomic::Ordering::Relaxed);
         assert!(handle.is_running());
@@ -619,7 +618,7 @@ mod tests {
         };
         assert_eq!(config.capacity, 100);
         assert!(config.auto_restart);
-        
+
         // Zero capacity (edge case - should be handled by implementation)
         let zero_config = OutboxConfig {
             capacity: 0,
@@ -638,13 +637,15 @@ mod tests {
         let _drop_oldest = OverflowBehavior::DropOldest;
         let _drop_newest = OverflowBehavior::DropNewest;
         let _error = OverflowBehavior::Error;
-        
+
         // Test pattern matching
         match OverflowBehavior::Block {
             OverflowBehavior::Block => {
                 // Correct
             }
-            OverflowBehavior::DropOldest | OverflowBehavior::DropNewest | OverflowBehavior::Error => {
+            OverflowBehavior::DropOldest
+            | OverflowBehavior::DropNewest
+            | OverflowBehavior::Error => {
                 panic!("Wrong variant");
             }
         }
@@ -655,7 +656,7 @@ mod tests {
     fn test_worker_handle_debug_format() {
         let is_running = Arc::new(portable_atomic::AtomicBool::new(true));
         let handle = WorkerHandle::new(42, is_running);
-        
+
         let debug_str = format!("{:?}", handle);
         assert!(debug_str.contains("WorkerHandle"));
         assert!(debug_str.contains("task_id"));
@@ -667,16 +668,16 @@ mod tests {
         let is_running = Arc::new(portable_atomic::AtomicBool::new(true));
         let call_count = Arc::new(portable_atomic::AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
-        
+
         let handle = WorkerHandle::new(1, is_running).with_restart_fn(move || {
             call_count_clone.fetch_add(1, portable_atomic::Ordering::Relaxed);
         });
-        
+
         // Call restart multiple times
         for _ in 0..5 {
             assert!(handle.restart().is_ok());
         }
-        
+
         assert_eq!(call_count.load(portable_atomic::Ordering::Relaxed), 5);
     }
 
@@ -684,7 +685,7 @@ mod tests {
     #[cfg(feature = "std")]
     mod any_sender_tests {
         use super::*;
-        
+
         struct MockAnySender<T> {
             values: std::sync::Arc<std::sync::Mutex<Vec<T>>>,
         }
@@ -712,14 +713,17 @@ mod tests {
             fn send_any(&self, value: Box<dyn core::any::Any + Send>) -> SendFuture {
                 let value = *value.downcast::<T>().expect("Type mismatch");
                 let values = self.values.clone();
-                
+
                 Box::pin(async move {
                     values.lock().unwrap().push(value);
                     Ok(())
                 })
             }
 
-            fn try_send_any(&self, value: Box<dyn core::any::Any + Send>) -> Result<(), Box<dyn core::any::Any + Send>> {
+            fn try_send_any(
+                &self,
+                value: Box<dyn core::any::Any + Send>,
+            ) -> Result<(), Box<dyn core::any::Any + Send>> {
                 let value = *value.downcast::<T>().expect("Type mismatch");
                 self.values.lock().unwrap().push(value);
                 Ok(())
@@ -736,9 +740,11 @@ mod tests {
         fn test_any_sender_as_any_downcast() {
             let sender = MockAnySender::<TestPayload>::new();
             let sender_ref: &dyn AnySender = &sender;
-            
+
             // Test downcast via as_any
-            let downcasted = sender_ref.as_any().downcast_ref::<MockAnySender<TestPayload>>();
+            let downcasted = sender_ref
+                .as_any()
+                .downcast_ref::<MockAnySender<TestPayload>>();
             assert!(downcasted.is_some());
         }
 
@@ -746,15 +752,15 @@ mod tests {
         async fn test_any_sender_send_any() {
             let sender = MockAnySender::<TestPayload>::new();
             let sender_ref: &dyn AnySender = &sender;
-            
+
             let payload = TestPayload {
                 id: 42,
                 data: "test".to_string(),
             };
-            
+
             let boxed = Box::new(payload.clone()) as Box<dyn core::any::Any + Send>;
             let result = sender_ref.send_any(boxed).await;
-            
+
             assert!(result.is_ok());
             let values = sender.get_values();
             assert_eq!(values.len(), 1);
@@ -765,15 +771,15 @@ mod tests {
         fn test_any_sender_try_send_any() {
             let sender = MockAnySender::<TestPayload>::new();
             let sender_ref: &dyn AnySender = &sender;
-            
+
             let payload = TestPayload {
                 id: 99,
                 data: "sync".to_string(),
             };
-            
+
             let boxed = Box::new(payload.clone()) as Box<dyn core::any::Any + Send>;
             let result = sender_ref.try_send_any(boxed);
-            
+
             assert!(result.is_ok());
             let values = sender.get_values();
             assert_eq!(values.len(), 1);
@@ -785,18 +791,18 @@ mod tests {
             // Simulate storing multiple senders in a type-erased collection
             let sender1 = MockAnySender::<i32>::new();
             let sender2 = MockAnySender::<String>::new();
-            
+
             let mut storage: Vec<Box<dyn AnySender>> = Vec::new();
             storage.push(Box::new(sender1));
             storage.push(Box::new(sender2));
-            
+
             assert_eq!(storage.len(), 2);
-            
+
             // Each sender can still be used via the trait
             let boxed_int = Box::new(42i32) as Box<dyn core::any::Any + Send>;
             let result = storage[0].try_send_any(boxed_int);
             assert!(result.is_ok());
-            
+
             let boxed_string = Box::new("hello".to_string()) as Box<dyn core::any::Any + Send>;
             let result = storage[1].try_send_any(boxed_string);
             assert!(result.is_ok());

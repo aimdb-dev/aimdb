@@ -177,10 +177,7 @@ impl<T: Send + 'static> AnySender for TokioSender<T> {
         let sender = self.inner.clone();
 
         Box::pin(async move {
-            sender
-                .send(value)
-                .await
-                .map_err(|_| ()) // Convert SendError to ()
+            sender.send(value).await.map_err(|_| ()) // Convert SendError to ()
         })
     }
 

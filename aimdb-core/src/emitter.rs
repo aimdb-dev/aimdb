@@ -225,22 +225,20 @@ impl Emitter {
 
         let type_id = TypeId::of::<T>();
 
-        // Retrieve and clone sender from registry  
+        // Retrieve and clone sender from registry
         let outboxes = self.inner.outboxes.lock();
-        
+
         #[cfg(feature = "std")]
         let map = outboxes.as_ref().expect("Failed to lock outboxes");
         #[cfg(not(feature = "std"))]
         let map = &*outboxes;
 
-        let sender = map
-            .get(&type_id)
-            .ok_or_else(|| DbError::OutboxNotFound {
-                #[cfg(feature = "std")]
-                type_name: core::any::type_name::<T>().to_string(),
-                #[cfg(not(feature = "std"))]
-                _type_name: (),
-            })?;
+        let sender = map.get(&type_id).ok_or_else(|| DbError::OutboxNotFound {
+            #[cfg(feature = "std")]
+            type_name: core::any::type_name::<T>().to_string(),
+            #[cfg(not(feature = "std"))]
+            _type_name: (),
+        })?;
 
         // Send via type-erased trait method
         let boxed_value = Box::new(value) as Box<dyn Any + Send>;
@@ -304,20 +302,18 @@ impl Emitter {
 
         // Retrieve and clone sender from registry
         let outboxes = self.inner.outboxes.lock();
-        
+
         #[cfg(feature = "std")]
         let map = outboxes.as_ref().expect("Failed to lock outboxes");
         #[cfg(not(feature = "std"))]
         let map = &*outboxes;
 
-        let sender = map
-            .get(&type_id)
-            .ok_or_else(|| DbError::OutboxNotFound {
-                #[cfg(feature = "std")]
-                type_name: core::any::type_name::<T>().to_string(),
-                #[cfg(not(feature = "std"))]
-                _type_name: (),
-            })?;
+        let sender = map.get(&type_id).ok_or_else(|| DbError::OutboxNotFound {
+            #[cfg(feature = "std")]
+            type_name: core::any::type_name::<T>().to_string(),
+            #[cfg(not(feature = "std"))]
+            _type_name: (),
+        })?;
 
         // Try to send via type-erased trait method
         let boxed_value = Box::new(value) as Box<dyn Any + Send>;
@@ -481,7 +477,7 @@ mod tests {
 
         let result = emitter.try_enqueue(msg);
         assert!(result.is_err());
-        
+
         match result {
             Err(crate::DbError::OutboxNotFound { .. }) => {
                 // Expected error
@@ -493,11 +489,11 @@ mod tests {
     #[test]
     fn test_try_enqueue_success() {
         let emitter = create_test_emitter();
-        
+
         // Register a mock sender
         let mock_sender = MockSender::<TestMessage>::new(false, false);
         let type_id = TypeId::of::<TestMessage>();
-        
+
         #[cfg(feature = "std")]
         {
             let mut outboxes = emitter.inner.outboxes.lock().unwrap();
@@ -526,11 +522,11 @@ mod tests {
     #[test]
     fn test_try_enqueue_channel_full() {
         let emitter = create_test_emitter();
-        
+
         // Register a mock sender that simulates full channel
         let mock_sender = MockSender::<TestMessage>::new(false, true);
         let type_id = TypeId::of::<TestMessage>();
-        
+
         #[cfg(feature = "std")]
         {
             let mut outboxes = emitter.inner.outboxes.lock().unwrap();
@@ -549,7 +545,7 @@ mod tests {
 
         let result = emitter.try_enqueue(msg);
         assert!(result.is_err());
-        
+
         match result {
             Err(crate::DbError::OutboxFull { capacity, .. }) => {
                 // Capacity is placeholder (0) at this level
@@ -571,7 +567,7 @@ mod tests {
 
         let result = emitter.enqueue(msg).await;
         assert!(result.is_err());
-        
+
         match result {
             Err(crate::DbError::OutboxNotFound { .. }) => {
                 // Expected error
@@ -584,11 +580,11 @@ mod tests {
     #[tokio::test]
     async fn test_enqueue_success() {
         let emitter = create_test_emitter();
-        
+
         // Register a mock sender
         let mock_sender = MockSender::<TestMessage>::new(false, false);
         let type_id = TypeId::of::<TestMessage>();
-        
+
         {
             let mut outboxes = emitter.inner.outboxes.lock().unwrap();
             outboxes.insert(type_id, Box::new(mock_sender.clone()));
@@ -612,11 +608,11 @@ mod tests {
     #[tokio::test]
     async fn test_enqueue_channel_closed() {
         let emitter = create_test_emitter();
-        
+
         // Register a mock sender that always fails (simulating closed channel)
         let mock_sender = MockSender::<TestMessage>::new(true, false);
         let type_id = TypeId::of::<TestMessage>();
-        
+
         {
             let mut outboxes = emitter.inner.outboxes.lock().unwrap();
             outboxes.insert(type_id, Box::new(mock_sender));
@@ -629,7 +625,7 @@ mod tests {
 
         let result = emitter.enqueue(msg).await;
         assert!(result.is_err());
-        
+
         match result {
             Err(crate::DbError::OutboxClosed { .. }) => {
                 // Expected error
@@ -642,11 +638,11 @@ mod tests {
     #[tokio::test]
     async fn test_enqueue_multiple_messages() {
         let emitter = create_test_emitter();
-        
+
         // Register a mock sender
         let mock_sender = MockSender::<TestMessage>::new(false, false);
         let type_id = TypeId::of::<TestMessage>();
-        
+
         {
             let mut outboxes = emitter.inner.outboxes.lock().unwrap();
             outboxes.insert(type_id, Box::new(mock_sender.clone()));
@@ -673,11 +669,11 @@ mod tests {
     #[test]
     fn test_type_erasure_safety() {
         let emitter = create_test_emitter();
-        
+
         // Register sender for TestMessage
         let mock_sender = MockSender::<TestMessage>::new(false, false);
         let type_id = TypeId::of::<TestMessage>();
-        
+
         #[cfg(feature = "std")]
         {
             let mut outboxes = emitter.inner.outboxes.lock().unwrap();

@@ -602,7 +602,6 @@ impl AimDb {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

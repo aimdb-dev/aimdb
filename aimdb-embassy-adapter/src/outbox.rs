@@ -273,7 +273,7 @@ pub fn create_outbox_channel<T: Send + 'static>(
     // Embassy channels don't have split(), we get sender/receiver directly
     let sender = channel.sender();
     let receiver = channel.receiver();
-    
+
     (EmbassySender::new(sender), receiver)
 }
 
@@ -297,10 +297,10 @@ pub fn create_outbox_channel_with_capacity<T: Send + 'static, const N: usize>(
 ) -> (EmbassySender<T, N>, OutboxReceiver<T, N>) {
     let channel: &'static mut Channel<CriticalSectionRawMutex, T, N> =
         Box::leak(Box::new(Channel::<CriticalSectionRawMutex, T, N>::new()));
-    
+
     let sender = channel.sender();
     let receiver = channel.receiver();
-    
+
     (EmbassySender::new(sender), receiver)
 }
 

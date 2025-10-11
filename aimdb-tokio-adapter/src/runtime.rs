@@ -98,7 +98,10 @@ impl TokioAdapter {
     pub fn create_outbox_channel<T: Send + 'static>(
         &self,
         capacity: usize,
-    ) -> (crate::outbox::TokioSender<T>, crate::outbox::OutboxReceiver<T>) {
+    ) -> (
+        crate::outbox::TokioSender<T>,
+        crate::outbox::OutboxReceiver<T>,
+    ) {
         #[cfg(feature = "tracing")]
         debug!("Creating outbox channel with capacity: {}", capacity);
 
@@ -262,7 +265,10 @@ impl aimdb_core::OutboxRuntimeSupport for TokioAdapter {
     fn create_outbox_channel<T: Send + 'static>(
         &self,
         capacity: usize,
-    ) -> (Box<dyn aimdb_core::AnySender>, Box<dyn core::any::Any + Send>) {
+    ) -> (
+        Box<dyn aimdb_core::AnySender>,
+        Box<dyn core::any::Any + Send>,
+    ) {
         #[cfg(feature = "tracing")]
         debug!(
             "Creating Tokio outbox channel for type {} with capacity {}",
@@ -280,4 +286,3 @@ impl aimdb_core::OutboxRuntimeSupport for TokioAdapter {
         )
     }
 }
-
