@@ -233,7 +233,7 @@ impl Emitter {
         #[cfg(not(feature = "std"))]
         let map = &*outboxes;
 
-        let sender = map.get(&type_id).ok_or_else(|| DbError::OutboxNotFound {
+        let sender = map.get(&type_id).ok_or(DbError::OutboxNotFound {
             #[cfg(feature = "std")]
             type_name: core::any::type_name::<T>().to_string(),
             #[cfg(not(feature = "std"))]
@@ -308,7 +308,7 @@ impl Emitter {
         #[cfg(not(feature = "std"))]
         let map = &*outboxes;
 
-        let sender = map.get(&type_id).ok_or_else(|| DbError::OutboxNotFound {
+        let sender = map.get(&type_id).ok_or(DbError::OutboxNotFound {
             #[cfg(feature = "std")]
             type_name: core::any::type_name::<T>().to_string(),
             #[cfg(not(feature = "std"))]

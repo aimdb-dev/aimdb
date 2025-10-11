@@ -182,7 +182,7 @@ impl<T: Send + 'static, const N: usize> EmbassySender<T, N> {
     /// Embassy MPSC senders are cheaply cloneable.
     pub fn clone_sender(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: self.inner,
         }
     }
 }
@@ -199,7 +199,7 @@ impl<T: Send + 'static, const N: usize> AnySender for EmbassySender<T, N> {
             .expect("Type mismatch in send_any - this is a bug");
 
         // Clone the sender for the async block
-        let sender = self.inner.clone();
+        let sender = self.inner;
 
         Box::pin(async move {
             sender.send(value).await;
@@ -224,7 +224,7 @@ impl<T: Send + 'static, const N: usize> AnySender for EmbassySender<T, N> {
 impl<T: Send + 'static, const N: usize> Clone for EmbassySender<T, N> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: self.inner,
         }
     }
 }
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_embassy_sender_try_send() {
-        let (sender, mut rx) = create_outbox_channel::<i32>(2);
+        let (sender, rx) = create_outbox_channel::<i32>(2);
 
         // Should succeed (capacity is 64)
         assert!(sender.try_send(42).is_ok());
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_create_outbox_channel_with_capacity() {
-        let (sender, mut rx) = create_outbox_channel_with_capacity::<i32, 4>();
+        let (sender, rx) = create_outbox_channel_with_capacity::<i32, 4>();
 
         // Should be able to send up to capacity
         assert!(sender.try_send(1).is_ok());

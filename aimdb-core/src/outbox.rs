@@ -64,7 +64,7 @@ use alloc::sync::Arc;
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
-use crate::RuntimeAdapter;
+use crate::{DbError, RuntimeAdapter};
 
 // ============================================================================
 // Runtime Outbox Support Trait
@@ -214,14 +214,13 @@ pub trait AnySender: Send + Sync {
 /// Future type for async send operations
 pub type SendFuture = Pin<Box<dyn Future<Output = Result<(), ()>> + Send>>;
 
-///
-/// Runtime adapters implement this for their specific sender types:
-///
 // ============================================================================
 // SinkWorker Trait
 // ============================================================================
 
 /// Worker that consumes messages from an MPSC outbox
+///
+/// Runtime adapters implement this for their specific sender types:
 ///
 /// Implementers spawn a task that drains the receiver and communicates
 /// with an external system (MQTT broker, Kafka cluster, DDS domain, etc.).
@@ -418,13 +417,18 @@ impl WorkerHandle {
     /// # Returns
     ///
     /// * `Ok(())` - Restart initiated successfully
-    /// * `Err(())` - No restart function configured
-    pub fn restart(&self) -> Result<(), ()> {
+    /// * `Err(DbError::MissingConfiguration)` - No restart function configured
+    pub fn restart(&self) -> Result<(), DbError> {
         if let Some(ref restart_fn) = self.restart_fn {
             restart_fn();
             Ok(())
         } else {
-            Err(())
+            Err(DbError::MissingConfiguration {
+                #[cfg(feature = "std")]
+                parameter: "restart_fn".to_string(),
+                #[cfg(not(feature = "std"))]
+                _parameter: (),
+            })
         }
     }
 }
@@ -545,7 +549,7 @@ mod tests {
         let config = OutboxConfig::default();
         assert_eq!(config.capacity, 1024);
         assert_eq!(config.overflow, OverflowBehavior::Block);
-        assert_eq!(config.auto_restart, false);
+        assert!(!config.auto_restart);
         assert_eq!(config.max_concurrent_enqueue, 0);
     }
 
@@ -792,9 +796,7 @@ mod tests {
             let sender1 = MockAnySender::<i32>::new();
             let sender2 = MockAnySender::<String>::new();
 
-            let mut storage: Vec<Box<dyn AnySender>> = Vec::new();
-            storage.push(Box::new(sender1));
-            storage.push(Box::new(sender2));
+            let storage: Vec<Box<dyn AnySender>> = vec![Box::new(sender1), Box::new(sender2)];
 
             assert_eq!(storage.len(), 2);
 
