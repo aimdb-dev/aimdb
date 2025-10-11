@@ -14,6 +14,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod buffer;
 pub mod builder;
 pub mod context;
 pub mod database;

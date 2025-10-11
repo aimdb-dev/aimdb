@@ -37,6 +37,7 @@
 //! - **Internal** (0x7000-0x7FFF): Unexpected conditions and system errors
 //! - **I/O Operations** (0x8000-0x8FFF): File system and I/O errors, including context variants
 //! - **JSON Processing** (0x9000-0x9FFF): JSON serialization/deserialization errors, including context variants
+//! - **Buffer Operations** (0xA000-0xAFFF): Buffer read/write errors, lag detection, channel closure
 //!
 //! ## Platform-Specific Display Behavior
 //!
@@ -471,6 +472,42 @@ pub enum DbError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// Buffer consumer lagged behind producer
+    ///
+    /// This error occurs with SPMC ring buffers when a consumer falls behind
+    /// and messages are overwritten before being read. The consumer can continue
+    /// from the current position, but some messages were skipped.
+    ///
+    /// # Recovery Strategy
+    /// - Log the lag count for monitoring
+    /// - Continue consuming from current position
+    /// - Consider increasing buffer capacity or optimizing consumer
+    #[cfg_attr(feature = "std", error("Consumer lagged by {lag_count} messages"))]
+    BufferLagged {
+        lag_count: u64,
+        #[cfg(feature = "std")]
+        buffer_name: String,
+        #[cfg(not(feature = "std"))]
+        _buffer_name: (),
+    },
+
+    /// Buffer channel has been closed
+    ///
+    /// This error indicates the buffer is no longer accepting or delivering messages,
+    /// typically during shutdown. The consumer should exit its dispatch loop.
+    ///
+    /// # Causes
+    /// - Database shutdown
+    /// - Record removal
+    /// - Runtime termination
+    #[cfg_attr(feature = "std", error("Buffer channel closed: {buffer_name}"))]
+    BufferClosed {
+        #[cfg(feature = "std")]
+        buffer_name: String,
+        #[cfg(not(feature = "std"))]
+        _buffer_name: (),
+    },
 }
 
 #[cfg(not(feature = "std"))]
@@ -490,6 +527,8 @@ impl core::fmt::Display for DbError {
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
             DbError::RuntimeError { .. } => (0x7002, "Runtime error"),
+            DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
+            DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
 
             // Standard library only errors (conditionally compiled)
             #[cfg(feature = "std")]
@@ -627,22 +666,23 @@ impl DbError {
 
             // Internal errors: 0x7000-0x7FFF
             DbError::Internal { .. } => 0x7001,
+            DbError::RuntimeError { .. } => 0x7002,
 
-            // Runtime errors: 0xA000-0xAFFF
-            DbError::RuntimeError { .. } => 0xA001,
-
-            // Standard library only errors (conditionally compiled)
-            // I/O errors: 0x8000-0x8FFF
+            // I/O errors: 0x8000-0x8FFF (std only)
             #[cfg(feature = "std")]
             DbError::Io { .. } => 0x8001,
             #[cfg(feature = "std")]
             DbError::IoWithContext { .. } => 0x8002,
 
-            // JSON errors: 0x9000-0x9FFF
+            // JSON errors: 0x9000-0x9FFF (std only)
             #[cfg(feature = "std")]
             DbError::Json { .. } => 0x9001,
             #[cfg(feature = "std")]
             DbError::JsonWithContext { .. } => 0x9002,
+
+            // Buffer operation errors: 0xA000-0xAFFF
+            DbError::BufferLagged { .. } => 0xA001,
+            DbError::BufferClosed { .. } => 0xA002,
         }
     }
 
@@ -787,6 +827,22 @@ impl DbError {
             DbError::RuntimeError { mut message } => {
                 Self::prepend_context_always(&mut message, context);
                 DbError::RuntimeError { message }
+            }
+
+            // Buffer operation errors
+            DbError::BufferLagged {
+                lag_count,
+                mut buffer_name,
+            } => {
+                Self::prepend_context_always(&mut buffer_name, context);
+                DbError::BufferLagged {
+                    lag_count,
+                    buffer_name,
+                }
+            }
+            DbError::BufferClosed { mut buffer_name } => {
+                Self::prepend_context_always(&mut buffer_name, context);
+                DbError::BufferClosed { buffer_name }
             }
 
             // For Io and Json errors, convert to context variants
