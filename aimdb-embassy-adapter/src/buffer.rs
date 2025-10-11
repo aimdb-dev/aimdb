@@ -65,8 +65,13 @@ use embassy_sync::watch::{Receiver, Watch};
 /// let value = reader.recv().await.unwrap();
 /// # }
 /// ```
-pub enum EmbassyBuffer<T: Clone, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize>
-{
+pub enum EmbassyBuffer<
+    T: Clone,
+    const CAP: usize,
+    const SUBS: usize,
+    const PUBS: usize,
+    const WATCH_N: usize,
+> {
     /// SPMC Ring buffer using PubSubChannel
     /// Supports multiple publishers and subscribers with bounded capacity
     SpmcRing(PubSubChannel<CriticalSectionRawMutex, T, CAP, SUBS, PUBS>),
@@ -80,8 +85,13 @@ pub enum EmbassyBuffer<T: Clone, const CAP: usize, const SUBS: usize, const PUBS
     Mailbox(Channel<CriticalSectionRawMutex, T, 1>),
 }
 
-impl<T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize>
-    EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+impl<
+        T: Clone + Send + 'static,
+        const CAP: usize,
+        const SUBS: usize,
+        const PUBS: usize,
+        const WATCH_N: usize,
+    > EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
 {
     /// Create a new SPMC ring buffer (const constructor)
     pub const fn new_spmc() -> Self {
@@ -99,10 +109,18 @@ impl<T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const PUBS:
     }
 }
 
-impl<T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize> BufferBackend<T>
-    for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+impl<
+        T: Clone + Send + 'static,
+        const CAP: usize,
+        const SUBS: usize,
+        const PUBS: usize,
+        const WATCH_N: usize,
+    > BufferBackend<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
 {
-    type Reader<'a> = EmbassyBufferReader<'a, T, CAP, SUBS, PUBS, WATCH_N> where Self: 'a;
+    type Reader<'a>
+        = EmbassyBufferReader<'a, T, CAP, SUBS, PUBS, WATCH_N>
+    where
+        Self: 'a;
 
     fn new(cfg: &BufferCfg) -> Self {
         match cfg {
@@ -156,9 +174,7 @@ impl<T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const PUBS:
                     None => EmbassyBufferReader::Watch(None), // Max receivers reached
                 }
             }
-            Self::Mailbox(channel) => {
-                EmbassyBufferReader::Channel(channel.receiver())
-            }
+            Self::Mailbox(channel) => EmbassyBufferReader::Channel(channel.receiver()),
         }
     }
 }
@@ -186,8 +202,14 @@ pub enum EmbassyBufferReader<
     Channel(ChannelReceiver<'a, CriticalSectionRawMutex, T, 1>),
 }
 
-impl<'a, T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize> BufferReader<T>
-    for EmbassyBufferReader<'a, T, CAP, SUBS, PUBS, WATCH_N>
+impl<
+        'a,
+        T: Clone + Send + 'static,
+        const CAP: usize,
+        const SUBS: usize,
+        const PUBS: usize,
+        const WATCH_N: usize,
+    > BufferReader<T> for EmbassyBufferReader<'a, T, CAP, SUBS, PUBS, WATCH_N>
 {
     async fn recv(&mut self) -> Result<T, DbError> {
         match self {
@@ -196,16 +218,14 @@ impl<'a, T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const P
                 match sub.next_message().await {
                     WaitResult::Message(value) => Ok(value),
                     WaitResult::Lagged(n) => Err(DbError::BufferLagged {
-                        lag_count: n as u64,
+                        lag_count: n,
                         _buffer_name: (),
                     }),
                 }
             }
             Self::PubSub(None) => {
                 // Max subscribers reached
-                Err(DbError::BufferClosed {
-                    _buffer_name: (),
-                })
+                Err(DbError::BufferClosed { _buffer_name: () })
             }
             Self::Watch(Some(rx)) => {
                 // Wait for a change and get the new value
@@ -213,9 +233,7 @@ impl<'a, T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const P
             }
             Self::Watch(None) => {
                 // Max receivers reached
-                Err(DbError::BufferClosed {
-                    _buffer_name: (),
-                })
+                Err(DbError::BufferClosed { _buffer_name: () })
             }
             Self::Channel(rx) => {
                 // Wait for next message from channel
@@ -244,13 +262,13 @@ mod tests {
     #[test]
     fn test_buffer_from_cfg() {
         type TestBuffer = EmbassyBuffer<u32, 10, 4, 2, 4>;
-        
+
         let cfg1 = BufferCfg::SpmcRing { capacity: 10 };
         let _buf1: TestBuffer = BufferBackend::new(&cfg1);
-        
+
         let cfg2 = BufferCfg::SingleLatest;
         let _buf2: TestBuffer = BufferBackend::new(&cfg2);
-        
+
         let cfg3 = BufferCfg::Mailbox;
         let _buf3: TestBuffer = BufferBackend::new(&cfg3);
     }
