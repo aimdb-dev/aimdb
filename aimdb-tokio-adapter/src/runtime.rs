@@ -67,6 +67,44 @@ impl TokioAdapter {
         Self::new().map_err(DbError::from)
     }
 
+    /// Creates an MPSC channel for outbox use
+    ///
+    /// This method creates a bounded Tokio MPSC channel and wraps the sender
+    /// in a `TokioSender` that implements `AnySender` for type-erased storage.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The message payload type (must be `Send + 'static`)
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - The channel buffer size
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (wrapped sender, receiver) ready for outbox use
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_tokio_adapter::TokioAdapter;
+    ///
+    /// let adapter = TokioAdapter::new()?;
+    /// let (sender, receiver) = adapter.create_outbox_channel::<MyMsg>(1024);
+    ///
+    /// // Sender can be stored in outbox registry
+    /// // Receiver is passed to SinkWorker
+    /// ```
+    pub fn create_outbox_channel<T: Send + 'static>(
+        &self,
+        capacity: usize,
+    ) -> (crate::outbox::TokioSender<T>, crate::outbox::OutboxReceiver<T>) {
+        #[cfg(feature = "tracing")]
+        debug!("Creating outbox channel with capacity: {}", capacity);
+
+        crate::outbox::create_outbox_channel(capacity)
+    }
+
     /// Spawns an async task on the Tokio executor
     ///
     /// This method provides the core task spawning functionality for Tokio-based
@@ -217,3 +255,29 @@ impl Logger for TokioAdapter {
 }
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are implemented
+
+// Implement OutboxRuntimeSupport for outbox channel creation
+#[cfg(feature = "tokio-runtime")]
+impl aimdb_core::OutboxRuntimeSupport for TokioAdapter {
+    fn create_outbox_channel<T: Send + 'static>(
+        &self,
+        capacity: usize,
+    ) -> (Box<dyn aimdb_core::AnySender>, Box<dyn core::any::Any + Send>) {
+        #[cfg(feature = "tracing")]
+        debug!(
+            "Creating Tokio outbox channel for type {} with capacity {}",
+            core::any::type_name::<T>(),
+            capacity
+        );
+
+        // Create actual channel using the existing method
+        let (sender, receiver) = self.create_outbox_channel::<T>(capacity);
+
+        // Return as type-erased boxes
+        (
+            Box::new(sender) as Box<dyn aimdb_core::AnySender>,
+            Box::new(receiver) as Box<dyn core::any::Any + Send>,
+        )
+    }
+}
+

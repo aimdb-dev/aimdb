@@ -33,11 +33,13 @@ compile_error!("tokio-adapter requires the std feature");
 pub mod buffer;
 pub mod database;
 pub mod error;
+pub mod outbox;
 pub mod runtime;
 pub mod time;
 
 pub use buffer::TokioBuffer;
 pub use error::{TokioErrorConverter, TokioErrorSupport};
+pub use outbox::{create_outbox_channel, OutboxReceiver, OutboxSender, TokioSender};
 
 #[cfg(feature = "tokio-runtime")]
 pub use runtime::TokioAdapter;
