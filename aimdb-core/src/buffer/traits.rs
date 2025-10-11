@@ -4,9 +4,58 @@
 //! Actual implementations are provided by adapter crates (tokio, embassy).
 
 use core::future::Future;
+use core::pin::Pin;
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
+
+#[cfg(feature = "std")]
+use std::boxed::Box;
 
 use super::BufferCfg;
 use crate::DbError;
+
+/// Dyn-compatible sender interface for buffers
+///
+/// This trait provides a type-erased interface for sending values to buffers,
+/// allowing buffers to be stored as trait objects (`Box<dyn BufferSender<T>>`).
+///
+/// Unlike `BufferBackend`, this trait does not include reader operations or
+/// associated types with lifetimes, making it object-safe.
+///
+/// # Object Safety
+///
+/// This trait is dyn-compatible because:
+/// - All methods take `&self` (not `Self`)
+/// - No associated types or generics in methods
+/// - Uses boxed futures for async operations
+///
+/// # Usage
+///
+/// Used in `TypedRecord` to store heterogeneous buffer types without
+/// requiring concrete types or feature flags.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let buffer: Box<dyn BufferSender<SensorData>> = Box::new(tokio_buffer);
+/// buffer.send(SensorData { temp: 23.5 }).await?;
+/// ```
+pub trait BufferSender<T: Clone + Send>: Send + Sync {
+    /// Sends a value into the buffer (async, non-blocking)
+    ///
+    /// Returns an error if the buffer is closed or encounters an error.
+    ///
+    /// # Arguments
+    /// * `value` - The value to send
+    ///
+    /// # Returns
+    /// `Ok(())` if value was enqueued, `Err(DbError)` otherwise
+    fn send(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + '_>>;
+}
 
 /// Backend-agnostic buffer trait
 ///
@@ -236,6 +285,24 @@ pub trait AnyBuffer: Send + Sync {
     }
 }
 
+/// Blanket implementation of BufferSender for all BufferBackend types
+///
+/// This allows any buffer backend to be used as a trait object through
+/// the `BufferSender` interface.
+impl<T, B> BufferSender<T> for B
+where
+    T: Clone + Send + 'static,
+    B: BufferBackend<T>,
+{
+    fn send(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + '_>> {
+        // Convert synchronous push to async operation
+        Box::pin(async move {
+            self.push(value);
+            Ok(())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +317,10 @@ mod tests {
     }
 
     impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for MockBuffer<T> {
-        type Reader<'a> = MockReader<T> where Self: 'a;
+        type Reader<'a>
+            = MockReader<T>
+        where
+            Self: 'a;
 
         fn new(_cfg: &BufferCfg) -> Self {
             Self {
