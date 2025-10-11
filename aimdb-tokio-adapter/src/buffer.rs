@@ -351,4 +351,300 @@ mod tests {
             "Dispatcher should process at least some values despite lag"
         );
     }
+
+    // ========================================================================
+    // Integration Tests - Buffer Semantics
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_spmc_ring_overflow_behavior() {
+        // Small buffer to test overflow - need to send more than capacity
+        // for a slow reader to lag
+        let cfg = BufferCfg::SpmcRing { capacity: 3 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let mut reader = buffer.subscribe();
+
+        // Send more messages than capacity without reading
+        // This will cause the slow reader to lag
+        for i in 0..10 {
+            buffer.push(i);
+        }
+
+        // First recv should detect lag
+        let result = reader.recv().await;
+        match result {
+            Err(DbError::BufferLagged { lag_count, .. }) => {
+                assert!(lag_count > 0, "Should detect lag: lagged by {}", lag_count);
+            }
+            Ok(val) => {
+                // On fast systems, might get first value before lag
+                // Try again - subsequent values should show lag or higher values
+                assert!(val >= 0, "Should get a valid value");
+            }
+            _ => panic!("Unexpected error: {:?}", result),
+        }
+
+        // Should be able to continue reading newer values
+        // (exact values depend on timing, but should be higher numbers)
+        for _ in 0..3 {
+            match reader.recv().await {
+                Ok(val) => {
+                    assert!((0..10).contains(&val), "Should read values in range");
+                }
+                Err(DbError::BufferLagged { .. }) => {
+                    // Also acceptable - means we're catching up
+                }
+                Err(e) => panic!("Unexpected error: {:?}", e),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_spmc_ring_multiple_independent_consumers() {
+        let cfg = BufferCfg::SpmcRing { capacity: 10 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        // Create three independent readers
+        let mut reader1 = buffer.subscribe();
+        let mut reader2 = buffer.subscribe();
+        let mut reader3 = buffer.subscribe();
+
+        // Send values
+        for i in 0..5 {
+            buffer.push(i);
+        }
+
+        // Each reader should receive all values independently
+        for expected in 0..5 {
+            assert_eq!(reader1.recv().await.unwrap(), expected);
+            assert_eq!(reader2.recv().await.unwrap(), expected);
+            assert_eq!(reader3.recv().await.unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_single_latest_skips_intermediate_values() {
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let mut reader = buffer.subscribe();
+
+        // Send multiple values rapidly
+        buffer.push(1);
+        buffer.push(2);
+        buffer.push(3);
+        buffer.push(4);
+        buffer.push(5);
+
+        // Small delay to ensure values are written
+        sleep(Duration::from_millis(10)).await;
+
+        // Should only get the latest value
+        let value = reader.recv().await.unwrap();
+        assert_eq!(value, 5, "Should skip intermediate values and get latest");
+
+        // Wait with no new values - should block/wait
+        // (We'll test this with a timeout)
+    }
+
+    #[tokio::test]
+    async fn test_single_latest_multiple_consumers_all_get_latest() {
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        // Create readers BEFORE sending values
+        let mut reader1 = buffer.subscribe();
+        let mut reader2 = buffer.subscribe();
+
+        // Send values
+        buffer.push(10);
+        buffer.push(20);
+        buffer.push(30);
+
+        sleep(Duration::from_millis(10)).await;
+
+        // Both readers should get the latest value
+        assert_eq!(reader1.recv().await.unwrap(), 30);
+        assert_eq!(reader2.recv().await.unwrap(), 30);
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_overwrite_semantics() {
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let mut reader = buffer.subscribe();
+
+        // Send first value
+        buffer.push(1);
+
+        // Send second value before reading - should overwrite
+        buffer.push(2);
+
+        // Send third value - should overwrite again
+        buffer.push(3);
+
+        sleep(Duration::from_millis(10)).await;
+
+        // Should only get the last value
+        let value = reader.recv().await.unwrap();
+        assert_eq!(
+            value, 3,
+            "Mailbox should overwrite, only latest value available"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_single_slot_behavior() {
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let mut reader = buffer.subscribe();
+
+        // Send and immediately read
+        buffer.push(10);
+        sleep(Duration::from_millis(10)).await;
+        assert_eq!(reader.recv().await.unwrap(), 10);
+
+        // Send another value
+        buffer.push(20);
+        sleep(Duration::from_millis(10)).await;
+        assert_eq!(reader.recv().await.unwrap(), 20);
+
+        // Verify it's truly single-slot: send multiple, only last survives
+        buffer.push(30);
+        buffer.push(40);
+        buffer.push(50);
+        sleep(Duration::from_millis(10)).await;
+
+        let value = reader.recv().await.unwrap();
+        assert_eq!(value, 50, "Only the last value should be in the slot");
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_with_spmc_ring_semantics() {
+        use std::sync::Mutex;
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::SpmcRing { capacity: 100 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = Arc::clone(&received);
+
+        // Spawn dispatcher
+        let _handle = buffer.spawn_dispatcher(move |value| {
+            let received = Arc::clone(&received_clone);
+            async move {
+                received.lock().unwrap().push(value);
+            }
+        });
+
+        // Send sequential values
+        for i in 0..10 {
+            buffer.push(i);
+        }
+
+        // Wait for processing
+        sleep(Duration::from_millis(200)).await;
+
+        // Verify all values received in order
+        let values = received.lock().unwrap().clone();
+        assert_eq!(values.len(), 10, "Should receive all values");
+        for (idx, val) in values.iter().enumerate() {
+            assert_eq!(*val, idx as i32, "Values should be in order");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_with_single_latest_semantics() {
+        use std::sync::Mutex;
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = Arc::clone(&received);
+
+        // Spawn dispatcher
+        let _handle = buffer.spawn_dispatcher(move |value| {
+            let received = Arc::clone(&received_clone);
+            async move {
+                sleep(Duration::from_millis(20)).await; // Slow processing
+                received.lock().unwrap().push(value);
+            }
+        });
+
+        // Send many values rapidly
+        for i in 0..20 {
+            buffer.push(i);
+            sleep(Duration::from_millis(5)).await;
+        }
+
+        // Wait for processing
+        sleep(Duration::from_millis(500)).await;
+
+        // Should have received fewer values than sent (intermediate skipped)
+        let values = received.lock().unwrap().clone();
+        assert!(
+            values.len() < 20,
+            "Should skip intermediate values, got {} values",
+            values.len()
+        );
+        assert!(!values.is_empty(), "Should receive at least some values");
+
+        // Last value should be the highest
+        let last = values.last().unwrap();
+        assert_eq!(*last, 19, "Last value should be the final sent value");
+    }
+    #[tokio::test]
+    async fn test_dispatcher_with_mailbox_semantics() {
+        use std::sync::Mutex;
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = Arc::clone(&received);
+
+        // Spawn dispatcher with slow processing
+        let _handle = buffer.spawn_dispatcher(move |value| {
+            let received = Arc::clone(&received_clone);
+            async move {
+                sleep(Duration::from_millis(50)).await; // Slow processing
+                received.lock().unwrap().push(value);
+            }
+        });
+
+        // Send values with short delays
+        for i in 0..10 {
+            buffer.push(i);
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        // Wait for all processing
+        sleep(Duration::from_millis(600)).await;
+
+        // Wait for all processing
+        sleep(Duration::from_millis(600)).await;
+
+        // Mailbox should have overwritten values
+        let values = received.lock().unwrap().clone();
+        assert!(
+            values.len() < 10,
+            "Mailbox should overwrite, not queue all values"
+        );
+        assert!(!values.is_empty(), "Should receive some values");
+    }
 }

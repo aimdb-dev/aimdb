@@ -179,7 +179,13 @@ impl<
     }
 }
 
-impl<T: Clone + Send + 'static, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize> EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+impl<
+        T: Clone + Send + 'static,
+        const CAP: usize,
+        const SUBS: usize,
+        const PUBS: usize,
+        const WATCH_N: usize,
+    > EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
 {
     /// Creates a dispatcher task closure for use with Embassy executors
     ///
