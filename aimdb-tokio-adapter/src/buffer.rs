@@ -636,9 +636,6 @@ mod tests {
         // Wait for all processing
         sleep(Duration::from_millis(600)).await;
 
-        // Wait for all processing
-        sleep(Duration::from_millis(600)).await;
-
         // Mailbox should have overwritten values
         let values = received.lock().unwrap().clone();
         assert!(
