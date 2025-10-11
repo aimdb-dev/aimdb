@@ -255,13 +255,12 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
                 #[cfg(all(not(feature = "tracing"), feature = "defmt"))]
                 defmt::warn!("Buffer send failed: {:?}", e);
 
-                #[cfg(all(feature = "std", not(feature = "tracing")))]
+                #[cfg(all(feature = "std", not(any(feature = "tracing", feature = "defmt"))))]
                 eprintln!("Buffer send error: {:?}", e);
 
-                // Silent (truly constrained environments)
+                // Silent in truly constrained environments (no logging available)
                 #[cfg(not(any(feature = "std", feature = "tracing", feature = "defmt")))]
-                #[allow(unused_variables)]
-                |e| {}
+                let _ = e;
             }
             return;
         }
