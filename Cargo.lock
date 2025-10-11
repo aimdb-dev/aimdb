@@ -53,6 +53,7 @@ dependencies = [
  "embassy-executor",
  "heapless 0.9.1",
  "metrics",
+ "portable-atomic",
  "serde",
  "serde_json",
  "spin",

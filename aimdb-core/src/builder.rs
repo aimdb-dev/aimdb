@@ -18,24 +18,50 @@ use std::{boxed::Box, sync::Arc, vec::Vec};
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap;
 
+#[cfg(not(feature = "std"))]
+use spin::Mutex;
+
 #[cfg(feature = "std")]
 use std::collections::HashMap;
 
+#[cfg(feature = "std")]
+use std::sync::Mutex;
+
 use crate::emitter::Emitter;
+use crate::outbox::AnySender;
 use crate::producer_consumer::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 use crate::DbResult;
+use crate::RuntimeAdapter;
 
 /// Internal database state
 ///
-/// Holds the registry of typed records, indexed by `TypeId`.
+/// Holds the registry of typed records and outboxes, indexed by `TypeId`.
 pub struct AimDbInner {
-    /// Map from TypeId to type-erased records
+    /// Map from TypeId to type-erased records (SPMC buffers for internal data flow)
     #[cfg(feature = "std")]
     pub(crate) records: HashMap<TypeId, Box<dyn AnyRecord>>,
 
     #[cfg(not(feature = "std"))]
     pub(crate) records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
+
+    /// Map from payload TypeId to MPSC sender (for outboxes to external systems)
+    ///
+    /// This registry stores type-erased senders for outbound message queues.
+    /// Unlike records (which use SPMC for internal consumers), outboxes use
+    /// MPSC for multi-producer access to single external system workers.
+    ///
+    /// # Design Rationale
+    ///
+    /// - Separate from `records` - outboxes are not records (different pattern)
+    /// - Keyed by payload `TypeId` - ensures type safety at runtime  
+    /// - `Arc<Mutex<_>>` - allows initialization after `AimDb` creation
+    /// - `Box<dyn AnySender>` - type erasure for heterogeneous channel storage
+    #[cfg(feature = "std")]
+    pub(crate) outboxes: Arc<Mutex<HashMap<TypeId, Box<dyn AnySender>>>>,
+
+    #[cfg(not(feature = "std"))]
+    pub(crate) outboxes: Arc<Mutex<BTreeMap<TypeId, Box<dyn AnySender>>>>,
 }
 
 /// Database builder for producer-consumer pattern
@@ -238,6 +264,10 @@ impl AimDbBuilder {
 
         let inner = Arc::new(AimDbInner {
             records: self.records,
+            #[cfg(feature = "std")]
+            outboxes: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(not(feature = "std"))]
+            outboxes: Arc::new(Mutex::new(BTreeMap::new())),
         });
 
         Ok(AimDb { inner, runtime })
@@ -433,7 +463,145 @@ impl AimDb {
     pub fn runtime<R: 'static>(&self) -> Option<&R> {
         self.runtime.downcast_ref::<R>()
     }
+
+    /// Initializes an MPSC outbox for external system communication
+    ///
+    /// This method creates a bounded MPSC channel for enqueueing messages to
+    /// an external system worker (MQTT, Kafka, DDS, etc.). The sender is stored
+    /// in the outbox registry for multi-producer access and the receiver is
+    /// passed to the worker task.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `R` - The runtime adapter type (must implement OutboxRuntimeSupport)
+    /// * `T` - The payload type (must be `Send + 'static`)
+    /// * `W` - The worker implementation that consumes messages
+    ///
+    /// # Arguments
+    ///
+    /// * `runtime` - The runtime adapter instance (for channel creation and spawning)
+    /// * `config` - Configuration for the outbox (capacity, overflow behavior)
+    /// * `worker` - The worker instance that will consume messages
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(WorkerHandle)` - Handle for monitoring the worker task
+    /// * `Err(DbError::OutboxAlreadyExists)` - If outbox for type `T` already exists
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::outbox::{OutboxConfig, OverflowBehavior, SinkWorker};
+    /// use aimdb_tokio_adapter::TokioAdapter;
+    ///
+    /// // Define message type
+    /// #[derive(Clone, Debug)]
+    /// struct MqttMsg {
+    ///     topic: String,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// // Define worker
+    /// struct MqttWorker { /* ... */ }
+    /// impl SinkWorker<MqttMsg> for MqttWorker {
+    ///     fn spawn(self, rt: Arc<dyn RuntimeAdapter>, rx: Box<dyn Any + Send>) -> WorkerHandle {
+    ///         // Implementation
+    ///     }
+    /// }
+    ///
+    /// let runtime = Arc::new(TokioAdapter::new()?);
+    /// let db = AimDb::build_with(runtime.clone(), |b| { /* ... */ })?;
+    ///
+    /// // Initialize outbox
+    /// let handle = db.init_outbox::<TokioAdapter, MqttMsg, _>(
+    ///     runtime.clone(),
+    ///     OutboxConfig {
+    ///         capacity: 1024,
+    ///         overflow: OverflowBehavior::Block,
+    ///     },
+    ///     MqttWorker::new("mqtt://broker"),
+    /// )?;
+    ///
+    /// // Now can enqueue messages from any emitter
+    /// db.emitter().enqueue(MqttMsg { /* ... */ }).await?;
+    /// ```
+    ///
+    /// # Thread Safety
+    ///
+    /// This method acquires a lock on the outbox registry. Multiple threads
+    /// can safely call `init_outbox` with different types concurrently, but
+    /// attempting to initialize the same type twice will return an error.
+    pub fn init_outbox<R, T, W>(
+        &self,
+        runtime: Arc<R>,
+        config: crate::outbox::OutboxConfig,
+        worker: W,
+    ) -> DbResult<crate::outbox::WorkerHandle>
+    where
+        R: crate::outbox::OutboxRuntimeSupport,
+        T: Send + 'static,
+        W: crate::outbox::SinkWorker<T>,
+    {
+        use crate::DbError;
+        use core::any::TypeId;
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            "Initializing outbox for type {} with capacity {}",
+            core::any::type_name::<T>(),
+            config.capacity
+        );
+
+        let type_id = TypeId::of::<T>();
+
+        // Check if outbox already exists
+        {
+            let outboxes = self.inner.outboxes.lock();
+            #[cfg(feature = "std")]
+            let outboxes_ref = outboxes.as_ref().expect("Failed to lock outboxes");
+            #[cfg(not(feature = "std"))]
+            let outboxes_ref = &*outboxes;
+
+            if outboxes_ref.contains_key(&type_id) {
+                return Err(DbError::OutboxAlreadyExists {
+                    #[cfg(feature = "std")]
+                    type_name: core::any::type_name::<T>().to_string(),
+                    #[cfg(not(feature = "std"))]
+                    _type_name: (),
+                });
+            }
+        }
+
+        // Create type-erased channel via runtime adapter
+        let (sender, receiver) = runtime.create_outbox_channel::<T>(config.capacity);
+
+        // Store sender in registry
+        {
+            let mut outboxes = self.inner.outboxes.lock();
+            #[cfg(feature = "std")]
+            let outboxes_mut = outboxes.as_mut().expect("Failed to lock outboxes");
+            #[cfg(not(feature = "std"))]
+            let outboxes_mut = &mut *outboxes;
+
+            outboxes_mut.insert(type_id, sender);
+        }
+
+        // Spawn worker task
+        // Cast runtime to Arc<dyn RuntimeAdapter> for worker
+        let runtime_dyn: Arc<dyn RuntimeAdapter> = runtime as Arc<dyn RuntimeAdapter>;
+        let handle = worker.spawn(runtime_dyn, receiver);
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            "Outbox initialized for type {} with worker ID {}",
+            core::any::type_name::<T>(),
+            handle.task_id()
+        );
+
+        Ok(handle)
+    }
 }
+
 
 #[cfg(test)]
 mod tests {

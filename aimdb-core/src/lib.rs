@@ -21,6 +21,7 @@ pub mod database;
 pub mod emitter;
 mod error;
 pub mod metrics;
+pub mod outbox;
 pub mod producer_consumer;
 pub mod runtime;
 pub mod time;
@@ -42,6 +43,10 @@ pub use database::{Database, DatabaseSpec, DatabaseSpecBuilder};
 pub use builder::{AimDb, AimDbBuilder};
 pub use emitter::Emitter;
 pub use metrics::CallStats;
+pub use outbox::{
+    AnySender, OutboxConfig, OutboxRuntimeSupport, OverflowBehavior, SendFuture, SinkWorker,
+    WorkerHandle,
+};
 pub use producer_consumer::{RecordRegistrar, RecordT};
 pub use tracked_fn::TrackedAsyncFn;
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
