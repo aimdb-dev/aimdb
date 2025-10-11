@@ -29,8 +29,8 @@
 //! - `PubSubChannel<M, T, CAP, SUBS, PUBS>` - fixed capacity and subscriber/publisher counts
 //! - `Watch<M, T, N>` - fixed number of receivers
 //!
-//! The buffer configuration's runtime capacity parameter is validated but the actual capacity
-//! is determined by the const generic `CAP`. This is a design constraint of Embassy's no_std
+//! The buffer configuration's runtime capacity parameter must match the const generic `CAP`.
+//! A panic will occur if there's a mismatch. This is a design constraint of Embassy's no_std
 //! implementation.
 
 use aimdb_core::buffer::{BufferBackend, BufferCfg, BufferReader};
@@ -124,9 +124,15 @@ impl<
 
     fn new(cfg: &BufferCfg) -> Self {
         match cfg {
-            BufferCfg::SpmcRing { capacity: _ } => {
+            BufferCfg::SpmcRing { capacity } => {
                 // Note: Embassy requires compile-time capacity, so we use CAP const generic
-                // The runtime capacity parameter is validated but not used
+                // Validate that the runtime capacity matches the const generic
+                if *capacity != CAP {
+                    panic!(
+                        "BufferCfg::SpmcRing capacity ({}) does not match const generic CAP ({})",
+                        capacity, CAP
+                    );
+                }
                 Self::new_spmc()
             }
             BufferCfg::SingleLatest => Self::new_watch(),
