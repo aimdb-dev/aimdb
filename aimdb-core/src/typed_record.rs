@@ -15,6 +15,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc, vec::Vec};
 
+use crate::buffer::BufferSender;
 use crate::metrics::CallStats;
 use crate::tracked_fn::TrackedAsyncFn;
 
@@ -117,6 +118,10 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
 
     /// List of consumer functions
     consumers: Vec<TrackedAsyncFn<T>>,
+
+    /// Optional buffer for async dispatch
+    /// When present, produce() enqueues to buffer instead of direct call
+    buffer: Option<Box<dyn BufferSender<T>>>,
 }
 
 impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
@@ -128,6 +133,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         Self {
             producer: None,
             consumers: Vec::new(),
+            buffer: None,
         }
     }
 
@@ -185,11 +191,49 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         self.consumers.push(TrackedAsyncFn::new(f));
     }
 
+    /// Sets the buffer for this record
+    ///
+    /// When a buffer is set, `produce()` will enqueue values instead of
+    /// calling producer/consumers directly. A separate dispatcher task
+    /// should drain the buffer and invoke the functions.
+    ///
+    /// # Arguments
+    /// * `buffer` - A buffer backend implementation
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::buffer::BufferCfg;
+    ///
+    /// // Configure buffer (adapter-specific implementation)
+    /// let buffer = runtime.create_buffer(BufferCfg::SpmcRing { capacity: 1024 });
+    /// record.set_buffer(buffer);
+    /// ```
+    pub fn set_buffer(&mut self, buffer: Box<dyn BufferSender<T>>) {
+        self.buffer = Some(buffer);
+    }
+
+    /// Returns whether a buffer is configured
+    ///
+    /// # Returns
+    /// `true` if buffer is set, `false` otherwise
+    pub fn has_buffer(&self) -> bool {
+        self.buffer.is_some()
+    }
+
+    /// Returns a reference to the buffer if present
+    ///
+    /// # Returns
+    /// `Some(&dyn BufferSender<T>)` if buffer is set, `None` otherwise
+    pub fn buffer(&self) -> Option<&dyn BufferSender<T>> {
+        self.buffer.as_deref()
+    }
+
     /// Produces a value by calling producer and all consumers
     ///
     /// This is the core of the data flow mechanism:
-    /// 1. Calls the producer function (if set)
-    /// 2. Calls all consumer functions in order
+    /// 1. If buffer is configured: enqueues value to buffer (async dispatch)
+    /// 2. Otherwise: calls producer function (if set) and all consumers directly
     ///
     /// # Arguments
     /// * `emitter` - The emitter context for cross-record communication
@@ -201,6 +245,27 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// record.produce(emitter.clone(), SensorData { temp: 23.5 }).await;
     /// ```
     pub async fn produce(&self, emitter: crate::emitter::Emitter, val: T) {
+        // If buffer is configured, enqueue instead of direct call
+        if let Some(buf) = &self.buffer {
+            if let Err(e) = buf.send(val.clone()).await {
+                // Log error but don't panic - buffer send failures are non-fatal
+                #[cfg(feature = "tracing")]
+                tracing::warn!("Buffer send failed: {:?}", e);
+
+                #[cfg(all(not(feature = "tracing"), feature = "defmt"))]
+                defmt::warn!("Buffer send failed: {:?}", e);
+
+                #[cfg(all(feature = "std", not(any(feature = "tracing", feature = "defmt"))))]
+                eprintln!("Buffer send error: {:?}", e);
+
+                // Silent in truly constrained environments (no logging available)
+                #[cfg(not(any(feature = "std", feature = "tracing", feature = "defmt")))]
+                let _ = e;
+            }
+            return;
+        }
+
+        // No buffer: direct synchronous call path
         // Call producer if present
         if let Some(p) = &self.producer {
             p.call(emitter.clone(), val.clone()).await;
@@ -307,5 +372,60 @@ mod tests {
 
         // Should fail to downcast to wrong type
         assert!(record.as_typed::<i32>().is_none());
+    }
+
+    #[test]
+    fn test_buffer_setter_and_getter() {
+        use crate::buffer::{BufferBackend, BufferCfg, BufferReader, BufferSender};
+        use crate::DbError;
+
+        // Mock buffer for testing
+        struct MockBuffer;
+
+        impl BufferBackend<TestData> for MockBuffer {
+            type Reader<'a>
+                = MockReader
+            where
+                Self: 'a;
+
+            fn new(_cfg: &BufferCfg) -> Self {
+                MockBuffer
+            }
+
+            fn push(&self, _value: TestData) {
+                // No-op
+            }
+
+            fn subscribe(&self) -> Self::Reader<'_> {
+                MockReader
+            }
+        }
+
+        struct MockReader;
+
+        impl BufferReader<TestData> for MockReader {
+            async fn recv(&mut self) -> Result<TestData, DbError> {
+                Err(DbError::BufferClosed {
+                    #[cfg(feature = "std")]
+                    buffer_name: "mock".to_string(),
+                    #[cfg(not(feature = "std"))]
+                    _buffer_name: (),
+                })
+            }
+        }
+
+        let mut record = TypedRecord::<TestData>::new();
+
+        // Initially no buffer
+        assert!(!record.has_buffer());
+        assert!(record.buffer().is_none());
+
+        // Set buffer
+        let buffer: Box<dyn BufferSender<TestData>> = Box::new(MockBuffer);
+        record.set_buffer(buffer);
+
+        // Now has buffer
+        assert!(record.has_buffer());
+        assert!(record.buffer().is_some());
     }
 }

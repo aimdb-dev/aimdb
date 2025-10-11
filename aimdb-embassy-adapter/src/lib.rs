@@ -60,6 +60,9 @@ extern crate alloc;
 
 // Only include the implementation when std feature is not enabled
 // Embassy adapter is designed exclusively for no_std environments
+#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+pub mod buffer;
+
 #[cfg(not(feature = "std"))]
 mod error;
 
@@ -75,6 +78,10 @@ pub mod time;
 // Error handling exports
 #[cfg(not(feature = "std"))]
 pub use error::{EmbassyErrorConverter, EmbassyErrorSupport};
+
+// Buffer implementation exports
+#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+pub use buffer::EmbassyBuffer;
 
 // Runtime adapter exports
 #[cfg(feature = "embassy-runtime")]

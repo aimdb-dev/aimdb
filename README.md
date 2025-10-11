@@ -99,6 +99,87 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
+## 📦 Pluggable Buffers
+
+AimDB provides three buffer types for per-record streaming, each optimized for different communication patterns:
+
+### 1. **SPMC Ring Buffer** - High-Frequency Telemetry
+```rust
+use aimdb_tokio_adapter::TokioBuffer;
+use aimdb_core::buffer::{BufferBackend, BufferCfg};
+
+// Create bounded buffer with lag detection
+let buffer = TokioBuffer::<SensorReading>::new(
+    &BufferCfg::SpmcRing { capacity: 100 }
+);
+
+// Multiple consumers read independently
+let reader1 = buffer.subscribe();
+let reader2 = buffer.subscribe();
+
+// Producers push data
+buffer.push(SensorReading { temp: 23.5, humidity: 60.0 });
+
+// Consumers handle lag gracefully
+match reader1.recv().await {
+    Ok(data) => process(data),
+    Err(DbError::BufferLagged { lag_count, .. }) => {
+        log::warn!("Skipped {} messages", lag_count);
+    }
+    _ => {}
+}
+```
+
+**Use Cases**: 100+ Hz sensor streams, event monitoring, audit logs
+
+### 2. **SingleLatest** - Configuration & State
+```rust
+// Only latest value matters - intermediate updates skipped
+let buffer = TokioBuffer::<Config>::new(&BufferCfg::SingleLatest);
+
+// Fast producer
+for v in 1..=10 { buffer.push(Config { version: v }); }
+
+// Slow consumer automatically skips to latest
+let config = reader.recv().await?; // Gets v10, not v1-v9
+```
+
+**Use Cases**: Config updates, UI state sync, feature flags
+
+### 3. **Mailbox** - Command Processing
+```rust
+// Single-slot with overwrite semantics
+let buffer = TokioBuffer::<Command>::new(&BufferCfg::Mailbox);
+
+// Rapid commands overwrite unread ones
+buffer.push(Command::Start);
+buffer.push(Command::Stop);  // Overwrites Start if not read yet
+
+// Consumer gets latest command only
+let cmd = reader.recv().await?;
+```
+
+**Use Cases**: Device control, actuator setpoints, RPC-style messaging
+
+### Runtime Agnostic
+
+**Same buffer API works on both Tokio (std) and Embassy (no_std)**:
+
+```rust
+// Tokio (cloud/edge)
+use aimdb_tokio_adapter::TokioBuffer;
+let buffer = TokioBuffer::<T>::new(&cfg);
+
+// Embassy (MCU)
+use aimdb_embassy_adapter::EmbassyBuffer;
+type Buffer = EmbassyBuffer<T, 100, 4, 1, 1>;
+let buffer = Buffer::new_spmc();
+```
+
+**📖 Full Guide**: See [Buffer Usage Guide](docs/design/003-M1_buffer_usage_guide.md) for choosing the right buffer type, performance tuning, and best practices.
+
+---
+
 ## 🤝 Contributing  
 We love contributions! Here's how to jump in:  
 1. Clone the repository.

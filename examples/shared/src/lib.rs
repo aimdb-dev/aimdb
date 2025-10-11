@@ -3,89 +3,314 @@
 //! These services are runtime-agnostic and can be used with any Runtime implementation
 //! (TokioAdapter, EmbassyAdapter, etc.)
 //!
+//! # Buffer Services
+//!
+//! This module demonstrates three buffer patterns:
+//!
+//! 1. **SPMC Ring Buffer** (`telemetry_service`):
+//!    - High-frequency sensor data
+//!    - Multiple consumers with lag detection
+//!    - Bounded capacity for backpressure
+//!
+//! 2. **SingleLatest** (`config_service`):
+//!    - Configuration updates
+//!    - Consumers only care about current value
+//!    - Intermediate updates are skipped
+//!
+//! 3. **Mailbox** (`command_service`):
+//!    - Command processing
+//!    - Single consumer, overwrite old unprocessed commands
+//!    - Latest command wins
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use aimdb_core::{DbResult, RuntimeContext};
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::format;
+
+use aimdb_core::{buffer::BufferReader, DbResult, RuntimeContext};
 use aimdb_executor::Runtime;
 
-/// Background data processing service
+//
+// ============================================================================
+// BUFFER DEMONSTRATION SERVICES
+// ============================================================================
+//
+
+/// Telemetry data structure for sensor readings
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "std", derive(PartialEq))]
+pub struct TelemetryReading {
+    pub sensor_id: u32,
+    pub temperature: i32, // Temperature in Celsius * 100 (e.g., 2350 = 23.50°C)
+    pub humidity: u32,    // Humidity percentage * 100 (e.g., 5500 = 55.00%)
+}
+
+/// Configuration update structure
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "std", derive(PartialEq))]
+pub struct ConfigUpdate {
+    pub version: u32,
+    pub sampling_rate_hz: u32,
+    pub enable_alerts: bool,
+}
+
+/// Command structure for device control
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "std", derive(PartialEq))]
+pub struct DeviceCommand {
+    pub command_id: u32,
+    pub action: CommandAction,
+}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "std", derive(PartialEq))]
+pub enum CommandAction {
+    StartSampling,
+    StopSampling,
+    Reset,
+    Calibrate,
+}
+
+/// Telemetry producer service - generates high-frequency sensor data
 ///
-/// Demonstrates runtime-agnostic service that processes data in batches.
-/// Generic over any Runtime implementation.
-///
-/// This service demonstrates the clean accessor API:
-/// - Store accessors at the beginning: `let log = ctx.log(); let time = ctx.time();`
-/// - Use them throughout the service for clean, efficient code
-pub async fn data_processor_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbResult<()> {
-    // Store accessors for reuse throughout the service
+/// Demonstrates SPMC Ring Buffer usage:
+/// - Produces data rapidly
+/// - Multiple consumers can read at different rates
+/// - Lag detection when consumers fall behind
+pub async fn telemetry_producer_service<R: Runtime>(
+    ctx: RuntimeContext<R>,
+    count: u32,
+) -> DbResult<()> {
     let log = ctx.log();
     let time = ctx.time();
 
-    log.info("🚀 Data processor service started");
+    log.info("📡 Telemetry producer starting");
 
-    for i in 1..=5 {
-        match i {
-            1 => log.info("📊 Processing batch 1/5"),
-            2 => log.info("📊 Processing batch 2/5"),
-            3 => log.info("📊 Processing batch 3/5"),
-            4 => log.info("📊 Processing batch 4/5"),
-            5 => log.info("📊 Processing batch 5/5"),
-            _ => {}
-        }
+    for i in 0..count {
+        let reading = TelemetryReading {
+            sensor_id: 1,
+            temperature: 2300 + (i as i32 % 500), // 23-28°C range
+            humidity: 5000 + (i % 2000),          // 50-70% range
+        };
 
-        // Clean time operations using stored accessor
-        time.sleep(time.millis(200)).await;
+        // In real code, this would come from TypedRecord::produce()
+        // For this demo, we're just showing the data structure
+        log.info(&format!(
+            "📊 Telemetry #{}: temp={}.{:02}°C humidity={}.{:02}%",
+            i,
+            reading.temperature / 100,
+            reading.temperature % 100,
+            reading.humidity / 100,
+            reading.humidity % 100
+        ));
 
-        match i {
-            1 => log.info("✅ Batch 1 completed"),
-            2 => log.info("✅ Batch 2 completed"),
-            3 => log.info("✅ Batch 3 completed"),
-            4 => log.info("✅ Batch 4 completed"),
-            5 => log.info("✅ Batch 5 completed"),
-            _ => {}
-        }
+        // Simulate high-frequency sampling
+        time.sleep(time.millis(50)).await;
     }
 
-    log.info("🏁 Data processor service completed");
-
+    log.info("📡 Telemetry producer completed");
     Ok(())
 }
 
-/// Monitoring and health check service
+/// Telemetry consumer service - processes sensor data from SPMC buffer
 ///
-/// Demonstrates runtime-agnostic service that performs periodic health checks.
-/// Measures timing using the runtime context.
-///
-/// This service demonstrates the clean accessor API with timing measurements.
-/// Accessors are stored once and reused throughout the service.
-pub async fn monitoring_service<R: Runtime>(ctx: RuntimeContext<R>) -> DbResult<()> {
-    // Store accessors at the beginning for clean, efficient code
+/// Demonstrates buffer reader usage with lag handling
+pub async fn telemetry_consumer_service<R: Runtime, Reader: BufferReader<TelemetryReading>>(
+    ctx: RuntimeContext<R>,
+    mut reader: Reader,
+    consumer_id: u32,
+) -> DbResult<()> {
     let log = ctx.log();
     let time = ctx.time();
 
-    log.info("📈 Monitoring service started");
+    log.info("📥 Telemetry consumer starting");
 
-    for i in 1..=3 {
-        let start_time = time.now();
+    loop {
+        match reader.recv().await {
+            Ok(reading) => {
+                log.info(&format!(
+                    "Consumer {} received: sensor={} temp={}.{:02}°C",
+                    consumer_id,
+                    reading.sensor_id,
+                    reading.temperature / 100,
+                    reading.temperature % 100
+                ));
 
-        match i {
-            1 => log.info("🔍 Health check 1/3"),
-            2 => log.info("🔍 Health check 2/3"),
-            3 => log.info("🔍 Health check 3/3"),
-            _ => {}
+                // Simulate processing time
+                time.sleep(time.millis(100)).await;
+            }
+            Err(aimdb_core::DbError::BufferLagged { lag_count, .. }) => {
+                log.info(&format!(
+                    "⚠️  Consumer {} lagged: skipped {} messages",
+                    consumer_id, lag_count
+                ));
+
+                // Continue processing after lag
+                continue;
+            }
+            Err(aimdb_core::DbError::BufferClosed { .. }) => {
+                log.info("Buffer closed, consumer exiting");
+                break;
+            }
+            Err(_) => {
+                log.info("Consumer error, exiting");
+                break;
+            }
         }
-
-        // Clean time operations using stored accessor
-        time.sleep(time.millis(150)).await;
-
-        let end_time = time.now();
-        let _duration = time.duration_since(end_time, start_time).unwrap();
-
-        log.info("💚 System healthy");
     }
 
-    log.info("📈 Monitoring service completed");
+    log.info("📥 Telemetry consumer completed");
+    Ok(())
+}
 
+/// Configuration producer service - publishes config updates
+///
+/// Demonstrates SingleLatest buffer usage:
+/// - Updates published rapidly
+/// - Consumers only see latest value
+/// - Intermediate updates are skipped automatically
+pub async fn config_producer_service<R: Runtime>(
+    ctx: RuntimeContext<R>,
+    updates: u32,
+) -> DbResult<()> {
+    let log = ctx.log();
+    let time = ctx.time();
+
+    log.info("⚙️  Config producer starting");
+
+    for version in 1..=updates {
+        let config = ConfigUpdate {
+            version,
+            sampling_rate_hz: 10 * version, // Increasing sampling rate
+            enable_alerts: version % 2 == 0,
+        };
+
+        log.info(&format!(
+            "📝 Config v{}: rate={}Hz alerts={}",
+            config.version, config.sampling_rate_hz, config.enable_alerts
+        ));
+
+        // Rapid updates to demonstrate skipping
+        time.sleep(time.millis(30)).await;
+    }
+
+    log.info("⚙️  Config producer completed");
+    Ok(())
+}
+
+/// Configuration consumer service - applies config updates from SingleLatest buffer
+///
+/// Demonstrates how SingleLatest automatically skips intermediate values
+pub async fn config_consumer_service<R: Runtime, Reader: BufferReader<ConfigUpdate>>(
+    ctx: RuntimeContext<R>,
+    mut reader: Reader,
+) -> DbResult<()> {
+    let log = ctx.log();
+    let time = ctx.time();
+
+    log.info("📖 Config consumer starting");
+
+    loop {
+        match reader.recv().await {
+            Ok(config) => {
+                log.info(&format!(
+                    "✅ Applied config v{}: rate={}Hz",
+                    config.version, config.sampling_rate_hz
+                ));
+
+                // Slow processing to demonstrate skipping
+                time.sleep(time.millis(100)).await;
+            }
+            Err(aimdb_core::DbError::BufferClosed { .. }) => {
+                log.info("Config buffer closed, consumer exiting");
+                break;
+            }
+            Err(_) => {
+                log.info("Config consumer error, exiting");
+                break;
+            }
+        }
+    }
+
+    log.info("📖 Config consumer completed");
+    Ok(())
+}
+
+/// Command producer service - sends device commands
+///
+/// Demonstrates Mailbox buffer usage:
+/// - Commands sent rapidly
+/// - Only latest unread command is kept
+/// - Old commands are overwritten if not consumed yet
+pub async fn command_producer_service<R: Runtime>(
+    ctx: RuntimeContext<R>,
+    commands: u32,
+) -> DbResult<()> {
+    let log = ctx.log();
+    let time = ctx.time();
+
+    log.info("🎮 Command producer starting");
+
+    let actions = [
+        CommandAction::StartSampling,
+        CommandAction::StopSampling,
+        CommandAction::Calibrate,
+        CommandAction::Reset,
+    ];
+
+    for i in 0..commands {
+        let cmd = DeviceCommand {
+            command_id: i,
+            action: actions[(i % 4) as usize].clone(),
+        };
+
+        log.info(&format!("🎯 Command #{}: {:?}", cmd.command_id, cmd.action));
+
+        // Send commands faster than they can be processed
+        time.sleep(time.millis(20)).await;
+    }
+
+    log.info("🎮 Command producer completed");
+    Ok(())
+}
+
+/// Command consumer service - executes device commands from Mailbox buffer
+///
+/// Demonstrates how Mailbox overwrites unread commands
+pub async fn command_consumer_service<R: Runtime, Reader: BufferReader<DeviceCommand>>(
+    ctx: RuntimeContext<R>,
+    mut reader: Reader,
+) -> DbResult<()> {
+    let log = ctx.log();
+    let time = ctx.time();
+
+    log.info("⚡ Command consumer starting");
+
+    loop {
+        match reader.recv().await {
+            Ok(cmd) => {
+                log.info(&format!(
+                    "✨ Executing command #{}: {:?}",
+                    cmd.command_id, cmd.action
+                ));
+
+                // Simulate slow command execution
+                time.sleep(time.millis(100)).await;
+            }
+            Err(aimdb_core::DbError::BufferClosed { .. }) => {
+                log.info("Command buffer closed, consumer exiting");
+                break;
+            }
+            Err(_) => {
+                log.info("Command consumer error, exiting");
+                break;
+            }
+        }
+    }
+
+    log.info("⚡ Command consumer completed");
     Ok(())
 }

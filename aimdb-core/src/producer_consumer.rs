@@ -6,6 +6,15 @@
 use core::fmt::Debug;
 use core::future::Future;
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
+
+#[cfg(feature = "std")]
+use std::boxed::Box;
+
 use crate::typed_record::TypedRecord;
 
 /// Registrar for configuring a typed record
@@ -106,6 +115,35 @@ where
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.rec.add_consumer(f);
+        self
+    }
+
+    /// Configures a buffer for this record
+    ///
+    /// When a buffer is set, `produce()` will enqueue values to the buffer
+    /// instead of calling producer/consumers directly. A separate dispatcher
+    /// task should drain the buffer and invoke the functions.
+    ///
+    /// # Arguments
+    /// * `buffer` - A buffer backend implementation
+    ///
+    /// # Returns
+    /// `&mut Self` for method chaining
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::buffer::{BufferBackend, BufferCfg};
+    ///
+    /// // In adapter-specific code:
+    /// let buffer = runtime.create_buffer(BufferCfg::SpmcRing { capacity: 1024 });
+    ///
+    /// reg.buffer(buffer)
+    ///    .producer(|em, data| async { ... })
+    ///    .consumer(|em, data| async { ... });
+    /// ```
+    pub fn buffer(&'a mut self, buffer: Box<dyn crate::buffer::BufferSender<T>>) -> &'a mut Self {
+        self.rec.set_buffer(buffer);
         self
     }
 }

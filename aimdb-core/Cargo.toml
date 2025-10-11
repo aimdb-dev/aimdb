@@ -21,6 +21,7 @@ alloc = ["serde"] # Enable heap in no_std
 
 # Observability features (available on both std/no_std)
 tracing = ["dep:tracing"]        # Works in both std and no_std environments
+defmt = ["dep:defmt"]            # Embedded logging via probe (no_std)
 metrics = ["dep:metrics", "std"] # Requires std for aggregation
 
 # Testing features
@@ -47,6 +48,7 @@ embassy-executor = { workspace = true, optional = true }
 
 # Observability (optional)
 tracing = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 
 # Synchronization primitives for no_std
