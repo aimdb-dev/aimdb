@@ -336,9 +336,7 @@ mod tests {
     fn test_buffer_cfg_validation() {
         // Valid configurations
         assert!(BufferCfg::SpmcRing { capacity: 1 }.validate().is_ok());
-        assert!(BufferCfg::SpmcRing { capacity: 1024 }
-            .validate()
-            .is_ok());
+        assert!(BufferCfg::SpmcRing { capacity: 1024 }.validate().is_ok());
         assert!(BufferCfg::SingleLatest.validate().is_ok());
         assert!(BufferCfg::Mailbox.validate().is_ok());
 
@@ -355,15 +353,13 @@ mod tests {
 
     #[test]
     fn test_buffer_cfg_names() {
-        assert_eq!(
-            BufferCfg::SpmcRing { capacity: 100 }.name(),
-            "spmc_ring"
-        );
+        assert_eq!(BufferCfg::SpmcRing { capacity: 100 }.name(), "spmc_ring");
         assert_eq!(BufferCfg::SingleLatest.name(), "single_latest");
         assert_eq!(BufferCfg::Mailbox.name(), "mailbox");
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_buffer_cfg_display() {
         assert_eq!(
             format!("{}", BufferCfg::SpmcRing { capacity: 512 }),

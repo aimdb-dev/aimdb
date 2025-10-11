@@ -30,11 +30,13 @@
 #[cfg(not(feature = "std"))]
 compile_error!("tokio-adapter requires the std feature");
 
+pub mod buffer;
 pub mod database;
 pub mod error;
 pub mod runtime;
 pub mod time;
 
+pub use buffer::TokioBuffer;
 pub use error::{TokioErrorConverter, TokioErrorSupport};
 
 #[cfg(feature = "tokio-runtime")]

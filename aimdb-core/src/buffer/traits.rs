@@ -217,6 +217,7 @@ pub trait BufferReader<T: Clone + Send>: Send {
 /// # Usage
 /// Primarily used internally by `TypedRecord` to store buffers without knowing
 /// the concrete runtime type at compile time.
+#[allow(dead_code)] // Will be used in TASK-BUF-004 (TypedRecord integration)
 pub trait AnyBuffer: Send + Sync {
     /// Returns the buffer configuration
     fn config(&self) -> &BufferCfg;
