@@ -33,7 +33,10 @@ enum TokioBufferInner<T: Clone + Send + Sync + 'static> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
-    type Reader<'a> = TokioBufferReader<T> where Self: 'a;
+    type Reader<'a>
+        = TokioBufferReader<T>
+    where
+        Self: 'a;
 
     fn new(cfg: &BufferCfg) -> Self {
         let inner = match &cfg {
