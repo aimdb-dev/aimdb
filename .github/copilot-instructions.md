@@ -1,7 +1,16 @@
 # GitHub Copilot Instructions for AimDB
 
 ## Project Status & Quick Start
-AimDB is in **early development** - the architecture is defined but implementation is just beginning. The codebase currently contains skeleton modules that need to be built out according to the architectural vision below.
+AimDB is in **active development** - the core architecture is implemented and functional. Working features include runtime adapters (Tokio & Embassy), three buffer types (SPMC Ring, SingleLatest, Mailbox), type-safe producer-consumer patterns, and comprehensive examples. Focus is now on protocol connectors, performance optimization, and expanded features.
+
+**Current Implementation Status:**
+- ✅ Core Database Engine - Fully functional with type-safe records
+- ✅ Runtime Adapters - Tokio (std) and Embassy (embedded) working
+- ✅ Buffer Systems - Three buffer types implemented
+- ✅ Producer-Consumer - Complete with emitter and cross-record communication  
+- ✅ Examples & Testing - Multiple working demos with comprehensive coverage
+- 🚧 Protocol Connectors - MQTT, Kafka, DDS (planned, not yet implemented)
+- 🚧 CLI Tools - Skeleton structure exists, needs implementation
 
 **Key Development Workflow:**
 - Use `make help` to see all available commands
@@ -9,41 +18,50 @@ AimDB is in **early development** - the architecture is defined but implementati
 - Use `make build` and `make test` for standard development
 - CI runs automatically on push/PR using the Makefile commands
 
-## Project Architecture Vision
+## Project Architecture
 AimDB is an async, in-memory database for real-time data synchronization across **MCU → edge → cloud** environments, targeting <50ms reactivity.
 
 ### Future Usage Vision
-See `docs/vision/future_usage.md` for an aspirational (non-functional) end-user example illustrating the intended ergonomic API across runtimes. Treat it as a guide when designing traits and modules—incremental PRs should converge toward that shape without introducing unused stubs prematurely.
+See `docs/vision/future_usage.md` for an aspirational end-user example. The current implementation already supports most of these patterns - see the `examples/` directory for working code.
 
 ### Current Workspace Structure
 ```
-aimdb-core/          # Core database engine (skeleton)
-aimdb-connectors/    # Protocol bridges: MQTT, Kafka, DDS (skeleton) 
-aimdb-adapters/      # Async runtime adapters: Tokio, Embassy (skeleton)
-tools/aimdb-cli/     # Command-line interface (skeleton)
-examples/quickstart/ # Demo application (skeleton)
+aimdb-core/              # ✅ Core database engine - IMPLEMENTED
+aimdb-executor/          # ✅ Runtime trait abstractions - IMPLEMENTED  
+aimdb-tokio-adapter/     # ✅ Tokio runtime adapter - IMPLEMENTED
+aimdb-embassy-adapter/   # ✅ Embassy runtime adapter - IMPLEMENTED
+aimdb-macros/            # ✅ Proc macros - IMPLEMENTED
+examples/
+  ├── tokio-runtime-demo/          # ✅ Tokio with all buffer types
+  ├── embassy-runtime-demo/        # ✅ Embedded example
+  ├── producer-consumer-demo/      # ✅ Type-safe patterns
+  └── shared/                      # ✅ Runtime-agnostic services
+tools/aimdb-cli/         # 🚧 CLI - SKELETON ONLY
 ```
 
+**Note:** Protocol connectors (`aimdb-mqtt-connector`, `aimdb-kafka-connector`) do not exist yet - this is the next major milestone.
+
 ### Platform Targets
-- **MCU**: `no_std` + Embassy executor for embedded async
-- **Edge**: Linux devices with Tokio/async-std 
-- **Cloud**: Container/VM deployments with full std library
+- **MCU**: `no_std` + Embassy executor for embedded async ✅ WORKING
+- **Edge**: Linux devices with Tokio/async-std ✅ WORKING
+- **Cloud**: Container/VM deployments with full std library ✅ WORKING
 
 ## Implementation Guidelines
 
 ### Rust Standards
-- **Edition**: 2024 (configured in Cargo.toml files)
-- **Error Handling**: Use `thiserror` for library errors, `anyhow` for applications
-- **Async**: All operations must be async/await compatible
-- **Testing**: Use `tokio-test` for async test utilities
-- **Docs**: Include examples in doc comments for public APIs
+- **Edition**: 2021 (configured in Cargo.toml files)
+- **Error Handling**: Use `thiserror` for library errors (✅ `DbError` implemented)
+- **Async**: All operations are async/await compatible (✅ fully implemented)
+- **Testing**: Use `tokio-test` for async test utilities (✅ in use)
+- **Docs**: Include examples in doc comments for public APIs (✅ established pattern)
+- **no_std Support**: Core and Embassy adapter work in embedded environments (✅ working)
 
 ### Code Organization Pattern
 When implementing modules, follow this structure:
 ```rust
 //! Module-level docs explaining purpose and integration points
 
-use crate::core::AimDbError;  // Consistent error handling
+use crate::DbError;  // Consistent error handling
 use tracing::{debug, info, warn, error};  // Observability
 
 /// Public API with comprehensive docs and examples
@@ -53,12 +71,15 @@ pub struct ComponentName {
 
 impl ComponentName {
     /// Constructor with error handling
-    pub fn new() -> Result<Self, AimDbError> {
-        // Implementation
+    pub fn new() -> DbResult<Self> {
+        #[cfg(feature = "tracing")]
+        debug!("Creating ComponentName");
+        
+        Ok(Self { /* ... */ })
     }
     
     /// Async methods for all operations
-    pub async fn process(&self) -> Result<(), AimDbError> {
+    pub async fn process(&self) -> DbResult<()> {
         // Implementation with tracing
         Ok(())
     }
@@ -76,21 +97,31 @@ mod tests {
 ```
 
 ### Performance Requirements
-- Target <50ms latency for data operations
-- Use lock-free data structures where possible
-- Minimize allocations in hot paths  
-- Design for zero-copy operations
+- Target <50ms latency for data operations (architecture supports this)
+- Lock-free data structures implemented in buffer systems
+- Minimal allocations in hot paths (designed into buffer traits)
+- Zero-copy operations where possible (emitter design)
 
-### Feature Flags (To Implement)
-When adding dependencies, organize with feature flags:
+### Feature Flags (Implemented)
+The project uses feature flags for conditional compilation:
 ```toml
 [features]
-default = ["tokio-runtime"]
-tokio-runtime = ["tokio"]
-embassy-runtime = ["embassy-executor"] 
-mqtt = ["rumqttc"]
-kafka = ["rdkafka"]
-embedded = ["no-std-compat"]
+# Core features (aimdb-core)
+default = ["std"]
+std = []
+embedded = []
+
+# Runtime features
+tokio-runtime = ["dep:tokio"]
+embassy-runtime = ["dep:embassy-executor", "dep:embassy-time"]
+
+# Optional features
+tracing = ["dep:tracing"]
+metrics = ["dep:metrics"]
+
+# Future protocol connectors (not yet implemented)
+# mqtt = ["rumqttc"]
+# kafka = ["rdkafka"]
 ```
 
 ### Naming Conventions
@@ -103,11 +134,17 @@ embedded = ["no-std-compat"]
 
 ### Before Committing
 ```bash
-make check  # Runs fmt + clippy + test
+make check  # Quick check: fmt + clippy + test
+make all    # Full validation: build all targets + run all tests (recommended before push)
 ```
+
+**Quick iteration:** Use `make check` for fast development feedback.  
+**Final validation:** Use `make all` before committing to ensure everything builds correctly across all configurations.
 
 ### Working with the Makefile
 The project uses a simple Makefile for automation:
+- `make check` - Fast dev check (fmt + clippy + test)
+- `make all` - Complete build and test (all targets and features)
 - `make build` - Build with all features
 - `make test` - Run all tests
 - `make fmt` - Format code  
@@ -130,34 +167,77 @@ This helps stay current with project priorities, bug reports, and community cont
 
 ## Implementation Priorities
 
-### Core Database Engine (`aimdb-core`)
-1. Define `AimDbError` error type with `thiserror`
-2. Implement in-memory storage with async operations
-3. Add ring buffer for high-throughput streaming
-4. Create notification system for state changes
+### ✅ Completed Features (Do Not Re-Implement)
 
-### Runtime Adapters (`aimdb-adapters`) 
-1. Tokio adapter for standard environments
-2. Embassy adapter for embedded/MCU targets
-3. Feature-gated compilation for different runtimes
+**Core Database Engine (`aimdb-core`)**
+- [x] `DbError` error type with `thiserror` - COMPLETE
+- [x] In-memory storage with async operations - COMPLETE  
+- [x] Three buffer types (SPMC Ring, SingleLatest, Mailbox) - COMPLETE
+- [x] Producer-consumer pattern with typed records - COMPLETE
+- [x] Emitter for cross-record communication - COMPLETE
+- [x] Runtime-agnostic design - COMPLETE
 
-### Protocol Connectors (`aimdb-connectors`)
-1. MQTT bridge using `rumqttc`
-2. Kafka bridge using `rdkafka` 
-3. DDS bridge (future)
+**Runtime Adapters**
+- [x] Tokio adapter for standard environments - COMPLETE
+- [x] Embassy adapter for embedded/MCU targets - COMPLETE
+- [x] Feature-gated compilation - COMPLETE
+- [x] Unified trait system (RuntimeAdapter, TimeOps, Logger, Spawn) - COMPLETE
+
+**Examples & Testing**
+- [x] Working demos (tokio-runtime, embassy-runtime, producer-consumer) - COMPLETE
+- [x] Runtime-agnostic shared services - COMPLETE
+- [x] Comprehensive async test coverage - COMPLETE
+
+### 🚧 Current Focus Areas (Based on Open Issues #9-#18)
+
+**Protocol Connectors (`aimdb-connectors`) - NOT YET IMPLEMENTED**
+The next major milestone is adding protocol bridges:
+1. MQTT bridge using `rumqttc` for IoT device connectivity
+2. Kafka bridge using `rdkafka` for cloud streaming
+3. DDS bridge (future) for real-time systems
 4. Feature flags for optional protocol support
 
-### Examples & CLI
+These will be new workspace crates: `aimdb-mqtt-connector`, `aimdb-kafka-connector`, etc.
+
+**CLI Tools (`tools/aimdb-cli`) - SKELETON ONLY**
+1. Database introspection commands
+2. Record monitoring and debugging
+3. Performance profiling utilities
+4. Configuration validation
+
+**Ongoing Improvements**
+- Error severity classification system
+- Enhanced tracing/observability integration
+- Cross-module error boundary handling
+- Documentation and usage examples
+- Performance validation and benchmarking
+
+### Key Dependencies
 1. Build out `examples/quickstart` as a working demo
 2. Implement `aimdb-cli` for development/debugging
 3. Add integration tests that exercise the full stack
 
-## Key Dependencies (To Add)
-- `tokio` or `async-std` for async runtime
-- `serde` for serialization  
-- `thiserror` for error handling
-- `tracing` for observability
-- `rumqttc` for MQTT (feature-gated)
-- `rdkafka` for Kafka (feature-gated)
+## Key Dependencies (Current State)
 
-When implementing, always consider async patterns, error handling, platform compatibility, and include comprehensive documentation with examples.
+### Implemented & In Use
+- ✅ `tokio` (v1.47+) - async runtime for std environments
+- ✅ `embassy-executor` - async runtime for embedded/no_std
+- ✅ `embassy-time` - time operations for embedded systems
+- ✅ `thiserror` (v2.0+) - error handling in libraries
+- ✅ `tracing` - observability (feature-gated)
+- ✅ `metrics` - performance metrics (feature-gated)
+- ✅ `serde` - serialization support
+- ✅ `tokio-test` - async testing utilities
+
+### To Be Added (Protocol Connectors)
+- 🚧 `rumqttc` - MQTT client (feature-gated)
+- 🚧 `rdkafka` - Kafka client (feature-gated)
+- 🚧 Additional protocol libraries as needed
+
+When implementing new features, always consider:
+1. **Async patterns** - All operations use async/await
+2. **Error handling** - Use `DbResult<T>` with proper error variants
+3. **Platform compatibility** - Test with both std and no_std where applicable
+4. **Documentation** - Include comprehensive docs with working examples
+5. **Testing** - Add both unit and integration tests
+6. **Feature flags** - Gate optional dependencies appropriately
