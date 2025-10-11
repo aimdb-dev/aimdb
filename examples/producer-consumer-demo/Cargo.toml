@@ -1,0 +1,16 @@
+[package]
+name = "producer-consumer-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AimDB example demonstrating producer consumer creation based on a Tokio runtime"
+publish = false
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core" }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter" }
+tokio = { version = "1.43", features = ["full"] }

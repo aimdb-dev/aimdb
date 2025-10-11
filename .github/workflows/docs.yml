@@ -18,6 +18,8 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'github-pages' || null }}
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -41,7 +43,7 @@ jobs:
         cp -r target/doc/* target/doc-final/cloud/
         
         # Build embedded documentation
-        cargo doc --features "embedded,embassy-runtime" --no-deps  
+        cargo doc --no-default-features --features "embassy-runtime" --no-deps  
         cp -r target/doc/* target/doc-final/embedded/
         
         # Copy main index page

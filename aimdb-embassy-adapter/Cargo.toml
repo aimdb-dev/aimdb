@@ -10,14 +10,10 @@ build = "build.rs"
 default = []
 
 # Runtime features
-embassy-runtime = [
-    "embassy-executor",
-    "embassy-time",
-    "aimdb-core/embassy-runtime",
-]
+embassy-runtime = ["embassy-executor", "embassy-time", "embassy-sync"]
 
 # Observability features (no_std compatible)
-tracing = ["aimdb-core/tracing"]
+tracing = ["aimdb-core/tracing", "dep:tracing"]
 
 # Note: std feature is intentionally kept but will cause build.rs to fail if enabled
 # This provides clear error messages when accidentally enabled
@@ -26,20 +22,41 @@ std = []
 # Note: metrics feature not supported on embedded - requires std library
 
 [dependencies]
-# Core AimDB types - always no_std for Embassy
+# Executor traits
+aimdb-executor = { path = "../aimdb-executor", default-features = false, features = [
+    "embassy-types",
+] }
+
+# Core AimDB types - no_std for Embassy (for DbError integration)
 aimdb-core = { path = "../aimdb-core", default-features = false, features = [
-    "embedded",
+    "embassy-runtime",
 ] }
 
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }
 embassy-time = { workspace = true, optional = true }
+embassy-sync = { workspace = true, optional = true }
 
 # Embedded HAL for peripheral abstractions
 embedded-hal = { workspace = true }
 embedded-hal-async = { workspace = true }
 embedded-hal-nb = { workspace = true }
 
+# Logging for embedded
+defmt = { workspace = true }
+
+# Observability (optional, no_std compatible)
+tracing = { workspace = true, optional = true, default-features = false }
+
 [dev-dependencies]
-# For testing on embedded targets
+# For testing on embedded targets  
 heapless = "0.9.1"
+
+# Utilities for async testing
+futures = "0.3"
+
+# For tracing tests
+tracing-test = "0.2"
+
+# Random number generation for tests
+rand = "0.8"

@@ -1,0 +1,36 @@
+[package]
+name = "aimdb-executor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Pure async executor trait definitions for AimDB - runtime-agnostic abstractions"
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+
+# Core capabilities
+std = ["thiserror"]
+
+# Optional runtime-specific types (for concrete return types)
+tokio-types = ["tokio", "std"]       # Tokio requires std
+embassy-types = ["embassy-executor"] # Embassy works in no_std
+
+[dependencies]
+# Error handling (only for std environments)
+thiserror = { workspace = true, optional = true }
+
+# Runtime-specific types (optional, only for concrete trait method signatures)
+tokio = { workspace = true, optional = true, default-features = false }
+embassy-executor = { workspace = true, optional = true }
+
+# Core async types (always available)
+# Note: We use core::future::Future which is available in no_std
+
+[dev-dependencies]
+# For testing trait implementations
+tokio = { workspace = true, features = ["macros", "rt"] }

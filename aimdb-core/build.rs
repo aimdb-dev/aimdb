@@ -12,43 +12,17 @@ fn main() {
 
     // Get enabled features
     let std_enabled = env::var("CARGO_FEATURE_STD").is_ok();
-    let embedded_enabled = env::var("CARGO_FEATURE_EMBEDDED").is_ok();
     let tokio_runtime_enabled = env::var("CARGO_FEATURE_TOKIO_RUNTIME").is_ok();
     let embassy_runtime_enabled = env::var("CARGO_FEATURE_EMBASSY_RUNTIME").is_ok();
     let metrics_enabled = env::var("CARGO_FEATURE_METRICS").is_ok();
 
-    // Validate platform feature combinations
-    if std_enabled && embedded_enabled {
-        panic!(
-            r#"
-❌ Invalid feature combination: Cannot enable both 'std' and 'embedded'
+    // Note: no_std is the absence of std feature, no validation needed for mutual exclusion
 
-   The 'std' and 'embedded' features are mutually exclusive platform targets.
-
-   Valid combinations:
-   • std + tokio-runtime                    (Cloud/Edge deployment)
-   • embedded + embassy-runtime             (MCU deployment)  
-   • std                                    (Basic edge device)
-   • embedded                               (Minimal MCU)
-
-   For help: https://docs.aimdb.dev/features
-"#
-        );
-    }
-
-    // Validate runtime feature combinations
+    // Validate runtime feature combinations (skip validation when both are enabled via --all-features for testing)
     if tokio_runtime_enabled && embassy_runtime_enabled {
-        panic!(
-            r#"
-❌ Invalid feature combination: Cannot enable both 'tokio-runtime' and 'embassy-runtime'
-
-   These runtime adapters target different platforms and cannot be used together.
-
-   Use:
-   • tokio-runtime   → For std platforms (edge/cloud)
-   • embassy-runtime → For embedded platforms (MCU)
-"#
-        );
+        // Allow this for --all-features testing, but warn
+        eprintln!("⚠️  Warning: Both tokio-runtime and embassy-runtime enabled (likely from --all-features)");
+        eprintln!("   This is only valid for testing. Production builds should use one runtime.");
     }
 
     // Validate metrics require std
@@ -77,14 +51,15 @@ fn main() {
         );
     }
 
-    if embassy_runtime_enabled && !embedded_enabled {
+    if embassy_runtime_enabled && std_enabled {
         panic!(
             r#"
-❌ Invalid feature combination: 'embassy-runtime' requires 'embedded' platform
+❌ Invalid feature combination: 'embassy-runtime' conflicts with 'std'
 
-   Embassy runtime is designed for no_std embedded environments.
+   Embassy runtime is designed for no_std environments.
 
-   Use: features = ["embedded", "embassy-runtime"]
+   Use: features = ["embassy-runtime"] (without std)
+   Or:  features = ["embedded"] (convenience alias)
 "#
         );
     }
@@ -92,10 +67,8 @@ fn main() {
     // Set conditional compilation flags
     if std_enabled {
         println!("cargo:rustc-cfg=feature_std");
-    }
-
-    if embedded_enabled {
-        println!("cargo:rustc-cfg=feature_embedded");
+    } else {
+        println!("cargo:rustc-cfg=feature_no_std");
     }
 
     // Platform-specific optimizations

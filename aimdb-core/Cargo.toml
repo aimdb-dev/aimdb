@@ -7,32 +7,41 @@ description = "Core database engine for AimDB - async in-memory storage with rea
 build = "build.rs"
 
 [features]
-default = []
+default = ["std"]
 
-# Platform targets (mutually exclusive)
-std = ["thiserror", "anyhow", "serde_json"]
-embedded = []
+# Core capabilities
+std = ["thiserror", "anyhow", "serde_json", "aimdb-executor/std"]
 
-# Runtime adapters
-tokio-runtime = ["tokio", "std"]
-embassy-runtime = ["embassy-executor", "embedded"]
+# Runtime adapters (imply capability requirements)
+tokio-runtime = ["std", "tokio"]       # Tokio requires std
+embassy-runtime = ["embassy-executor"] # Embassy works in no_std
 
-# Observability features (optional on both platforms)
-tracing = [
-    "dep:tracing",
-] # Note: embedded targets may need no_std compatible tracing config
-metrics = ["dep:metrics", "std"]
+# Heap allocation in no_std environments
+alloc = ["serde"] # Enable heap in no_std
+
+# Observability features (available on both std/no_std)
+tracing = ["dep:tracing"]        # Works in both std and no_std environments
+metrics = ["dep:metrics", "std"] # Requires std for aggregation
 
 # Testing features
 test-utils = ["std"]
 
 [dependencies]
+# Executor traits (always available)
+aimdb-executor = { path = "../aimdb-executor", default-features = false }
+
+# Procedural macros (always available)
+aimdb-macros = { path = "../aimdb-macros" }
+
+# Serialization (optional)
+serde = { workspace = true, optional = true }
+
 # Error handling - only for std environments
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
-# Runtime dependencies (optional)
+# Runtime support (optional)
 tokio = { workspace = true, optional = true }
 embassy-executor = { workspace = true, optional = true }
 
@@ -40,6 +49,14 @@ embassy-executor = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 
+# Synchronization primitives for no_std
+spin = { version = "0.9", default-features = false, features = [
+    "mutex",
+    "spin_mutex",
+] }
+
 [dev-dependencies]
 # For no_std testing
 heapless = "0.9.1"
+# For async testing
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

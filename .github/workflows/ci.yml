@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -43,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -73,6 +77,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -95,6 +101,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -110,8 +118,11 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-embedded-${{ hashFiles('**/Cargo.lock') }}
     
-    - name: Check embedded core
-      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --features embedded
+    - name: Check embedded core (no_std minimal)
+      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features
+    
+    - name: Check embedded core (with embassy)
+      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features embassy-runtime
     
     - name: Check embassy adapter
       run: cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features embassy-runtime
@@ -130,6 +141,8 @@ jobs:
         
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -173,6 +186,8 @@ jobs:
     needs: [format-and-lint, makefile-build, feature-validation, embedded-targets, adapters]
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -191,9 +206,6 @@ jobs:
     
     - name: Run comprehensive development check
       run: make check
-    
-    - name: Build examples
-      run: cargo build --package aimdb-examples
     
     - name: Generate documentation
       run: make doc

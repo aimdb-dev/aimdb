@@ -55,18 +55,47 @@ cd aimdb
 code .
 # Then: Ctrl/Cmd+Shift+P → "Dev Containers: Reopen in Container"
 
-# 3. Inside the container, everything is ready:
-cargo build --release
-cargo run --example quickstart -p aimdb-examples
+# 3. Inside the container, build and test:
+make check  # Format, lint, and test
+
+# 4. Run the examples:
+cargo run --package tokio-runtime-demo          # Std runtime
+cargo run --package embassy-runtime-demo        # Embedded (compile-only)
 ```
 
 **✅ Zero Setup**: Rust, embedded targets and development tools pre-installed  
 **✅ Cross-Platform**: Works on macOS, Linux, Windows (with Docker Desktop) or WSL
 **✅ VS Code Ready**: Optimized extensions and settings included  
 
-You should see a demo simulation showing the concept of data syncing between devices, edge, and cloud!  
+### Basic Usage
 
-> **💡 Note**: The current demo is a simple simulation. Real AimDB functionality is still being implemented as part of the early development process.
+```rust
+use aimdb_core::{Database, RecordT};
+use aimdb_tokio_adapter::TokioAdapter;
+
+#[derive(Debug, Clone)]
+struct SensorData(String);
+impl RecordT for SensorData {}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build typed database
+    let db = Database::<TokioAdapter>::builder()
+        .record::<SensorData>(&Default::default())
+        .build()?;
+    
+    // Produce data
+    db.produce(SensorData("temp: 23.5°C".into())).await?;
+    
+    // Check stats
+    let stats = db.producer_stats::<SensorData>();
+    println!("Calls: {}", stats.call_count());
+    
+    Ok(())
+}
+```
+
+> **💡 Architecture**: Type-safe records with `TypeId`-based routing. No string keys, no macros.
 
 ---
 
