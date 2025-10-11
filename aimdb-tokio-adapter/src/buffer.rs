@@ -33,7 +33,7 @@ enum TokioBufferInner<T: Clone + Send + Sync + 'static> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
-    type Reader = TokioBufferReader<T>;
+    type Reader<'a> = TokioBufferReader<T> where Self: 'a;
 
     fn new(cfg: &BufferCfg) -> Self {
         let inner = match &cfg {
@@ -71,7 +71,7 @@ impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
         }
     }
 
-    fn subscribe(&self) -> Self::Reader {
+    fn subscribe(&self) -> Self::Reader<'_> {
         match &*self.inner {
             TokioBufferInner::Broadcast { tx } => {
                 TokioBufferReader::Broadcast { rx: tx.subscribe() }
