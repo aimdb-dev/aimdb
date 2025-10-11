@@ -138,5 +138,5 @@ check: fmt clippy test test-embedded test-feature-validation
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ Invalid feature combinations correctly rejected$(NC)\n"
 
-all: build test
+all: build test examples
 	@printf "$(GREEN)Build and test completed!$(NC)\n"
