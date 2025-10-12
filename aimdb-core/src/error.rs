@@ -473,6 +473,85 @@ pub enum DbError {
         source: serde_json::Error,
     },
 
+    /// Outbox not found for the specified type
+    ///
+    /// This error occurs when attempting to enqueue to an outbox that hasn't
+    /// been initialized via `init_outbox()`.
+    ///
+    /// # Recovery Strategy
+    /// - Verify outbox was initialized before use
+    /// - Check that the correct payload type is being used
+    /// - Ensure init_outbox() completed successfully
+    #[cfg_attr(feature = "std", error("Outbox not found for type: {type_name}"))]
+    OutboxNotFound {
+        #[cfg(feature = "std")]
+        type_name: String,
+        #[cfg(not(feature = "std"))]
+        _type_name: (),
+    },
+
+    /// Outbox channel is full and cannot accept more messages
+    ///
+    /// This error occurs when the outbox buffer is full and `OverflowBehavior::Error`
+    /// is configured. The message was not enqueued.
+    ///
+    /// # Recovery Strategy
+    /// - Retry with backoff
+    /// - Use try_enqueue() for non-critical messages
+    /// - Consider increasing outbox capacity
+    /// - Switch to OverflowBehavior::Block for backpressure
+    #[cfg_attr(
+        feature = "std",
+        error("Outbox channel full: {type_name} (capacity: {capacity})")
+    )]
+    OutboxFull {
+        capacity: usize,
+        #[cfg(feature = "std")]
+        type_name: String,
+        #[cfg(not(feature = "std"))]
+        _type_name: (),
+    },
+
+    /// Outbox channel has been closed
+    ///
+    /// This error indicates the outbox worker has stopped and is no longer
+    /// accepting messages. This typically occurs during shutdown or if the
+    /// worker task panicked.
+    ///
+    /// # Causes
+    /// - Database shutdown
+    /// - Worker task panic or termination
+    /// - Runtime termination
+    ///
+    /// # Recovery Strategy
+    /// - Check worker status via WorkerHandle
+    /// - Attempt worker restart if auto_restart is enabled
+    /// - Log for investigation if unexpected
+    #[cfg_attr(feature = "std", error("Outbox channel closed: {type_name}"))]
+    OutboxClosed {
+        #[cfg(feature = "std")]
+        type_name: String,
+        #[cfg(not(feature = "std"))]
+        _type_name: (),
+    },
+
+    /// Outbox already exists for the specified type
+    ///
+    /// This error occurs when attempting to initialize an outbox that has
+    /// already been registered for the same payload type.
+    ///
+    /// # Recovery Strategy
+    /// - Use the existing outbox
+    /// - Check for duplicate initialization logic
+    /// - Each payload type can only have one outbox
+    #[cfg_attr(feature = "std", error("Outbox already exists for type: {type_name}"))]
+    OutboxAlreadyExists {
+        #[cfg(feature = "std")]
+        type_name: String,
+        #[cfg(not(feature = "std"))]
+        _type_name: (),
+    },
+
     /// Buffer consumer lagged behind producer
     ///
     /// This error occurs with SPMC ring buffers when a consumer falls behind
@@ -527,6 +606,10 @@ impl core::fmt::Display for DbError {
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
             DbError::RuntimeError { .. } => (0x7002, "Runtime error"),
+            DbError::OutboxNotFound { .. } => (0xA003, "Outbox not found"),
+            DbError::OutboxFull { .. } => (0xA004, "Outbox channel full"),
+            DbError::OutboxClosed { .. } => (0xA005, "Outbox channel closed"),
+            DbError::OutboxAlreadyExists { .. } => (0xA006, "Outbox already exists"),
             DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
             DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
 
@@ -680,9 +763,13 @@ impl DbError {
             #[cfg(feature = "std")]
             DbError::JsonWithContext { .. } => 0x9002,
 
-            // Buffer operation errors: 0xA000-0xAFFF
+            // Buffer and Outbox operation errors: 0xA000-0xAFFF
             DbError::BufferLagged { .. } => 0xA001,
             DbError::BufferClosed { .. } => 0xA002,
+            DbError::OutboxNotFound { .. } => 0xA003,
+            DbError::OutboxFull { .. } => 0xA004,
+            DbError::OutboxClosed { .. } => 0xA005,
+            DbError::OutboxAlreadyExists { .. } => 0xA006,
         }
     }
 
@@ -843,6 +930,30 @@ impl DbError {
             DbError::BufferClosed { mut buffer_name } => {
                 Self::prepend_context_always(&mut buffer_name, context);
                 DbError::BufferClosed { buffer_name }
+            }
+
+            // Outbox operation errors
+            DbError::OutboxNotFound { mut type_name } => {
+                Self::prepend_context_always(&mut type_name, context);
+                DbError::OutboxNotFound { type_name }
+            }
+            DbError::OutboxFull {
+                capacity,
+                mut type_name,
+            } => {
+                Self::prepend_context_always(&mut type_name, context);
+                DbError::OutboxFull {
+                    capacity,
+                    type_name,
+                }
+            }
+            DbError::OutboxClosed { mut type_name } => {
+                Self::prepend_context_always(&mut type_name, context);
+                DbError::OutboxClosed { type_name }
+            }
+            DbError::OutboxAlreadyExists { mut type_name } => {
+                Self::prepend_context_always(&mut type_name, context);
+                DbError::OutboxAlreadyExists { type_name }
             }
 
             // For Io and Json errors, convert to context variants

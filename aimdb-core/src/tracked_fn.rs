@@ -173,7 +173,13 @@ mod tests {
         #[cfg(not(feature = "std"))]
         let records = BTreeMap::new();
 
-        let inner = Arc::new(AimDbInner { records });
+        let inner = Arc::new(AimDbInner {
+            records,
+            #[cfg(feature = "std")]
+            outboxes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            #[cfg(not(feature = "std"))]
+            outboxes: Arc::new(spin::Mutex::new(BTreeMap::new())),
+        });
         let runtime = Arc::new(());
 
         Emitter::new(runtime, inner)
