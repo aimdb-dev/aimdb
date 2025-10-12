@@ -192,6 +192,16 @@ impl<T: Send + 'static> AnySender for TokioSender<T> {
             mpsc::error::TrySendError::Closed(v) => Box::new(v) as Box<dyn Any + Send>,
         })
     }
+
+    fn capacity(&self) -> usize {
+        // Tokio channels expose max_capacity() which returns the capacity
+        self.inner.max_capacity()
+    }
+
+    fn is_closed(&self) -> bool {
+        // Tokio channels expose is_closed() method
+        self.inner.is_closed()
+    }
 }
 
 // Implement Clone for TokioSender since mpsc::Sender is Clone

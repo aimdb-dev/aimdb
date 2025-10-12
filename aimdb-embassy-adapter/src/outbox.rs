@@ -216,6 +216,19 @@ impl<T: Send + 'static, const N: usize> AnySender for EmbassySender<T, N> {
             Box::new(v) as Box<dyn Any + Send>
         })
     }
+
+    fn capacity(&self) -> usize {
+        // Embassy channels have const generic capacity N
+        N
+    }
+
+    fn is_closed(&self) -> bool {
+        // Embassy channels don't have a direct is_closed() check
+        // They remain open as long as at least one sender exists
+        // Since we hold a sender reference, it's not closed
+        // This is a simplification - Embassy channels don't close in the same way
+        false
+    }
 }
 
 // Implement Clone for EmbassySender since embassy Sender is Clone

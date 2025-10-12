@@ -318,14 +318,23 @@ impl Emitter {
         // Try to send via type-erased trait method
         let boxed_value = Box::new(value) as Box<dyn Any + Send>;
         sender.try_send_any(boxed_value).map_err(|_returned_value| {
-            // We can't easily distinguish between Full and Closed in the type-erased interface
-            // For now, assume Full (more common case). Capacity is unknown at this level.
-            DbError::OutboxFull {
-                capacity: 0, // Unknown at this level
-                #[cfg(feature = "std")]
-                type_name: core::any::type_name::<T>().to_string(),
-                #[cfg(not(feature = "std"))]
-                _type_name: (),
+            // Check if channel is closed to distinguish error types
+            if sender.is_closed() {
+                DbError::OutboxClosed {
+                    #[cfg(feature = "std")]
+                    type_name: core::any::type_name::<T>().to_string(),
+                    #[cfg(not(feature = "std"))]
+                    _type_name: (),
+                }
+            } else {
+                // Channel is full - now we can report the actual capacity
+                DbError::OutboxFull {
+                    capacity: sender.capacity(),
+                    #[cfg(feature = "std")]
+                    type_name: core::any::type_name::<T>().to_string(),
+                    #[cfg(not(feature = "std"))]
+                    _type_name: (),
+                }
             }
         })
     }
@@ -434,6 +443,16 @@ mod tests {
                 }
                 Ok(())
             }
+        }
+
+        fn capacity(&self) -> usize {
+            // Mock capacity for testing
+            100
+        }
+
+        fn is_closed(&self) -> bool {
+            // If should_fail is true, simulate closed channel
+            self.should_fail
         }
     }
 
@@ -548,10 +567,45 @@ mod tests {
 
         match result {
             Err(crate::DbError::OutboxFull { capacity, .. }) => {
-                // Capacity is placeholder (0) at this level
-                assert_eq!(capacity, 0);
+                // Capacity should now be reported from the mock sender
+                assert_eq!(capacity, 100);
             }
             _ => panic!("Expected OutboxFull error"),
+        }
+    }
+
+    #[test]
+    fn test_try_enqueue_channel_closed() {
+        let emitter = create_test_emitter();
+
+        // Register a mock sender that simulates closed channel (should_fail=true)
+        let mock_sender = MockSender::<TestMessage>::new(true, false);
+        let type_id = TypeId::of::<TestMessage>();
+
+        #[cfg(feature = "std")]
+        {
+            let mut outboxes = emitter.inner.outboxes.lock().unwrap();
+            outboxes.insert(type_id, Box::new(mock_sender));
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let mut outboxes = emitter.inner.outboxes.lock();
+            outboxes.insert(type_id, Box::new(mock_sender));
+        }
+
+        let msg = TestMessage {
+            id: 88,
+            content: "closed",
+        };
+
+        let result = emitter.try_enqueue(msg);
+        assert!(result.is_err());
+
+        match result {
+            Err(crate::DbError::OutboxClosed { .. }) => {
+                // Expected - should detect closed channel via is_closed()
+            }
+            _ => panic!("Expected OutboxClosed error"),
         }
     }
 

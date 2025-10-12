@@ -209,6 +209,26 @@ pub trait AnySender: Send + Sync {
     /// * `Ok(())` - Message sent successfully
     /// * `Err(value)` - Channel full or closed, value returned
     fn try_send_any(&self, value: Box<dyn Any + Send>) -> Result<(), Box<dyn Any + Send>>;
+
+    /// Returns the channel capacity
+    ///
+    /// This provides information about the maximum number of messages
+    /// the channel can buffer. Useful for error reporting and metrics.
+    ///
+    /// # Returns
+    ///
+    /// The channel capacity, or 0 if unknown/unbounded
+    fn capacity(&self) -> usize;
+
+    /// Checks if the channel is closed
+    ///
+    /// This allows distinguishing between a full channel (temporary backpressure)
+    /// and a closed channel (permanent failure) when `try_send_any` fails.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the channel is closed, `false` otherwise
+    fn is_closed(&self) -> bool;
 }
 
 /// Future type for async send operations
@@ -731,6 +751,16 @@ mod tests {
                 let value = *value.downcast::<T>().expect("Type mismatch");
                 self.values.lock().unwrap().push(value);
                 Ok(())
+            }
+
+            fn capacity(&self) -> usize {
+                // Mock capacity for testing
+                1000
+            }
+
+            fn is_closed(&self) -> bool {
+                // Mock: never closed
+                false
             }
         }
 
