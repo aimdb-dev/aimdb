@@ -238,7 +238,7 @@ impl<T: Send + 'static, const N: usize> Clone for EmbassySender<T, N> {
 ///
 /// # Arguments
 ///
-/// * `capacity` - The channel buffer size (currently fixed at 64 due to const generic)
+/// * `capacity` - The requested channel buffer size (currently ignored, see note below)
 ///
 /// # Returns
 ///
@@ -252,14 +252,39 @@ impl<T: Send + 'static, const N: usize> Clone for EmbassySender<T, N> {
 /// let (tx, rx) = create_outbox_channel::<MyMsg>(1024);
 /// ```
 ///
+/// # Important Note on Capacity
+///
+/// **The `capacity` parameter is currently ignored.** Embassy channels require
+/// const generic capacity at compile time, so this function always creates a
+/// channel with capacity 64. If you need a different capacity, use
+/// `create_outbox_channel_with_capacity::<T, N>()` instead, where `N` is a
+/// const generic parameter.
+///
+/// This signature maintains API compatibility with the Tokio adapter, which
+/// supports dynamic capacity. A warning is logged if the requested capacity
+/// differs from the actual capacity (64).
+///
 /// # Note
 ///
 /// This function requires the `alloc` feature in no_std environments
-/// as it uses `Box::leak` for heap allocation. The capacity parameter is
-/// currently ignored due to Embassy's const generic requirement.
+/// as it uses `Box::leak` for heap allocation.
 pub fn create_outbox_channel<T: Send + 'static>(
-    _capacity: usize,
+    capacity: usize,
 ) -> (EmbassySender<T, 64>, OutboxReceiver<T, 64>) {
+    // Warn if requested capacity doesn't match the const generic capacity
+    // This helps callers understand that the capacity parameter is not used
+    if capacity != 64 {
+        #[cfg(feature = "tracing")]
+        tracing::warn!(
+            requested = capacity,
+            actual = 64,
+            "Embassy outbox channel capacity is fixed at compile time. \
+             Requested capacity {} ignored, using 64. \
+             Use create_outbox_channel_with_capacity::<T, N>() for custom capacity.",
+            capacity
+        );
+    }
+
     // Create channel on heap with default capacity of 64
     // We use Box::leak to convert Box<Channel> into &'static Channel
     // This is safe because outboxes are long-lived (application lifetime)
