@@ -117,12 +117,13 @@ async fn store_sensor_data(
     writer: Producer<WeatherReading>,
     ctx: RuntimeContext,
 ) -> DbResult<()> {
+    let time = ctx.time();
     loop {
         // Read from physical sensor hardware (I2C, SPI, etc.)
         let (temperature, humidity, pressure) = read_weather_sensor().await?;
         
         // Get timestamp from runtime context
-        let timestamp = ctx.now();
+        let timestamp = time.now();
         
         // Create record from sensor data
         let reading = WeatherReading::new(sensor_id, temperature, humidity, pressure, timestamp);
@@ -132,7 +133,7 @@ async fn store_sensor_data(
         writer.insert(reading).await?;
         
         // Sleep between readings
-        ctx.sleep_millis(1000).await;
+        time.sleep_millis(1000).await;
     }
 }
 
@@ -214,14 +215,15 @@ async fn log_statistics(
     let mut stream = reader.subscribe().await;
     let mut count = 0u64;
     let mut temp_sum = 0.0f32;
-    
+
+    let log = ctx.log();
     while let Some(reading) = stream.next().await {
         count += 1;
         temp_sum += reading.temperature;
         
         if count % 10 == 0 {
             let avg_temp = temp_sum / count as f32;
-            ctx.log_info(&format!(
+            log.info(&format!(
                 "Sensor {}: {} readings, avg temp: {:.1}°C",
                 reading.sensor_id, count, avg_temp
             ));
