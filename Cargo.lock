@@ -117,7 +117,6 @@ dependencies = [
  "aimdb-executor",
  "futures",
  "tokio",
- "tokio-stream",
  "tokio-test",
  "tracing",
 ]

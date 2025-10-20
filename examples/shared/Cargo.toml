@@ -9,12 +9,8 @@ publish = false
 [features]
 default = ["std"]
 std = ["aimdb-core/std", "aimdb-executor/std"]
-embassy-runtime = [
-    "aimdb-core/embassy-runtime",
-    "aimdb-executor/embassy-types",
-    "dep:defmt",
-]
-tokio-runtime = ["std", "aimdb-core/tokio-runtime"]
+embassy-runtime = ["aimdb-executor/embassy-types", "dep:defmt"]
+tokio-runtime = ["std"]
 
 [dependencies]
 aimdb-core = { path = "../../aimdb-core", default-features = false }

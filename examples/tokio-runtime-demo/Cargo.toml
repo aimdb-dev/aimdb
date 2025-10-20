@@ -19,7 +19,7 @@ aimdb-examples-shared = { path = "../shared", features = [
 ] }
 
 # Core AimDB dependencies
-aimdb-core = { path = "../../aimdb-core", features = ["std", "tokio-runtime"] }
+aimdb-core = { path = "../../aimdb-core", features = ["std"] }
 aimdb-executor = { path = "../../aimdb-executor", features = ["std"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
