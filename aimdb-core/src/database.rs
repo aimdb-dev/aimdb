@@ -225,7 +225,7 @@ impl<A: RuntimeAdapter> Database<A> {
     /// Creates a subscription to the configured buffer for the given record type.
     /// Returns a boxed reader that can be used to receive values asynchronously.
     ///
-    /// This method works with any runtime that implements `BufferSubscribable`.
+    /// This method works with any runtime that implements `Buffer` (via `DynBuffer`).
     ///
     /// # Type Parameters
     /// * `T` - The record type to subscribe to
@@ -295,7 +295,7 @@ impl<A: RuntimeAdapter> Database<A> {
             .as_typed::<T>()
             .ok_or(DbError::RecordNotFound { _record_name: () })?;
 
-        // Get the buffer (now BufferSubscribable!)
+        // Get the buffer
         #[cfg(feature = "std")]
         let buffer = typed_record.buffer().ok_or(DbError::InvalidOperation {
             operation: "subscribe".to_string(),
@@ -311,8 +311,8 @@ impl<A: RuntimeAdapter> Database<A> {
             _reason: (),
         })?;
 
-        // BufferSubscribable provides subscribe_reader() - universal across all runtimes!
-        Ok(buffer.subscribe_reader())
+        // DynBuffer provides subscribe_boxed() - universal across all runtimes!
+        Ok(buffer.subscribe_boxed())
     }
 
     /// Gets producer call statistics for a record type

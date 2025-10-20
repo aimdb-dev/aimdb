@@ -61,7 +61,7 @@ mod traits;
 
 // Public API exports
 pub use cfg::BufferCfg;
-pub use traits::{BufferBackend, BufferReader, BufferSender, BufferSubscribable};
+pub use traits::{Buffer, BufferReader, DynBuffer};
 
 // Re-export buffer-specific errors from core error module
 // These are type aliases for convenience

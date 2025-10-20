@@ -11,7 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use aimdb_core::buffer::{BufferBackend, BufferCfg, BufferReader, BufferSubscribable};
+use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
 use aimdb_core::DbError;
 use tokio::sync::{broadcast, watch, Notify};
 
@@ -34,7 +34,7 @@ enum TokioBufferInner<T: Clone + Send + Sync + 'static> {
     },
 }
 
-impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
+impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
     type Reader = TokioBufferReader<T>;
 
     fn new(cfg: &BufferCfg) -> Self {
@@ -87,15 +87,7 @@ impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> BufferSubscribable<T> for TokioBuffer<T> {
-    fn subscribe_reader(&self) -> Box<dyn BufferReader<T> + Send> {
-        Box::new(self.subscribe())
-    }
-
-    fn as_any_buffer(&self) -> &dyn core::any::Any {
-        self
-    }
-}
+// Note: DynBuffer is automatically implemented via blanket impl in aimdb-core
 
 impl<T: Clone + Send + Sync + 'static> TokioBuffer<T> {
     /// Spawns a dispatcher task that drains the buffer and calls a handler function

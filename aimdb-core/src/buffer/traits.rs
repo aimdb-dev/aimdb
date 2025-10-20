@@ -2,6 +2,16 @@
 //!
 //! Defines the trait interface that buffer implementations must satisfy.
 //! Actual implementations are provided by adapter crates (tokio, embassy).
+//!
+//! # Design
+//!
+//! This module provides two complementary traits:
+//!
+//! - **`Buffer<T>`**: Static trait for concrete buffer implementations with owned readers
+//! - **`DynBuffer<T>`**: Dynamic trait for trait objects (object-safe, type-erased)
+//!
+//! The `DynBuffer` trait is automatically implemented for all `Buffer` types via a blanket impl,
+//! eliminating boilerplate in adapter crates.
 
 use core::future::Future;
 use core::pin::Pin;
@@ -18,88 +28,39 @@ use std::boxed::Box;
 use super::BufferCfg;
 use crate::DbError;
 
-/// Dyn-compatible sender interface for buffers
+/// Static buffer trait for concrete implementations
 ///
-/// This trait provides a type-erased interface for sending values to buffers,
-/// allowing buffers to be stored as trait objects (`Box<dyn BufferSender<T>>`).
-///
-/// Unlike `BufferBackend`, this trait does not include reader operations or
-/// associated types with lifetimes, making it object-safe.
-///
-/// # Object Safety
-///
-/// This trait is dyn-compatible because:
-/// - All methods take `&self` (not `Self`)
-/// - No associated types or generics in methods
-/// - Uses boxed futures for async operations
-///
-/// # Usage
-///
-/// Used in `TypedRecord` to store heterogeneous buffer types without
-/// requiring concrete types or feature flags.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let buffer: Box<dyn BufferSender<SensorData>> = Box::new(tokio_buffer);
-/// buffer.send(SensorData { temp: 23.5 }).await?;
-/// ```
-pub trait BufferSender<T: Clone + Send>: Send + Sync {
-    /// Sends a value into the buffer (async, non-blocking)
-    ///
-    /// Returns an error if the buffer is closed or encounters an error.
-    ///
-    /// # Arguments
-    /// * `value` - The value to send
-    ///
-    /// # Returns
-    /// `Ok(())` if value was enqueued, `Err(DbError)` otherwise
-    fn send(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + '_>>;
-
-    /// Returns self as Any for downcasting to concrete buffer types
-    ///
-    /// This enables adapter-specific operations (like subscription) on buffers
-    /// stored as trait objects.
-    ///
-    /// # Returns
-    /// `&dyn Any` for use with `downcast_ref()`
-    fn as_any(&self) -> &dyn core::any::Any;
-}
-
-/// Backend-agnostic buffer trait
-///
-/// This trait defines the interface for buffer implementations across different
-/// async runtimes (Tokio, Embassy, etc.). It provides non-blocking push and
-/// subscription operations.
+/// This trait defines the interface for buffer implementations with owned readers.
+/// Use this when you know the concrete buffer type at compile time.
 ///
 /// # Design Philosophy
 ///
-/// - **Runtime Agnostic**: Works with any async runtime
-/// - **Type Safe**: Generic over item type `T`
-/// - **Clone Safe**: Buffers can be shared across threads
+/// - **Runtime Agnostic**: Works with any async runtime (Tokio, Embassy, etc.)
+/// - **Type Safe**: Generic over item type `T` and reader type
+/// - **Owned Readers**: `subscribe()` returns owned readers that can outlive borrows
 /// - **Non-Blocking**: Push operations never block
 ///
 /// # Implementation Requirements
 ///
 /// Implementations must:
-/// 1. Support concurrent access from multiple threads
-/// 2. Provide independent readers via `subscribe()`
+/// 1. Support concurrent access from multiple threads (`Send + Sync`)
+/// 2. Provide independent owned readers via `subscribe()`
 /// 3. Handle overflow according to `BufferCfg` semantics
-/// 4. Be `Send + Sync` for multi-threaded use
+/// 4. Be `'static` for use in spawned tasks
 ///
 /// # Examples
 ///
 /// Implementing for a custom runtime:
 ///
 /// ```rust,ignore
-/// use aimdb_core::buffer::{BufferBackend, BufferReader, BufferCfg};
+/// use aimdb_core::buffer::{Buffer, BufferReader, BufferCfg};
 /// use aimdb_core::DbError;
 ///
 /// struct MyBuffer<T> {
-///     inner: MyRuntimeChannel<T>,
+///     inner: Arc<MyRuntimeChannel<T>>,
 /// }
 ///
-/// impl<T: Clone + Send> BufferBackend<T> for MyBuffer<T> {
+/// impl<T: Clone + Send> Buffer<T> for MyBuffer<T> {
 ///     type Reader = MyReader<T>;
 ///     
 ///     fn new(cfg: &BufferCfg) -> Self {
@@ -113,22 +74,22 @@ pub trait BufferSender<T: Clone + Send>: Send + Sync {
 ///     }
 ///     
 ///     fn subscribe(&self) -> Self::Reader {
-///         // Create independent reader
+///         // Return owned reader
 ///         MyReader {
 ///             rx: self.inner.subscribe(),
 ///         }
 ///     }
 /// }
 /// ```
-pub trait BufferBackend<T: Clone + Send>: Send + Sync + 'static {
+pub trait Buffer<T: Clone + Send>: Send + Sync + 'static {
     /// Reader type for consuming values
     ///
     /// Each call to `subscribe()` returns an independent owned reader that can
     /// consume values at its own pace.
     ///
     /// The reader is owned (not borrowed) and can outlive the reference used
-    /// to create it. This enables universal subscription support across all
-    /// runtimes (Tokio, Embassy, etc.) by using Arc or static references internally.
+    /// to create it. Implementations use Arc or static references internally
+    /// to achieve this (required for Embassy's const-generic channels).
     type Reader: BufferReader<T> + 'static;
 
     /// Creates a new buffer with the given configuration
@@ -184,6 +145,77 @@ pub trait BufferBackend<T: Clone + Send>: Send + Sync + 'static {
     /// let reader2 = buffer.subscribe(); // Consumer 2 (independent)
     /// ```
     fn subscribe(&self) -> Self::Reader;
+}
+
+/// Dynamic buffer trait for trait objects (object-safe)
+///
+/// This trait provides a type-erased interface for buffers that can be stored
+/// as trait objects (`Box<dyn DynBuffer<T>>`). It is automatically implemented
+/// for all types that implement `Buffer<T>`.
+///
+/// # Object Safety
+///
+/// This trait is object-safe because:
+/// - All methods take `&self` (not `Self`)
+/// - No associated types or generics in method signatures
+/// - Returns are concrete types (Box, &dyn Any)
+///
+/// # Usage
+///
+/// Used in `TypedRecord` and other places where buffers need to be stored
+/// heterogeneously without knowing the concrete runtime type at compile time.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Store different buffer types in the same collection
+/// let buffer: Box<dyn DynBuffer<SensorData>> = Box::new(tokio_buffer);
+/// buffer.push(SensorData { temp: 23.5 });
+/// let reader = buffer.subscribe_boxed();
+/// ```
+pub trait DynBuffer<T: Clone + Send>: Send + Sync {
+    /// Push a value into the buffer (synchronous, non-blocking)
+    ///
+    /// This is the same as `Buffer::push()` but callable on trait objects.
+    ///
+    /// # Arguments
+    /// * `value` - The value to enqueue
+    fn push(&self, value: T);
+
+    /// Create a boxed reader for consuming values
+    ///
+    /// Returns a type-erased reader that can be stored and used without
+    /// knowing the concrete reader type. Each reader maintains its own
+    /// position in the buffer.
+    ///
+    /// # Returns
+    /// `Box<dyn BufferReader<T> + Send>` - A boxed reader instance
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let reader = buffer.subscribe_boxed();
+    /// while let Ok(value) = reader.recv().await {
+    ///     process(value).await;
+    /// }
+    /// ```
+    fn subscribe_boxed(&self) -> Box<dyn BufferReader<T> + Send>;
+
+    /// Returns self as Any for downcasting to concrete buffer types
+    ///
+    /// This enables adapter-specific operations on buffers stored as
+    /// trait objects.
+    ///
+    /// # Returns
+    /// `&dyn Any` for use with `downcast_ref::<ConcreteType>()`
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Downcast to access runtime-specific features
+    /// if let Some(tokio_buf) = buffer.as_any().downcast_ref::<TokioBuffer<T>>() {
+    ///     let handle = tokio_buf.spawn_dispatcher(handler);
+    /// }
+    /// ```
+    fn as_any(&self) -> &dyn core::any::Any;
 }
 
 /// Reader trait for consuming values from a buffer
@@ -274,103 +306,34 @@ pub trait BufferReader<T: Clone + Send>: Send {
     fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>>;
 }
 
-/// Trait for buffers that support subscription (creating new readers)
+/// Blanket implementation of DynBuffer for all Buffer types
 ///
-/// This trait extends `BufferSender` with the ability to create new independent
-/// readers (subscribers) from the buffer. This is used by adapter-specific
-/// subscription mechanisms to provide stream-based APIs.
-///
-/// # Object Safety
-///
-/// This trait is dyn-compatible because:
-/// - All methods take `&self` (not `Self`)
-/// - The reader type is boxed and type-erased
-/// - Uses boxed trait objects for readers
-///
-/// # Usage
-///
-/// Adapters implement this trait alongside `BufferSender` to enable
-/// subscription capabilities. The core crate remains agnostic to specific
-/// reader implementations.
+/// This automatic implementation eliminates boilerplate in adapter crates.
+/// Any type implementing `Buffer<T>` automatically gets `DynBuffer<T>`.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// // In adapter crate (e.g., aimdb-tokio-adapter)
-/// impl<T: Clone + Send + Sync + 'static> BufferSubscribable<T> for TokioBuffer<T> {
-///     fn subscribe_reader(&self) -> Box<dyn BufferReader<T> + Send> {
-///         Box::new(self.subscribe())
-///     }
+/// // Adapter just implements Buffer
+/// impl Buffer<SensorData> for TokioBuffer<SensorData> {
+///     type Reader = TokioBufferReader<SensorData>;
+///     // ... implementation
 /// }
 ///
-/// // In application code
-/// let buffer: Box<dyn BufferSubscribable<T>> = Box::new(tokio_buffer);
-/// let reader = buffer.subscribe_reader();
+/// // DynBuffer is automatically available
+/// let dyn_buf: Box<dyn DynBuffer<SensorData>> = Box::new(tokio_buffer);
 /// ```
-pub trait BufferSubscribable<T: Clone + Send>: BufferSender<T> {
-    /// Creates a new independent reader for consuming values
-    ///
-    /// Each reader maintains its own position in the buffer and can consume
-    /// values at its own pace. For SPMC ring buffers, readers track their
-    /// position independently and may lag if processing is slow.
-    ///
-    /// # Returns
-    /// A boxed `BufferReader<T>` instance
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let reader = buffer.subscribe_reader();
-    /// while let Ok(value) = reader.recv().await {
-    ///     process(value).await;
-    /// }
-    /// ```
-    fn subscribe_reader(&self) -> Box<dyn BufferReader<T> + Send>;
-
-    /// Attempts to downcast to a concrete buffer type for stream creation
-    ///
-    /// This method provides a way to access the underlying concrete buffer
-    /// type for creating adapter-specific streams. Returns None if the buffer
-    /// is not of the expected concrete type.
-    ///
-    /// # Returns
-    /// `&dyn Any` for downcasting to concrete types
-    fn as_any_buffer(&self) -> &dyn core::any::Any;
-}
-
-/// Helper trait for type-erased buffer operations
-///
-/// This trait allows storing buffers of different types in a single collection
-/// while maintaining type safety through downcasting.
-///
-/// # Usage
-/// Primarily used internally by `TypedRecord` to store buffers without knowing
-/// the concrete runtime type at compile time.
-#[allow(dead_code)] // Will be used in TASK-BUF-004 (TypedRecord integration)
-pub trait AnyBuffer: Send + Sync {
-    /// Returns the buffer configuration
-    fn config(&self) -> &BufferCfg;
-
-    /// Validates the buffer state
-    fn validate(&self) -> Result<(), &'static str> {
-        self.config().validate()
-    }
-}
-
-/// Blanket implementation of BufferSender for all BufferBackend types
-///
-/// This allows any buffer backend to be used as a trait object through
-/// the `BufferSender` interface.
-impl<T, B> BufferSender<T> for B
+impl<T, B> DynBuffer<T> for B
 where
     T: Clone + Send + 'static,
-    B: BufferBackend<T> + 'static,
+    B: Buffer<T>,
 {
-    fn send(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + '_>> {
-        // Convert synchronous push to async operation
-        Box::pin(async move {
-            self.push(value);
-            Ok(())
-        })
+    fn push(&self, value: T) {
+        <Self as Buffer<T>>::push(self, value)
+    }
+
+    fn subscribe_boxed(&self) -> Box<dyn BufferReader<T> + Send> {
+        Box::new(self.subscribe())
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -391,7 +354,7 @@ mod tests {
         _phantom: core::marker::PhantomData<T>,
     }
 
-    impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for MockBuffer<T> {
+    impl<T: Clone + Send + Sync + 'static> Buffer<T> for MockBuffer<T> {
         type Reader = MockReader<T>;
 
         fn new(_cfg: &BufferCfg) -> Self {
@@ -434,5 +397,16 @@ mod tests {
         assert_send::<MockBuffer<i32>>();
         assert_sync::<MockBuffer<i32>>();
         assert_send::<MockReader<i32>>();
+    }
+
+    #[test]
+    fn test_dyn_buffer_blanket_impl() {
+        // Verify DynBuffer is automatically implemented
+        let buffer = MockBuffer::<i32> {
+            _phantom: core::marker::PhantomData,
+        };
+
+        // Should be able to use as DynBuffer
+        let _: &dyn DynBuffer<i32> = &buffer;
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Tests the end-to-end flow: producer → buffer → consumers with subscription support
 
-use aimdb_core::buffer::{BufferBackend, BufferCfg};
+use aimdb_core::buffer::{Buffer, BufferCfg};
 use aimdb_core::{Database, DbResult, RecordRegistrar, RecordT};
 use aimdb_tokio_adapter::{TokioBuffer, TokioDatabaseBuilder};
 

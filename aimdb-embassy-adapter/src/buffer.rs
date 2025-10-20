@@ -43,7 +43,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use aimdb_core::buffer::{BufferBackend, BufferCfg, BufferReader, BufferSubscribable};
+use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
 use aimdb_core::DbError;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -145,7 +145,7 @@ impl<
         const SUBS: usize,
         const PUBS: usize,
         const WATCH_N: usize,
-    > BufferBackend<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+    > Buffer<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
 {
     type Reader = EmbassyBufferReader<T, CAP, SUBS, PUBS, WATCH_N>;
 
@@ -199,24 +199,7 @@ impl<
     }
 }
 
-impl<
-        T: Clone + Send + 'static,
-        const CAP: usize,
-        const SUBS: usize,
-        const PUBS: usize,
-        const WATCH_N: usize,
-    > BufferSubscribable<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
-{
-    fn subscribe_reader(&self) -> Box<dyn BufferReader<T> + Send> {
-        Box::new(EmbassyBufferReader {
-            buffer: Arc::clone(&self.inner),
-        })
-    }
-
-    fn as_any_buffer(&self) -> &dyn core::any::Any {
-        self
-    }
-}
+// Note: DynBuffer is automatically implemented via blanket impl in aimdb-core
 
 impl<
         T: Clone + Send + 'static,
@@ -353,12 +336,12 @@ mod tests {
         type TestBuffer = EmbassyBuffer<u32, 10, 4, 2, 4>;
 
         let cfg1 = BufferCfg::SpmcRing { capacity: 10 };
-        let _buf1: TestBuffer = BufferBackend::new(&cfg1);
+        let _buf1: TestBuffer = Buffer::new(&cfg1);
 
         let cfg2 = BufferCfg::SingleLatest;
-        let _buf2: TestBuffer = BufferBackend::new(&cfg2);
+        let _buf2: TestBuffer = Buffer::new(&cfg2);
 
         let cfg3 = BufferCfg::Mailbox;
-        let _buf3: TestBuffer = BufferBackend::new(&cfg3);
+        let _buf3: TestBuffer = Buffer::new(&cfg3);
     }
 }

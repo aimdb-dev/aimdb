@@ -10,7 +10,7 @@
 
 extern crate alloc;
 
-use aimdb_core::{Database, RuntimeContext, buffer::BufferBackend};
+use aimdb_core::{Database, RuntimeContext, buffer::Buffer};
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBuffer, EmbassyDatabaseBuilder};
 use aimdb_examples_shared::{CommandAction, ConfigUpdate, DeviceCommand, TelemetryReading};
 use defmt::*;

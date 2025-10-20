@@ -6,7 +6,7 @@
 //! 3. Mailbox - command processing with overwrite semantics
 
 use aimdb_core::{
-    buffer::{BufferBackend, BufferCfg},
+    buffer::{Buffer, BufferCfg},
     Database, DbResult,
 };
 use aimdb_examples_shared::*;

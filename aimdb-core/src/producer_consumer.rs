@@ -133,7 +133,7 @@ where
     /// # Example
     ///
     /// ```rust,ignore
-    /// use aimdb_core::buffer::{BufferBackend, BufferCfg};
+    /// use aimdb_core::buffer::{Buffer, BufferCfg};
     ///
     /// // In adapter-specific code:
     /// let buffer = runtime.create_buffer(BufferCfg::SpmcRing { capacity: 1024 });
@@ -142,10 +142,7 @@ where
     ///    .producer(|em, data| async { ... })
     ///    .consumer(|em, data| async { ... });
     /// ```
-    pub fn buffer(
-        &'a mut self,
-        buffer: Box<dyn crate::buffer::BufferSubscribable<T>>,
-    ) -> &'a mut Self {
+    pub fn buffer(&'a mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &'a mut Self {
         self.rec.set_buffer(buffer);
         self
     }

@@ -15,7 +15,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc, vec::Vec};
 
-use crate::buffer::BufferSubscribable;
+use crate::buffer::DynBuffer;
 use crate::metrics::CallStats;
 use crate::tracked_fn::TrackedAsyncFn;
 
@@ -121,7 +121,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
-    buffer: Option<Box<dyn BufferSubscribable<T>>>,
+    buffer: Option<Box<dyn DynBuffer<T>>>,
 }
 
 impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
@@ -209,7 +209,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// let buffer = runtime.create_buffer(BufferCfg::SpmcRing { capacity: 1024 });
     /// record.set_buffer(buffer);
     /// ```
-    pub fn set_buffer(&mut self, buffer: Box<dyn BufferSubscribable<T>>) {
+    pub fn set_buffer(&mut self, buffer: Box<dyn DynBuffer<T>>) {
         self.buffer = Some(buffer);
     }
 
@@ -224,8 +224,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Returns a reference to the buffer if present
     ///
     /// # Returns
-    /// `Some(&dyn BufferSubscribable<T>)` if buffer is set, `None` otherwise
-    pub fn buffer(&self) -> Option<&dyn BufferSubscribable<T>> {
+    /// `Some(&dyn DynBuffer<T>)` if buffer is set, `None` otherwise
+    pub fn buffer(&self) -> Option<&dyn DynBuffer<T>> {
         self.buffer.as_deref()
     }
 
@@ -247,21 +247,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     pub async fn produce(&self, emitter: crate::emitter::Emitter, val: T) {
         // If buffer is configured, enqueue instead of direct call
         if let Some(buf) = &self.buffer {
-            if let Err(e) = buf.send(val.clone()).await {
-                // Log error but don't panic - buffer send failures are non-fatal
-                #[cfg(feature = "tracing")]
-                tracing::warn!("Buffer send failed: {:?}", e);
-
-                #[cfg(all(not(feature = "tracing"), feature = "defmt"))]
-                defmt::warn!("Buffer send failed: {:?}", e);
-
-                #[cfg(all(feature = "std", not(any(feature = "tracing", feature = "defmt"))))]
-                eprintln!("Buffer send error: {:?}", e);
-
-                // Silent in truly constrained environments (no logging available)
-                #[cfg(not(any(feature = "std", feature = "tracing", feature = "defmt")))]
-                let _ = e;
-            }
+            // DynBuffer::push is synchronous and non-blocking
+            buf.push(val.clone());
             return;
         }
 
@@ -376,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_buffer_setter_and_getter() {
-        use crate::buffer::{BufferBackend, BufferCfg, BufferReader, BufferSubscribable};
+        use crate::buffer::{Buffer, BufferCfg, BufferReader, DynBuffer};
         use crate::DbError;
         use core::future::Future;
         use core::pin::Pin;
@@ -384,7 +371,7 @@ mod tests {
         // Mock buffer for testing
         struct MockBuffer;
 
-        impl BufferBackend<TestData> for MockBuffer {
+        impl Buffer<TestData> for MockBuffer {
             type Reader = MockReader;
 
             fn new(_cfg: &BufferCfg) -> Self {
@@ -417,15 +404,7 @@ mod tests {
             }
         }
 
-        impl BufferSubscribable<TestData> for MockBuffer {
-            fn subscribe_reader(&self) -> Box<dyn BufferReader<TestData> + Send> {
-                Box::new(MockReader)
-            }
-
-            fn as_any_buffer(&self) -> &dyn core::any::Any {
-                self
-            }
-        }
+        // Note: DynBuffer is auto-implemented via blanket impl
 
         let mut record = TypedRecord::<TestData>::new();
 
@@ -434,7 +413,7 @@ mod tests {
         assert!(record.buffer().is_none());
 
         // Set buffer
-        let buffer: Box<dyn BufferSubscribable<TestData>> = Box::new(MockBuffer);
+        let buffer: Box<dyn DynBuffer<TestData>> = Box::new(MockBuffer);
         record.set_buffer(buffer);
 
         // Now has buffer
