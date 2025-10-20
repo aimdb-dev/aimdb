@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean fmt clippy doc all check test-embedded test-feature-validation examples
+.PHONY: help build test clean fmt clippy doc all check test-embedded examples
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -27,7 +27,6 @@ help:
 	@printf "  $(YELLOW)Testing Commands:$(NC)\n"
 	@printf "    check                Comprehensive development check (fmt + clippy + all tests)\n"
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
-	@printf "    test-feature-validation Test that invalid feature combinations fail\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Convenience:$(NC)\n"
 	@printf "    all           Build everything\n"
@@ -38,7 +37,7 @@ build:
 	@printf "$(YELLOW)  → Building aimdb-core (no_std minimal)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
-	cargo build --package aimdb-core --features "std,tokio-runtime,tracing,metrics"
+	cargo build --package aimdb-core --features "std,tracing,metrics"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
@@ -49,7 +48,7 @@ test:
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std minimal)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
-	cargo test --package aimdb-core --features "std,tokio-runtime,tracing"
+	cargo test --package aimdb-core --features "std,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
@@ -68,7 +67,7 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
-	cargo clippy --package aimdb-core --features "std,tokio-runtime,tracing,metrics" --all-targets -- -D warnings
+	cargo clippy --package aimdb-core --features "std,tracing,metrics" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
 	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
@@ -101,22 +100,9 @@ test-embedded:
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime"
-
-test-feature-validation:
-	@printf "$(BLUE)Testing feature flag validation (invalid combinations should fail)...$(NC)\n"
-	@printf "$(YELLOW)  → Testing invalid combination: std + embassy-runtime$(NC)\n"
-	@! cargo build --package aimdb-core --features "std,embassy-runtime" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
-	@printf "$(GREEN)    ✓ Correctly failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing invalid combination: tokio-runtime + embassy-runtime$(NC)\n"
-	@! cargo build --package aimdb-core --features "tokio-runtime,embassy-runtime" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
-	@printf "$(GREEN)    ✓ Correctly failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing invalid combination: embassy-runtime + metrics (no_std conflict)$(NC)\n"
-	@! cargo build --package aimdb-core --no-default-features --features "embassy-runtime,metrics" 2>/dev/null || (echo "❌ Should have failed" && exit 1)
-	@printf "$(GREEN)    ✓ Correctly failed$(NC)\n"
-	@printf "$(GREEN)All invalid combinations correctly rejected!$(NC)\n"
 
 ## Example projects
 examples:
@@ -130,13 +116,12 @@ examples:
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Convenience commands
-check: fmt clippy test test-embedded test-feature-validation
+check: fmt clippy test test-embedded
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatted$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
 	@printf "$(BLUE)✓ All valid feature combinations tested$(NC)\n"
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
-	@printf "$(BLUE)✓ Invalid feature combinations correctly rejected$(NC)\n"
-
+	
 all: build test examples
 	@printf "$(GREEN)Build and test completed!$(NC)\n"
