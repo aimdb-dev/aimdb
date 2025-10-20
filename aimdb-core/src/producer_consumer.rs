@@ -142,7 +142,10 @@ where
     ///    .producer(|em, data| async { ... })
     ///    .consumer(|em, data| async { ... });
     /// ```
-    pub fn buffer(&'a mut self, buffer: Box<dyn crate::buffer::BufferSender<T>>) -> &'a mut Self {
+    pub fn buffer(
+        &'a mut self,
+        buffer: Box<dyn crate::buffer::BufferSubscribable<T>>,
+    ) -> &'a mut Self {
         self.rec.set_buffer(buffer);
         self
     }

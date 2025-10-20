@@ -148,10 +148,8 @@ impl<T: Send + 'static + Debug + Clone> TrackedAsyncFn<T> {
 mod tests {
     use super::*;
 
-    #[cfg(not(feature = "std"))]
+    extern crate alloc;
     use alloc::collections::BTreeMap;
-    #[cfg(feature = "std")]
-    use std::collections::HashMap;
 
     #[allow(dead_code)]
     #[derive(Debug, Clone, PartialEq)]
@@ -168,15 +166,12 @@ mod tests {
 
         use crate::builder::AimDbInner;
 
-        #[cfg(feature = "std")]
-        let records = HashMap::new();
-        #[cfg(not(feature = "std"))]
         let records = BTreeMap::new();
 
         let inner = Arc::new(AimDbInner {
             records,
             #[cfg(feature = "std")]
-            outboxes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            outboxes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             #[cfg(not(feature = "std"))]
             outboxes: Arc::new(spin::Mutex::new(BTreeMap::new())),
         });
@@ -186,7 +181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(all(test, feature = "tokio-runtime"))]
+    #[cfg(all(test, feature = "std"))]
     async fn test_tracked_fn_basic() {
         let func = TrackedAsyncFn::new(|_em, data: TestData| async move {
             assert_eq!(data.value, 42);
@@ -202,7 +197,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(all(test, feature = "tokio-runtime"))]
+    #[cfg(all(test, feature = "std"))]
     async fn test_tracked_fn_multiple_calls() {
         let func = TrackedAsyncFn::new(|_em, _data: TestData| async move {
             // Do nothing

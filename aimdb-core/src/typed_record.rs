@@ -15,7 +15,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc, vec::Vec};
 
-use crate::buffer::BufferSender;
+use crate::buffer::BufferSubscribable;
 use crate::metrics::CallStats;
 use crate::tracked_fn::TrackedAsyncFn;
 
@@ -121,7 +121,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
-    buffer: Option<Box<dyn BufferSender<T>>>,
+    buffer: Option<Box<dyn BufferSubscribable<T>>>,
 }
 
 impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
@@ -209,7 +209,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// let buffer = runtime.create_buffer(BufferCfg::SpmcRing { capacity: 1024 });
     /// record.set_buffer(buffer);
     /// ```
-    pub fn set_buffer(&mut self, buffer: Box<dyn BufferSender<T>>) {
+    pub fn set_buffer(&mut self, buffer: Box<dyn BufferSubscribable<T>>) {
         self.buffer = Some(buffer);
     }
 
@@ -224,8 +224,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Returns a reference to the buffer if present
     ///
     /// # Returns
-    /// `Some(&dyn BufferSender<T>)` if buffer is set, `None` otherwise
-    pub fn buffer(&self) -> Option<&dyn BufferSender<T>> {
+    /// `Some(&dyn BufferSubscribable<T>)` if buffer is set, `None` otherwise
+    pub fn buffer(&self) -> Option<&dyn BufferSubscribable<T>> {
         self.buffer.as_deref()
     }
 
@@ -376,17 +376,16 @@ mod tests {
 
     #[test]
     fn test_buffer_setter_and_getter() {
-        use crate::buffer::{BufferBackend, BufferCfg, BufferReader, BufferSender};
+        use crate::buffer::{BufferBackend, BufferCfg, BufferReader, BufferSubscribable};
         use crate::DbError;
+        use core::future::Future;
+        use core::pin::Pin;
 
         // Mock buffer for testing
         struct MockBuffer;
 
         impl BufferBackend<TestData> for MockBuffer {
-            type Reader<'a>
-                = MockReader
-            where
-                Self: 'a;
+            type Reader = MockReader;
 
             fn new(_cfg: &BufferCfg) -> Self {
                 MockBuffer
@@ -396,7 +395,7 @@ mod tests {
                 // No-op
             }
 
-            fn subscribe(&self) -> Self::Reader<'_> {
+            fn subscribe(&self) -> Self::Reader {
                 MockReader
             }
         }
@@ -404,13 +403,27 @@ mod tests {
         struct MockReader;
 
         impl BufferReader<TestData> for MockReader {
-            async fn recv(&mut self) -> Result<TestData, DbError> {
-                Err(DbError::BufferClosed {
-                    #[cfg(feature = "std")]
-                    buffer_name: "mock".to_string(),
-                    #[cfg(not(feature = "std"))]
-                    _buffer_name: (),
+            fn recv(
+                &mut self,
+            ) -> Pin<Box<dyn Future<Output = Result<TestData, DbError>> + Send + '_>> {
+                Box::pin(async {
+                    Err(DbError::BufferClosed {
+                        #[cfg(feature = "std")]
+                        buffer_name: "mock".to_string(),
+                        #[cfg(not(feature = "std"))]
+                        _buffer_name: (),
+                    })
                 })
+            }
+        }
+
+        impl BufferSubscribable<TestData> for MockBuffer {
+            fn subscribe_reader(&self) -> Box<dyn BufferReader<TestData> + Send> {
+                Box::new(MockReader)
+            }
+
+            fn as_any_buffer(&self) -> &dyn core::any::Any {
+                self
             }
         }
 
@@ -421,7 +434,7 @@ mod tests {
         assert!(record.buffer().is_none());
 
         // Set buffer
-        let buffer: Box<dyn BufferSender<TestData>> = Box::new(MockBuffer);
+        let buffer: Box<dyn BufferSubscribable<TestData>> = Box::new(MockBuffer);
         record.set_buffer(buffer);
 
         // Now has buffer

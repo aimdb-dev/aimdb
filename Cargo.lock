@@ -50,7 +50,6 @@ dependencies = [
  "aimdb-macros",
  "anyhow",
  "defmt 1.0.1",
- "embassy-executor",
  "heapless 0.9.1",
  "metrics",
  "portable-atomic",
@@ -118,6 +117,7 @@ dependencies = [
  "aimdb-executor",
  "futures",
  "tokio",
+ "tokio-stream",
  "tokio-test",
  "tracing",
 ]

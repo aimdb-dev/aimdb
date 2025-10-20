@@ -6,8 +6,9 @@
 use core::any::TypeId;
 use core::fmt::Debug;
 
-#[cfg(not(feature = "std"))]
 extern crate alloc;
+
+use alloc::collections::BTreeMap;
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -16,13 +17,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use std::{boxed::Box, sync::Arc, vec::Vec};
 
 #[cfg(not(feature = "std"))]
-use alloc::collections::BTreeMap;
-
-#[cfg(not(feature = "std"))]
 use spin::Mutex;
-
-#[cfg(feature = "std")]
-use std::collections::HashMap;
 
 #[cfg(feature = "std")]
 use std::sync::Mutex;
@@ -39,11 +34,7 @@ use crate::RuntimeAdapter;
 /// Holds the registry of typed records and outboxes, indexed by `TypeId`.
 pub struct AimDbInner {
     /// Map from TypeId to type-erased records (SPMC buffers for internal data flow)
-    #[cfg(feature = "std")]
-    pub(crate) records: HashMap<TypeId, Box<dyn AnyRecord>>,
-
-    #[cfg(not(feature = "std"))]
-    pub(crate) records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
+    pub records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
 
     /// Map from payload TypeId to MPSC sender (for outboxes to external systems)
     ///
@@ -57,10 +48,6 @@ pub struct AimDbInner {
     /// - Keyed by payload `TypeId` - ensures type safety at runtime  
     /// - `Arc<Mutex<_>>` - allows initialization after `AimDb` creation
     /// - `Box<dyn AnySender>` - type erasure for heterogeneous channel storage
-    #[cfg(feature = "std")]
-    pub(crate) outboxes: Arc<Mutex<HashMap<TypeId, Box<dyn AnySender>>>>,
-
-    #[cfg(not(feature = "std"))]
     pub(crate) outboxes: Arc<Mutex<BTreeMap<TypeId, Box<dyn AnySender>>>>,
 }
 
@@ -91,10 +78,6 @@ pub struct AimDbInner {
 /// ```
 pub struct AimDbBuilder {
     /// Registry of typed records
-    #[cfg(feature = "std")]
-    records: HashMap<TypeId, Box<dyn AnyRecord>>,
-
-    #[cfg(not(feature = "std"))]
     records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
 
     /// Runtime adapter (type-erased for storage)
@@ -108,9 +91,6 @@ impl AimDbBuilder {
     /// An empty `AimDbBuilder`
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "std")]
-            records: HashMap::new(),
-            #[cfg(not(feature = "std"))]
             records: BTreeMap::new(),
             runtime: None,
         }
@@ -264,9 +244,6 @@ impl AimDbBuilder {
 
         let inner = Arc::new(AimDbInner {
             records: self.records,
-            #[cfg(feature = "std")]
-            outboxes: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(not(feature = "std"))]
             outboxes: Arc::new(Mutex::new(BTreeMap::new())),
         });
 
@@ -320,6 +297,15 @@ pub struct AimDb {
 }
 
 impl AimDb {
+    /// Internal accessor for the inner state
+    ///
+    /// This is used by adapter crates for advanced operations.
+    /// Should not be used by application code.
+    #[doc(hidden)]
+    pub fn inner(&self) -> &Arc<AimDbInner> {
+        &self.inner
+    }
+
     /// Builds a database with a closure-based builder pattern
     ///
     /// This is the primary construction method for most use cases.

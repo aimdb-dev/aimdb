@@ -55,6 +55,15 @@ pub trait BufferSender<T: Clone + Send>: Send + Sync {
     /// # Returns
     /// `Ok(())` if value was enqueued, `Err(DbError)` otherwise
     fn send(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + '_>>;
+
+    /// Returns self as Any for downcasting to concrete buffer types
+    ///
+    /// This enables adapter-specific operations (like subscription) on buffers
+    /// stored as trait objects.
+    ///
+    /// # Returns
+    /// `&dyn Any` for use with `downcast_ref()`
+    fn as_any(&self) -> &dyn core::any::Any;
 }
 
 /// Backend-agnostic buffer trait
@@ -111,17 +120,16 @@ pub trait BufferSender<T: Clone + Send>: Send + Sync {
 ///     }
 /// }
 /// ```
-pub trait BufferBackend<T: Clone + Send>: Send + Sync {
+pub trait BufferBackend<T: Clone + Send>: Send + Sync + 'static {
     /// Reader type for consuming values
     ///
-    /// Each call to `subscribe()` returns an independent reader that can
+    /// Each call to `subscribe()` returns an independent owned reader that can
     /// consume values at its own pace.
     ///
-    /// The reader has a lifetime tied to the buffer that created it,
-    /// allowing implementations to hold references to the buffer.
-    type Reader<'a>: BufferReader<T>
-    where
-        Self: 'a;
+    /// The reader is owned (not borrowed) and can outlive the reference used
+    /// to create it. This enables universal subscription support across all
+    /// runtimes (Tokio, Embassy, etc.) by using Arc or static references internally.
+    type Reader: BufferReader<T> + 'static;
 
     /// Creates a new buffer with the given configuration
     ///
@@ -164,18 +172,18 @@ pub trait BufferBackend<T: Clone + Send>: Send + Sync {
     /// values at its own pace. For SPMC ring buffers, readers track their
     /// position independently and may lag if processing is slow.
     ///
-    /// The returned reader has a lifetime tied to the buffer, allowing it to
-    /// hold references to the buffer's internal state.
+    /// The returned reader is owned and can outlive the buffer reference.
+    /// Implementations use Arc or static references internally to achieve this.
     ///
     /// # Returns
-    /// A new reader instance with a lifetime bound to `&self`
+    /// A new owned reader instance
     ///
     /// # Example
     /// ```rust,ignore
     /// let reader1 = buffer.subscribe(); // Consumer 1
     /// let reader2 = buffer.subscribe(); // Consumer 2 (independent)
     /// ```
-    fn subscribe(&self) -> Self::Reader<'_>;
+    fn subscribe(&self) -> Self::Reader;
 }
 
 /// Reader trait for consuming values from a buffer
@@ -263,7 +271,70 @@ pub trait BufferReader<T: Clone + Send>: Send {
     ///     Err(e) => eprintln!("Error: {}", e),
     /// }
     /// ```
-    fn recv(&mut self) -> impl Future<Output = Result<T, DbError>> + Send + '_;
+    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>>;
+}
+
+/// Trait for buffers that support subscription (creating new readers)
+///
+/// This trait extends `BufferSender` with the ability to create new independent
+/// readers (subscribers) from the buffer. This is used by adapter-specific
+/// subscription mechanisms to provide stream-based APIs.
+///
+/// # Object Safety
+///
+/// This trait is dyn-compatible because:
+/// - All methods take `&self` (not `Self`)
+/// - The reader type is boxed and type-erased
+/// - Uses boxed trait objects for readers
+///
+/// # Usage
+///
+/// Adapters implement this trait alongside `BufferSender` to enable
+/// subscription capabilities. The core crate remains agnostic to specific
+/// reader implementations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // In adapter crate (e.g., aimdb-tokio-adapter)
+/// impl<T: Clone + Send + Sync + 'static> BufferSubscribable<T> for TokioBuffer<T> {
+///     fn subscribe_reader(&self) -> Box<dyn BufferReader<T> + Send> {
+///         Box::new(self.subscribe())
+///     }
+/// }
+///
+/// // In application code
+/// let buffer: Box<dyn BufferSubscribable<T>> = Box::new(tokio_buffer);
+/// let reader = buffer.subscribe_reader();
+/// ```
+pub trait BufferSubscribable<T: Clone + Send>: BufferSender<T> {
+    /// Creates a new independent reader for consuming values
+    ///
+    /// Each reader maintains its own position in the buffer and can consume
+    /// values at its own pace. For SPMC ring buffers, readers track their
+    /// position independently and may lag if processing is slow.
+    ///
+    /// # Returns
+    /// A boxed `BufferReader<T>` instance
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let reader = buffer.subscribe_reader();
+    /// while let Ok(value) = reader.recv().await {
+    ///     process(value).await;
+    /// }
+    /// ```
+    fn subscribe_reader(&self) -> Box<dyn BufferReader<T> + Send>;
+
+    /// Attempts to downcast to a concrete buffer type for stream creation
+    ///
+    /// This method provides a way to access the underlying concrete buffer
+    /// type for creating adapter-specific streams. Returns None if the buffer
+    /// is not of the expected concrete type.
+    ///
+    /// # Returns
+    /// `&dyn Any` for downcasting to concrete types
+    fn as_any_buffer(&self) -> &dyn core::any::Any;
 }
 
 /// Helper trait for type-erased buffer operations
@@ -292,7 +363,7 @@ pub trait AnyBuffer: Send + Sync {
 impl<T, B> BufferSender<T> for B
 where
     T: Clone + Send + 'static,
-    B: BufferBackend<T>,
+    B: BufferBackend<T> + 'static,
 {
     fn send(&self, value: T) -> Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + '_>> {
         // Convert synchronous push to async operation
@@ -300,6 +371,10 @@ where
             self.push(value);
             Ok(())
         })
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
     }
 }
 
@@ -317,10 +392,7 @@ mod tests {
     }
 
     impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for MockBuffer<T> {
-        type Reader<'a>
-            = MockReader<T>
-        where
-            Self: 'a;
+        type Reader = MockReader<T>;
 
         fn new(_cfg: &BufferCfg) -> Self {
             Self {
@@ -332,7 +404,7 @@ mod tests {
             // No-op for testing
         }
 
-        fn subscribe(&self) -> Self::Reader<'_> {
+        fn subscribe(&self) -> Self::Reader {
             MockReader {
                 _phantom: core::marker::PhantomData,
             }
@@ -340,13 +412,15 @@ mod tests {
     }
 
     impl<T: Clone + Send> BufferReader<T> for MockReader<T> {
-        async fn recv(&mut self) -> Result<T, DbError> {
-            // Return closed for testing
-            Err(DbError::BufferClosed {
-                #[cfg(feature = "std")]
-                buffer_name: "mock".to_string(),
-                #[cfg(not(feature = "std"))]
-                _buffer_name: (),
+        fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>> {
+            Box::pin(async {
+                // Return closed for testing
+                Err(DbError::BufferClosed {
+                    #[cfg(feature = "std")]
+                    buffer_name: "mock".to_string(),
+                    #[cfg(not(feature = "std"))]
+                    _buffer_name: (),
+                })
             })
         }
     }

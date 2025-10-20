@@ -344,11 +344,9 @@ impl Emitter {
 mod tests {
     use super::*;
     use core::any::Any;
-
-    #[cfg(not(feature = "std"))]
+    
+    extern crate alloc;
     use alloc::collections::BTreeMap;
-    #[cfg(feature = "std")]
-    use std::collections::HashMap;
 
     #[allow(dead_code)]
     #[derive(Debug, Clone, PartialEq)]
@@ -457,15 +455,12 @@ mod tests {
     }
 
     fn create_test_emitter() -> Emitter {
-        #[cfg(feature = "std")]
-        let records = HashMap::new();
-        #[cfg(not(feature = "std"))]
         let records = BTreeMap::new();
 
         let inner = Arc::new(AimDbInner {
             records,
             #[cfg(feature = "std")]
-            outboxes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            outboxes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             #[cfg(not(feature = "std"))]
             outboxes: Arc::new(spin::Mutex::new(BTreeMap::new())),
         });

@@ -117,6 +117,15 @@ pub struct Database<A: RuntimeAdapter> {
 }
 
 impl<A: RuntimeAdapter> Database<A> {
+    /// Internal accessor for the AimDb instance
+    ///
+    /// This is used by adapter crates for advanced operations like subscription.
+    /// Should not be used by application code.
+    #[doc(hidden)]
+    pub fn inner_aimdb(&self) -> &AimDb {
+        &self.aimdb
+    }
+
     /// Creates a new database builder
     ///
     /// Use this to start configuring a database with type-safe records.

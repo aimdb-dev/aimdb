@@ -587,6 +587,56 @@ pub enum DbError {
         #[cfg(not(feature = "std"))]
         _buffer_name: (),
     },
+
+    /// Record type not found in database
+    ///
+    /// This error occurs when attempting to access a record type that has not
+    /// been registered in the database.
+    ///
+    /// **Error Code**: 0x7001
+    ///
+    /// # Common Causes
+    /// - Attempting to subscribe/produce to unregistered record type
+    /// - Typo in record type name
+    /// - Record registration skipped during database initialization
+    ///
+    /// # Resolution
+    /// - Register the record type using `DatabaseBuilder::record::<T>()`
+    /// - Verify the record type matches the registered type exactly
+    #[cfg_attr(feature = "std", error("Record type not found: {record_name}"))]
+    RecordNotFound {
+        #[cfg(feature = "std")]
+        record_name: String,
+        #[cfg(not(feature = "std"))]
+        _record_name: (),
+    },
+
+    /// Invalid operation attempted on database or record
+    ///
+    /// This error occurs when an operation is attempted that is not valid for
+    /// the current state or configuration of the database or record.
+    ///
+    /// **Error Code**: 0x7002
+    ///
+    /// # Common Causes
+    /// - Subscribing to a record without a configured buffer
+    /// - Attempting buffer-specific operations on unbuffered records
+    /// - Invalid state transitions
+    ///
+    /// # Resolution
+    /// - Check the error reason for specific details
+    /// - Ensure proper configuration before attempting operations
+    #[cfg_attr(feature = "std", error("Invalid operation '{operation}': {reason}"))]
+    InvalidOperation {
+        #[cfg(feature = "std")]
+        operation: String,
+        #[cfg(feature = "std")]
+        reason: String,
+        #[cfg(not(feature = "std"))]
+        _operation: (),
+        #[cfg(not(feature = "std"))]
+        _reason: (),
+    },
 }
 
 #[cfg(not(feature = "std"))]
@@ -612,6 +662,8 @@ impl core::fmt::Display for DbError {
             DbError::OutboxAlreadyExists { .. } => (0xA006, "Outbox already exists"),
             DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
             DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
+            DbError::RecordNotFound { .. } => (0x7003, "Record not found"),
+            DbError::InvalidOperation { .. } => (0x7004, "Invalid operation"),
 
             // Standard library only errors (conditionally compiled)
             #[cfg(feature = "std")]
@@ -770,6 +822,10 @@ impl DbError {
             DbError::OutboxFull { .. } => 0xA004,
             DbError::OutboxClosed { .. } => 0xA005,
             DbError::OutboxAlreadyExists { .. } => 0xA006,
+
+            // Database operation errors: 0x7003-0x7004
+            DbError::RecordNotFound { .. } => 0x7003,
+            DbError::InvalidOperation { .. } => 0x7004,
         }
     }
 
@@ -954,6 +1010,19 @@ impl DbError {
             DbError::OutboxAlreadyExists { mut type_name } => {
                 Self::prepend_context_always(&mut type_name, context);
                 DbError::OutboxAlreadyExists { type_name }
+            }
+
+            // Database operation errors
+            DbError::RecordNotFound { mut record_name } => {
+                Self::prepend_context_always(&mut record_name, context);
+                DbError::RecordNotFound { record_name }
+            }
+            DbError::InvalidOperation {
+                operation,
+                mut reason,
+            } => {
+                Self::prepend_context_always(&mut reason, context);
+                DbError::InvalidOperation { operation, reason }
             }
 
             // For Io and Json errors, convert to context variants
