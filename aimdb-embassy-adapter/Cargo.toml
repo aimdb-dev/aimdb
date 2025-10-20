@@ -7,7 +7,10 @@ description = "Embassy async runtime adapter for AimDB embedded targets"
 build = "build.rs"
 
 [features]
-default = []
+default = ["alloc"]
+
+# Heap allocation support (required for Arc-based readers)
+alloc = []
 
 # Runtime features
 embassy-runtime = ["embassy-executor", "embassy-time", "embassy-sync"]
@@ -28,9 +31,7 @@ aimdb-executor = { path = "../aimdb-executor", default-features = false, feature
 ] }
 
 # Core AimDB types - no_std for Embassy (for DbError integration)
-aimdb-core = { path = "../aimdb-core", default-features = false, features = [
-    "embassy-runtime",
-] }
+aimdb-core = { path = "../aimdb-core", default-features = false }
 
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }
