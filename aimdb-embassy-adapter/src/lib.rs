@@ -31,17 +31,18 @@
 //! # #[cfg(not(feature = "std"))]
 //! # {
 //! use aimdb_core::DbError;
-//! use aimdb_embassy_adapter::{EmbassyErrorSupport, EmbassyErrorConverter};
+//! use aimdb_embassy_adapter::EmbassyErrorSupport;
 //!
-//! // Create hardware-specific errors
-//! let uart_error = DbError::from_uart_error(0x42);
-//! let adc_error = DbError::from_adc_error(0x10);
-//! let gpio_error = DbError::from_gpio_error(0x05);
-//! let timer_error = DbError::from_timer_error(0x20);
-//!
-//! // Convert from nb errors using the converter
+//! // Convert from nb errors (production-critical for embedded-hal)
 //! let nb_error: embedded_hal_nb::nb::Error<DbError> = embedded_hal_nb::nb::Error::WouldBlock;
-//! let db_error = EmbassyErrorConverter::from_nb(nb_error);
+//! let db_error = DbError::from_nb_error(nb_error);
+//!
+//! // Create hardware errors directly (recommended approach)
+//! let uart_error = DbError::HardwareError {
+//!     component: 4,  // UART component ID
+//!     error_code: 0x6210,
+//!     _description: (),
+//! };
 //! # }
 //! ```
 //!
@@ -80,7 +81,7 @@ pub mod outbox;
 
 // Error handling exports
 #[cfg(not(feature = "std"))]
-pub use error::{EmbassyErrorConverter, EmbassyErrorSupport};
+pub use error::EmbassyErrorSupport;
 
 // Buffer implementation exports
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]

@@ -178,7 +178,10 @@ pub enum DbError {
 
     // ===== Hardware Errors (0x6000-0x6FFF) - Embedded Only =====
     /// Hardware-specific errors for embedded/MCU environments
-    #[cfg_attr(feature = "std", error("Hardware error: component {component}, code 0x{error_code:04X}"))]
+    #[cfg_attr(
+        feature = "std",
+        error("Hardware error: component {component}, code 0x{error_code:04X}")
+    )]
     HardwareError {
         component: u8,
         error_code: u16,
@@ -589,10 +592,7 @@ mod tests {
         .with_context("Application startup");
 
         if let DbError::ConnectionFailed { reason, .. } = error {
-            assert_eq!(
-                reason,
-                "Application startup: Database connection: timeout"
-            );
+            assert_eq!(reason, "Application startup: Database connection: timeout");
         } else {
             panic!("Expected ConnectionFailed");
         }

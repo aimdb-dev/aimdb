@@ -38,7 +38,7 @@ pub mod runtime;
 pub mod time;
 
 pub use buffer::TokioBuffer;
-pub use error::{TokioErrorConverter, TokioErrorSupport};
+pub use error::TokioErrorSupport;
 pub use outbox::{create_outbox_channel, OutboxReceiver, OutboxSender, TokioSender};
 
 #[cfg(feature = "tokio-runtime")]
