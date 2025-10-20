@@ -14,10 +14,10 @@ use core::fmt::Debug;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 #[cfg(feature = "std")]
-use std::{sync::Arc, vec::Vec};
+use std::{boxed::Box, sync::Arc, vec::Vec};
 
 /// Database specification
 ///
@@ -218,6 +218,101 @@ impl<A: RuntimeAdapter> Database<A> {
         T: Send + 'static + Clone + core::fmt::Debug,
     {
         self.aimdb.produce(data).await
+    }
+
+    /// Subscribes to a record type's buffer
+    ///
+    /// Creates a subscription to the configured buffer for the given record type.
+    /// Returns a boxed reader that can be used to receive values asynchronously.
+    ///
+    /// This method works with any runtime that implements `BufferSubscribable`.
+    ///
+    /// # Type Parameters
+    /// * `T` - The record type to subscribe to
+    ///
+    /// # Returns
+    /// `DbResult<Box<dyn BufferReader<T> + Send>>` - A boxed reader for consuming values
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The record type is not registered
+    /// - No buffer is configured for the record type
+    /// - The buffer doesn't support subscription
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) -> aimdb_core::DbResult<()> {
+    /// let mut reader = db.subscribe::<SensorData>()?;
+    ///
+    /// loop {
+    ///     match reader.recv().await {
+    ///         Ok(data) => println!("Received: {:?}", data),
+    ///         Err(e) => {
+    ///             eprintln!("Error: {:?}", e);
+    ///             break;
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn subscribe<T>(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
+    where
+        T: Send + Sync + 'static + Debug + Clone,
+    {
+        use crate::typed_record::AnyRecordExt;
+        use core::any::TypeId;
+
+        // Get the record for type T
+        let type_id = TypeId::of::<T>();
+
+        #[cfg(feature = "std")]
+        let record = self
+            .aimdb
+            .inner()
+            .records
+            .get(&type_id)
+            .ok_or(DbError::RecordNotFound {
+                record_name: core::any::type_name::<T>().to_string(),
+            })?;
+
+        #[cfg(not(feature = "std"))]
+        let record = self
+            .aimdb
+            .inner()
+            .records
+            .get(&type_id)
+            .ok_or(DbError::RecordNotFound { _record_name: () })?;
+
+        // Downcast to typed record
+        #[cfg(feature = "std")]
+        let typed_record = record.as_typed::<T>().ok_or(DbError::RecordNotFound {
+            record_name: core::any::type_name::<T>().to_string(),
+        })?;
+
+        #[cfg(not(feature = "std"))]
+        let typed_record = record
+            .as_typed::<T>()
+            .ok_or(DbError::RecordNotFound { _record_name: () })?;
+
+        // Get the buffer (now BufferSubscribable!)
+        #[cfg(feature = "std")]
+        let buffer = typed_record.buffer().ok_or(DbError::InvalidOperation {
+            operation: "subscribe".to_string(),
+            reason: format!(
+                "No buffer configured for record type {}. Use RecordRegistrar::buffer() to configure a buffer.",
+                core::any::type_name::<T>()
+            ),
+        })?;
+
+        #[cfg(not(feature = "std"))]
+        let buffer = typed_record.buffer().ok_or(DbError::InvalidOperation {
+            _operation: (),
+            _reason: (),
+        })?;
+
+        // BufferSubscribable provides subscribe_reader() - universal across all runtimes!
+        Ok(buffer.subscribe_reader())
     }
 
     /// Gets producer call statistics for a record type

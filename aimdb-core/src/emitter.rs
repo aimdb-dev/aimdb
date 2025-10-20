@@ -344,7 +344,7 @@ impl Emitter {
 mod tests {
     use super::*;
     use core::any::Any;
-    
+
     extern crate alloc;
     use alloc::collections::BTreeMap;
 
