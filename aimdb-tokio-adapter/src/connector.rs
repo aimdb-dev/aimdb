@@ -64,11 +64,7 @@ impl TokioAdapter {
             if connector_count > 0 {
                 #[cfg(feature = "tracing")]
                 {
-                    tracing::info!(
-                        "Record {:?} has {} connector(s)",
-                        _type_id,
-                        connector_count
-                    );
+                    tracing::info!("Record {:?} has {} connector(s)", _type_id, connector_count);
 
                     let urls = record.connector_urls();
                     for url in urls {
@@ -111,15 +107,15 @@ mod tests {
     async fn test_spawn_connectors_empty_database() {
         let adapter = TokioAdapter::new().unwrap();
         let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter.clone()));
-        
+
         // Register a record with no connectors
         builder.configure::<TestMessage>(|reg| {
             reg.producer(|_em, _msg| async {})
-               .consumer(|_em, _msg| async {});
+                .consumer(|_em, _msg| async {});
         });
-        
+
         let db = builder.build().unwrap();
-        
+
         // Should succeed even with no connectors
         let result = adapter.spawn_connectors(&db);
         assert!(result.is_ok());
@@ -129,23 +125,23 @@ mod tests {
     async fn test_spawn_connectors_with_links() {
         let adapter = TokioAdapter::new().unwrap();
         let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter.clone()));
-        
+
         // Register a record with connectors
         builder.configure::<TestMessage>(|reg| {
             reg.producer(|_em, _msg| async {})
-               .consumer(|_em, _msg| async {})
-               .link("mqtt://broker.example.com:1883")
-                   .finish()
-               .link("kafka://kafka1:9092/messages")
-                   .finish();
+                .consumer(|_em, _msg| async {})
+                .link("mqtt://broker.example.com:1883")
+                .finish()
+                .link("kafka://kafka1:9092/messages")
+                .finish();
         });
-        
+
         let db = builder.build().unwrap();
-        
+
         // Should discover and validate connectors
         let result = adapter.spawn_connectors(&db);
         assert!(result.is_ok());
-        
+
         // Verify connectors were registered
         let inner = db.inner();
         let record = inner
@@ -153,9 +149,9 @@ mod tests {
             .values()
             .next()
             .expect("Should have one record");
-        
+
         assert_eq!(record.connector_count(), 2);
-        
+
         #[cfg(feature = "std")]
         {
             let urls = record.connector_urls();
