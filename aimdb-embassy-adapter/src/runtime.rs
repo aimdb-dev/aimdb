@@ -3,7 +3,6 @@
 //! This module provides the Embassy-specific implementation of AimDB's runtime traits,
 //! enabling async task execution in embedded environments using Embassy.
 
-use aimdb_core::outbox::{AnySender, OutboxRuntimeSupport};
 use aimdb_core::{DbError, DbResult};
 use aimdb_executor::{ExecutorResult, RuntimeAdapter};
 
@@ -115,85 +114,6 @@ impl EmbassyAdapter {
         self.spawner.as_ref()
     }
 
-    /// Creates a bounded MPSC channel for outbox use
-    ///
-    /// This method creates an Embassy MPSC channel suitable for outbox communication.
-    /// The channel uses `Box::leak` to obtain a `'static` lifetime required by Embassy.
-    ///
-    /// # Arguments
-    ///
-    /// * `capacity` - The desired channel buffer size (currently fixed at 64)
-    ///
-    /// # Returns
-    ///
-    /// A tuple of (EmbassySender, OutboxReceiver) with default capacity of 64
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_embassy_adapter::EmbassyAdapter;
-    ///
-    /// let adapter = EmbassyAdapter::new()?;
-    /// let (tx, rx) = adapter.create_outbox_channel::<MyMsg>(1024);
-    /// ```
-    ///
-    /// # Note on Capacity
-    ///
-    /// Embassy channels have compile-time capacity specified via const generics.
-    /// The current implementation creates channels with capacity 64 due to this
-    /// limitation. Use `create_outbox_channel_with_capacity()` for specific sizes.
-    #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-    pub fn create_outbox_channel<T: Send + 'static>(
-        &self,
-        capacity: usize,
-    ) -> (
-        crate::outbox::EmbassySender<T, 64>,
-        crate::outbox::OutboxReceiver<T, 64>,
-    ) {
-        #[cfg(feature = "tracing")]
-        debug!(
-            "Creating Embassy outbox channel for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            capacity
-        );
-
-        crate::outbox::create_outbox_channel(capacity)
-    }
-
-    /// Creates an Embassy outbox channel with compile-time capacity
-    ///
-    /// This method allows specifying the channel capacity at compile time via
-    /// const generics, avoiding the dynamic capacity limitation.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `T` - Message type
-    /// * `N` - Channel capacity (const generic)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_embassy_adapter::EmbassyAdapter;
-    ///
-    /// let adapter = EmbassyAdapter::new()?;
-    /// let (tx, rx) = adapter.create_outbox_channel_with_capacity::<MyMsg, 256>();
-    /// ```
-    #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-    pub fn create_outbox_channel_with_capacity<T: Send + 'static, const N: usize>(
-        &self,
-    ) -> (
-        crate::outbox::EmbassySender<T, N>,
-        crate::outbox::OutboxReceiver<T, N>,
-    ) {
-        #[cfg(feature = "tracing")]
-        debug!(
-            "Creating Embassy outbox channel for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            N
-        );
-
-        crate::outbox::create_outbox_channel_with_capacity::<T, N>()
-    }
 }
 
 impl Default for EmbassyAdapter {
@@ -287,31 +207,3 @@ impl aimdb_executor::Logger for EmbassyAdapter {
 }
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are all implemented
-
-// Implement OutboxRuntimeSupport for outbox channel creation
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-impl OutboxRuntimeSupport for EmbassyAdapter {
-    fn create_outbox_channel<T: Send + 'static>(
-        &self,
-        capacity: usize,
-    ) -> (
-        alloc::boxed::Box<dyn AnySender>,
-        alloc::boxed::Box<dyn core::any::Any + Send>,
-    ) {
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
-            "Creating Embassy outbox channel for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            capacity
-        );
-
-        // Create actual channel using the existing method (default capacity 64)
-        let (sender, receiver) = self.create_outbox_channel::<T>(capacity);
-
-        // Return as type-erased boxes
-        (
-            alloc::boxed::Box::new(sender) as alloc::boxed::Box<dyn AnySender>,
-            alloc::boxed::Box::new(receiver) as alloc::boxed::Box<dyn core::any::Any + Send>,
-        )
-    }
-}

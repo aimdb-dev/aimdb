@@ -164,10 +164,6 @@ mod tests {
 
         let inner = Arc::new(AimDbInner {
             records,
-            #[cfg(feature = "std")]
-            outboxes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
-            #[cfg(not(feature = "std"))]
-            outboxes: Arc::new(spin::Mutex::new(BTreeMap::new())),
         });
         let runtime = Arc::new(());
 

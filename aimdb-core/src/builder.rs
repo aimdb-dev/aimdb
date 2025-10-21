@@ -16,28 +16,17 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc, vec::Vec};
 
-#[cfg(not(feature = "std"))]
-use spin::Mutex;
-
-#[cfg(feature = "std")]
-use std::sync::Mutex;
-
 use crate::emitter::Emitter;
-use crate::outbox::AnySender;
 use crate::producer_consumer::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 use crate::DbResult;
-use crate::RuntimeAdapter;
 
 /// Internal database state
 ///
-/// Holds the registry of typed records and outboxes, indexed by `TypeId`.
+/// Holds the registry of typed records, indexed by `TypeId`.
 pub struct AimDbInner {
     /// Map from TypeId to type-erased records (SPMC buffers for internal data flow)
     pub records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
-
-    /// Map from payload TypeId to MPSC sender (for outboxes to external systems)
-    pub(crate) outboxes: Arc<Mutex<BTreeMap<TypeId, Box<dyn AnySender>>>>,
 }
 
 /// Database builder for producer-consumer pattern
@@ -141,7 +130,6 @@ impl AimDbBuilder {
 
         let inner = Arc::new(AimDbInner {
             records: self.records,
-            outboxes: Arc::new(Mutex::new(BTreeMap::new())),
         });
 
         Ok(AimDb { inner, runtime })
@@ -246,82 +234,6 @@ impl AimDb {
         self.runtime.downcast_ref::<R>()
     }
 
-    /// Initializes an MPSC outbox for external system communication
-    ///
-    /// Creates a bounded MPSC channel for enqueueing messages to an external
-    /// system worker (MQTT, Kafka, DDS, etc.). The sender is stored in the
-    /// outbox registry and the receiver is passed to the worker task.
-    ///
-    /// Returns `Err(DbError::OutboxAlreadyExists)` if outbox for type `T` already exists.
-    pub fn init_outbox<R, T, W>(
-        &self,
-        runtime: Arc<R>,
-        config: crate::outbox::OutboxConfig,
-        worker: W,
-    ) -> DbResult<crate::outbox::WorkerHandle>
-    where
-        R: crate::outbox::OutboxRuntimeSupport,
-        T: Send + 'static,
-        W: crate::outbox::SinkWorker<T>,
-    {
-        use crate::DbError;
-        use core::any::TypeId;
-
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Initializing outbox for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            config.capacity
-        );
-
-        let type_id = TypeId::of::<T>();
-
-        // Check if outbox already exists
-        {
-            let outboxes = self.inner.outboxes.lock();
-            #[cfg(feature = "std")]
-            let outboxes_ref = outboxes.as_ref().expect("Failed to lock outboxes");
-            #[cfg(not(feature = "std"))]
-            let outboxes_ref = &*outboxes;
-
-            if outboxes_ref.contains_key(&type_id) {
-                return Err(DbError::OutboxAlreadyExists {
-                    #[cfg(feature = "std")]
-                    type_name: core::any::type_name::<T>().to_string(),
-                    #[cfg(not(feature = "std"))]
-                    _type_name: (),
-                });
-            }
-        }
-
-        // Create type-erased channel via runtime adapter
-        let (sender, receiver) = runtime.create_outbox_channel::<T>(config.capacity);
-
-        // Store sender in registry
-        {
-            let mut outboxes = self.inner.outboxes.lock();
-            #[cfg(feature = "std")]
-            let outboxes_mut = outboxes.as_mut().expect("Failed to lock outboxes");
-            #[cfg(not(feature = "std"))]
-            let outboxes_mut = &mut *outboxes;
-
-            outboxes_mut.insert(type_id, sender);
-        }
-
-        // Spawn worker task
-        // Cast runtime to Arc<dyn RuntimeAdapter> for worker
-        let runtime_dyn: Arc<dyn RuntimeAdapter> = runtime as Arc<dyn RuntimeAdapter>;
-        let handle = worker.spawn(runtime_dyn, receiver);
-
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Outbox initialized for type {} with worker ID {}",
-            core::any::type_name::<T>(),
-            handle.task_id()
-        );
-
-        Ok(handle)
-    }
 }
 
 #[cfg(test)]

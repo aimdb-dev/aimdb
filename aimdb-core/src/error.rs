@@ -82,47 +82,6 @@ pub enum DbError {
         _buffer_name: (),
     },
 
-    // ===== Outbox Errors (0xA000-0xAFFF) =====
-    /// Outbox not found for the specified type
-    #[cfg_attr(feature = "std", error("Outbox not found for type: {type_name}"))]
-    OutboxNotFound {
-        #[cfg(feature = "std")]
-        type_name: String,
-        #[cfg(not(feature = "std"))]
-        _type_name: (),
-    },
-
-    /// Outbox channel is full
-    #[cfg_attr(
-        feature = "std",
-        error("Outbox channel full: {type_name} (capacity: {capacity})")
-    )]
-    OutboxFull {
-        capacity: usize,
-        #[cfg(feature = "std")]
-        type_name: String,
-        #[cfg(not(feature = "std"))]
-        _type_name: (),
-    },
-
-    /// Outbox channel has been closed
-    #[cfg_attr(feature = "std", error("Outbox channel closed: {type_name}"))]
-    OutboxClosed {
-        #[cfg(feature = "std")]
-        type_name: String,
-        #[cfg(not(feature = "std"))]
-        _type_name: (),
-    },
-
-    /// Outbox already exists for this type
-    #[cfg_attr(feature = "std", error("Outbox already exists for type: {type_name}"))]
-    OutboxAlreadyExists {
-        #[cfg(feature = "std")]
-        type_name: String,
-        #[cfg(not(feature = "std"))]
-        _type_name: (),
-    },
-
     // ===== Database Errors (0x7003-0x7004) =====
     /// Record type not found in database
     #[cfg_attr(feature = "std", error("Record type not found: {record_name}"))]
@@ -247,10 +206,6 @@ impl core::fmt::Display for DbError {
             DbError::BufferFull { .. } => (0x2002, "Buffer full"),
             DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
             DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
-            DbError::OutboxNotFound { .. } => (0xA003, "Outbox not found"),
-            DbError::OutboxFull { .. } => (0xA004, "Outbox channel full"),
-            DbError::OutboxClosed { .. } => (0xA005, "Outbox channel closed"),
-            DbError::OutboxAlreadyExists { .. } => (0xA006, "Outbox already exists"),
             DbError::RecordNotFound { .. } => (0x7003, "Record not found"),
             DbError::InvalidOperation { .. } => (0x7004, "Invalid operation"),
             DbError::MissingConfiguration { .. } => (0x4002, "Missing configuration"),
@@ -350,13 +305,9 @@ impl DbError {
             #[cfg(feature = "std")]
             DbError::JsonWithContext { .. } => 0x9002,
 
-            // Buffer and Outbox operation errors: 0xA000-0xAFFF
+            // Buffer operation errors: 0xA000-0xAFFF
             DbError::BufferLagged { .. } => 0xA001,
             DbError::BufferClosed { .. } => 0xA002,
-            DbError::OutboxNotFound { .. } => 0xA003,
-            DbError::OutboxFull { .. } => 0xA004,
-            DbError::OutboxClosed { .. } => 0xA005,
-            DbError::OutboxAlreadyExists { .. } => 0xA006,
         }
     }
 
@@ -404,28 +355,6 @@ impl DbError {
             DbError::BufferClosed { mut buffer_name } => {
                 Self::prepend_context(&mut buffer_name, context);
                 DbError::BufferClosed { buffer_name }
-            }
-            DbError::OutboxNotFound { mut type_name } => {
-                Self::prepend_context(&mut type_name, context);
-                DbError::OutboxNotFound { type_name }
-            }
-            DbError::OutboxFull {
-                capacity,
-                mut type_name,
-            } => {
-                Self::prepend_context(&mut type_name, context);
-                DbError::OutboxFull {
-                    capacity,
-                    type_name,
-                }
-            }
-            DbError::OutboxClosed { mut type_name } => {
-                Self::prepend_context(&mut type_name, context);
-                DbError::OutboxClosed { type_name }
-            }
-            DbError::OutboxAlreadyExists { mut type_name } => {
-                Self::prepend_context(&mut type_name, context);
-                DbError::OutboxAlreadyExists { type_name }
             }
             DbError::RecordNotFound { mut record_name } => {
                 Self::prepend_context(&mut record_name, context);
