@@ -31,6 +31,7 @@
 compile_error!("tokio-adapter requires the std feature");
 
 pub mod buffer;
+pub mod connector;
 pub mod database;
 pub mod error;
 pub mod runtime;

@@ -34,6 +34,18 @@ pub trait AnyRecord: Send + Sync {
 
     /// Returns self as mutable Any for downcasting
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Returns the number of registered connectors
+    ///
+    /// Allows runtime adapters to discover connectors without knowing the concrete type.
+    fn connector_count(&self) -> usize;
+
+    /// Returns the connector URLs as strings
+    ///
+    /// Provides access to connector configuration through the type-erased interface.
+    /// Useful for logging and debugging.
+    #[cfg(feature = "std")]
+    fn connector_urls(&self) -> Vec<String>;
 }
 
 // Helper extension trait for type-safe downcasting
@@ -305,6 +317,18 @@ impl<T: Send + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn connector_count(&self) -> usize {
+        self.connectors.len()
+    }
+
+    #[cfg(feature = "std")]
+    fn connector_urls(&self) -> Vec<String> {
+        self.connectors
+            .iter()
+            .map(|link| format!("{}", link.url))
+            .collect()
     }
 }
 
