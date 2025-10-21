@@ -28,7 +28,7 @@
 //!     .unwrap();
 //! ```
 
-use aimdb_core::outbox::AnySender;
+use aimdb_core::outbox::{AnySender, SendFuture};
 use core::any::Any;
 use tokio::sync::mpsc;
 
@@ -167,7 +167,7 @@ impl<T: Send + 'static> AnySender for TokioSender<T> {
         self
     }
 
-    fn send_any(&self, value: Box<dyn Any + Send>) -> aimdb_core::SendFuture {
+    fn send_any(&self, value: Box<dyn Any + Send>) -> SendFuture {
         // Downcast the value to the concrete type
         let value = *value
             .downcast::<T>()

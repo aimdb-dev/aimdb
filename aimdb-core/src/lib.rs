@@ -43,10 +43,6 @@ pub use database::{Database, DatabaseSpec, DatabaseSpecBuilder};
 pub use builder::{AimDb, AimDbBuilder};
 pub use emitter::Emitter;
 pub use metrics::CallStats;
-pub use outbox::{
-    AnySender, OutboxConfig, OutboxRuntimeSupport, OverflowBehavior, SendFuture, SinkWorker,
-    WorkerHandle,
-};
+pub use outbox::{OutboxConfig, OverflowBehavior, WorkerHandle};
 pub use producer_consumer::{RecordRegistrar, RecordT};
-pub use tracked_fn::TrackedAsyncFn;
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};

@@ -3,6 +3,7 @@
 //! This module provides the Embassy-specific implementation of AimDB's runtime traits,
 //! enabling async task execution in embedded environments using Embassy.
 
+use aimdb_core::outbox::{AnySender, OutboxRuntimeSupport};
 use aimdb_core::{DbError, DbResult};
 use aimdb_executor::{ExecutorResult, RuntimeAdapter};
 
@@ -289,12 +290,12 @@ impl aimdb_executor::Logger for EmbassyAdapter {
 
 // Implement OutboxRuntimeSupport for outbox channel creation
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-impl aimdb_core::OutboxRuntimeSupport for EmbassyAdapter {
+impl OutboxRuntimeSupport for EmbassyAdapter {
     fn create_outbox_channel<T: Send + 'static>(
         &self,
         capacity: usize,
     ) -> (
-        alloc::boxed::Box<dyn aimdb_core::AnySender>,
+        alloc::boxed::Box<dyn AnySender>,
         alloc::boxed::Box<dyn core::any::Any + Send>,
     ) {
         #[cfg(feature = "tracing")]
@@ -309,7 +310,7 @@ impl aimdb_core::OutboxRuntimeSupport for EmbassyAdapter {
 
         // Return as type-erased boxes
         (
-            alloc::boxed::Box::new(sender) as alloc::boxed::Box<dyn aimdb_core::AnySender>,
+            alloc::boxed::Box::new(sender) as alloc::boxed::Box<dyn AnySender>,
             alloc::boxed::Box::new(receiver) as alloc::boxed::Box<dyn core::any::Any + Send>,
         )
     }

@@ -3,6 +3,7 @@
 //! This module provides the Tokio-specific implementation of AimDB's runtime traits,
 //! enabling async task spawning and execution in std environments using Tokio.
 
+use aimdb_core::outbox::{AnySender, OutboxRuntimeSupport};
 use aimdb_core::{DbError, DbResult};
 use aimdb_executor::{ExecutorResult, Logger, RuntimeAdapter, Spawn, TimeOps};
 use core::future::Future;
@@ -261,14 +262,11 @@ impl Logger for TokioAdapter {
 
 // Implement OutboxRuntimeSupport for outbox channel creation
 #[cfg(feature = "tokio-runtime")]
-impl aimdb_core::OutboxRuntimeSupport for TokioAdapter {
+impl OutboxRuntimeSupport for TokioAdapter {
     fn create_outbox_channel<T: Send + 'static>(
         &self,
         capacity: usize,
-    ) -> (
-        Box<dyn aimdb_core::AnySender>,
-        Box<dyn core::any::Any + Send>,
-    ) {
+    ) -> (Box<dyn AnySender>, Box<dyn core::any::Any + Send>) {
         #[cfg(feature = "tracing")]
         debug!(
             "Creating Tokio outbox channel for type {} with capacity {}",
@@ -281,7 +279,7 @@ impl aimdb_core::OutboxRuntimeSupport for TokioAdapter {
 
         // Return as type-erased boxes
         (
-            Box::new(sender) as Box<dyn aimdb_core::AnySender>,
+            Box::new(sender) as Box<dyn AnySender>,
             Box::new(receiver) as Box<dyn core::any::Any + Send>,
         )
     }

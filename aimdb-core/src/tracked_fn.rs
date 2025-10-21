@@ -1,5 +1,8 @@
 //! Async function wrapper with automatic call tracking
 //!
+//! **Internal module**: These types are used internally by the producer-consumer
+//! system and are not part of the public API.
+//!
 //! Provides type-erased async functions that automatically record
 //! execution statistics via `CallStats`.
 
@@ -30,6 +33,10 @@ type ErasedAsyncFn<T> = Arc<dyn Fn(Emitter, T) -> BoxFutureUnit + Send + Sync + 
 
 /// Async function wrapper with automatic call tracking
 ///
+/// **Internal type**: Used by the producer-consumer system to track function calls.
+/// Not re-exported from crate root. Access statistics via `Database::producer_stats()`
+/// and `Database::consumer_stats()` instead of using this type directly.
+///
 /// Wraps an async function and automatically records call statistics
 /// including invocation count and last argument value.
 ///
@@ -41,19 +48,6 @@ type ErasedAsyncFn<T> = Arc<dyn Fn(Emitter, T) -> BoxFutureUnit + Send + Sync + 
 /// - Type-erases async functions for storage in collections
 /// - Automatically records each call in `CallStats`
 /// - Zero-cost abstraction when not inspecting stats
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use aimdb_core::experimental::TrackedAsyncFn;
-///
-/// let func = TrackedAsyncFn::new(|emitter, value: i32| async move {
-///     println!("Called with: {}", value);
-/// });
-///
-/// func.call(emitter, 42).await;
-/// assert_eq!(func.stats().calls(), 1);
-/// ```
 pub struct TrackedAsyncFn<T: Send + 'static + Debug + Clone> {
     /// The type-erased function (wrapped in Arc for cloning into closure)
     func: ErasedAsyncFn<T>,

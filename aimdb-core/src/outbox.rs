@@ -67,10 +67,14 @@ use std::sync::Arc;
 use crate::{DbError, RuntimeAdapter};
 
 // ============================================================================
-// Runtime Outbox Support Trait
+// Runtime Outbox Support Trait (Internal - Adapter Use Only)
 // ============================================================================
 
 /// Optional trait for runtime adapters that support MPSC outbox channels
+///
+/// **Internal API**: This trait is only implemented by runtime adapters
+/// (TokioAdapter, EmbassyAdapter) and should not be used directly by
+/// application code. It is not re-exported from the crate root.
 ///
 /// This trait enables `init_outbox()` functionality by providing a way to
 /// create MPSC channels with concrete types. Unlike the failed type-erased
@@ -129,10 +133,14 @@ pub trait OutboxRuntimeSupport: RuntimeAdapter {
 }
 
 // ============================================================================
-// Type-Erased Sender Trait
+// Type-Erased Sender Trait (Internal - Adapter Use Only)
 // ============================================================================
 
 /// Type-erased sender trait for MPSC outboxes
+///
+/// **Internal API**: This trait is only implemented by runtime adapter sender
+/// wrappers (TokioSender, EmbassySender) and should not be used directly by
+/// application code. It is not re-exported from the crate root.
 ///
 /// This trait enables storing different `Sender<T>` types in the same
 /// heterogeneous collection (HashMap/BTreeMap). It provides both type
@@ -232,13 +240,19 @@ pub trait AnySender: Send + Sync {
 }
 
 /// Future type for async send operations
+///
+/// **Internal type**: Used by AnySender trait implementations. Not re-exported from crate root.
 pub type SendFuture = Pin<Box<dyn Future<Output = Result<(), ()>> + Send>>;
 
 // ============================================================================
-// SinkWorker Trait
+// SinkWorker Trait (Internal - Adapter Use Only)
 // ============================================================================
 
 /// Worker that consumes messages from an MPSC outbox
+///
+/// **Internal API**: This trait is implemented by connector workers and
+/// should not be directly referenced by most application code. It is not
+/// re-exported from the crate root.
 ///
 /// Runtime adapters implement this for their specific sender types:
 ///
