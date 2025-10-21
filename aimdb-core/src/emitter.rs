@@ -28,27 +28,14 @@ type BoxFutureUnit = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 /// Emitter for cross-record communication
 ///
-/// The Emitter allows records to emit data to other record types,
-/// creating reactive data flow pipelines. It is generic over the runtime type.
-///
-/// # Design Philosophy
-///
-/// - **Runtime Generic**: Works with any runtime implementing `Runtime`
-/// - **Type Safety**: Emit operations are type-checked at compile time
-/// - **Cross-Record Flow**: Records can emit to any other registered record type
-/// - **Clone-able**: Can be cloned cheaply (Arc-based) for passing to async tasks
+/// Allows records to emit data to other record types, creating reactive data flow pipelines.
+/// Clone-able (Arc-based) for passing to async tasks.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use aimdb_core::experimental::Emitter;
-///
-/// async fn process_sensor<R: Runtime>(emitter: Emitter<R>, data: SensorData) {
-///     // Do processing
-///     let processed = process(data);
-///     
-///     // Emit to another record type if threshold exceeded
-///     if processed.value > 100.0 {
+/// async fn process_sensor(emitter: Emitter, data: SensorData) {
+///     if data.value > 100.0 {
 ///         emitter.emit(Alert::new("High value detected")).await?;
 ///     }
 /// }
@@ -68,13 +55,6 @@ pub struct Emitter {
 
 impl Emitter {
     /// Creates a new emitter from a concrete runtime
-    ///
-    /// # Arguments
-    /// * `runtime` - The runtime adapter
-    /// * `inner` - The database internal state
-    ///
-    /// # Returns
-    /// A new `Emitter` instance
     pub fn new<R>(runtime: Arc<R>, inner: Arc<AimDbInner>) -> Self
     where
         R: 'static + Send + Sync,
@@ -87,37 +67,20 @@ impl Emitter {
 
     /// Gets a reference to the runtime (downcasted)
     ///
-    /// # Type Parameters
-    /// * `R` - The expected runtime type
-    ///
-    /// # Returns
-    /// `Some(&R)` if the runtime type matches, `None` otherwise
+    /// Returns `Some(&R)` if the runtime type matches, `None` otherwise.
     pub fn runtime<R: 'static>(&self) -> Option<&R> {
         self.runtime.downcast_ref::<R>()
     }
 
     /// Emits a value to another record type
     ///
-    /// This is the core cross-record communication primitive. When called,
-    /// it will invoke the producer and all consumers registered for the
-    /// target record type.
-    ///
-    /// # Type Parameters
-    /// * `U` - The target record type to emit to
-    ///
-    /// # Arguments
-    /// * `value` - The value to emit
-    ///
-    /// # Returns
-    /// `Ok(())` if successful, `Err` if the record type is not registered
+    /// Invokes the producer and all consumers registered for the target record type.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// // In a producer or consumer function
     /// async fn process(emitter: Emitter, data: SensorData) {
     ///     if data.temp > 100.0 {
-    ///         // Emit to Alert record type
     ///         emitter.emit(Alert::new("Temperature too high")).await?;
     ///     }
     /// }
@@ -168,35 +131,12 @@ impl Emitter {
 
     /// Enqueues a message to an outbox for external system delivery
     ///
-    /// This method sends a message to an MPSC outbox channel that feeds an
-    /// external system worker (MQTT, Kafka, DDS, etc.). The message is queued
-    /// asynchronously and will block if the channel is full (respecting backpressure).
-    ///
-    /// # Type Parameters
-    ///
-    /// * `T` - The message payload type (must match the type used in `init_outbox`)
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The message to enqueue
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - Message successfully enqueued
-    /// * `Err(DbError::OutboxNotFound)` - No outbox registered for type `T`
-    /// * `Err(DbError::OutboxClosed)` - Outbox channel closed (worker terminated)
-    ///
-    /// # Behavior
-    ///
-    /// This method will block if the outbox channel is full, providing natural
-    /// backpressure. This prevents overwhelming external systems and ensures
-    /// message delivery guarantees.
+    /// Sends a message to an MPSC outbox channel that feeds an external system worker
+    /// (MQTT, Kafka, DDS, etc.). Blocks if the channel is full (backpressure).
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// use aimdb_core::Emitter;
-    ///
     /// #[derive(Clone, Debug)]
     /// struct MqttMsg {
     ///     topic: String,
@@ -204,18 +144,12 @@ impl Emitter {
     /// }
     ///
     /// async fn process(emitter: Emitter, data: SensorData) {
-    ///     // Enqueue message to MQTT outbox
     ///     emitter.enqueue(MqttMsg {
     ///         topic: "sensors/temperature".to_string(),
     ///         payload: data.to_bytes(),
     ///     }).await?;
     /// }
     /// ```
-    ///
-    /// # Thread Safety
-    ///
-    /// Multiple emitters can call `enqueue()` concurrently (multi-producer pattern).
-    /// The outbox registry is protected by a lock, but actual sending is lock-free.
     pub async fn enqueue<T>(&self, value: T) -> DbResult<()>
     where
         T: Send + 'static,
@@ -255,23 +189,7 @@ impl Emitter {
 
     /// Tries to enqueue a message without blocking
     ///
-    /// This method attempts to send a message to an outbox channel without
-    /// blocking. If the channel is full, it returns an error immediately.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `T` - The message payload type
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The message to enqueue
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - Message successfully enqueued
-    /// * `Err(DbError::OutboxNotFound)` - No outbox registered for type `T`
-    /// * `Err(DbError::OutboxFull)` - Channel full, message was not sent
-    /// * `Err(DbError::OutboxClosed)` - Channel closed (worker terminated)
+    /// Attempts to send without blocking. Returns error immediately if channel is full.
     ///
     /// # Example
     ///
@@ -279,18 +197,11 @@ impl Emitter {
     /// match emitter.try_enqueue(msg) {
     ///     Ok(()) => println!("Sent"),
     ///     Err(DbError::OutboxFull { .. }) => {
-    ///         // Handle backpressure - maybe drop, log, or retry later
     ///         eprintln!("Outbox full, dropping message");
     ///     }
     ///     Err(e) => return Err(e),
     /// }
     /// ```
-    ///
-    /// # Use Cases
-    ///
-    /// - **Fire-and-forget**: When message loss is acceptable under load
-    /// - **Rate limiting**: Detect backpressure and throttle producers
-    /// - **Metrics**: Track outbox saturation and performance
     pub fn try_enqueue<T>(&self, value: T) -> DbResult<()>
     where
         T: Send + 'static,

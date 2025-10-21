@@ -1,52 +1,13 @@
-//! MPSC Outbox primitives for external system connectors
+//! MPSC outbox pattern for external system integration
 //!
-//! This module provides the core types and traits for the MPSC (Multi-Producer
-//! Single-Consumer) outbox pattern, enabling multiple producers to enqueue
-//! messages to single external system workers.
+//! Provides type-safe message queues from multiple internal producers
+//! to single external connector workers (MQTT, Kafka, etc.).
 //!
-//! # Architecture
+//! # Key Difference from Buffers
+//! - Buffers: SPMC for internal consumers  
+//! - Outboxes: MPSC for external protocols
 //!
-//! - **Type-Safe Routing**: Each outbox is keyed by payload `TypeId`
-//! - **Type Erasure**: `AnySender` trait enables heterogeneous storage
-//! - **Pluggable Workers**: `SinkWorker` trait for connector implementations
-//! - **Runtime Agnostic**: Core types work with any runtime adapter
-//!
-//! # Design Philosophy
-//!
-//! This module defines **runtime-agnostic** interfaces. Concrete implementations
-//! of channel types are provided by runtime adapters:
-//!
-//! - `aimdb-tokio-adapter`: Uses `tokio::sync::mpsc` channels
-//! - `aimdb-embassy-adapter`: Uses `embassy_sync::channel` channels
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! use aimdb_core::outbox::{OutboxConfig, SinkWorker};
-//!
-//! // Define message type
-//! #[derive(Clone, Debug)]
-//! struct MqttMsg {
-//!     topic: String,
-//!     payload: Vec<u8>,
-//! }
-//!
-//! // Implement worker
-//! struct MqttWorker { /* ... */ }
-//! impl SinkWorker<MqttMsg> for MqttWorker { /* ... */ }
-//!
-//! // Initialize outbox (runtime adapter provides channel creation)
-//! let handle = db.init_outbox::<MqttMsg, _>(
-//!     OutboxConfig::default(),
-//!     MqttWorker::new("mqtt://broker"),
-//! )?;
-//!
-//! // Enqueue from any producer
-//! db.enqueue(MqttMsg {
-//!     topic: "sensors/temp",
-//!     payload: data,
-//! }).await?;
-//! ```
+//! See `examples/producer-consumer-demo` for usage.
 
 use core::any::Any;
 use core::fmt::Debug;
@@ -72,60 +33,15 @@ use crate::{DbError, RuntimeAdapter};
 
 /// Optional trait for runtime adapters that support MPSC outbox channels
 ///
-/// **Internal API**: This trait is only implemented by runtime adapters
-/// (TokioAdapter, EmbassyAdapter) and should not be used directly by
-/// application code. It is not re-exported from the crate root.
+/// **Internal API**: Implemented by runtime adapters, not for application use.
 ///
-/// This trait enables `init_outbox()` functionality by providing a way to
-/// create MPSC channels with concrete types. Unlike the failed type-erased
-/// approach, this trait uses generic methods to preserve type information.
-///
-/// # Design
-///
-/// - Generic method `create_outbox_channel<T>()` preserves type information
-/// - Returns type-erased sender/receiver for storage
-/// - Keeps aimdb-core independent of specific runtime channel implementations
-///
-/// # Implementation
-///
-/// ```rust,ignore
-/// // In aimdb-tokio-adapter
-/// impl OutboxRuntimeSupport for TokioAdapter {
-///     fn create_outbox_channel<T: Send + 'static>(
-///         &self,
-///         capacity: usize,
-///     ) -> (Box<dyn AnySender>, Box<dyn Any + Send>) {
-///         let (tx, rx) = tokio::sync::mpsc::channel::<T>(capacity);
-///         (
-///             Box::new(TokioSender::new(tx)),
-///             Box::new(rx) as Box<dyn Any + Send>
-///         )
-///     }
-/// }
-/// ```
-///
-/// # Why Generic Method?
-///
-/// Rust's type system requires `T` to be known at compile time for channel
-/// creation (`mpsc::channel<T>(capacity)`). A non-generic trait method would
-/// lose this type information, making channel creation impossible.
+/// Generic method preserves type information for channel creation while
+/// returning type-erased sender/receiver for heterogeneous storage.
 pub trait OutboxRuntimeSupport: RuntimeAdapter {
     /// Creates an MPSC channel for outbox use
     ///
-    /// # Type Parameters
-    ///
-    /// * `T` - The message payload type (must be `Send + 'static`)
-    ///
-    /// # Arguments
-    ///
-    /// * `capacity` - The channel buffer size
-    ///
-    /// # Returns
-    ///
-    /// A tuple of (type-erased sender, type-erased receiver)
-    ///
-    /// The sender implements `AnySender` for registry storage, and the receiver
-    /// is passed to the `SinkWorker` which will downcast it to the concrete type.
+    /// Returns (type-erased sender, type-erased receiver). The sender implements
+    /// `AnySender` for registry storage; receiver is passed to `SinkWorker`.
     fn create_outbox_channel<T: Send + 'static>(
         &self,
         capacity: usize,
@@ -138,72 +54,19 @@ pub trait OutboxRuntimeSupport: RuntimeAdapter {
 
 /// Type-erased sender trait for MPSC outboxes
 ///
-/// **Internal API**: This trait is only implemented by runtime adapter sender
-/// wrappers (TokioSender, EmbassySender) and should not be used directly by
-/// application code. It is not re-exported from the crate root.
+/// **Internal API**: Implemented by runtime adapter sender wrappers,
+/// not for application use.
 ///
-/// This trait enables storing different `Sender<T>` types in the same
-/// heterogeneous collection (HashMap/BTreeMap). It provides both type
-/// erasure via `as_any()` and async sending methods.
-///
-/// # Design
-///
-/// - Object-safe trait (uses Pin<Box<Future>> for async methods)
-/// - Uses `Any` trait for runtime type checking and downcasting
-/// - Implemented by runtime-specific sender wrappers in adapters
-///
-/// # Safety
-///
-/// Downcasting is safe because we key outboxes by `TypeId`, ensuring
-/// the stored type matches the requested type at registration time.
-///
-/// # Implementation
-///
-/// Runtime adapters implement this for their specific sender types:
-///
-/// ```rust,ignore
-/// // In aimdb-tokio-adapter
-/// struct TokioSender<T> {
-///     inner: tokio::sync::mpsc::Sender<T>,
-/// }
-///
-/// impl<T: Send + 'static> AnySender for TokioSender<T> {
-///     fn as_any(&self) -> &dyn Any {
-///         self
-///     }
-///     
-///     fn send_any(&self, value: Box<dyn Any + Send>) -> SendFuture {
-///         let value = *value.downcast::<T>().expect("Type mismatch");
-///         Box::pin(async move {
-///             self.inner.send(value).await.map_err(|_| ())
-///         })
-///     }
-///     
-///     fn try_send_any(&self, value: Box<dyn Any + Send>) -> Result<(), Box<dyn Any + Send>> {
-///         let value = *value.downcast::<T>().expect("Type mismatch");
-///         self.inner.try_send(value).map_err(|e| Box::new(e.0) as Box<dyn Any + Send>)
-///     }
-/// }
-/// ```
+/// Enables storing different `Sender<T>` types in heterogeneous collections.
+/// Provides type erasure via `as_any()` and async sending methods.
 pub trait AnySender: Send + Sync {
     /// Downcast to `&dyn Any` for type checking
-    ///
-    /// This enables safe retrieval of the concrete sender type
-    /// by downcasting to the specific payload type.
     fn as_any(&self) -> &dyn Any;
 
     /// Send a type-erased value asynchronously
     ///
-    /// The value is passed as `Box<dyn Any + Send>` and will be downcast
-    /// to the concrete type by the implementation.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Type-erased value to send
-    ///
-    /// # Returns
-    ///
-    /// A future that resolves to `Ok(())` on success or `Err(())` if channel is closed
+    /// Value is downcast to concrete type by implementation.
+    /// Returns `Ok(())` on success or `Err(())` if channel closed.
     fn send_any(&self, value: Box<dyn Any + Send>) -> SendFuture;
 
     /// Try to send a type-erased value without blocking
@@ -252,95 +115,19 @@ pub type SendFuture = Pin<Box<dyn Future<Output = Result<(), ()>> + Send>>;
 ///
 /// **Internal API**: This trait is implemented by connector workers and
 /// should not be directly referenced by most application code. It is not
-/// re-exported from the crate root.
-///
-/// Runtime adapters implement this for their specific sender types:
+/// **Internal API**: Implemented by connector workers, not typically used
+/// directly by application code. See adapter examples for implementations.
 ///
 /// Implementers spawn a task that drains the receiver and communicates
 /// with an external system (MQTT broker, Kafka cluster, DDS domain, etc.).
 ///
-/// # Type Parameters
-///
-/// * `T` - The payload type this worker consumes
-///
-/// # Lifecycle
-///
-/// 1. `spawn()` is called once during `init_outbox()`
-/// 2. Worker task runs until receiver is closed
-/// 3. Worker is responsible for connection management and retries
-/// 4. Worker signals completion via `WorkerHandle`
-///
-/// # Generic Receiver Type
-///
-/// The receiver type is provided as a trait object (`Box<dyn Any>`) that
-/// the worker must downcast to the concrete runtime-specific type:
-///
-/// - Tokio: `tokio::sync::mpsc::Receiver<T>`
-/// - Embassy: `embassy_sync::channel::Receiver<'static, T>`
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use aimdb_core::outbox::{SinkWorker, WorkerHandle};
-///
-/// struct MqttWorker {
-///     broker_url: String,
-///     client_id: String,
-/// }
-///
-/// impl SinkWorker<MqttMsg> for MqttWorker {
-///     fn spawn(
-///         self,
-///         rt: Arc<dyn RuntimeAdapter>,
-///         rx: Box<dyn Any + Send>,
-///     ) -> WorkerHandle {
-///         let is_running = Arc::new(AtomicBool::new(true));
-///         let is_running_clone = is_running.clone();
-///         
-///         rt.spawn(Box::pin(async move {
-///             // Downcast to concrete receiver type
-///             let mut rx = *rx.downcast::<tokio::sync::mpsc::Receiver<MqttMsg>>()
-///                 .expect("Invalid receiver type");
-///             
-///             // Connect to MQTT broker
-///             let mut client = connect_mqtt(&self.broker_url).await?;
-///             
-///             // Drain receiver
-///             while let Some(msg) = rx.recv().await {
-///                 client.publish(&msg.topic, &msg.payload).await?;
-///             }
-///             
-///             is_running_clone.store(false, Ordering::Relaxed);
-///         }));
-///         
-///         WorkerHandle::new(0, is_running)
-///     }
-/// }
-/// ```
+/// The receiver is provided as `Box<dyn Any>` and must be downcast to the
+/// concrete runtime type (tokio::mpsc::Receiver, embassy::channel::Receiver).
 pub trait SinkWorker<T: Send + 'static>: Send + 'static {
     /// Spawn the worker task
     ///
-    /// This method is called once during outbox initialization. It should:
-    /// 1. Downcast the receiver to the concrete runtime type
-    /// 2. Establish connection to external system
-    /// 3. Spawn a task that drains the receiver
-    /// 4. Handle errors with appropriate retry logic
-    /// 5. Return a handle for monitoring
-    ///
-    /// # Arguments
-    ///
-    /// * `rt` - Runtime adapter for spawning tasks
-    /// * `rx` - Receiver end of the MPSC channel (type-erased)
-    ///
-    /// # Returns
-    ///
-    /// A `WorkerHandle` for monitoring and controlling the worker
-    ///
-    /// # Note on Receiver Type
-    ///
-    /// The receiver is passed as `Box<dyn Any + Send>` to maintain
-    /// runtime-agnosticism in the core. Workers must downcast it to
-    /// the appropriate concrete type for their target runtime.
+    /// Should downcast receiver, establish connection, spawn drain task,
+    /// and return handle for monitoring.
     fn spawn(self, rt: Arc<dyn RuntimeAdapter>, rx: Box<dyn Any + Send>) -> WorkerHandle;
 }
 

@@ -21,8 +21,7 @@ use std::{boxed::Box, sync::Arc, vec::Vec};
 
 /// Database specification
 ///
-/// This struct holds the configuration for creating a database instance.
-/// It is runtime-agnostic and works with any RuntimeAdapter implementation.
+/// Runtime-agnostic configuration for creating a database instance.
 #[allow(dead_code)] // Used by adapter crates
 pub struct DatabaseSpec<A: RuntimeAdapter> {
     pub(crate) aimdb_builder: AimDbBuilder,
@@ -31,9 +30,6 @@ pub struct DatabaseSpec<A: RuntimeAdapter> {
 
 impl<A: RuntimeAdapter> DatabaseSpec<A> {
     /// Creates a new specification builder
-    ///
-    /// # Returns
-    /// A builder for constructing database specifications
     pub fn builder() -> DatabaseSpecBuilder<A> {
         DatabaseSpecBuilder::new()
     }
@@ -41,8 +37,7 @@ impl<A: RuntimeAdapter> DatabaseSpec<A> {
 
 /// Builder for database specifications
 ///
-/// This builder provides a fluent API for configuring databases with
-/// type-safe record registration.
+/// Provides a fluent API for configuring databases with type-safe record registration.
 pub struct DatabaseSpecBuilder<A: RuntimeAdapter> {
     aimdb_builder: AimDbBuilder,
     _phantom: core::marker::PhantomData<A>,
@@ -58,15 +53,6 @@ impl<A: RuntimeAdapter> DatabaseSpecBuilder<A> {
     }
 
     /// Registers a type-safe record with configuration
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type implementing `RecordT`
-    ///
-    /// # Arguments
-    /// * `cfg` - Configuration for the record
-    ///
-    /// # Returns
-    /// Self for method chaining
     ///
     /// # Example
     /// ```rust,ignore
@@ -84,7 +70,7 @@ impl<A: RuntimeAdapter> DatabaseSpecBuilder<A> {
 
     /// Internal method to convert builder to spec
     ///
-    /// This is used by adapter-specific build methods.
+    /// Used by adapter-specific build methods.
     #[allow(dead_code)] // Used by adapter crates
     pub fn into_spec(self) -> DatabaseSpec<A> {
         #[cfg(feature = "tracing")]
@@ -99,18 +85,8 @@ impl<A: RuntimeAdapter> DatabaseSpecBuilder<A> {
 
 /// AimDB Database implementation
 ///
-/// Provides a unified database implementation combining runtime adapter management
-/// with type-safe record registration and producer-consumer patterns.
-///
-/// # Design Philosophy
-///
-/// - **Type Safety**: Records identified by type, not strings
-/// - **Runtime Agnostic**: Core behavior doesn't depend on specific runtimes
-/// - **Async First**: All operations are async for consistency
-/// - **Reactive Data Flow**: Producer-consumer pipelines with observability
-/// - **Service Orchestration**: Manages spawned services on the runtime
-///
-/// See the repository examples for complete usage patterns.
+/// Unified database combining runtime adapter management with type-safe record
+/// registration and producer-consumer patterns. See `examples/` for usage patterns.
 pub struct Database<A: RuntimeAdapter> {
     adapter: A,
     aimdb: AimDb,
@@ -119,8 +95,7 @@ pub struct Database<A: RuntimeAdapter> {
 impl<A: RuntimeAdapter> Database<A> {
     /// Internal accessor for the AimDb instance
     ///
-    /// This is used by adapter crates for advanced operations like subscription.
-    /// Should not be used by application code.
+    /// Used by adapter crates. Should not be used by application code.
     #[doc(hidden)]
     pub fn inner_aimdb(&self) -> &AimDb {
         &self.aimdb
@@ -128,18 +103,14 @@ impl<A: RuntimeAdapter> Database<A> {
 
     /// Creates a new database builder
     ///
-    /// Use this to start configuring a database with type-safe records.
-    /// The builder provides runtime-specific build methods in the adapter crates.
-    ///
-    /// See the repository examples for complete usage.
+    /// Use this to configure a database with type-safe records. See `examples/` for usage.
     pub fn builder() -> DatabaseSpecBuilder<A> {
         DatabaseSpecBuilder::new()
     }
 
     /// Internal constructor for creating a database from a spec
     ///
-    /// This is called by adapter-specific build methods and should not
-    /// be used directly.
+    /// Called by adapter-specific build methods. Should not be used directly.
     #[allow(dead_code)] // Used by adapter crates
     pub fn new(adapter: A, spec: DatabaseSpec<A>) -> DbResult<Self>
     where
@@ -156,8 +127,6 @@ impl<A: RuntimeAdapter> Database<A> {
     }
 
     /// Gets a reference to the runtime adapter
-    ///
-    /// This allows direct access to the runtime adapter for advanced use cases.
     ///
     /// # Example
     /// ```rust,ignore
@@ -176,12 +145,6 @@ impl<A: RuntimeAdapter> Database<A> {
 
     /// Gets the emitter for cross-record communication
     ///
-    /// The emitter allows producing data to typed records from anywhere
-    /// in your application.
-    ///
-    /// # Returns
-    /// An `Emitter` for cross-record communication
-    ///
     /// # Example
     /// ```rust,ignore
     /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) {
@@ -194,17 +157,6 @@ impl<A: RuntimeAdapter> Database<A> {
     }
 
     /// Produces typed data to the record's producer pipeline
-    ///
-    /// This is the primary way to inject data into the reactive pipeline.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Arguments
-    /// * `data` - The data to produce
-    ///
-    /// # Returns
-    /// `DbResult<()>` indicating success or failure
     ///
     /// # Example
     /// ```rust,ignore
@@ -223,21 +175,7 @@ impl<A: RuntimeAdapter> Database<A> {
     /// Subscribes to a record type's buffer
     ///
     /// Creates a subscription to the configured buffer for the given record type.
-    /// Returns a boxed reader that can be used to receive values asynchronously.
-    ///
-    /// This method works with any runtime that implements `Buffer` (via `DynBuffer`).
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type to subscribe to
-    ///
-    /// # Returns
-    /// `DbResult<Box<dyn BufferReader<T> + Send>>` - A boxed reader for consuming values
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The record type is not registered
-    /// - No buffer is configured for the record type
-    /// - The buffer doesn't support subscription
+    /// Returns a boxed reader for receiving values asynchronously.
     ///
     /// # Example
     /// ```rust,ignore
@@ -317,13 +255,7 @@ impl<A: RuntimeAdapter> Database<A> {
 
     /// Gets producer call statistics for a record type
     ///
-    /// Returns the number of times the producer was called and the last value.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Returns
-    /// `Option<(u64, Option<T>)>` with call count and last value
+    /// Returns `Some((calls, last_value))` if record exists, `None` otherwise.
     ///
     /// # Example
     /// ```rust,ignore
@@ -343,13 +275,6 @@ impl<A: RuntimeAdapter> Database<A> {
     /// Gets consumer call statistics for a record type
     ///
     /// Returns statistics for all consumers registered on this record type.
-    /// Returns an empty vector if the record type has no consumers registered.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Returns
-    /// `Vec<(u64, Option<T>)>` with stats for each consumer
     ///
     /// # Example
     /// ```rust,ignore
@@ -369,11 +294,7 @@ impl<A: RuntimeAdapter> Database<A> {
 
     /// Creates a RuntimeContext for this database
     ///
-    /// The context provides services with access to runtime capabilities
-    /// like timing and logging, plus the emitter for cross-record communication.
-    ///
-    /// # Returns
-    /// A RuntimeContext configured for this database's runtime with emitter included
+    /// Provides services with access to runtime capabilities (timing, logging) plus the emitter.
     ///
     /// # Example
     /// ```rust,ignore
@@ -411,15 +332,6 @@ where
     A: RuntimeAdapter + Spawn,
 {
     /// Spawns a service on the database's runtime
-    ///
-    /// This method provides a unified interface for spawning services
-    /// across different runtime adapters.
-    ///
-    /// # Arguments
-    /// * `future` - The service future to spawn
-    ///
-    /// # Returns
-    /// `DbResult<()>` indicating whether the spawn succeeded
     ///
     /// # Example
     /// ```rust,ignore

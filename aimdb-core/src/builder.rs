@@ -37,45 +37,12 @@ pub struct AimDbInner {
     pub records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
 
     /// Map from payload TypeId to MPSC sender (for outboxes to external systems)
-    ///
-    /// This registry stores type-erased senders for outbound message queues.
-    /// Unlike records (which use SPMC for internal consumers), outboxes use
-    /// MPSC for multi-producer access to single external system workers.
-    ///
-    /// # Design Rationale
-    ///
-    /// - Separate from `records` - outboxes are not records (different pattern)
-    /// - Keyed by payload `TypeId` - ensures type safety at runtime  
-    /// - `Arc<Mutex<_>>` - allows initialization after `AimDb` creation
-    /// - `Box<dyn AnySender>` - type erasure for heterogeneous channel storage
     pub(crate) outboxes: Arc<Mutex<BTreeMap<TypeId, Box<dyn AnySender>>>>,
 }
 
 /// Database builder for producer-consumer pattern
 ///
-/// Provides a fluent API for constructing databases with type-safe
-/// record registration.
-///
-/// # Design Philosophy
-///
-/// - **Type Safety**: Records are identified by TypeId, not strings
-/// - **Validation**: Ensures all records have valid producer/consumer setup
-/// - **Runtime Agnostic**: Works with any Runtime implementation
-/// - **Builder Pattern**: Fluent API for construction
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use aimdb_core::experimental::AimDb;
-/// use aimdb_tokio_adapter::TokioAdapter;
-///
-/// let runtime = Arc::new(TokioAdapter::new()?);
-///
-/// let db = AimDb::build_with(runtime, |b| {
-///     b.register_record::<SensorData>(&sensor_cfg);
-///     b.register_record::<Alert>(&alert_cfg);
-/// })?;
-/// ```
+/// Provides a fluent API for constructing databases with type-safe record registration.
 pub struct AimDbBuilder {
     /// Registry of typed records
     records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
@@ -86,9 +53,6 @@ pub struct AimDbBuilder {
 
 impl AimDbBuilder {
     /// Creates a new database builder
-    ///
-    /// # Returns
-    /// An empty `AimDbBuilder`
     pub fn new() -> Self {
         Self {
             records: BTreeMap::new(),
@@ -97,19 +61,6 @@ impl AimDbBuilder {
     }
 
     /// Sets the runtime adapter
-    ///
-    /// # Arguments
-    /// * `rt` - The runtime adapter to use
-    ///
-    /// # Returns
-    /// `Self` for method chaining
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = AimDbBuilder::new()
-    ///     .with_runtime(Arc::new(TokioAdapter::new()?));
-    /// ```
     pub fn with_runtime<R>(mut self, rt: Arc<R>) -> Self
     where
         R: 'static + Send + Sync,
@@ -120,30 +71,7 @@ impl AimDbBuilder {
 
     /// Configures a record type manually
     ///
-    /// This is a low-level method for advanced use cases. Most users
-    /// should use `register_record` instead.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Arguments
-    /// * `f` - A function that configures the record via `RecordRegistrar`
-    ///
-    /// # Returns
-    /// `&mut Self` for method chaining
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// builder.configure::<SensorData>(|reg| {
-    ///     reg.producer(|em, data| async move {
-    ///         println!("Sensor: {:?}", data);
-    ///     })
-    ///     .consumer(|em, data| async move {
-    ///         println!("Consumer: {:?}", data);
-    ///     });
-    /// });
-    /// ```
+    /// Low-level method for advanced use cases. Most users should use `register_record` instead.
     pub fn configure<T>(
         &mut self,
         f: impl for<'a> FnOnce(&'a mut RecordRegistrar<'a, T>),
@@ -167,24 +95,7 @@ impl AimDbBuilder {
 
     /// Registers a self-registering record type
     ///
-    /// This is the primary method for adding records to the database.
     /// The record type must implement `RecordT`.
-    ///
-    /// # Type Parameters
-    /// * `R` - The record type implementing `RecordT`
-    ///
-    /// # Arguments
-    /// * `cfg` - Configuration for the record
-    ///
-    /// # Returns
-    /// `&mut Self` for method chaining
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let sensor_cfg = SensorConfig { threshold: 100.0 };
-    /// builder.register_record::<SensorData>(&sensor_cfg);
-    /// ```
     pub fn register_record<R>(&mut self, cfg: &R::Config) -> &mut Self
     where
         R: RecordT,
@@ -194,21 +105,7 @@ impl AimDbBuilder {
 
     /// Builds the database
     ///
-    /// Validates that all records have proper producer/consumer setup
-    /// and constructs the final `AimDb` instance.
-    ///
-    /// # Returns
-    /// `Ok(AimDb)` if successful, `Err` if validation fails or runtime not set
-    ///
-    /// # Errors
-    /// - Runtime not set (use `with_runtime`)
-    /// - Record validation failed (missing producer or consumers)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let db = builder.build()?;
-    /// ```
+    /// Validates all records and constructs the final `AimDb` instance.
     pub fn build(self) -> DbResult<AimDb> {
         use crate::DbError;
 
@@ -259,35 +156,8 @@ impl Default for AimDbBuilder {
 
 /// Producer-consumer database
 ///
-/// A database instance with type-safe record registration and
-/// cross-record communication via the Emitter pattern.
-///
-/// # Design Philosophy
-///
-/// - **Type Safety**: Records identified by type, not strings
-/// - **Reactive**: Data flows through producer-consumer pipelines
-/// - **Observable**: Built-in call tracking and statistics
-/// - **Runtime Agnostic**: Works with any Runtime implementation
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use aimdb_core::experimental::AimDb;
-///
-/// // Build database
-/// let db = AimDb::build_with(runtime, |b| {
-///     b.register_record::<SensorData>(&sensor_cfg);
-///     b.register_record::<Alert>(&alert_cfg);
-/// })?;
-///
-/// // Produce data - flows through pipeline
-/// db.produce(SensorData { temp: 75.0 }).await?;
-///
-/// // Inspect statistics
-/// if let Some((calls, last)) = db.producer_stats::<SensorData>() {
-///     println!("Producer called {} times", calls);
-/// }
-/// ```
+/// A database instance with type-safe record registration and cross-record
+/// communication via the Emitter pattern. See `examples/` for usage.
 pub struct AimDb {
     /// Internal state
     inner: Arc<AimDbInner>,
@@ -299,32 +169,13 @@ pub struct AimDb {
 impl AimDb {
     /// Internal accessor for the inner state
     ///
-    /// This is used by adapter crates for advanced operations.
-    /// Should not be used by application code.
+    /// Used by adapter crates. Should not be used by application code.
     #[doc(hidden)]
     pub fn inner(&self) -> &Arc<AimDbInner> {
         &self.inner
     }
 
     /// Builds a database with a closure-based builder pattern
-    ///
-    /// This is the primary construction method for most use cases.
-    ///
-    /// # Arguments
-    /// * `rt` - The runtime adapter to use
-    /// * `f` - A closure that configures the builder
-    ///
-    /// # Returns
-    /// `Ok(AimDb)` if successful, `Err` if validation fails
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let db = AimDb::build_with(runtime, |b| {
-    ///     b.register_record::<SensorData>(&sensor_cfg);
-    ///     b.register_record::<Alert>(&alert_cfg);
-    /// })?;
-    /// ```
     pub fn build_with<R>(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder)) -> DbResult<Self>
     where
         R: 'static + Send + Sync,
@@ -335,18 +186,6 @@ impl AimDb {
     }
 
     /// Returns an emitter for cross-record communication
-    ///
-    /// The emitter can be cloned and passed to async tasks.
-    ///
-    /// # Returns
-    /// An `Emitter` instance
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let emitter = db.emitter();
-    /// emitter.emit(Alert::new("Test")).await?;
-    /// ```
     pub fn emitter(&self) -> Emitter {
         // Clone the Arc to get a new reference
         let runtime_clone = self.runtime.clone();
@@ -359,22 +198,7 @@ impl AimDb {
 
     /// Produces a value for a record type
     ///
-    /// This triggers the producer and all consumers for the given type.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Arguments
-    /// * `value` - The value to produce
-    ///
-    /// # Returns
-    /// `Ok(())` if successful, `Err` if record type not registered
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// db.produce(SensorData { temp: 23.5 }).await?;
-    /// ```
+    /// Triggers the producer and all consumers for the given type.
     pub async fn produce<T>(&self, value: T) -> DbResult<()>
     where
         T: Send + 'static + Debug + Clone,
@@ -384,19 +208,7 @@ impl AimDb {
 
     /// Returns producer statistics for a record type
     ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Returns
-    /// `Some((calls, last_value))` if record exists and has a producer, `None` otherwise
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// if let Some((calls, last)) = db.producer_stats::<SensorData>() {
-    ///     println!("Producer called {} times, last value: {:?}", calls, last);
-    /// }
-    /// ```
+    /// Returns `Some((calls, last_value))` if record exists, `None` otherwise.
     pub fn producer_stats<T>(&self) -> Option<(u64, Option<T>)>
     where
         T: Send + 'static + Debug + Clone,
@@ -409,19 +221,7 @@ impl AimDb {
 
     /// Returns consumer statistics for a record type
     ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Returns
-    /// A vector of `(calls, last_value)` tuples, one per consumer
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// for (i, (calls, last)) in db.consumer_stats::<SensorData>().into_iter().enumerate() {
-    ///     println!("Consumer {} called {} times", i, calls);
-    /// }
-    /// ```
+    /// Returns a vector of `(calls, last_value)` tuples, one per consumer.
     pub fn consumer_stats<T>(&self) -> Vec<(u64, Option<T>)>
     where
         T: Send + 'static + Debug + Clone,
@@ -441,82 +241,18 @@ impl AimDb {
 
     /// Returns a reference to the runtime (downcasted)
     ///
-    /// # Type Parameters
-    /// * `R` - The expected runtime type
-    ///
-    /// # Returns
-    /// `Some(&R)` if the runtime type matches, `None` otherwise
+    /// Returns `Some(&R)` if the runtime type matches, `None` otherwise.
     pub fn runtime<R: 'static>(&self) -> Option<&R> {
         self.runtime.downcast_ref::<R>()
     }
 
     /// Initializes an MPSC outbox for external system communication
     ///
-    /// This method creates a bounded MPSC channel for enqueueing messages to
-    /// an external system worker (MQTT, Kafka, DDS, etc.). The sender is stored
-    /// in the outbox registry for multi-producer access and the receiver is
-    /// passed to the worker task.
+    /// Creates a bounded MPSC channel for enqueueing messages to an external
+    /// system worker (MQTT, Kafka, DDS, etc.). The sender is stored in the
+    /// outbox registry and the receiver is passed to the worker task.
     ///
-    /// # Type Parameters
-    ///
-    /// * `R` - The runtime adapter type (must implement OutboxRuntimeSupport)
-    /// * `T` - The payload type (must be `Send + 'static`)
-    /// * `W` - The worker implementation that consumes messages
-    ///
-    /// # Arguments
-    ///
-    /// * `runtime` - The runtime adapter instance (for channel creation and spawning)
-    /// * `config` - Configuration for the outbox (capacity, overflow behavior)
-    /// * `worker` - The worker instance that will consume messages
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(WorkerHandle)` - Handle for monitoring the worker task
-    /// * `Err(DbError::OutboxAlreadyExists)` - If outbox for type `T` already exists
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_core::outbox::{OutboxConfig, OverflowBehavior, SinkWorker};
-    /// use aimdb_tokio_adapter::TokioAdapter;
-    ///
-    /// // Define message type
-    /// #[derive(Clone, Debug)]
-    /// struct MqttMsg {
-    ///     topic: String,
-    ///     payload: Vec<u8>,
-    /// }
-    ///
-    /// // Define worker
-    /// struct MqttWorker { /* ... */ }
-    /// impl SinkWorker<MqttMsg> for MqttWorker {
-    ///     fn spawn(self, rt: Arc<dyn RuntimeAdapter>, rx: Box<dyn Any + Send>) -> WorkerHandle {
-    ///         // Implementation
-    ///     }
-    /// }
-    ///
-    /// let runtime = Arc::new(TokioAdapter::new()?);
-    /// let db = AimDb::build_with(runtime.clone(), |b| { /* ... */ })?;
-    ///
-    /// // Initialize outbox
-    /// let handle = db.init_outbox::<TokioAdapter, MqttMsg, _>(
-    ///     runtime.clone(),
-    ///     OutboxConfig {
-    ///         capacity: 1024,
-    ///         overflow: OverflowBehavior::Block,
-    ///     },
-    ///     MqttWorker::new("mqtt://broker"),
-    /// )?;
-    ///
-    /// // Now can enqueue messages from any emitter
-    /// db.emitter().enqueue(MqttMsg { /* ... */ }).await?;
-    /// ```
-    ///
-    /// # Thread Safety
-    ///
-    /// This method acquires a lock on the outbox registry. Multiple threads
-    /// can safely call `init_outbox` with different types concurrently, but
-    /// attempting to initialize the same type twice will return an error.
+    /// Returns `Err(DbError::OutboxAlreadyExists)` if outbox for type `T` already exists.
     pub fn init_outbox<R, T, W>(
         &self,
         runtime: Arc<R>,

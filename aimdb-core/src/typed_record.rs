@@ -23,30 +23,10 @@ use crate::tracked_fn::TrackedAsyncFn;
 ///
 /// Allows storage of heterogeneous record types in a single collection
 /// while maintaining type safety through downcast operations.
-///
-/// # Design
-///
-/// - Type-erased interface for storage in collections
-/// - Safe downcasting to concrete types via `Any`
-/// - Validation of producer/consumer configuration
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let mut record: Box<dyn AnyRecord> = Box::new(TypedRecord::<SensorData>::new());
-/// if let Some(typed) = record.as_any().downcast_ref::<TypedRecord<SensorData>>() {
-///     // Access type-specific methods
-/// }
-/// ```
 pub trait AnyRecord: Send + Sync {
     /// Validates that the record has correct producer/consumer setup
     ///
-    /// # Returns
-    /// `Ok(())` if valid, `Err` with description if invalid
-    ///
-    /// # Rules
-    /// - Must have exactly one producer
-    /// - Must have at least one consumer
+    /// Rules: Must have exactly one producer and at least one consumer.
     fn validate(&self) -> Result<(), &'static str>;
 
     /// Returns self as Any for downcasting
@@ -89,29 +69,8 @@ impl AnyRecordExt for Box<dyn AnyRecord> {
 
 /// Typed record storage with producer/consumer functions
 ///
-/// Stores type-safe producer and consumer functions for a specific
-/// record type T, along with their execution statistics.
-///
-/// # Type Parameters
-/// * `T` - The record type (must be `Send + 'static + Debug + Clone`)
-///
-/// # Design
-///
-/// - One optional producer function
-/// - Multiple consumer functions (Vec)
-/// - Each function is wrapped in `TrackedAsyncFn` for observability
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let mut record = TypedRecord::<SensorData>::new();
-/// record.set_producer(|em, data| async move {
-///     println!("Producer: {:?}", data);
-/// });
-/// record.add_consumer(|em, data| async move {
-///     println!("Consumer: {:?}", data);
-/// });
-/// ```
+/// Stores type-safe producer and consumer functions for a specific record type,
+/// with optional buffering for async dispatch patterns.
 pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// Optional producer function
     producer: Option<TrackedAsyncFn<T>>,
