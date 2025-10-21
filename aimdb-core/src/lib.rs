@@ -16,6 +16,7 @@
 
 pub mod buffer;
 pub mod builder;
+pub mod connector;
 pub mod context;
 pub mod database;
 pub mod emitter;
@@ -44,3 +45,6 @@ pub use emitter::Emitter;
 pub use metrics::CallStats;
 pub use producer_consumer::{RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
+
+// Connector Infrastructure exports
+pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl};
