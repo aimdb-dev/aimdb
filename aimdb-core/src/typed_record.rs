@@ -81,7 +81,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
     buffer: Option<Box<dyn DynBuffer<T>>>,
-    
+
     /// List of connector links for external system integration
     /// Each link represents a protocol connector (MQTT, Kafka, HTTP, etc.)
     connectors: Vec<crate::connector::ConnectorLink>,

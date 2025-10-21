@@ -253,22 +253,22 @@ mod tests {
 
         {
             let mut reg = RecordRegistrar { rec: &mut record };
-            
+
             // Register connectors using the new .link() API - chainable!
             reg.link("mqtt://broker.example.com:1883")
-               .finish()
-               .link("kafka://kafka1:9092/my-topic")
-               .finish();
+                .finish()
+                .link("kafka://kafka1:9092/my-topic")
+                .finish();
         }
 
         // Verify connectors were registered
         assert_eq!(record.connector_count(), 2);
-        
+
         let connectors = record.connectors();
         assert_eq!(connectors[0].url.scheme, "mqtt");
         assert_eq!(connectors[0].url.host, "broker.example.com");
         assert_eq!(connectors[0].url.port, Some(1883));
-        
+
         assert_eq!(connectors[1].url.scheme, "kafka");
         assert!(connectors[1].url.host.contains("kafka1"));
     }
@@ -277,10 +277,10 @@ mod tests {
     #[should_panic(expected = "Invalid connector URL")]
     fn test_connector_invalid_url() {
         let mut record = TypedRecord::<TestData>::new();
-        
+
         {
             let mut reg = RecordRegistrar { rec: &mut record };
-            
+
             // This should panic due to invalid URL
             let _ = reg.link("invalid-url-without-scheme").finish();
         }
