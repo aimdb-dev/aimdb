@@ -233,7 +233,6 @@ impl AimDb {
     pub fn runtime<R: 'static>(&self) -> Option<&R> {
         self.runtime.downcast_ref::<R>()
     }
-
 }
 
 #[cfg(test)]

@@ -162,9 +162,7 @@ mod tests {
 
         let records = BTreeMap::new();
 
-        let inner = Arc::new(AimDbInner {
-            records,
-        });
+        let inner = Arc::new(AimDbInner { records });
         let runtime = Arc::new(());
 
         Emitter::new(runtime, inner)

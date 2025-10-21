@@ -113,7 +113,6 @@ impl EmbassyAdapter {
     pub fn spawner(&self) -> Option<&Spawner> {
         self.spawner.as_ref()
     }
-
 }
 
 impl Default for EmbassyAdapter {
