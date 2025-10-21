@@ -33,7 +33,10 @@ use core::fmt::{self, Debug};
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::{String, ToString}, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 #[cfg(feature = "std")]
 use std::{string::String, vec::Vec};
@@ -51,22 +54,22 @@ use crate::DbResult;
 pub struct ConnectorUrl {
     /// Protocol scheme (mqtt, mqtts, kafka, http, https, ws, wss)
     pub scheme: String,
-    
+
     /// Host or comma-separated list of hosts (for Kafka)
     pub host: String,
-    
+
     /// Port number (optional, protocol-specific defaults)
     pub port: Option<u16>,
-    
+
     /// Path component (for HTTP/WebSocket)
     pub path: Option<String>,
-    
+
     /// Username for authentication (optional)
     pub username: Option<String>,
-    
+
     /// Password for authentication (optional)
     pub password: Option<String>,
-    
+
     /// Query parameters (optional, parsed from URL)
     pub query_params: Vec<(String, String)>,
 }
@@ -126,7 +129,7 @@ impl ConnectorUrl {
 impl fmt::Display for ConnectorUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}://", self.scheme)?;
-        
+
         if let Some(ref username) = self.username {
             write!(f, "{}", username)?;
             if self.password.is_some() {
@@ -134,20 +137,20 @@ impl fmt::Display for ConnectorUrl {
             }
             write!(f, "@")?;
         }
-        
+
         write!(f, "{}", self.host)?;
-        
+
         if let Some(port) = self.port {
             write!(f, ":{}", port)?;
         }
-        
+
         if let Some(ref path) = self.path {
             if !path.starts_with('/') {
                 write!(f, "/")?;
             }
             write!(f, "{}", path)?;
         }
-        
+
         Ok(())
     }
 }
@@ -166,22 +169,22 @@ pub enum ConnectorClient {
     /// MQTT client (protocol-specific, user-provided)
     #[cfg(feature = "std")]
     Mqtt(std::sync::Arc<dyn core::any::Any + Send + Sync>),
-    
+
     /// Kafka producer (protocol-specific, user-provided)
     #[cfg(feature = "std")]
     Kafka(std::sync::Arc<dyn core::any::Any + Send + Sync>),
-    
+
     /// HTTP client (protocol-specific, user-provided)
     #[cfg(feature = "std")]
     Http(std::sync::Arc<dyn core::any::Any + Send + Sync>),
-    
+
     /// Generic connector for custom protocols
     #[cfg(feature = "std")]
     Generic {
         protocol: String,
         client: std::sync::Arc<dyn core::any::Any + Send + Sync>,
     },
-    
+
     /// Embedded/no_std variant (static references)
     #[cfg(not(feature = "std"))]
     Embedded {
@@ -243,7 +246,7 @@ impl ConnectorClient {
 pub struct ConnectorLink {
     /// Parsed connector URL
     pub url: ConnectorUrl,
-    
+
     /// Additional configuration options (protocol-specific)
     pub config: Vec<(String, String)>,
 }
@@ -312,14 +315,14 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
     let (host_port, path, query_params) = if let Some(slash_idx) = host_part.find('/') {
         let hp = &host_part[..slash_idx];
         let path_query = &host_part[slash_idx..];
-        
+
         // Split query parameters
         let (path_part, query_part) = if let Some(q_idx) = path_query.find('?') {
             (&path_query[..q_idx], Some(&path_query[q_idx + 1..]))
         } else {
             (path_query, None)
         };
-        
+
         // Parse query parameters
         let params = if let Some(query) = query_part {
             query
@@ -332,7 +335,7 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
         } else {
             Vec::new()
         };
-        
+
         (hp, Some(path_part.to_string()), params)
     } else {
         (host_part, None, Vec::new())
@@ -362,7 +365,7 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // Tests typically run with std, so format! is available
     #[cfg(not(feature = "std"))]
     use alloc::format;
@@ -403,7 +406,10 @@ mod tests {
         assert_eq!(url.host, "api.example.com");
         assert_eq!(url.path, Some("/data".to_string()));
         assert_eq!(url.query_params.len(), 2);
-        assert_eq!(url.query_params[0], ("key".to_string(), "value".to_string()));
+        assert_eq!(
+            url.query_params[0],
+            ("key".to_string(), "value".to_string())
+        );
         assert_eq!(url.query_params[1], ("foo".to_string(), "bar".to_string()));
     }
 
@@ -420,13 +426,25 @@ mod tests {
 
     #[test]
     fn test_is_secure() {
-        assert!(ConnectorUrl::parse("mqtts://broker.local").unwrap().is_secure());
-        assert!(ConnectorUrl::parse("https://api.example.com").unwrap().is_secure());
-        assert!(ConnectorUrl::parse("wss://ws.example.com").unwrap().is_secure());
-        
-        assert!(!ConnectorUrl::parse("mqtt://broker.local").unwrap().is_secure());
-        assert!(!ConnectorUrl::parse("http://api.example.com").unwrap().is_secure());
-        assert!(!ConnectorUrl::parse("ws://ws.example.com").unwrap().is_secure());
+        assert!(ConnectorUrl::parse("mqtts://broker.local")
+            .unwrap()
+            .is_secure());
+        assert!(ConnectorUrl::parse("https://api.example.com")
+            .unwrap()
+            .is_secure());
+        assert!(ConnectorUrl::parse("wss://ws.example.com")
+            .unwrap()
+            .is_secure());
+
+        assert!(!ConnectorUrl::parse("mqtt://broker.local")
+            .unwrap()
+            .is_secure());
+        assert!(!ConnectorUrl::parse("http://api.example.com")
+            .unwrap()
+            .is_secure());
+        assert!(!ConnectorUrl::parse("ws://ws.example.com")
+            .unwrap()
+            .is_secure());
     }
 
     #[test]
@@ -439,7 +457,8 @@ mod tests {
 
     #[test]
     fn test_parse_kafka_style() {
-        let url = ConnectorUrl::parse("kafka://broker1.local:9092,broker2.local:9092/my-topic").unwrap();
+        let url =
+            ConnectorUrl::parse("kafka://broker1.local:9092,broker2.local:9092/my-topic").unwrap();
         assert_eq!(url.scheme, "kafka");
         // Note: Our simple parser doesn't handle the second port in comma-separated hosts perfectly
         // It parses "broker1.local:9092,broker2.local" as the host and "9092" as the port
