@@ -12,7 +12,7 @@ use core::future::Future;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, string::ToString};
 
 #[cfg(feature = "std")]
 use std::boxed::Box;
@@ -63,6 +63,83 @@ where
     pub fn buffer(&'a mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &'a mut Self {
         self.rec.set_buffer(buffer);
         self
+    }
+
+    /// Adds a connector link for external system integration
+    ///
+    /// Creates a fluent builder chain for configuring protocol connectors.
+    /// Supports MQTT, Kafka, HTTP, WebSocket, and custom protocols.
+    ///
+    /// # Arguments
+    /// * `url` - The connector URL (e.g., "mqtt://broker:1883", "kafka://host:9092/topic")
+    ///
+    /// # Returns
+    /// A `ConnectorBuilder` for chaining configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// reg.link("mqtt://broker.local:1883")
+    ///    .with_config("client_id", "my-device")
+    ///    .with_config("qos", "1")
+    ///    .finish();
+    /// ```
+    pub fn link(&'a mut self, url: &str) -> ConnectorBuilder<'a, T> {
+        ConnectorBuilder {
+            registrar: self,
+            url: url.to_string(),
+        }
+    }
+}
+
+/// Builder for configuring connector links
+///
+/// Provides a fluent API for adding connector configuration options
+/// before finalizing the connector registration.
+pub struct ConnectorBuilder<'a, T: Send + 'static + Debug + Clone> {
+    registrar: &'a mut RecordRegistrar<'a, T>,
+    #[cfg(feature = "std")]
+    url: std::string::String,
+    #[cfg(not(feature = "std"))]
+    url: alloc::string::String,
+}
+
+impl<'a, T> ConnectorBuilder<'a, T>
+where
+    T: Send + 'static + Debug + Clone,
+{
+    /// Adds a configuration option to the connector
+    ///
+    /// Configuration options are protocol-specific and passed to the
+    /// connector implementation during initialization.
+    ///
+    /// # Arguments
+    /// * `key` - Configuration key (e.g., "client_id", "qos", "timeout")
+    /// * `value` - Configuration value
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_config(self, _key: &str, _value: &str) -> Self {
+        // TODO: Store configuration options in a temporary structure
+        // For now, we just return self for the fluent API
+        self
+    }
+
+    /// Finalizes the connector registration
+    ///
+    /// Parses the URL and adds the connector link to the record.
+    /// Returns the registrar for further chaining.
+    ///
+    /// # Panics
+    /// Panics if the URL is invalid
+    pub fn finish(self) -> &'a mut RecordRegistrar<'a, T> {
+        use crate::connector::{ConnectorLink, ConnectorUrl};
+
+        let url = ConnectorUrl::parse(&self.url)
+            .unwrap_or_else(|_| panic!("Invalid connector URL: {}", self.url));
+        let link = ConnectorLink::new(url);
+        self.registrar.rec.add_connector(link);
+        self.registrar
     }
 }
 
@@ -168,5 +245,44 @@ mod tests {
 
         // Should be valid after registration
         assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_connector_registration() {
+        let mut record = TypedRecord::<TestData>::new();
+
+        {
+            let mut reg = RecordRegistrar { rec: &mut record };
+            
+            // Register connectors using the new .link() API - chainable!
+            reg.link("mqtt://broker.example.com:1883")
+               .finish()
+               .link("kafka://kafka1:9092/my-topic")
+               .finish();
+        }
+
+        // Verify connectors were registered
+        assert_eq!(record.connector_count(), 2);
+        
+        let connectors = record.connectors();
+        assert_eq!(connectors[0].url.scheme, "mqtt");
+        assert_eq!(connectors[0].url.host, "broker.example.com");
+        assert_eq!(connectors[0].url.port, Some(1883));
+        
+        assert_eq!(connectors[1].url.scheme, "kafka");
+        assert!(connectors[1].url.host.contains("kafka1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid connector URL")]
+    fn test_connector_invalid_url() {
+        let mut record = TypedRecord::<TestData>::new();
+        
+        {
+            let mut reg = RecordRegistrar { rec: &mut record };
+            
+            // This should panic due to invalid URL
+            let _ = reg.link("invalid-url-without-scheme").finish();
+        }
     }
 }

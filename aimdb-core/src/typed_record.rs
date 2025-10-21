@@ -81,6 +81,10 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
     buffer: Option<Box<dyn DynBuffer<T>>>,
+    
+    /// List of connector links for external system integration
+    /// Each link represents a protocol connector (MQTT, Kafka, HTTP, etc.)
+    connectors: Vec<crate::connector::ConnectorLink>,
 }
 
 impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
@@ -93,6 +97,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             producer: None,
             consumers: Vec::new(),
             buffer: None,
+            connectors: Vec::new(),
         }
     }
 
@@ -186,6 +191,43 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// `Some(&dyn DynBuffer<T>)` if buffer is set, `None` otherwise
     pub fn buffer(&self) -> Option<&dyn DynBuffer<T>> {
         self.buffer.as_deref()
+    }
+
+    /// Adds a connector link for external system integration
+    ///
+    /// Connectors bridge AimDB records to external protocols (MQTT, Kafka, HTTP, etc.).
+    /// Multiple connectors can be registered for the same record type.
+    ///
+    /// # Arguments
+    /// * `link` - The connector configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::connector::{ConnectorUrl, ConnectorLink};
+    ///
+    /// let url = ConnectorUrl::parse("mqtt://broker.local:1883")?;
+    /// let link = ConnectorLink::new(url);
+    /// record.add_connector(link);
+    /// ```
+    pub fn add_connector(&mut self, link: crate::connector::ConnectorLink) {
+        self.connectors.push(link);
+    }
+
+    /// Returns a reference to the registered connectors
+    ///
+    /// # Returns
+    /// A slice of connector links
+    pub fn connectors(&self) -> &[crate::connector::ConnectorLink] {
+        &self.connectors
+    }
+
+    /// Returns the number of registered connectors
+    ///
+    /// # Returns
+    /// The count of connectors
+    pub fn connector_count(&self) -> usize {
+        self.connectors.len()
     }
 
     /// Produces a value by calling producer and all consumers
