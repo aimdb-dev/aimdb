@@ -1,0 +1,57 @@
+[package]
+name = "aimdb-mqtt-connector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "MQTT connector for AimDB - supports both std (Tokio) and no_std (Embassy) environments"
+keywords = ["mqtt", "aimdb", "connector", "iot", "embedded"]
+categories = ["database-implementations", "embedded", "network-programming"]
+
+[features]
+default = []
+std = ["aimdb-core/std"]
+tokio-runtime = ["std", "tokio", "rumqttc", "uuid"]
+embassy-runtime = [
+    "embassy-executor",
+    "embassy-time",
+    "embassy-sync",
+    "rust-mqtt",
+]
+tracing = ["dep:tracing", "aimdb-core/tracing"]
+
+[dependencies]
+aimdb-core = { path = "../aimdb-core", default-features = false }
+
+# Error handling
+thiserror = { workspace = true }
+
+# UUID generation for client IDs (std only)
+uuid = { version = "1.0", features = ["v4"], optional = true }
+
+# Tokio runtime dependencies (std)
+tokio = { workspace = true, optional = true, features = ["sync", "time"] }
+rumqttc = { version = "0.24", optional = true }
+
+# Embassy runtime dependencies (no_std)
+# Note: These use the workspace's local embassy checkout to avoid conflicts
+embassy-executor = { path = "../_external/embassy/embassy-executor", optional = true }
+embassy-time = { path = "../_external/embassy/embassy-time", optional = true }
+embassy-sync = { path = "../_external/embassy/embassy-sync", optional = true }
+rust-mqtt = { version = "0.3", default-features = false, optional = true }
+
+# Optional observability
+tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-test = "0.4"
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

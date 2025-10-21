@@ -124,6 +124,16 @@ impl ConnectorUrl {
     pub fn is_secure(&self) -> bool {
         matches!(self.scheme.as_str(), "mqtts" | "https" | "wss")
     }
+
+    /// Returns the URL scheme (protocol)
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
+    /// Returns the path component, or "/" if not specified
+    pub fn path(&self) -> &str {
+        self.path.as_deref().unwrap_or("/")
+    }
 }
 
 impl fmt::Display for ConnectorUrl {

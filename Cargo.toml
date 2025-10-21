@@ -5,6 +5,7 @@ members = [
     "aimdb-embassy-adapter",
     "aimdb-tokio-adapter",
     "aimdb-macros",
+    "aimdb-mqtt-connector",
     "tools/aimdb-cli",
     "examples/shared",
     "examples/tokio-runtime-demo",
