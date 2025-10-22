@@ -1,64 +1,38 @@
 //! MQTT connector for AimDB
 //!
-//! This crate provides MQTT connectivity for AimDB records, supporting both
-//! std (Tokio) and no_std (Embassy) environments.
+//! Provides MQTT publishing for AimDB records with automatic consumer registration.
 //!
-//! # Features
+//! ## Features
 //!
-//! - `tokio-runtime`: Enable Tokio-based MQTT connector using `rumqttc`
-//! - `embassy-runtime`: Enable Embassy-based MQTT connector for embedded systems
-//! - `tracing`: Enable tracing support for debugging
+//! - `tokio-runtime`: Tokio-based connector using `rumqttc`
+//! - `embassy-runtime`: Embassy connector for embedded systems (planned)
+//! - `tracing`: Debug logging support
 //!
-//! # Architecture
-//!
-//! The connector spawns background tasks that:
-//! 1. Subscribe to a record's buffer via emitter
-//! 2. Transform values to MQTT payloads
-//! 3. Publish to the configured MQTT broker
-//! 4. Handle reconnection and error recovery
-//!
-//! # Example (Tokio)
+//! ## Usage
 //!
 //! ```rust,ignore
-//! use aimdb_core::{AimDb, AimDbBuilder};
-//! use aimdb_tokio_adapter::TokioAdapter;
+//! use aimdb_core::AimDb;
+//! use aimdb_mqtt_connector::MqttClientPool;
 //! use std::sync::Arc;
 //!
-//! #[derive(Clone, Debug)]
-//! struct Temperature {
-//!     sensor_id: u32,
-//!     celsius: f32,
-//! }
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let runtime = Arc::new(TokioAdapter::new()?);
-//!     
-//!     let db = AimDb::build_with(runtime.clone(), |builder| {
-//!         builder.configure::<Temperature>(|reg| {
-//!             reg.producer(|_em, temp| async move {
-//!                 println!("Temperature: {}°C", temp.celsius);
-//!             })
-//!             .link("mqtt://broker.example.com:1883/sensors/temperature")
-//!                 .with_config("client_id", "sensor-001")
-//!                 .with_config("qos", "1")
-//!                 .finish();
+//! // Create pool and pass to builder
+//! let pool = Arc::new(MqttClientPool::new());
+//! let db = AimDb::build_with(runtime, |builder| {
+//!     builder
+//!         .with_connector_pool(pool)
+//!         .configure::<Temperature>(|reg| {
+//!             reg.producer(|_em, temp| async move { /* ... */ })
+//!                .link("mqtt://broker:1883/sensors/temp")
+//!                    .with_serializer(|t| serde_json::to_vec(t).map_err(|e| e.to_string()))
+//!                    .finish();
 //!         });
-//!     })?;
-//!     
-//!     // Spawn MQTT connector tasks
-//!     runtime.spawn_connectors(&db)?;
-//!     
-//!     // Publish temperature readings
-//!     db.produce(Temperature { sensor_id: 1, celsius: 22.5 }).await?;
-//!     
-//!     Ok(())
-//! }
+//! })?;
+//!
+//! // Publishing happens automatically
+//! db.produce(Temperature { celsius: 22.5 }).await?;
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![warn(missing_docs)]
-#![warn(rustdoc::broken_intra_doc_links)]
 
 use aimdb_core::connector::ConnectorUrl;
 
@@ -161,10 +135,18 @@ impl MqttConfig {
 
 // Platform-specific implementations
 #[cfg(feature = "tokio-runtime")]
-pub mod tokio;
+mod tokio_client;
 
 #[cfg(feature = "embassy-runtime")]
-pub mod embassy;
+mod embassy_client;
+
+// Re-export platform-specific types
+#[cfg(feature = "tokio-runtime")]
+pub use tokio_client::MqttClientPool;
+
+// Note: Embassy client will be exported here when implemented
+// #[cfg(feature = "embassy-runtime")]
+// pub use embassy_client::MqttClientPool;
 
 #[cfg(test)]
 mod tests {

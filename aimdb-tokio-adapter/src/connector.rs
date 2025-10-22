@@ -100,13 +100,13 @@ mod tests {
 
     #[derive(Clone, Debug)]
     struct TestMessage {
-        content: String,
+        _content: String,
     }
 
     #[tokio::test]
     async fn test_spawn_connectors_empty_database() {
         let adapter = TokioAdapter::new().unwrap();
-        let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter.clone()));
+        let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter));
 
         // Register a record with no connectors
         builder.configure::<TestMessage>(|reg| {
@@ -124,7 +124,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_connectors_with_links() {
         let adapter = TokioAdapter::new().unwrap();
-        let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter.clone()));
+        let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter));
 
         // Register a record with connectors
         builder.configure::<TestMessage>(|reg| {
