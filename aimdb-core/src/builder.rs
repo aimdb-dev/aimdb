@@ -38,6 +38,10 @@ pub struct AimDbBuilder {
 
     /// Runtime adapter (type-erased for storage)
     runtime: Option<Arc<dyn core::any::Any + Send + Sync>>,
+
+    /// Optional connector pool for MQTT, Kafka, etc.
+    /// Used by connector implementations to register consumers during record configuration
+    pub(crate) connector_pool: Option<Arc<dyn crate::pool::MqttConnectorPool>>,
 }
 
 impl AimDbBuilder {
@@ -46,6 +50,7 @@ impl AimDbBuilder {
         Self {
             records: BTreeMap::new(),
             runtime: None,
+            connector_pool: None,
         }
     }
 
@@ -55,6 +60,27 @@ impl AimDbBuilder {
         R: 'static + Send + Sync,
     {
         self.runtime = Some(rt);
+        self
+    }
+
+    /// Sets the connector pool (for MQTT, Kafka, etc.)
+    ///
+    /// This allows connectors to register consumers during record configuration.
+    /// The pool must implement the `MqttConnectorPool` trait.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_mqtt_connector::MqttClientPool;
+    /// use std::sync::Arc;
+    ///
+    /// let mqtt_pool = Arc::new(MqttClientPool::new());
+    /// let builder = AimDbBuilder::new()
+    ///     .with_runtime(runtime)
+    ///     .with_connector_pool(mqtt_pool);
+    /// ```
+    pub fn with_connector_pool(mut self, pool: Arc<dyn crate::pool::MqttConnectorPool>) -> Self {
+        self.connector_pool = Some(pool);
         self
     }
 
@@ -77,7 +103,10 @@ impl AimDbBuilder {
             .as_typed_mut::<T>()
             .expect("type mismatch in record registry");
 
-        let mut reg = RecordRegistrar { rec };
+        let mut reg = RecordRegistrar {
+            rec,
+            connector_pool: self.connector_pool.clone(),
+        };
         f(&mut reg);
         self
     }

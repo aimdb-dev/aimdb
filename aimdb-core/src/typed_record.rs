@@ -46,6 +46,13 @@ pub trait AnyRecord: Send + Sync {
     /// Useful for logging and debugging.
     #[cfg(feature = "std")]
     fn connector_urls(&self) -> Vec<String>;
+
+    /// Gets the connector links
+    ///
+    /// Returns a reference to the connector configuration list.
+    /// This allows connector spawning logic to access the serializer callbacks
+    /// and other connector-specific configuration.
+    fn connectors(&self) -> &[crate::connector::ConnectorLink];
 }
 
 // Helper extension trait for type-safe downcasting
@@ -242,6 +249,14 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         self.connectors.len()
     }
 
+    /// Returns the number of registered consumers
+    ///
+    /// # Returns
+    /// The count of consumers
+    pub fn consumer_count(&self) -> usize {
+        self.consumers.len()
+    }
+
     /// Produces a value by calling producer and all consumers
     ///
     /// This is the core of the data flow mechanism:
@@ -329,6 +344,10 @@ impl<T: Send + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
             .iter()
             .map(|link| format!("{}", link.url))
             .collect()
+    }
+
+    fn connectors(&self) -> &[crate::connector::ConnectorLink] {
+        &self.connectors
     }
 }
 

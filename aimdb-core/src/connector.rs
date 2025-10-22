@@ -29,19 +29,21 @@
 
 use core::fmt::{self, Debug};
 
-#[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(not(feature = "std"))]
 use alloc::{
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
 
 #[cfg(feature = "std")]
-use std::{string::String, vec::Vec};
+use alloc::format;
 
 use crate::DbResult;
+
+/// Type alias for serializer callbacks (reduces type complexity)
+pub type SerializerFn = Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, String> + Send + Sync>;
 
 /// Parsed connector URL with protocol, host, port, and credentials
 ///
@@ -174,59 +176,51 @@ impl fmt::Display for ConnectorUrl {
 ///
 /// This is intentionally minimal - actual client types are defined by
 /// user extensions. The core only provides the infrastructure.
+///
+/// Works in both `std` and `no_std` (with `alloc`) environments.
 #[derive(Clone)]
 pub enum ConnectorClient {
     /// MQTT client (protocol-specific, user-provided)
-    #[cfg(feature = "std")]
-    Mqtt(std::sync::Arc<dyn core::any::Any + Send + Sync>),
+    Mqtt(Arc<dyn core::any::Any + Send + Sync>),
 
     /// Kafka producer (protocol-specific, user-provided)
-    #[cfg(feature = "std")]
-    Kafka(std::sync::Arc<dyn core::any::Any + Send + Sync>),
+    Kafka(Arc<dyn core::any::Any + Send + Sync>),
 
     /// HTTP client (protocol-specific, user-provided)
-    #[cfg(feature = "std")]
-    Http(std::sync::Arc<dyn core::any::Any + Send + Sync>),
+    Http(Arc<dyn core::any::Any + Send + Sync>),
 
     /// Generic connector for custom protocols
-    #[cfg(feature = "std")]
     Generic {
         protocol: String,
-        client: std::sync::Arc<dyn core::any::Any + Send + Sync>,
-    },
-
-    /// Embedded/no_std variant (static references)
-    #[cfg(not(feature = "std"))]
-    Embedded {
-        protocol: alloc::string::String,
-        client: &'static dyn core::any::Any,
+        client: Arc<dyn core::any::Any + Send + Sync>,
     },
 }
 
 impl Debug for ConnectorClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            #[cfg(feature = "std")]
             ConnectorClient::Mqtt(_) => write!(f, "ConnectorClient::Mqtt(..)"),
-            #[cfg(feature = "std")]
             ConnectorClient::Kafka(_) => write!(f, "ConnectorClient::Kafka(..)"),
-            #[cfg(feature = "std")]
             ConnectorClient::Http(_) => write!(f, "ConnectorClient::Http(..)"),
-            #[cfg(feature = "std")]
             ConnectorClient::Generic { protocol, .. } => {
                 write!(f, "ConnectorClient::Generic({})", protocol)
-            }
-            #[cfg(not(feature = "std"))]
-            ConnectorClient::Embedded { protocol, .. } => {
-                write!(f, "ConnectorClient::Embedded({})", protocol)
             }
         }
     }
 }
 
 impl ConnectorClient {
-    /// Downcasts to a concrete client type (std only)
-    #[cfg(feature = "std")]
+    /// Downcasts to a concrete client type
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use rumqttc::AsyncClient;
+    ///
+    /// if let Some(mqtt_client) = connector.downcast_ref::<Arc<AsyncClient>>() {
+    ///     // Use the MQTT client
+    /// }
+    /// ```
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         match self {
             ConnectorClient::Mqtt(arc) => arc.downcast_ref::<T>(),
@@ -235,30 +229,42 @@ impl ConnectorClient {
             ConnectorClient::Generic { client, .. } => client.downcast_ref::<T>(),
         }
     }
-
-    /// Downcasts to a concrete client type (no_std)
-    #[cfg(not(feature = "std"))]
-    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-        match self {
-            ConnectorClient::Embedded { client, .. } => {
-                // Safety: We're following the same pattern as Any::downcast_ref
-                client.downcast_ref::<T>()
-            }
-        }
-    }
 }
 
 /// Configuration for a connector link
 ///
 /// Stores the parsed URL and configuration until the record is built.
 /// The actual client creation and handler spawning happens during the build phase.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConnectorLink {
     /// Parsed connector URL
     pub url: ConnectorUrl,
 
     /// Additional configuration options (protocol-specific)
     pub config: Vec<(String, String)>,
+
+    /// Serialization callback that converts record values to bytes for publishing
+    ///
+    /// This is a type-erased function that takes `&dyn Any` and returns `Result<Vec<u8>, String>`.
+    /// The connector implementation will downcast to the concrete type and call the serializer.
+    ///
+    /// If `None`, the connector must provide a default serialization mechanism or fail.
+    ///
+    /// Available in both `std` and `no_std` (with `alloc` feature) environments.
+    pub serializer: Option<SerializerFn>,
+}
+
+impl Debug for ConnectorLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectorLink")
+            .field("url", &self.url)
+            .field("config", &self.config)
+            .field(
+                "serializer",
+                &self.serializer.as_ref().map(|_| "<function>"),
+            )
+            .finish()
+    }
 }
 
 impl ConnectorLink {
@@ -267,6 +273,7 @@ impl ConnectorLink {
         Self {
             url,
             config: Vec::new(),
+            serializer: None,
         }
     }
 
@@ -285,7 +292,7 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
     use crate::DbError;
 
     // Split scheme from rest
-    let (scheme, rest) = url.split_once("://").ok_or_else(|| {
+    let (scheme, rest) = url.split_once("://").ok_or({
         #[cfg(feature = "std")]
         {
             DbError::InvalidOperation {
@@ -375,9 +382,6 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Tests typically run with std, so format! is available
-    #[cfg(not(feature = "std"))]
     use alloc::format;
 
     #[test]
