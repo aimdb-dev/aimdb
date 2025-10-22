@@ -1201,6 +1201,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mqtt-connector-demo"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-mqtt-connector",
+ "aimdb-tokio-adapter",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nb"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
