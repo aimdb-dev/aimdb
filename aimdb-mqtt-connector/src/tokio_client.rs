@@ -8,7 +8,7 @@
 
 use crate::MqttConfig;
 use aimdb_core::connector::ConnectorUrl;
-use rumqttc::{AsyncClient, EventLoop, MqttOptions, QoS};
+use rumqttc::{AsyncClient, EventLoop, MqttOptions};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -121,11 +121,7 @@ impl MqttClientPool {
         // Spawn event loop task (required by rumqttc)
         spawn_event_loop(event_loop, broker_key.clone());
 
-        let mqtt_client = Arc::new(MqttClient {
-            client,
-            broker_key: broker_key.clone(),
-            is_secure: config.url.scheme() == "mqtts",
-        });
+        let mqtt_client = Arc::new(MqttClient { client });
 
         clients.insert(broker_key, mqtt_client.clone());
         mqtt_client
@@ -153,118 +149,83 @@ impl Default for MqttClientPool {
 impl aimdb_core::pool::MqttConnectorPool for MqttClientPool {
     fn publish(
         &self,
-        url: &str,
-        config: &[(String, String)],
-        bytes: Vec<u8>,
-    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<(), String>> + Send + '_>> {
-        let url_owned = url.to_string();
-        let config_owned: Vec<(String, String)> = config.to_vec();
+        topic: &str,
+        config: &aimdb_core::pool::MqttPublishConfig,
+        payload: &[u8],
+    ) -> core::pin::Pin<
+        Box<dyn core::future::Future<Output = Result<(), aimdb_core::pool::PublishError>> + Send + '_>,
+    > {
+        use aimdb_core::pool::PublishError;
         
+        // We need to own the data for the async block
+        let topic_owned = topic.to_string();
+        let payload_owned = payload.to_vec();
+        let qos = config.qos;
+        let retain = config.retain;
+        let broker_host = config.broker_host.clone();
+        let broker_port = config.broker_port;
+
         Box::pin(async move {
-            let url = url_owned.as_str();
-            // Parse the URL to get MQTT configuration
-            let connector_url = aimdb_core::connector::ConnectorUrl::parse(url)
-                .map_err(|e| format!("Invalid MQTT URL: {}", e))?;
+            // Create a temporary MqttConfig to use get_or_create_client
+            // This ensures we reuse the singleton pattern logic
+            let connector_url = aimdb_core::connector::ConnectorUrl {
+                scheme: if broker_port == 8883 { "mqtts".to_string() } else { "mqtt".to_string() },
+                username: None,
+                password: None,
+                host: broker_host.clone(),
+                port: Some(broker_port),
+                path: Some(topic_owned.clone()),
+                query_params: Vec::new(),
+            };
             
-            let mut mqtt_config = crate::MqttConfig::from_url(connector_url)
-                .map_err(|e| format!("Invalid MQTT config: {}", e))?;
+            let mqtt_config = MqttConfig::from_url(connector_url)
+                .map_err(|_| PublishError::ConnectionFailed)?;
             
-            // Apply additional config from key-value pairs
-            for (key, value) in &config_owned {
-                match key.as_str() {
-                    "client_id" => mqtt_config = mqtt_config.with_client_id(value),
-                    "qos" => {
-                        if let Ok(qos_val) = value.parse::<u8>() {
-                            mqtt_config = mqtt_config.with_qos(qos_val);
-                        }
-                    }
-                    "retain" => {
-                        if let Ok(retain_val) = value.parse::<bool>() {
-                            mqtt_config = mqtt_config.with_retain(retain_val);
-                        }
-                    }
-                    _ => {} // Ignore unknown config
-                }
-            }
-            
-            // Get or create client for this broker
+            // Use the existing get_or_create_client method to ensure singleton pattern
             let mqtt_client = self.get_or_create_client(&mqtt_config);
+            let client = mqtt_client.client.clone();
             
             // Determine QoS
-            let qos = match mqtt_config.qos {
+            let qos_level = match qos {
                 0 => rumqttc::QoS::AtMostOnce,
                 1 => rumqttc::QoS::AtLeastOnce,
                 2 => rumqttc::QoS::ExactlyOnce,
-                _ => rumqttc::QoS::AtLeastOnce,
+                _ => return Err(PublishError::UnsupportedQoS),
             };
             
             // Publish the message
-            mqtt_client
-                .publish(
-                    mqtt_config.topic.clone(),
-                    qos,
-                    mqtt_config.retain,
-                    bytes,
-                )
+            #[cfg(feature = "tracing")]
+            let topic_for_log = topic_owned.clone();
+            
+            client
+                .publish(topic_owned, qos_level, retain, payload_owned)
                 .await
-                .map_err(|e| format!("MQTT publish failed: {}", e))?;
+                .map_err(|_e| {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("MQTT publish failed to {}:{}: {}", broker_host, broker_port, _e);
+                    
+                    PublishError::ConnectionFailed
+                })?;
+            
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Published to {}:{}/{}", broker_host, broker_port, topic_for_log);
             
             Ok(())
         })
     }
 }
 
-/// MQTT client wrapper with metadata
+/// MQTT client wrapper
 ///
-/// Wraps the rumqttc AsyncClient along with connection information
-/// for debugging and monitoring.
+/// Internal wrapper that holds the rumqttc AsyncClient.
+/// This is cached in the pool to ensure singleton pattern (one client per broker).
 pub struct MqttClient {
     /// The underlying MQTT client
     pub client: AsyncClient,
-    
-    /// Broker identifier (host:port)
-    #[allow(dead_code)]
-    broker_key: String,
-    
-    /// Whether TLS is enabled
-    #[allow(dead_code)]
-    is_secure: bool,
 }
 
-impl MqttClient {
-    /// Get the broker identifier (host:port)
-    #[allow(dead_code)]
-    pub fn broker_key(&self) -> &str {
-        &self.broker_key
-    }
-    
-    /// Check if TLS is enabled for this connection
-    #[allow(dead_code)]
-    pub fn is_secure(&self) -> bool {
-        self.is_secure
-    }
-    
-    /// Publish a message to a topic
-    ///
-    /// # Arguments
-    /// * `topic` - MQTT topic to publish to
-    /// * `qos` - Quality of Service level (0, 1, or 2)
-    /// * `retain` - Whether message should be retained by broker
-    /// * `payload` - Message payload as bytes
-    ///
-    /// # Returns
-    /// * `Ok(())` on successful publish (queued, not confirmed)
-    /// * `Err(_)` if client is disconnected or queue is full
-    pub async fn publish(
-        &self,
-        topic: impl Into<String>,
-        qos: QoS,
-        retain: bool,
-        payload: impl Into<Vec<u8>>,
-    ) -> Result<(), rumqttc::ClientError> {
-        self.client.publish(topic, qos, retain, payload).await
-    }
-}
+// MqttClient is an internal wrapper - no public methods needed
+// All publishing goes through the MqttConnectorPool trait implementation
 
 /// Spawn the MQTT event loop in a background task
 ///
@@ -275,11 +236,11 @@ impl MqttClient {
 ///
 /// # Arguments
 /// * `event_loop` - The rumqttc EventLoop to run
-/// * `broker_key` - Broker identifier for logging
-fn spawn_event_loop(mut event_loop: EventLoop, broker_key: String) {
+/// * `_broker_key` - Broker identifier for logging (unused in release builds)
+fn spawn_event_loop(mut event_loop: EventLoop, _broker_key: String) {
     tokio::spawn(async move {
         #[cfg(feature = "tracing")]
-        tracing::debug!("MQTT event loop started for {}", broker_key);
+        tracing::debug!("MQTT event loop started for {}", _broker_key);
 
         loop {
             match event_loop.poll().await {
@@ -287,9 +248,9 @@ fn spawn_event_loop(mut event_loop: EventLoop, broker_key: String) {
                     // Event loop is running normally
                     // Notifications include: Incoming publishes, connection status, etc.
                 }
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(feature = "tracing")]
-                    tracing::error!("MQTT event loop error for {}: {:?}", broker_key, e);
+                    tracing::error!("MQTT event loop error for {}: {:?}", _broker_key, _e);
 
                     // Wait before reconnecting
                     tokio::time::sleep(Duration::from_secs(5)).await;

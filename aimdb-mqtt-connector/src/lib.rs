@@ -137,8 +137,9 @@ impl MqttConfig {
 #[cfg(feature = "tokio-runtime")]
 mod tokio_client;
 
-#[cfg(feature = "embassy-runtime")]
-mod embassy_client;
+// Embassy client will be implemented in future
+// #[cfg(feature = "embassy-runtime")]
+// mod embassy_client;
 
 // Re-export platform-specific types
 #[cfg(feature = "tokio-runtime")]

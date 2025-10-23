@@ -80,7 +80,8 @@ async fn main() -> DbResult<()> {
             .link("mqtt://localhost:1883/sensors/temperature")
                 .with_serializer(|temp: &Temperature| {
                     // Custom JSON serialization
-                    serde_json::to_vec(temp).map_err(|e| e.to_string())
+                    serde_json::to_vec(temp)
+                        .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
                 })
                 .finish()
             // You can add multiple MQTT destinations

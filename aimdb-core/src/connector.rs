@@ -42,8 +42,65 @@ use alloc::format;
 
 use crate::DbResult;
 
+/// Error that can occur during serialization
+///
+/// Uses an enum instead of String for better performance in `no_std` environments
+/// and to enable defmt logging support in Embassy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerializeError {
+    /// Output buffer is too small for the serialized data
+    BufferTooSmall,
+
+    /// Type mismatch in serializer (wrong type passed)
+    TypeMismatch,
+
+    /// Invalid data that cannot be serialized
+    InvalidData,
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for SerializeError {
+    fn format(&self, f: defmt::Formatter) {
+        match self {
+            Self::BufferTooSmall => defmt::write!(f, "BufferTooSmall"),
+            Self::TypeMismatch => defmt::write!(f, "TypeMismatch"),
+            Self::InvalidData => defmt::write!(f, "InvalidData"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::fmt::Display for SerializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BufferTooSmall => write!(f, "Output buffer too small"),
+            Self::TypeMismatch => write!(f, "Type mismatch in serializer"),
+            Self::InvalidData => write!(f, "Invalid data for serialization"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SerializeError {}
+
 /// Type alias for serializer callbacks (reduces type complexity)
-pub type SerializerFn = Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, String> + Send + Sync>;
+///
+/// Requires the `alloc` feature for `Arc` and `Vec` (available in both std and no_std+alloc).
+/// Serializers convert record values to bytes for publishing to external systems.
+///
+/// # Current Implementation
+///
+/// Returns `Vec<u8>` which requires heap allocation. This works in:
+/// - ✅ `std` environments (full standard library)
+/// - ✅ `no_std + alloc` environments (embedded with allocator, e.g., ESP32, STM32 with heap)
+/// - ❌ `no_std` without `alloc` (bare-metal MCUs without allocator)
+///
+/// # Future Considerations
+///
+/// For zero-allocation embedded environments, future versions may support buffer-based
+/// serialization using `&mut [u8]` output or static lifetime slices.
+pub type SerializerFn =
+    Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, SerializeError> + Send + Sync>;
 
 /// Parsed connector URL with protocol, host, port, and credentials
 ///

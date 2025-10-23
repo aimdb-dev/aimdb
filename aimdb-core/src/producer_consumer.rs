@@ -12,7 +12,6 @@ extern crate alloc;
 
 use alloc::{
     boxed::Box,
-    format,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -21,7 +20,8 @@ use alloc::{
 use crate::typed_record::TypedRecord;
 
 /// Type alias for typed serializer callbacks (reduces type complexity)
-type TypedSerializerFn<T> = Arc<dyn Fn(&T) -> Result<Vec<u8>, String> + Send + Sync + 'static>;
+type TypedSerializerFn<T> =
+    Arc<dyn Fn(&T) -> Result<Vec<u8>, crate::connector::SerializeError> + Send + Sync + 'static>;
 
 /// Registrar for configuring a typed record
 ///
@@ -146,19 +146,59 @@ where
     /// # Example
     ///
     /// ```rust,ignore
-    /// use serde_json;
+    /// use aimdb_core::connector::SerializeError;
     ///
     /// reg.link("mqtt://broker:1883/topic")
     ///    .with_serializer(|temp: &Temperature| {
-    ///        serde_json::to_vec(temp).map_err(|e| e.to_string())
+    ///        serde_json::to_vec(temp)
+    ///            .map_err(|_| SerializeError::InvalidData)
     ///    })
     ///    .finish();
     /// ```
     pub fn with_serializer<F>(mut self, f: F) -> Self
     where
-        F: Fn(&T) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+        F: Fn(&T) -> Result<Vec<u8>, crate::connector::SerializeError> + Send + Sync + 'static,
     {
         self.serializer = Some(Arc::new(f));
+        self
+    }
+
+    /// Sets the MQTT Quality of Service level
+    ///
+    /// # Arguments
+    /// * `qos` - QoS level (0, 1, or 2)
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_qos(mut self, qos: u8) -> Self {
+        self.config.push(("qos".to_string(), qos.to_string()));
+        self
+    }
+
+    /// Sets the MQTT retain flag
+    ///
+    /// # Arguments
+    /// * `retain` - Whether to retain messages on the broker
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_retain(mut self, retain: bool) -> Self {
+        self.config.push(("retain".to_string(), retain.to_string()));
+        self
+    }
+
+    /// Sets the publish timeout in milliseconds
+    ///
+    /// Primarily used in Embassy environments where explicit timeouts are required.
+    ///
+    /// # Arguments
+    /// * `timeout_ms` - Timeout in milliseconds
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
+        self.config
+            .push(("timeout_ms".to_string(), timeout_ms.to_string()));
         self
     }
 
@@ -201,10 +241,7 @@ where
                     if let Some(value) = any.downcast_ref::<T>() {
                         (typed_callback)(value)
                     } else {
-                        Err(format!(
-                            "Type mismatch in serializer: expected {}, got different type",
-                            core::any::type_name::<T>()
-                        ))
+                        Err(crate::connector::SerializeError::TypeMismatch)
                     }
                 });
             link.serializer = Some(erased);
@@ -245,12 +282,18 @@ where
                                     publish_via_pool(&pool_ref, &url_ref, &config_ref, bytes).await
                                 {
                                     #[cfg(feature = "tracing")]
-                                    tracing::error!("Failed to publish to MQTT: {}", _e);
+                                    tracing::error!("Failed to publish to MQTT: {:?}", _e);
+
+                                    #[cfg(feature = "defmt")]
+                                    defmt::error!("MQTT publish failed: {:?}", _e);
                                 }
                             }
                             Err(_e) => {
                                 #[cfg(feature = "tracing")]
                                 tracing::error!("Failed to serialize for MQTT: {}", _e);
+
+                                #[cfg(feature = "defmt")]
+                                defmt::error!("Serialization failed");
                             }
                         }
                     }
@@ -273,14 +316,70 @@ where
 
 /// Helper function to publish via a connector pool
 ///
-/// Calls the pool's publish method to handle the actual MQTT/Kafka/etc. publishing.
+/// Parses the configuration and calls the pool's publish method to handle
+/// the actual MQTT/Kafka/etc. publishing.
+///
+/// # Arguments
+/// * `pool` - The connector pool to use for publishing
+/// * `url` - The connector URL (e.g., "mqtt://broker:1883/sensors/temp")
+/// * `config` - Key-value configuration pairs (qos, retain, timeout_ms, etc.)
+/// * `bytes` - The serialized message payload
 async fn publish_via_pool(
     pool: &Arc<dyn crate::pool::MqttConnectorPool>,
     url: &str,
     config: &[(String, String)],
     bytes: Vec<u8>,
-) -> Result<(), String> {
-    pool.publish(url, config, bytes).await
+) -> Result<(), crate::pool::PublishError> {
+    use crate::connector::ConnectorUrl;
+    use crate::pool::MqttPublishConfig;
+
+    // Parse the URL to extract topic and broker information
+    let parsed_url =
+        ConnectorUrl::parse(url).map_err(|_| crate::pool::PublishError::InvalidTopic)?;
+
+    // Extract topic from URL path (or use default)
+    let topic = parsed_url
+        .path
+        .as_deref()
+        .unwrap_or("default")
+        .trim_start_matches('/');
+
+    // Parse configuration into MqttPublishConfig
+    let mut mqtt_config = MqttPublishConfig {
+        qos: 0,
+        retain: false,
+        timeout_ms: Some(5000),
+        broker_host: parsed_url.host.clone(),
+        broker_port: parsed_url.port.unwrap_or_else(|| {
+            if parsed_url.scheme == "mqtts" {
+                8883
+            } else {
+                1883
+            }
+        }),
+    };
+
+    for (key, value) in config {
+        match key.as_str() {
+            "qos" => {
+                mqtt_config.qos = value.parse().unwrap_or(0).min(2); // Clamp to valid range 0-2
+            }
+            "retain" => {
+                mqtt_config.retain = value.parse().unwrap_or(false);
+            }
+            "timeout_ms" => {
+                mqtt_config.timeout_ms = value.parse().ok();
+            }
+            _ => {
+                // Ignore unknown config keys
+                #[cfg(feature = "tracing")]
+                tracing::debug!("Ignoring unknown MQTT config key: {}", key);
+            }
+        }
+    }
+
+    // Call the pool's publish method with borrowed bytes
+    pool.publish(topic, &mqtt_config, &bytes).await
 }
 
 /// Self-registering record trait

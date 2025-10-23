@@ -44,9 +44,11 @@ pub use database::{Database, DatabaseSpec, DatabaseSpecBuilder};
 pub use builder::{AimDb, AimDbBuilder};
 pub use emitter::Emitter;
 pub use metrics::CallStats;
-pub use pool::{HttpConnectorPool, KafkaConnectorPool, MqttConnectorPool};
+pub use pool::{
+    HttpConnectorPool, KafkaConnectorPool, MqttConnectorPool, MqttPublishConfig, PublishError,
+};
 pub use producer_consumer::{RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // Connector Infrastructure exports
-pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl};
+pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError};
