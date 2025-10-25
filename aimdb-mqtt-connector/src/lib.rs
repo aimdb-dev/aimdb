@@ -34,9 +34,21 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 use aimdb_core::connector::ConnectorUrl;
 
+#[cfg(not(feature = "std"))]
+use alloc::{
+    format,
+    string::{String, ToString},
+};
+#[cfg(feature = "std")]
+use std::string::String;
+
 /// Errors that can occur in MQTT connector operations
+#[cfg(feature = "std")]
 #[derive(Debug, thiserror::Error)]
 pub enum MqttError {
     /// Invalid MQTT URL format
@@ -64,6 +76,51 @@ pub enum MqttError {
     DbError(#[from] aimdb_core::DbError),
 }
 
+/// Errors that can occur in MQTT connector operations (no_std version)
+#[cfg(not(feature = "std"))]
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum MqttError {
+    /// Invalid MQTT URL format
+    InvalidUrl(String),
+
+    /// Failed to connect to MQTT broker
+    ConnectionFailed(String),
+
+    /// Failed to publish message
+    PublishFailed(String),
+
+    /// Failed to subscribe to buffer
+    SubscriptionFailed(String),
+
+    /// Missing required configuration
+    MissingConfig(String),
+
+    /// Database error
+    DbError(aimdb_core::DbError),
+}
+
+#[cfg(not(feature = "std"))]
+impl core::fmt::Display for MqttError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MqttError::InvalidUrl(s) => write!(f, "Invalid MQTT URL: {}", s),
+            MqttError::ConnectionFailed(s) => write!(f, "Failed to connect to broker: {}", s),
+            MqttError::PublishFailed(s) => write!(f, "Failed to publish: {}", s),
+            MqttError::SubscriptionFailed(s) => write!(f, "Failed to subscribe to buffer: {}", s),
+            MqttError::MissingConfig(s) => write!(f, "Missing required config: {}", s),
+            MqttError::DbError(e) => write!(f, "Database error: {:?}", e),
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl From<aimdb_core::DbError> for MqttError {
+    fn from(err: aimdb_core::DbError) -> Self {
+        MqttError::DbError(err)
+    }
+}
+
 /// Result type for MQTT connector operations
 pub type MqttResult<T> = Result<T, MqttError>;
 
@@ -72,16 +129,16 @@ pub type MqttResult<T> = Result<T, MqttError>;
 pub struct MqttConfig {
     /// Parsed MQTT URL
     pub url: ConnectorUrl,
-    
+
     /// MQTT client ID (optional, auto-generated if not provided)
     pub client_id: Option<String>,
-    
+
     /// Quality of Service level (0, 1, or 2)
     pub qos: u8,
-    
+
     /// Whether to retain messages
     pub retain: bool,
-    
+
     /// Topic to publish to (extracted from URL path or config)
     pub topic: String,
 }
@@ -101,7 +158,7 @@ impl MqttConfig {
         let topic = url.path().trim_start_matches('/').to_string();
         if topic.is_empty() {
             return Err(MqttError::InvalidUrl(
-                "MQTT URL must include topic path (e.g., mqtt://broker:1883/my/topic)".to_string()
+                "MQTT URL must include topic path (e.g., mqtt://broker:1883/my/topic)".to_string(),
             ));
         }
 
@@ -135,19 +192,29 @@ impl MqttConfig {
 
 // Platform-specific implementations
 #[cfg(feature = "tokio-runtime")]
-mod tokio_client;
+pub mod tokio_client;
 
-// Embassy client will be implemented in future
-// #[cfg(feature = "embassy-runtime")]
-// mod embassy_client;
+#[cfg(feature = "embassy-runtime")]
+pub mod embassy_client;
 
 // Re-export platform-specific types
-#[cfg(feature = "tokio-runtime")]
+// Both implementations export the same MqttClientPool name for API compatibility
+// When both features are enabled (e.g., during testing), prefer tokio
+#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
 pub use tokio_client::MqttClientPool;
 
-// Note: Embassy client will be exported here when implemented
-// #[cfg(feature = "embassy-runtime")]
-// pub use embassy_client::MqttClientPool;
+#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
+pub use embassy_client::MqttClientPool;
+
+// When both features are enabled, export both with different names
+#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub use tokio_client::MqttClientPool as TokioMqttClientPool;
+
+#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub use embassy_client::MqttClientPool as EmbassyMqttClientPool;
+
+#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub use tokio_client::MqttClientPool; // Default to tokio when both enabled
 
 #[cfg(test)]
 mod tests {
@@ -155,7 +222,8 @@ mod tests {
 
     #[test]
     fn test_mqtt_config_from_url() {
-        let url = ConnectorUrl::parse("mqtt://broker.example.com:1883/sensors/temperature").unwrap();
+        let url =
+            ConnectorUrl::parse("mqtt://broker.example.com:1883/sensors/temperature").unwrap();
         let config = MqttConfig::from_url(url).unwrap();
 
         assert_eq!(config.topic, "sensors/temperature");
