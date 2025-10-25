@@ -11,10 +11,10 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use crate::emitter::Emitter;
 use crate::producer_consumer::{RecordRegistrar, RecordT};
@@ -39,9 +39,9 @@ pub struct AimDbBuilder {
     /// Runtime adapter (type-erased for storage)
     runtime: Option<Arc<dyn core::any::Any + Send + Sync>>,
 
-    /// Optional connector pool for MQTT, Kafka, etc.
-    /// Used by connector implementations to register consumers during record configuration
-    pub(crate) connector_pool: Option<Arc<dyn crate::pool::MqttConnectorPool>>,
+    /// Connector pools indexed by scheme (mqtt, shmem, kafka, etc.)
+    /// Used by .link() to route publishing requests to the correct protocol handler
+    pub(crate) connector_pools: BTreeMap<String, Arc<dyn crate::pool::ConnectorPool>>,
 }
 
 impl AimDbBuilder {
@@ -50,7 +50,7 @@ impl AimDbBuilder {
         Self {
             records: BTreeMap::new(),
             runtime: None,
-            connector_pool: None,
+            connector_pools: BTreeMap::new(),
         }
     }
 
@@ -63,10 +63,15 @@ impl AimDbBuilder {
         self
     }
 
-    /// Sets the connector pool (for MQTT, Kafka, etc.)
+    /// Registers a connector pool for a specific URL scheme
     ///
-    /// This allows connectors to register consumers during record configuration.
-    /// The pool must implement the `MqttConnectorPool` trait.
+    /// The scheme (e.g., "mqtt", "shmem", "kafka") determines how `.link()` URLs
+    /// are routed. Each scheme can have ONE pool, which manages connections to
+    /// a specific endpoint (broker, segment, cluster, etc.).
+    ///
+    /// # Arguments
+    /// * `scheme` - URL scheme without "://" (e.g., "mqtt", "shmem", "kafka")
+    /// * `pool` - Connector pool implementing the ConnectorPool trait
     ///
     /// # Example
     ///
@@ -74,13 +79,24 @@ impl AimDbBuilder {
     /// use aimdb_mqtt_connector::MqttClientPool;
     /// use std::sync::Arc;
     ///
-    /// let mqtt_pool = Arc::new(MqttClientPool::new());
+    /// let mqtt_pool = MqttClientPool::new("broker.local:1883");
+    /// let shmem_pool = ShmemConnectorPool::new("/dev/shm/aimdb");
+    ///
     /// let builder = AimDbBuilder::new()
     ///     .with_runtime(runtime)
-    ///     .with_connector_pool(mqtt_pool);
+    ///     .with_connector_pool("mqtt", Arc::new(mqtt_pool))
+    ///     .with_connector_pool("shmem", Arc::new(shmem_pool));
+    ///
+    /// // Now .link() can route to either:
+    /// //   .link("mqtt://sensors/temp")  → mqtt_pool
+    /// //   .link("shmem://temp_data")    → shmem_pool
     /// ```
-    pub fn with_connector_pool(mut self, pool: Arc<dyn crate::pool::MqttConnectorPool>) -> Self {
-        self.connector_pool = Some(pool);
+    pub fn with_connector_pool(
+        mut self,
+        scheme: impl Into<String>,
+        pool: Arc<dyn crate::pool::ConnectorPool>,
+    ) -> Self {
+        self.connector_pools.insert(scheme.into(), pool);
         self
     }
 
@@ -105,7 +121,7 @@ impl AimDbBuilder {
 
         let mut reg = RecordRegistrar {
             rec,
-            connector_pool: self.connector_pool.clone(),
+            connector_pools: &self.connector_pools,
         };
         f(&mut reg);
         self

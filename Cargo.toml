@@ -12,6 +12,7 @@ members = [
     "examples/embassy-runtime-demo",
     "examples/producer-consumer-demo",
     "examples/mqtt-connector-demo",
+    "examples/embassy-mqtt-connector-demo",
 ]
 exclude = ["_external"]
 resolver = "2"

@@ -115,11 +115,16 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
+ "defmt 1.0.1",
  "embassy-executor",
+ "embassy-net",
  "embassy-sync",
  "embassy-time",
+ "heapless 0.8.0",
+ "mountain-mqtt",
+ "mountain-mqtt-embassy",
  "rumqttc",
- "rust-mqtt",
+ "static_cell",
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",
@@ -528,6 +533,40 @@ dependencies = [
  "critical-section",
  "defmt 1.0.1",
  "num-traits",
+]
+
+[[package]]
+name = "embassy-mqtt-connector-demo"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-embassy-adapter",
+ "aimdb-examples-shared",
+ "aimdb-executor",
+ "aimdb-macros",
+ "aimdb-mqtt-connector",
+ "cortex-m",
+ "cortex-m-rt",
+ "critical-section",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-net",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-alloc",
+ "embedded-hal 0.2.7",
+ "embedded-hal-async",
+ "embedded-io-async",
+ "embedded-storage",
+ "heapless 0.8.0",
+ "micromath",
+ "panic-probe",
+ "rand",
+ "static_cell",
+ "stm32-fmc",
 ]
 
 [[package]]
@@ -1201,6 +1240,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "mountain-mqtt"
+version = "0.2.0"
+dependencies = [
+ "defmt 0.3.100",
+ "embedded-hal-async",
+ "embedded-io",
+ "embedded-io-async",
+ "heapless 0.8.0",
+]
+
+[[package]]
+name = "mountain-mqtt-embassy"
+version = "0.2.0"
+dependencies = [
+ "defmt 1.0.1",
+ "embassy-net",
+ "embassy-sync",
+ "embassy-time",
+ "mountain-mqtt",
+]
+
+[[package]]
 name = "mqtt-connector-demo"
 version = "0.1.0"
 dependencies = [
@@ -1487,18 +1548,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-rustls",
-]
-
-[[package]]
-name = "rust-mqtt"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f71160765f368fd9a84e0955e2ddb6d64ac9018fee1c5323354d6d08c816b40"
-dependencies = [
- "embedded-io",
- "embedded-io-async",
- "heapless 0.8.0",
- "rand_core 0.6.4",
 ]
 
 [[package]]

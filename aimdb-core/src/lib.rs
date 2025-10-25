@@ -29,6 +29,9 @@ pub mod time;
 pub mod tracked_fn;
 pub mod typed_record;
 
+// Re-export procedural macros
+pub use aimdb_macros::service;
+
 // Public API exports
 pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};
@@ -45,7 +48,7 @@ pub use builder::{AimDb, AimDbBuilder};
 pub use emitter::Emitter;
 pub use metrics::CallStats;
 pub use pool::{
-    HttpConnectorPool, KafkaConnectorPool, MqttConnectorPool, MqttPublishConfig, PublishError,
+    ConnectorConfig, ConnectorPool, HttpConnectorPool, KafkaConnectorPool, PublishError,
 };
 pub use producer_consumer::{RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};

@@ -12,6 +12,7 @@ extern crate alloc;
 
 use alloc::{
     boxed::Box,
+    collections::BTreeMap,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -30,8 +31,9 @@ pub struct RecordRegistrar<'a, T: Send + 'static + Debug + Clone> {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T>,
 
-    /// Optional connector pool for MQTT, Kafka, etc.
-    pub(crate) connector_pool: Option<Arc<dyn crate::pool::MqttConnectorPool>>,
+    /// Connector pools indexed by scheme (mqtt, shmem, kafka, etc.)
+    /// Used by .link() to route publishing requests to the correct protocol handler
+    pub(crate) connector_pools: &'a BTreeMap<String, Arc<dyn crate::pool::ConnectorPool>>,
 }
 
 impl<'a, T> RecordRegistrar<'a, T>
@@ -75,10 +77,19 @@ where
     /// Adds a connector link for external system integration
     ///
     /// Creates a fluent builder chain for configuring protocol connectors.
-    /// Supports MQTT, Kafka, HTTP, WebSocket, and custom protocols.
+    /// The URL scheme (mqtt://, shmem://, kafka://, etc.) routes to the appropriate
+    /// connector pool registered via `.with_connector_pool()`.
+    ///
+    /// # URL Format
+    ///
+    /// `scheme://destination`
+    ///
+    /// Where:
+    /// - `scheme` - Protocol type (mqtt, shmem, kafka, http, dds, etc.)
+    /// - `destination` - Protocol-specific path (topic, segment, endpoint)
     ///
     /// # Arguments
-    /// * `url` - The connector URL (e.g., "mqtt://broker:1883", "kafka://host:9092/topic")
+    /// * `url` - The connector URL (e.g., "mqtt://sensors/temperature", "shmem://temp_data")
     ///
     /// # Returns
     /// A `ConnectorBuilder` for chaining configuration
@@ -86,9 +97,11 @@ where
     /// # Example
     ///
     /// ```rust,ignore
-    /// reg.link("mqtt://broker.local:1883")
-    ///    .with_config("client_id", "my-device")
-    ///    .with_config("qos", "1")
+    /// reg.link("mqtt://sensors/temperature")     // MQTT topic
+    ///    .with_qos(1)
+    ///    .with_retain(true)
+    ///    .finish()
+    ///    .link("shmem://temp_readings")          // Shared memory
     ///    .finish();
     /// ```
     pub fn link(&'a mut self, url: &str) -> ConnectorBuilder<'a, T> {
@@ -204,23 +217,32 @@ where
 
     /// Finalizes the connector registration
     ///
-    /// Parses the URL and adds the connector link to the record.
-    /// Returns the registrar for further chaining.
+    /// Parses the URL, looks up the connector pool by scheme, and registers
+    /// a consumer that publishes via the appropriate protocol handler.
     ///
-    /// For MQTT connectors (mqtt:// or mqtts://), this automatically registers
-    /// a consumer that subscribes to the buffer and publishes to the MQTT broker.
+    /// # URL Parsing
     ///
-    /// Finalizes the connector registration
+    /// The URL is parsed as `scheme://destination`:
+    /// - `scheme` - Routes to the connector pool (must be registered via `.with_connector_pool()`)
+    /// - `destination` - Protocol-specific path (topic, segment, endpoint)
     ///
-    /// Parses the URL and adds the connector link to the record.
-    /// Returns the registrar for further chaining.
+    /// # Auto-Registration
     ///
-    /// For MQTT connectors (mqtt:// or mqtts://), if a connector pool is available
-    /// and a serializer is provided, this automatically registers a consumer that
-    /// publishes to the MQTT broker.
+    /// If a serializer is provided and a pool exists for the scheme, this method
+    /// automatically registers a consumer that:
+    /// 1. Serializes each value using the provided callback
+    /// 2. Publishes to the destination via the connector pool
     ///
     /// # Panics
     /// Panics if the URL is invalid
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// reg.link("mqtt://sensors/temperature")
+    ///    .with_serializer(|temp| serde_json::to_vec(temp))
+    ///    .finish();  // Auto-registers MQTT consumer
+    /// ```
     pub fn finish(self) -> &'a mut RecordRegistrar<'a, T> {
         use crate::connector::{ConnectorLink, ConnectorUrl};
 
@@ -231,7 +253,7 @@ where
         let scheme = url.scheme().to_string();
 
         // Add the connector link (storing metadata)
-        let mut link = ConnectorLink::new(url);
+        let mut link = ConnectorLink::new(url.clone());
         link.config = self.config.clone();
 
         // Convert typed serializer to type-erased version
@@ -250,62 +272,83 @@ where
             None
         };
 
-        // Auto-register MQTT consumer if pool is available
-        if let (Some(serializer), Some(pool)) = (serializer_opt, &self.registrar.connector_pool) {
-            if scheme == "mqtt" || scheme == "mqtts" {
-                // Store Arc references for the closure
-                let pool_clone = pool.clone();
-                let url_clone = url_string.clone();
-                let config_clone = self.config.clone();
+        // Check if we have both a serializer and a pool
+        let has_serializer = serializer_opt.is_some();
+        let has_pool = self.registrar.connector_pools.get(&scheme).is_some();
 
-                // Register a consumer that publishes to MQTT
-                let rec = &mut self.registrar.rec;
-                rec.add_consumer(move |_em, value: T| {
-                    let pool_ref = pool_clone.clone();
-                    let url_ref = url_clone.clone();
-                    let config_ref = config_clone.clone();
-                    let ser = serializer.clone();
+        // Auto-register consumer if pool is available for this scheme
+        if let (Some(serializer), Some(pool)) =
+            (serializer_opt, self.registrar.connector_pools.get(&scheme))
+        {
+            // Store Arc references for the closure
+            let pool_clone = pool.clone();
+            let url_clone = url_string.clone();
+            let config_clone = self.config.clone();
 
-                    async move {
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!(
-                            "MQTT consumer triggered for {} with type {}",
-                            url_ref,
-                            core::any::type_name::<T>()
-                        );
+            // Register a consumer that publishes via the connector pool
+            let rec = &mut self.registrar.rec;
+            rec.add_consumer(move |_em, value: T| {
+                let pool_ref = pool_clone.clone();
+                let url_ref = url_clone.clone();
+                let config_ref = config_clone.clone();
+                let ser = serializer.clone();
 
-                        // Serialize the value
-                        match ser(&value) {
-                            Ok(bytes) => {
-                                // Call the connector pool's publish method
-                                if let Err(_e) =
-                                    publish_via_pool(&pool_ref, &url_ref, &config_ref, bytes).await
-                                {
-                                    #[cfg(feature = "tracing")]
-                                    tracing::error!("Failed to publish to MQTT: {:?}", _e);
+                async move {
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        "Connector triggered for {} with type {}",
+                        url_ref,
+                        core::any::type_name::<T>()
+                    );
 
-                                    #[cfg(feature = "defmt")]
-                                    defmt::error!("MQTT publish failed: {:?}", _e);
-                                }
-                            }
-                            Err(_e) => {
+                    #[cfg(feature = "defmt")]
+                    defmt::debug!("Connector triggered for {}", url_ref);
+
+                    // Serialize the value
+                    match ser(&value) {
+                        Ok(bytes) => {
+                            // Call the connector pool's publish method
+                            if let Err(_e) =
+                                publish_via_pool(&pool_ref, &url_ref, &config_ref, bytes).await
+                            {
                                 #[cfg(feature = "tracing")]
-                                tracing::error!("Failed to serialize for MQTT: {}", _e);
+                                tracing::error!("Failed to publish: {:?}", _e);
 
                                 #[cfg(feature = "defmt")]
-                                defmt::error!("Serialization failed");
+                                defmt::error!("Publish failed: {:?}", _e);
                             }
                         }
+                        Err(_e) => {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!("Failed to serialize: {:?}", _e);
+
+                            #[cfg(feature = "defmt")]
+                            defmt::error!("Serialization failed");
+                        }
                     }
-                });
-            }
-        } else if scheme == "mqtt" || scheme == "mqtts" {
-            // MQTT URL but no pool or no serializer
+                }
+            });
+        } else if !has_serializer {
             #[cfg(feature = "tracing")]
             tracing::warn!(
-                "MQTT connector configured for {} but no connector pool provided. \
-                Use builder.with_connector_pool() to enable automatic MQTT publishing.",
+                "Connector configured for {} but no serializer provided. \
+                Use .with_serializer() to enable automatic publishing.",
                 url_string
+            );
+        } else if !has_pool {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(
+                "Connector configured for {} but no pool registered for scheme '{}'. \
+                Use builder.with_connector_pool(\"{}\", pool) to enable publishing.",
+                url_string,
+                scheme,
+                scheme
+            );
+
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "No pool registered for scheme: {}. Use with_connector_pool().",
+                scheme
             );
         }
 
@@ -321,65 +364,78 @@ where
 ///
 /// # Arguments
 /// * `pool` - The connector pool to use for publishing
-/// * `url` - The connector URL (e.g., "mqtt://broker:1883/sensors/temp")
+/// * `url` - The connector URL (e.g., "mqtt://sensors/temp")
 /// * `config` - Key-value configuration pairs (qos, retain, timeout_ms, etc.)
 /// * `bytes` - The serialized message payload
 async fn publish_via_pool(
-    pool: &Arc<dyn crate::pool::MqttConnectorPool>,
+    pool: &Arc<dyn crate::pool::ConnectorPool>,
     url: &str,
     config: &[(String, String)],
     bytes: Vec<u8>,
 ) -> Result<(), crate::pool::PublishError> {
     use crate::connector::ConnectorUrl;
-    use crate::pool::MqttPublishConfig;
+    use crate::pool::ConnectorConfig;
 
-    // Parse the URL to extract topic and broker information
+    // Parse the URL to extract destination (topic/path/segment)
     let parsed_url =
-        ConnectorUrl::parse(url).map_err(|_| crate::pool::PublishError::InvalidTopic)?;
+        ConnectorUrl::parse(url).map_err(|_| crate::pool::PublishError::InvalidDestination)?;
 
-    // Extract topic from URL path (or use default)
-    let topic = parsed_url
-        .path
-        .as_deref()
-        .unwrap_or("default")
-        .trim_start_matches('/');
+    // Extract destination from URL
+    // For pool-based connectors, the full topic is: host + path
+    // e.g., "mqtt://sensors/temperature" -> host="sensors", path="/temperature"
+    // The destination should be "sensors/temperature"
+    let destination: String = if let Some(path) = parsed_url.path.as_deref() {
+        let path_part = path.trim_start_matches('/');
+        if path_part.is_empty() {
+            // Just host, no path: mqtt://topic -> "topic"
+            parsed_url.host.clone()
+        } else {
+            // Host + path: mqtt://sensors/temperature -> "sensors/temperature"
+            alloc::format!("{}/{}", parsed_url.host, path_part)
+        }
+    } else {
+        // No path: mqtt://topic -> "topic"
+        parsed_url.host.clone()
+    };
 
-    // Parse configuration into MqttPublishConfig
-    let mut mqtt_config = MqttPublishConfig {
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Publishing to destination '{}' via {} pool (original URL: {})",
+        destination,
+        parsed_url.scheme,
+        url
+    );
+
+    // Parse configuration into ConnectorConfig
+    let mut connector_config = ConnectorConfig {
         qos: 0,
         retain: false,
         timeout_ms: Some(5000),
-        broker_host: parsed_url.host.clone(),
-        broker_port: parsed_url.port.unwrap_or_else(|| {
-            if parsed_url.scheme == "mqtts" {
-                8883
-            } else {
-                1883
-            }
-        }),
+        protocol_options: Vec::new(),
     };
 
     for (key, value) in config {
         match key.as_str() {
             "qos" => {
-                mqtt_config.qos = value.parse().unwrap_or(0).min(2); // Clamp to valid range 0-2
+                connector_config.qos = value.parse().unwrap_or(0).min(2);
             }
             "retain" => {
-                mqtt_config.retain = value.parse().unwrap_or(false);
+                connector_config.retain = value.parse().unwrap_or(false);
             }
             "timeout_ms" => {
-                mqtt_config.timeout_ms = value.parse().ok();
+                connector_config.timeout_ms = value.parse().ok();
             }
             _ => {
-                // Ignore unknown config keys
-                #[cfg(feature = "tracing")]
-                tracing::debug!("Ignoring unknown MQTT config key: {}", key);
+                // Store unknown keys in protocol_options for protocol-specific use
+                connector_config
+                    .protocol_options
+                    .push((key.clone(), value.clone()));
             }
         }
     }
 
-    // Call the pool's publish method with borrowed bytes
-    pool.publish(topic, &mqtt_config, &bytes).await
+    // Call the pool's publish method
+    pool.publish(&destination, &connector_config, &bytes).await
 }
 
 /// Self-registering record trait
@@ -463,7 +519,7 @@ mod tests {
         {
             let mut reg = RecordRegistrar {
                 rec: &mut record,
-                connector_pool: None,
+                connector_pools: &BTreeMap::new(),
             };
             TestData::register(&mut reg, &cfg);
         }
@@ -483,7 +539,7 @@ mod tests {
         {
             let mut reg = RecordRegistrar {
                 rec: &mut record,
-                connector_pool: None,
+                connector_pools: &BTreeMap::new(),
             };
             TestData::register(&mut reg, &cfg);
         }
@@ -499,13 +555,13 @@ mod tests {
         {
             let mut reg = RecordRegistrar {
                 rec: &mut record,
-                connector_pool: None,
+                connector_pools: &BTreeMap::new(),
             };
 
             // Register connectors using the new .link() API - chainable!
-            reg.link("mqtt://broker.example.com:1883")
+            reg.link("mqtt://sensors/temperature")
                 .finish()
-                .link("kafka://kafka1:9092/my-topic")
+                .link("kafka://events/system")
                 .finish();
         }
 
@@ -514,11 +570,7 @@ mod tests {
 
         let connectors = record.connectors();
         assert_eq!(connectors[0].url.scheme, "mqtt");
-        assert_eq!(connectors[0].url.host, "broker.example.com");
-        assert_eq!(connectors[0].url.port, Some(1883));
-
         assert_eq!(connectors[1].url.scheme, "kafka");
-        assert!(connectors[1].url.host.contains("kafka1"));
     }
 
     #[test]
@@ -529,11 +581,41 @@ mod tests {
         {
             let mut reg = RecordRegistrar {
                 rec: &mut record,
-                connector_pool: None,
+                connector_pools: &BTreeMap::new(),
             };
 
             // This should panic due to invalid URL
             let _ = reg.link("invalid-url-without-scheme").finish();
         }
+    }
+
+    #[test]
+    fn test_destination_extraction_simple() {
+        use crate::connector::ConnectorUrl;
+
+        // Single-level topic: mqtt://sensors -> host="sensors", path=None
+        let url = ConnectorUrl::parse("mqtt://sensors").unwrap();
+        assert_eq!(url.host, "sensors");
+        assert_eq!(url.path, None);
+    }
+
+    #[test]
+    fn test_destination_extraction_multi_level() {
+        use crate::connector::ConnectorUrl;
+
+        // Multi-level topic: mqtt://sensors/temperature -> host="sensors", path="/temperature"
+        let url = ConnectorUrl::parse("mqtt://sensors/temperature").unwrap();
+        assert_eq!(url.host, "sensors");
+        assert_eq!(url.path, Some("/temperature".to_string()));
+    }
+
+    #[test]
+    fn test_destination_extraction_deep() {
+        use crate::connector::ConnectorUrl;
+
+        // Deep topic: mqtt://factory/floor1/sensors/temp
+        let url = ConnectorUrl::parse("mqtt://factory/floor1/sensors/temp").unwrap();
+        assert_eq!(url.host, "factory");
+        assert_eq!(url.path, Some("/floor1/sensors/temp".to_string()));
     }
 }

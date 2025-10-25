@@ -1,7 +1,15 @@
-//! Connector pool traits for MQTT, Kafka, HTTP, and other protocols
+//! Connector pool traits for MQTT, Kafka, HTTP, shmem, and other protocols
 //!
-//! Connector implementations provide pools that implement these traits,
-//! enabling automatic consumer registration via `.with_connector_pool()`.
+//! Provides a generic `ConnectorPool` trait that enables scheme-based routing
+//! to different transport protocols. Pools manage connections to specific endpoints
+//! (e.g., one MQTT broker, one shared memory segment, etc.).
+//!
+//! # Design Philosophy
+//!
+//! - **Scheme-based routing**: URL scheme (mqtt://, shmem://, kafka://) determines which pool handles requests
+//! - **Single endpoint per pool**: Each pool connects to ONE broker/resource
+//! - **Multi-transport publishing**: Same data can be published to multiple protocols
+//! - **Protocol-agnostic core**: Core doesn't know about MQTT, Kafka, etc. - just routes by scheme
 
 extern crate alloc;
 
@@ -9,67 +17,62 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use core::future::Future;
 use core::pin::Pin;
 
-/// Configuration for MQTT publishing
+/// Protocol-agnostic connector configuration
 ///
-/// This struct is designed to work in both `std` (Tokio) and `no_std` (Embassy)
-/// environments. All fields are Copy-able to avoid allocations in the publish path.
+/// Provides common configuration options that apply across multiple protocols.
+/// Each protocol interprets these fields according to its semantics.
 ///
-/// # Broker Information
+/// # Protocol Interpretation
 ///
-/// The broker_host and broker_port fields identify which MQTT broker to publish to.
-/// These are extracted from the connector URL during setup and passed to the pool
-/// implementation so it knows which client connection to use.
+/// - **MQTT**: qos=QoS level, retain=retain flag, timeout_ms=publish timeout
+/// - **Kafka**: qos=acks setting (0=none, 1=leader, 2=all), timeout_ms=send timeout
+/// - **HTTP**: qos=retry count, timeout_ms=request timeout
+/// - **Shmem**: qos=priority, retain=pin in memory
 #[derive(Debug, Clone)]
-pub struct MqttPublishConfig {
-    /// Quality of Service level (0, 1, or 2)
+pub struct ConnectorConfig {
+    /// Quality of Service / reliability level (0, 1, or 2)
     pub qos: u8,
 
-    /// Whether to retain the message on the broker
+    /// Whether to retain/persist the message
     pub retain: bool,
 
-    /// Optional timeout in milliseconds (primarily for Embassy environments)
-    /// None means use default timeout behavior
+    /// Optional timeout in milliseconds
     pub timeout_ms: Option<u32>,
 
-    /// MQTT broker hostname or IP address
-    /// Extracted from the connector URL (e.g., "mqtt://broker.example.com:1883")
-    pub broker_host: String,
-
-    /// MQTT broker port
-    /// Default is 1883 for mqtt:// and 8883 for mqtts://
-    pub broker_port: u16,
+    /// Protocol-specific options as key-value pairs
+    /// Allows custom configuration without polluting the base struct
+    pub protocol_options: Vec<(String, String)>,
 }
 
-impl Default for MqttPublishConfig {
+impl Default for ConnectorConfig {
     fn default() -> Self {
         Self {
             qos: 0,
             retain: false,
-            timeout_ms: Some(5000), // 5s default timeout
-            broker_host: String::from("localhost"),
-            broker_port: 1883,
+            timeout_ms: Some(5000),
+            protocol_options: Vec::new(),
         }
     }
 }
 
-/// Error that can occur during MQTT publishing
+/// Error that can occur during connector publishing
 ///
 /// Uses an enum instead of String for better performance in `no_std` environments
 /// and to enable defmt logging support in Embassy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishError {
-    /// Failed to connect to broker
+    /// Failed to connect to endpoint
     ConnectionFailed,
     /// Message payload too large for buffer
     MessageTooLarge,
     /// Quality of Service level not supported
     UnsupportedQoS,
-    /// Network timeout occurred
+    /// Network or operation timeout occurred
     Timeout,
     /// Buffer full, cannot queue message
     BufferFull,
-    /// Invalid topic string
-    InvalidTopic,
+    /// Invalid destination (topic, segment, endpoint)
+    InvalidDestination,
 }
 
 #[cfg(feature = "defmt")]
@@ -81,7 +84,7 @@ impl defmt::Format for PublishError {
             Self::UnsupportedQoS => defmt::write!(f, "UnsupportedQoS"),
             Self::Timeout => defmt::write!(f, "Timeout"),
             Self::BufferFull => defmt::write!(f, "BufferFull"),
-            Self::InvalidTopic => defmt::write!(f, "InvalidTopic"),
+            Self::InvalidDestination => defmt::write!(f, "InvalidDestination"),
         }
     }
 }
@@ -90,12 +93,12 @@ impl defmt::Format for PublishError {
 impl std::fmt::Display for PublishError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ConnectionFailed => write!(f, "Failed to connect to MQTT broker"),
+            Self::ConnectionFailed => write!(f, "Failed to connect to endpoint"),
             Self::MessageTooLarge => write!(f, "Message payload too large"),
             Self::UnsupportedQoS => write!(f, "QoS level not supported"),
-            Self::Timeout => write!(f, "Network timeout"),
+            Self::Timeout => write!(f, "Operation timeout"),
             Self::BufferFull => write!(f, "Buffer full, cannot queue message"),
-            Self::InvalidTopic => write!(f, "Invalid MQTT topic"),
+            Self::InvalidDestination => write!(f, "Invalid destination"),
         }
     }
 }
@@ -103,62 +106,74 @@ impl std::fmt::Display for PublishError {
 #[cfg(feature = "std")]
 impl std::error::Error for PublishError {}
 
-/// Trait for MQTT connector pools
+/// Generic connector pool trait for protocol-agnostic publishing
 ///
-/// Implement this trait to enable automatic MQTT publishing when records
-/// are configured with `mqtt://` or `mqtts://` URLs.
+/// This trait enables multi-protocol publishing via scheme-based routing:
+/// - `mqtt://topic` → MQTT broker
+/// - `shmem://segment` → Shared memory
+/// - `kafka://topic` → Kafka cluster
+/// - `http://endpoint` → HTTP POST
+/// - `dds://topic` → DDS topic
 ///
-/// # Embassy Compatibility
-///
-/// This trait is designed to work in both `std` (Tokio) and `no_std` (Embassy)
-/// environments by:
-/// - Using slice borrows instead of Vec ownership (allows stack buffers)
-/// - Using structured config instead of String key-value pairs (zero allocations)
-/// - Using Copy-able error types instead of String (better for embedded)
+/// Each pool manages ONE connection/endpoint. For multiple brokers/endpoints,
+/// create multiple pools and register them with different schemes.
 ///
 /// # Example Implementation
 ///
 /// ```rust,ignore
-/// impl MqttConnectorPool for MyMqttPool {
+/// impl ConnectorPool for MqttClientPool {
 ///     fn publish(
 ///         &self,
-///         topic: &str,
-///         config: &MqttPublishConfig,
+///         destination: &str,  // "sensors/temperature"
+///         config: &ConnectorConfig,
 ///         payload: &[u8],
 ///     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
 ///         Box::pin(async move {
-///             // Tokio: Can allocate Vec internally if needed
-///             // Embassy: Use heapless::Vec or static buffers
-///             self.client.publish(topic, config.qos, config.retain, payload).await
+///             self.client.publish(destination, config.qos, config.retain, payload).await
 ///                 .map_err(|_| PublishError::ConnectionFailed)
 ///         })
 ///     }
 /// }
 /// ```
-pub trait MqttConnectorPool: Send + Sync {
-    /// Publish a message to an MQTT topic
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let mqtt_pool = MqttClientPool::new("broker.local:1883");
+///
+/// let db = AimDbBuilder::new()
+///     .with_runtime(runtime)
+///     .with_connector_pool("mqtt", Arc::new(mqtt_pool))
+///     .configure::<Temperature>(|reg| {
+///         reg.link("mqtt://sensors/temp")
+///            .with_qos(1)
+///            .finish()
+///     })
+///     .build()?;
+/// ```
+///
+/// # Thread Safety
+///
+/// Requires Send + Sync for Tokio compatibility. For Embassy (single-threaded),
+/// use `unsafe impl Send + Sync` with safety documentation.
+pub trait ConnectorPool: Send + Sync {
+    /// Publish data to a protocol-specific destination
     ///
     /// # Arguments
-    /// * `url` - Full MQTT URL including broker and topic (e.g., "mqtt://broker:1883/sensors/temp")
-    /// * `config` - Publishing configuration (QoS, retain, timeout)
+    /// * `destination` - Protocol-specific path (no broker/host info):
+    ///   - MQTT: "sensors/temperature"
+    ///   - Shmem: "temp_readings"
+    ///   - Kafka: "production/events"
+    ///   - HTTP: "api/v1/sensors"
+    /// * `config` - Publishing configuration (QoS, retain, timeout, protocol options)
     /// * `payload` - Message payload as byte slice
     ///
     /// # Returns
     /// `Ok(())` on success, `PublishError` on failure
-    ///
-    /// # Implementation Notes
-    ///
-    /// The pool should parse the URL to extract:
-    /// - Broker information (host, port, scheme) - used to select/create the right client
-    /// - Topic path - used for the MQTT publish operation
-    ///
-    /// - **Tokio**: Can allocate Vec internally if needed for the client
-    /// - **Embassy**: Should use heapless::Vec or static buffers
-    /// - Timeout should be respected if `config.timeout_ms` is Some
     fn publish(
         &self,
-        url: &str,
-        config: &MqttPublishConfig,
+        destination: &str,
+        config: &ConnectorConfig,
         payload: &[u8],
     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>>;
 }
@@ -192,14 +207,14 @@ mod tests {
     use super::*;
     use alloc::sync::Arc;
 
-    // Mock MQTT pool for testing
-    struct MockMqttPool;
+    // Mock connector pool for testing
+    struct MockConnectorPool;
 
-    impl MqttConnectorPool for MockMqttPool {
+    impl ConnectorPool for MockConnectorPool {
         fn publish(
             &self,
-            _url: &str,
-            _config: &MqttPublishConfig,
+            _destination: &str,
+            _config: &ConnectorConfig,
             _payload: &[u8],
         ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
             Box::pin(async move { Ok(()) })
@@ -207,21 +222,20 @@ mod tests {
     }
 
     #[test]
-    fn test_mqtt_pool_trait() {
-        let pool = Arc::new(MockMqttPool);
+    fn test_connector_pool_trait() {
+        let pool = Arc::new(MockConnectorPool);
 
         // Verify the pool can be used as a trait object
-        let _trait_obj: Arc<dyn MqttConnectorPool> = pool;
+        let _trait_obj: Arc<dyn ConnectorPool> = pool;
     }
 
     #[test]
-    fn test_mqtt_publish_config_default() {
-        let config = MqttPublishConfig::default();
+    fn test_connector_config_default() {
+        let config = ConnectorConfig::default();
         assert_eq!(config.qos, 0);
         assert!(!config.retain);
         assert_eq!(config.timeout_ms, Some(5000));
-        assert_eq!(config.broker_host, "localhost");
-        assert_eq!(config.broker_port, 1883);
+        assert_eq!(config.protocol_options.len(), 0);
     }
 
     #[test]
