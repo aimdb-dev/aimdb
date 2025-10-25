@@ -295,8 +295,7 @@ mod tests {
         type Config = TestConfig;
 
         fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self>, _cfg: &Self::Config) {
-            reg.producer(|_em, _data| async {})
-                .consumer(|_em, _data| async {});
+            reg.source(|_em, _data| async {}).tap(|_em, _data| async {});
         }
     }
 
@@ -313,8 +312,7 @@ mod tests {
     fn test_builder_configure() {
         let mut builder = AimDbBuilder::new();
         builder.configure::<TestData>(|reg| {
-            reg.producer(|_em, _data| async {})
-                .consumer(|_em, _data| async {});
+            reg.source(|_em, _data| async {}).tap(|_em, _data| async {});
         });
 
         assert_eq!(builder.records.len(), 1);

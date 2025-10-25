@@ -317,11 +317,13 @@ impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {
 
 impl<T: Send + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     fn validate(&self) -> Result<(), &'static str> {
+        // Must have exactly one source (producer)
         if self.producer.is_none() {
-            return Err("must have exactly one producer");
+            return Err("must have exactly one source (use .source())");
         }
+        // Must have at least one consumer (tap, link, or explicit consumer)
         if self.consumers.is_empty() {
-            return Err("must have ≥1 consumer");
+            return Err("must have ≥1 consumer (use .tap() or .link())");
         }
         Ok(())
     }
@@ -371,14 +373,18 @@ mod tests {
     fn test_typed_record_validation() {
         let mut record = TypedRecord::<TestData>::new();
 
-        // No producer, no consumers - invalid
+        // No source, no consumers - invalid
         assert!(record.validate().is_err());
 
-        // Add producer - still invalid (no consumers)
+        // Add source - still invalid (no consumers/taps)
         record.set_producer(|_em, _data| async {});
         assert!(record.validate().is_err());
 
-        // Add consumer - now valid
+        // Add consumer (tap) - now valid
+        record.add_consumer(|_em, _data| async {});
+        assert!(record.validate().is_ok());
+
+        // Can add multiple consumers (taps)
         record.add_consumer(|_em, _data| async {});
         assert!(record.validate().is_ok());
     }

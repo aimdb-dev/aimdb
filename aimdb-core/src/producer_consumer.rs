@@ -40,11 +40,31 @@ impl<'a, T> RecordRegistrar<'a, T>
 where
     T: Send + 'static + Debug + Clone,
 {
-    /// Registers a producer function
+    /// Registers a data source (producer) for this record type.
     ///
-    /// Called first when data is produced. Only one producer per record type.
-    /// Panics if producer already registered.
-    pub fn producer<F, Fut>(&'a mut self, f: F) -> &'a mut Self
+    /// This is the single source of data that calls `db.produce()` to generate values.
+    /// Only one source can be registered per record type.
+    ///
+    /// # Arguments
+    /// * `f` - An async function taking `(Emitter, T)` and returning `()`
+    ///
+    /// # Panics
+    /// Panics if a source is already registered (each record can have only one source)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// reg.source(|_em, temp| async move {
+    ///     // This is the primary data source
+    ///     // It gets called when db.produce(temp) is invoked
+    ///     info!("Source received: {:.1}°C", temp.celsius);
+    /// })
+    /// .tap(|_em, temp| async move {
+    ///     // These are observers that tap into the data stream
+    ///     metrics::gauge!("temperature", temp.celsius);
+    /// });
+    /// ```
+    pub fn source<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
         F: Fn(crate::emitter::Emitter, T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
@@ -53,14 +73,33 @@ where
         self
     }
 
-    /// Registers a consumer function
+    /// Register a side-effect observer that taps into the data stream.
     ///
-    /// Multiple consumers can be registered. Each receives a copy of the data.
-    pub fn consumer<F, Fut>(&'a mut self, f: F) -> &'a mut Self
+    /// This is a non-consuming observer that gets called whenever `db.produce()` is invoked
+    /// for this record type. Multiple `.tap()` calls can be chained to register multiple observers.
+    ///
+    /// # Use Cases
+    /// - Logging and debugging
+    /// - Metrics collection  
+    /// - Validation and alerting
+    /// - Audit trails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// reg.tap(|_em, temp| async move {
+    ///     info!("Temperature: {:.1}°C", temp.celsius);
+    /// })
+    /// .tap(|_em, temp| async move {
+    ///     metrics::gauge!("temperature", temp.celsius);
+    /// });
+    /// ```
+    pub fn tap<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
         F: Fn(crate::emitter::Emitter, T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
+        // Add as consumer - allows multiple taps
         self.rec.add_consumer(f);
         self
     }
@@ -464,16 +503,20 @@ pub trait RecordT: Send + 'static + Debug + Clone {
     ///
     /// ```rust,ignore
     /// fn register(reg: &mut RecordRegistrar<Self>, cfg: &Self::Config) {
-    ///     // Set up producer
-    ///     reg.producer(|emitter, data| async move {
+    ///     // Set up data source
+    ///     reg.source(|emitter, data| async move {
     ///         // Process incoming data
     ///         process(&data).await;
     ///     });
     ///     
-    ///     // Set up consumers
-    ///     reg.consumer(|emitter, data| async move {
+    ///     // Set up observers
+    ///     reg.tap(|emitter, data| async move {
     ///         // React to data
-    ///         react(&data).await;
+    ///         log(&data).await;
+    ///     })
+    ///     .tap(|emitter, data| async move {
+    ///         // Collect metrics
+    ///         metrics(&data).await;
     ///     });
     /// }
     /// ```
@@ -500,10 +543,10 @@ mod tests {
         fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self>, cfg: &Self::Config) {
             let threshold = cfg.threshold;
 
-            reg.producer(|_emitter, data| async move {
+            reg.source(|_emitter, data| async move {
                 assert!(data.value >= 0);
             })
-            .consumer(move |_emitter, data| async move {
+            .tap(move |_emitter, data| async move {
                 if data.value > threshold {
                     // Would emit alert in real usage
                 }
@@ -524,7 +567,7 @@ mod tests {
             TestData::register(&mut reg, &cfg);
         }
 
-        // Verify producer and consumer were added
+        // Verify source and tap were added
         assert!(record.producer_stats().is_some());
         assert_eq!(record.consumer_stats().len(), 1);
     }

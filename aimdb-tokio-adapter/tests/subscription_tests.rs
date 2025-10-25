@@ -21,11 +21,11 @@ impl RecordT for TestData {
         let buffer = TokioBuffer::<TestData>::new(&BufferCfg::SpmcRing { capacity: 100 });
 
         reg.buffer(Box::new(buffer))
-            .producer(|_emitter, data| async move {
+            .source(|_emitter, data| async move {
                 #[cfg(feature = "tracing")]
-                tracing::info!("Producer received: {:?}", data);
+                tracing::info!("Source received: {:?}", data);
             })
-            .consumer(|_emitter, data| async move {
+            .tap(|_emitter, data| async move {
                 #[cfg(feature = "tracing")]
                 tracing::info!("Consumer received: {:?}", data);
             });
@@ -103,8 +103,8 @@ async fn test_subscribe_to_unbuffered_record() {
 
         fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self>, _cfg: &Self::Config) {
             // No buffer configured
-            reg.producer(|_emitter, _data| async move {})
-                .consumer(|_emitter, _data| async move {});
+            reg.source(|_emitter, _data| async move {})
+                .tap(|_emitter, _data| async move {});
         }
     }
 

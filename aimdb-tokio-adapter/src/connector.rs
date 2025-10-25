@@ -38,7 +38,7 @@ impl TokioAdapter {
     ///     // Build database with connector registrations
     ///     let db = AimDb::build_with(runtime.clone(), |builder| {
     ///         builder.configure::<WeatherAlert>(|reg| {
-    ///             reg.producer(|_em, alert| async { /* ... */ })
+    ///             reg.source(|_em, alert| async { /* ... */ })
     ///                .link("mqtt://broker:1883").finish();
     ///         });
     ///     })?;
@@ -110,8 +110,7 @@ mod tests {
 
         // Register a record with no connectors
         builder.configure::<TestMessage>(|reg| {
-            reg.producer(|_em, _msg| async {})
-                .consumer(|_em, _msg| async {});
+            reg.source(|_em, _msg| async {}).tap(|_em, _msg| async {});
         });
 
         let db = builder.build().unwrap();
@@ -128,8 +127,8 @@ mod tests {
 
         // Register a record with connectors
         builder.configure::<TestMessage>(|reg| {
-            reg.producer(|_em, _msg| async {})
-                .consumer(|_em, _msg| async {})
+            reg.source(|_em, _msg| async {})
+                .tap(|_em, _msg| async {})
                 .link("mqtt://broker.example.com:1883")
                 .finish()
                 .link("kafka://kafka1:9092/messages")
