@@ -1,3 +1,6 @@
 [submodule "_external/embassy"]
 	path = _external/embassy
 	url = https://github.com/embassy-rs/embassy.git
+[submodule "mountain-mqtt"]
+	path = mountain-mqtt
+	url = https://github.com/aimdb-dev/mountain-mqtt.git
