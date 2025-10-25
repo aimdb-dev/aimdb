@@ -212,6 +212,45 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         self.buffer.as_deref()
     }
 
+    /// Subscribes to the buffer for this record type
+    ///
+    /// Creates a new subscription that can receive values asynchronously.
+    ///
+    /// # Returns
+    /// A boxed `BufferReader<T>` for receiving values
+    ///
+    /// # Errors
+    /// Returns `DbError::MissingConfiguration` if no buffer is configured
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut reader = record.subscribe()?;
+    ///
+    /// loop {
+    ///     match reader.recv().await {
+    ///         Ok(value) => process(value),
+    ///         Err(_) => break,
+    ///     }
+    /// }
+    /// ```
+    pub fn subscribe(&self) -> crate::DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
+        let buffer = self.buffer.as_ref().ok_or({
+            #[cfg(feature = "std")]
+            {
+                crate::DbError::MissingConfiguration {
+                    parameter: "buffer".to_string(),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                crate::DbError::MissingConfiguration { _parameter: () }
+            }
+        })?;
+
+        Ok(buffer.subscribe_boxed())
+    }
+
     /// Adds a connector link for external system integration
     ///
     /// Connectors bridge AimDB records to external protocols (MQTT, Kafka, HTTP, etc.).

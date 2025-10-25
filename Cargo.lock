@@ -1210,6 +1210,7 @@ name = "mqtt-connector-demo"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-executor",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
  "serde",

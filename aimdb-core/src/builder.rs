@@ -19,7 +19,7 @@ use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use crate::emitter::Emitter;
 use crate::producer_consumer::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
-use crate::DbResult;
+use crate::{DbError, DbResult};
 
 /// Internal database state
 ///
@@ -199,6 +199,15 @@ pub struct AimDb {
     runtime: Arc<dyn core::any::Any + Send + Sync>,
 }
 
+impl Clone for AimDb {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+
 impl AimDb {
     /// Internal accessor for the inner state
     ///
@@ -237,6 +246,111 @@ impl AimDb {
         T: Send + 'static + Debug + Clone,
     {
         self.emitter().emit::<T>(value).await
+    }
+
+    /// Subscribes to a record type's buffer
+    ///
+    /// Creates a subscription to the configured buffer for the given record type.
+    /// Returns a boxed reader for receiving values asynchronously.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut reader = db.subscribe::<Temperature>()?;
+    ///
+    /// loop {
+    ///     match reader.recv().await {
+    ///         Ok(temp) => println!("Temperature: {:.1}°C", temp.celsius),
+    ///         Err(_) => break,
+    ///     }
+    /// }
+    /// ```
+    pub fn subscribe<T>(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
+    where
+        T: Send + Sync + 'static + Debug + Clone,
+    {
+        use crate::typed_record::AnyRecordExt;
+        use core::any::TypeId;
+
+        // Get the record for type T
+        let type_id = TypeId::of::<T>();
+        let rec = self.inner.records.get(&type_id).ok_or({
+            #[cfg(feature = "std")]
+            {
+                DbError::RecordNotFound {
+                    record_name: core::any::type_name::<T>().to_string(),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                DbError::RecordNotFound { _record_name: () }
+            }
+        })?;
+
+        // Downcast to typed record
+        let typed_rec = rec.as_typed::<T>().ok_or({
+            #[cfg(feature = "std")]
+            {
+                DbError::InvalidOperation {
+                    operation: "subscribe".to_string(),
+                    reason: "type mismatch".to_string(),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                DbError::InvalidOperation {
+                    _operation: (),
+                    _reason: (),
+                }
+            }
+        })?;
+
+        // Subscribe to the buffer
+        typed_rec.subscribe()
+    }
+
+    /// Creates a type-safe producer for a specific record type
+    ///
+    /// Returns a `Producer<T>` that can only produce values of type `T`.
+    /// This is the recommended way to pass database access to producer services,
+    /// following the principle of least privilege.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let db = builder.build()?;
+    /// let temp_producer = db.producer::<Temperature>();
+    ///
+    /// // Pass to service - it can only produce Temperature values
+    /// runtime.spawn(temperature_service(ctx, temp_producer)).unwrap();
+    /// ```
+    pub fn producer<T>(&self) -> crate::producer::Producer<T>
+    where
+        T: Send + 'static + Debug + Clone,
+    {
+        crate::producer::Producer::new(Arc::new(self.clone()))
+    }
+
+    /// Creates a type-safe consumer for a specific record type
+    ///
+    /// Returns a `Consumer<T>` that can only subscribe to values of type `T`.
+    /// This is the recommended way to pass database access to consumer services,
+    /// following the principle of least privilege.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let db = builder.build()?;
+    /// let temp_consumer = db.consumer::<Temperature>();
+    ///
+    /// // Pass to service - it can only consume Temperature values
+    /// runtime.spawn(temperature_monitor(ctx, temp_consumer)).unwrap();
+    /// ```
+    pub fn consumer<T>(&self) -> crate::consumer::Consumer<T>
+    where
+        T: Send + Sync + 'static + Debug + Clone,
+    {
+        crate::consumer::Consumer::new(Arc::new(self.clone()))
     }
 
     /// Returns producer statistics for a record type
