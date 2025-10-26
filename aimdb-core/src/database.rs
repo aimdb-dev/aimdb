@@ -14,10 +14,10 @@ use core::fmt::Debug;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc};
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, sync::Arc};
 
 /// Database specification
 ///
@@ -114,7 +114,7 @@ impl<A: RuntimeAdapter> Database<A> {
     #[allow(dead_code)] // Used by adapter crates
     pub fn new(adapter: A, spec: DatabaseSpec<A>) -> DbResult<Self>
     where
-        A: Clone + 'static,
+        A: Clone + aimdb_executor::Spawn + 'static,
     {
         #[cfg(feature = "tracing")]
         tracing::info!("Initializing unified database with typed records");
@@ -253,44 +253,10 @@ impl<A: RuntimeAdapter> Database<A> {
         Ok(buffer.subscribe_boxed())
     }
 
-    /// Gets producer call statistics for a record type
-    ///
-    /// Returns `Some((calls, last_value))` if record exists, `None` otherwise.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// # fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) {
-    /// if let Some((calls, last)) = db.producer_stats::<SensorData>() {
-    ///     println!("Producer called {} times", calls);
-    /// }
-    /// # }
-    /// ```
-    pub fn producer_stats<T>(&self) -> Option<(u64, Option<T>)>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        self.aimdb.producer_stats()
-    }
-
-    /// Gets consumer call statistics for a record type
-    ///
-    /// Returns statistics for all consumers registered on this record type.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// # fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) {
-    /// let stats = db.consumer_stats::<SensorData>();
-    /// for (i, (calls, last)) in stats.iter().enumerate() {
-    ///     println!("Consumer {} called {} times", i, calls);
-    /// }
-    /// # }
-    /// ```
-    pub fn consumer_stats<T>(&self) -> Vec<(u64, Option<T>)>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        self.aimdb.consumer_stats()
-    }
+    // Note: producer_stats() and consumer_stats() were removed because:
+    // - Producers are now auto-spawned services rather than callbacks
+    // - Consumers are FnOnce closures consumed during spawning
+    // Statistics are no longer tracked for these components.
 
     /// Creates a RuntimeContext for this database
     ///

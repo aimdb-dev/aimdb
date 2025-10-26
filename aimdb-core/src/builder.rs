@@ -9,12 +9,13 @@ use core::fmt::Debug;
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc};
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
+use std::{boxed::Box, string::String, sync::Arc};
 
 use crate::emitter::Emitter;
 use crate::producer_consumer::{RecordRegistrar, RecordT};
@@ -29,6 +30,24 @@ pub struct AimDbInner {
     pub records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
 }
 
+/// Type alias for spawning closure
+/// Captures the logic to spawn tap tasks for a specific record type
+type SpawnFn = Box<
+    dyn FnOnce(&Arc<dyn core::any::Any + Send + Sync>, &Arc<AimDb>) -> crate::DbResult<()>
+        + Send
+        + Sync,
+>;
+
+/// Type alias for the spawn callback stored in AimDb
+/// This captures the concrete runtime type for spawning tasks
+type SpawnCallback = Arc<
+    dyn Fn(
+            Box<dyn core::future::Future<Output = ()> + Send + 'static>,
+        ) -> aimdb_executor::ExecutorResult<()>
+        + Send
+        + Sync,
+>;
+
 /// Database builder for producer-consumer pattern
 ///
 /// Provides a fluent API for constructing databases with type-safe record registration.
@@ -39,9 +58,16 @@ pub struct AimDbBuilder {
     /// Runtime adapter (type-erased for storage)
     runtime: Option<Arc<dyn core::any::Any + Send + Sync>>,
 
+    /// Spawn callback for automatic tap spawning
+    spawn_callback: Option<SpawnCallback>,
+
     /// Connector pools indexed by scheme (mqtt, shmem, kafka, etc.)
     /// Used by .link() to route publishing requests to the correct protocol handler
     pub(crate) connector_pools: BTreeMap<String, Arc<dyn crate::pool::ConnectorPool>>,
+
+    /// Spawning closures for automatic tap task spawning
+    /// Each closure captures the concrete type information needed to spawn tasks
+    spawn_fns: Vec<SpawnFn>,
 }
 
 impl AimDbBuilder {
@@ -50,16 +76,47 @@ impl AimDbBuilder {
         Self {
             records: BTreeMap::new(),
             runtime: None,
+            spawn_callback: None,
             connector_pools: BTreeMap::new(),
+            spawn_fns: Vec::new(),
         }
     }
 
     /// Sets the runtime adapter
     pub fn with_runtime<R>(mut self, rt: Arc<R>) -> Self
     where
-        R: 'static + Send + Sync,
+        R: aimdb_executor::Spawn + 'static,
     {
-        self.runtime = Some(rt);
+        let rt_clone = rt.clone();
+
+        // Store the spawn callback - this captures the concrete runtime type
+        // and allows us to spawn tasks later without type erasure issues
+        let spawn_callback = Arc::new(
+            move |future: Box<dyn core::future::Future<Output = ()> + Send + 'static>| {
+                use core::future::Future;
+                use core::pin::Pin;
+                use core::task::{Context, Poll};
+
+                // Create a wrapper future that holds the Box<dyn Future>
+                struct BoxedFuture(Box<dyn Future<Output = ()> + Send + 'static>);
+
+                impl Future for BoxedFuture {
+                    type Output = ();
+
+                    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                        // SAFETY: We're just forwarding the poll to the inner future
+                        // The Box provides a stable address, and we're careful not to move the inner future
+                        let inner = unsafe { Pin::new_unchecked(&mut *self.0) };
+                        inner.poll(cx)
+                    }
+                }
+
+                rt_clone.spawn(BoxedFuture(future)).map(|_token| ())
+            },
+        );
+
+        self.runtime = Some(rt as Arc<dyn core::any::Any + Send + Sync>);
+        self.spawn_callback = Some(spawn_callback);
         self
     }
 
@@ -108,7 +165,7 @@ impl AimDbBuilder {
         f: impl for<'a> FnOnce(&'a mut RecordRegistrar<'a, T>),
     ) -> &mut Self
     where
-        T: Send + 'static + Debug + Clone,
+        T: Send + Sync + 'static + Debug + Clone,
     {
         let entry = self
             .records
@@ -124,6 +181,63 @@ impl AimDbBuilder {
             connector_pools: &self.connector_pools,
         };
         f(&mut reg);
+
+        // Capture a spawning closure for this record type
+        // This closure will be called during build() to spawn tap tasks
+        let type_id = TypeId::of::<T>();
+        let spawn_fn: SpawnFn = Box::new(move |runtime, db| {
+            // Get the record from the database
+            let record = db.inner().records.get(&type_id).ok_or({
+                #[cfg(feature = "std")]
+                {
+                    crate::DbError::RecordNotFound {
+                        record_name: core::any::type_name::<T>().to_string(),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    crate::DbError::RecordNotFound { _record_name: () }
+                }
+            })?;
+
+            // Downcast to the concrete TypedRecord<T>
+            let typed_record = record.as_typed::<T>().ok_or({
+                #[cfg(feature = "std")]
+                {
+                    crate::DbError::RecordNotFound {
+                        record_name: core::any::type_name::<T>().to_string(),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    crate::DbError::RecordNotFound { _record_name: () }
+                }
+            })?;
+
+            // Check if there are consumers to spawn
+            if typed_record.consumer_count() > 0 {
+                // We need to downcast the runtime to a Spawn trait object
+                // The runtime is Arc<dyn Any + Send + Sync>, we need Arc<dyn Spawn>
+                // This is the key insight: we can use Any::downcast_ref to get the concrete type
+
+                // Try to extract a Spawn-capable runtime
+                // Since we can't downcast trait objects, we need a different approach
+                // Let's store the runtime with proper typing in Database::new()
+
+                // Actually, the runtime in AimDb is already properly typed - we just
+                // need to extract it. Let me use a helper method.
+                typed_record.spawn_consumer_tasks_from_any(runtime, db)?;
+            }
+
+            // Check if there is a producer service to spawn
+            if typed_record.has_producer_service() {
+                typed_record.spawn_producer_service_from_any(runtime, db)?;
+            }
+
+            Ok(())
+        });
+
+        self.spawn_fns.push(spawn_fn);
         self
     }
 
@@ -140,6 +254,9 @@ impl AimDbBuilder {
     /// Builds the database
     ///
     /// Validates all records and constructs the final `AimDb` instance.
+    ///
+    /// **Automatic Tap Spawning:** This method automatically spawns all `.tap()` observer
+    /// tasks that were registered during database configuration. No manual spawning needed!
     pub fn build(self) -> DbResult<AimDb> {
         use crate::DbError;
 
@@ -164,7 +281,8 @@ impl AimDbBuilder {
             #[cfg(feature = "std")]
             {
                 DbError::RuntimeError {
-                    message: "runtime not set (use with_runtime)".into(),
+                    message: "runtime not set (use with_runtime or Database<A>::builder().build())"
+                        .into(),
                 }
             }
             #[cfg(not(feature = "std"))]
@@ -177,7 +295,28 @@ impl AimDbBuilder {
             records: self.records,
         });
 
-        Ok(AimDb { inner, runtime })
+        let db = Arc::new(AimDb {
+            inner,
+            runtime: runtime.clone(),
+            spawn_fn: self.spawn_callback.clone(),
+        });
+
+        #[cfg(feature = "tracing")]
+        tracing::info!("Spawning {} tap observer task groups", self.spawn_fns.len());
+
+        // Execute all spawning closures to automatically spawn tap tasks
+        for spawn_fn in self.spawn_fns {
+            spawn_fn(&runtime, &db)?;
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::info!("Automatic tap spawning complete");
+
+        // Unwrap the Arc to return the owned AimDb
+        // This is safe because we just created it and hold the only reference
+        let db_owned = Arc::try_unwrap(db).unwrap_or_else(|arc| (*arc).clone());
+
+        Ok(db_owned)
     }
 }
 
@@ -195,8 +334,12 @@ pub struct AimDb {
     /// Internal state
     inner: Arc<AimDbInner>,
 
-    /// Runtime adapter (type-erased)
+    /// Runtime adapter (type-erased for compatibility)
     runtime: Arc<dyn core::any::Any + Send + Sync>,
+
+    /// Spawn callback for automatic tap spawning
+    /// Takes a future and spawns it using the runtime
+    spawn_fn: Option<SpawnCallback>,
 }
 
 impl Clone for AimDb {
@@ -204,6 +347,7 @@ impl Clone for AimDb {
         Self {
             inner: self.inner.clone(),
             runtime: self.runtime.clone(),
+            spawn_fn: self.spawn_fn.clone(),
         }
     }
 }
@@ -220,7 +364,7 @@ impl AimDb {
     /// Builds a database with a closure-based builder pattern
     pub fn build_with<R>(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder)) -> DbResult<Self>
     where
-        R: 'static + Send + Sync,
+        R: aimdb_executor::Spawn + 'static,
     {
         let mut b = AimDbBuilder::new().with_runtime(rt);
         f(&mut b);
@@ -236,6 +380,55 @@ impl AimDb {
             runtime: runtime_clone,
             inner: self.inner.clone(),
         }
+    }
+
+    /// Spawns a task using the database's runtime adapter
+    ///
+    /// This is an internal method used by automatic tap spawning.
+    /// It bridges the type-erased runtime to the Spawn trait.
+    ///
+    /// # Arguments
+    /// * `future` - The future to spawn
+    ///
+    /// # Returns
+    /// `DbResult<()>` - Ok if the task was spawned successfully
+    #[doc(hidden)]
+    pub fn spawn_task<F>(&self, future: F) -> DbResult<()>
+    where
+        F: core::future::Future<Output = ()> + Send + 'static,
+    {
+        use crate::DbError;
+
+        let spawn_fn = self.spawn_fn.as_ref().ok_or({
+            #[cfg(feature = "std")]
+            {
+                DbError::RuntimeError {
+                    message: "No spawn function available - runtime may not support spawning"
+                        .into(),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                DbError::RuntimeError { _message: () }
+            }
+        })?;
+
+        // Box the future and call the spawn function
+        spawn_fn(Box::new(future)).map_err(|e| {
+            #[cfg(feature = "std")]
+            {
+                DbError::RuntimeError {
+                    message: format!("Failed to spawn task: {:?}", e),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                let _ = e;
+                DbError::RuntimeError { _message: () }
+            }
+        })?;
+
+        Ok(())
     }
 
     /// Produces a value for a record type
@@ -353,38 +546,11 @@ impl AimDb {
         crate::consumer::Consumer::new(Arc::new(self.clone()))
     }
 
-    /// Returns producer statistics for a record type
-    ///
-    /// Returns `Some((calls, last_value))` if record exists, `None` otherwise.
-    pub fn producer_stats<T>(&self) -> Option<(u64, Option<T>)>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        let rec = self.inner.records.get(&TypeId::of::<T>())?;
-        let rec_typed = rec.as_typed::<T>()?;
-        let stats = rec_typed.producer_stats()?;
-        Some((stats.calls(), stats.last_arg()))
-    }
-
-    /// Returns consumer statistics for a record type
-    ///
-    /// Returns a vector of `(calls, last_value)` tuples, one per consumer.
-    pub fn consumer_stats<T>(&self) -> Vec<(u64, Option<T>)>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        let Some(rec) = self.inner.records.get(&TypeId::of::<T>()) else {
-            return Vec::new();
-        };
-        let Some(rec_typed) = rec.as_typed::<T>() else {
-            return Vec::new();
-        };
-        rec_typed
-            .consumer_stats()
-            .into_iter()
-            .map(|s| (s.calls(), s.last_arg()))
-            .collect()
-    }
+    // Note: producer_stats() was removed because producer is now an auto-spawned service
+    // rather than a callback, so statistics are not tracked.
+    // Note: consumer_stats() was removed because consumers are now FnOnce closures
+    // that are consumed during spawning. Consumer statistics are no longer tracked
+    // separately from producer statistics.
 
     /// Returns a reference to the runtime (downcasted)
     ///
@@ -409,7 +575,7 @@ mod tests {
         type Config = TestConfig;
 
         fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self>, _cfg: &Self::Config) {
-            reg.source(|_em, _data| async {}).tap(|_em, _data| async {});
+            reg.source(|_prod, _ctx| async {}).tap(|_consumer| async {});
         }
     }
 
@@ -426,7 +592,7 @@ mod tests {
     fn test_builder_configure() {
         let mut builder = AimDbBuilder::new();
         builder.configure::<TestData>(|reg| {
-            reg.source(|_em, _data| async {}).tap(|_em, _data| async {});
+            reg.source(|_prod, _ctx| async {}).tap(|_consumer| async {});
         });
 
         assert_eq!(builder.records.len(), 1);

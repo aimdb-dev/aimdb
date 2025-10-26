@@ -25,9 +25,9 @@ impl RecordT for TestData {
                 #[cfg(feature = "tracing")]
                 tracing::info!("Source received: {:?}", data);
             })
-            .tap(|_emitter, data| async move {
+            .tap(|_consumer| async move {
                 #[cfg(feature = "tracing")]
-                tracing::info!("Consumer received: {:?}", data);
+                tracing::info!("Consumer task spawned");
             });
     }
 }
@@ -104,7 +104,7 @@ async fn test_subscribe_to_unbuffered_record() {
         fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self>, _cfg: &Self::Config) {
             // No buffer configured
             reg.source(|_emitter, _data| async move {})
-                .tap(|_emitter, _data| async move {});
+                .tap(|_consumer| async move {});
         }
     }
 

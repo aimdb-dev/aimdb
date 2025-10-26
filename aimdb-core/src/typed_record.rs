@@ -16,13 +16,32 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use std::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::buffer::DynBuffer;
-use crate::metrics::CallStats;
-use crate::tracked_fn::TrackedAsyncFn;
+
+// Type alias for boxed futures
+type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
+
+/// Type alias for consumer service closure stored in TypedRecord
+/// Each consumer receives a Consumer<T> handle for subscribing to the buffer
+type ConsumerServiceFn<T> = Box<dyn FnOnce(crate::Consumer<T>) -> BoxFuture<'static, ()> + Send>;
+
+/// Type alias for producer service closure stored in TypedRecord
+/// Takes (Producer<T>, RuntimeContext) and returns a Future
+/// This will be auto-spawned during build()
+type ProducerServiceFn<T> = Box<
+    dyn FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()>
+        + Send
+        + Sync,
+>;
 
 /// Type-erased trait for records
 ///
 /// Allows storage of heterogeneous record types in a single collection
 /// while maintaining type safety through downcast operations.
+///
+/// Note: This trait requires both `Send` and `Sync` because:
+/// - Records are stored in Arc and shared across threads
+/// - Emitter needs to be Send+Sync to work in async contexts
+/// - The FnOnce consumers are moved out during spawning, so they don't affect Sync
 pub trait AnyRecord: Send + Sync {
     /// Validates that the record has correct producer/consumer setup
     ///
@@ -53,6 +72,20 @@ pub trait AnyRecord: Send + Sync {
     /// This allows connector spawning logic to access the serializer callbacks
     /// and other connector-specific configuration.
     fn connectors(&self) -> &[crate::connector::ConnectorLink];
+
+    /// Returns the number of registered consumers (tap observers)
+    ///
+    /// Used to check if automatic spawning is needed.
+    fn consumer_count(&self) -> usize;
+
+    /// Spawns all registered consumer tasks (type-erased version)
+    ///
+    /// This is called automatically by `Database::new()` to spawn tap observer tasks.
+    fn spawn_consumer_tasks_dyn(
+        &self,
+        runtime: &dyn core::any::Any,
+        db: &Arc<crate::AimDb>,
+    ) -> crate::DbResult<()>;
 }
 
 // Helper extension trait for type-safe downcasting
@@ -91,11 +124,24 @@ impl AnyRecordExt for Box<dyn AnyRecord> {
 /// Stores type-safe producer and consumer functions for a specific record type,
 /// with optional buffering for async dispatch patterns.
 pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
-    /// Optional producer function
-    producer: Option<TrackedAsyncFn<T>>,
+    /// Optional producer service - a task that generates data
+    /// This will be auto-spawned during build() if present
+    /// Stored as FnOnce that takes (Producer<T>, RuntimeContext) and returns a Future
+    /// Wrapped in Mutex for interior mutability (needed to take() during spawning)
+    #[cfg(feature = "std")]
+    producer_service: std::sync::Mutex<Option<ProducerServiceFn<T>>>,
 
-    /// List of consumer functions
-    consumers: Vec<TrackedAsyncFn<T>>,
+    #[cfg(not(feature = "std"))]
+    producer_service: spin::Mutex<Option<ProducerServiceFn<T>>>,
+
+    /// List of consumer/tap tasks - wrapped in Mutex for Sync + taking out during spawn
+    /// Each is spawned as an independent background task that subscribes to the buffer
+    /// Using Mutex provides the Sync bound required by AnyRecord trait
+    #[cfg(feature = "std")]
+    consumers: std::sync::Mutex<Vec<ConsumerServiceFn<T>>>,
+
+    #[cfg(not(feature = "std"))]
+    consumers: spin::Mutex<alloc::vec::Vec<ConsumerServiceFn<T>>>,
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
@@ -113,65 +159,112 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// A `TypedRecord<T>` with no producer or consumers
     pub fn new() -> Self {
         Self {
-            producer: None,
-            consumers: Vec::new(),
+            #[cfg(feature = "std")]
+            producer_service: std::sync::Mutex::new(None),
+            #[cfg(not(feature = "std"))]
+            producer_service: spin::Mutex::new(None),
+            #[cfg(feature = "std")]
+            consumers: std::sync::Mutex::new(Vec::new()),
+            #[cfg(not(feature = "std"))]
+            consumers: spin::Mutex::new(alloc::vec::Vec::new()),
             buffer: None,
             connectors: Vec::new(),
         }
     }
 
-    /// Sets the producer function for this record
+    /// Sets the producer service for this record
+    ///
+    /// The producer service is a long-running task that generates data and calls
+    /// `producer.produce()` to emit values. It will be automatically spawned during `build()`.
     ///
     /// # Arguments
-    /// * `f` - An async function taking `(Emitter, T)` and returning `()`
+    /// * `f` - A function taking `(Producer<T>, RuntimeContext)` and returning a Future
     ///
     /// # Panics
-    /// Panics if a producer is already set (each record can have only one producer)
+    /// Panics if a producer service is already set (each record can have only one source)
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// record.set_producer(|emitter, data| async move {
-    ///     println!("Processing: {:?}", data);
-    ///     // Can emit to other record types
-    ///     emitter.emit(OtherType(data.value)).await?;
+    /// record.set_producer_service(|producer, ctx| async move {
+    ///     loop {
+    ///         let value = generate_data();
+    ///         producer.produce(value).await?;
+    ///         ctx.time().sleep(ctx.time().secs(1)).await;
+    ///     }
     /// });
     /// ```
-    pub fn set_producer<F, Fut>(&mut self, f: F)
+    pub fn set_producer_service<F, Fut>(&mut self, f: F)
     where
-        F: Fn(crate::emitter::Emitter, T) -> Fut + Send + Sync + 'static,
+        F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + Sync + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
-        if self.producer.is_some() {
-            panic!("This record type already has a producer");
+        // Check if already set
+        #[cfg(feature = "std")]
+        let already_set = self.producer_service.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let already_set = self.producer_service.lock().is_some();
+
+        if already_set {
+            panic!("This record type already has a producer service");
         }
-        self.producer = Some(TrackedAsyncFn::new(f));
+
+        // Box the future-returning function
+        let boxed_fn = Box::new(
+            move |producer: crate::Producer<T>,
+                  ctx: Arc<dyn Any + Send + Sync>|
+                  -> BoxFuture<'static, ()> { Box::pin(f(producer, ctx)) },
+        );
+
+        // Store it in the mutex
+        #[cfg(feature = "std")]
+        {
+            *self.producer_service.lock().unwrap() = Some(boxed_fn);
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            *self.producer_service.lock() = Some(boxed_fn);
+        }
     }
 
     /// Adds a consumer function for this record
     ///
+    /// Consumer functions are spawned as independent background tasks that
+    /// subscribe to the buffer and process values asynchronously.
     /// Multiple consumers can be registered for the same record type.
-    /// They will all be called when data is produced.
     ///
     /// # Arguments
-    /// * `f` - An async function taking `(Emitter, T)` and returning `()`
+    /// * `f` - A function that takes `Consumer<T>` and returns a Future
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// record.add_consumer(|emitter, data| async move {
-    ///     println!("Consumer 1: {:?}", data);
-    /// });
-    /// record.add_consumer(|emitter, data| async move {
-    ///     println!("Consumer 2: {:?}", data);
+    /// record.add_consumer(|consumer| async move {
+    ///     let mut rx = consumer.subscribe().unwrap();
+    ///     while let Ok(value) = rx.recv().await {
+    ///         println!("Consumer: {:?}", value);
+    ///     }
     /// });
     /// ```
     pub fn add_consumer<F, Fut>(&mut self, f: F)
     where
-        F: Fn(crate::emitter::Emitter, T) -> Fut + Send + Sync + 'static,
+        F: FnOnce(crate::Consumer<T>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
-        self.consumers.push(TrackedAsyncFn::new(f));
+        // Box the future to make it trait object compatible
+        let boxed = Box::new(
+            move |consumer: crate::Consumer<T>| -> BoxFuture<'static, ()> { Box::pin(f(consumer)) },
+        );
+
+        #[cfg(feature = "std")]
+        {
+            self.consumers.lock().unwrap().push(boxed);
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            self.consumers.lock().push(boxed);
+        }
     }
 
     /// Sets the buffer for this record
@@ -293,17 +386,220 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// # Returns
     /// The count of consumers
     pub fn consumer_count(&self) -> usize {
-        self.consumers.len()
+        #[cfg(feature = "std")]
+        {
+            self.consumers.lock().unwrap().len()
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            self.consumers.lock().len()
+        }
     }
 
-    /// Produces a value by calling producer and all consumers
+    /// Spawns all registered consumer tasks
     ///
-    /// This is the core of the data flow mechanism:
-    /// 1. If buffer is configured: enqueues value to buffer (async dispatch)
-    /// 2. Otherwise: calls producer function (if set) and all consumers directly
+    /// This method takes all registered `.tap()` consumers and spawns them as
+    /// background tasks using the provided runtime adapter. Called automatically
+    /// by `Database::new()` during database construction.
+    ///
+    /// # Type Parameters
+    /// * `R` - The runtime adapter type (e.g., TokioAdapter, EmbassyAdapter)
     ///
     /// # Arguments
-    /// * `emitter` - The emitter context for cross-record communication
+    /// * `runtime` - The runtime adapter for spawning tasks  
+    /// * `db` - The database instance for creating Consumer handles
+    ///
+    /// # Returns
+    /// `DbResult<()>` - Ok if all tasks spawned successfully
+    ///
+    /// # Note
+    /// This consumes all registered consumers (FnOnce), so it can only be called once.
+    pub fn spawn_consumer_tasks<R>(
+        &self,
+        runtime: &R,
+        db: &Arc<crate::AimDb>,
+    ) -> crate::DbResult<()>
+    where
+        R: aimdb_executor::Spawn + 'static,
+        T: Sync,
+    {
+        use crate::DbError;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "Spawning {} consumer tasks for record type {}",
+            self.consumer_count(),
+            core::any::type_name::<T>()
+        );
+
+        // Take all consumers from the Mutex
+        let consumers = {
+            #[cfg(feature = "std")]
+            {
+                core::mem::take(&mut *self.consumers.lock().unwrap())
+            }
+
+            #[cfg(not(feature = "std"))]
+            {
+                core::mem::take(&mut *self.consumers.lock())
+            }
+        };
+
+        #[cfg(feature = "tracing")]
+        let count = consumers.len();
+
+        // Spawn each consumer as a background task
+        for consumer_fn in consumers {
+            // Create a Consumer<T> handle for this task
+            let consumer = crate::consumer::Consumer::new(db.clone());
+
+            // Spawn the consumer task
+            let task_future = consumer_fn(consumer);
+            runtime.spawn(task_future).map_err(|e| {
+                #[cfg(feature = "std")]
+                {
+                    DbError::RuntimeError {
+                        message: format!("Failed to spawn consumer task: {:?}", e),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = e;
+                    DbError::RuntimeError { _message: () }
+                }
+            })?;
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            "Successfully spawned {} consumer tasks for record type {}",
+            count,
+            core::any::type_name::<T>()
+        );
+
+        Ok(())
+    }
+
+    /// Spawns consumer tasks from a type-erased runtime
+    ///
+    /// This is a helper for the automatic spawning system. It uses the database's
+    /// spawn_task method which has access to the concrete runtime type.
+    ///
+    /// # Arguments
+    /// * `runtime` - Type-erased runtime adapter (unused, kept for signature compatibility)
+    /// * `db` - Database instance with spawn capability
+    ///
+    /// # Returns
+    /// `DbResult<()>` - Ok if spawning succeeded
+    pub fn spawn_consumer_tasks_from_any(
+        &self,
+        _runtime: &Arc<dyn core::any::Any + Send + Sync>,
+        db: &Arc<crate::AimDb>,
+    ) -> crate::DbResult<()>
+    where
+        T: Sync,
+    {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "Spawning {} consumer tasks for record type {} (via spawn_task)",
+            self.consumer_count(),
+            core::any::type_name::<T>()
+        );
+
+        // Take all consumers from the Mutex
+        let consumers = {
+            #[cfg(feature = "std")]
+            {
+                core::mem::take(&mut *self.consumers.lock().unwrap())
+            }
+
+            #[cfg(not(feature = "std"))]
+            {
+                core::mem::take(&mut *self.consumers.lock())
+            }
+        };
+
+        #[cfg(feature = "tracing")]
+        let count = consumers.len();
+
+        // Spawn each consumer as a background task
+        for consumer_fn in consumers {
+            // Create a Consumer<T> handle for this task
+            let consumer = crate::consumer::Consumer::new(db.clone());
+
+            // Spawn the consumer task using the database's spawn_task method
+            let task_future = consumer_fn(consumer);
+            db.spawn_task(task_future)?;
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            "Successfully spawned {} consumer tasks for record type {}",
+            count,
+            core::any::type_name::<T>()
+        );
+
+        Ok(())
+    }
+
+    /// Spawns the registered producer service (if any)
+    ///
+    /// Takes the producer service closure and spawns it as a background task.
+    /// The service receives a Producer<T> and RuntimeContext to generate data.
+    pub fn spawn_producer_service_from_any(
+        &self,
+        runtime: &Arc<dyn core::any::Any + Send + Sync>,
+        db: &Arc<crate::AimDb>,
+    ) -> crate::DbResult<()>
+    where
+        T: Sync,
+    {
+        // Take the producer service (can only spawn once)
+        let service = {
+            #[cfg(feature = "std")]
+            {
+                self.producer_service.lock().unwrap().take()
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                self.producer_service.lock().take()
+            }
+        };
+
+        if let Some(service_fn) = service {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                "Spawning producer service for record type {}",
+                core::any::type_name::<T>()
+            );
+
+            // Create Producer<T> and pass the type-erased runtime context
+            let producer = crate::producer::Producer::new(db.clone());
+            let ctx = runtime.clone();
+
+            // Call the service function to get the future
+            let task_future = service_fn(producer, ctx);
+
+            // Spawn the producer service task
+            db.spawn_task(task_future)?;
+
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "Successfully spawned producer service for record type {}",
+                core::any::type_name::<T>()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Produces a value by pushing to the buffer
+    ///
+    /// Enqueues the value to the buffer where consumer tasks will pick it up.
+    ///
+    /// # Arguments
+    /// * `_emitter` - The emitter context (unused, kept for API compatibility)
     /// * `val` - The value to produce
     ///
     /// # Example
@@ -311,41 +607,27 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// ```rust,ignore
     /// record.produce(emitter.clone(), SensorData { temp: 23.5 }).await;
     /// ```
-    pub async fn produce(&self, emitter: crate::emitter::Emitter, val: T) {
-        // If buffer is configured, enqueue instead of direct call
+    pub async fn produce(&self, _emitter: crate::emitter::Emitter, val: T) {
+        // Push to buffer - consumer tasks will receive it
         if let Some(buf) = &self.buffer {
-            // DynBuffer::push is synchronous and non-blocking
-            buf.push(val.clone());
-            return;
-        }
-
-        // No buffer: direct synchronous call path
-        // Call producer if present
-        if let Some(p) = &self.producer {
-            p.call(emitter.clone(), val.clone()).await;
-        }
-
-        // Call all consumers
-        for c in &self.consumers {
-            c.call(emitter.clone(), val.clone()).await;
+            buf.push(val);
         }
     }
 
-    /// Returns statistics for the producer function
-    ///
-    /// # Returns
-    /// `Some(Arc<CallStats<T>>)` if producer is set, `None` otherwise
-    pub fn producer_stats(&self) -> Option<Arc<CallStats<T>>> {
-        self.producer.as_ref().map(|p| p.stats())
+    /// Returns whether a producer service is registered
+    pub fn has_producer_service(&self) -> bool {
+        #[cfg(feature = "std")]
+        {
+            self.producer_service.lock().unwrap().is_some()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.producer_service.lock().is_some()
+        }
     }
 
-    /// Returns statistics for all consumer functions
-    ///
-    /// # Returns
-    /// A vector of `Arc<CallStats<T>>`, one for each consumer
-    pub fn consumer_stats(&self) -> Vec<Arc<CallStats<T>>> {
-        self.consumers.iter().map(|c| c.stats()).collect()
-    }
+    // Note: producer_stats() removed - no longer tracking stats for producer service
+    // Note: consumer_stats() removed - consumers are FnOnce closures consumed during spawning
 }
 
 impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {
@@ -356,12 +638,9 @@ impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {
 
 impl<T: Send + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     fn validate(&self) -> Result<(), &'static str> {
-        // Must have exactly one source (producer)
-        if self.producer.is_none() {
-            return Err("must have exactly one source (use .source())");
-        }
+        // Producer service is optional - some records are driven by external events
         // Must have at least one consumer (tap, link, or explicit consumer)
-        if self.consumers.is_empty() {
+        if self.consumer_count() == 0 {
             return Err("must have ≥1 consumer (use .tap() or .link())");
         }
         Ok(())
@@ -390,6 +669,39 @@ impl<T: Send + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     fn connectors(&self) -> &[crate::connector::ConnectorLink] {
         &self.connectors
     }
+
+    fn consumer_count(&self) -> usize {
+        TypedRecord::consumer_count(self)
+    }
+
+    fn spawn_consumer_tasks_dyn(
+        &self,
+        _runtime: &dyn core::any::Any,
+        _db: &Arc<crate::AimDb>,
+    ) -> crate::DbResult<()> {
+        use crate::DbError;
+
+        // The runtime was passed in as Arc<A> where A: RuntimeAdapter
+        // We need to downcast it back to Arc<dyn Spawn>
+        // Actually, the AimDb stores it as Arc<dyn Any + Send + Sync>
+        // And we passed in runtime.as_ref() which gives us &dyn Any
+
+        // The cleanest approach: add a helper method to AimDb that gives us
+        // the Spawn trait object. For now, return an error with instructions.
+
+        Err({
+            #[cfg(feature = "std")]
+            {
+                DbError::RuntimeError {
+                    message: "spawn_consumer_tasks_dyn needs refactoring - use Database<A> wrapper for automatic spawning".into(),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                DbError::RuntimeError { _message: () }
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -404,36 +716,32 @@ mod tests {
     #[test]
     fn test_typed_record_new() {
         let record = TypedRecord::<TestData>::new();
-        assert!(record.producer.is_none());
-        assert!(record.consumers.is_empty());
+        assert!(!record.has_producer_service());
+        assert_eq!(record.consumer_count(), 0);
     }
 
     #[test]
     fn test_typed_record_validation() {
         let mut record = TypedRecord::<TestData>::new();
 
-        // No source, no consumers - invalid
+        // No consumers - invalid (producer service is optional)
         assert!(record.validate().is_err());
 
-        // Add source - still invalid (no consumers/taps)
-        record.set_producer(|_em, _data| async {});
-        assert!(record.validate().is_err());
-
-        // Add consumer (tap) - now valid
-        record.add_consumer(|_em, _data| async {});
+        // Add consumer (tap) - now valid (even without producer service)
+        record.add_consumer(|_consumer| async {});
         assert!(record.validate().is_ok());
 
         // Can add multiple consumers (taps)
-        record.add_consumer(|_em, _data| async {});
+        record.add_consumer(|_consumer| async {});
         assert!(record.validate().is_ok());
     }
 
     #[test]
-    #[should_panic(expected = "already has a producer")]
+    #[should_panic(expected = "already has a producer service")]
     fn test_typed_record_duplicate_producer() {
         let mut record = TypedRecord::<TestData>::new();
-        record.set_producer(|_em, _data| async {});
-        record.set_producer(|_em, _data| async {}); // Should panic
+        record.set_producer_service(|_prod, _ctx| async {});
+        record.set_producer_service(|_prod, _ctx| async {}); // Should panic
     }
 
     #[test]

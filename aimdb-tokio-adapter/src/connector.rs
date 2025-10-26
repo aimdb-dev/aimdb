@@ -110,7 +110,7 @@ mod tests {
 
         // Register a record with no connectors
         builder.configure::<TestMessage>(|reg| {
-            reg.source(|_em, _msg| async {}).tap(|_em, _msg| async {});
+            reg.source(|_em, _msg| async {}).tap(|_consumer| async {});
         });
 
         let db = builder.build().unwrap();
@@ -128,7 +128,7 @@ mod tests {
         // Register a record with connectors
         builder.configure::<TestMessage>(|reg| {
             reg.source(|_em, _msg| async {})
-                .tap(|_em, _msg| async {})
+                .tap(|_consumer| async {})
                 .link("mqtt://broker.example.com:1883")
                 .finish()
                 .link("kafka://kafka1:9092/messages")

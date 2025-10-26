@@ -27,7 +27,7 @@ type TypedSerializerFn<T> =
 /// Registrar for configuring a typed record
 ///
 /// Provides a fluent API for registering producer and consumer functions.
-pub struct RecordRegistrar<'a, T: Send + 'static + Debug + Clone> {
+pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T>,
 
@@ -38,15 +38,15 @@ pub struct RecordRegistrar<'a, T: Send + 'static + Debug + Clone> {
 
 impl<'a, T> RecordRegistrar<'a, T>
 where
-    T: Send + 'static + Debug + Clone,
+    T: Send + Sync + 'static + Debug + Clone,
 {
-    /// Registers a data source (producer) for this record type.
+    /// Registers a producer service for this record type.
     ///
-    /// This is the single source of data that calls `db.produce()` to generate values.
-    /// Only one source can be registered per record type.
+    /// The producer service is a long-running task that generates data and calls
+    /// `producer.produce()` to emit values. It will be automatically spawned during `build()`.
     ///
     /// # Arguments
-    /// * `f` - An async function taking `(Emitter, T)` and returning `()`
+    /// * `f` - A function taking `(Producer<T>, RuntimeContext)` and returning a Future
     ///
     /// # Panics
     /// Panics if a source is already registered (each record can have only one source)
@@ -54,22 +54,26 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// reg.source(|_em, temp| async move {
-    ///     // This is the primary data source
-    ///     // It gets called when db.produce(temp) is invoked
-    ///     info!("Source received: {:.1}°C", temp.celsius);
-    /// })
-    /// .tap(|_em, temp| async move {
-    ///     // These are observers that tap into the data stream
-    ///     metrics::gauge!("temperature", temp.celsius);
+    /// reg.source(|producer, ctx| async move {
+    ///     loop {
+    ///         let temp = Temperature {
+    ///             celsius: read_sensor(),
+    ///             timestamp: timestamp(),
+    ///         };
+    ///         producer.produce(temp).await?;
+    ///         ctx.time().sleep(ctx.time().secs(1)).await;
+    ///     }
     /// });
     /// ```
     pub fn source<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
-        F: Fn(crate::emitter::Emitter, T) -> Fut + Send + Sync + 'static,
+        F: FnOnce(crate::Producer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
+            + Send
+            + Sync
+            + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.rec.set_producer(f);
+        self.rec.set_producer_service(f);
         self
     }
 
@@ -87,19 +91,26 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// reg.tap(|_em, temp| async move {
-    ///     info!("Temperature: {:.1}°C", temp.celsius);
+    /// reg.tap(|consumer| async move {
+    ///     let mut reader = consumer.subscribe().unwrap();
+    ///     while let Ok(temp) = reader.recv().await {
+    ///         info!("Temperature: {:.1}°C", temp.celsius);
+    ///     }
     /// })
-    /// .tap(|_em, temp| async move {
-    ///     metrics::gauge!("temperature", temp.celsius);
+    /// .tap(|consumer| async move {
+    ///     let mut reader = consumer.subscribe().unwrap();
+    ///     while let Ok(temp) = reader.recv().await {
+    ///         metrics::gauge!("temperature", temp.celsius);
+    ///     }
     /// });
     /// ```
     pub fn tap<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
-        F: Fn(crate::emitter::Emitter, T) -> Fut + Send + Sync + 'static,
+        F: FnOnce(crate::Consumer<T>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
+        T: Sync, // Required for Consumer::subscribe()
     {
-        // Add as consumer - allows multiple taps
+        // Add as consumer - will be spawned as background task
         self.rec.add_consumer(f);
         self
     }
@@ -157,7 +168,7 @@ where
 ///
 /// Provides a fluent API for adding connector configuration options
 /// before finalizing the connector registration.
-pub struct ConnectorBuilder<'a, T: Send + 'static + Debug + Clone> {
+pub struct ConnectorBuilder<'a, T: Send + Sync + 'static + Debug + Clone> {
     registrar: &'a mut RecordRegistrar<'a, T>,
     url: String,
     config: Vec<(String, String)>,
@@ -166,7 +177,7 @@ pub struct ConnectorBuilder<'a, T: Send + 'static + Debug + Clone> {
 
 impl<'a, T> ConnectorBuilder<'a, T>
 where
-    T: Send + 'static + Debug + Clone,
+    T: Send + Sync + 'static + Debug + Clone,
 {
     /// Adds a configuration option to the connector
     ///
@@ -326,43 +337,52 @@ where
 
             // Register a consumer that publishes via the connector pool
             let rec = &mut self.registrar.rec;
-            rec.add_consumer(move |_em, value: T| {
+            rec.add_consumer(move |consumer| {
                 let pool_ref = pool_clone.clone();
                 let url_ref = url_clone.clone();
                 let config_ref = config_clone.clone();
                 let ser = serializer.clone();
 
                 async move {
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!(
-                        "Connector triggered for {} with type {}",
-                        url_ref,
-                        core::any::type_name::<T>()
-                    );
+                    // Subscribe to buffer and forward each value to connector
+                    let Ok(mut reader) = consumer.subscribe() else {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("Failed to subscribe to buffer for connector {}", url_ref);
+                        return;
+                    };
 
-                    #[cfg(feature = "defmt")]
-                    defmt::debug!("Connector triggered for {}", url_ref);
+                    while let Ok(value) = reader.recv().await {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!(
+                            "Connector triggered for {} with type {}",
+                            url_ref,
+                            core::any::type_name::<T>()
+                        );
 
-                    // Serialize the value
-                    match ser(&value) {
-                        Ok(bytes) => {
-                            // Call the connector pool's publish method
-                            if let Err(_e) =
-                                publish_via_pool(&pool_ref, &url_ref, &config_ref, bytes).await
-                            {
+                        #[cfg(feature = "defmt")]
+                        defmt::debug!("Connector triggered for {}", url_ref);
+
+                        // Serialize the value
+                        match ser(&value) {
+                            Ok(bytes) => {
+                                // Call the connector pool's publish method
+                                if let Err(_e) =
+                                    publish_via_pool(&pool_ref, &url_ref, &config_ref, bytes).await
+                                {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::error!("Failed to publish: {:?}", _e);
+
+                                    #[cfg(feature = "defmt")]
+                                    defmt::error!("Publish failed: {:?}", _e);
+                                }
+                            }
+                            Err(_e) => {
                                 #[cfg(feature = "tracing")]
-                                tracing::error!("Failed to publish: {:?}", _e);
+                                tracing::error!("Failed to serialize: {:?}", _e);
 
                                 #[cfg(feature = "defmt")]
-                                defmt::error!("Publish failed: {:?}", _e);
+                                defmt::error!("Serialization failed");
                             }
-                        }
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!("Failed to serialize: {:?}", _e);
-
-                            #[cfg(feature = "defmt")]
-                            defmt::error!("Serialization failed");
                         }
                     }
                 }
@@ -483,7 +503,7 @@ async fn publish_via_pool(
 /// functions, encapsulating behavior with their type.
 ///
 /// See `examples/producer-consumer-demo` for complete examples.
-pub trait RecordT: Send + 'static + Debug + Clone {
+pub trait RecordT: Send + Sync + 'static + Debug + Clone {
     /// Configuration type for this record
     ///
     /// This type is passed to the `register` method and can contain
@@ -543,13 +563,15 @@ mod tests {
         fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self>, cfg: &Self::Config) {
             let threshold = cfg.threshold;
 
-            reg.source(|_emitter, data| async move {
-                assert!(data.value >= 0);
+            // Register producer service (would generate data in real usage)
+            reg.source(|_producer, _ctx| async move {
+                // Producer service would loop and call producer.produce()
+                // For this test, we just register it
             })
-            .tap(move |_emitter, data| async move {
-                if data.value > threshold {
-                    // Would emit alert in real usage
-                }
+            .tap(move |_consumer| async move {
+                // Read from buffer and check threshold
+                // In real usage, would subscribe and loop
+                let _ = threshold; // Use the captured variable
             });
         }
     }
@@ -568,8 +590,8 @@ mod tests {
         }
 
         // Verify source and tap were added
-        assert!(record.producer_stats().is_some());
-        assert_eq!(record.consumer_stats().len(), 1);
+        assert!(record.has_producer_service());
+        assert_eq!(record.consumer_count(), 1);
     }
 
     #[test]
