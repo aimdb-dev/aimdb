@@ -95,6 +95,7 @@ impl TokioAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TokioRecordRegistrarExt;
     use aimdb_core::AimDbBuilder;
     use std::sync::Arc;
 
@@ -110,7 +111,8 @@ mod tests {
 
         // Register a record with no connectors
         builder.configure::<TestMessage>(|reg| {
-            reg.source(|_em, _msg| async {}).tap(|_consumer| async {});
+            reg.source(|_ctx, _msg| async {})
+                .tap(|_ctx, _consumer| async {});
         });
 
         let db = builder.build().unwrap();
@@ -127,8 +129,8 @@ mod tests {
 
         // Register a record with connectors
         builder.configure::<TestMessage>(|reg| {
-            reg.source(|_em, _msg| async {})
-                .tap(|_consumer| async {})
+            reg.source(|_ctx, _msg| async {})
+                .tap(|_ctx, _consumer| async {})
                 .link("mqtt://broker.example.com:1883")
                 .finish()
                 .link("kafka://kafka1:9092/messages")
