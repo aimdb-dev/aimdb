@@ -70,9 +70,6 @@ mod error;
 #[cfg(not(feature = "std"))]
 mod runtime;
 
-#[cfg(not(feature = "std"))]
-pub mod database;
-
 #[cfg(all(not(feature = "std"), feature = "embassy-time"))]
 pub mod time;
 
@@ -88,11 +85,12 @@ pub use buffer::EmbassyBuffer;
 #[cfg(feature = "embassy-runtime")]
 pub use runtime::EmbassyAdapter;
 
-// Database implementation exports
+/// Type alias for Embassy database
+///
+/// This provides a convenient type for working with databases on the Embassy runtime.
+/// Most users should use `AimDbBuilder` directly to create databases.
 #[cfg(feature = "embassy-runtime")]
-pub use database::{
-    EmbassyDatabase, EmbassyDatabaseBuilder, EmbassyDatabaseSpec, EmbassyDatabaseSpecBuilder,
-};
+pub type EmbassyDatabase = aimdb_core::Database<EmbassyAdapter>;
 
 // Re-export core types for convenience
 #[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]
