@@ -151,3 +151,65 @@ pub async fn yield_now() {
         core::future::ready(()).await;
     }
 }
+
+/// Extension trait for convenient buffer configuration with Embassy
+///
+/// This trait provides convenience methods for configuring buffers
+/// inline when using the Embassy runtime adapter.
+#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+pub trait EmbassyRecordRegistrarExt<
+    'a,
+    T,
+    const CAP: usize,
+    const SUBS: usize,
+    const PUBS: usize,
+    const WATCH_N: usize,
+> where
+    T: Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    /// Configures a buffer for this record using inline configuration
+    ///
+    /// This is a convenience method that creates an `EmbassyBuffer` and configures
+    /// it in one step, avoiding the need to manually instantiate the buffer.
+    ///
+    /// # Arguments
+    /// * `cfg` - Buffer configuration specifying capacity and behavior
+    ///
+    /// # Returns
+    /// `&mut Self` for method chaining
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_embassy_adapter::EmbassyRecordRegistrarExt;
+    /// use aimdb_core::buffer::BufferCfg;
+    ///
+    /// builder.configure::<Temperature>(|reg| {
+    ///     reg.with_buffer(BufferCfg::SpmcRing { capacity: 10 })
+    ///        .source(|producer, ctx_any| { ... })
+    ///        .tap(|consumer| { ... });
+    /// });
+    /// ```
+    fn with_buffer(
+        &'a mut self,
+        cfg: aimdb_core::buffer::BufferCfg,
+    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>;
+}
+
+#[cfg(all(feature = "embassy-runtime", feature = "embassy-sync"))]
+impl<'a, T, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize>
+    EmbassyRecordRegistrarExt<'a, T, CAP, SUBS, PUBS, WATCH_N>
+    for aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
+where
+    T: Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    fn with_buffer(
+        &'a mut self,
+        cfg: aimdb_core::buffer::BufferCfg,
+    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter> {
+        use aimdb_core::buffer::Buffer;
+        use alloc::boxed::Box;
+        let buffer = Box::new(EmbassyBuffer::<T, CAP, SUBS, PUBS, WATCH_N>::new(&cfg));
+        self.buffer(buffer)
+    }
+}
