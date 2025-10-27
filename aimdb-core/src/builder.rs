@@ -40,14 +40,13 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Registry of typed records
     records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
 
-    /// Runtime adapter (None for NoRuntime marker)
+    /// Runtime adapter
     runtime: Option<Arc<R>>,
 
     /// Connector pools indexed by scheme (mqtt, shmem, kafka, etc.)
     pub(crate) connector_pools: BTreeMap<String, Arc<dyn crate::pool::ConnectorPool>>,
 
-    /// Spawn functions indexed by TypeId - each knows how to spawn its record type
-    /// Only present when R: Spawn (i.e., after with_runtime() is called)
+    /// Spawn functions indexed by TypeId
     spawn_fns: BTreeMap<TypeId, Box<dyn core::any::Any + Send>>,
 
     /// PhantomData to track the runtime type parameter
