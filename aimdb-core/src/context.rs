@@ -6,8 +6,6 @@
 use aimdb_executor::Runtime;
 use core::future::Future;
 
-use crate::emitter::Emitter;
-
 /// Unified runtime context for AimDB services
 ///
 /// Provides access to runtime capabilities (sleep, timestamps) through
@@ -24,11 +22,6 @@ where
     runtime: std::sync::Arc<R>,
     #[cfg(not(feature = "std"))]
     runtime: &'static R,
-    /// Optional emitter for cross-record communication
-    #[cfg(feature = "std")]
-    emitter: Option<Emitter>,
-    #[cfg(not(feature = "std"))]
-    emitter: Option<Emitter>,
 }
 
 #[cfg(feature = "std")]
@@ -40,22 +33,12 @@ where
     pub fn new(runtime: R) -> Self {
         Self {
             runtime: std::sync::Arc::new(runtime),
-            emitter: None,
         }
     }
 
     /// Create from an existing Arc to avoid double-wrapping
     pub fn from_arc(runtime: std::sync::Arc<R>) -> Self {
-        Self {
-            runtime,
-            emitter: None,
-        }
-    }
-
-    /// Add an emitter for services to emit data to typed records
-    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
-        self.emitter = Some(emitter);
-        self
+        Self { runtime }
     }
 }
 
@@ -66,16 +49,7 @@ where
 {
     /// Create a new RuntimeContext with static reference (no_std version)
     pub fn new(runtime: &'static R) -> Self {
-        Self {
-            runtime,
-            emitter: None,
-        }
-    }
-
-    /// Add an emitter for services to emit data to typed records
-    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
-        self.emitter = Some(emitter);
-        self
+        Self { runtime }
     }
 }
 
@@ -93,13 +67,6 @@ where
     /// Access logging utilities
     pub fn log(&self) -> Log<'_, R> {
         Log { ctx: self }
-    }
-
-    /// Access the emitter for cross-record communication
-    ///
-    /// Returns the emitter if configured, allowing services to emit to typed records.
-    pub fn emitter(&self) -> Option<&Emitter> {
-        self.emitter.as_ref()
     }
 
     /// Get access to the underlying runtime

@@ -17,18 +17,13 @@
 pub mod buffer;
 pub mod builder;
 pub mod connector;
-pub mod consumer;
 pub mod context;
 pub mod database;
-pub mod emitter;
 mod error;
-pub mod metrics;
 pub mod pool;
-pub mod producer;
-pub mod producer_consumer;
 pub mod runtime;
 pub mod time;
-pub mod tracked_fn;
+pub mod typed_api;
 pub mod typed_record;
 
 // Re-export procedural macros
@@ -43,18 +38,14 @@ pub use runtime::{
 };
 
 // Database implementation exports
-pub use database::{Database, DatabaseSpec, DatabaseSpecBuilder};
+pub use database::Database;
 
 // Producer-Consumer Pattern exports
 pub use builder::{AimDb, AimDbBuilder};
-pub use consumer::Consumer;
-pub use emitter::Emitter;
-pub use metrics::CallStats;
 pub use pool::{
     ConnectorConfig, ConnectorPool, HttpConnectorPool, KafkaConnectorPool, PublishError,
 };
-pub use producer::Producer;
-pub use producer_consumer::{RecordRegistrar, RecordT};
+pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // Connector Infrastructure exports
