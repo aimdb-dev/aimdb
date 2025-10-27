@@ -49,7 +49,7 @@ impl TokioAdapter {
     ///     Ok(())
     /// }
     /// ```
-    pub fn spawn_connectors(&self, db: &AimDb) -> DbResult<()> {
+    pub fn spawn_connectors(&self, db: &AimDb<TokioAdapter>) -> DbResult<()> {
         #[cfg(feature = "tracing")]
         tracing::debug!("Spawning connector tasks for database");
 

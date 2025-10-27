@@ -32,7 +32,6 @@ compile_error!("tokio-adapter requires the std feature");
 
 pub mod buffer;
 pub mod connector;
-pub mod database;
 pub mod error;
 pub mod runtime;
 pub mod time;
@@ -43,7 +42,9 @@ pub use error::TokioErrorSupport;
 #[cfg(feature = "tokio-runtime")]
 pub use runtime::TokioAdapter;
 
+/// Type alias for Tokio database
+///
+/// This provides a convenient type for working with databases on the Tokio runtime.
+/// Most users should use `AimDbBuilder` directly to create databases.
 #[cfg(feature = "tokio-runtime")]
-pub use database::{
-    TokioDatabase, TokioDatabaseBuilder, TokioDatabaseSpec, TokioDatabaseSpecBuilder,
-};
+pub type TokioDatabase = aimdb_core::Database<TokioAdapter>;
