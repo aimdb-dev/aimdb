@@ -129,21 +129,50 @@ impl RuntimeAdapter for EmbassyAdapter {
     }
 }
 
-// Implement Spawn trait for Embassy (static spawning)
+// Type-erased future wrapper for dynamic spawning
+#[cfg(feature = "embassy-runtime")]
+type BoxedFuture = alloc::boxed::Box<dyn core::future::Future<Output = ()> + Send + 'static>;
+
+// Generic task runner for dynamic spawning in Embassy
+#[cfg(feature = "embassy-runtime")]
+#[embassy_executor::task(pool_size = 8)]
+async fn generic_task_runner(mut future: BoxedFuture) {
+    use core::pin::Pin;
+    // Pin the boxed future so it can be awaited
+    let pinned = unsafe { Pin::new_unchecked(&mut *future) };
+    pinned.await;
+}
+
+// Implement Spawn trait for Embassy with dynamic spawning support
 #[cfg(feature = "embassy-runtime")]
 impl aimdb_executor::Spawn for EmbassyAdapter {
     type SpawnToken = (); // Embassy doesn't return a handle from static spawn
 
-    fn spawn<F>(&self, _future: F) -> ExecutorResult<Self::SpawnToken>
+    fn spawn<F>(&self, future: F) -> ExecutorResult<Self::SpawnToken>
     where
         F: core::future::Future<Output = ()> + Send + 'static,
     {
-        // Embassy spawning is handled via the #[embassy_executor::task] attribute
-        // and spawner.spawn() at the application level. This method exists for
-        // trait compatibility but spawning must be done through Embassy tasks.
-        Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
-            message: "Embassy requires static task spawning via #[embassy_executor::task]",
-        })
+        // Box the future for type erasure
+        let boxed_future: BoxedFuture = alloc::boxed::Box::new(future);
+
+        // Get the spawner
+        let spawner =
+            self.spawner
+                .as_ref()
+                .ok_or(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                    message: "No spawner available - use EmbassyAdapter::new_with_spawner()",
+                })?;
+
+        // Spawn using our generic task pool
+        match generic_task_runner(boxed_future) {
+            Ok(spawn_token) => {
+                spawner.spawn(spawn_token);
+                Ok(())
+            }
+            Err(_) => Err(aimdb_executor::ExecutorError::SpawnFailed {
+                message: "Task pool exhausted - increase pool_size in generic_task_runner",
+            }),
+        }
     }
 }
 

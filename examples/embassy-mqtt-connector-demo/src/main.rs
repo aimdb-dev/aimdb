@@ -3,12 +3,37 @@
 
 //! MQTT Connector Demo for Embassy Runtime
 //!
-//! This example demonstrates the complete AimDB + MQTT integration on embedded hardware.
+//! Demonstrates MQTT integration with automatic publishing to multiple topics on embedded hardware.
+//!
+//! ## Hardware Requirements
+//!
+//! - STM32H563ZI Nucleo board (or similar with Ethernet)
+//! - Ethernet connection to network with MQTT broker
+//!
+//! ## Running
+//!
+//! 1. Start an MQTT broker on your network:
+//! ```bash
+//! docker run -d -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
+//! ```
+//!
+//! 2. Subscribe to topics:
+//! ```bash
+//! mosquitto_sub -h <broker-ip> -t 'sensors/#' -v
+//! ```
+//!
+//! 3. Update MQTT_BROKER_IP constant below to match your broker
+//!
+//! 4. Flash to target:
+//! ```bash
+//! cargo run --example embassy-mqtt-connector-demo --features embassy-runtime,tracing
+//! ```
 
 extern crate alloc;
 
-use aimdb_core::AimDbBuilder;
-use aimdb_embassy_adapter::EmbassyAdapter;
+use aimdb_core::buffer::BufferCfg;
+use aimdb_core::{AimDbBuilder, Consumer, Producer, RuntimeContext};
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyRecordRegistrarExt};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
@@ -48,57 +73,6 @@ async fn mqtt_task(task: aimdb_mqtt_connector::embassy_client::MqttBackgroundTas
     task.run().await;
 }
 
-/// Temperature producer service that generates sensor readings
-/// Uses #[aimdb_core::service] macro for runtime-agnostic definition
-#[aimdb_core::service]
-async fn temperature_producer(db: &'static aimdb_core::AimDb) {
-    info!("📊 Temperature producer service starting");
-
-    let mut counter = 0u32;
-
-    loop {
-        let temp = Temperature {
-            sensor_id: "sensor-001",
-            celsius: 20.0 + (counter as f32 * 0.5) % 20.0,
-            timestamp: counter,
-        };
-
-        info!(
-            "📡 Producing temperature: {}.{} °C",
-            (temp.celsius * 10.0) as i32 / 10,
-            (temp.celsius * 10.0) as i32 % 10
-        );
-
-        match db.produce(temp.clone()).await {
-            Ok(_) => {}
-            Err(e) => {
-                error!(
-                    "❌ Failed to produce temperature: {:?}",
-                    defmt::Debug2Format(&e)
-                );
-            }
-        }
-
-        counter += 1;
-        Timer::after(Duration::from_secs(2)).await;
-    }
-}
-
-//
-// ============================================================================
-// MQTT CONFIGURATION
-// ============================================================================
-//
-
-/// MQTT broker IP address (modify for your network)
-const MQTT_BROKER_IP: &str = "192.168.1.3";
-
-/// MQTT broker port
-const MQTT_BROKER_PORT: u16 = 1883;
-
-/// MQTT client ID for this device
-const MQTT_CLIENT_ID: &str = "embassy-sensor-node";
-
 //
 // ============================================================================
 // SENSOR DATA TYPES
@@ -115,7 +89,7 @@ struct Temperature {
 
 impl Temperature {
     /// Serialize to JSON format using heapless string
-    /// Returns a byte slice ready for MQTT publishing  
+    /// Returns a byte slice ready for MQTT publishing
     fn to_json(&self) -> HeaplessString<128> {
         use core::fmt::Write;
         let mut json = HeaplessString::<128>::new();
@@ -136,7 +110,76 @@ impl Temperature {
     fn to_json_vec(&self) -> alloc::vec::Vec<u8> {
         self.to_json().as_bytes().to_vec()
     }
+
+    /// Serialize to CSV format for no_std
+    fn to_csv(&self) -> alloc::vec::Vec<u8> {
+        use alloc::format;
+        let csv = format!("{},{},{}", self.sensor_id, self.celsius, self.timestamp);
+        csv.into_bytes()
+    }
 }
+
+/// Simulates a temperature sensor generating readings
+async fn temperature_producer(
+    ctx: RuntimeContext<EmbassyAdapter>,
+    temperature: Producer<Temperature, EmbassyAdapter>,
+) {
+    let log = ctx.log();
+
+    log.info("📊 Starting temperature producer service...\n");
+
+    for i in 0..10 {
+        let temp = Temperature {
+            sensor_id: "sensor-001",
+            celsius: 20.0 + (i as f32 * 2.0),
+            timestamp: i,
+        };
+
+        if let Err(e) = temperature.produce(temp).await {
+            log.error(&alloc::format!("❌ Failed to produce temperature: {:?}", e));
+        }
+
+        Timer::after(Duration::from_secs(2)).await;
+    }
+
+    log.info("\n✅ Published 10 temperature readings");
+}
+
+/// Consumer that logs temperature readings
+async fn temperature_consumer(
+    ctx: RuntimeContext<EmbassyAdapter>,
+    consumer: Consumer<Temperature, EmbassyAdapter>,
+) {
+    let log = ctx.log();
+
+    let Ok(mut reader) = consumer.subscribe() else {
+        log.error("Failed to subscribe to temperature buffer");
+        return;
+    };
+
+    while let Ok(temp) = reader.recv().await {
+        log.info(&alloc::format!(
+            "Temperature produced: {:.1}°C from {}",
+            temp.celsius,
+            temp.sensor_id
+        ));
+    }
+}
+
+//
+// ============================================================================
+// MQTT CONFIGURATION
+// ============================================================================
+//
+
+/// MQTT broker IP address (modify for your network)
+const MQTT_BROKER_IP: &str = "192.168.1.3";
+
+/// MQTT broker port
+const MQTT_BROKER_PORT: u16 = 1883;
+
+/// MQTT client ID for this device
+const MQTT_CLIENT_ID: &str = "embassy-sensor-node";
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -283,66 +326,45 @@ async fn main(spawner: Spawner) {
     info!("🎉 MQTT connector ready");
 
     // Create AimDB database with Embassy adapter
-    info!("🔧 Building AimDB database with producer and MQTT consumer...");
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_spawner(spawner));
 
-    // Create Embassy adapter
-    let adapter = EmbassyAdapter::new_with_spawner(spawner);
-    let runtime = alloc::sync::Arc::new(adapter);
+    let mqtt_connector = alloc::sync::Arc::new(mqtt_connector.clone());
 
-    // Build database with MQTT connector using scheme-based registration
-    // This enables the same .link() pattern as Tokio!
+    info!("🔧 Creating database with MQTT connector...");
+
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector("mqtt", alloc::sync::Arc::new(mqtt_connector.clone()));
+        .with_connector("mqtt", mqtt_connector.clone());
 
-    // Configure Temperature record with MQTT publishing
     builder.configure::<Temperature>(|reg| {
-        // Note: .source() is a future feature for automatic service spawning
-        // For now, we spawn the producer service manually below
-        // When implemented, .source() will handle the lifecycle management
-
-        // Register tap observer for console logging
-        reg.tap(|_em, temp| async move {
-            info!(
-                "Temperature observed: {}.{} °C from {}",
-                (temp.celsius * 10.0) as i32 / 10,
-                (temp.celsius * 10.0) as i32 % 10,
-                temp.sensor_id
-            );
-        })
-        // Use .link() pattern for automatic MQTT publishing!
-        // This now works in both Tokio and Embassy
-        // URL format: mqtt://topic (broker info is already in the pool)
-        .link("mqtt://sensors/temperature")
-        .with_qos(1)
-        .with_retain(false)
-        .with_serializer(|temp: &Temperature| {
-            // Serialize to JSON (no_std compatible)
-            Ok(temp.to_json_vec())
-        })
-        .finish();
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+            .source(temperature_producer)
+            .tap(temperature_consumer)
+            // Publish to MQTT as JSON
+            .link("mqtt://sensors/temperature")
+            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .finish()
+            // Publish to MQTT as CSV with QoS 1 and retain
+            .link("mqtt://sensors/raw")
+            .with_qos(1)
+            .with_retain(true)
+            .with_serializer(|temp: &Temperature| Ok(temp.to_csv()))
+            .finish();
     });
 
-    static DB_CELL: StaticCell<aimdb_core::AimDb> = StaticCell::new();
-    let db = DB_CELL.init(builder.build().expect("Failed to build database"));
+    info!("✅ Database configured with MQTT connectors");
+    info!("   - mqtt://sensors/temperature (JSON format)");
+    info!("   - mqtt://sensors/raw (CSV format, QoS=1, retain=true)");
+    info!("   Broker: {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
+    info!("   Press Reset button to restart.\n");
 
-    info!("✅ AimDB database created with tap observer and MQTT link");
-    info!("   Pattern: producer service -> db.produce() -> tap -> MQTT link");
+    static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
+    let _db = DB_CELL.init(builder.build().expect("Failed to build database"));
 
-    // Spawn temperature producer service
-    // The #[service] macro automatically injects #[embassy_executor::task] for Embassy
-    // The service calls db.produce() which triggers the tap observers and link connectors
-    spawner
-        .spawn(temperature_producer(db))
-        .expect("Failed to spawn temperature producer");
+    info!("✅ Database running with background services");
 
-    info!("✅ Temperature producer service spawned");
-
-    info!("🎉 Demo ready - entering main loop");
-    info!("💡 LED will blink slowly while running");
-
-    // Main loop - just blink LED to show we're alive
-    // The temperature_producer_task runs independently
+    // Main loop - blink LED to show system is alive
+    // All services (producer, consumer, MQTT) run in the background
     loop {
         led.set_high();
         Timer::after(Duration::from_millis(100)).await;
