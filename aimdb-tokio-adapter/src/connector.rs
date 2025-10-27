@@ -106,10 +106,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_connectors_empty_database() {
-        let adapter = TokioAdapter::new().unwrap();
-        let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter));
+        let adapter = TokioAdapter::new().expect("Failed to create adapter");
+        let mut builder = AimDbBuilder::new().runtime(Arc::new(adapter));
 
-        // Register a record with no connectors
+        // Configure a test record type but don't add any connectors
         builder.configure::<TestMessage>(|reg| {
             reg.source(|_ctx, _msg| async {})
                 .tap(|_ctx, _consumer| async {});
@@ -125,7 +125,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_connectors_with_links() {
         let adapter = TokioAdapter::new().unwrap();
-        let mut builder = AimDbBuilder::new().with_runtime(Arc::new(adapter));
+        let mut builder = AimDbBuilder::new().runtime(Arc::new(adapter));
 
         // Register a record with connectors
         builder.configure::<TestMessage>(|reg| {
