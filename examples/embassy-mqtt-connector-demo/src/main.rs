@@ -7,7 +7,7 @@
 
 extern crate alloc;
 
-use aimdb_core::{AimDbBuilder, service};
+use aimdb_core::AimDbBuilder;
 use aimdb_embassy_adapter::EmbassyAdapter;
 use defmt::*;
 use embassy_executor::Spawner;
@@ -22,7 +22,7 @@ use heapless::String as HeaplessString;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use aimdb_mqtt_connector::embassy_client::MqttClientPool;
+use aimdb_mqtt_connector::embassy_client::MqttConnector;
 
 // Simple embedded allocator (required by some dependencies)
 #[global_allocator]
@@ -48,11 +48,11 @@ async fn mqtt_task(task: aimdb_mqtt_connector::embassy_client::MqttBackgroundTas
     task.run().await;
 }
 
-/// Temperature producer task that generates sensor readings
-/// Uses #[service] macro for runtime-agnostic task definition
-#[service]
+/// Temperature producer service that generates sensor readings
+/// Uses #[aimdb_core::service] macro for runtime-agnostic definition
+#[aimdb_core::service]
 async fn temperature_producer(db: &'static aimdb_core::AimDb) {
-    info!("📊 Temperature producer starting");
+    info!("📊 Temperature producer service starting");
 
     let mut counter = 0u32;
 
@@ -255,19 +255,19 @@ async fn main(spawner: Spawner) {
 
     info!("🔌 Initializing MQTT client...");
 
-    // Create MQTT client pool and background task
+    // Create MQTT connector and background task
     let mqtt_result =
-        MqttClientPool::create(stack, MQTT_BROKER_IP, MQTT_BROKER_PORT, MQTT_CLIENT_ID).await;
+        MqttConnector::create(stack, MQTT_BROKER_IP, MQTT_BROKER_PORT, MQTT_CLIENT_ID).await;
 
     let mqtt = match mqtt_result {
         Ok(m) => m,
         Err(_e) => {
-            error!("Failed to create MQTT client - check broker IP and network");
+            error!("Failed to create MQTT connector - check broker IP and network");
             core::panic!("MQTT initialization failed");
         }
     };
 
-    info!("✅ MQTT client pool created");
+    info!("✅ MQTT connector created");
 
     // Spawn the MQTT background task
     // This task maintains the connection and processes publish requests
@@ -275,10 +275,10 @@ async fn main(spawner: Spawner) {
 
     info!("✅ MQTT background task spawned");
 
-    // Make pool available for MQTT consumer
-    static MQTT_POOL: StaticCell<aimdb_mqtt_connector::embassy_client::MqttClientPool> =
+    // Make connector available for MQTT consumer
+    static MQTT_CONNECTOR: StaticCell<aimdb_mqtt_connector::embassy_client::MqttConnector> =
         StaticCell::new();
-    let mqtt_pool = MQTT_POOL.init(mqtt.pool);
+    let mqtt_connector = MQTT_CONNECTOR.init(mqtt.connector);
 
     info!("🎉 MQTT connector ready");
 
@@ -289,18 +289,22 @@ async fn main(spawner: Spawner) {
     let adapter = EmbassyAdapter::new_with_spawner(spawner);
     let runtime = alloc::sync::Arc::new(adapter);
 
-    // Build database with MQTT connector pool using scheme-based registration
+    // Build database with MQTT connector using scheme-based registration
     // This enables the same .link() pattern as Tokio!
     let mut builder = AimDbBuilder::new()
-        .with_runtime(runtime.clone())
-        .with_connector_pool("mqtt", alloc::sync::Arc::new(mqtt_pool.clone()));
+        .runtime(runtime.clone())
+        .with_connector("mqtt", alloc::sync::Arc::new(mqtt_connector.clone()));
 
     // Configure Temperature record with MQTT publishing
     builder.configure::<Temperature>(|reg| {
-        // Register producer (application logic)
-        reg.producer(|_em, temp| async move {
+        // Note: .source() is a future feature for automatic service spawning
+        // For now, we spawn the producer service manually below
+        // When implemented, .source() will handle the lifecycle management
+
+        // Register tap observer for console logging
+        reg.tap(|_em, temp| async move {
             info!(
-                "Temperature produced: {}.{} °C from {}",
+                "Temperature observed: {}.{} °C from {}",
                 (temp.celsius * 10.0) as i32 / 10,
                 (temp.celsius * 10.0) as i32 % 10,
                 temp.sensor_id
@@ -322,14 +326,17 @@ async fn main(spawner: Spawner) {
     static DB_CELL: StaticCell<aimdb_core::AimDb> = StaticCell::new();
     let db = DB_CELL.init(builder.build().expect("Failed to build database"));
 
-    info!("✅ AimDB database created with producer and MQTT consumer");
-    info!("   Pattern: producer -> database -> MQTT consumer");
+    info!("✅ AimDB database created with tap observer and MQTT link");
+    info!("   Pattern: producer service -> db.produce() -> tap -> MQTT link");
 
-    // Spawn temperature producer using unified #[service] macro pattern
-    // Works identically to Tokio: spawner.spawn(temperature_producer(db))
-    spawner.spawn(temperature_producer(db).expect("Failed to spawn temperature producer"));
+    // Spawn temperature producer service
+    // The #[service] macro automatically injects #[embassy_executor::task] for Embassy
+    // The service calls db.produce() which triggers the tap observers and link connectors
+    spawner
+        .spawn(temperature_producer(db))
+        .expect("Failed to spawn temperature producer");
 
-    info!("✅ Temperature producer spawned via unified service pattern");
+    info!("✅ Temperature producer service spawned");
 
     info!("🎉 Demo ready - entering main loop");
     info!("💡 LED will blink slowly while running");

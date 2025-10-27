@@ -1,9 +1,9 @@
 [package]
-name = "mqtt-connector-demo"
+name = "tokio-mqtt-connector-demo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "AimDB example demonstrating MQTT connector integration"
+description = "AimDB example demonstrating MQTT connector integration with Tokio runtime"
 publish = false
 
 [features]
@@ -14,6 +14,7 @@ tracing = ["dep:tracing", "dep:tracing-subscriber"]
 [dependencies]
 # Core AimDB dependencies
 aimdb-core = { path = "../../aimdb-core", features = ["std", "tokio-runtime"] }
+aimdb-executor = { path = "../../aimdb-executor", features = ["std"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
     "tracing",

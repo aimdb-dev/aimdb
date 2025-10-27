@@ -7,11 +7,7 @@ members = [
     "aimdb-macros",
     "aimdb-mqtt-connector",
     "tools/aimdb-cli",
-    "examples/shared",
-    "examples/tokio-runtime-demo",
-    "examples/embassy-runtime-demo",
-    "examples/producer-consumer-demo",
-    "examples/mqtt-connector-demo",
+    "examples/tokio-mqtt-connector-demo",
     "examples/embassy-mqtt-connector-demo",
 ]
 exclude = ["_external"]
@@ -136,7 +132,6 @@ embassy-time = { path = "./_external/embassy/embassy-time" }
 embassy-sync = { path = "./_external/embassy/embassy-sync" }
 embassy-net = { path = "./_external/embassy/embassy-net" }
 embassy-futures = { path = "./_external/embassy/embassy-futures" }
-embassy-usb = { path = "./_external/embassy/embassy-usb" }
 
 [workspace.metadata.docs.rs]
 all-features = true

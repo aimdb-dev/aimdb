@@ -1,4 +1,0 @@
-[toolchain]
-channel = "1.90"
-components = ["rust-src", "rustfmt", "llvm-tools"]
-targets = ["thumbv8m.main-none-eabihf"]

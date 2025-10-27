@@ -57,10 +57,6 @@ embassy-net = { workspace = true, features = [
 ] }
 embassy-futures = { workspace = true }
 
-aimdb-examples-shared = { path = "../shared", default-features = false, features = [
-    "embassy-runtime",
-] }
-
 # Embedded debugging and logging
 defmt = { workspace = true }
 defmt-rtt = { workspace = true }

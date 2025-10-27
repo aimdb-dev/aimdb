@@ -56,7 +56,7 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-macros aimdb-cli aimdb-examples-shared aimdb-tokio-demo embassy-runtime-demo producer-consumer-demo; do \
+	@for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-macros aimdb-mqtt-connector aimdb-cli tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -107,12 +107,10 @@ test-embedded:
 ## Example projects
 examples:
 	@printf "$(GREEN)Building all example projects...$(NC)\n"
-	@printf "$(YELLOW)  → Building tokio-runtime-demo (native, tokio runtime)$(NC)\n"
-	cargo build --package aimdb-tokio-demo --features tokio-runtime
-	@printf "$(YELLOW)  → Building producer-consumer-demo (native, tokio runtime)$(NC)\n"
-	cargo build --package producer-consumer-demo --features std
-	@printf "$(YELLOW)  → Building embassy-runtime-demo (thumbv8m.main-none-eabihf, embassy runtime)$(NC)\n"
-	cargo build --package embassy-runtime-demo --target thumbv8m.main-none-eabihf --features embassy-runtime
+	@printf "$(YELLOW)  → Building tokio-mqtt-connector-demo (native, tokio runtime)$(NC)\n"
+	cargo build --package tokio-mqtt-connector-demo
+	@printf "$(YELLOW)  → Building embassy-mqtt-connector-demo (embedded, embassy runtime)$(NC)\n"
+	cargo build --package embassy-mqtt-connector-demo --target thumbv7em-none-eabihf
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Convenience commands
