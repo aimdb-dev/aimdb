@@ -190,12 +190,68 @@ where
         self.configure::<T>(|reg| T::register(reg, cfg))
     }
 
-    /// Builds the database
+    /// Runs the database indefinitely (never returns)
     ///
-    /// Validates all records and constructs the final `AimDb<R>` instance.
+    /// This method builds the database, spawns all producer and consumer tasks, and then
+    /// parks the current task indefinitely. This is the primary way to run AimDB services.
     ///
-    /// **Automatic Tap Spawning:** This method automatically spawns all `.tap()` observer
-    /// tasks that were registered during database configuration. No manual spawning needed!
+    /// All logic runs in background tasks via producers, consumers, and connectors. The
+    /// application continues until interrupted (e.g., Ctrl+C).
+    ///
+    /// # Returns
+    /// `DbResult<()>` - Ok when database starts successfully, then parks forever
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[tokio::main]
+    /// async fn main() -> DbResult<()> {
+    ///     AimDbBuilder::new()
+    ///         .with_runtime(Arc::new(TokioAdapter::new()?))
+    ///         .configure::<MyData>(|reg| {
+    ///             reg.with_buffer(BufferCfg::SpmcRing { capacity: 100 })
+    ///                .with_source(my_producer)
+    ///                .with_tap(my_consumer);
+    ///         })
+    ///         .run().await  // Runs forever
+    /// }
+    /// ```
+    pub async fn run(self) -> DbResult<()> {
+        // Build the database and spawn all tasks
+        let _db = self.build()?;
+
+        #[cfg(feature = "tracing")]
+        tracing::info!("Database running, background tasks active. Press Ctrl+C to stop.");
+
+        // Park indefinitely - the background tasks will continue running
+        // The database handle is kept alive here to prevent dropping it
+        core::future::pending::<()>().await;
+
+        Ok(())
+    }
+
+    /// Builds the database and returns the handle (advanced use)
+    ///
+    /// Use this when you need programmatic access to the database handle for
+    /// manual subscriptions or production. For typical services, use `.run().await` instead.
+    ///
+    /// **Automatic Task Spawning:** This method spawns all producer services and
+    /// `.tap()` observer tasks that were registered during configuration.
+    ///
+    /// # Returns
+    /// `DbResult<AimDb<R>>` - The database instance
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let db = AimDbBuilder::new()
+    ///     .with_runtime(Arc::new(TokioAdapter::new()?))
+    ///     .configure::<MyData>(|reg| { /* ... */ })
+    ///     .build()?;
+    ///
+    /// // Manually subscribe or produce
+    /// let mut reader = db.subscribe::<MyData>()?;
+    /// ```
     pub fn build(self) -> DbResult<AimDb<R>> {
         use crate::DbError;
 
@@ -325,10 +381,10 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     }
 
     /// Builds a database with a closure-based builder pattern
-    pub fn build_with(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder<R>)) -> DbResult<Self> {
+    pub async fn build_with(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder<R>)) -> DbResult<()> {
         let mut b = AimDbBuilder::new().with_runtime(rt);
         f(&mut b);
-        b.build()
+        b.run().await
     }
 
     /// Spawns a task using the database's runtime adapter

@@ -22,8 +22,10 @@ type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> 
 
 /// Type alias for consumer service closure stored in TypedRecord
 /// Each consumer receives a Consumer<T, R> handle for subscribing to the buffer
-type ConsumerServiceFn<T, R> =
-    Box<dyn FnOnce(crate::Consumer<T, R>) -> BoxFuture<'static, ()> + Send>;
+/// and a runtime context (Arc<dyn Any>) for accessing runtime capabilities
+type ConsumerServiceFn<T, R> = Box<
+    dyn FnOnce(crate::Consumer<T, R>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()> + Send,
+>;
 
 /// Type alias for producer service closure stored in TypedRecord
 /// Takes (Producer<T, R>, RuntimeContext) and returns a Future
@@ -296,12 +298,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Multiple consumers can be registered for the same record type.
     ///
     /// # Arguments
-    /// * `f` - A function that takes `Consumer<T>` and returns a Future
+    /// * `f` - A function that takes `Consumer<T>`, runtime context, and returns a Future
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// record.add_consumer(|consumer| async move {
+    /// record.add_consumer(|consumer, ctx_any| async move {
     ///     let mut rx = consumer.subscribe().unwrap();
     ///     while let Ok(value) = rx.recv().await {
     ///         println!("Consumer: {:?}", value);
@@ -310,14 +312,14 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// ```
     pub fn add_consumer<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(crate::Consumer<T, R>) -> Fut + Send + 'static,
+        F: FnOnce(crate::Consumer<T, R>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Box the future to make it trait object compatible
         let boxed = Box::new(
-            move |consumer: crate::Consumer<T, R>| -> BoxFuture<'static, ()> {
-                Box::pin(f(consumer))
-            },
+            move |consumer: crate::Consumer<T, R>,
+                  ctx_any: Arc<dyn Any + Send + Sync>|
+                  -> BoxFuture<'static, ()> { Box::pin(f(consumer, ctx_any)) },
         );
 
         #[cfg(feature = "std")]
@@ -478,7 +480,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// This consumes all registered consumers (FnOnce), so it can only be called once.
     pub fn spawn_consumer_tasks(
         &self,
-        runtime: &R,
+        runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
     ) -> crate::DbResult<()>
     where
@@ -515,8 +517,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             // Create a Consumer<T> handle for this task
             let consumer = crate::typed_api::Consumer::new(db.clone());
 
-            // Spawn the consumer task
-            let task_future = consumer_fn(consumer);
+            // Get runtime context as Arc<dyn Any> by cloning the Arc
+            let runtime_any: Arc<dyn Any + Send + Sync> = runtime.clone();
+
+            // Spawn the consumer task with runtime context
+            let task_future = consumer_fn(consumer, runtime_any);
             runtime.spawn(task_future).map_err(DbError::from)?;
         }
 

@@ -213,8 +213,18 @@ where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
 {
-    /// Registers a producer service for this record type
-    pub fn source<F, Fut>(&'a mut self, f: F) -> &'a mut Self
+    /// Registers a producer service for this record type (low-level API)
+    ///
+    /// **Note:** This is the foundational API used by runtime adapter implementations.
+    /// Most users should use the higher-level `source()` method provided by runtime
+    /// adapter extension traits (e.g., `TokioRecordRegistrarExt::source()`) which
+    /// automatically extract the typed `RuntimeContext`.
+    ///
+    /// This method accepts the raw runtime context as `Arc<dyn Any>` and is used by:
+    /// - Runtime adapter implementations to provide convenient wrappers
+    /// - Internal connector implementations
+    /// - Advanced use cases requiring direct control
+    pub fn source_raw<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
         F: FnOnce(crate::Producer<T, R>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
             + Send
@@ -226,10 +236,22 @@ where
         self
     }
 
-    /// Register a side-effect observer that taps into the data stream
-    pub fn tap<F, Fut>(&'a mut self, f: F) -> &'a mut Self
+    /// Register a side-effect observer that taps into the data stream (low-level API)
+    ///
+    /// **Note:** This is the foundational API used by runtime adapter and connector implementations.
+    /// Most users should use the higher-level `tap()` method provided by runtime
+    /// adapter extension traits (e.g., `TokioRecordRegistrarExt::tap()`) which
+    /// automatically extract the typed `RuntimeContext`.
+    ///
+    /// This method accepts the raw runtime context as `Arc<dyn Any>` and is used by:
+    /// - Runtime adapter implementations to provide convenient wrappers
+    /// - Internal connector implementations (e.g., `.link()` creates consumers via this method)
+    /// - Advanced use cases requiring direct control
+    pub fn tap_raw<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
-        F: FnOnce(crate::Consumer<T, R>) -> Fut + Send + 'static,
+        F: FnOnce(crate::Consumer<T, R>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
+            + Send
+            + 'static,
         Fut: Future<Output = ()> + Send + 'static,
         T: Sync,
     {
@@ -237,8 +259,17 @@ where
         self
     }
 
-    /// Configures a buffer for this record
-    pub fn buffer(&'a mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &'a mut Self {
+    /// Configures a buffer for this record (low-level API)
+    ///
+    /// **Note:** This is the foundational API used by runtime adapter implementations.
+    /// Most users should use the higher-level `buffer()` method provided by runtime
+    /// adapter extension traits (e.g., `TokioRecordRegistrarExt::buffer()`) which
+    /// accept `BufferCfg` and construct the appropriate buffer type automatically.
+    ///
+    /// This method accepts a boxed buffer trait object and is used by:
+    /// - Runtime adapter implementations to provide convenient wrappers
+    /// - Advanced use cases requiring custom buffer implementations
+    pub fn buffer_raw(&'a mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &'a mut Self {
         self.rec.set_buffer(buffer);
         self
     }
@@ -348,7 +379,7 @@ where
             let config_clone = self.config.clone();
 
             let rec = &mut self.registrar.rec;
-            rec.add_consumer(move |consumer| {
+            rec.add_consumer(move |consumer, _ctx_any| {
                 let pool_ref = pool_clone.clone();
                 let url_ref = url_clone.clone();
                 let config_ref = config_clone.clone();
