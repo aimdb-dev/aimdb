@@ -20,9 +20,9 @@ pub mod connector;
 pub mod context;
 pub mod database;
 mod error;
-pub mod pool;
 pub mod runtime;
 pub mod time;
+pub mod transport;
 pub mod typed_api;
 pub mod typed_record;
 
@@ -42,9 +42,7 @@ pub use database::Database;
 
 // Producer-Consumer Pattern exports
 pub use builder::{AimDb, AimDbBuilder};
-pub use pool::{
-    ConnectorConfig, ConnectorPool, HttpConnectorPool, KafkaConnectorPool, PublishError,
-};
+pub use transport::{Connector, ConnectorConfig, HttpConnector, KafkaConnector, PublishError};
 pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 

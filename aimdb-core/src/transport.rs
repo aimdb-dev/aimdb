@@ -1,13 +1,13 @@
-//! Connector pool traits for MQTT, Kafka, HTTP, shmem, and other protocols
+//! Transport connector traits for MQTT, Kafka, HTTP, shmem, and other protocols
 //!
-//! Provides a generic `ConnectorPool` trait that enables scheme-based routing
-//! to different transport protocols. Pools manage connections to specific endpoints
-//! (e.g., one MQTT broker, one shared memory segment, etc.).
+//! Provides a generic `Connector` trait that enables scheme-based routing
+//! to different transport protocols. Each connector manages a single connection
+//! to a specific endpoint (e.g., one MQTT broker, one shared memory segment, etc.).
 //!
 //! # Design Philosophy
 //!
-//! - **Scheme-based routing**: URL scheme (mqtt://, shmem://, kafka://) determines which pool handles requests
-//! - **Single endpoint per pool**: Each pool connects to ONE broker/resource
+//! - **Scheme-based routing**: URL scheme (mqtt://, shmem://, kafka://) determines which connector handles requests
+//! - **Single endpoint per connector**: Each connector connects to ONE broker/resource
 //! - **Multi-transport publishing**: Same data can be published to multiple protocols
 //! - **Protocol-agnostic core**: Core doesn't know about MQTT, Kafka, etc. - just routes by scheme
 
@@ -106,7 +106,7 @@ impl std::fmt::Display for PublishError {
 #[cfg(feature = "std")]
 impl std::error::Error for PublishError {}
 
-/// Generic connector pool trait for protocol-agnostic publishing
+/// Generic transport connector trait for protocol-agnostic publishing
 ///
 /// This trait enables multi-protocol publishing via scheme-based routing:
 /// - `mqtt://topic` → MQTT broker
@@ -115,13 +115,13 @@ impl std::error::Error for PublishError {}
 /// - `http://endpoint` → HTTP POST
 /// - `dds://topic` → DDS topic
 ///
-/// Each pool manages ONE connection/endpoint. For multiple brokers/endpoints,
-/// create multiple pools and register them with different schemes.
+/// Each connector manages ONE connection/endpoint. For multiple brokers/endpoints,
+/// create multiple connectors and register them with different schemes.
 ///
 /// # Example Implementation
 ///
 /// ```rust,ignore
-/// impl ConnectorPool for MqttClientPool {
+/// impl Connector for MqttConnector {
 ///     fn publish(
 ///         &self,
 ///         destination: &str,  // "sensors/temperature"
@@ -139,11 +139,11 @@ impl std::error::Error for PublishError {}
 /// # Usage
 ///
 /// ```rust,ignore
-/// let mqtt_pool = MqttClientPool::new("broker.local:1883");
+/// let mqtt_connector = MqttConnector::new("mqtt://broker.local:1883").await?;
 ///
 /// let db = AimDbBuilder::new()
-///     .with_runtime(runtime)
-///     .with_connector_pool("mqtt", Arc::new(mqtt_pool))
+///     .runtime(runtime)
+///     .with_connector("mqtt", Arc::new(mqtt_connector))
 ///     .configure::<Temperature>(|reg| {
 ///         reg.link("mqtt://sensors/temp")
 ///            .with_qos(1)
@@ -156,7 +156,7 @@ impl std::error::Error for PublishError {}
 ///
 /// Requires Send + Sync for Tokio compatibility. For Embassy (single-threaded),
 /// use `unsafe impl Send + Sync` with safety documentation.
-pub trait ConnectorPool: Send + Sync {
+pub trait Connector: Send + Sync {
     /// Publish data to a protocol-specific destination
     ///
     /// # Arguments
@@ -178,9 +178,9 @@ pub trait ConnectorPool: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>>;
 }
 
-/// Trait for Kafka connector pools (placeholder for future implementation)
+/// Trait for Kafka connectors (placeholder for future implementation)
 #[allow(dead_code)]
-pub trait KafkaConnectorPool: Send + Sync {
+pub trait KafkaConnector: Send + Sync {
     /// Publish a message to a Kafka topic
     fn publish(
         &self,
@@ -190,9 +190,9 @@ pub trait KafkaConnectorPool: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
 }
 
-/// Trait for HTTP connector pools (placeholder for future implementation)
+/// Trait for HTTP connectors (placeholder for future implementation)
 #[allow(dead_code)]
-pub trait HttpConnectorPool: Send + Sync {
+pub trait HttpConnector: Send + Sync {
     /// Publish a message via HTTP POST
     fn publish(
         &self,
@@ -207,10 +207,10 @@ mod tests {
     use super::*;
     use alloc::sync::Arc;
 
-    // Mock connector pool for testing
-    struct MockConnectorPool;
+    // Mock connector for testing
+    struct MockConnector;
 
-    impl ConnectorPool for MockConnectorPool {
+    impl Connector for MockConnector {
         fn publish(
             &self,
             _destination: &str,
@@ -222,11 +222,11 @@ mod tests {
     }
 
     #[test]
-    fn test_connector_pool_trait() {
-        let pool = Arc::new(MockConnectorPool);
+    fn test_connector_trait() {
+        let connector = Arc::new(MockConnector);
 
-        // Verify the pool can be used as a trait object
-        let _trait_obj: Arc<dyn ConnectorPool> = pool;
+        // Verify the connector can be used as a trait object
+        let _trait_obj: Arc<dyn Connector> = connector;
     }
 
     #[test]

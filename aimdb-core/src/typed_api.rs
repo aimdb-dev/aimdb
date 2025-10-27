@@ -204,8 +204,8 @@ pub struct RecordRegistrar<
 > {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T, R>,
-    /// Connector pools indexed by scheme
-    pub(crate) connector_pools: &'a BTreeMap<String, Arc<dyn crate::pool::ConnectorPool>>,
+    /// Connectors indexed by scheme
+    pub(crate) connectors: &'a BTreeMap<String, Arc<dyn crate::transport::Connector>>,
 }
 
 impl<'a, T, R> RecordRegistrar<'a, T, R>
@@ -369,18 +369,18 @@ where
         };
 
         let has_serializer = serializer_opt.is_some();
-        let has_pool = self.registrar.connector_pools.get(&scheme).is_some();
+        let has_connector = self.registrar.connectors.get(&scheme).is_some();
 
-        if let (Some(serializer), Some(pool)) =
-            (serializer_opt, self.registrar.connector_pools.get(&scheme))
+        if let (Some(serializer), Some(connector)) =
+            (serializer_opt, self.registrar.connectors.get(&scheme))
         {
-            let pool_clone = pool.clone();
+            let connector_clone = connector.clone();
             let url_clone = url_string.clone();
             let config_clone = self.config.clone();
 
             let rec = &mut self.registrar.rec;
             rec.add_consumer(move |consumer, _ctx_any| {
-                let pool_ref = pool_clone.clone();
+                let connector_ref = connector_clone.clone();
                 let url_ref = url_clone.clone();
                 let config_ref = config_clone.clone();
                 let ser = serializer.clone();
@@ -402,8 +402,13 @@ where
 
                         match ser(&value) {
                             Ok(bytes) => {
-                                if let Err(_e) =
-                                    publish_via_pool(&pool_ref, &url_ref, &config_ref, bytes).await
+                                if let Err(_e) = publish_via_connector(
+                                    &connector_ref,
+                                    &url_ref,
+                                    &config_ref,
+                                    bytes,
+                                )
+                                .await
                                 {
                                     #[cfg(feature = "tracing")]
                                     tracing::error!("Failed to publish: {:?}", _e);
@@ -423,10 +428,10 @@ where
                 "Connector configured for {} but no serializer provided.",
                 url_string
             );
-        } else if !has_pool {
+        } else if !has_connector {
             #[cfg(feature = "tracing")]
             tracing::warn!(
-                "Connector configured for {} but no pool registered for scheme '{}'.",
+                "Connector configured for {} but no connector registered for scheme '{}'.",
                 url_string,
                 scheme
             );
@@ -437,18 +442,18 @@ where
     }
 }
 
-/// Helper function to publish via a connector pool
-async fn publish_via_pool(
-    pool: &Arc<dyn crate::pool::ConnectorPool>,
+/// Helper function to publish via a connector
+async fn publish_via_connector(
+    connector: &Arc<dyn crate::transport::Connector>,
     url: &str,
     config: &[(String, String)],
     bytes: Vec<u8>,
-) -> Result<(), crate::pool::PublishError> {
+) -> Result<(), crate::transport::PublishError> {
     use crate::connector::ConnectorUrl;
-    use crate::pool::ConnectorConfig;
+    use crate::transport::ConnectorConfig;
 
     let parsed_url =
-        ConnectorUrl::parse(url).map_err(|_| crate::pool::PublishError::InvalidDestination)?;
+        ConnectorUrl::parse(url).map_err(|_| crate::transport::PublishError::InvalidDestination)?;
 
     let destination: String = if let Some(path) = parsed_url.path.as_deref() {
         let path_part = path.trim_start_matches('/');
@@ -487,7 +492,9 @@ async fn publish_via_pool(
         }
     }
 
-    pool.publish(&destination, &connector_config, &bytes).await
+    connector
+        .publish(&destination, &connector_config, &bytes)
+        .await
 }
 
 // ============================================================================

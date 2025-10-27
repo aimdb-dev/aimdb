@@ -35,7 +35,7 @@ pub struct AimDbInner {
 /// Database builder for producer-consumer pattern
 ///
 /// Provides a fluent API for constructing databases with type-safe record registration.
-/// Use `.with_runtime()` to set the runtime and transition to a typed builder.
+/// Use `.runtime()` to set the runtime and transition to a typed builder.
 pub struct AimDbBuilder<R = NoRuntime> {
     /// Registry of typed records
     records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
@@ -43,8 +43,8 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Runtime adapter
     runtime: Option<Arc<R>>,
 
-    /// Connector pools indexed by scheme (mqtt, shmem, kafka, etc.)
-    pub(crate) connector_pools: BTreeMap<String, Arc<dyn crate::pool::ConnectorPool>>,
+    /// Connectors indexed by scheme (mqtt, shmem, kafka, etc.)
+    pub(crate) connectors: BTreeMap<String, Arc<dyn crate::transport::Connector>>,
 
     /// Spawn functions indexed by TypeId
     spawn_fns: BTreeMap<TypeId, Box<dyn core::any::Any + Send>>,
@@ -56,12 +56,12 @@ pub struct AimDbBuilder<R = NoRuntime> {
 impl AimDbBuilder<NoRuntime> {
     /// Creates a new database builder without a runtime
     ///
-    /// Call `.with_runtime()` to set the runtime adapter.
+    /// Call `.runtime()` to set the runtime adapter.
     pub fn new() -> Self {
         Self {
             records: BTreeMap::new(),
             runtime: None,
-            connector_pools: BTreeMap::new(),
+            connectors: BTreeMap::new(),
             spawn_fns: BTreeMap::new(),
             _phantom: PhantomData,
         }
@@ -70,14 +70,14 @@ impl AimDbBuilder<NoRuntime> {
     /// Sets the runtime adapter
     ///
     /// This transitions the builder from untyped to typed with concrete runtime `R`.
-    pub fn with_runtime<R>(self, rt: Arc<R>) -> AimDbBuilder<R>
+    pub fn runtime<R>(self, rt: Arc<R>) -> AimDbBuilder<R>
     where
         R: aimdb_executor::Spawn + 'static,
     {
         AimDbBuilder {
             records: self.records,
             runtime: Some(rt),
-            connector_pools: self.connector_pools,
+            connectors: self.connectors,
             spawn_fns: BTreeMap::new(),
             _phantom: PhantomData,
         }
@@ -88,40 +88,40 @@ impl<R> AimDbBuilder<R>
 where
     R: aimdb_executor::Spawn + 'static,
 {
-    /// Registers a connector pool for a specific URL scheme
+    /// Registers a connector for a specific URL scheme
     ///
     /// The scheme (e.g., "mqtt", "shmem", "kafka") determines how `.link()` URLs
-    /// are routed. Each scheme can have ONE pool, which manages connections to
+    /// are routed. Each scheme can have ONE connector, which manages connections to
     /// a specific endpoint (broker, segment, cluster, etc.).
     ///
     /// # Arguments
     /// * `scheme` - URL scheme without "://" (e.g., "mqtt", "shmem", "kafka")
-    /// * `pool` - Connector pool implementing the ConnectorPool trait
+    /// * `connector` - Connector implementing the Connector trait
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// use aimdb_mqtt_connector::MqttClientPool;
+    /// use aimdb_mqtt_connector::MqttConnector;
     /// use std::sync::Arc;
     ///
-    /// let mqtt_pool = MqttClientPool::new("broker.local:1883");
-    /// let shmem_pool = ShmemConnectorPool::new("/dev/shm/aimdb");
+    /// let mqtt_connector = MqttConnector::new("mqtt://broker.local:1883").await?;
+    /// let shmem_connector = ShmemConnector::new("/dev/shm/aimdb");
     ///
     /// let builder = AimDbBuilder::new()
-    ///     .with_runtime(runtime)
-    ///     .with_connector_pool("mqtt", Arc::new(mqtt_pool))
-    ///     .with_connector_pool("shmem", Arc::new(shmem_pool));
+    ///     .runtime(runtime)
+    ///     .with_connector("mqtt", Arc::new(mqtt_connector))
+    ///     .with_connector("shmem", Arc::new(shmem_connector));
     ///
     /// // Now .link() can route to either:
-    /// //   .link("mqtt://sensors/temp")  → mqtt_pool
-    /// //   .link("shmem://temp_data")    → shmem_pool
+    /// //   .link("mqtt://sensors/temp")  → mqtt_connector
+    /// //   .link("shmem://temp_data")    → shmem_connector
     /// ```
-    pub fn with_connector_pool(
+    pub fn with_connector(
         mut self,
         scheme: impl Into<String>,
-        pool: Arc<dyn crate::pool::ConnectorPool>,
+        connector: Arc<dyn crate::transport::Connector>,
     ) -> Self {
-        self.connector_pools.insert(scheme.into(), pool);
+        self.connectors.insert(scheme.into(), connector);
         self
     }
 
@@ -146,7 +146,7 @@ where
 
         let mut reg = RecordRegistrar {
             rec,
-            connector_pools: &self.connector_pools,
+            connectors: &self.connectors,
         };
         f(&mut reg);
 
@@ -207,7 +207,7 @@ where
     /// #[tokio::main]
     /// async fn main() -> DbResult<()> {
     ///     AimDbBuilder::new()
-    ///         .with_runtime(Arc::new(TokioAdapter::new()?))
+    ///         .runtime(Arc::new(TokioAdapter::new()?))
     ///         .configure::<MyData>(|reg| {
     ///             reg.with_buffer(BufferCfg::SpmcRing { capacity: 100 })
     ///                .with_source(my_producer)
@@ -245,7 +245,7 @@ where
     ///
     /// ```rust,ignore
     /// let db = AimDbBuilder::new()
-    ///     .with_runtime(Arc::new(TokioAdapter::new()?))
+    ///     .runtime(Arc::new(TokioAdapter::new()?))
     ///     .configure::<MyData>(|reg| { /* ... */ })
     ///     .build()?;
     ///
@@ -276,7 +276,7 @@ where
             #[cfg(feature = "std")]
             {
                 DbError::RuntimeError {
-                    message: "runtime not set (use with_runtime)".into(),
+                    message: "runtime not set (use .runtime())".into(),
                 }
             }
             #[cfg(not(feature = "std"))]
@@ -346,7 +346,7 @@ impl Default for AimDbBuilder<NoRuntime> {
 ///
 /// let runtime = Arc::new(TokioAdapter);
 /// let db: AimDb<TokioAdapter> = AimDbBuilder::new()
-///     .with_runtime(runtime)
+///     .runtime(runtime)
 ///     .register_record::<Temperature>(&TemperatureConfig)
 ///     .build()?;
 /// ```
@@ -382,7 +382,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
 
     /// Builds a database with a closure-based builder pattern
     pub async fn build_with(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder<R>)) -> DbResult<()> {
-        let mut b = AimDbBuilder::new().with_runtime(rt);
+        let mut b = AimDbBuilder::new().runtime(rt);
         f(&mut b);
         b.run().await
     }
