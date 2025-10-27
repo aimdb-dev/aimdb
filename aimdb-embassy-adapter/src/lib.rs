@@ -156,6 +156,10 @@ pub async fn yield_now() {
 ///
 /// This trait provides convenience methods for configuring buffers
 /// inline when using the Embassy runtime adapter.
+///
+/// Note: Unlike the Tokio adapter, Embassy does not provide `with_source()`
+/// because Embassy requires `&'static` runtime references, which makes automatic
+/// context extraction more complex. Users should use `.source()` directly.
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
 pub trait EmbassyRecordRegistrarExt<
     'a,
@@ -210,6 +214,6 @@ where
         use aimdb_core::buffer::Buffer;
         use alloc::boxed::Box;
         let buffer = Box::new(EmbassyBuffer::<T, CAP, SUBS, PUBS, WATCH_N>::new(&cfg));
-        self.buffer(buffer)
+        self.buffer_raw(buffer)
     }
 }
