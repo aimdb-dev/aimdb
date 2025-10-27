@@ -11,30 +11,30 @@ use rumqttc::{AsyncClient, EventLoop, MqttOptions};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// MQTT client pool for a single broker connection
+/// MQTT connector for a single broker connection
 ///
-/// Each pool manages ONE MQTT broker connection. For multiple brokers,
-/// create multiple pools and register them with different schemes.
+/// Each connector manages ONE MQTT broker connection. For multiple brokers,
+/// create multiple connectors and register them with different schemes.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use aimdb_mqtt_connector::MqttClientPool;
+/// use aimdb_mqtt_connector::MqttConnector;
 ///
-/// // Create pool connected to a specific broker
-/// let pool = MqttClientPool::new("mqtt://localhost:1883").await?;
+/// // Create connector for a specific broker
+/// let connector = MqttConnector::new("mqtt://localhost:1883").await?;
 ///
 /// // Register with database
 /// let db = AimDbBuilder::new()
-///     .with_connector_pool("mqtt", Arc::new(pool))
+///     .with_connector("mqtt", Arc::new(connector))
 ///     .build()?;
 /// ```
-pub struct MqttClientPool {
+pub struct MqttConnector {
     client: Arc<AsyncClient>,
 }
 
-impl MqttClientPool {
-    /// Create a new MQTT client pool connected to a specific broker
+impl MqttConnector {
+    /// Create a new MQTT connector for a specific broker
     ///
     /// Creates an MQTT client and spawns its event loop immediately.
     ///
@@ -43,14 +43,14 @@ impl MqttClientPool {
     ///   Note: The URL should NOT include a topic - just the broker address
     ///
     /// # Returns
-    /// * `Ok(pool)` if connection was created successfully
+    /// * `Ok(connector)` if connection was created successfully
     /// * `Err(_)` if URL is invalid
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let pool = MqttClientPool::new("mqtt://localhost:1883").await?;
-    /// let pool_secure = MqttClientPool::new("mqtts://cloud.example.com:8883").await?;
+    /// let connector = MqttConnector::new("mqtt://localhost:1883").await?;
+    /// let connector_secure = MqttConnector::new("mqtts://cloud.example.com:8883").await?;
     /// ```
     pub async fn new(broker_url: &str) -> Result<Self, String> {
         // Parse the broker URL - we accept it with or without a topic
@@ -104,20 +104,20 @@ impl MqttClientPool {
 }
 
 // Implement the connector trait from aimdb-core
-impl aimdb_core::pool::ConnectorPool for MqttClientPool {
+impl aimdb_core::transport::Connector for MqttConnector {
     fn publish(
         &self,
         destination: &str,
-        config: &aimdb_core::pool::ConnectorConfig,
+        config: &aimdb_core::transport::ConnectorConfig,
         payload: &[u8],
     ) -> core::pin::Pin<
         Box<
-            dyn core::future::Future<Output = Result<(), aimdb_core::pool::PublishError>>
+            dyn core::future::Future<Output = Result<(), aimdb_core::transport::PublishError>>
                 + Send
                 + '_,
         >,
     > {
-        use aimdb_core::pool::PublishError;
+        use aimdb_core::transport::PublishError;
 
         // Extract topic from destination (destination is already the topic)
         let topic = destination.to_string();
@@ -194,20 +194,20 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_pool_creation() {
-        let pool = MqttClientPool::new("mqtt://localhost:1883").await;
-        assert!(pool.is_ok());
+    async fn test_connector_creation() {
+        let connector = MqttConnector::new("mqtt://localhost:1883").await;
+        assert!(connector.is_ok());
     }
 
     #[tokio::test]
-    async fn test_pool_with_port() {
-        let pool = MqttClientPool::new("mqtt://broker.local:9999").await;
-        assert!(pool.is_ok());
+    async fn test_connector_with_port() {
+        let connector = MqttConnector::new("mqtt://broker.local:9999").await;
+        assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_invalid_url() {
-        let pool = MqttClientPool::new("not-a-valid-url").await;
-        assert!(pool.is_err());
+        let connector = MqttConnector::new("not-a-valid-url").await;
+        assert!(connector.is_err());
     }
 }

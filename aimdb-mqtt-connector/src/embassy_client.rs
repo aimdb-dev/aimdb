@@ -16,10 +16,10 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use aimdb_mqtt_connector::embassy_client::MqttClientPool;
+//! use aimdb_mqtt_connector::embassy_client::MqttConnector;
 //!
-//! // Create pool and get task spawner
-//! let (pool, mqtt_task_fn) = MqttClientPool::new(
+//! // Create connector and get task spawner
+//! let mqtt = MqttConnector::create(
 //!     network_stack,
 //!     "192.168.1.100",
 //!     1883,
@@ -27,15 +27,15 @@
 //! ).await.unwrap();
 //!
 //! // Spawn the MQTT background task
-//! spawner.spawn(mqtt_task_fn).unwrap();
+//! spawner.spawn(async move { mqtt.task.run().await }).unwrap();
 //!
 //! // Publish messages
-//! pool.publish("sensor/temp", b"23.5", 1, false).await.unwrap();
+//! mqtt.connector.publish_async("sensor/temp", b"23.5", 1, false).await.unwrap();
 //! ```
 
 extern crate alloc;
 
-use aimdb_core::pool::{PublishError};
+use aimdb_core::transport::PublishError;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
@@ -98,7 +98,12 @@ impl MqttOperations for AimdbMqttAction {
                     if is_retry {
                         defmt::debug!("Retrying publish to {}", topic);
                     } else {
-                        defmt::debug!("Publishing {} bytes to {} (QoS={:?})", payload.len(), topic, qos);
+                        defmt::debug!(
+                            "Publishing {} bytes to {} (QoS={:?})",
+                            payload.len(),
+                            topic,
+                            qos
+                        );
                     }
                 }
 
@@ -120,7 +125,9 @@ impl MqttOperations for AimdbMqttAction {
 #[derive(Clone)]
 pub enum AimdbMqttEvent {}
 
-impl mountain_mqtt_embassy::mqtt_manager::FromApplicationMessage<MAX_PROPERTIES> for AimdbMqttEvent {
+impl mountain_mqtt_embassy::mqtt_manager::FromApplicationMessage<MAX_PROPERTIES>
+    for AimdbMqttEvent
+{
     fn from_application_message(
         _message: &mountain_mqtt::packets::publish::ApplicationMessage<MAX_PROPERTIES>,
     ) -> Result<Self, mountain_mqtt::client::EventHandlerError> {
@@ -155,7 +162,13 @@ impl MqttBackgroundTask {
         // We need to use a type annotation to avoid exposing ! in our signature
         #[allow(unreachable_code)]
         {
-            let _never: () = mqtt_manager::run::<AimdbMqttAction, AimdbMqttEvent, MAX_PROPERTIES, BUFFER_SIZE, CHANNEL_SIZE>(
+            let _never: () = mqtt_manager::run::<
+                AimdbMqttAction,
+                AimdbMqttEvent,
+                MAX_PROPERTIES,
+                BUFFER_SIZE,
+                CHANNEL_SIZE,
+            >(
                 self.network_stack,
                 self.connection_settings,
                 self.settings,
@@ -169,31 +182,31 @@ impl MqttBackgroundTask {
     }
 }
 
-/// Return type from MqttClientPool::new() containing the pool and background task
-pub struct MqttClientPoolWithTask {
-    /// The client pool for publishing messages
-    pub pool: MqttClientPool,
+/// Return type from MqttConnector::create() containing the connector and background task
+pub struct MqttConnectorWithTask {
+    /// The connector for publishing messages
+    pub connector: MqttConnector,
     /// Background task that must be spawned to run the MQTT connection
     pub task: MqttBackgroundTask,
 }
 
-/// MQTT client pool for Embassy runtime
+/// MQTT connector for Embassy runtime
 ///
 /// This provides a simple interface for publishing MQTT messages.
 /// The actual MQTT connection is managed by a background task.
 #[derive(Clone)]
-pub struct MqttClientPool {
+pub struct MqttConnector {
     /// Channel sender for MQTT actions
     action_sender: Sender<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>,
 }
 
-impl MqttClientPool {
-    /// Create a new MQTT client pool and prepare the background task
+impl MqttConnector {
+    /// Create a new MQTT connector and prepare the background task
     ///
     /// This sets up all the infrastructure needed for MQTT communication:
     /// - Creates channels for actions and events
     /// - Configures connection settings
-    /// - Returns a struct containing the pool and background task
+    /// - Returns a struct containing the connector and background task
     ///
     /// # Arguments
     ///
@@ -204,12 +217,12 @@ impl MqttClientPool {
     ///
     /// # Returns
     ///
-    /// A `MqttClientPoolWithTask` containing the client pool and background task.
+    /// A `MqttConnectorWithTask` containing the connector and background task.
     ///
     /// # Example
     ///
     /// ```rust,no_run
-    /// let mqtt = MqttClientPool::create(
+    /// let mqtt = MqttConnector::create(
     ///     network_stack,
     ///     "192.168.1.100",
     ///     1883,
@@ -219,18 +232,18 @@ impl MqttClientPool {
     /// // Spawn the background task
     /// spawner.spawn(async move { mqtt.task.run().await }).unwrap();
     ///
-    /// // Use the pool
-    /// mqtt.pool.publish_async("sensor/temp", b"23.5", 1, false).await?;
+    /// // Use the connector
+    /// mqtt.connector.publish_async("sensor/temp", b"23.5", 1, false).await?;
     /// ```
     pub async fn create(
         network_stack: Stack<'static>,
         broker_host: &str,
         broker_port: u16,
         client_id: &'static str,
-    ) -> Result<MqttClientPoolWithTask, PublishError> {
+    ) -> Result<MqttConnectorWithTask, PublishError> {
         // Parse broker IP address
-        let broker_ip = Ipv4Addr::from_str(broker_host)
-            .map_err(|_| PublishError::ConnectionFailed)?;
+        let broker_ip =
+            Ipv4Addr::from_str(broker_host).map_err(|_| PublishError::ConnectionFailed)?;
 
         // Convert to embassy Ipv4Address
         let octets = broker_ip.octets();
@@ -245,8 +258,11 @@ impl MqttClientPool {
         );
 
         // Create static channels for MQTT communication using StaticCell
-        static ACTION_CHANNEL: StaticCell<Channel<NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>> = StaticCell::new();
-        static EVENT_CHANNEL: StaticCell<Channel<NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>> = StaticCell::new();
+        static ACTION_CHANNEL: StaticCell<Channel<NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>> =
+            StaticCell::new();
+        static EVENT_CHANNEL: StaticCell<
+            Channel<NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>,
+        > = StaticCell::new();
 
         let action_channel = ACTION_CHANNEL.init(Channel::new());
         let event_channel = EVENT_CHANNEL.init(Channel::new());
@@ -262,8 +278,8 @@ impl MqttClientPool {
         // Create mqtt_manager settings
         let settings = Settings::new(broker_addr, broker_port);
 
-        // Create the pool
-        let pool = Self { action_sender };
+        // Create the connector
+        let connector = Self { action_sender };
 
         // Create the background task
         let mqtt_task = MqttBackgroundTask {
@@ -274,7 +290,10 @@ impl MqttClientPool {
             action_receiver,
         };
 
-        Ok(MqttClientPoolWithTask { pool, task: mqtt_task })
+        Ok(MqttConnectorWithTask {
+            connector,
+            task: mqtt_task,
+        })
     }
 
     /// Helper to map QoS level from u8 to QualityOfService enum
@@ -347,15 +366,15 @@ impl MqttClientPool {
 // even though NoopRawMutex doesn't implement them.
 //
 // Embassy executors run cooperatively on a single core, so there's no actual
-// concurrent access. These markers allow MqttClientPool to work with the
-// MqttConnectorPool trait which requires Send + Sync for Tokio compatibility.
+// concurrent access. These markers allow MqttConnector to work with the
+// Connector trait which requires Send + Sync for Tokio compatibility.
 //
 // This is safe because:
 // 1. Embassy tasks run cooperatively (no preemption on single core)
 // 2. NoopRawMutex is safe for single-threaded access
 // 3. No actual thread migration occurs in Embassy
-unsafe impl Send for MqttClientPool {}
-unsafe impl Sync for MqttClientPool {}
+unsafe impl Send for MqttConnector {}
+unsafe impl Sync for MqttConnector {}
 
 // Helper wrapper to make the publish future Send
 struct SendFutureWrapper<F>(F);
@@ -374,38 +393,39 @@ impl<F: core::future::Future> core::future::Future for SendFutureWrapper<F> {
     }
 }
 
-/// Implement the connector pool trait for Embassy
+/// Implement the connector trait for Embassy
 ///
-/// This allows using the same `.with_connector_pool()` and `.link()` pattern
+/// This allows using the same `.with_connector()` and `.link()` pattern
 /// as the Tokio version, despite Embassy being single-threaded.
-impl aimdb_core::pool::ConnectorPool for MqttClientPool {
+impl aimdb_core::transport::Connector for MqttConnector {
     fn publish(
         &self,
         destination: &str,
-        config: &aimdb_core::pool::ConnectorConfig,
+        config: &aimdb_core::transport::ConnectorConfig,
         payload: &[u8],
     ) -> core::pin::Pin<
         alloc::boxed::Box<
-            dyn core::future::Future<Output = Result<(), aimdb_core::pool::PublishError>>
+            dyn core::future::Future<Output = Result<(), aimdb_core::transport::PublishError>>
                 + Send
                 + '_,
         >,
     > {
         use alloc::boxed::Box;
         use alloc::vec::Vec;
-        
+
         // destination is the topic for MQTT
         let topic_owned = destination.to_string();
         let payload_owned: Vec<u8> = payload.to_vec();
         let qos = config.qos;
         let retain = config.retain;
-        
+
         // Wrap the future in our Send wrapper
         // SAFETY: Safe in Embassy's single-threaded environment
         let fut = SendFutureWrapper(async move {
-            self.publish_async(&topic_owned, &payload_owned, qos, retain).await
+            self.publish_async(&topic_owned, &payload_owned, qos, retain)
+                .await
         });
-        
+
         Box::pin(fut)
     }
 }
@@ -416,21 +436,9 @@ mod tests {
 
     #[test]
     fn test_qos_mapping() {
-        assert!(matches!(
-            MqttClientPool::map_qos(0),
-            QualityOfService::Qos0
-        ));
-        assert!(matches!(
-            MqttClientPool::map_qos(1),
-            QualityOfService::Qos1
-        ));
-        assert!(matches!(
-            MqttClientPool::map_qos(2),
-            QualityOfService::Qos1
-        )); // Downgrades
-        assert!(matches!(
-            MqttClientPool::map_qos(99),
-            QualityOfService::Qos0
-        )); // Defaults
+        assert!(matches!(MqttConnector::map_qos(0), QualityOfService::Qos0));
+        assert!(matches!(MqttConnector::map_qos(1), QualityOfService::Qos1));
+        assert!(matches!(MqttConnector::map_qos(2), QualityOfService::Qos1)); // Downgrades
+        assert!(matches!(MqttConnector::map_qos(99), QualityOfService::Qos0)); // Defaults
     }
 }

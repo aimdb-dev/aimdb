@@ -12,17 +12,17 @@
 //!
 //! ```rust,ignore
 //! use aimdb_core::AimDb;
-//! use aimdb_mqtt_connector::MqttClientPool;
+//! use aimdb_mqtt_connector::MqttConnector;
 //! use std::sync::Arc;
 //!
-//! // Create pool and pass to builder
-//! let pool = Arc::new(MqttClientPool::new());
+//! // Create connector and pass to builder
+//! let connector = Arc::new(MqttConnector::new("mqtt://localhost:1883").await?);
 //! let db = AimDb::build_with(runtime, |builder| {
 //!     builder
-//!         .with_connector_pool(pool)
+//!         .with_connector("mqtt", connector)
 //!         .configure::<Temperature>(|reg| {
 //!             reg.producer(|_em, temp| async move { /* ... */ })
-//!                .link("mqtt://broker:1883/sensors/temp")
+//!                .link("mqtt://sensors/temperature")
 //!                    .with_serializer(|t| serde_json::to_vec(t).map_err(|e| e.to_string()))
 //!                    .finish();
 //!         });
@@ -198,23 +198,23 @@ pub mod tokio_client;
 pub mod embassy_client;
 
 // Re-export platform-specific types
-// Both implementations export the same MqttClientPool name for API compatibility
+// Both implementations export the same MqttConnector name for API compatibility
 // When both features are enabled (e.g., during testing), prefer tokio
 #[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_client::MqttClientPool;
+pub use tokio_client::MqttConnector;
 
 #[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_client::MqttClientPool;
+pub use embassy_client::MqttConnector;
 
 // When both features are enabled, export both with different names
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::MqttClientPool as TokioMqttClientPool;
+pub use tokio_client::MqttConnector as TokioMqttConnector;
 
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_client::MqttClientPool as EmbassyMqttClientPool;
+pub use embassy_client::MqttConnector as EmbassyMqttConnector;
 
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::MqttClientPool; // Default to tokio when both enabled
+pub use tokio_client::MqttConnector; // Default to tokio when both enabled
 
 #[cfg(test)]
 mod tests {
