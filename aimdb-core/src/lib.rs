@@ -16,37 +16,34 @@
 
 pub mod buffer;
 pub mod builder;
+pub mod connector;
 pub mod context;
 pub mod database;
-pub mod emitter;
 mod error;
-pub mod metrics;
-pub mod outbox;
-pub mod producer_consumer;
-pub mod runtime;
+pub mod ext_macros;
 pub mod time;
-pub mod tracked_fn;
+pub mod transport;
+pub mod typed_api;
 pub mod typed_record;
 
 // Public API exports
 pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};
-pub use runtime::{
-    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Sleeper, Spawn,
-    TimeOps, TimeSource,
+
+// Runtime trait re-exports from aimdb-executor
+// These traits define the platform-specific execution, timing, and logging capabilities
+pub use aimdb_executor::{
+    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Spawn, TimeOps,
 };
 
 // Database implementation exports
-pub use database::{Database, DatabaseSpec, DatabaseSpecBuilder};
+pub use database::Database;
 
 // Producer-Consumer Pattern exports
 pub use builder::{AimDb, AimDbBuilder};
-pub use emitter::Emitter;
-pub use metrics::CallStats;
-pub use outbox::{
-    AnySender, OutboxConfig, OutboxRuntimeSupport, OverflowBehavior, SendFuture, SinkWorker,
-    WorkerHandle,
-};
-pub use producer_consumer::{RecordRegistrar, RecordT};
-pub use tracked_fn::TrackedAsyncFn;
+pub use transport::{Connector, ConnectorConfig, PublishError};
+pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
+
+// Connector Infrastructure exports
+pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError};

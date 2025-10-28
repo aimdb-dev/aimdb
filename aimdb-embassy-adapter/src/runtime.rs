@@ -113,86 +113,6 @@ impl EmbassyAdapter {
     pub fn spawner(&self) -> Option<&Spawner> {
         self.spawner.as_ref()
     }
-
-    /// Creates a bounded MPSC channel for outbox use
-    ///
-    /// This method creates an Embassy MPSC channel suitable for outbox communication.
-    /// The channel uses `Box::leak` to obtain a `'static` lifetime required by Embassy.
-    ///
-    /// # Arguments
-    ///
-    /// * `capacity` - The desired channel buffer size (currently fixed at 64)
-    ///
-    /// # Returns
-    ///
-    /// A tuple of (EmbassySender, OutboxReceiver) with default capacity of 64
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_embassy_adapter::EmbassyAdapter;
-    ///
-    /// let adapter = EmbassyAdapter::new()?;
-    /// let (tx, rx) = adapter.create_outbox_channel::<MyMsg>(1024);
-    /// ```
-    ///
-    /// # Note on Capacity
-    ///
-    /// Embassy channels have compile-time capacity specified via const generics.
-    /// The current implementation creates channels with capacity 64 due to this
-    /// limitation. Use `create_outbox_channel_with_capacity()` for specific sizes.
-    #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-    pub fn create_outbox_channel<T: Send + 'static>(
-        &self,
-        capacity: usize,
-    ) -> (
-        crate::outbox::EmbassySender<T, 64>,
-        crate::outbox::OutboxReceiver<T, 64>,
-    ) {
-        #[cfg(feature = "tracing")]
-        debug!(
-            "Creating Embassy outbox channel for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            capacity
-        );
-
-        crate::outbox::create_outbox_channel(capacity)
-    }
-
-    /// Creates an Embassy outbox channel with compile-time capacity
-    ///
-    /// This method allows specifying the channel capacity at compile time via
-    /// const generics, avoiding the dynamic capacity limitation.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `T` - Message type
-    /// * `N` - Channel capacity (const generic)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_embassy_adapter::EmbassyAdapter;
-    ///
-    /// let adapter = EmbassyAdapter::new()?;
-    /// let (tx, rx) = adapter.create_outbox_channel_with_capacity::<MyMsg, 256>();
-    /// ```
-    #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-    pub fn create_outbox_channel_with_capacity<T: Send + 'static, const N: usize>(
-        &self,
-    ) -> (
-        crate::outbox::EmbassySender<T, N>,
-        crate::outbox::OutboxReceiver<T, N>,
-    ) {
-        #[cfg(feature = "tracing")]
-        debug!(
-            "Creating Embassy outbox channel for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            N
-        );
-
-        crate::outbox::create_outbox_channel_with_capacity::<T, N>()
-    }
 }
 
 impl Default for EmbassyAdapter {
@@ -209,25 +129,77 @@ impl RuntimeAdapter for EmbassyAdapter {
     }
 }
 
-// Implement Spawn trait for Embassy (static spawning)
+// Type-erased future wrapper for dynamic spawning
+#[cfg(feature = "embassy-runtime")]
+type BoxedFuture = alloc::boxed::Box<dyn core::future::Future<Output = ()> + Send + 'static>;
+
+// Configurable task pool size for dynamic spawning
+// Users can select the pool size via feature flags:
+// - embassy-task-pool-8 (default): 8 concurrent tasks
+// - embassy-task-pool-16: 16 concurrent tasks
+// - embassy-task-pool-32: 32 concurrent tasks
+#[cfg(all(feature = "embassy-runtime", feature = "embassy-task-pool-32"))]
+const TASK_POOL_SIZE: usize = 32;
+
+#[cfg(all(
+    feature = "embassy-runtime",
+    feature = "embassy-task-pool-16",
+    not(feature = "embassy-task-pool-32")
+))]
+const TASK_POOL_SIZE: usize = 16;
+
+#[cfg(all(
+    feature = "embassy-runtime",
+    not(feature = "embassy-task-pool-16"),
+    not(feature = "embassy-task-pool-32")
+))]
+const TASK_POOL_SIZE: usize = 8;
+
+// Generic task runner for dynamic spawning in Embassy
+// Pool size is configured at compile time via feature flags
+#[cfg(feature = "embassy-runtime")]
+#[embassy_executor::task(pool_size = TASK_POOL_SIZE)]
+async fn generic_task_runner(mut future: BoxedFuture) {
+    use core::pin::Pin;
+    // Pin the boxed future so it can be awaited
+    let pinned = unsafe { Pin::new_unchecked(&mut *future) };
+    pinned.await;
+}
+
+// Implement Spawn trait for Embassy with dynamic spawning support
 #[cfg(feature = "embassy-runtime")]
 impl aimdb_executor::Spawn for EmbassyAdapter {
     type SpawnToken = (); // Embassy doesn't return a handle from static spawn
 
-    fn spawn<F>(&self, _future: F) -> ExecutorResult<Self::SpawnToken>
+    fn spawn<F>(&self, future: F) -> ExecutorResult<Self::SpawnToken>
     where
         F: core::future::Future<Output = ()> + Send + 'static,
     {
-        // Embassy spawning is handled via the #[embassy_executor::task] attribute
-        // and spawner.spawn() at the application level. This method exists for
-        // trait compatibility but spawning must be done through Embassy tasks.
-        Err(aimdb_executor::ExecutorError::RuntimeUnavailable {
-            message: "Embassy requires static task spawning via #[embassy_executor::task]",
-        })
+        // Box the future for type erasure
+        let boxed_future: BoxedFuture = alloc::boxed::Box::new(future);
+
+        // Get the spawner
+        let spawner =
+            self.spawner
+                .as_ref()
+                .ok_or(aimdb_executor::ExecutorError::RuntimeUnavailable {
+                    message: "No spawner available - use EmbassyAdapter::new_with_spawner()",
+                })?;
+
+        // Spawn using our generic task pool
+        match generic_task_runner(boxed_future) {
+            Ok(spawn_token) => {
+                spawner.spawn(spawn_token);
+                Ok(())
+            }
+            Err(_) => Err(aimdb_executor::ExecutorError::SpawnFailed {
+                message: "Task pool exhausted - enable a larger task pool feature (embassy-task-pool-16 or embassy-task-pool-32)",
+            }),
+        }
     }
 }
 
-// Implement TimeOps trait (combines TimeSource + Sleeper)
+// Implement TimeOps trait for time operations
 #[cfg(feature = "embassy-time")]
 impl aimdb_executor::TimeOps for EmbassyAdapter {
     type Instant = embassy_time::Instant;
@@ -286,31 +258,3 @@ impl aimdb_executor::Logger for EmbassyAdapter {
 }
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are all implemented
-
-// Implement OutboxRuntimeSupport for outbox channel creation
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-impl aimdb_core::OutboxRuntimeSupport for EmbassyAdapter {
-    fn create_outbox_channel<T: Send + 'static>(
-        &self,
-        capacity: usize,
-    ) -> (
-        alloc::boxed::Box<dyn aimdb_core::AnySender>,
-        alloc::boxed::Box<dyn core::any::Any + Send>,
-    ) {
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
-            "Creating Embassy outbox channel for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            capacity
-        );
-
-        // Create actual channel using the existing method (default capacity 64)
-        let (sender, receiver) = self.create_outbox_channel::<T>(capacity);
-
-        // Return as type-erased boxes
-        (
-            alloc::boxed::Box::new(sender) as alloc::boxed::Box<dyn aimdb_core::AnySender>,
-            alloc::boxed::Box::new(receiver) as alloc::boxed::Box<dyn core::any::Any + Send>,
-        )
-    }
-}

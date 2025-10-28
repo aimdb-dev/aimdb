@@ -49,63 +49,20 @@ pub struct TokioAdapter;
 
 #[cfg(feature = "tokio-runtime")]
 impl TokioAdapter {
-    /// Creates a new TokioAdapter
+    /// Creates a new TokioAdapter instance
     ///
-    /// # Returns
-    /// `Ok(TokioAdapter)` - Tokio adapters are lightweight and cannot fail
-    pub fn new() -> ExecutorResult<Self> {
-        #[cfg(feature = "tracing")]
-        debug!("Creating TokioAdapter");
-
-        Ok(Self)
-    }
-
-    /// Creates a new TokioAdapter returning DbResult for backward compatibility
-    ///
-    /// This method provides compatibility with existing code that expects DbResult.
-    pub fn new_db_result() -> DbResult<Self> {
-        Self::new().map_err(DbError::from)
-    }
-
-    /// Creates an MPSC channel for outbox use
-    ///
-    /// This method creates a bounded Tokio MPSC channel and wraps the sender
-    /// in a `TokioSender` that implements `AnySender` for type-erased storage.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `T` - The message payload type (must be `Send + 'static`)
-    ///
-    /// # Arguments
-    ///
-    /// * `capacity` - The channel buffer size
-    ///
-    /// # Returns
-    ///
-    /// A tuple of (wrapped sender, receiver) ready for outbox use
+    /// This is a simple constructor that returns a TokioAdapter.
+    /// Always succeeds since TokioAdapter is a zero-sized type.
     ///
     /// # Example
-    ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use aimdb_tokio_adapter::TokioAdapter;
     ///
     /// let adapter = TokioAdapter::new()?;
-    /// let (sender, receiver) = adapter.create_outbox_channel::<MyMsg>(1024);
-    ///
-    /// // Sender can be stored in outbox registry
-    /// // Receiver is passed to SinkWorker
+    /// # Ok::<(), aimdb_core::DbError>(())
     /// ```
-    pub fn create_outbox_channel<T: Send + 'static>(
-        &self,
-        capacity: usize,
-    ) -> (
-        crate::outbox::TokioSender<T>,
-        crate::outbox::OutboxReceiver<T>,
-    ) {
-        #[cfg(feature = "tracing")]
-        debug!("Creating outbox channel with capacity: {}", capacity);
-
-        crate::outbox::create_outbox_channel(capacity)
+    pub fn new() -> DbResult<Self> {
+        Ok(Self)
     }
 
     /// Spawns an async task on the Tokio executor
@@ -258,31 +215,3 @@ impl Logger for TokioAdapter {
 }
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are implemented
-
-// Implement OutboxRuntimeSupport for outbox channel creation
-#[cfg(feature = "tokio-runtime")]
-impl aimdb_core::OutboxRuntimeSupport for TokioAdapter {
-    fn create_outbox_channel<T: Send + 'static>(
-        &self,
-        capacity: usize,
-    ) -> (
-        Box<dyn aimdb_core::AnySender>,
-        Box<dyn core::any::Any + Send>,
-    ) {
-        #[cfg(feature = "tracing")]
-        debug!(
-            "Creating Tokio outbox channel for type {} with capacity {}",
-            core::any::type_name::<T>(),
-            capacity
-        );
-
-        // Create actual channel using the existing method
-        let (sender, receiver) = self.create_outbox_channel::<T>(capacity);
-
-        // Return as type-erased boxes
-        (
-            Box::new(sender) as Box<dyn aimdb_core::AnySender>,
-            Box::new(receiver) as Box<dyn core::any::Any + Send>,
-        )
-    }
-}

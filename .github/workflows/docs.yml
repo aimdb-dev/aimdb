@@ -34,20 +34,7 @@ jobs:
         key: ${{ runner.os }}-docs-cargo-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Build documentation
-      run: |
-        # Create directory structure for dual documentation
-        mkdir -p target/doc-final/{cloud,embedded}
-        
-        # Build cloud/edge documentation 
-        cargo doc --features "std,tokio-runtime,tracing,metrics" --no-deps
-        cp -r target/doc/* target/doc-final/cloud/
-        
-        # Build embedded documentation
-        cargo doc --no-default-features --features "embassy-runtime" --no-deps  
-        cp -r target/doc/* target/doc-final/embedded/
-        
-        # Copy main index page
-        cp docs/index.html target/doc-final/index.html
+      run: make doc
     
     - name: Setup Pages
       if: github.ref == 'refs/heads/main'

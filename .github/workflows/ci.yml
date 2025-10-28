@@ -33,15 +33,15 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-format-${{ hashFiles('**/Cargo.lock') }}
     
-    - name: Check formatting
-      run: cargo fmt --all -- --check
+    - name: Check formatting (workspace members only)
+      run: make fmt-check
     
     - name: Run clippy on all valid feature combinations
       run: make clippy
 
-  # Build and test using Makefile (valid combinations)
+  # Build and test using Makefile
   makefile-build:
-    name: Makefile Build & Test
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -60,40 +60,13 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-makefile-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Build all valid feature combinations
       run: make build
     
     - name: Test all valid feature combinations
       run: make test
-    
-    - name: Test embedded cross-compilation
-      run: make test-embedded
-
-  # Feature validation using Makefile
-  feature-validation:
-    name: Feature Flag Validation
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-    
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-validation-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Validate feature combinations (invalid should fail)
-      run: make test-feature-validation
 
   # Embedded target testing
   embedded-targets:
@@ -118,72 +91,14 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-embedded-${{ hashFiles('**/Cargo.lock') }}
     
-    - name: Check embedded core (no_std minimal)
-      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features
-    
-    - name: Check embedded core (with embassy)
-      run: cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features embassy-runtime
-    
-    - name: Check embassy adapter
-      run: cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features embassy-runtime
-    
-    - name: Verify embassy adapter with tracing
-      run: cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime,tracing"
-
-  # Adapter-specific testing
-  adapters:
-    name: Runtime Adapters
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        adapter: ["tokio", "embassy"]
-        
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: thumbv7em-none-eabihf
-    
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ matrix.adapter }}-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Test tokio adapter
-      if: matrix.adapter == 'tokio'
-      run: |
-        # Test basic tokio adapter
-        cargo test --package aimdb-tokio-adapter --features tokio-runtime
-        
-        # Test with observability
-        cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
-        
-        # Test with metrics
-        cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
-    
-    - name: Test embassy adapter
-      if: matrix.adapter == 'embassy'
-      run: |
-        # Test basic embassy adapter (cross-compilation check)
-        cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features embassy-runtime
-        
-        # Test with tracing
-        cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime,tracing"
+    - name: Test embedded cross-compilation
+      run: make test-embedded
 
   # Comprehensive validation using Makefile
   comprehensive-check:
     name: Comprehensive Development Check
     runs-on: ubuntu-latest
-    needs: [format-and-lint, makefile-build, feature-validation, embedded-targets, adapters]
+    needs: [format-and-lint, makefile-build, embedded-targets]
     steps:
     - uses: actions/checkout@v4
       with:

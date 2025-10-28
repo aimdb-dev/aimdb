@@ -4,12 +4,10 @@ members = [
     "aimdb-core",
     "aimdb-embassy-adapter",
     "aimdb-tokio-adapter",
-    "aimdb-macros",
+    "aimdb-mqtt-connector",
     "tools/aimdb-cli",
-    "examples/shared",
-    "examples/tokio-runtime-demo",
-    "examples/embassy-runtime-demo",
-    "examples/producer-consumer-demo",
+    "examples/tokio-mqtt-connector-demo",
+    "examples/embassy-mqtt-connector-demo",
 ]
 exclude = ["_external"]
 resolver = "2"
@@ -124,6 +122,15 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 heapless = { version = "0.8", default-features = false }
 micromath = "2.0.0"
 stm32-fmc = "0.3.0"
+
+# Patch mountain-mqtt-embassy's Embassy dependencies to use our local checkout
+# This prevents version conflicts between crates.io Embassy and our git submodule
+[patch.crates-io]
+embassy-executor = { path = "./_external/embassy/embassy-executor" }
+embassy-time = { path = "./_external/embassy/embassy-time" }
+embassy-sync = { path = "./_external/embassy/embassy-sync" }
+embassy-net = { path = "./_external/embassy/embassy-net" }
+embassy-futures = { path = "./_external/embassy/embassy-futures" }
 
 [workspace.metadata.docs.rs]
 all-features = true

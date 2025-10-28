@@ -3,38 +3,19 @@
 //! Provides a unified interface to runtime capabilities like sleep and timestamp
 //! functions, abstracting away the specific runtime adapter implementation.
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 use aimdb_executor::Runtime;
 use core::future::Future;
 
-use crate::emitter::Emitter;
-
 /// Unified runtime context for AimDB services
 ///
-/// This context provides access to essential runtime capabilities through
-/// a clean, unified API. Services receive this context and can use it for
-/// timing operations without needing to know about the underlying runtime.
+/// Provides access to runtime capabilities (sleep, timestamps) through
+/// a unified API, abstracting the underlying runtime implementation.
 ///
-/// The context holds a reference or smart pointer to the runtime, enabling
-/// efficient sharing across service instances without requiring cloning.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use aimdb_core::{RuntimeContext, service, DbResult};
-/// use aimdb_tokio_adapter::TokioAdapter;
-/// use std::time::Duration;
-///
-/// #[service]
-/// async fn my_service(ctx: RuntimeContext<TokioAdapter>) -> DbResult<()> {
-///     println!("Service starting at: {:?}", ctx.now());
-///     
-///     // Sleep using the runtime's sleep capability
-///     ctx.sleep(Duration::from_millis(100)).await;
-///     
-///     println!("Service completed at: {:?}", ctx.now());
-///     Ok(())
-/// }
-/// ```
+/// Services receive this context for timing operations without knowing
+/// about the specific runtime adapter.
 #[derive(Clone)]
 pub struct RuntimeContext<R>
 where
@@ -44,11 +25,6 @@ where
     runtime: std::sync::Arc<R>,
     #[cfg(not(feature = "std"))]
     runtime: &'static R,
-    /// Optional emitter for cross-record communication
-    #[cfg(feature = "std")]
-    emitter: Option<Emitter>,
-    #[cfg(not(feature = "std"))]
-    emitter: Option<Emitter>,
 }
 
 #[cfg(feature = "std")]
@@ -56,36 +32,30 @@ impl<R> RuntimeContext<R>
 where
     R: Runtime,
 {
-    /// Create a new RuntimeContext with the given runtime adapter (std version)
-    ///
-    /// In std environments, the runtime is wrapped in an Arc for efficient sharing.
-    ///
-    /// # Arguments
-    ///
-    /// * `runtime` - Runtime adapter implementing the Runtime trait
+    /// Create a new RuntimeContext (std version uses Arc internally)
     pub fn new(runtime: R) -> Self {
         Self {
             runtime: std::sync::Arc::new(runtime),
-            emitter: None,
         }
     }
 
-    /// Create a RuntimeContext from an Arc (for efficiency)
-    ///
-    /// This avoids double-wrapping when you already have an Arc.
+    /// Create from an existing Arc to avoid double-wrapping
     pub fn from_arc(runtime: std::sync::Arc<R>) -> Self {
-        Self {
-            runtime,
-            emitter: None,
-        }
+        Self { runtime }
     }
 
-    /// Create a RuntimeContext with an emitter
+    /// Extract runtime context from type-erased Arc (std version)
     ///
-    /// This allows services to emit data to typed records.
-    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
-        self.emitter = Some(emitter);
-        self
+    /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
+    /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
+    ///
+    /// # Panics
+    /// Panics if the runtime type doesn't match `R`.
+    pub fn extract_from_any(ctx_any: std::sync::Arc<dyn core::any::Any + Send + Sync>) -> Self {
+        let runtime = ctx_any
+            .downcast::<R>()
+            .expect("Runtime type mismatch - expected matching runtime adapter");
+        Self::from_arc(runtime.clone())
     }
 }
 
@@ -94,26 +64,31 @@ impl<R> RuntimeContext<R>
 where
     R: Runtime,
 {
-    /// Create a new RuntimeContext with a static reference (no_std version)
-    ///
-    /// In no_std environments, requires a static reference since we can't use Arc.
-    ///
-    /// # Arguments
-    ///
-    /// * `runtime` - Static reference to runtime adapter
+    /// Create a new RuntimeContext with static reference (no_std version)
     pub fn new(runtime: &'static R) -> Self {
-        Self {
-            runtime,
-            emitter: None,
-        }
+        Self { runtime }
     }
 
-    /// Create a RuntimeContext with an emitter (no_std version)
+    /// Extract runtime context from type-erased Arc (no_std version)
     ///
-    /// This allows services to emit data to typed records.
-    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
-        self.emitter = Some(emitter);
-        self
+    /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
+    /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
+    ///
+    /// For no_std, this leaks the Arc to obtain a `&'static` reference, which is safe
+    /// because the runtime lives for the entire program lifetime in embedded contexts.
+    ///
+    /// # Panics
+    /// Panics if the runtime type doesn't match `R`.
+    pub fn extract_from_any(ctx_any: alloc::sync::Arc<dyn core::any::Any + Send + Sync>) -> Self {
+        let runtime = ctx_any
+            .downcast::<R>()
+            .expect("Runtime type mismatch - expected matching runtime adapter");
+
+        // Convert Arc<R> to &'static R by leaking it
+        // This is safe because in embedded contexts, the runtime lives for the entire program
+        let runtime_ref: &'static R = &*alloc::boxed::Box::leak(runtime.into());
+
+        Self::new(runtime_ref)
     }
 }
 
@@ -123,64 +98,14 @@ where
 {
     /// Access time utilities
     ///
-    /// Returns a time accessor that provides duration creation, sleep, and timing operations.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// # use aimdb_core::RuntimeContext;
-    /// # use aimdb_tokio_adapter::TokioAdapter;
-    /// # async fn example(ctx: &RuntimeContext<TokioAdapter>) {
-    /// // Get time accessor
-    /// let time = ctx.time();
-    ///
-    /// // Use it for various operations
-    /// let start = time.now();
-    /// time.sleep(time.millis(500)).await;
-    /// let elapsed = time.duration_since(time.now(), start);
-    /// # }
-    /// ```
+    /// Returns a time accessor for duration creation, sleep, and timing operations.
     pub fn time(&self) -> Time<'_, R> {
         Time { ctx: self }
     }
 
     /// Access logging utilities
-    ///
-    /// Returns a logger accessor that provides structured logging operations.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// # use aimdb_core::RuntimeContext;
-    /// # use aimdb_tokio_adapter::TokioAdapter;
-    /// # fn example(ctx: &RuntimeContext<TokioAdapter>) {
-    /// ctx.log().info("Service started");
-    /// ctx.log().warn("High memory usage");
-    /// ctx.log().error("Connection failed");
-    /// # }
-    /// ```
     pub fn log(&self) -> Log<'_, R> {
         Log { ctx: self }
-    }
-
-    /// Access the emitter for cross-record communication
-    ///
-    /// Returns the emitter if one was configured, allowing services to emit
-    /// data to typed records in the producer-consumer pipeline.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// # use aimdb_core::RuntimeContext;
-    /// # use aimdb_tokio_adapter::TokioAdapter;
-    /// # async fn example(ctx: &RuntimeContext<TokioAdapter>) {
-    /// if let Some(emitter) = ctx.emitter() {
-    ///     emitter.emit(MyRecord::new("data")).await;
-    /// }
-    /// # }
-    /// ```
-    pub fn emitter(&self) -> Option<&Emitter> {
-        self.emitter.as_ref()
     }
 
     /// Get access to the underlying runtime
@@ -203,28 +128,12 @@ where
     R: Runtime,
 {
     /// Create a RuntimeContext from a runtime adapter (std version with Arc)
-    ///
-    /// This is a convenience method that wraps the runtime in an Arc.
-    ///
-    /// # Arguments
-    ///
-    /// * `runtime` - Runtime adapter implementing the Runtime trait
     pub fn from_runtime(runtime: R) -> Self {
         Self::new(runtime)
     }
 }
 
-/// Create a RuntimeContext from any type that implements the Runtime trait (std version)
-///
-/// This function provides a generic way to create a RuntimeContext from any
-/// runtime adapter, as long as it implements the Runtime trait.
-/// This is particularly useful in macros where we don't know the concrete type.
-///
-/// # Arguments
-/// * `runtime` - Any type implementing Runtime
-///
-/// # Returns
-/// A RuntimeContext wrapping the provided runtime in an Arc
+/// Create a RuntimeContext from any Runtime implementation (std version)
 #[cfg(feature = "std")]
 pub fn create_runtime_context<R>(runtime: R) -> RuntimeContext<R>
 where
@@ -235,162 +144,69 @@ where
 
 /// Time utilities accessor for RuntimeContext
 ///
-/// This accessor provides all time-related operations including duration creation,
-/// sleep, and timing measurements. It encapsulates time functionality separately
-/// from other context capabilities like logging.
-///
-/// # Design Philosophy
-///
-/// - **Separation of Concerns**: Time operations are isolated from logging and other capabilities
-/// - **Clear Intent**: `ctx.time().sleep()` clearly indicates time-based operation
-/// - **Extensible**: Easy to add new time-related methods without cluttering RuntimeContext
-///
-/// # Example
-///
-/// ```rust,ignore
-/// async fn my_service<R: Runtime>(ctx: RuntimeContext<R>) {
-///     let time = ctx.time();
-///     
-///     let start = time.now();
-///     time.sleep(time.millis(100)).await;
-///     let elapsed = time.duration_since(time.now(), start);
-/// }
-/// ```
+/// Provides duration creation, sleep, and timing measurements.
 pub struct Time<'a, R: Runtime> {
     ctx: &'a RuntimeContext<R>,
 }
 
 impl<'a, R: Runtime> Time<'a, R> {
     /// Create a duration from milliseconds
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// time.sleep(time.millis(500)).await;
-    /// ```
     pub fn millis(&self, millis: u64) -> R::Duration {
         self.ctx.runtime.millis(millis)
     }
 
     /// Create a duration from seconds
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// time.sleep(time.secs(2)).await;
-    /// ```
     pub fn secs(&self, secs: u64) -> R::Duration {
         self.ctx.runtime.secs(secs)
     }
 
     /// Create a duration from microseconds
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// time.sleep(time.micros(1000)).await;
-    /// ```
     pub fn micros(&self, micros: u64) -> R::Duration {
         self.ctx.runtime.micros(micros)
     }
 
     /// Sleep for the specified duration
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// time.sleep(time.millis(100)).await;
-    /// ```
     pub fn sleep(&self, duration: R::Duration) -> impl Future<Output = ()> + Send + '_ {
         self.ctx.runtime.sleep(duration)
     }
 
     /// Get the current timestamp
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let now = time.now();
-    /// ```
     pub fn now(&self) -> R::Instant {
         self.ctx.runtime.now()
     }
 
     /// Get the duration between two instants
     ///
-    /// Returns None if `later` is before `earlier`
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let start = time.now();
-    /// // ... do work ...
-    /// let end = time.now();
-    /// let elapsed = time.duration_since(end, start);
-    /// ```
+    /// Returns None if `later` is before `earlier`.
     pub fn duration_since(&self, later: R::Instant, earlier: R::Instant) -> Option<R::Duration> {
         self.ctx.runtime.duration_since(later, earlier)
     }
 }
 
-/// Logging accessor for RuntimeContext
+/// Log utilities accessor for RuntimeContext
 ///
-/// This accessor provides all logging operations, separating them from time and
-/// other context capabilities for better organization and testability.
-///
-/// # Design Philosophy
-///
-/// - **Separation of Concerns**: Logging is isolated from time and other operations
-/// - **Clear Intent**: `ctx.log().info()` clearly indicates logging operation
-/// - **Mockable**: Easy to mock logging separately from other capabilities
-///
-/// # Example
-///
-/// ```rust,ignore
-/// async fn my_service<R: Runtime>(ctx: RuntimeContext<R>) {
-///     let log = ctx.log();
-///     
-///     log.info("Service starting");
-///     log.debug("Debug information");
-///     log.warn("Warning message");
-///     log.error("Error occurred");
-/// }
-/// ```
+/// Provides structured logging operations.
 pub struct Log<'a, R: Runtime> {
     ctx: &'a RuntimeContext<R>,
 }
 
 impl<'a, R: Runtime> Log<'a, R> {
     /// Log an informational message
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// ctx.log().info("Service started");
-    /// ```
     pub fn info(&self, message: &str) {
         self.ctx.runtime.info(message)
     }
 
     /// Log a debug message
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// ctx.log().debug("Processing item");
-    /// ```
     pub fn debug(&self, message: &str) {
         self.ctx.runtime.debug(message)
     }
 
     /// Log a warning message
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// ctx.log().warn("High memory usage");
-    /// ```
     pub fn warn(&self, message: &str) {
         self.ctx.runtime.warn(message)
     }
 
     /// Log an error message
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// ctx.log().error("Connection failed");
-    /// ```
     pub fn error(&self, message: &str) {
         self.ctx.runtime.error(message)
     }

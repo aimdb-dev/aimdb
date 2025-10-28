@@ -37,7 +37,6 @@ aimdb-executor = { path = "../aimdb-executor", default-features = false, feature
 # Core AimDB types - std version for Tokio (for DbError integration)
 aimdb-core = { path = "../aimdb-core", default-features = false, features = [
     "std",
-    "tokio-runtime",
 ] }
 
 # Tokio async runtime

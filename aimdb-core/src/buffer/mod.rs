@@ -43,13 +43,13 @@
 //!
 //! // High-frequency sensor data
 //! reg.buffer(BufferCfg::SpmcRing { capacity: 2048 })
-//!    .producer(|em, data| async { ... })
-//!    .consumer(|em, data| async { ... });
+//!    .source(|em, data| async { ... })
+//!    .tap(|em, data| async { ... });
 //!
 //! // Configuration updates
 //! reg.buffer(BufferCfg::SingleLatest)
-//!    .producer(|em, cfg| async { ... })
-//!    .consumer(|em, cfg| async { ... });
+//!    .source(|em, cfg| async { ... })
+//!    .tap(|em, cfg| async { ... });
 //! ```
 
 #[cfg(not(feature = "std"))]
@@ -61,7 +61,7 @@ mod traits;
 
 // Public API exports
 pub use cfg::BufferCfg;
-pub use traits::{BufferBackend, BufferReader, BufferSender};
+pub use traits::{Buffer, BufferReader, DynBuffer};
 
 // Re-export buffer-specific errors from core error module
 // These are type aliases for convenience

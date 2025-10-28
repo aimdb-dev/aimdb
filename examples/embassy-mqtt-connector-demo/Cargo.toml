@@ -1,34 +1,32 @@
 [package]
 edition = "2024"
-name = "embassy-runtime-demo"
+name = "embassy-mqtt-connector-demo"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 publish = false
+description = "AimDB example demonstrating MQTT connector with Embassy runtime"
 
 [features]
 default = ["embassy-runtime"]
 embassy-runtime = []
-# Declare but don't enable these features to silence cfg warnings from the service macro
+# Declare but don't enable these features to silence cfg warnings
 tokio-runtime = []
 std = []
 
 [dependencies]
 # AimDB dependencies
-aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
-    "embassy-runtime",
-] }
+aimdb-core = { path = "../../aimdb-core", default-features = false }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
 ] }
 aimdb-executor = { path = "../../aimdb-executor", default-features = false, features = [
     "embassy-types",
 ] }
-# aimdb-macros = { path = "../../aimdb-macros" } # No longer used
-aimdb-examples-shared = { path = "../shared", default-features = false, features = [
+aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", default-features = false, features = [
     "embassy-runtime",
 ] }
 
-# Embassy ecosystem - override workspace to use different chip
+# Embassy ecosystem - STM32H563ZI with Ethernet
 embassy-stm32 = { workspace = true, features = [
     "defmt",
     "stm32h563zi",
@@ -54,7 +52,6 @@ embassy-net = { workspace = true, features = [
     "dhcpv4",
     "medium-ethernet",
 ] }
-embassy-usb = { workspace = true, features = ["defmt"] }
 embassy-futures = { workspace = true }
 
 # Embedded debugging and logging
@@ -70,17 +67,18 @@ static_cell = { workspace = true }
 
 # Embedded HAL
 embedded-hal = { workspace = true }
-embedded-hal-1 = { workspace = true }
 embedded-hal-async = { workspace = true }
 embedded-io-async = { workspace = true }
-embedded-nal-async = { workspace = true }
 embedded-storage = { workspace = true }
 
 # Embedded utilities  
 heapless = { workspace = true }
 micromath = { workspace = true }
 stm32-fmc = { workspace = true }
-embedded-alloc = "0.6"
+embedded-alloc = { version = "0.6", features = ["llff"] }
+
+# RNG for unique client IDs
+rand = { version = "0.8", default-features = false, features = ["small_rng"] }
 
 [package.metadata.embassy]
 build = [

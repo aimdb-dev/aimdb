@@ -11,216 +11,164 @@
 [![Docs](https://docs.rs/aimdb/badge.svg)](https://docs.rs/aimdb)
 [![Website](https://img.shields.io/badge/website-aimdb.dev-blue.svg)](https://aimdb.dev)
 
-> **⚠️ EARLY DEVELOPMENT STAGE**  
-> AimDB is currently in **very early development**. The architecture is defined and the foundation is being built, but most features are not yet implemented. This is a work-in-progress project where core functionality is still being developed. Expect breaking changes and incomplete features.
+> **⚠️ ACTIVE DEVELOPMENT**  
+> AimDB is in active development. Core architecture is functional with working runtime adapters (Tokio & Embassy), buffer systems, and MQTT connectivity. API may change as we refine the design.
 
 > **One codebase. Any hardware. Always in sync.**
 
-AimDB is an **async, in-memory database** that keeps state and streams **consistent across MCU → edge → cloud** — without internal brokers, glue code or vendor lock-in. If you've ever juggled MQTT bridges, SQLite caches and custom sync scripts just to move live data, AimDB is here to simplify your world.
+AimDB is an **async, in-memory database** for real-time data synchronization across **MCU → edge → cloud** — without internal brokers or vendor lock-in. Built in Rust with `no_std` support for embedded systems.
 
 ---
 
-## 🚀 Why AimDB Matters  
-Modern devices generate massive real-time data, but today's stacks are fragmented and slow:  
-- Multiple brokers/databases/sync layers to keep MCU, edge and cloud in step.  
-- Device-specific integrations that make hardware swaps risky.  
-- Batch-oriented pipelines that miss millisecond-level insights.  
+## 🚀 Why AimDB?
 
-AimDB collapses these layers into **one lightweight engine**:  
-- Lock-free ring buffers + async transforms = **ms-level reactivity (<50 ms)**.  
-- Protocol-agnostic bridges (MQTT, DDS, Kafka) = **no vendor lock**.  
-- Portable across platforms with **swappable async runtimes**.  
+Modern IoT stacks are fragmented:
+- Multiple brokers/databases to sync MCU, edge, and cloud
+- Device-specific integrations that make hardware swaps risky
+- Batch-oriented pipelines that miss real-time insights
 
----
-
-## 🧩 High-Level Architecture & Tech Stack  
-- **Language**: Rust 🦀 (async/await, `no_std` capable for MCUs)  
-- **Runtime**: Supports **Embassy** for embedded async execution or standard Rust runtimes like Tokio/async-std.  
-- **Data Core**: In-memory state + lock-free ring buffers + notifiers + async transforms.  
-- **Protocols**: MQTT, Kafka, DDS (plug-in bridges).  
-- **Platforms**: MCUs, Linux-class edge devices, cloud VMs/containers.  
-- **Extras**: Built-in identity & access hooks, metering for future live-data assets.  
+**AimDB simplifies this:**
+- **Fast**: Lock-free buffers + async transforms for <50ms reactivity
+- **Portable**: Works on MCUs (Embassy), edge (Tokio), and cloud
+- **Flexible**: Three buffer types (SPMC Ring, SingleLatest, Mailbox) for different patterns
+- **Protocol-agnostic**: MQTT bridges ready, Kafka/DDS planned
 
 ---
 
-## 🏃 Quick Start  
-Get up and running in **≤15 minutes** with our pre-configured development environment:
+## 🧩 Architecture
+
+- **Language**: Rust 🦀 (async/await, `no_std` capable)
+- **Runtimes**: Embassy (embedded) or Tokio (std)
+- **Data Core**: Type-safe records with `TypeId` routing, three buffer types
+- **Protocols**: MQTT ✅, Kafka 🚧, DDS 🚧
+- **Platforms**: MCUs, Linux edge devices, cloud VMs/containers
+
+---
+
+## 🏃 Quick Start
+
+**Prerequisites**: Docker (for dev container) or Rust 1.75+
 
 ```bash
-# 1. Clone the repo
+# Clone and open in VS Code dev container
 git clone https://github.com/aimdb-dev/aimdb.git
 cd aimdb
+code .  # Then: Dev Containers: Reopen in Container
 
-# 2. Open in VS Code with Dev Containers extension
-code .
-# Then: Ctrl/Cmd+Shift+P → "Dev Containers: Reopen in Container"
+# Build and test
+make check
 
-# 3. Inside the container, build and test:
-make check  # Format, lint, and test
-
-# 4. Run the examples:
-cargo run --package tokio-runtime-demo          # Std runtime
-cargo run --package embassy-runtime-demo        # Embedded (compile-only)
+# Run examples
+cargo run --example tokio-mqtt-connector-demo
 ```
-
-**✅ Zero Setup**: Rust, embedded targets and development tools pre-installed  
-**✅ Cross-Platform**: Works on macOS, Linux, Windows (with Docker Desktop) or WSL
-**✅ VS Code Ready**: Optimized extensions and settings included  
 
 ### Basic Usage
 
 ```rust
-use aimdb_core::{Database, RecordT};
+use aimdb_core::{AimDbBuilder, DbResult};
 use aimdb_tokio_adapter::TokioAdapter;
 
 #[derive(Debug, Clone)]
-struct SensorData(String);
-impl RecordT for SensorData {}
+struct Temperature { celsius: f32 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Build typed database
-    let db = Database::<TokioAdapter>::builder()
-        .record::<SensorData>(&Default::default())
+async fn main() -> DbResult<()> {
+    let runtime = Arc::new(TokioAdapter::new());
+    
+    let db = AimDbBuilder::new()
+        .runtime(runtime)
+        .with_record::<Temperature>(|reg| {
+            reg.buffer_sized::<32>(TokioBufferType::SpmcRing);
+        })
         .build()?;
     
     // Produce data
-    db.produce(SensorData("temp: 23.5°C".into())).await?;
+    db.produce(Temperature { celsius: 23.5 }).await?;
     
-    // Check stats
-    let stats = db.producer_stats::<SensorData>();
-    println!("Calls: {}", stats.call_count());
+    // Subscribe to updates
+    let mut reader = db.subscribe::<Temperature>()?;
+    if let Ok(temp) = reader.recv().await {
+        println!("Temperature: {:.1}°C", temp.celsius);
+    }
     
     Ok(())
 }
 ```
 
-> **💡 Architecture**: Type-safe records with `TypeId`-based routing. No string keys, no macros.
-
 ---
 
-## 📦 Pluggable Buffers
+## 📦 Buffer Types
 
-AimDB provides three buffer types for per-record streaming, each optimized for different communication patterns:
+Choose the right buffer for your data pattern:
 
-### 1. **SPMC Ring Buffer** - High-Frequency Telemetry
+**1. SPMC Ring** - High-frequency telemetry (100+ Hz sensors, logs)
 ```rust
-use aimdb_tokio_adapter::TokioBuffer;
-use aimdb_core::buffer::{BufferBackend, BufferCfg};
-
-// Create bounded buffer with lag detection
-let buffer = TokioBuffer::<SensorReading>::new(
-    &BufferCfg::SpmcRing { capacity: 100 }
-);
-
-// Multiple consumers read independently
-let reader1 = buffer.subscribe();
-let reader2 = buffer.subscribe();
-
-// Producers push data
-buffer.push(SensorReading { temp: 23.5, humidity: 60.0 });
-
-// Consumers handle lag gracefully
-match reader1.recv().await {
-    Ok(data) => process(data),
-    Err(DbError::BufferLagged { lag_count, .. }) => {
-        log::warn!("Skipped {} messages", lag_count);
-    }
-    _ => {}
-}
+reg.buffer_sized::<100>(BufferType::SpmcRing);
 ```
+Multiple consumers read independently. Handles lag with explicit notifications.
 
-**Use Cases**: 100+ Hz sensor streams, event monitoring, audit logs
-
-### 2. **SingleLatest** - Configuration & State
+**2. SingleLatest** - Configuration & state (UI sync, feature flags)
 ```rust
-// Only latest value matters - intermediate updates skipped
-let buffer = TokioBuffer::<Config>::new(&BufferCfg::SingleLatest);
-
-// Fast producer
-for v in 1..=10 { buffer.push(Config { version: v }); }
-
-// Slow consumer automatically skips to latest
-let config = reader.recv().await?; // Gets v10, not v1-v9
+reg.buffer_sized::<10>(BufferType::SingleLatest);
 ```
+Only newest value matters. Consumers skip intermediate updates automatically.
 
-**Use Cases**: Config updates, UI state sync, feature flags
-
-### 3. **Mailbox** - Command Processing
+**3. Mailbox** - Commands & control (device control, RPC)
 ```rust
-// Single-slot with overwrite semantics
-let buffer = TokioBuffer::<Command>::new(&BufferCfg::Mailbox);
-
-// Rapid commands overwrite unread ones
-buffer.push(Command::Start);
-buffer.push(Command::Stop);  // Overwrites Start if not read yet
-
-// Consumer gets latest command only
-let cmd = reader.recv().await?;
+reg.buffer_sized::<1>(BufferType::Mailbox);
 ```
+Single slot with overwrite. Latest command wins.
 
-**Use Cases**: Device control, actuator setpoints, RPC-style messaging
-
-### Runtime Agnostic
-
-**Same buffer API works on both Tokio (std) and Embassy (no_std)**:
-
-```rust
-// Tokio (cloud/edge)
-use aimdb_tokio_adapter::TokioBuffer;
-let buffer = TokioBuffer::<T>::new(&cfg);
-
-// Embassy (MCU)
-use aimdb_embassy_adapter::EmbassyBuffer;
-type Buffer = EmbassyBuffer<T, 100, 4, 1, 1>;
-let buffer = Buffer::new_spmc();
-```
-
-**📖 Full Guide**: See [Buffer Usage Guide](docs/design/003-M1_buffer_usage_guide.md) for choosing the right buffer type, performance tuning, and best practices.
+**Runtime Agnostic**: Same API works on Tokio (std) and Embassy (no_std).
 
 ---
 
-## 🤝 Contributing  
-We love contributions! Here's how to jump in:  
-1. Clone the repository.
-   ```bash
-   git clone https://github.com/aimdb-dev/aimdb.git
-   ```
-2. Create a feature branch. 
-   ```bash
-   git checkout -b feature/my-awesome-idea
-   ```
-3. Follow our Coding Standards (Rustfmt + Clippy; clear commit messages).  
-4. Open a Pull Request with a concise description and link any related issues.  
-5. Discuss ideas or questions in GitHub Discussions or our chat (see below).  
+## 🚧 Roadmap
 
-Bug reports, docs fixes experimental connectors are all welcome — don't be shy!  
+**✅ Completed:**
+- Core database with type-safe records
+- Tokio & Embassy runtime adapters
+- Three buffer types with simplified API
+- MQTT connector (std and embedded)
+- Extension trait macro system
 
----
+**� In Progress:**
+- Kafka connector (std environments)
+- CLI tools for debugging and introspection
+- Performance benchmarks
 
-## 🛣 Roadmap & Help Wanted  
-**Current Status**: Early development - foundational architecture is being implemented.
-
-Core priorities where you can make a huge impact:  
-- 🚧 **Core Database Engine** – implement in-memory storage with async operations  
-- 🚧 **MCU Runtime** – tighten Embassy executor integration and notification system  
-- 🧪 **Connectors** – expand MQTT/Kafka/DDS bridges, add gRPC/WebSocket bridges  
-- 📊 **Observability** – lightweight metrics and health probes  
-- 📚 **Docs & Examples** – more templates, edge-to-cloud demos  
-- 🔐 **Access Control Hooks** – refine built-in identity & metering  
-
-Check the Issues board for "help wanted" labels or propose your own ideas.  
+**📋 Planned:**
+- DDS connector for real-time systems
+- HTTP/REST bridge
+- Advanced observability
 
 ---
 
-## 🌐 Community  
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/aimdb-dev/aimdb/discussions)
-- 🐛 **Issues**: [Bug Reports & Feature Requests](https://github.com/aimdb-dev/aimdb/issues)
-- 📖 **Docs**: [Project Wiki](https://github.com/aimdb-dev/aimdb/wiki)
+## 🤝 Contributing
 
-Your voice shapes AimDB — ask questions, share feedback and showcase what you build.  
+Contributions welcome! Here's how:
+
+1. Clone the repository
+2. Create a feature branch: `git checkout -b feature/my-idea`
+3. Run `make check` to validate (fmt + clippy + tests)
+4. Submit a PR with a clear description
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ---
 
-## ✨ Tagline  
+## � Documentation
+
+- **Examples**: Check `/examples` for working demos
+- **Design Docs**: See `/docs/design` for architecture details
+- **API Docs**: Run `make doc` to generate rustdoc
+
+---
+
+## � License
+
+Licensed under Apache License 2.0. See [LICENSE](LICENSE) for details.
+
+---
+
 **Let's build the future of edge intelligence — together!**

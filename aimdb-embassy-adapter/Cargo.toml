@@ -7,10 +7,19 @@ description = "Embassy async runtime adapter for AimDB embedded targets"
 build = "build.rs"
 
 [features]
-default = []
+default = ["alloc"]
+
+# Heap allocation support (required for Arc-based readers)
+alloc = []
 
 # Runtime features
 embassy-runtime = ["embassy-executor", "embassy-time", "embassy-sync"]
+
+# Task pool size configuration for dynamic spawning
+# Only one should be enabled at a time (default is 8)
+embassy-task-pool-8 = []  # Default: 8 concurrent dynamic tasks
+embassy-task-pool-16 = [] # Medium: 16 concurrent dynamic tasks
+embassy-task-pool-32 = [] # Large: 32 concurrent dynamic tasks
 
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]
@@ -28,9 +37,7 @@ aimdb-executor = { path = "../aimdb-executor", default-features = false, feature
 ] }
 
 # Core AimDB types - no_std for Embassy (for DbError integration)
-aimdb-core = { path = "../aimdb-core", default-features = false, features = [
-    "embassy-runtime",
-] }
+aimdb-core = { path = "../aimdb-core", default-features = false }
 
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }

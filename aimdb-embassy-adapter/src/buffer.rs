@@ -32,16 +32,29 @@
 //! The buffer configuration's runtime capacity parameter must match the const generic `CAP`.
 //! A panic will occur if there's a mismatch. This is a design constraint of Embassy's no_std
 //! implementation.
+//!
+//! # Arc-Based Readers
+//!
+//! To enable universal subscription support (BufferSubscribable trait), readers hold
+//! Arc references to the buffer internals. This requires the `alloc` feature (enabled by default).
 
-use aimdb_core::buffer::{BufferBackend, BufferCfg, BufferReader};
+extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+
+use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
 use aimdb_core::DbError;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Channel, Receiver as ChannelReceiver};
-use embassy_sync::pubsub::{PubSubChannel, Subscriber, WaitResult};
-use embassy_sync::watch::{Receiver, Watch};
+use embassy_sync::channel::Channel;
+use embassy_sync::pubsub::{PubSubChannel, WaitResult};
+use embassy_sync::watch::Watch;
 
 /// Embassy buffer implementation that wraps the appropriate Embassy primitive
 /// based on the buffer configuration.
+///
+/// Uses Arc internally to enable owned readers that can outlive borrows,
+/// making it compatible with the BufferSubscribable trait.
 ///
 /// # Type Parameters
 /// - `T`: The value type (must be `Clone` for Embassy primitives)
@@ -65,7 +78,18 @@ use embassy_sync::watch::{Receiver, Watch};
 /// let value = reader.recv().await.unwrap();
 /// # }
 /// ```
-pub enum EmbassyBuffer<
+pub struct EmbassyBuffer<
+    T: Clone,
+    const CAP: usize,
+    const SUBS: usize,
+    const PUBS: usize,
+    const WATCH_N: usize,
+> {
+    inner: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
+}
+
+/// Inner buffer variants using Embassy primitives
+enum EmbassyBufferInner<
     T: Clone,
     const CAP: usize,
     const SUBS: usize,
@@ -93,19 +117,25 @@ impl<
         const WATCH_N: usize,
     > EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
 {
-    /// Create a new SPMC ring buffer (const constructor)
-    pub const fn new_spmc() -> Self {
-        Self::SpmcRing(PubSubChannel::new())
+    /// Create a new SPMC ring buffer
+    pub fn new_spmc() -> Self {
+        Self {
+            inner: Arc::new(EmbassyBufferInner::SpmcRing(PubSubChannel::new())),
+        }
     }
 
-    /// Create a new SingleLatest buffer (const constructor)
-    pub const fn new_watch() -> Self {
-        Self::Watch(Watch::new())
+    /// Create a new SingleLatest buffer
+    pub fn new_watch() -> Self {
+        Self {
+            inner: Arc::new(EmbassyBufferInner::Watch(Watch::new())),
+        }
     }
 
-    /// Create a new Mailbox buffer (const constructor)
-    pub const fn new_mailbox() -> Self {
-        Self::Mailbox(Channel::new())
+    /// Create a new Mailbox buffer
+    pub fn new_mailbox() -> Self {
+        Self {
+            inner: Arc::new(EmbassyBufferInner::Mailbox(Channel::new())),
+        }
     }
 }
 
@@ -115,12 +145,9 @@ impl<
         const SUBS: usize,
         const PUBS: usize,
         const WATCH_N: usize,
-    > BufferBackend<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+    > Buffer<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
 {
-    type Reader<'a>
-        = EmbassyBufferReader<'a, T, CAP, SUBS, PUBS, WATCH_N>
-    where
-        Self: 'a;
+    type Reader = EmbassyBufferReader<T, CAP, SUBS, PUBS, WATCH_N>;
 
     fn new(cfg: &BufferCfg) -> Self {
         match cfg {
@@ -141,17 +168,17 @@ impl<
     }
 
     fn push(&self, value: T) {
-        match self {
-            Self::SpmcRing(channel) => {
+        match &*self.inner {
+            EmbassyBufferInner::SpmcRing(channel) => {
                 // Use immediate publish to avoid blocking
                 // This matches Tokio's broadcast behavior where send() doesn't block
                 let publisher = channel.immediate_publisher();
                 publisher.publish_immediate(value);
             }
-            Self::Watch(watch) => {
+            EmbassyBufferInner::Watch(watch) => {
                 watch.sender().send(value);
             }
-            Self::Mailbox(channel) => {
+            EmbassyBufferInner::Mailbox(channel) => {
                 // Try to send, if full, clear and try again (overwrite semantic)
                 let sender = channel.sender();
                 if sender.try_send(value.clone()).is_err() {
@@ -164,26 +191,15 @@ impl<
         }
     }
 
-    fn subscribe(&self) -> Self::Reader<'_> {
-        match self {
-            Self::SpmcRing(channel) => {
-                // Get a subscriber, or create a dummy if max subscribers reached
-                match channel.subscriber() {
-                    Ok(sub) => EmbassyBufferReader::PubSub(Some(sub)),
-                    Err(_) => EmbassyBufferReader::PubSub(None), // Max subscribers reached
-                }
-            }
-            Self::Watch(watch) => {
-                // Get a receiver, or create a dummy if max receivers reached
-                match watch.receiver() {
-                    Some(rx) => EmbassyBufferReader::Watch(Some(rx)),
-                    None => EmbassyBufferReader::Watch(None), // Max receivers reached
-                }
-            }
-            Self::Mailbox(channel) => EmbassyBufferReader::Channel(channel.receiver()),
+    fn subscribe(&self) -> Self::Reader {
+        // Clone the Arc for the reader
+        EmbassyBufferReader {
+            buffer: Arc::clone(&self.inner),
         }
     }
 }
+
+// Note: DynBuffer is automatically implemented via blanket impl in aimdb-core
 
 impl<
         T: Clone + Send + 'static,
@@ -248,65 +264,54 @@ impl<
 
 /// Reader for Embassy buffers
 ///
-/// Each variant holds a reference or owned handle to the appropriate Embassy primitive.
-pub enum EmbassyBufferReader<
-    'a,
+/// Holds an Arc reference to the buffer. Each recv() call creates a temporary
+/// subscription to read one value.
+pub struct EmbassyBufferReader<
     T: Clone + Send + 'static,
     const CAP: usize,
     const SUBS: usize,
     const PUBS: usize,
     const WATCH_N: usize,
 > {
-    /// Reader for SPMC ring buffer
-    /// Option allows handling the case where max subscribers was reached
-    PubSub(Option<Subscriber<'a, CriticalSectionRawMutex, T, CAP, SUBS, PUBS>>),
-
-    /// Reader for SingleLatest buffer
-    /// Option allows handling the case where max receivers was reached
-    Watch(Option<Receiver<'a, CriticalSectionRawMutex, T, WATCH_N>>),
-
-    /// Reader for Mailbox buffer using Channel
-    Channel(ChannelReceiver<'a, CriticalSectionRawMutex, T, 1>),
+    buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
 }
 
 impl<
-        'a,
         T: Clone + Send + 'static,
         const CAP: usize,
         const SUBS: usize,
         const PUBS: usize,
         const WATCH_N: usize,
-    > BufferReader<T> for EmbassyBufferReader<'a, T, CAP, SUBS, PUBS, WATCH_N>
+    > BufferReader<T> for EmbassyBufferReader<T, CAP, SUBS, PUBS, WATCH_N>
 {
-    async fn recv(&mut self) -> Result<T, DbError> {
-        match self {
-            Self::PubSub(Some(sub)) => {
-                // Wait for next message
-                match sub.next_message().await {
-                    WaitResult::Message(value) => Ok(value),
-                    WaitResult::Lagged(n) => Err(DbError::BufferLagged {
-                        lag_count: n,
-                        _buffer_name: (),
-                    }),
+    fn recv(
+        &mut self,
+    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<T, DbError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            // Create a temporary subscription for this recv() call
+            // This works because the Arc keeps the buffer alive
+            match &*self.buffer {
+                EmbassyBufferInner::SpmcRing(channel) => match channel.subscriber() {
+                    Ok(mut sub) => match sub.next_message().await {
+                        WaitResult::Message(value) => Ok(value),
+                        WaitResult::Lagged(n) => Err(DbError::BufferLagged {
+                            lag_count: n,
+                            _buffer_name: (),
+                        }),
+                    },
+                    Err(_) => Err(DbError::BufferClosed { _buffer_name: () }),
+                },
+                EmbassyBufferInner::Watch(watch) => match watch.receiver() {
+                    Some(mut rx) => Ok(rx.changed().await),
+                    None => Err(DbError::BufferClosed { _buffer_name: () }),
+                },
+                EmbassyBufferInner::Mailbox(channel) => {
+                    let rx = channel.receiver();
+                    Ok(rx.receive().await)
                 }
             }
-            Self::PubSub(None) => {
-                // Max subscribers reached
-                Err(DbError::BufferClosed { _buffer_name: () })
-            }
-            Self::Watch(Some(rx)) => {
-                // Wait for a change and get the new value
-                Ok(rx.changed().await)
-            }
-            Self::Watch(None) => {
-                // Max receivers reached
-                Err(DbError::BufferClosed { _buffer_name: () })
-            }
-            Self::Channel(rx) => {
-                // Wait for next message from channel
-                Ok(rx.receive().await)
-            }
-        }
+        })
     }
 }
 
@@ -331,12 +336,12 @@ mod tests {
         type TestBuffer = EmbassyBuffer<u32, 10, 4, 2, 4>;
 
         let cfg1 = BufferCfg::SpmcRing { capacity: 10 };
-        let _buf1: TestBuffer = BufferBackend::new(&cfg1);
+        let _buf1: TestBuffer = Buffer::new(&cfg1);
 
         let cfg2 = BufferCfg::SingleLatest;
-        let _buf2: TestBuffer = BufferBackend::new(&cfg2);
+        let _buf2: TestBuffer = Buffer::new(&cfg2);
 
         let cfg3 = BufferCfg::Mailbox;
-        let _buf3: TestBuffer = BufferBackend::new(&cfg3);
+        let _buf3: TestBuffer = Buffer::new(&cfg3);
     }
 }

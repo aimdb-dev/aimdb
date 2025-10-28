@@ -7,9 +7,11 @@
 //! - **SingleLatest**: `tokio::sync::watch` for latest-value semantics
 //! - **Mailbox**: `tokio::sync::Mutex` + `tokio::sync::Notify` for single-slot overwrite
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use aimdb_core::buffer::{BufferBackend, BufferCfg, BufferReader};
+use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
 use aimdb_core::DbError;
 use tokio::sync::{broadcast, watch, Notify};
 
@@ -32,11 +34,8 @@ enum TokioBufferInner<T: Clone + Send + Sync + 'static> {
     },
 }
 
-impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
-    type Reader<'a>
-        = TokioBufferReader<T>
-    where
-        Self: 'a;
+impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
+    type Reader = TokioBufferReader<T>;
 
     fn new(cfg: &BufferCfg) -> Self {
         let inner = match &cfg {
@@ -74,7 +73,7 @@ impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
         }
     }
 
-    fn subscribe(&self) -> Self::Reader<'_> {
+    fn subscribe(&self) -> Self::Reader {
         match &*self.inner {
             TokioBufferInner::Broadcast { tx } => {
                 TokioBufferReader::Broadcast { rx: tx.subscribe() }
@@ -87,6 +86,8 @@ impl<T: Clone + Send + Sync + 'static> BufferBackend<T> for TokioBuffer<T> {
         }
     }
 }
+
+// Note: DynBuffer is automatically implemented via blanket impl in aimdb-core
 
 impl<T: Clone + Send + Sync + 'static> TokioBuffer<T> {
     /// Spawns a dispatcher task that drains the buffer and calls a handler function
@@ -174,45 +175,47 @@ pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> {
-    async fn recv(&mut self) -> Result<T, DbError> {
-        match self {
-            TokioBufferReader::Broadcast { rx } => match rx.recv().await {
-                Ok(value) => Ok(value),
-                Err(broadcast::error::RecvError::Lagged(n)) => Err(DbError::BufferLagged {
-                    lag_count: n,
-                    buffer_name: "broadcast".to_string(),
-                }),
-                Err(broadcast::error::RecvError::Closed) => Err(DbError::BufferClosed {
-                    buffer_name: "broadcast".to_string(),
-                }),
-            },
-            TokioBufferReader::Watch { rx } => {
-                rx.changed().await.map_err(|_| DbError::BufferClosed {
-                    buffer_name: "watch".to_string(),
-                })?;
-
-                let value = rx.borrow().clone();
-                match value {
-                    Some(v) => Ok(v),
-                    None => Err(DbError::BufferClosed {
-                        buffer_name: "watch".to_string(),
+    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>> {
+        Box::pin(async move {
+            match self {
+                TokioBufferReader::Broadcast { rx } => match rx.recv().await {
+                    Ok(value) => Ok(value),
+                    Err(broadcast::error::RecvError::Lagged(n)) => Err(DbError::BufferLagged {
+                        lag_count: n,
+                        buffer_name: "broadcast".to_string(),
                     }),
-                }
-            }
-            TokioBufferReader::Notify { slot, notify } => {
-                loop {
-                    // Check if there's already a value
-                    {
-                        let mut guard = slot.lock().unwrap();
-                        if let Some(value) = guard.take() {
-                            return Ok(value);
-                        }
+                    Err(broadcast::error::RecvError::Closed) => Err(DbError::BufferClosed {
+                        buffer_name: "broadcast".to_string(),
+                    }),
+                },
+                TokioBufferReader::Watch { rx } => {
+                    rx.changed().await.map_err(|_| DbError::BufferClosed {
+                        buffer_name: "watch".to_string(),
+                    })?;
+
+                    let value = rx.borrow().clone();
+                    match value {
+                        Some(v) => Ok(v),
+                        None => Err(DbError::BufferClosed {
+                            buffer_name: "watch".to_string(),
+                        }),
                     }
-                    // No value, wait for notification
-                    notify.notified().await;
+                }
+                TokioBufferReader::Notify { slot, notify } => {
+                    loop {
+                        // Check if there's already a value
+                        {
+                            let mut guard = slot.lock().unwrap();
+                            if let Some(value) = guard.take() {
+                                return Ok(value);
+                            }
+                        }
+                        // No value, wait for notification
+                        notify.notified().await;
+                    }
                 }
             }
-        }
+        })
     }
 }
 

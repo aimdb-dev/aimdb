@@ -12,10 +12,6 @@ default = ["std"]
 # Core capabilities
 std = ["thiserror", "anyhow", "serde_json", "aimdb-executor/std"]
 
-# Runtime adapters (imply capability requirements)
-tokio-runtime = ["std", "tokio"]       # Tokio requires std
-embassy-runtime = ["embassy-executor"] # Embassy works in no_std
-
 # Heap allocation in no_std environments
 alloc = ["serde"] # Enable heap in no_std
 
@@ -31,9 +27,6 @@ test-utils = ["std"]
 # Executor traits (always available)
 aimdb-executor = { path = "../aimdb-executor", default-features = false }
 
-# Procedural macros (always available)
-aimdb-macros = { path = "../aimdb-macros" }
-
 # Serialization (optional)
 serde = { workspace = true, optional = true }
 
@@ -41,10 +34,6 @@ serde = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-
-# Runtime support (optional)
-tokio = { workspace = true, optional = true }
-embassy-executor = { workspace = true, optional = true }
 
 # Atomic operations for all platforms
 portable-atomic = { version = "1.9", default-features = false }

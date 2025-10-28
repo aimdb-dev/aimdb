@@ -9,209 +9,52 @@ extern crate alloc;
 
 /// Buffer configuration for a record type
 ///
-/// Each record can choose a buffering strategy that matches its data flow characteristics.
-/// The configuration is set during record registration and determines how values are
-/// queued between producer and consumers.
+/// Selects buffering strategy: SPMC Ring (backlog), SingleLatest (state sync), or Mailbox (commands).
 ///
-/// # Buffer Types
-///
-/// ## SPMC Ring
-/// Best for high-frequency data streams where you need bounded memory but can tolerate
-/// some lag in slow consumers.
-///
-/// **Characteristics:**
-/// - Bounded capacity with overflow handling
-/// - Each consumer has independent read position
-/// - Fast producer can outrun slow consumer (lag detection)
-/// - Oldest messages dropped on overflow
-///
-/// **Memory:** `capacity × size_of::<T>()` bytes
-///
-/// ## SingleLatest
-/// Best for state synchronization where only the newest value matters.
-///
-/// **Characteristics:**
-/// - Only the most recent value is kept
-/// - Consumers always see latest state
-/// - Intermediate values are skipped
-/// - No memory accumulation
-///
-/// **Memory:** `size_of::<Option<T>>()` bytes (constant)
-///
-/// ## Mailbox
-/// Best for command processing where you need guaranteed delivery but can overwrite
-/// pending commands.
-///
-/// **Characteristics:**
-/// - Single value slot
-/// - New value overwrites old (if not consumed)
-/// - Notify-based wake-up
-/// - At-least-once delivery guarantee
-///
-/// **Memory:** `size_of::<Option<T>>() + notify_overhead` (~32 bytes)
+/// # Quick Selection Guide
+/// - **High-frequency data (>10 Hz)**: `SpmcRing` with tuned capacity
+/// - **State/config updates**: `SingleLatest` (only latest matters)
+/// - **Commands/one-shot events**: `Mailbox`
 ///
 /// # Examples
-///
 /// ```rust
 /// use aimdb_core::buffer::BufferCfg;
 ///
-/// // High-frequency telemetry (1000+ Hz)
-/// let telemetry = BufferCfg::SpmcRing { capacity: 2048 };
-///
-/// // Configuration state (occasional updates)
-/// let config = BufferCfg::SingleLatest;
-///
-/// // Command processing (one-shot events)
-/// let commands = BufferCfg::Mailbox;
-/// ```
-///
-/// # Decision Guide
-///
-/// ```text
-/// High-frequency data (>10 Hz)?
-///   Yes → SPMC Ring (tune capacity)
-///   No  ↓
-///
-/// Need full history?
-///   Yes → SPMC Ring (large capacity)
-///   No  ↓
-///
-/// Only care about latest?
-///   Yes → SingleLatest
-///   No  ↓
-///
-/// One-shot events?
-///   Yes → Mailbox
+/// let telemetry = BufferCfg::SpmcRing { capacity: 2048 };  // High-freq data
+/// let config = BufferCfg::SingleLatest;                     // State sync
+/// let commands = BufferCfg::Mailbox;                        // Commands
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BufferCfg {
     /// SPMC (Single Producer, Multiple Consumer) ring buffer
     ///
-    /// # Use Cases
-    /// - High-frequency telemetry (sensor streams at 100-1000 Hz)
-    /// - Event logs with bounded memory
-    /// - Metrics collection
-    /// - Any scenario where you need backlog but can tolerate lag
+    /// Best for high-frequency data streams with bounded memory. Fast producers
+    /// can outrun slow consumers (lag detection). Oldest messages dropped on overflow.
     ///
-    /// # Overflow Behavior
-    /// When buffer is full:
-    /// - New values overwrite oldest
-    /// - Lagging consumers get `RecvErr::Lagged(n)`
-    /// - Fast consumers are unaffected
-    ///
-    /// # Performance
-    /// - Push: O(1) lock-free
-    /// - Recv: O(1) lock-free
-    /// - Throughput: >1M msg/s (typical)
-    ///
-    /// # Example
-    /// ```rust
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// // Sensor data at 1000 Hz with ~1 second backlog
-    /// let cfg = BufferCfg::SpmcRing { capacity: 1024 };
-    ///
-    /// // High-throughput logs with 4 second backlog
-    /// let cfg = BufferCfg::SpmcRing { capacity: 4096 };
-    /// ```
+    /// **Sizing:** `capacity = data_rate_hz × lag_seconds` (use power-of-2)
     SpmcRing {
         /// Maximum number of items in the buffer
-        ///
-        /// **Recommendation:** Use power-of-2 for optimal performance.
-        ///
-        /// **Sizing Guide:**
-        /// - `capacity = data_rate_hz × acceptable_lag_seconds`
-        /// - Example: 100 Hz × 2s = 200 items
-        /// - Add margin for bursts: 200 × 1.5 = 300, round to 512
         capacity: usize,
     },
 
     /// Single latest value buffer (no backlog)
     ///
-    /// # Use Cases
-    /// - Configuration updates
-    /// - Status synchronization
-    /// - Latest sensor reading (when history doesn't matter)
-    /// - Any scenario where only current state matters
-    ///
-    /// # Behavior
-    /// - Only the most recent value is kept
-    /// - Consumers always get latest state when they read
-    /// - Intermediate updates are collapsed
-    /// - No per-consumer tracking needed
-    ///
-    /// # Performance
-    /// - Push: O(1) atomic
-    /// - Recv: O(1) wait
-    /// - Throughput: >10M msg/s (typical)
-    ///
-    /// # Example
-    /// ```rust
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// // Device configuration (only latest matters)
-    /// let cfg = BufferCfg::SingleLatest;
-    /// ```
-    ///
-    /// # Note
-    /// If you need to process *every* update, use `SpmcRing` instead.
+    /// Only most recent value is kept. Consumers always get latest state.
+    /// Intermediate updates are collapsed. Use when history doesn't matter.
     SingleLatest,
 
     /// Single-slot mailbox with overwrite
     ///
-    /// # Use Cases
-    /// - Command processing (start/stop/reset)
-    /// - One-shot triggers
-    /// - State machine transitions
-    /// - Any scenario where you need delivery guarantee but can overwrite pending
-    ///
-    /// # Behavior
-    /// - Single value slot
-    /// - New value overwrites old if not yet consumed
-    /// - Notify-based wake-up (efficient)
-    /// - At-least-once delivery (last value before consumption)
-    ///
-    /// # Performance
-    /// - Push: O(1) lock
-    /// - Recv: O(1) lock + wait
-    /// - Throughput: ~100K msg/s (typical)
-    ///
-    /// # Example
-    /// ```rust
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// // Command processing (latest command wins)
-    /// let cfg = BufferCfg::Mailbox;
-    /// ```
-    ///
-    /// # Note
-    /// If you need to queue multiple commands, use `SpmcRing` instead.
+    /// New value overwrites old if not consumed. At-least-once delivery.
+    /// Use for commands where latest command wins.
     Mailbox,
 }
 
 impl BufferCfg {
     /// Validates the buffer configuration
     ///
-    /// # Returns
-    /// - `Ok(())` if configuration is valid
-    /// - `Err(&str)` with error description if invalid
-    ///
-    /// # Validation Rules
-    /// - SPMC Ring: `capacity` must be > 0
-    /// - SingleLatest: always valid
-    /// - Mailbox: always valid
-    ///
-    /// # Example
-    /// ```rust
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// let cfg = BufferCfg::SpmcRing { capacity: 1024 };
-    /// assert!(cfg.validate().is_ok());
-    ///
-    /// let invalid = BufferCfg::SpmcRing { capacity: 0 };
-    /// assert!(invalid.validate().is_err());
-    /// ```
+    /// Returns `Err` if SPMC Ring capacity is 0.
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             BufferCfg::SpmcRing { capacity } => {
@@ -227,19 +70,6 @@ impl BufferCfg {
     }
 
     /// Returns a human-readable name for this buffer type
-    ///
-    /// Useful for logging and debugging.
-    ///
-    /// # Example
-    /// ```rust
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// let cfg = BufferCfg::SpmcRing { capacity: 1024 };
-    /// assert_eq!(cfg.name(), "spmc_ring");
-    ///
-    /// let cfg = BufferCfg::SingleLatest;
-    /// assert_eq!(cfg.name(), "single_latest");
-    /// ```
     pub fn name(&self) -> &'static str {
         match self {
             BufferCfg::SpmcRing { .. } => "spmc_ring",
@@ -250,29 +80,7 @@ impl BufferCfg {
 
     /// Returns estimated memory overhead for this buffer type
     ///
-    /// This is an approximation and may vary by implementation and platform.
-    ///
-    /// # Arguments
-    /// * `item_size` - Size in bytes of a single item `size_of::<T>()`
-    /// * `consumer_count` - Number of consumers for this record
-    ///
-    /// # Returns
-    /// Estimated memory in bytes
-    ///
-    /// # Example
-    /// ```rust
-    /// use aimdb_core::buffer::BufferCfg;
-    /// use core::mem::size_of;
-    ///
-    /// struct SensorData {
-    ///     temperature: f32,
-    ///     timestamp: u64,
-    /// }
-    ///
-    /// let cfg = BufferCfg::SpmcRing { capacity: 1024 };
-    /// let memory = cfg.estimated_memory_bytes(size_of::<SensorData>(), 3);
-    /// // ~1024 * 12 bytes + 3 * 64 bytes ≈ 12KB + 192 bytes
-    /// ```
+    /// Approximation; varies by implementation and platform.
     pub fn estimated_memory_bytes(&self, item_size: usize, consumer_count: usize) -> usize {
         match self {
             BufferCfg::SpmcRing { capacity } => {
@@ -299,20 +107,7 @@ impl BufferCfg {
 }
 
 impl Default for BufferCfg {
-    /// Returns the default buffer configuration
-    ///
-    /// Default is `SpmcRing { capacity: 1024 }` which provides:
-    /// - Reasonable backlog for most use cases
-    /// - ~1 second buffer at 1000 Hz
-    /// - Backward compatibility with existing behavior
-    ///
-    /// # Example
-    /// ```rust
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// let cfg = BufferCfg::default();
-    /// assert_eq!(cfg, BufferCfg::SpmcRing { capacity: 1024 });
-    /// ```
+    /// Returns the default buffer configuration: `SpmcRing { capacity: 1024 }`
     fn default() -> Self {
         BufferCfg::SpmcRing { capacity: 1024 }
     }

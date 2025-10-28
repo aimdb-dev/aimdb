@@ -10,7 +10,7 @@ AimDB is an async, in-memory database designed for real-time data synchronizatio
 
 ### Prerequisites
 
-- **Rust**: Latest stable version with Rust 2024 edition support
+- **Rust**: Latest stable version (2021 edition)
 - **Git**: For version control
 - **Make**: For build automation
 - **Docker**: For running integration tests (optional)
@@ -63,8 +63,8 @@ cargo deny check advisories # Security advisories only
 
 ### Rust Guidelines
 
-- **Edition**: Rust 2024 (configured in Cargo.toml files)
-- **Error Handling**: Use `thiserror` for library errors, `anyhow` for applications
+- **Edition**: Rust 2021
+- **Error Handling**: Use `DbResult<T>` with `DbError` enum
 - **Async**: All operations must be async/await compatible
 - **Testing**: Use `tokio-test` for async test utilities
 - **Documentation**: Include examples in doc comments for public APIs
@@ -76,7 +76,7 @@ When implementing modules, follow this structure:
 ```rust
 //! Module-level docs explaining purpose and integration points
 
-use crate::core::AimDbError;  // Consistent error handling
+use crate::{DbError, DbResult};  // Consistent error handling
 use tracing::{debug, info, warn, error};  // Observability
 
 /// Public API with comprehensive docs and examples
@@ -86,12 +86,12 @@ pub struct ComponentName {
 
 impl ComponentName {
     /// Constructor with error handling
-    pub fn new() -> Result<Self, AimDbError> {
+    pub fn new() -> DbResult<Self> {
         // Implementation
     }
     
     /// Async methods for all operations
-    pub async fn process(&self) -> Result<(), AimDbError> {
+    pub async fn process(&self) -> DbResult<()> {
         // Implementation with tracing
         Ok(())
     }
@@ -214,29 +214,23 @@ add async stream handler for real-time data sync
 ## Project Structure
 
 ```
-aimdb-core/          # Core database engine
-aimdb-connectors/    # Protocol bridges: MQTT, Kafka, DDS
-aimdb-adapters/      # Async runtime adapters: Tokio, Embassy
-tools/aimdb-cli/     # Command-line interface
-examples/quickstart/ # Demo application
+aimdb-core/              # Core database engine
+aimdb-executor/          # Runtime trait abstractions
+aimdb-tokio-adapter/     # Tokio runtime adapter  
+aimdb-embassy-adapter/   # Embassy runtime adapter (embedded)
+aimdb-mqtt-connector/    # MQTT protocol connector
+tools/aimdb-cli/         # Command-line interface (skeleton)
+examples/                # Demo applications
 ```
 
-## Implementation Priorities
+## Next Development Areas
 
-### Current Focus Areas
+See `.github/copilot-instructions.md` for current implementation status and priorities:
 
-1. **Core Database Engine** (`aimdb-core`)
-   - Define `AimDbError` error type with `thiserror`
-   - Implement in-memory storage with async operations
-   - Add ring buffer for high-throughput streaming
-
-2. **Runtime Adapters** (`aimdb-adapters`)
-   - Tokio adapter for standard environments
-   - Embassy adapter for embedded/MCU targets
-
-3. **Protocol Connectors** (`aimdb-connectors`)
-   - MQTT bridge using `rumqttc`
-   - Kafka bridge using `rdkafka`
+- **Kafka Connector** - Kafka integration using `rdkafka`
+- **DDS Connector** - DDS protocol support
+- **CLI Tools** - Introspection, monitoring, debugging commands
+- **Performance** - Benchmarks and profiling infrastructure
 
 ## Getting Help
 

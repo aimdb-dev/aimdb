@@ -31,20 +31,29 @@
 compile_error!("tokio-adapter requires the std feature");
 
 pub mod buffer;
-pub mod database;
+pub mod connector;
 pub mod error;
-pub mod outbox;
 pub mod runtime;
 pub mod time;
 
 pub use buffer::TokioBuffer;
-pub use error::{TokioErrorConverter, TokioErrorSupport};
-pub use outbox::{create_outbox_channel, OutboxReceiver, OutboxSender, TokioSender};
+pub use error::TokioErrorSupport;
 
 #[cfg(feature = "tokio-runtime")]
 pub use runtime::TokioAdapter;
 
+/// Type alias for Tokio database
+///
+/// This provides a convenient type for working with databases on the Tokio runtime.
+/// Most users should use `AimDbBuilder` directly to create databases.
 #[cfg(feature = "tokio-runtime")]
-pub use database::{
-    TokioDatabase, TokioDatabaseBuilder, TokioDatabaseSpec, TokioDatabaseSpecBuilder,
-};
+pub type TokioDatabase = aimdb_core::Database<TokioAdapter>;
+
+// Generate extension trait for Tokio adapter using the macro
+aimdb_core::impl_record_registrar_ext! {
+    TokioRecordRegistrarExt,
+    TokioAdapter,
+    TokioBuffer,
+    "tokio-runtime",
+    |cfg| TokioBuffer::<T>::new(cfg)
+}

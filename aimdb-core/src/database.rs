@@ -4,9 +4,7 @@
 //! in-memory storage with type-safe records and real-time synchronization across
 //! MCU → edge → cloud environments.
 
-use crate::{
-    AimDb, AimDbBuilder, DbError, DbResult, Emitter, RecordT, RuntimeAdapter, RuntimeContext,
-};
+use crate::{AimDb, DbError, DbResult, RuntimeAdapter, RuntimeContext};
 use aimdb_executor::Spawn;
 use core::fmt::Debug;
 
@@ -14,141 +12,47 @@ use core::fmt::Debug;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{sync::Arc, vec::Vec};
+use alloc::boxed::Box;
 
 #[cfg(feature = "std")]
-use std::{sync::Arc, vec::Vec};
-
-/// Database specification
-///
-/// This struct holds the configuration for creating a database instance.
-/// It is runtime-agnostic and works with any RuntimeAdapter implementation.
-#[allow(dead_code)] // Used by adapter crates
-pub struct DatabaseSpec<A: RuntimeAdapter> {
-    pub(crate) aimdb_builder: AimDbBuilder,
-    _phantom: core::marker::PhantomData<A>,
-}
-
-impl<A: RuntimeAdapter> DatabaseSpec<A> {
-    /// Creates a new specification builder
-    ///
-    /// # Returns
-    /// A builder for constructing database specifications
-    pub fn builder() -> DatabaseSpecBuilder<A> {
-        DatabaseSpecBuilder::new()
-    }
-}
-
-/// Builder for database specifications
-///
-/// This builder provides a fluent API for configuring databases with
-/// type-safe record registration.
-pub struct DatabaseSpecBuilder<A: RuntimeAdapter> {
-    aimdb_builder: AimDbBuilder,
-    _phantom: core::marker::PhantomData<A>,
-}
-
-impl<A: RuntimeAdapter> DatabaseSpecBuilder<A> {
-    /// Creates a new database specification builder
-    fn new() -> Self {
-        Self {
-            aimdb_builder: AimDbBuilder::new(),
-            _phantom: core::marker::PhantomData,
-        }
-    }
-
-    /// Registers a type-safe record with configuration
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type implementing `RecordT`
-    ///
-    /// # Arguments
-    /// * `cfg` - Configuration for the record
-    ///
-    /// # Returns
-    /// Self for method chaining
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let builder = Database::<TokioAdapter>::builder()
-    ///     .record::<SensorData>(&sensor_cfg)
-    ///     .record::<Alerts>(&alert_cfg);
-    /// ```
-    pub fn record<T: RecordT>(mut self, cfg: &T::Config) -> Self {
-        #[cfg(feature = "tracing")]
-        tracing::debug!("Registering typed record: {}", core::any::type_name::<T>());
-
-        self.aimdb_builder.register_record::<T>(cfg);
-        self
-    }
-
-    /// Internal method to convert builder to spec
-    ///
-    /// This is used by adapter-specific build methods.
-    #[allow(dead_code)] // Used by adapter crates
-    pub fn into_spec(self) -> DatabaseSpec<A> {
-        #[cfg(feature = "tracing")]
-        tracing::info!("Building database spec with typed records");
-
-        DatabaseSpec {
-            aimdb_builder: self.aimdb_builder,
-            _phantom: core::marker::PhantomData,
-        }
-    }
-}
+use std::boxed::Box;
 
 /// AimDB Database implementation
 ///
-/// Provides a unified database implementation combining runtime adapter management
-/// with type-safe record registration and producer-consumer patterns.
+/// Unified database combining runtime adapter management with type-safe record
+/// registration and producer-consumer patterns. See `examples/` for usage patterns.
 ///
-/// # Design Philosophy
-///
-/// - **Type Safety**: Records identified by type, not strings
-/// - **Runtime Agnostic**: Core behavior doesn't depend on specific runtimes
-/// - **Async First**: All operations are async for consistency
-/// - **Reactive Data Flow**: Producer-consumer pipelines with observability
-/// - **Service Orchestration**: Manages spawned services on the runtime
-///
-/// See the repository examples for complete usage patterns.
-pub struct Database<A: RuntimeAdapter> {
+/// This is a thin wrapper around `AimDb<R>` that adds adapter-specific functionality.
+/// Most users should use `AimDbBuilder` directly to create databases.
+pub struct Database<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> {
     adapter: A,
-    aimdb: AimDb,
+    aimdb: AimDb<A>,
 }
 
-impl<A: RuntimeAdapter> Database<A> {
-    /// Creates a new database builder
+impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
+    /// Internal accessor for the AimDb instance
     ///
-    /// Use this to start configuring a database with type-safe records.
-    /// The builder provides runtime-specific build methods in the adapter crates.
-    ///
-    /// See the repository examples for complete usage.
-    pub fn builder() -> DatabaseSpecBuilder<A> {
-        DatabaseSpecBuilder::new()
+    /// Used by adapter crates. Should not be used by application code.
+    #[doc(hidden)]
+    pub fn inner_aimdb(&self) -> &AimDb<A> {
+        &self.aimdb
     }
 
-    /// Internal constructor for creating a database from a spec
+    /// Creates a new database from adapter and AimDb
     ///
-    /// This is called by adapter-specific build methods and should not
-    /// be used directly.
-    #[allow(dead_code)] // Used by adapter crates
-    pub fn new(adapter: A, spec: DatabaseSpec<A>) -> DbResult<Self>
-    where
-        A: Clone + 'static,
-    {
+    /// # Arguments
+    /// * `adapter` - The runtime adapter
+    /// * `aimdb` - The configured AimDb instance
+    ///
+    /// Most users should use `AimDbBuilder` directly instead of this constructor.
+    pub fn new(adapter: A, aimdb: AimDb<A>) -> DbResult<Self> {
         #[cfg(feature = "tracing")]
         tracing::info!("Initializing unified database with typed records");
-
-        // Build the AimDb with the runtime
-        let runtime = Arc::new(adapter.clone());
-        let aimdb = spec.aimdb_builder.with_runtime(runtime).build()?;
 
         Ok(Self { adapter, aimdb })
     }
 
     /// Gets a reference to the runtime adapter
-    ///
-    /// This allows direct access to the runtime adapter for advanced use cases.
     ///
     /// # Example
     /// ```rust,ignore
@@ -165,37 +69,7 @@ impl<A: RuntimeAdapter> Database<A> {
         &self.adapter
     }
 
-    /// Gets the emitter for cross-record communication
-    ///
-    /// The emitter allows producing data to typed records from anywhere
-    /// in your application.
-    ///
-    /// # Returns
-    /// An `Emitter` for cross-record communication
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) {
-    /// let emitter = db.emitter();
-    /// emitter.emit(SensorData { temp: 23.5 }).await;
-    /// # }
-    /// ```
-    pub fn emitter(&self) -> Emitter {
-        self.aimdb.emitter()
-    }
-
     /// Produces typed data to the record's producer pipeline
-    ///
-    /// This is the primary way to inject data into the reactive pipeline.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Arguments
-    /// * `data` - The data to produce
-    ///
-    /// # Returns
-    /// `DbResult<()>` indicating success or failure
     ///
     /// # Example
     /// ```rust,ignore
@@ -211,65 +85,58 @@ impl<A: RuntimeAdapter> Database<A> {
         self.aimdb.produce(data).await
     }
 
-    /// Gets producer call statistics for a record type
+    /// Subscribes to a record type's buffer
     ///
-    /// Returns the number of times the producer was called and the last value.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Returns
-    /// `Option<(u64, Option<T>)>` with call count and last value
+    /// Creates a subscription to the configured buffer for the given record type.
+    /// Returns a boxed reader for receiving values asynchronously.
     ///
     /// # Example
     /// ```rust,ignore
-    /// # fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) {
-    /// if let Some((calls, last)) = db.producer_stats::<SensorData>() {
-    ///     println!("Producer called {} times", calls);
+    /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) -> aimdb_core::DbResult<()> {
+    /// let mut reader = db.subscribe::<SensorData>()?;
+    ///
+    /// loop {
+    ///     match reader.recv().await {
+    ///         Ok(data) => println!("Received: {:?}", data),
+    ///         Err(e) => {
+    ///             eprintln!("Error: {:?}", e);
+    ///             break;
+    ///         }
+    ///     }
     /// }
+    /// # Ok(())
     /// # }
     /// ```
-    pub fn producer_stats<T>(&self) -> Option<(u64, Option<T>)>
+    pub fn subscribe<T>(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
     where
-        T: Send + 'static + Debug + Clone,
+        T: Send + Sync + 'static + Debug + Clone,
     {
-        self.aimdb.producer_stats()
-    }
+        // Get the typed record using the helper
+        let typed_record = self.aimdb.inner().get_typed_record::<T, A>()?;
 
-    /// Gets consumer call statistics for a record type
-    ///
-    /// Returns statistics for all consumers registered on this record type.
-    /// Returns an empty vector if the record type has no consumers registered.
-    ///
-    /// # Type Parameters
-    /// * `T` - The record type
-    ///
-    /// # Returns
-    /// `Vec<(u64, Option<T>)>` with stats for each consumer
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// # fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) {
-    /// let stats = db.consumer_stats::<SensorData>();
-    /// for (i, (calls, last)) in stats.iter().enumerate() {
-    ///     println!("Consumer {} called {} times", i, calls);
-    /// }
-    /// # }
-    /// ```
-    pub fn consumer_stats<T>(&self) -> Vec<(u64, Option<T>)>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        self.aimdb.consumer_stats()
+        // Get the buffer
+        #[cfg(feature = "std")]
+        let buffer = typed_record.buffer().ok_or(DbError::InvalidOperation {
+            operation: "subscribe".to_string(),
+            reason: format!(
+                "No buffer configured for record type {}. Use RecordRegistrar::buffer() to configure a buffer.",
+                core::any::type_name::<T>()
+            ),
+        })?;
+
+        #[cfg(not(feature = "std"))]
+        let buffer = typed_record.buffer().ok_or(DbError::InvalidOperation {
+            _operation: (),
+            _reason: (),
+        })?;
+
+        // DynBuffer provides subscribe_boxed() - universal across all runtimes!
+        Ok(buffer.subscribe_boxed())
     }
 
     /// Creates a RuntimeContext for this database
     ///
-    /// The context provides services with access to runtime capabilities
-    /// like timing and logging, plus the emitter for cross-record communication.
-    ///
-    /// # Returns
-    /// A RuntimeContext configured for this database's runtime with emitter included
+    /// Provides services with access to runtime capabilities (timing, logging) plus the emitter.
     ///
     /// # Example
     /// ```rust,ignore
@@ -278,7 +145,7 @@ impl<A: RuntimeAdapter> Database<A> {
     /// # {
     /// # async fn example<A: aimdb_executor::Runtime + Clone>(db: Database<A>) {
     /// let ctx = db.context();
-    /// // Pass ctx to services - they can use ctx.emitter()
+    /// // Pass ctx to services
     /// # }
     /// # }
     /// ```
@@ -289,7 +156,6 @@ impl<A: RuntimeAdapter> Database<A> {
         #[cfg(feature = "std")]
         {
             RuntimeContext::from_arc(std::sync::Arc::new(self.adapter.clone()))
-                .with_emitter(self.emitter())
         }
         #[cfg(not(feature = "std"))]
         {
@@ -307,15 +173,6 @@ where
     A: RuntimeAdapter + Spawn,
 {
     /// Spawns a service on the database's runtime
-    ///
-    /// This method provides a unified interface for spawning services
-    /// across different runtime adapters.
-    ///
-    /// # Arguments
-    /// * `future` - The service future to spawn
-    ///
-    /// # Returns
-    /// `DbResult<()>` indicating whether the spawn succeeded
     ///
     /// # Example
     /// ```rust,ignore

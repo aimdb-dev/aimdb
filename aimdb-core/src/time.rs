@@ -7,21 +7,12 @@ use core::future::Future;
 
 /// Trait for adapters that provide current time information
 ///
-/// This trait enables adapters to provide timing information which can be
-/// useful for timestamping, performance measurement, and scheduling.
-///
-/// # Availability
-/// - **Tokio environments**: Uses `std::time::Instant`
-/// - **Embassy environments**: Uses `embassy_time::Instant` (when embassy-time feature enabled)
-/// - **Basic environments**: May not be available depending on platform
+/// Enables timing information for timestamping, performance measurement, and scheduling.
 pub trait TimestampProvider {
     /// Type representing an instant in time for this runtime
     type Instant;
 
     /// Gets the current timestamp according to the runtime's time source
-    ///
-    /// # Returns
-    /// Current timestamp as the runtime's Instant type
     ///
     /// # Example
     /// ```rust,no_run
@@ -29,7 +20,6 @@ pub trait TimestampProvider {
     ///
     /// fn log_operation<T: TimestampProvider>(provider: &T) {
     ///     let _timestamp = provider.now();
-    ///     // Use timestamp for logging, performance measurement, etc.
     ///     println!("Operation completed");
     /// }
     /// ```
@@ -38,27 +28,12 @@ pub trait TimestampProvider {
 
 /// Trait for adapters that support sleep/delay operations
 ///
-/// This trait provides the capability to pause execution for a specified duration,
-/// useful for implementing delays, rate limiting, and timing-based control flow.
-///
-/// # Availability
-/// - **Tokio environments**: Full support with `tokio::time::sleep()`
-/// - **Embassy environments**: Available when `embassy-time` feature is enabled
-/// - **Basic environments**: Not available
+/// Provides capability to pause execution for a specified duration.
 pub trait SleepCapable {
     /// Type representing a duration for this runtime
     type Duration;
 
-    /// Pauses execution for the specified duration
-    ///
-    /// This method provides a sleep/delay functionality that pauses the current
-    /// execution context without blocking other tasks.
-    ///
-    /// # Arguments
-    /// * `duration` - How long to pause execution
-    ///
-    /// # Returns
-    /// A future that completes after the specified duration
+    /// Pauses execution for the specified duration without blocking other tasks
     ///
     /// # Example
     /// ```rust,no_run
@@ -77,17 +52,12 @@ pub trait SleepCapable {
 }
 
 /// Utility functions for time-based operations
-///
-/// This module provides convenience functions that work with the timing traits
-/// to provide common time-based functionality across different platforms.
 pub mod utils {
     use super::*;
 
-    /// Measures the execution time of an async operation using a timestamp provider
+    /// Measures the execution time of an async operation
     ///
-    /// This function works in both `std` and `no_std` environments by using the
-    /// provided `TimestampProvider` for timing measurements. The duration calculation
-    /// depends on the timestamp provider's `Instant` type supporting subtraction.
+    /// Works in both `std` and `no_std` environments using the provided `TimestampProvider`.
     pub async fn measure_async<F, T, P>(provider: &P, operation: F) -> (T, P::Instant, P::Instant)
     where
         F: Future<Output = T>,
@@ -100,9 +70,6 @@ pub mod utils {
     }
 
     /// Creates a generic timeout error for operations that exceed their time limit
-    ///
-    /// This utility function provides a standard way to create timeout errors
-    /// without depending on specific runtime implementations.
     pub fn create_timeout_error(_operation_name: &str) -> crate::DbError {
         crate::DbError::ConnectionFailed {
             #[cfg(feature = "std")]
