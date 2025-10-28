@@ -49,95 +49,11 @@ pub use runtime::TokioAdapter;
 #[cfg(feature = "tokio-runtime")]
 pub type TokioDatabase = aimdb_core::Database<TokioAdapter>;
 
-/// Extension trait for convenient configuration with Tokio
-///
-/// This trait provides high-level convenience methods for configuring records
-/// with the Tokio runtime, automatically handling buffer creation and runtime
-/// context extraction.
-pub trait TokioRecordRegistrarExt<'a, T>
-where
-    T: Send + Sync + Clone + core::fmt::Debug + 'static,
-{
-    /// Configures a buffer using inline configuration
-    fn buffer(
-        &'a mut self,
-        cfg: aimdb_core::buffer::BufferCfg,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, TokioAdapter>;
-
-    /// Registers a producer with automatic runtime context injection
-    fn source<F, Fut>(
-        &'a mut self,
-        f: F,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, TokioAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<TokioAdapter>,
-                aimdb_core::Producer<T, TokioAdapter>,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static;
-
-    /// Registers a consumer with automatic runtime context injection
-    fn tap<F, Fut>(&'a mut self, f: F) -> &'a mut aimdb_core::RecordRegistrar<'a, T, TokioAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<TokioAdapter>,
-                aimdb_core::Consumer<T, TokioAdapter>,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static;
-}
-
-#[cfg(feature = "tokio-runtime")]
-impl<'a, T> TokioRecordRegistrarExt<'a, T> for aimdb_core::RecordRegistrar<'a, T, TokioAdapter>
-where
-    T: Send + Sync + Clone + core::fmt::Debug + 'static,
-{
-    fn buffer(
-        &'a mut self,
-        cfg: aimdb_core::buffer::BufferCfg,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, TokioAdapter> {
-        use aimdb_core::buffer::Buffer;
-        let buffer = Box::new(TokioBuffer::<T>::new(&cfg));
-        self.buffer_raw(buffer)
-    }
-
-    fn source<F, Fut>(
-        &'a mut self,
-        f: F,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, TokioAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<TokioAdapter>,
-                aimdb_core::Producer<T, TokioAdapter>,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static,
-    {
-        self.source_raw(|producer, ctx_any| {
-            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
-            f(ctx, producer)
-        })
-    }
-
-    fn tap<F, Fut>(&'a mut self, f: F) -> &'a mut aimdb_core::RecordRegistrar<'a, T, TokioAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<TokioAdapter>,
-                aimdb_core::Consumer<T, TokioAdapter>,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static,
-    {
-        self.tap_raw(|consumer, ctx_any| {
-            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
-            f(ctx, consumer)
-        })
-    }
+// Generate extension trait for Tokio adapter using the macro
+aimdb_core::impl_record_registrar_ext! {
+    TokioRecordRegistrarExt,
+    TokioAdapter,
+    TokioBuffer,
+    "tokio-runtime",
+    |cfg| TokioBuffer::<T>::new(cfg)
 }

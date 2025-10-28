@@ -31,9 +31,10 @@
 
 extern crate alloc;
 
-use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, Consumer, Producer, RuntimeContext};
-use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyRecordRegistrarExt};
+use aimdb_embassy_adapter::{
+    EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
+};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
@@ -336,8 +337,18 @@ async fn main(spawner: Spawner) {
         .runtime(runtime.clone())
         .with_connector("mqtt", mqtt_connector.clone());
 
+    // Configure Temperature record with custom buffer sizing
+    //
+    // For SPMC (Single Producer, Multiple Consumer) ring buffer:
+    // - CAP=32: Ring buffer holds 32 temperature readings
+    // - CONSUMERS=4: Maximum 4 concurrent consumers (used as SUBS for SPMC ring)
+    //
+    // Note: The CONSUMERS parameter is used differently based on buffer type:
+    // - SPMC Ring: CONSUMERS becomes SUBS (independent ring buffer positions)
+    // - SingleLatest: CONSUMERS becomes WATCH_N (watchers of latest value)
+    // - Mailbox: CONSUMERS is ignored (single-slot)
     builder.configure::<Temperature>(|reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+        reg.buffer_sized::<32, 4>(EmbassyBufferType::SpmcRing)
             .source(temperature_producer)
             .tap(temperature_consumer)
             // Publish to MQTT as JSON

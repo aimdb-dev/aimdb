@@ -152,122 +152,127 @@ pub async fn yield_now() {
     }
 }
 
-/// Extension trait for convenient buffer configuration with Embassy
-///
-/// This trait provides convenience methods for configuring buffers and consumers
-/// inline when using the Embassy runtime adapter, with automatic runtime context injection.
+// Generate extension trait for Embassy adapter using the macro
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-pub trait EmbassyRecordRegistrarExt<'a, T>
+aimdb_core::impl_record_registrar_ext! {
+    EmbassyRecordRegistrarExt,
+    EmbassyAdapter,
+    EmbassyBuffer,
+    ["embassy-runtime", "embassy-sync"],
+    |cfg| EmbassyBuffer::<T, 16, 4, 4, 1>::new(cfg)
+}
+
+/// Buffer type selection for Embassy adapters
+///
+/// This enum allows explicit selection of buffer semantics when configuring
+/// Embassy buffers with custom const generics.
+#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbassyBufferType {
+    /// SPMC ring buffer - multiple consumers can read independently
+    /// Capacity specified via const generic CAP
+    SpmcRing,
+
+    /// Single-latest buffer - all consumers get the most recent value
+    /// Only stores one value, CAP const generic is ignored (typically use 1)
+    SingleLatest,
+
+    /// Mailbox buffer - single slot with overwrite semantics
+    /// CAP const generic is ignored (typically use 1)
+    Mailbox,
+}
+
+/// Additional Embassy-specific extension methods for buffer configuration
+///
+/// These methods allow fine-grained control over Embassy buffer const generics,
+/// which is necessary for embedded systems with limited resources.
+#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+pub trait EmbassyRecordRegistrarExtCustom<'a, T>
 where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,
 {
-    /// Configures a buffer for this record using inline configuration
+    /// Configure buffer with custom size parameters for Embassy
     ///
-    /// This is a convenience method that creates an `EmbassyBuffer` and configures
-    /// it in one step, avoiding the need to manually instantiate the buffer.
+    /// This allows precise control over buffer sizing for embedded systems.
+    /// The default `.buffer()` method uses conservative defaults (CAP=16, CONSUMERS=4),
+    /// but you can optimize for your specific use case with this method.
+    ///
+    /// # Type Parameters
+    /// - `CAP`: Buffer capacity
+    ///   - For SPMC Ring: Ring buffer size (e.g., 16, 32, 64)
+    ///   - For SingleLatest/Mailbox: Ignored (set to 1)
+    /// - `CONSUMERS`: Maximum concurrent consumers
+    ///   - For SPMC Ring: Used as SUBS (independent read positions in ring)
+    ///   - For SingleLatest: Used as WATCH_N (watchers of latest value)
+    ///   - For Mailbox: Ignored
     ///
     /// # Arguments
-    /// * `cfg` - Buffer configuration specifying capacity and behavior
+    /// - `buffer_type`: Explicit buffer type selection
     ///
-    /// # Returns
-    /// `&mut Self` for method chaining
+    /// # Recommended Values
     ///
-    /// # Example
+    /// **For SPMC Ring Buffer:**
+    /// ```ignore
+    /// // Small buffer: 16 items, 2 consumers
+    /// reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
     ///
-    /// ```rust,ignore
-    /// use aimdb_embassy_adapter::EmbassyRecordRegistrarExt;
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// builder.configure::<Temperature>(|reg| {
-    ///     reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-    ///        .source(|ctx, producer| { ... })
-    ///        .tap(|ctx, consumer| { ... });
-    /// });
+    /// // Large buffer: 64 items, 4 consumers  
+    /// reg.buffer_sized::<64, 4>(EmbassyBufferType::SpmcRing)
     /// ```
-    fn buffer(
+    ///
+    /// **For SingleLatest (only latest value stored):**
+    /// ```ignore
+    /// // 4 consumers watching the latest value
+    /// reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+    /// ```
+    ///
+    /// **For Mailbox (single-slot overwrite):**
+    /// ```ignore
+    /// // Parameters are ignored, single slot
+    /// reg.buffer_sized::<1, 4>(EmbassyBufferType::Mailbox)
+    /// ```
+    ///
+    /// # Rule of Thumb
+    /// - Set `CAP` to your desired ring buffer size for SPMC
+    /// - Set `CONSUMERS` to match your number of `.tap()` consumers
+    fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
         &'a mut self,
-        cfg: aimdb_core::buffer::BufferCfg,
+        buffer_type: EmbassyBufferType,
     ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>;
-
-    /// Registers a producer with automatic runtime context injection
-    fn source<F, Fut>(
-        &'a mut self,
-        f: F,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<EmbassyAdapter>,
-                aimdb_core::Producer<T, EmbassyAdapter>,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static;
-
-    /// Registers a consumer with automatic runtime context injection
-    fn tap<F, Fut>(
-        &'a mut self,
-        f: F,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<EmbassyAdapter>,
-                aimdb_core::Consumer<T, EmbassyAdapter>,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static;
 }
 
 #[cfg(all(feature = "embassy-runtime", feature = "embassy-sync"))]
-impl<'a, T> EmbassyRecordRegistrarExt<'a, T> for aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
+impl<'a, T> EmbassyRecordRegistrarExtCustom<'a, T>
+    for aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
 where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,
 {
-    fn buffer(
+    fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
         &'a mut self,
-        cfg: aimdb_core::buffer::BufferCfg,
+        buffer_type: EmbassyBufferType,
     ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter> {
-        use aimdb_core::buffer::Buffer;
+        use aimdb_core::buffer::{Buffer, BufferCfg};
         use alloc::boxed::Box;
-        // Embassy buffer uses const generics - use default sizes
-        let buffer = Box::new(EmbassyBuffer::<T, 16, 4, 4, 1>::new(&cfg));
+
+        // PUBS is hardcoded to 1 for typical SPMC patterns (internal implementation detail)
+        const PUBS: usize = 1;
+
+        // CONSUMERS parameter is used differently based on buffer type:
+        // - SPMC Ring: CONSUMERS -> SUBS (independent ring positions)
+        // - SingleLatest: CONSUMERS -> WATCH_N (latest value watchers)
+        // - Mailbox: CONSUMERS is ignored
+
+        // Create BufferCfg based on explicit buffer type selection
+        let cfg = match buffer_type {
+            EmbassyBufferType::SpmcRing => BufferCfg::SpmcRing { capacity: CAP },
+            EmbassyBufferType::SingleLatest => BufferCfg::SingleLatest,
+            EmbassyBufferType::Mailbox => BufferCfg::Mailbox,
+        };
+
+        // Map CONSUMERS to appropriate Embassy generic parameter
+        let buffer = Box::new(EmbassyBuffer::<T, CAP, CONSUMERS, PUBS, CONSUMERS>::new(
+            &cfg,
+        ));
         self.buffer_raw(buffer)
-    }
-
-    fn source<F, Fut>(
-        &'a mut self,
-        f: F,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<EmbassyAdapter>,
-                aimdb_core::Producer<T, EmbassyAdapter>,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static,
-    {
-        self.source_raw(|producer, ctx_any| {
-            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
-            f(ctx, producer)
-        })
-    }
-
-    fn tap<F, Fut>(&'a mut self, f: F) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
-    where
-        F: FnOnce(
-                aimdb_core::RuntimeContext<EmbassyAdapter>,
-                aimdb_core::Consumer<T, EmbassyAdapter>,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static,
-    {
-        self.tap_raw(|consumer, ctx_any| {
-            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
-            f(ctx, consumer)
-        })
     }
 }

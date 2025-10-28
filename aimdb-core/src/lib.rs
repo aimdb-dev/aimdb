@@ -20,6 +20,7 @@ pub mod connector;
 pub mod context;
 pub mod database;
 mod error;
+pub mod ext_macros;
 pub mod runtime;
 pub mod time;
 pub mod transport;
