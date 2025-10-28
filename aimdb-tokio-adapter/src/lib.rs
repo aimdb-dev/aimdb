@@ -120,10 +120,7 @@ where
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         self.source_raw(|producer, ctx_any| {
-            let runtime = ctx_any
-                .downcast::<TokioAdapter>()
-                .expect("Expected TokioAdapter runtime");
-            let ctx = aimdb_core::RuntimeContext::from_arc(runtime.clone());
+            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
             f(ctx, producer)
         })
     }
@@ -139,10 +136,7 @@ where
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         self.tap_raw(|consumer, ctx_any| {
-            let runtime = ctx_any
-                .downcast::<TokioAdapter>()
-                .expect("Expected TokioAdapter runtime");
-            let ctx = aimdb_core::RuntimeContext::from_arc(runtime.clone());
+            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
             f(ctx, consumer)
         })
     }

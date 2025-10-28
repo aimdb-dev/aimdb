@@ -250,17 +250,7 @@ where
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         self.source_raw(|producer, ctx_any| {
-            let runtime = ctx_any
-                .downcast::<EmbassyAdapter>()
-                .expect("Expected EmbassyAdapter runtime");
-            // For no_std, we need to leak the Arc to get a 'static reference
-            // This is safe because the runtime lives for the entire program lifetime
-            let runtime_ref: &'static EmbassyAdapter =
-                alloc::boxed::Box::leak(alloc::boxed::Box::new(
-                    alloc::sync::Arc::try_unwrap(runtime.clone())
-                        .unwrap_or_else(|arc| (*arc).clone()),
-                ));
-            let ctx = aimdb_core::RuntimeContext::new(runtime_ref);
+            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
             f(ctx, producer)
         })
     }
@@ -276,59 +266,8 @@ where
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         self.tap_raw(|consumer, ctx_any| {
-            let runtime = ctx_any
-                .downcast::<EmbassyAdapter>()
-                .expect("Expected EmbassyAdapter runtime");
-            // For no_std, we need to leak the Arc to get a 'static reference
-            // This is safe because the runtime lives for the entire program lifetime
-            let runtime_ref: &'static EmbassyAdapter =
-                alloc::boxed::Box::leak(alloc::boxed::Box::new(
-                    alloc::sync::Arc::try_unwrap(runtime.clone())
-                        .unwrap_or_else(|arc| (*arc).clone()),
-                ));
-            let ctx = aimdb_core::RuntimeContext::new(runtime_ref);
+            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
             f(ctx, consumer)
         })
-    }
-}
-
-/// Legacy extension trait for buffer configuration with const generics
-///
-/// This trait is kept for backward compatibility with code that explicitly
-/// specifies const generic parameters. New code should use `EmbassyRecordRegistrarExt`
-/// which uses sensible defaults.
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-pub trait EmbassyRecordRegistrarExtLegacy<
-    'a,
-    T,
-    const CAP: usize,
-    const SUBS: usize,
-    const PUBS: usize,
-    const WATCH_N: usize,
-> where
-    T: Send + Sync + Clone + core::fmt::Debug + 'static,
-{
-    /// Configures a buffer for this record using inline configuration
-    fn with_buffer(
-        &'a mut self,
-        cfg: aimdb_core::buffer::BufferCfg,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>;
-}
-
-#[cfg(all(feature = "embassy-runtime", feature = "embassy-sync"))]
-impl<'a, T, const CAP: usize, const SUBS: usize, const PUBS: usize, const WATCH_N: usize>
-    EmbassyRecordRegistrarExtLegacy<'a, T, CAP, SUBS, PUBS, WATCH_N>
-    for aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
-where
-    T: Send + Sync + Clone + core::fmt::Debug + 'static,
-{
-    fn with_buffer(
-        &'a mut self,
-        cfg: aimdb_core::buffer::BufferCfg,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter> {
-        use aimdb_core::buffer::Buffer;
-        use alloc::boxed::Box;
-        let buffer = Box::new(EmbassyBuffer::<T, CAP, SUBS, PUBS, WATCH_N>::new(&cfg));
-        self.buffer_raw(buffer)
     }
 }

@@ -3,6 +3,9 @@
 //! Provides a unified interface to runtime capabilities like sleep and timestamp
 //! functions, abstracting away the specific runtime adapter implementation.
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 use aimdb_executor::Runtime;
 use core::future::Future;
 
@@ -40,6 +43,20 @@ where
     pub fn from_arc(runtime: std::sync::Arc<R>) -> Self {
         Self { runtime }
     }
+
+    /// Extract runtime context from type-erased Arc (std version)
+    ///
+    /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
+    /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
+    ///
+    /// # Panics
+    /// Panics if the runtime type doesn't match `R`.
+    pub fn extract_from_any(ctx_any: std::sync::Arc<dyn core::any::Any + Send + Sync>) -> Self {
+        let runtime = ctx_any
+            .downcast::<R>()
+            .expect("Runtime type mismatch - expected matching runtime adapter");
+        Self::from_arc(runtime.clone())
+    }
 }
 
 #[cfg(not(feature = "std"))]
@@ -50,6 +67,28 @@ where
     /// Create a new RuntimeContext with static reference (no_std version)
     pub fn new(runtime: &'static R) -> Self {
         Self { runtime }
+    }
+
+    /// Extract runtime context from type-erased Arc (no_std version)
+    ///
+    /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
+    /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
+    ///
+    /// For no_std, this leaks the Arc to obtain a `&'static` reference, which is safe
+    /// because the runtime lives for the entire program lifetime in embedded contexts.
+    ///
+    /// # Panics
+    /// Panics if the runtime type doesn't match `R`.
+    pub fn extract_from_any(ctx_any: alloc::sync::Arc<dyn core::any::Any + Send + Sync>) -> Self {
+        let runtime = ctx_any
+            .downcast::<R>()
+            .expect("Runtime type mismatch - expected matching runtime adapter");
+
+        // Convert Arc<R> to &'static R by leaking it
+        // This is safe because in embedded contexts, the runtime lives for the entire program
+        let runtime_ref: &'static R = &*alloc::boxed::Box::leak(runtime.into());
+
+        Self::new(runtime_ref)
     }
 }
 
