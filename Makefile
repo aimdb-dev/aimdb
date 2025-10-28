@@ -98,10 +98,15 @@ doc:
 	@mkdir -p target/doc-final/cloud
 	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
-	cargo doc --features "std,tokio-runtime,tracing,metrics" --no-deps
+	cargo doc --package aimdb-core --features "std,tracing,metrics" --no-deps
+	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
+	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
+	cargo doc --package aimdb-cli --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
-	cargo doc --no-default-features --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-core --no-default-features --no-deps
+	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
 	@printf "$(YELLOW)  → Creating main index page$(NC)\n"
 	@cp docs/index.html target/doc-final/index.html
