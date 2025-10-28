@@ -18,6 +18,12 @@ AimDB is in **active development** - the core architecture is implemented and fu
 - Use `make build` and `make test` for standard development
 - CI runs automatically on push/PR using the Makefile commands
 
+**IMPORTANT - Testing Protocol:**
+- **Always run `make check` from `/aimdb` directory** after making changes
+- This ensures: code formatting, linter checks, all tests pass, embedded cross-compilation works
+- Do NOT run tests from subdirectories - the Makefile must be executed from workspace root
+- If `make check` fails, fix issues before proceeding with further changes
+
 ## Project Architecture
 AimDB is an async, in-memory database for real-time data synchronization across **MCU → edge → cloud** environments, targeting <50ms reactivity.
 
@@ -132,8 +138,35 @@ metrics = ["dep:metrics"]
 
 ## Development Workflow
 
+### Testing Requirements - CRITICAL
+
+**Always test from workspace root:**
+```bash
+cd /aimdb
+make check
+```
+
+**What `make check` validates:**
+1. ✅ **Code formatting** (`cargo fmt --all -- --check`)
+2. ✅ **Linter checks** (`cargo clippy` with strict settings)
+3. ✅ **All unit tests** pass (`cargo test --all-features`)
+4. ✅ **Embedded cross-compilation** works (thumbv7em-none-eabihf target)
+
+**Common Mistakes to Avoid:**
+- ❌ Running `cargo test` from subdirectories (misses workspace checks)
+- ❌ Skipping `make check` after changes (breaks CI)
+- ❌ Only testing one feature flag combination
+- ❌ Not verifying embedded compatibility
+
+**Testing Workflow:**
+1. Make code changes
+2. Run `cd /aimdb && make check`
+3. If it passes, commit
+4. If it fails, fix issues and repeat
+
 ### Before Committing
 ```bash
+cd /aimdb
 make check  # Quick check: fmt + clippy + test
 make all    # Full validation: build all targets + run all tests (recommended before push)
 ```
