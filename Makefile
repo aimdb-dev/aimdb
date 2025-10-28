@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean fmt clippy doc all check test-embedded examples
+.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded examples
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -20,6 +20,7 @@ help:
 	@printf "    test          Run all tests (std + embedded)\n"
 	@printf "    examples      Build all example projects\n"
 	@printf "    fmt           Format code\n"
+	@printf "    fmt-check     Check code formatting (CI mode)\n"
 	@printf "    clippy        Run linter\n"
 	@printf "    doc           Generate docs\n"
 	@printf "    clean         Clean build artifacts\n"
@@ -56,11 +57,27 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-macros aimdb-mqtt-connector aimdb-cli tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+	@for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-mqtt-connector aimdb-cli tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
 	@printf "$(GREEN)✓ Formatting complete!$(NC)\n"
+
+fmt-check:
+	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
+	@FAILED=0; \
+	for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-mqtt-connector aimdb-cli tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
+		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
+			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
+			FAILED=1; \
+		fi; \
+	done; \
+	if [ $$FAILED -eq 1 ]; then \
+		printf "$(RED)✗ Formatting check failed! Run 'make fmt' to fix.$(NC)\n"; \
+		exit 1; \
+	fi
+	@printf "$(GREEN)✓ All packages properly formatted!$(NC)\n"
 
 clippy:
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
@@ -114,9 +131,9 @@ examples:
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Convenience commands
-check: fmt clippy test test-embedded
+check: fmt-check clippy test test-embedded
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
-	@printf "$(BLUE)✓ Code formatted$(NC)\n"
+	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
 	@printf "$(BLUE)✓ All valid feature combinations tested$(NC)\n"
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
