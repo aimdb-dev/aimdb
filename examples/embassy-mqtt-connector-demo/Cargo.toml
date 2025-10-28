@@ -15,10 +15,7 @@ std = []
 
 [dependencies]
 # AimDB dependencies
-aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
-    "embassy-runtime",
-] }
-aimdb-macros = { path = "../../aimdb-macros", features = ["embassy-runtime"] }
+aimdb-core = { path = "../../aimdb-core", default-features = false }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
 ] }

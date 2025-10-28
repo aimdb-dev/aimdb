@@ -26,9 +26,6 @@ pub mod transport;
 pub mod typed_api;
 pub mod typed_record;
 
-// Re-export procedural macros
-pub use aimdb_macros::service;
-
 // Public API exports
 pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};

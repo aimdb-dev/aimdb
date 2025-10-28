@@ -12,10 +12,6 @@ default = ["std"]
 # Core capabilities
 std = ["thiserror", "anyhow", "serde_json", "aimdb-executor/std"]
 
-# Runtime features - pass through to macros
-embassy-runtime = ["aimdb-macros/embassy-runtime"]
-tokio-runtime = ["aimdb-macros/tokio-runtime"]
-
 # Heap allocation in no_std environments
 alloc = ["serde"] # Enable heap in no_std
 
@@ -30,9 +26,6 @@ test-utils = ["std"]
 [dependencies]
 # Executor traits (always available)
 aimdb-executor = { path = "../aimdb-executor", default-features = false }
-
-# Procedural macros (always available)
-aimdb-macros = { path = "../aimdb-macros" }
 
 # Serialization (optional)
 serde = { workspace = true, optional = true }

@@ -25,7 +25,6 @@ struct Temperature {
 }
 
 /// Simulates a temperature sensor generating readings every second
-#[aimdb_core::service]
 async fn temperature_producer(
     ctx: RuntimeContext<TokioAdapter>,
     temperature: Producer<Temperature, TokioAdapter>,
