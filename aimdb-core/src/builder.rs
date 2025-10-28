@@ -323,7 +323,6 @@ where
         let db = Arc::new(AimDb {
             inner: inner.clone(),
             runtime: runtime.clone(),
-            _phantom: PhantomData,
         });
 
         #[cfg(feature = "tracing")]
@@ -387,9 +386,6 @@ pub struct AimDb<R: aimdb_executor::Spawn + 'static> {
 
     /// Runtime adapter with concrete type
     runtime: Arc<R>,
-
-    /// PhantomData to track the runtime type parameter
-    _phantom: PhantomData<R>,
 }
 
 impl<R: aimdb_executor::Spawn + 'static> Clone for AimDb<R> {
@@ -397,7 +393,6 @@ impl<R: aimdb_executor::Spawn + 'static> Clone for AimDb<R> {
         Self {
             inner: self.inner.clone(),
             runtime: self.runtime.clone(),
-            _phantom: PhantomData,
         }
     }
 }

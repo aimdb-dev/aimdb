@@ -27,7 +27,6 @@ use std::boxed::Box;
 pub struct Database<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> {
     adapter: A,
     aimdb: AimDb<A>,
-    _phantom: core::marker::PhantomData<A>,
 }
 
 impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
@@ -50,11 +49,7 @@ impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
         #[cfg(feature = "tracing")]
         tracing::info!("Initializing unified database with typed records");
 
-        Ok(Self {
-            adapter,
-            aimdb,
-            _phantom: core::marker::PhantomData,
-        })
+        Ok(Self { adapter, aimdb })
     }
 
     /// Gets a reference to the runtime adapter
