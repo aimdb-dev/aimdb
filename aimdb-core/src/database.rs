@@ -116,40 +116,8 @@ impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        use crate::typed_record::AnyRecordExt;
-        use core::any::TypeId;
-
-        // Get the record for type T
-        let type_id = TypeId::of::<T>();
-
-        #[cfg(feature = "std")]
-        let record = self
-            .aimdb
-            .inner()
-            .records
-            .get(&type_id)
-            .ok_or(DbError::RecordNotFound {
-                record_name: core::any::type_name::<T>().to_string(),
-            })?;
-
-        #[cfg(not(feature = "std"))]
-        let record = self
-            .aimdb
-            .inner()
-            .records
-            .get(&type_id)
-            .ok_or(DbError::RecordNotFound { _record_name: () })?;
-
-        // Downcast to typed record
-        #[cfg(feature = "std")]
-        let typed_record = record.as_typed::<T, A>().ok_or(DbError::RecordNotFound {
-            record_name: core::any::type_name::<T>().to_string(),
-        })?;
-
-        #[cfg(not(feature = "std"))]
-        let typed_record = record
-            .as_typed::<T, A>()
-            .ok_or(DbError::RecordNotFound { _record_name: () })?;
+        // Get the typed record using the helper
+        let typed_record = self.aimdb.inner().get_typed_record::<T, A>()?;
 
         // Get the buffer
         #[cfg(feature = "std")]
@@ -170,11 +138,6 @@ impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
         // DynBuffer provides subscribe_boxed() - universal across all runtimes!
         Ok(buffer.subscribe_boxed())
     }
-
-    // Note: producer_stats() and consumer_stats() were removed because:
-    // - Producers are now auto-spawned services rather than callbacks
-    // - Consumers are FnOnce closures consumed during spawning
-    // Statistics are no longer tracked for these components.
 
     /// Creates a RuntimeContext for this database
     ///

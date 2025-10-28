@@ -133,9 +133,32 @@ impl RuntimeAdapter for EmbassyAdapter {
 #[cfg(feature = "embassy-runtime")]
 type BoxedFuture = alloc::boxed::Box<dyn core::future::Future<Output = ()> + Send + 'static>;
 
+// Configurable task pool size for dynamic spawning
+// Users can select the pool size via feature flags:
+// - embassy-task-pool-8 (default): 8 concurrent tasks
+// - embassy-task-pool-16: 16 concurrent tasks
+// - embassy-task-pool-32: 32 concurrent tasks
+#[cfg(all(feature = "embassy-runtime", feature = "embassy-task-pool-32"))]
+const TASK_POOL_SIZE: usize = 32;
+
+#[cfg(all(
+    feature = "embassy-runtime",
+    feature = "embassy-task-pool-16",
+    not(feature = "embassy-task-pool-32")
+))]
+const TASK_POOL_SIZE: usize = 16;
+
+#[cfg(all(
+    feature = "embassy-runtime",
+    not(feature = "embassy-task-pool-16"),
+    not(feature = "embassy-task-pool-32")
+))]
+const TASK_POOL_SIZE: usize = 8;
+
 // Generic task runner for dynamic spawning in Embassy
+// Pool size is configured at compile time via feature flags
 #[cfg(feature = "embassy-runtime")]
-#[embassy_executor::task(pool_size = 8)]
+#[embassy_executor::task(pool_size = TASK_POOL_SIZE)]
 async fn generic_task_runner(mut future: BoxedFuture) {
     use core::pin::Pin;
     // Pin the boxed future so it can be awaited
@@ -170,7 +193,7 @@ impl aimdb_executor::Spawn for EmbassyAdapter {
                 Ok(())
             }
             Err(_) => Err(aimdb_executor::ExecutorError::SpawnFailed {
-                message: "Task pool exhausted - increase pool_size in generic_task_runner",
+                message: "Task pool exhausted - enable a larger task pool feature (embassy-task-pool-16 or embassy-task-pool-32)",
             }),
         }
     }

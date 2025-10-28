@@ -32,6 +32,49 @@ pub struct AimDbInner {
     pub records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
 }
 
+impl AimDbInner {
+    /// Helper to get a typed record from the registry
+    ///
+    /// This encapsulates the common pattern of:
+    /// 1. Getting TypeId for type T
+    /// 2. Looking up the record in the map
+    /// 3. Downcasting to the typed record
+    pub fn get_typed_record<T, R>(&self) -> DbResult<&TypedRecord<T, R>>
+    where
+        T: Send + 'static + Debug + Clone,
+        R: aimdb_executor::Spawn + 'static,
+    {
+        use crate::typed_record::AnyRecordExt;
+
+        let type_id = TypeId::of::<T>();
+
+        #[cfg(feature = "std")]
+        let record = self.records.get(&type_id).ok_or(DbError::RecordNotFound {
+            record_name: core::any::type_name::<T>().to_string(),
+        })?;
+
+        #[cfg(not(feature = "std"))]
+        let record = self
+            .records
+            .get(&type_id)
+            .ok_or(DbError::RecordNotFound { _record_name: () })?;
+
+        #[cfg(feature = "std")]
+        let typed_record = record.as_typed::<T, R>().ok_or(DbError::InvalidOperation {
+            operation: "get_typed_record".to_string(),
+            reason: "type mismatch during downcast".to_string(),
+        })?;
+
+        #[cfg(not(feature = "std"))]
+        let typed_record = record.as_typed::<T, R>().ok_or(DbError::InvalidOperation {
+            _operation: (),
+            _reason: (),
+        })?;
+
+        Ok(typed_record)
+    }
+}
+
 /// Database builder for producer-consumer pattern
 ///
 /// Provides a fluent API for constructing databases with type-safe record registration.
@@ -158,20 +201,8 @@ where
                 // Use RecordSpawner to spawn tasks for this record type
                 use crate::typed_record::RecordSpawner;
 
-                let record = db.inner().records.get(&type_id).ok_or({
-                    #[cfg(feature = "std")]
-                    {
-                        DbError::RecordNotFound {
-                            record_name: core::any::type_name::<T>().to_string(),
-                        }
-                    }
-                    #[cfg(not(feature = "std"))]
-                    {
-                        DbError::RecordNotFound { _record_name: () }
-                    }
-                })?;
-
-                RecordSpawner::<T>::spawn_all_tasks(record.as_ref(), runtime, db)
+                let typed_record = db.inner().get_typed_record::<T, R>()?;
+                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db)
             });
 
         // Store the spawn function (type-erased in Box<dyn Any>)
@@ -411,41 +442,8 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     where
         T: Send + 'static + Debug + Clone,
     {
-        use crate::typed_record::AnyRecordExt;
-        use core::any::TypeId;
-
-        // Get the record for type T
-        let type_id = TypeId::of::<T>();
-        let rec = self.inner.records.get(&type_id).ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::RecordNotFound {
-                    record_name: core::any::type_name::<T>().to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::RecordNotFound { _record_name: () }
-            }
-        })?;
-
-        // Downcast to typed record
-        let typed_rec = rec.as_typed::<T, R>().ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::InvalidOperation {
-                    operation: "produce".to_string(),
-                    reason: "type mismatch".to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::InvalidOperation {
-                    _operation: (),
-                    _reason: (),
-                }
-            }
-        })?;
+        // Get the typed record using the helper
+        let typed_rec = self.inner.get_typed_record::<T, R>()?;
 
         // Produce the value directly to the buffer
         typed_rec.produce(value).await;
@@ -473,41 +471,8 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        use crate::typed_record::AnyRecordExt;
-        use core::any::TypeId;
-
-        // Get the record for type T
-        let type_id = TypeId::of::<T>();
-        let rec = self.inner.records.get(&type_id).ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::RecordNotFound {
-                    record_name: core::any::type_name::<T>().to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::RecordNotFound { _record_name: () }
-            }
-        })?;
-
-        // Downcast to typed record
-        let typed_rec = rec.as_typed::<T, R>().ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::InvalidOperation {
-                    operation: "subscribe".to_string(),
-                    reason: "type mismatch".to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::InvalidOperation {
-                    _operation: (),
-                    _reason: (),
-                }
-            }
-        })?;
+        // Get the typed record using the helper
+        let typed_rec = self.inner.get_typed_record::<T, R>()?;
 
         // Subscribe to the buffer
         typed_rec.subscribe()
@@ -556,12 +521,6 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     {
         crate::typed_api::Consumer::new(Arc::new(self.clone()))
     }
-
-    // Note: producer_stats() was removed because producer is now an auto-spawned service
-    // rather than a callback, so statistics are not tracked.
-    // Note: consumer_stats() was removed because consumers are now FnOnce closures
-    // that are consumed during spawning. Consumer statistics are no longer tracked
-    // separately from producer statistics.
 
     /// Returns a reference to the runtime adapter
     ///

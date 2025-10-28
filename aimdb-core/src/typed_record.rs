@@ -626,9 +626,6 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             self.producer_service.lock().is_some()
         }
     }
-
-    // Note: producer_stats() removed - no longer tracking stats for producer service
-    // Note: consumer_stats() removed - consumers are FnOnce closures consumed during spawning
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Default

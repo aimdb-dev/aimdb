@@ -10,6 +10,26 @@
 //! - **Hardware Abstraction**: Support for UART, ADC, GPIO, and Timer peripherals
 //! - **Error Handling**: Embassy-specific error conversions and handling
 //! - **No-std Compatible**: Designed for resource-constrained embedded systems
+//! - **Configurable Task Pool**: Adjustable pool size for dynamic task spawning
+//!
+//! ## Task Pool Configuration
+//!
+//! The Embassy adapter uses a static task pool for dynamic spawning. By default,
+//! it supports up to 8 concurrent dynamic tasks. You can increase this limit
+//! by enabling one of the task pool feature flags:
+//!
+//! - `embassy-task-pool-8` (default): 8 concurrent dynamic tasks
+//! - `embassy-task-pool-16`: 16 concurrent dynamic tasks  
+//! - `embassy-task-pool-32`: 32 concurrent dynamic tasks
+//!
+//! Only enable one task pool feature at a time. If you exceed the pool size,
+//! you'll get a `ExecutorError::SpawnFailed` error.
+//!
+//! Example in `Cargo.toml`:
+//! ```toml
+//! [dependencies]
+//! aimdb-embassy-adapter = { version = "0.1", features = ["embassy-runtime", "embassy-task-pool-16"] }
+//! ```
 //!
 //! # Architecture
 //!
