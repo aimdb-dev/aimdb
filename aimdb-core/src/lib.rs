@@ -33,8 +33,7 @@ pub use error::{DbError, DbResult};
 // Runtime trait re-exports from aimdb-executor
 // These traits define the platform-specific execution, timing, and logging capabilities
 pub use aimdb_executor::{
-    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Sleeper, Spawn,
-    TimeOps, TimeSource,
+    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Spawn, TimeOps,
 };
 
 // Database implementation exports
@@ -42,7 +41,7 @@ pub use database::Database;
 
 // Producer-Consumer Pattern exports
 pub use builder::{AimDb, AimDbBuilder};
-pub use transport::{Connector, ConnectorConfig, HttpConnector, KafkaConnector, PublishError};
+pub use transport::{Connector, ConnectorConfig, PublishError};
 pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 

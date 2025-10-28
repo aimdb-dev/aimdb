@@ -1,25 +1,22 @@
-//! AimDB Executor Traits - Simplified
+//! AimDB Executor Traits
 //!
-//! This crate provides pure trait definitions for async execution across different
-//! runtime environments. It enables dependency inversion where the core database
-//! depends on abstractions rather than concrete runtime implementations.
+//! Pure trait definitions for async execution across different runtime environments.
+//! Enables dependency inversion where the core database depends on abstractions
+//! rather than concrete runtime implementations.
 //!
-//! # Design Philosophy (Simplified)
+//! # Design Philosophy
 //!
-//! - **Runtime Agnostic**: No concrete runtime dependencies, no cfg in traits
-//! - **Flat Trait Structure**: 4 simple traits instead of complex hierarchies
+//! - **Runtime Agnostic**: No concrete runtime dependencies
+//! - **Simple Trait Structure**: 4 focused traits covering all runtime needs
 //! - **Platform Flexible**: Works across std and no_std environments
-//! - **Accessor Pattern**: Enables clean `ctx.log()` and `ctx.time()` usage
 //! - **Zero Dependencies**: Pure trait definitions with minimal coupling
 //!
-//! # Simplified Trait Structure
+//! # Trait Structure
 //!
-//! Instead of 12+ traits with complex hierarchies, we now have 4 focused traits:
-//!
-//! 1. **`RuntimeAdapter`** - Identity and basic metadata
-//! 2. **`TimeOps`** - Time operations (enables `ctx.time()` accessor)
-//! 3. **`Logger`** - Logging operations (enables `ctx.log()` accessor)
-//! 4. **`Spawn`** - Task spawning (adapter-specific implementation)
+//! 1. **`RuntimeAdapter`** - Platform identity and metadata
+//! 2. **`TimeOps`** - Time operations (now, sleep, duration helpers)
+//! 3. **`Logger`** - Structured logging (info, debug, warn, error)
+//! 4. **`Spawn`** - Task spawning with platform-specific tokens
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -126,15 +123,3 @@ impl<T> Runtime for T where T: RuntimeAdapter + TimeOps + Logger + Spawn {}
 pub struct RuntimeInfo {
     pub name: &'static str,
 }
-
-// ============================================================================
-// Compatibility Aliases (for migration)
-// ============================================================================
-
-/// OLD: TimeSource - now use TimeOps
-pub trait TimeSource: TimeOps {}
-impl<T: TimeOps> TimeSource for T {}
-
-/// OLD: Sleeper - now part of TimeOps
-pub trait Sleeper: TimeOps {}
-impl<T: TimeOps> Sleeper for T {}

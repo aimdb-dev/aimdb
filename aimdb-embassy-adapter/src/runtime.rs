@@ -199,7 +199,7 @@ impl aimdb_executor::Spawn for EmbassyAdapter {
     }
 }
 
-// Implement TimeOps trait (combines TimeSource + Sleeper)
+// Implement TimeOps trait for time operations
 #[cfg(feature = "embassy-time")]
 impl aimdb_executor::TimeOps for EmbassyAdapter {
     type Instant = embassy_time::Instant;

@@ -178,30 +178,6 @@ pub trait Connector: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>>;
 }
 
-/// Trait for Kafka connectors (placeholder for future implementation)
-#[allow(dead_code)]
-pub trait KafkaConnector: Send + Sync {
-    /// Publish a message to a Kafka topic
-    fn publish(
-        &self,
-        url: &str,
-        config: &[(String, String)],
-        bytes: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
-}
-
-/// Trait for HTTP connectors (placeholder for future implementation)
-#[allow(dead_code)]
-pub trait HttpConnector: Send + Sync {
-    /// Publish a message via HTTP POST
-    fn publish(
-        &self,
-        url: &str,
-        config: &[(String, String)],
-        bytes: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
