@@ -21,7 +21,6 @@ pub mod context;
 pub mod database;
 mod error;
 pub mod ext_macros;
-pub mod runtime;
 pub mod time;
 pub mod transport;
 pub mod typed_api;
@@ -30,7 +29,10 @@ pub mod typed_record;
 // Public API exports
 pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};
-pub use runtime::{
+
+// Runtime trait re-exports from aimdb-executor
+// These traits define the platform-specific execution, timing, and logging capabilities
+pub use aimdb_executor::{
     ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Sleeper, Spawn,
     TimeOps, TimeSource,
 };

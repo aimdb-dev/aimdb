@@ -444,6 +444,56 @@ impl DbError {
 /// Type alias for Results using DbError
 pub type DbResult<T> = Result<T, DbError>;
 
+// ============================================================================
+// Error Conversions
+// ============================================================================
+
+/// Convert executor errors to database errors
+///
+/// This allows runtime adapters to return `ExecutorError` while the core
+/// database works with `DbError` for consistency across the API.
+impl From<aimdb_executor::ExecutorError> for DbError {
+    fn from(err: aimdb_executor::ExecutorError) -> Self {
+        use aimdb_executor::ExecutorError;
+
+        match err {
+            ExecutorError::SpawnFailed { message } => {
+                #[cfg(feature = "std")]
+                {
+                    DbError::RuntimeError { message }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = message; // Avoid unused warnings
+                    DbError::RuntimeError { _message: () }
+                }
+            }
+            ExecutorError::RuntimeUnavailable { message } => {
+                #[cfg(feature = "std")]
+                {
+                    DbError::RuntimeError { message }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = message; // Avoid unused warnings
+                    DbError::RuntimeError { _message: () }
+                }
+            }
+            ExecutorError::TaskJoinFailed { message } => {
+                #[cfg(feature = "std")]
+                {
+                    DbError::RuntimeError { message }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    let _ = message; // Avoid unused warnings
+                    DbError::RuntimeError { _message: () }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
