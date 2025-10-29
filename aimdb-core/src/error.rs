@@ -161,6 +161,32 @@ pub enum DbError {
         _message: (),
     },
 
+    // ===== Sync API Errors (0xB000-0xBFFF) - std only =====
+    /// Failed to attach database to runtime thread
+    #[cfg(feature = "std")]
+    #[error("Failed to attach database: {message}")]
+    AttachFailed { message: String },
+
+    /// Failed to detach database from runtime thread
+    #[cfg(feature = "std")]
+    #[error("Failed to detach database: {message}")]
+    DetachFailed { message: String },
+
+    /// Timeout while setting a value
+    #[cfg(feature = "std")]
+    #[error("Timeout while setting value")]
+    SetTimeout,
+
+    /// Timeout while getting a value
+    #[cfg(feature = "std")]
+    #[error("Timeout while getting value")]
+    GetTimeout,
+
+    /// Runtime thread has shut down
+    #[cfg(feature = "std")]
+    #[error("Runtime thread has shut down")]
+    RuntimeShutdown,
+
     // ===== Standard Library Integrations (std only) =====
     /// I/O operation error
     #[cfg(feature = "std")]
@@ -308,6 +334,18 @@ impl DbError {
             // Buffer operation errors: 0xA000-0xAFFF
             DbError::BufferLagged { .. } => 0xA001,
             DbError::BufferClosed { .. } => 0xA002,
+
+            // Sync API errors: 0xB000-0xBFFF (std only)
+            #[cfg(feature = "std")]
+            DbError::AttachFailed { .. } => 0xB001,
+            #[cfg(feature = "std")]
+            DbError::DetachFailed { .. } => 0xB002,
+            #[cfg(feature = "std")]
+            DbError::SetTimeout => 0xB003,
+            #[cfg(feature = "std")]
+            DbError::GetTimeout => 0xB004,
+            #[cfg(feature = "std")]
+            DbError::RuntimeShutdown => 0xB005,
         }
     }
 
@@ -401,6 +439,19 @@ impl DbError {
                 Self::prepend_context(&mut message, context);
                 DbError::Internal { code, message }
             }
+            // Sync API errors that support context
+            DbError::AttachFailed { mut message } => {
+                Self::prepend_context(&mut message, context);
+                DbError::AttachFailed { message }
+            }
+            DbError::DetachFailed { mut message } => {
+                Self::prepend_context(&mut message, context);
+                DbError::DetachFailed { message }
+            }
+            // Sync timeout and shutdown errors don't have context fields
+            DbError::SetTimeout => DbError::SetTimeout,
+            DbError::GetTimeout => DbError::GetTimeout,
+            DbError::RuntimeShutdown => DbError::RuntimeShutdown,
             // Convert simple I/O and JSON errors to context variants
             DbError::Io { source } => DbError::IoWithContext {
                 context: context.into(),
