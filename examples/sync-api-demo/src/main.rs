@@ -12,9 +12,10 @@
 //!
 //! 1. Building an AimDB instance with a typed record
 //! 2. Attaching the database to get a sync handle
-//! 3. Creating a producer in sync context
-//! 4. Setting values using blocking operations
-//! 5. Clean shutdown with detach()
+//! 3. Creating producers and consumers in sync context
+//! 4. Setting and getting values using blocking operations
+//! 5. Multi-threaded producer-consumer patterns
+//! 6. Clean shutdown with detach()
 
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_sync::AimDbBuilderSyncExt; // Extension trait for .attach()
@@ -60,69 +61,98 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handle = builder.attach()?;
     println!("   ✓ Database attached successfully\n");
 
-    // Step 2: Create a synchronous producer
-    println!("2. Creating producer for Temperature...");
-    let producer = handle.producer::<Temperature>()?;
-    println!("   ✓ Producer created\n");
+    // Step 2: Create consumers before producing
+    println!("2. Creating consumers for Temperature...");
+    let consumer1 = handle.consumer::<Temperature>()?;
+    let consumer2 = handle.consumer::<Temperature>()?;
+    // Alternative with custom capacity for high-frequency data:
+    // let consumer1 = handle.consumer_with_capacity::<Temperature>(1000)?;
+    println!("   ✓ Two consumers created\n");
 
-    // Step 3: Use the producer from sync context
-    println!("3. Producing temperature values...");
+    // Step 3: Spawn consumer threads
+    println!("3. Starting consumer threads...");
 
-    // Clone producer for use in another thread
-    let producer_clone = producer.clone();
-    let thread_handle = thread::spawn(move || {
+    let consumer1_handle = thread::spawn(move || {
+        println!("   [Consumer 1] Started, waiting for values...");
         for i in 0..5 {
-            let temp = Temperature {
-                celsius: 20.0 + i as f32 * 0.5,
-                timestamp_ms: i * 1000,
-            };
-            println!("   Thread: Setting temperature {:.1}°C", temp.celsius);
-
-            // Blocking send - will wait if channel is full
-            if let Err(e) = producer_clone.set(temp) {
-                eprintln!("   Error setting value: {}", e);
+            match consumer1.get() {
+                Ok(temp) => {
+                    println!("   [Consumer 1] Got #{}: {:.1}°C", i + 1, temp.celsius);
+                }
+                Err(e) => {
+                    println!("   [Consumer 1] Error: {}", e);
+                    break;
+                }
             }
-
-            thread::sleep(Duration::from_millis(100));
         }
+        println!("   [Consumer 1] Finished");
     });
 
-    // Also produce from main thread
-    thread::sleep(Duration::from_millis(50)); // Offset timing slightly
-    for i in 5..10 {
+    let consumer2_handle = thread::spawn(move || {
+        println!("   [Consumer 2] Started, waiting for values...");
+        for i in 0..5 {
+            // Use try_get for non-blocking reads
+            match consumer2.try_get() {
+                Ok(temp) => {
+                    println!("   [Consumer 2] Got #{}: {:.1}°C", i + 1, temp.celsius);
+                }
+                Err(_) => {
+                    // No data yet, sleep and retry
+                    thread::sleep(Duration::from_millis(50));
+                    // Try blocking get instead
+                    if let Ok(temp) = consumer2.get_timeout(Duration::from_millis(500)) {
+                        println!(
+                            "   [Consumer 2] Got #{} (after timeout): {:.1}°C",
+                            i + 1,
+                            temp.celsius
+                        );
+                    }
+                }
+            }
+        }
+        println!("   [Consumer 2] Finished");
+    });
+
+    // Give consumers time to start
+    thread::sleep(Duration::from_millis(100));
+    println!("   ✓ Consumer threads started\n");
+
+    // Step 4: Create a synchronous producer
+    println!("4. Creating producer and producing values...");
+    let producer = handle.producer::<Temperature>()?;
+    // Alternative with custom capacity:
+    // let producer = handle.producer_with_capacity::<Temperature>(500)?;
+    println!("   ✓ Producer created\n");
+
+    // Step 5: Produce values
+    println!("5. Producing temperature values...");
+
+    for i in 0..10 {
         let temp = Temperature {
             celsius: 20.0 + i as f32 * 0.5,
             timestamp_ms: i * 1000,
         };
         println!("   Main: Setting temperature {:.1}°C", temp.celsius);
 
-        // Use try_set to demonstrate non-blocking operation
-        match producer.try_set(temp) {
-            Ok(()) => println!("   Main: Sent immediately"),
-            Err(e) => println!("   Main: Could not send: {}", e),
+        // Use blocking send
+        if let Err(e) = producer.set(temp) {
+            eprintln!("   Error setting value: {}", e);
         }
 
         thread::sleep(Duration::from_millis(100));
     }
 
-    // Wait for spawned thread to complete
-    thread_handle.join().unwrap();
     println!("   ✓ All values produced\n");
 
-    // Step 4: Demonstrate timeout operation
-    println!("4. Testing set_timeout...");
-    let temp = Temperature {
-        celsius: 25.5,
-        timestamp_ms: 10000,
-    };
-    match producer.set_timeout(temp, Duration::from_millis(500)) {
-        Ok(()) => println!("   ✓ Set with timeout succeeded\n"),
-        Err(e) => println!("   ✗ Set with timeout failed: {}\n", e),
-    }
+    // Step 6: Wait for consumers to finish
+    println!("6. Waiting for consumer threads...");
+    consumer1_handle.join().unwrap();
+    consumer2_handle.join().unwrap();
+    println!("   ✓ All consumers finished\n");
 
-    // Step 5: Clean shutdown
-    println!("5. Shutting down...");
-    // Give async tasks time to process values
+    // Step 7: Clean shutdown
+    println!("7. Shutting down...");
+    // Give async tasks time to process remaining values
     thread::sleep(Duration::from_millis(200));
 
     // Detach the handle to gracefully shut down the runtime thread
@@ -130,8 +160,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   ✓ Database detached successfully\n");
 
     println!("=== Demo Complete ===");
-    println!("\nNote: This example demonstrates the producer API.");
-    println!("Consumer API will be added in a future update.");
+    println!("\nThis example demonstrated:");
+    println!("  • Pure synchronous context (no #[tokio::main])");
+    println!("  • Multiple independent consumers");
+    println!("  • Blocking (get), timeout (get_timeout), and non-blocking (try_get) reads");
+    println!("  • Blocking (set), timeout (set_timeout), and non-blocking (try_set) writes");
+    println!("  • Multi-threaded producer-consumer patterns");
 
     Ok(())
 }

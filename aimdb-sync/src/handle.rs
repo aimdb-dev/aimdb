@@ -8,6 +8,18 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+/// Default channel capacity for sync producers and consumers.
+///
+/// This is the buffer size used by `producer()` and `consumer()` methods.
+/// A capacity of 100 provides a good balance between:
+/// - Memory usage (100 × sizeof(T) per channel)
+/// - Latency (small bursts don't block)
+/// - Backpressure (prevents unbounded growth)
+///
+/// Use `producer_with_capacity()` or `consumer_with_capacity()` if you need
+/// different buffering for specific record types.
+pub const DEFAULT_SYNC_CHANNEL_CAPACITY: usize = 100;
+
 /// Extension trait to add `attach()` method to `AimDbBuilder`.
 ///
 /// This trait provides the entry point to the sync API by allowing
@@ -293,23 +305,7 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        // Create a bounded channel for this producer
-        // Buffer size of 100 is reasonable for most use cases
-        let (tx, mut rx) = mpsc::channel::<T>(100);
-
-        // Spawn a task on the runtime to forward values to the database
-        let db = self.db.clone();
-        self.runtime_handle.spawn(async move {
-            while let Some(value) = rx.recv().await {
-                // Forward the value to the database's produce pipeline
-                // If produce fails, log the error but continue processing
-                if let Err(e) = db.produce(value.clone()).await {
-                    eprintln!("Error producing value: {}", e);
-                }
-            }
-        });
-
-        Ok(crate::SyncProducer::new(tx))
+        self.producer_with_capacity(DEFAULT_SYNC_CHANNEL_CAPACITY)
     }
 
     /// Create a synchronous consumer for type `T`.
@@ -340,11 +336,151 @@ impl AimDbHandle {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        // TODO: Implement consumer creation
-        // For now, return an error
-        Err(DbError::RecordNotFound {
-            record_name: std::any::type_name::<T>().to_string(),
-        })
+        self.consumer_with_capacity(DEFAULT_SYNC_CHANNEL_CAPACITY)
+    }
+
+    /// Create a synchronous producer with custom channel capacity.
+    ///
+    /// Like `producer()` but allows specifying the channel buffer size.
+    /// Use this when you need different buffering characteristics for specific record types.
+    ///
+    /// # Arguments
+    ///
+    /// - `capacity`: Channel buffer size (number of items that can be buffered)
+    ///
+    /// # Type Parameters
+    ///
+    /// - `T`: The record type, must implement `TypedRecord`
+    ///
+    /// # Errors
+    ///
+    /// - `DbError::RecordNotFound` if type `T` was not registered
+    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// # use aimdb_sync::*;
+    /// # use serde::{Serialize, Deserialize};
+    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// # struct HighFrequencySensor { value: f32 }
+    /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// // High-frequency sensor needs larger buffer
+    /// let producer = handle.producer_with_capacity::<HighFrequencySensor>(1000)?;
+    /// producer.set(HighFrequencySensor { value: 42.0 })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn producer_with_capacity<T>(&self, capacity: usize) -> DbResult<crate::SyncProducer<T>>
+    where
+        T: Send + 'static + Debug + Clone,
+    {
+        // Create a bounded channel with custom capacity
+        let (tx, mut rx) = mpsc::channel::<T>(capacity);
+
+        // Spawn a task on the runtime to forward values to the database
+        let db = self.db.clone();
+        self.runtime_handle.spawn(async move {
+            while let Some(value) = rx.recv().await {
+                // Forward the value to the database's produce pipeline
+                // If produce fails, log the error but continue processing
+                if let Err(e) = db.produce(value.clone()).await {
+                    eprintln!("Error producing value: {}", e);
+                }
+            }
+        });
+
+        Ok(crate::SyncProducer::new(tx))
+    }
+
+    /// Create a synchronous consumer with custom channel capacity.
+    ///
+    /// Like `consumer()` but allows specifying the channel buffer size.
+    /// Use this when you need different buffering characteristics for specific record types.
+    ///
+    /// # Arguments
+    ///
+    /// - `capacity`: Channel buffer size (number of items that can be buffered)
+    ///
+    /// # Type Parameters
+    ///
+    /// - `T`: The record type, must implement `TypedRecord`
+    ///
+    /// # Errors
+    ///
+    /// - `DbError::RecordNotFound` if type `T` was not registered
+    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use aimdb_sync::*;
+    /// # use serde::{Serialize, Deserialize};
+    /// # #[derive(Clone, Debug, Serialize, Deserialize)]
+    /// # struct RareEvent { id: u32 }
+    /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// // Rare events need smaller buffer
+    /// let consumer = handle.consumer_with_capacity::<RareEvent>(10)?;
+    /// let event = consumer.get()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn consumer_with_capacity<T>(&self, capacity: usize) -> DbResult<crate::SyncConsumer<T>>
+    where
+        T: Send + Sync + 'static + Debug + Clone,
+    {
+        // Create an mpsc channel with custom capacity
+        let (tx, rx) = mpsc::channel::<T>(capacity);
+
+        // Create a oneshot channel to confirm subscription succeeded
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        // Spawn a task on the runtime to forward buffer data to the channel
+        let db = self.db.clone();
+        self.runtime_handle.spawn(async move {
+            // Subscribe to the database buffer for type T
+            match db.subscribe::<T>() {
+                Ok(mut reader) => {
+                    // Signal that subscription succeeded
+                    let _ = ready_tx.send(());
+
+                    // Forward all values from the buffer reader to the sync channel
+                    loop {
+                        match reader.recv().await {
+                            Ok(value) => {
+                                // Try to send the value. If the receiver is dropped, stop
+                                if tx.send(value).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                // Log error and stop
+                                eprintln!("Error reading from buffer: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Failed to subscribe to record type {}: {}",
+                        std::any::type_name::<T>(),
+                        e
+                    );
+                    // Signal failure (will be ignored if receiver dropped)
+                    let _ = ready_tx.send(());
+                }
+            }
+        });
+
+        // Wait for subscription to complete (with timeout)
+        ready_rx
+            .blocking_recv()
+            .map_err(|_| DbError::AttachFailed {
+                message: format!("Failed to subscribe to {}", std::any::type_name::<T>()),
+            })?;
+
+        Ok(crate::SyncConsumer::new(rx))
     }
 
     /// Gracefully shut down the runtime thread.

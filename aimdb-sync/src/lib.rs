@@ -1,7 +1,7 @@
 //! # AimDB Sync API
 //!
 //! Synchronous API wrapper for AimDB that enables blocking operations
-//! on the async database.
+//! on the async database. Perfect for FFI, legacy codebases, and simple scripts.
 //!
 //! ## Overview
 //!
@@ -11,12 +11,20 @@
 //!
 //! ## Features
 //!
-//! - **Blocking Operations**: `set()` and `get()` methods that block until complete
-//! - **Timeout Support**: `set_timeout()` and `get_timeout()` with configurable timeouts
-//! - **Non-blocking Try**: `try_set()` and `try_get()` for opportunistic operations
+//! ### Producer Operations
+//! - **`set()`**: Blocking send, waits if channel is full
+//! - **`set_timeout()`**: Blocking send with timeout
+//! - **`try_set()`**: Non-blocking send, returns immediately
+//!
+//! ### Consumer Operations
+//! - **`get()`**: Blocking receive, waits for value
+//! - **`get_timeout()`**: Blocking receive with timeout
+//! - **`try_get()`**: Non-blocking receive, returns immediately
+//!
+//! ### General
 //! - **Thread-Safe**: All types are `Send + Sync` and can be shared across threads
 //! - **Type-Safe**: Full compile-time type safety with generics
-//! - **Zero-Copy**: Values are moved (not cloned) through channels
+//! - **Pure Sync Context**: No `#[tokio::main]` required - works in plain `fn main()`
 //!
 //! ## Architecture
 //!
@@ -24,14 +32,21 @@
 //! User Threads (sync)  →  Channels  →  Runtime Thread (async)
 //!                                        ↓
 //!                                     AimDB (async)
+//!                                        ↓
+//!                                    Buffers (SPMC, etc.)
+//!                                        ↓
+//!                                     Channels  →  Consumer Threads (sync)
 //! ```
+//!
+//! The runtime thread is created automatically when you call `attach()` on the builder.
+//! It stays alive until `detach()` is called or the handle is dropped.
 //!
 //! ## Quick Start
 //!
 //! ```rust,ignore
 //! use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
-//! use aimdb_tokio_adapter::TokioAdapter;
-//! use aimdb_sync::AimDbBuilderSyncExt;  // Import the extension trait
+//! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+//! use aimdb_sync::AimDbBuilderSyncExt;
 //! use serde::{Serialize, Deserialize};
 //! use std::sync::Arc;
 //!
@@ -40,25 +55,27 @@
 //!     celsius: f32,
 //! }
 //!
-//! // Configure Temperature as a record type (not shown - see aimdb-core docs)
-//!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Build and attach database using builder pattern
-//! let handle = AimDbBuilder::new()
-//!     .runtime(Arc::new(TokioAdapter::new()?))
-//!     .configure::<Temperature>(|reg| {
-//!         reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
-//!         // Configure producers, consumers, connectors, etc.
-//!     })
-//!     .attach()?;  // Build and attach in one step!
+//! // Build and attach database (NO #[tokio::main] NEEDED!)
+//! let adapter = Arc::new(TokioAdapter);
+//! let mut builder = AimDbBuilder::new().runtime(adapter);
+//!
+//! builder.configure::<Temperature>(|reg| {
+//!     reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
+//! });
+//!
+//! let handle = builder.attach()?;
 //!
 //! // Create producer and consumer
 //! let producer = handle.producer::<Temperature>()?;
 //! let consumer = handle.consumer::<Temperature>()?;
 //!
-//! // Use blocking operations
+//! // Producer: blocking operations
 //! producer.set(Temperature { celsius: 25.0 })?;
+//!
+//! // Consumer: blocking operations
 //! let temp = consumer.get()?;
+//! println!("Temperature: {:.1}°C", temp.celsius);
 //!
 //! // Clean shutdown
 //! handle.detach()?;
@@ -66,17 +83,79 @@
 //! # }
 //! ```
 //!
-//! ## Threading
+//! ## Multi-threaded Usage
 //!
-//! - **User threads**: Unlimited - any number of threads can call `set()`/`get()` concurrently
-//! - **Runtime thread**: One dedicated thread runs the Tokio async runtime
-//! - **Channels**: Lock-free MPSC channels bridge sync and async contexts
+//! Both `SyncProducer` and `SyncConsumer` can be cloned and shared across threads:
+//!
+//! ```rust,ignore
+//! use std::thread;
+//!
+//! // Clone for use in another thread
+//! let producer_clone = producer.clone();
+//! let consumer_clone = consumer.clone();
+//!
+//! thread::spawn(move || {
+//!     producer_clone.set(Temperature { celsius: 22.0 }).ok();
+//! });
+//!
+//! thread::spawn(move || {
+//!     if let Ok(temp) = consumer_clone.get() {
+//!         println!("Got: {:.1}°C", temp.celsius);
+//!     }
+//! });
+//! ```
+//!
+//! ## Independent Subscriptions
+//!
+//! Note: Cloning a `SyncConsumer` shares the same channel, so only one thread
+//! will receive each value. For independent subscriptions, create multiple consumers:
+//!
+//! ```rust,ignore
+//! let consumer1 = handle.consumer::<Temperature>()?;
+//! let consumer2 = handle.consumer::<Temperature>()?;
+//!
+//! // Both receive independent copies of all values
+//! ```
+//!
+//! ## Channel Capacity Configuration
+//!
+//! By default, both producers and consumers use a channel capacity of 100.
+//! You can customize this per record type using the `_with_capacity` methods:
+//!
+//! ```rust,ignore
+//! // High-frequency sensor data needs larger buffer
+//! let producer = handle.producer_with_capacity::<SensorData>(1000)?;
+//!
+//! // Rare events can use smaller buffer
+//! let consumer = handle.consumer_with_capacity::<RareEvent>(10)?;
+//! ```
+//!
+//! **When to adjust capacity:**
+//! - **Increase**: High-frequency data, bursty traffic, slow consumers
+//! - **Decrease**: Memory-constrained, rare events, strict backpressure needed
+//! - **Default (100)**: Good for most use cases
+//!
+//! ## Threading Model
+//!
+//! - **User threads**: Unlimited - any number of threads can call operations concurrently
+//! - **Runtime thread**: One dedicated thread named "aimdb-sync-runtime"
+//! - **Channels**: Lock-free MPSC channels for efficient communication
 //!
 //! ## Performance
 //!
-//! - **Target overhead**: <1ms per operation vs pure async
-//! - **Zero-copy**: Values are moved through channels, not cloned
-//! - **Lock-free**: Tokio channels use lock-free algorithms
+//! - **Overhead**: ~100-500μs per operation vs pure async (channel + context switch)
+//! - **Throughput**: Limited by channel capacity (default: 100 items)
+//! - **Latency**: Excellent for <50ms target, not suitable for hard real-time
+//!
+//! ## Error Handling
+//!
+//! All operations return `DbResult<T>` which wraps standard `DbError` variants:
+//!
+//! - `RuntimeShutdown`: The runtime thread stopped
+//! - `SetTimeout`: Producer timeout expired
+//! - `GetTimeout`: Consumer timeout expired or no data (try_get)
+//! - `AttachFailed`: Failed to start runtime thread
+//! - `DetachFailed`: Failed to stop runtime thread
 //!
 //! ## Safety
 //!
@@ -92,7 +171,7 @@ mod handle;
 mod producer;
 
 pub use consumer::SyncConsumer;
-pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt};
+pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt, DEFAULT_SYNC_CHANNEL_CAPACITY};
 pub use producer::SyncProducer;
 
 // Re-export error types from aimdb-core
