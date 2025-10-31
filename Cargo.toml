@@ -10,6 +10,7 @@ members = [
     "examples/tokio-mqtt-connector-demo",
     "examples/embassy-mqtt-connector-demo",
     "examples/sync-api-demo",
+    "examples/remote-access-demo",
 ]
 exclude = ["_external"]
 resolver = "2"

@@ -739,10 +739,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
 {
     fn validate(&self) -> Result<(), &'static str> {
         // Producer service is optional - some records are driven by external events
-        // Must have at least one consumer (tap, link, or explicit consumer)
-        if self.consumer_count() == 0 {
-            return Err("must have ≥1 consumer (use .tap() or .link())");
-        }
+        // Consumer is also optional - records can be accessed via:
+        // - Explicit consumers (tap, link)
+        // - Remote access (AimX protocol)
+        // - Direct producer/consumer API
         Ok(())
     }
 
