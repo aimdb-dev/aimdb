@@ -10,7 +10,14 @@ build = "build.rs"
 default = ["std"]
 
 # Core capabilities
-std = ["serde", "thiserror", "anyhow", "serde_json", "aimdb-executor/std"]
+std = [
+    "serde",
+    "thiserror",
+    "anyhow",
+    "serde_json",
+    "tokio",
+    "aimdb-executor/std",
+]
 
 # Heap allocation in no_std environments
 alloc = ["serde"] # Enable heap in no_std
@@ -34,6 +41,9 @@ serde = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+
+# Async runtime - only for std environments with remote access
+tokio = { workspace = true, features = ["net"], optional = true }
 
 # Atomic operations for all platforms
 portable-atomic = { version = "1.9", default-features = false }
