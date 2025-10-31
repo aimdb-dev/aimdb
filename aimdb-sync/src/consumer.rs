@@ -63,6 +63,7 @@ where
             rx: Arc::new(Mutex::new(rx)),
         }
     }
+
     /// Get a value, blocking until one is available.
     ///
     /// Blocks indefinitely until a value is available from the
