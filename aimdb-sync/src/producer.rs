@@ -97,9 +97,12 @@ where
     ///
     /// Attempts to send the value to the runtime thread, blocking for at most `timeout` duration.
     ///
-    /// **Implementation Note**: This method uses a polling loop with 1ms intervals
-    /// because native timeout support isn't available in stable Rust. For most use
-    /// cases, prefer `set()` (blocking) or `try_set()` (non-blocking).
+    /// **Implementation Note**: This method uses a polling loop with 1ms intervals because
+    /// Tokio's async `mpsc::Sender` doesn't provide a `blocking_send_timeout` method. While
+    /// `std::sync::mpsc::SyncSender::send_timeout` exists, it cannot be used here as we need
+    /// to bridge between sync and async runtimes. The 1ms polling interval provides a good
+    /// balance between responsiveness and CPU usage. For most use cases, prefer `set()`
+    /// (blocking indefinitely) or `try_set()` (non-blocking).
     ///
     /// # Errors
     ///
@@ -127,8 +130,8 @@ where
     /// # }
     /// ```
     pub fn set_with_timeout(&self, value: T, timeout: Duration) -> DbResult<()> {
-        // tokio's blocking_send doesn't have native timeout support
-        // Use efficient polling with 1ms intervals to minimize latency
+        // Tokio's mpsc::Sender only provides blocking_send (indefinite) and try_send (non-blocking)
+        // Use polling with 1ms intervals as a workaround for timeout functionality
         let start = std::time::Instant::now();
         let poll_interval = Duration::from_millis(1);
         let mut value = value;
