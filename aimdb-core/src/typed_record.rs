@@ -17,6 +17,59 @@ use std::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::buffer::DynBuffer;
 
+/// Metadata tracking for records (std only - used for remote access introspection)
+#[cfg(feature = "std")]
+#[derive(Debug, Clone)]
+struct RecordMetadataTracker {
+    /// Human-readable record name (type name)
+    name: String,
+    /// Creation timestamp (seconds, nanoseconds since UNIX_EPOCH)
+    created_at: (u64, u32),
+    /// Last update timestamp (seconds, nanoseconds since UNIX_EPOCH, None if never updated)
+    last_update: std::sync::Arc<std::sync::Mutex<Option<(u64, u32)>>>,
+    /// Whether this record allows writes via remote access
+    writable: bool,
+}
+
+#[cfg(feature = "std")]
+impl RecordMetadataTracker {
+    fn new<T: 'static>() -> Self {
+        use std::time::SystemTime;
+
+        let duration = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+
+        Self {
+            name: core::any::type_name::<T>().to_string(),
+            created_at: (duration.as_secs(), duration.subsec_nanos()),
+            last_update: Arc::new(std::sync::Mutex::new(None)),
+            writable: false,
+        }
+    }
+
+    fn mark_updated(&self) {
+        use std::time::SystemTime;
+
+        let duration = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+
+        if let Ok(mut last) = self.last_update.lock() {
+            *last = Some((duration.as_secs(), duration.subsec_nanos()));
+        }
+    }
+
+    fn set_writable(&mut self, writable: bool) {
+        self.writable = writable;
+    }
+
+    /// Formats a Unix timestamp as "secs.nanosecs" string
+    fn format_timestamp(timestamp: (u64, u32)) -> String {
+        format!("{}.{:09}", timestamp.0, timestamp.1)
+    }
+}
+
 // Type alias for boxed futures
 type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
 
@@ -85,6 +138,13 @@ pub trait AnyRecord: Send + Sync {
     ///
     /// Used to check if producer spawning is needed.
     fn has_producer_service(&self) -> bool;
+
+    /// Collects metadata for this record (std only)
+    ///
+    /// Returns record metadata for remote access introspection.
+    /// Available only when the `std` feature is enabled.
+    #[cfg(feature = "std")]
+    fn collect_metadata(&self, type_id: core::any::TypeId) -> crate::remote::RecordMetadata;
 }
 
 // Helper extension trait for type-safe downcasting
@@ -211,9 +271,17 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     /// When present, produce() enqueues to buffer instead of direct call
     buffer: Option<Box<dyn DynBuffer<T>>>,
 
+    /// Buffer configuration (cached for metadata, std only)
+    #[cfg(feature = "std")]
+    buffer_cfg: Option<crate::buffer::BufferCfg>,
+
     /// List of connector links for external system integration
     /// Each link represents a protocol connector (MQTT, Kafka, HTTP, etc.)
     connectors: Vec<crate::connector::ConnectorLink>,
+
+    /// Metadata tracking (std only - for remote access)
+    #[cfg(feature = "std")]
+    metadata: RecordMetadataTracker,
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> TypedRecord<T, R> {
@@ -232,7 +300,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             #[cfg(not(feature = "std"))]
             consumers: spin::Mutex::new(alloc::vec::Vec::new()),
             buffer: None,
+            #[cfg(feature = "std")]
+            buffer_cfg: None,
             connectors: Vec::new(),
+            #[cfg(feature = "std")]
+            metadata: RecordMetadataTracker::new::<T>(),
         }
     }
 
@@ -352,7 +424,20 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// record.set_buffer(buffer);
     /// ```
     pub fn set_buffer(&mut self, buffer: Box<dyn DynBuffer<T>>) {
+        // Cache buffer configuration for metadata (std only)
+        #[cfg(feature = "std")]
+        {
+            // Store a simplified version of the config for metadata
+            // We can't call cfg() on the buffer, so we'll infer from the buffer type name
+            self.buffer_cfg = None; // Will be set by the caller via set_buffer_cfg
+        }
         self.buffer = Some(buffer);
+    }
+
+    /// Sets the buffer configuration (for metadata tracking, std only)
+    #[cfg(feature = "std")]
+    pub fn set_buffer_cfg(&mut self, cfg: crate::buffer::BufferCfg) {
+        self.buffer_cfg = Some(cfg);
     }
 
     /// Returns whether a buffer is configured
@@ -612,6 +697,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         // Push to buffer - consumer tasks will receive it
         if let Some(buf) = &self.buffer {
             buf.push(val);
+
+            // Update metadata timestamp (std only)
+            #[cfg(feature = "std")]
+            self.metadata.mark_updated();
         }
     }
 
@@ -625,6 +714,15 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         {
             self.producer_service.lock().is_some()
         }
+    }
+
+    /// Marks this record as writable for remote access (std only)
+    ///
+    /// This is used by the remote access system to control which records
+    /// can be written to via the protocol.
+    #[cfg(feature = "std")]
+    pub fn set_writable(&mut self, writable: bool) {
+        self.metadata.set_writable(writable);
     }
 }
 
@@ -679,28 +777,38 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
     fn has_producer_service(&self) -> bool {
         TypedRecord::has_producer_service(self)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    // NOTE: All tests commented out because TypedRecord<T, R> now requires R: aimdb_executor::Spawn,
-    // and we can't use () as a dummy runtime type. See examples/ for working tests with real runtimes.
+    #[cfg(feature = "std")]
+    fn collect_metadata(&self, type_id: core::any::TypeId) -> crate::remote::RecordMetadata {
+        let (buffer_type, buffer_capacity) = if let Some(cfg) = &self.buffer_cfg {
+            let cap = match cfg {
+                crate::buffer::BufferCfg::SpmcRing { capacity } => Some(*capacity),
+                _ => None,
+            };
+            (cfg.name().to_string(), cap)
+        } else {
+            ("none".to_string(), None)
+        };
 
-    /*
-    use super::*;
-    #[derive(Debug, Clone, PartialEq)]
-    struct TestData {
-        value: i32,
+        let last_update = self
+            .metadata
+            .last_update
+            .lock()
+            .ok()
+            .and_then(|guard| *guard)
+            .map(RecordMetadataTracker::format_timestamp);
+
+        crate::remote::RecordMetadata::new(
+            type_id,
+            self.metadata.name.clone(),
+            buffer_type,
+            buffer_capacity,
+            if self.has_producer_service() { 1 } else { 0 },
+            self.consumer_count(),
+            self.metadata.writable,
+            RecordMetadataTracker::format_timestamp(self.metadata.created_at),
+            self.connector_count(),
+        )
+        .with_last_update_opt(last_update)
     }
-
-    #[test]
-    fn test_typed_record_new() {
-        // Using unit type () as placeholder for R in test
-        let record = TypedRecord::<TestData, ()>::new();
-        assert!(!record.has_producer_service());
-        assert_eq!(record.consumer_count(), 0);
-    }
-
-    // ... rest of tests omitted ...
-    */
 }

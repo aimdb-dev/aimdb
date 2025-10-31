@@ -87,6 +87,12 @@ impl RecordMetadata {
         self.last_update = Some(timestamp);
         self
     }
+
+    /// Sets the last update timestamp from an Option
+    pub fn with_last_update_opt(mut self, timestamp: Option<String>) -> Self {
+        self.last_update = timestamp;
+        self
+    }
 }
 
 #[cfg(test)]

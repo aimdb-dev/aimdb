@@ -73,6 +73,18 @@ impl AimDbInner {
 
         Ok(typed_record)
     }
+
+    /// Collects metadata for all registered records (std only)
+    ///
+    /// Returns a vector of `RecordMetadata` for remote access introspection.
+    /// Available only when the `std` feature is enabled.
+    #[cfg(feature = "std")]
+    pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
+        self.records
+            .iter()
+            .map(|(type_id, record)| record.collect_metadata(*type_id))
+            .collect()
+    }
 }
 
 /// Database builder for producer-consumer pattern
@@ -522,6 +534,23 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// Provides direct access to the concrete runtime type.
     pub fn runtime(&self) -> &R {
         &self.runtime
+    }
+
+    /// Lists all registered records (std only)
+    ///
+    /// Returns metadata for all registered records, useful for remote access introspection.
+    /// Available only when the `std` feature is enabled.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let records = db.list_records();
+    /// for record in records {
+    ///     println!("Record: {} ({})", record.name, record.type_id);
+    /// }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
+        self.inner.list_records()
     }
 }
 

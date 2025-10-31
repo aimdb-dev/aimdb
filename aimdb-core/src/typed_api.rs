@@ -269,8 +269,30 @@ where
     /// This method accepts a boxed buffer trait object and is used by:
     /// - Runtime adapter implementations to provide convenient wrappers
     /// - Advanced use cases requiring custom buffer implementations
+    ///
+    /// **Note:** For metadata tracking in std mode, call `buffer_with_cfg()` instead,
+    /// or call `buffer_cfg()` separately to set the configuration.
     pub fn buffer_raw(&'a mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &'a mut Self {
         self.rec.set_buffer(buffer);
+        self
+    }
+
+    /// Configures a buffer with metadata tracking (std only)
+    #[cfg(feature = "std")]
+    pub fn buffer_with_cfg(
+        &'a mut self,
+        buffer: Box<dyn crate::buffer::DynBuffer<T>>,
+        cfg: crate::buffer::BufferCfg,
+    ) -> &'a mut Self {
+        self.rec.set_buffer(buffer);
+        self.rec.set_buffer_cfg(cfg);
+        self
+    }
+
+    /// Sets the buffer configuration for metadata tracking (std only)
+    #[cfg(feature = "std")]
+    pub fn buffer_cfg(&'a mut self, cfg: crate::buffer::BufferCfg) -> &'a mut Self {
+        self.rec.set_buffer_cfg(cfg);
         self
     }
 
