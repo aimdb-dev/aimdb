@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // No data yet, sleep and retry
                     thread::sleep(Duration::from_millis(50));
                     // Try blocking get instead
-                    if let Ok(temp) = consumer2.get_timeout(Duration::from_millis(500)) {
+                    if let Ok(temp) = consumer2.get_with_timeout(Duration::from_millis(500)) {
                         println!(
                             "   [Consumer 2] Got #{} (after timeout): {:.1}°C",
                             i + 1,

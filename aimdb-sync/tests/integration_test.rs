@@ -51,7 +51,7 @@ fn test_basic_producer_consumer() {
 
     // Consume the value (use timeout to avoid hanging)
     let received = consumer
-        .get_timeout(Duration::from_secs(2))
+        .get_with_timeout(Duration::from_secs(2))
         .expect("Failed to consume");
     assert_eq!(received, test_value);
 
@@ -167,7 +167,7 @@ fn test_timeout_operations() {
         .expect("Failed to create consumer");
 
     // Test get_timeout on empty buffer (should timeout)
-    let result = consumer.get_timeout(Duration::from_millis(100));
+    let result = consumer.get_with_timeout(Duration::from_millis(100));
     assert!(matches!(result, Err(DbError::GetTimeout)));
 
     // Produce a value
@@ -176,7 +176,7 @@ fn test_timeout_operations() {
         value: "test".to_string(),
     };
     producer
-        .set_timeout(test_value.clone(), Duration::from_secs(1))
+        .set_with_timeout(test_value.clone(), Duration::from_secs(1))
         .expect("Failed to produce with timeout");
 
     // Give more time for the value to propagate through the async pipeline
@@ -184,7 +184,7 @@ fn test_timeout_operations() {
 
     // Get with timeout (should succeed)
     let received = consumer
-        .get_timeout(Duration::from_secs(2))
+        .get_with_timeout(Duration::from_secs(2))
         .expect("Failed to consume with timeout");
     assert_eq!(received, test_value);
 
@@ -229,7 +229,7 @@ fn test_non_blocking_operations() {
     // Use blocking get to ensure we receive the value
     // (try_get is inherently racy in this test scenario)
     let received = consumer
-        .get_timeout(Duration::from_secs(1))
+        .get_with_timeout(Duration::from_secs(1))
         .expect("Failed to receive value");
     assert_eq!(received, test_value);
 
@@ -327,7 +327,7 @@ fn test_runtime_shutdown_error() {
     let result = producer.set(test_value);
     assert!(matches!(result, Err(DbError::RuntimeShutdown)));
 
-    let result = consumer.get_timeout(Duration::from_millis(100));
+    let result = consumer.get_with_timeout(Duration::from_millis(100));
     assert!(matches!(
         result,
         Err(DbError::RuntimeShutdown) | Err(DbError::GetTimeout)

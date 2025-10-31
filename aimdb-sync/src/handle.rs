@@ -375,7 +375,7 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        // Create a bounded channel with custom capacity
+        // Create a bounded tokio channel for async/sync bridging
         let (tx, mut rx) = mpsc::channel::<T>(capacity);
 
         // Spawn a task on the runtime to forward values to the database
@@ -429,13 +429,13 @@ impl AimDbHandle {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        // Create an mpsc channel with custom capacity
-        let (tx, rx) = mpsc::channel::<T>(capacity);
+        // Create std::sync::mpsc channel for sync API
+        let (std_tx, std_rx) = std::sync::mpsc::sync_channel::<T>(capacity);
 
         // Create a oneshot channel to confirm subscription succeeded
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
-        // Spawn a task on the runtime to forward buffer data to the channel
+        // Spawn a task on the runtime to forward buffer data to the std channel
         let db = self.db.clone();
         self.runtime_handle.spawn(async move {
             // Subscribe to the database buffer for type T
@@ -444,12 +444,13 @@ impl AimDbHandle {
                     // Signal that subscription succeeded
                     let _ = ready_tx.send(());
 
-                    // Forward all values from the buffer reader to the sync channel
+                    // Forward all values from the buffer reader to the std channel
                     loop {
                         match reader.recv().await {
                             Ok(value) => {
-                                // Try to send the value. If the receiver is dropped, stop
-                                if tx.send(value).await.is_err() {
+                                // Send to std channel (non-async operation)
+                                // If the receiver is dropped, send() will fail
+                                if std_tx.send(value).is_err() {
                                     break;
                                 }
                             }
@@ -480,7 +481,7 @@ impl AimDbHandle {
                 message: format!("Failed to subscribe to {}", std::any::type_name::<T>()),
             })?;
 
-        Ok(crate::SyncConsumer::new(rx))
+        Ok(crate::SyncConsumer::new(std_rx))
     }
 
     /// Gracefully shut down the runtime thread.

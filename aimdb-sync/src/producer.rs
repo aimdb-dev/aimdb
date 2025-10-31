@@ -29,7 +29,7 @@ use tokio::sync::mpsc;
 ///
 /// // Set with timeout
 /// use std::time::Duration;
-/// producer.set_timeout(
+/// producer.set_with_timeout(
 ///     Temperature { celsius: 26.0 },
 ///     Duration::from_millis(100)
 /// )?;
@@ -97,6 +97,10 @@ where
     ///
     /// Attempts to send the value to the runtime thread, blocking for at most `timeout` duration.
     ///
+    /// **Implementation Note**: This method uses a polling loop with 1ms intervals
+    /// because native timeout support isn't available in stable Rust. For most use
+    /// cases, prefer `set()` (blocking) or `try_set()` (non-blocking).
+    ///
     /// # Errors
     ///
     /// Returns `DbError::SetTimeout` if the timeout expires before the value can be sent.
@@ -118,30 +122,38 @@ where
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
     /// let producer = handle.producer::<MyData>()?;
-    /// producer.set_timeout(MyData { value: 42 }, Duration::from_millis(100))?;
+    /// producer.set_with_timeout(MyData { value: 42 }, Duration::from_millis(100))?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn set_timeout(&self, value: T, timeout: Duration) -> DbResult<()> {
-        // tokio's blocking_send doesn't support timeout, so we use a different approach
-        let tx = self.tx.clone();
-        std::thread::scope(|s| {
-            let handle = s.spawn(move || tx.blocking_send(value));
+    pub fn set_with_timeout(&self, value: T, timeout: Duration) -> DbResult<()> {
+        // tokio's blocking_send doesn't have native timeout support
+        // Use efficient polling with 1ms intervals to minimize latency
+        let start = std::time::Instant::now();
+        let poll_interval = Duration::from_millis(1);
+        let mut value = value;
 
-            // Wait for the thread to complete with timeout
-            std::thread::sleep(timeout);
+        loop {
+            // Try non-blocking send
+            match self.tx.try_send(value) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(DbError::RuntimeShutdown);
+                }
+                Err(mpsc::error::TrySendError::Full(returned_value)) => {
+                    // Check timeout first
+                    if start.elapsed() >= timeout {
+                        return Err(DbError::SetTimeout);
+                    }
 
-            // Check if the thread is still running
-            if !handle.is_finished() {
-                return Err(DbError::SetTimeout);
+                    // Sleep briefly before trying again (1ms to minimize latency)
+                    std::thread::sleep(poll_interval);
+
+                    // Restore value for next iteration
+                    value = returned_value;
+                }
             }
-
-            // Get the result
-            handle
-                .join()
-                .map_err(|_| DbError::SetTimeout)?
-                .map_err(|_| DbError::RuntimeShutdown)
-        })
+        }
     }
 
     /// Try to set the value without blocking.

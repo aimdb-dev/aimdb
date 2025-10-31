@@ -2,9 +2,9 @@
 
 use aimdb_core::{DbError, DbResult};
 use std::fmt::Debug;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 /// Synchronous consumer for records of type `T`.
 ///
@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 ///
 /// // Get with timeout
 /// use std::time::Duration;
-/// match consumer.get_timeout(Duration::from_millis(100)) {
+/// match consumer.get_with_timeout(Duration::from_millis(100)) {
 ///     Ok(temp) => println!("Got: {}°C", temp.celsius),
 ///     Err(_) => println!("No data available"),
 /// }
@@ -97,8 +97,8 @@ where
     /// # }
     /// ```
     pub fn get(&self) -> DbResult<T> {
-        let mut rx = self.rx.lock().unwrap();
-        rx.blocking_recv().ok_or(DbError::RuntimeShutdown)
+        let rx = self.rx.lock().unwrap();
+        rx.recv().map_err(|_| DbError::RuntimeShutdown)
     }
 
     /// Get a value with a timeout.
@@ -130,43 +130,19 @@ where
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
     /// let consumer = handle.consumer::<MyData>()?;
-    /// match consumer.get_timeout(Duration::from_millis(100)) {
+    /// match consumer.get_with_timeout(Duration::from_millis(100)) {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data available"),
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_timeout(&self, timeout: Duration) -> DbResult<T> {
-        // We need to use a channel that supports timeout on recv
-        // The Tokio MPSC receiver's blocking_recv doesn't support timeout directly
-        // So we'll poll with a small interval
-        let start = std::time::Instant::now();
-        let poll_interval = Duration::from_millis(10);
-
-        loop {
-            // Try non-blocking receive
-            {
-                let mut rx = self.rx.lock().unwrap();
-                match rx.try_recv() {
-                    Ok(value) => return Ok(value),
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        return Err(DbError::RuntimeShutdown);
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        // No value yet, continue polling
-                    }
-                }
-            } // Release lock before sleeping
-
-            // Check timeout
-            if start.elapsed() >= timeout {
-                return Err(DbError::GetTimeout);
-            }
-
-            // Sleep briefly before trying again
-            std::thread::sleep(poll_interval);
-        }
+    pub fn get_with_timeout(&self, timeout: Duration) -> DbResult<T> {
+        let rx = self.rx.lock().unwrap();
+        rx.recv_timeout(timeout).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => DbError::GetTimeout,
+            mpsc::RecvTimeoutError::Disconnected => DbError::RuntimeShutdown,
+        })
     }
 
     /// Try to get a value without blocking.
@@ -202,10 +178,10 @@ where
     /// # }
     /// ```
     pub fn try_get(&self) -> DbResult<T> {
-        let mut rx = self.rx.lock().unwrap();
+        let rx = self.rx.lock().unwrap();
         rx.try_recv().map_err(|e| match e {
-            mpsc::error::TryRecvError::Empty => DbError::GetTimeout,
-            mpsc::error::TryRecvError::Disconnected => DbError::RuntimeShutdown,
+            mpsc::TryRecvError::Empty => DbError::GetTimeout,
+            mpsc::TryRecvError::Disconnected => DbError::RuntimeShutdown,
         })
     }
 }
