@@ -104,6 +104,10 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Spawn functions indexed by TypeId
     spawn_fns: BTreeMap<TypeId, Box<dyn core::any::Any + Send>>,
 
+    /// Remote access configuration (std only)
+    #[cfg(feature = "std")]
+    remote_config: Option<crate::remote::AimxConfig>,
+
     /// PhantomData to track the runtime type parameter
     _phantom: PhantomData<R>,
 }
@@ -118,6 +122,8 @@ impl AimDbBuilder<NoRuntime> {
             runtime: None,
             connectors: BTreeMap::new(),
             spawn_fns: BTreeMap::new(),
+            #[cfg(feature = "std")]
+            remote_config: None,
             _phantom: PhantomData,
         }
     }
@@ -134,6 +140,8 @@ impl AimDbBuilder<NoRuntime> {
             runtime: Some(rt),
             connectors: self.connectors,
             spawn_fns: BTreeMap::new(),
+            #[cfg(feature = "std")]
+            remote_config: None,
             _phantom: PhantomData,
         }
     }
@@ -177,6 +185,36 @@ where
         connector: Arc<dyn crate::transport::Connector>,
     ) -> Self {
         self.connectors.insert(scheme.into(), connector);
+        self
+    }
+
+    /// Enables remote access via AimX protocol (std only)
+    ///
+    /// Configures the database to accept remote connections over a Unix domain socket,
+    /// allowing external clients to introspect records, subscribe to updates, and
+    /// (optionally) write data.
+    ///
+    /// The remote access supervisor will be spawned automatically during `build()`.
+    ///
+    /// # Arguments
+    /// * `config` - Remote access configuration (socket path, security policy, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::remote::{AimxConfig, SecurityPolicy};
+    ///
+    /// let config = AimxConfig::new("/tmp/aimdb.sock")
+    ///     .with_security(SecurityPolicy::read_only());
+    ///
+    /// let db = AimDbBuilder::new()
+    ///     .runtime(runtime)
+    ///     .with_remote_access(config)
+    ///     .build()?;
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn with_remote_access(mut self, config: crate::remote::AimxConfig) -> Self {
+        self.remote_config = Some(config);
         self
     }
 
@@ -358,6 +396,23 @@ where
 
         #[cfg(feature = "tracing")]
         tracing::info!("Automatic spawning complete");
+
+        // Spawn remote access supervisor if configured (std only)
+        #[cfg(feature = "std")]
+        if let Some(remote_cfg) = self.remote_config {
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "Spawning remote access supervisor on socket: {}",
+                remote_cfg.socket_path.display()
+            );
+
+            // Spawn the remote supervisor task
+            // This will be implemented in Task 6
+            crate::remote::supervisor::spawn_supervisor(db.clone(), runtime.clone(), remote_cfg)?;
+
+            #[cfg(feature = "tracing")]
+            tracing::info!("Remote access supervisor spawned successfully");
+        }
 
         // Unwrap the Arc to return the owned AimDb
         // This is safe because we just created it and hold the only reference
