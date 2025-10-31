@@ -41,6 +41,8 @@ build:
 	cargo build --package aimdb-core --features "std,tracing,metrics"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
+	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
+	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
 	cargo build --package aimdb-cli
 
@@ -52,12 +54,14 @@ test:
 	cargo test --package aimdb-core --features "std,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
+	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
+	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
 	cargo test --package aimdb-cli
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-mqtt-connector aimdb-cli tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+	@for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -66,7 +70,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-mqtt-connector aimdb-cli tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+	for pkg in aimdb-executor aimdb-core aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -89,6 +93,8 @@ clippy:
 	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --features "embassy-runtime" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
+	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on CLI tools$(NC)\n"
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
 
@@ -100,6 +106,7 @@ doc:
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
 	cargo doc --package aimdb-core --features "std,tracing,metrics" --no-deps
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
+	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-cli --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
@@ -129,6 +136,8 @@ test-embedded:
 ## Example projects
 examples:
 	@printf "$(GREEN)Building all example projects...$(NC)\n"
+	@printf "$(YELLOW)  → Building sync-api-demo (synchronous API wrapper)$(NC)\n"
+	cargo build --package sync-api-demo
 	@printf "$(YELLOW)  → Building tokio-mqtt-connector-demo (native, tokio runtime)$(NC)\n"
 	cargo build --package tokio-mqtt-connector-demo
 	@printf "$(YELLOW)  → Building embassy-mqtt-connector-demo (embedded, embassy runtime)$(NC)\n"

@@ -1,0 +1,21 @@
+[package]
+name = "sync-api-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AimDB example demonstrating synchronous API usage"
+publish = false
+
+[dependencies]
+# AimDB dependencies
+aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+] }
+aimdb-sync = { path = "../../aimdb-sync" }
+
+# Runtime for initialization
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }

@@ -4,10 +4,12 @@ members = [
     "aimdb-core",
     "aimdb-embassy-adapter",
     "aimdb-tokio-adapter",
+    "aimdb-sync",
     "aimdb-mqtt-connector",
     "tools/aimdb-cli",
     "examples/tokio-mqtt-connector-demo",
     "examples/embassy-mqtt-connector-demo",
+    "examples/sync-api-demo",
 ]
 exclude = ["_external"]
 resolver = "2"

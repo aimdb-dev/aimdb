@@ -1,0 +1,38 @@
+[package]
+name = "aimdb-sync"
+version = "0.1.0"
+edition = "2021"
+authors = ["AimDB Team"]
+license = "MIT OR Apache-2.0"
+description = "Synchronous API wrapper for AimDB - blocking operations for async database"
+repository = "https://github.com/aimdb-dev/aimdb"
+keywords = ["database", "sync", "blocking", "real-time"]
+categories = ["database"]
+
+[dependencies]
+# Core dependencies
+aimdb-core = { path = "../aimdb-core", version = "0.1.0" }
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", version = "0.1.0" }
+
+# Tokio for channels and runtime
+tokio = { version = "1.40", features = ["sync", "rt", "time"] }
+
+# Error handling
+thiserror = "1.0"
+
+# For type erasure and Any
+[dev-dependencies]
+# Testing dependencies
+tokio = { version = "1.40", features = ["full", "test-util"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = []
+
+# Enable tracing for debugging
+tracing = ["aimdb-core/tracing"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
