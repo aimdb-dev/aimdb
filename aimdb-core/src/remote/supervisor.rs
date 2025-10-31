@@ -119,16 +119,23 @@ where
                     let config_clone = config.clone();
 
                     // Spawn connection handler for this client
-                    // TODO: Task 7 - Implement ConnectionHandler
                     tokio::spawn(async move {
                         #[cfg(feature = "tracing")]
                         tracing::debug!("Connection handler spawned for client");
 
-                        // Placeholder: ConnectionHandler will be implemented in Task 7
-                        let _ = (db_clone, config_clone, stream);
+                        if let Err(_e) = crate::remote::handler::handle_connection(
+                            db_clone,
+                            config_clone,
+                            stream,
+                        )
+                        .await
+                        {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!("Connection handler error: {}", _e);
+                        }
 
                         #[cfg(feature = "tracing")]
-                        tracing::debug!("Connection handler terminated (stub implementation)");
+                        tracing::debug!("Connection handler terminated");
                     });
                 }
                 Err(_e) => {

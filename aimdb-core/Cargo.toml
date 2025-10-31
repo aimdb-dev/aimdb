@@ -43,7 +43,7 @@ anyhow = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 # Async runtime - only for std environments with remote access
-tokio = { workspace = true, features = ["net"], optional = true }
+tokio = { workspace = true, features = ["net", "io-util"], optional = true }
 
 # Atomic operations for all platforms
 portable-atomic = { version = "1.9", default-features = false }
