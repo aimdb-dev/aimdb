@@ -10,7 +10,7 @@ build = "build.rs"
 default = ["std"]
 
 # Core capabilities
-std = ["thiserror", "anyhow", "serde_json", "aimdb-executor/std"]
+std = ["serde", "thiserror", "anyhow", "serde_json", "aimdb-executor/std"]
 
 # Heap allocation in no_std environments
 alloc = ["serde"] # Enable heap in no_std

@@ -105,6 +105,15 @@ pub enum DbError {
         _reason: (),
     },
 
+    /// Permission denied for operation
+    #[cfg_attr(feature = "std", error("Permission denied: {operation}"))]
+    PermissionDenied {
+        #[cfg(feature = "std")]
+        operation: String,
+        #[cfg(not(feature = "std"))]
+        _operation: (),
+    },
+
     // ===== Configuration Errors (0x4000-0x4FFF) =====
     /// Missing required configuration parameter
     #[cfg_attr(feature = "std", error("Missing configuration parameter: {parameter}"))]
@@ -234,6 +243,7 @@ impl core::fmt::Display for DbError {
             DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
             DbError::RecordNotFound { .. } => (0x7003, "Record not found"),
             DbError::InvalidOperation { .. } => (0x7004, "Invalid operation"),
+            DbError::PermissionDenied { .. } => (0x7005, "Permission denied"),
             DbError::MissingConfiguration { .. } => (0x4002, "Missing configuration"),
             DbError::RuntimeError { .. } => (0x7002, "Runtime error"),
             DbError::ResourceUnavailable { .. } => (0x5002, "Resource unavailable"),
@@ -318,6 +328,7 @@ impl DbError {
             DbError::RuntimeError { .. } => 0x7002,
             DbError::RecordNotFound { .. } => 0x7003,
             DbError::InvalidOperation { .. } => 0x7004,
+            DbError::PermissionDenied { .. } => 0x7005,
 
             // I/O errors: 0x8000-0x8FFF (std only)
             #[cfg(feature = "std")]
@@ -404,6 +415,10 @@ impl DbError {
             } => {
                 Self::prepend_context(&mut reason, context);
                 DbError::InvalidOperation { operation, reason }
+            }
+            DbError::PermissionDenied { mut operation } => {
+                Self::prepend_context(&mut operation, context);
+                DbError::PermissionDenied { operation }
             }
             DbError::MissingConfiguration { mut parameter } => {
                 Self::prepend_context(&mut parameter, context);
