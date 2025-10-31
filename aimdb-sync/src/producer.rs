@@ -4,7 +4,7 @@ use aimdb_core::{DbError, DbResult};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Synchronous producer for records of type `T`.
 ///
@@ -48,7 +48,8 @@ where
 {
     /// Channel sender for producer commands
     /// Wrapped in Arc so it can be cloned across threads
-    tx: Arc<mpsc::Sender<T>>,
+    /// Sends (value, result_sender) tuples to propagate produce errors back to caller
+    tx: Arc<mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>>,
 }
 
 impl<T> SyncProducer<T>
@@ -56,7 +57,7 @@ where
     T: Send + 'static + Debug + Clone,
 {
     /// Create a new sync producer (internal use only)
-    pub(crate) fn new(tx: mpsc::Sender<T>) -> Self {
+    pub(crate) fn new(tx: mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>) -> Self {
         Self { tx: Arc::new(tx) }
     }
     /// Set the value, blocking until it can be sent.
@@ -67,6 +68,8 @@ where
     /// # Errors
     ///
     /// Returns `DbError::RuntimeShutdown` if the runtime thread has been detached.
+    /// Returns any error from the underlying `produce()` operation (e.g., record not registered,
+    /// buffer full, etc.).
     ///
     /// # Example
     ///
@@ -83,14 +86,23 @@ where
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
     /// let producer = handle.producer::<MyData>()?;
-    /// producer.set(MyData { value: 42 })?; // blocks until value is sent
+    /// producer.set(MyData { value: 42 })?; // blocks until value is sent and produced
     /// # Ok(())
     /// # }
     /// ```
     pub fn set(&self, value: T) -> DbResult<()> {
+        // Create a oneshot channel to receive the result
+        let (result_tx, result_rx) = oneshot::channel();
+
+        // Send the value with the result sender
         self.tx
-            .blocking_send(value)
-            .map_err(|_| DbError::RuntimeShutdown)
+            .blocking_send((value, result_tx))
+            .map_err(|_| DbError::RuntimeShutdown)?;
+
+        // Wait for the produce result
+        result_rx
+            .blocking_recv()
+            .map_err(|_| DbError::RuntimeShutdown)?
     }
 
     /// Set the value with a timeout.
@@ -106,8 +118,10 @@ where
     ///
     /// # Errors
     ///
-    /// Returns `DbError::SetTimeout` if the timeout expires before the value can be sent.
+    /// Returns `DbError::SetTimeout` if the timeout expires before the value can be sent
+    /// or if waiting for the produce result exceeds the timeout.
     /// Returns `DbError::RuntimeShutdown` if the runtime thread has been detached.
+    /// Returns any error from the underlying `produce()` operation.
     ///
     /// # Example
     ///
@@ -134,16 +148,20 @@ where
         // Use polling with 1ms intervals as a workaround for timeout functionality
         let start = std::time::Instant::now();
         let poll_interval = Duration::from_millis(1);
-        let mut value = value;
 
+        // Create a oneshot channel to receive the result
+        let (result_tx, mut result_rx) = oneshot::channel();
+        let mut payload = (value, result_tx);
+
+        // First, try to send with timeout
         loop {
             // Try non-blocking send
-            match self.tx.try_send(value) {
-                Ok(()) => return Ok(()),
+            match self.tx.try_send(payload) {
+                Ok(()) => break,
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     return Err(DbError::RuntimeShutdown);
                 }
-                Err(mpsc::error::TrySendError::Full(returned_value)) => {
+                Err(mpsc::error::TrySendError::Full(returned_payload)) => {
                     // Check timeout first
                     if start.elapsed() >= timeout {
                         return Err(DbError::SetTimeout);
@@ -152,8 +170,31 @@ where
                     // Sleep briefly before trying again (1ms to minimize latency)
                     std::thread::sleep(poll_interval);
 
-                    // Restore value for next iteration
-                    value = returned_value;
+                    // Restore payload for next iteration
+                    payload = returned_payload;
+                }
+            }
+        }
+
+        // Now wait for the produce result, respecting remaining timeout
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return Err(DbError::SetTimeout);
+        }
+
+        // Poll for result with remaining timeout
+        let result_start = std::time::Instant::now();
+        loop {
+            match result_rx.try_recv() {
+                Ok(result) => return result,
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    if result_start.elapsed() >= remaining {
+                        return Err(DbError::SetTimeout);
+                    }
+                    std::thread::sleep(poll_interval);
+                }
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    return Err(DbError::RuntimeShutdown);
                 }
             }
         }
@@ -163,6 +204,10 @@ where
     ///
     /// Attempts to send the value immediately. Returns an error if the channel is full
     /// or the runtime thread has shut down.
+    ///
+    /// **Note**: This method returns immediately after sending to the channel, but does NOT
+    /// wait for the produce operation to complete. Use `set()` or `set_with_timeout()` if
+    /// you need to know whether the produce operation succeeded.
     ///
     /// # Errors
     ///
@@ -192,7 +237,10 @@ where
     /// # }
     /// ```
     pub fn try_set(&self, value: T) -> DbResult<()> {
-        self.tx.try_send(value).map_err(|e| match e {
+        // Create a oneshot channel but don't wait for the result
+        let (result_tx, _result_rx) = oneshot::channel();
+
+        self.tx.try_send((value, result_tx)).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => DbError::SetTimeout,
             mpsc::error::TrySendError::Closed(_) => DbError::RuntimeShutdown,
         })

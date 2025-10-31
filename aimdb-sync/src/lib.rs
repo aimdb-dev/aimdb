@@ -156,6 +156,24 @@
 //! - `GetTimeout`: Consumer timeout expired or no data (try_get)
 //! - `AttachFailed`: Failed to start runtime thread
 //! - `DetachFailed`: Failed to stop runtime thread
+//! - `RecordNotFound`: Attempted to produce/consume unregistered type
+//! - Plus any other errors from the underlying `produce()` operation
+//!
+//! ### Error Propagation
+//!
+//! Producer errors are propagated synchronously back to the caller:
+//! - `set()` and `set_with_timeout()` block until the produce operation completes
+//!   and return any errors that occur in the async context
+//! - `try_set()` sends immediately without waiting for the produce result (fire-and-forget)
+//!
+//! ```rust,ignore
+//! // Errors are properly propagated to the caller
+//! match producer.set(data) {
+//!     Ok(()) => println!("Successfully produced"),
+//!     Err(DbError::RecordNotFound { .. }) => eprintln!("Type not registered"),
+//!     Err(e) => eprintln!("Production failed: {}", e),
+//! }
+//! ```
 //!
 //! ## Safety
 //!

@@ -417,12 +417,16 @@ fn test_single_latest_semantics() {
     assert_eq!(first.id, 100);
 
     // Now produce multiple values quickly (target: <50ms end-to-end)
+    // Use try_set() for fire-and-forget semantics - this allows queuing all values
+    // without blocking, which lets SingleLatest skip intermediates
     for i in 1..=5 {
         let data = TestData {
             id: i,
             value: format!("value-{}", i),
         };
-        producer.set(data).expect("Failed to produce");
+        // Use try_set() instead of set() to avoid blocking on each produce
+        // This allows all values to be queued quickly, demonstrating SingleLatest semantics
+        producer.try_set(data).expect("Failed to queue value");
     }
 
     // Wait for propagation - with <50ms target
@@ -436,6 +440,54 @@ fn test_single_latest_semantics() {
         received.id, 5,
         "Expected latest value (5), got {}. SingleLatest should skip intermediate values and deliver only the most recent.",
         received.id
+    );
+
+    handle.detach().expect("Failed to detach");
+}
+
+/// Test that produce errors are properly propagated back to the sync caller
+#[test]
+fn test_error_propagation() {
+    // Build a database WITHOUT registering TestData
+    // This will cause produce() to fail with RecordNotFound
+    let adapter = Arc::new(TokioAdapter);
+    let builder = AimDbBuilder::new().runtime(adapter);
+
+    let handle = builder.attach().expect("Failed to attach");
+
+    // Create a producer for an unregistered type
+    // Note: producer creation succeeds, but set() should fail
+    let producer = handle
+        .producer_with_capacity::<TestData>(10)
+        .expect("Failed to create producer");
+
+    // Try to produce a value - this should fail because TestData is not registered
+    let test_value = TestData {
+        id: 1,
+        value: "test".to_string(),
+    };
+
+    let result = producer.set(test_value.clone());
+
+    // Verify the error is propagated (not silently logged)
+    assert!(
+        result.is_err(),
+        "Expected produce to fail for unregistered type"
+    );
+
+    // Verify it's the correct error type
+    match result {
+        Err(DbError::RecordNotFound { .. }) => {
+            // Expected error
+        }
+        other => panic!("Expected RecordNotFound error, got: {:?}", other),
+    }
+
+    // Test set_with_timeout also propagates errors
+    let result = producer.set_with_timeout(test_value, Duration::from_millis(100));
+    assert!(
+        result.is_err(),
+        "Expected produce to fail for unregistered type (with timeout)"
     );
 
     handle.detach().expect("Failed to detach");

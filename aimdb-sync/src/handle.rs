@@ -376,17 +376,19 @@ impl AimDbHandle {
         T: Send + 'static + Debug + Clone,
     {
         // Create a bounded tokio channel for async/sync bridging
-        let (tx, mut rx) = mpsc::channel::<T>(capacity);
+        // Channel carries (value, result_sender) tuples to propagate errors back
+        let (tx, mut rx) =
+            mpsc::channel::<(T, tokio::sync::oneshot::Sender<DbResult<()>>)>(capacity);
 
         // Spawn a task on the runtime to forward values to the database
         let db = self.db.clone();
         self.runtime_handle.spawn(async move {
-            while let Some(value) = rx.recv().await {
+            while let Some((value, result_tx)) = rx.recv().await {
                 // Forward the value to the database's produce pipeline
-                // If produce fails, log the error but continue processing
-                if let Err(e) = db.produce(value).await {
-                    eprintln!("Error producing value: {}", e);
-                }
+                let result = db.produce(value).await;
+
+                // Send the result back to the caller (may fail if caller dropped)
+                let _ = result_tx.send(result);
             }
         });
 
@@ -454,9 +456,27 @@ impl AimDbHandle {
                                     break;
                                 }
                             }
+                            Err(DbError::BufferLagged { lag_count, .. }) => {
+                                // Consumer fell behind - this is not fatal
+                                // Log warning but continue receiving
+                                eprintln!(
+                                    "Warning: Consumer for {} lagged by {} messages",
+                                    std::any::type_name::<T>(),
+                                    lag_count
+                                );
+                                // Don't break - next recv() will get latest data
+                            }
+                            Err(DbError::BufferClosed { .. }) => {
+                                // Buffer closed (shutdown) - exit gracefully
+                                break;
+                            }
                             Err(e) => {
-                                // Log error and stop
-                                eprintln!("Error reading from buffer: {}", e);
+                                // Other unexpected errors - log and stop
+                                eprintln!(
+                                    "Error reading from buffer for {}: {}",
+                                    std::any::type_name::<T>(),
+                                    e
+                                );
                                 break;
                             }
                         }
