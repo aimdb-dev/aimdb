@@ -439,29 +439,37 @@ impl DbError {
                 Self::prepend_context(&mut message, context);
                 DbError::Internal { code, message }
             }
-            // Sync API errors that support context
+            // Sync API errors that support context (std only)
+            #[cfg(feature = "std")]
             DbError::AttachFailed { mut message } => {
                 Self::prepend_context(&mut message, context);
                 DbError::AttachFailed { message }
             }
+            #[cfg(feature = "std")]
             DbError::DetachFailed { mut message } => {
                 Self::prepend_context(&mut message, context);
                 DbError::DetachFailed { message }
             }
-            // Sync timeout and shutdown errors don't have context fields
+            // Sync timeout and shutdown errors don't have context fields (std only)
+            #[cfg(feature = "std")]
             DbError::SetTimeout => DbError::SetTimeout,
+            #[cfg(feature = "std")]
             DbError::GetTimeout => DbError::GetTimeout,
+            #[cfg(feature = "std")]
             DbError::RuntimeShutdown => DbError::RuntimeShutdown,
-            // Convert simple I/O and JSON errors to context variants
+            // Convert simple I/O and JSON errors to context variants (std only)
+            #[cfg(feature = "std")]
             DbError::Io { source } => DbError::IoWithContext {
                 context: context.into(),
                 source,
             },
+            #[cfg(feature = "std")]
             DbError::Json { source } => DbError::JsonWithContext {
                 context: context.into(),
                 source,
             },
-            // Prepend to existing context for context variants
+            // Prepend to existing context for context variants (std only)
+            #[cfg(feature = "std")]
             DbError::IoWithContext {
                 context: mut ctx,
                 source,
@@ -472,6 +480,7 @@ impl DbError {
                     source,
                 }
             }
+            #[cfg(feature = "std")]
             DbError::JsonWithContext {
                 context: mut ctx,
                 source,
