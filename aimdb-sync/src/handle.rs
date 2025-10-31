@@ -392,7 +392,7 @@ impl AimDbHandle {
             }
         });
 
-        Ok(crate::SyncProducer::new(tx))
+        Ok(crate::SyncProducer::new(tx, self.runtime_handle.clone()))
     }
 
     /// Create a synchronous consumer with custom channel capacity.

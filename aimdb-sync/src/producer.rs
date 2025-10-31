@@ -50,6 +50,9 @@ where
     /// Wrapped in Arc so it can be cloned across threads
     /// Sends (value, result_sender) tuples to propagate produce errors back to caller
     tx: Arc<mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>>,
+
+    /// Runtime handle for executing async operations with timeout
+    runtime_handle: tokio::runtime::Handle,
 }
 
 impl<T> SyncProducer<T>
@@ -57,9 +60,48 @@ where
     T: Send + 'static + Debug + Clone,
 {
     /// Create a new sync producer (internal use only)
-    pub(crate) fn new(tx: mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>) -> Self {
-        Self { tx: Arc::new(tx) }
+    pub(crate) fn new(
+        tx: mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>,
+        runtime_handle: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            tx: Arc::new(tx),
+            runtime_handle,
+        }
     }
+
+    /// Internal helper: send value and wait for result with optional timeout
+    fn send_internal(&self, value: T, timeout: Option<Duration>) -> DbResult<()> {
+        let (result_tx, result_rx) = oneshot::channel();
+        let tx = self.tx.clone();
+
+        self.runtime_handle.block_on(async move {
+            // Send with optional timeout
+            let send_result = match timeout {
+                Some(duration) => tokio::time::timeout(duration, tx.send((value, result_tx))).await,
+                None => Ok(tx.send((value, result_tx)).await),
+            };
+
+            match send_result {
+                Ok(Ok(())) => {
+                    // Successfully sent, now wait for produce result
+                    let recv_result = match timeout {
+                        Some(duration) => tokio::time::timeout(duration, result_rx).await,
+                        None => Ok(result_rx.await),
+                    };
+
+                    match recv_result {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(_)) => Err(DbError::RuntimeShutdown),
+                        Err(_) => Err(DbError::SetTimeout),
+                    }
+                }
+                Ok(Err(_)) => Err(DbError::RuntimeShutdown),
+                Err(_) => Err(DbError::SetTimeout),
+            }
+        })
+    }
+
     /// Set the value, blocking until it can be sent.
     ///
     /// This call will block the current thread until the value can be sent to the runtime thread.
@@ -91,30 +133,13 @@ where
     /// # }
     /// ```
     pub fn set(&self, value: T) -> DbResult<()> {
-        // Create a oneshot channel to receive the result
-        let (result_tx, result_rx) = oneshot::channel();
-
-        // Send the value with the result sender
-        self.tx
-            .blocking_send((value, result_tx))
-            .map_err(|_| DbError::RuntimeShutdown)?;
-
-        // Wait for the produce result
-        result_rx
-            .blocking_recv()
-            .map_err(|_| DbError::RuntimeShutdown)?
+        self.send_internal(value, None)
     }
 
     /// Set the value with a timeout.
     ///
-    /// Attempts to send the value to the runtime thread, blocking for at most `timeout` duration.
-    ///
-    /// **Implementation Note**: This method uses a polling loop with 1ms intervals because
-    /// Tokio's async `mpsc::Sender` doesn't provide a `blocking_send_timeout` method. While
-    /// `std::sync::mpsc::SyncSender::send_timeout` exists, it cannot be used here as we need
-    /// to bridge between sync and async runtimes. The 1ms polling interval provides a good
-    /// balance between responsiveness and CPU usage. For most use cases, prefer `set()`
-    /// (blocking indefinitely) or `try_set()` (non-blocking).
+    /// Attempts to send the value to the runtime thread and wait for produce completion,
+    /// blocking for at most `timeout` duration.
     ///
     /// # Errors
     ///
@@ -144,60 +169,7 @@ where
     /// # }
     /// ```
     pub fn set_with_timeout(&self, value: T, timeout: Duration) -> DbResult<()> {
-        // Tokio's mpsc::Sender only provides blocking_send (indefinite) and try_send (non-blocking)
-        // Use polling with 1ms intervals as a workaround for timeout functionality
-        let start = std::time::Instant::now();
-        let poll_interval = Duration::from_millis(1);
-
-        // Create a oneshot channel to receive the result
-        let (result_tx, mut result_rx) = oneshot::channel();
-        let mut payload = (value, result_tx);
-
-        // First, try to send with timeout
-        loop {
-            // Try non-blocking send
-            match self.tx.try_send(payload) {
-                Ok(()) => break,
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(DbError::RuntimeShutdown);
-                }
-                Err(mpsc::error::TrySendError::Full(returned_payload)) => {
-                    // Check timeout first
-                    if start.elapsed() >= timeout {
-                        return Err(DbError::SetTimeout);
-                    }
-
-                    // Sleep briefly before trying again (1ms to minimize latency)
-                    std::thread::sleep(poll_interval);
-
-                    // Restore payload for next iteration
-                    payload = returned_payload;
-                }
-            }
-        }
-
-        // Now wait for the produce result, respecting remaining timeout
-        let remaining = timeout.saturating_sub(start.elapsed());
-        if remaining.is_zero() {
-            return Err(DbError::SetTimeout);
-        }
-
-        // Poll for result with remaining timeout
-        let result_start = std::time::Instant::now();
-        loop {
-            match result_rx.try_recv() {
-                Ok(result) => return result,
-                Err(oneshot::error::TryRecvError::Empty) => {
-                    if result_start.elapsed() >= remaining {
-                        return Err(DbError::SetTimeout);
-                    }
-                    std::thread::sleep(poll_interval);
-                }
-                Err(oneshot::error::TryRecvError::Closed) => {
-                    return Err(DbError::RuntimeShutdown);
-                }
-            }
-        }
+        self.send_internal(value, Some(timeout))
     }
 
     /// Try to set the value without blocking.
@@ -257,6 +229,7 @@ where
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
+            runtime_handle: self.runtime_handle.clone(),
         }
     }
 }
