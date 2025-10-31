@@ -3,12 +3,14 @@
 //! Handles individual client connections, including handshake, authentication,
 //! and protocol method dispatch.
 
-use crate::remote::{AimxConfig, HelloMessage, RecordMetadata, WelcomeMessage};
+use crate::remote::{AimxConfig, HelloMessage, RecordMetadata, Request, Response, WelcomeMessage};
 use crate::{AimDb, DbError, DbResult};
 
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
+#[cfg(feature = "std")]
+use serde_json::json;
 #[cfg(feature = "std")]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(feature = "std")]
@@ -38,7 +40,7 @@ where
     tracing::info!("New remote access connection established");
 
     // Perform protocol handshake
-    let _stream = match perform_handshake(stream, &config, &db).await {
+    let mut stream = match perform_handshake(stream, &config, &db).await {
         Ok(stream) => stream,
         Err(e) => {
             #[cfg(feature = "tracing")]
@@ -50,10 +52,60 @@ where
     #[cfg(feature = "tracing")]
     tracing::info!("Handshake complete, client ready");
 
-    // TODO: Implement request/response loop
-    // - Read requests from stream
-    // - Dispatch to handlers (record.list, record.get, record.subscribe, etc.)
-    // - Send responses and event streams
+    // Request/response loop
+    loop {
+        let mut line = String::new();
+
+        match stream.read_line(&mut line).await {
+            Ok(0) => {
+                // Client closed connection
+                #[cfg(feature = "tracing")]
+                tracing::info!("Client disconnected gracefully");
+                break;
+            }
+            Ok(_) => {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("Received request: {}", line.trim());
+
+                // Parse request
+                let request: Request = match serde_json::from_str(line.trim()) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!("Failed to parse request: {}", e);
+
+                        // Send error response (use ID 0 if we can't parse the request)
+                        let error_response =
+                            Response::error(0, "parse_error", format!("Invalid JSON: {}", e));
+                        if let Err(_e) = send_response(&mut stream, &error_response).await {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!("Failed to send error response: {}", _e);
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                // Dispatch request to appropriate handler
+                let response = handle_request(&db, &config, request).await;
+
+                // Send response
+                if let Err(_e) = send_response(&mut stream, &response).await {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("Failed to send response: {}", _e);
+                    break;
+                }
+            }
+            Err(_e) => {
+                #[cfg(feature = "tracing")]
+                tracing::error!("Error reading from stream: {}", _e);
+                break;
+            }
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    tracing::info!("Connection handler terminating");
 
     Ok(())
 }
@@ -250,4 +302,116 @@ where
         })?;
 
     Ok(BufReader::new(stream))
+}
+
+/// Handles a single request and returns a response
+///
+/// Dispatches to the appropriate handler based on the request method.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `config` - Remote access configuration
+/// * `request` - The parsed request
+///
+/// # Returns
+/// Response to send to the client
+#[cfg(feature = "std")]
+async fn handle_request<R>(db: &Arc<AimDb<R>>, config: &AimxConfig, request: Request) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Handling request: method={}, id={}",
+        request.method,
+        request.id
+    );
+
+    match request.method.as_str() {
+        "record.list" => handle_record_list(db, config, request.id).await,
+        _ => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("Unknown method: {}", request.method);
+
+            Response::error(
+                request.id,
+                "method_not_found",
+                format!("Unknown method: {}", request.method),
+            )
+        }
+    }
+}
+
+/// Handles record.list method
+///
+/// Returns metadata for all registered records in the database.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `config` - Remote access configuration (for permission checks)
+/// * `request_id` - Request ID for the response
+///
+/// # Returns
+/// Success response with array of RecordMetadata
+#[cfg(feature = "std")]
+async fn handle_record_list<R>(
+    db: &Arc<AimDb<R>>,
+    _config: &AimxConfig,
+    request_id: u64,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Listing records");
+
+    // Get all record metadata from database
+    let records: Vec<RecordMetadata> = db.list_records();
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Found {} records", records.len());
+
+    // Convert to JSON and return
+    Response::success(request_id, json!(records))
+}
+
+/// Sends a response to the client
+///
+/// Serializes the response to JSON and writes it to the stream with a newline.
+///
+/// # Arguments
+/// * `stream` - The connection stream
+/// * `response` - The response to send
+///
+/// # Errors
+/// Returns error if serialization or write fails
+#[cfg(feature = "std")]
+async fn send_response(stream: &mut BufReader<UnixStream>, response: &Response) -> DbResult<()> {
+    let response_json = serde_json::to_string(response).map_err(|e| DbError::JsonWithContext {
+        context: "Failed to serialize response".to_string(),
+        source: e,
+    })?;
+
+    stream
+        .get_mut()
+        .write_all(response_json.as_bytes())
+        .await
+        .map_err(|e| DbError::IoWithContext {
+            context: "Failed to write response".to_string(),
+            source: e,
+        })?;
+
+    stream
+        .get_mut()
+        .write_all(b"\n")
+        .await
+        .map_err(|e| DbError::IoWithContext {
+            context: "Failed to write response newline".to_string(),
+            source: e,
+        })?;
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Sent response");
+
+    Ok(())
 }
