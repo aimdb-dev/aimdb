@@ -384,7 +384,7 @@ impl AimDbHandle {
             while let Some(value) = rx.recv().await {
                 // Forward the value to the database's produce pipeline
                 // If produce fails, log the error but continue processing
-                if let Err(e) = db.produce(value.clone()).await {
+                if let Err(e) = db.produce(value).await {
                     eprintln!("Error producing value: {}", e);
                 }
             }

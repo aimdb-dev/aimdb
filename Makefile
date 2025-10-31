@@ -97,8 +97,6 @@ clippy:
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on CLI tools$(NC)\n"
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on aimdb-sync$(NC)\n"
-	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"

@@ -404,8 +404,20 @@ fn test_single_latest_semantics() {
         .consumer::<TestData>()
         .expect("Failed to create consumer");
 
-    // Produce multiple values quickly
-    for i in 0..5 {
+    // Produce first value and wait for it to propagate
+    let data = TestData {
+        id: 100,
+        value: "initial".to_string(),
+    };
+    producer.set(data).expect("Failed to produce");
+    thread::sleep(Duration::from_millis(100));
+
+    // Consume first value to establish the subscription
+    let first = consumer.get().expect("Failed to consume initial value");
+    assert_eq!(first.id, 100);
+
+    // Now produce multiple values quickly (target: <50ms end-to-end)
+    for i in 1..=5 {
         let data = TestData {
             id: i,
             value: format!("value-{}", i),
@@ -413,13 +425,18 @@ fn test_single_latest_semantics() {
         producer.set(data).expect("Failed to produce");
     }
 
-    // Give time for values to propagate
-    thread::sleep(Duration::from_millis(100));
+    // Wait for propagation - with <50ms target
+    thread::sleep(Duration::from_millis(50));
 
-    // Consumer should get the latest value
+    // Consumer should get the latest value (5)
+    // With SingleLatest semantics, intermediate values (1,2,3,4) are skipped
     let received = consumer.get().expect("Failed to consume");
-    // Should be one of the later values (buffer only keeps latest)
-    assert!(received.id >= 3);
+
+    assert_eq!(
+        received.id, 5,
+        "Expected latest value (5), got {}. SingleLatest should skip intermediate values and deliver only the most recent.",
+        received.id
+    );
 
     handle.detach().expect("Failed to detach");
 }
