@@ -1,7 +1,15 @@
 //! Type-safe record storage using TypeId
 //!
-//! This module provides a type-safe alternative to string-based record
-//! identification, using Rust's `TypeId` for compile-time type safety.
+//! Provides type-safe record identification using Rust's `TypeId` for compile-time safety.
+//!
+//! # Feature Support
+//!
+//! **Both std and no_std**: Core API (`TypedRecord`, `latest()`, `RecordValue`, producer/consumer)
+//!
+//! **std only**: JSON serialization (`.with_serialization()`, `.as_json()`), remote access, metadata
+//!
+//! **no_std**: Use `record.latest()` for value access and `Deref` for fields. JSON requires std;
+//! implement custom serialization for embedded protocols (CBOR, MessagePack, etc.).
 
 use core::any::Any;
 use core::fmt::Debug;
@@ -21,34 +29,27 @@ use crate::buffer::DynBuffer;
 #[cfg(feature = "std")]
 type JsonSerializer<T> = Arc<dyn Fn(&T) -> Option<serde_json::Value> + Send + Sync>;
 
-/// Wrapper for a record's latest value with serialization helpers (std only)
+/// Wrapper for a record's latest value with optional serialization
 ///
-/// Provides methods to serialize the value to various formats.
-/// Created by `TypedRecord::latest()`.
-///
-/// # Example
-/// ```rust,ignore
-/// if let Some(value) = record.latest() {
-///     // Use the value directly
-///     println!("Temperature: {:.1}°C", value.celsius);
-///     
-///     // Or serialize to JSON
-///     if let Some(json) = value.as_json() {
-///         println!("JSON: {}", json);
-///     }
-/// }
-/// ```
-#[cfg(feature = "std")]
+/// Created by `TypedRecord::latest()`. Core methods (`get()`, `into_inner()`, `Deref`) work in
+/// both std and no_std. JSON serialization (`.as_json()`) requires std feature.
 pub struct RecordValue<T> {
     value: T,
+    #[cfg(feature = "std")]
     serializer: Option<JsonSerializer<T>>,
 }
 
-#[cfg(feature = "std")]
 impl<T> RecordValue<T> {
     /// Create a new RecordValue with optional serializer
+    #[cfg(feature = "std")]
     fn new(value: T, serializer: Option<JsonSerializer<T>>) -> Self {
         Self { value, serializer }
+    }
+
+    /// Create a new RecordValue without serializer (no_std)
+    #[cfg(not(feature = "std"))]
+    fn new(value: T, _serializer: Option<()>) -> Self {
+        Self { value }
     }
 
     /// Get a reference to the underlying value
@@ -61,27 +62,18 @@ impl<T> RecordValue<T> {
         self.value
     }
 
-    /// Serialize the value to JSON
+    /// Serialize the value to JSON (std only)
     ///
-    /// Returns `Some(JsonValue)` if:
-    /// - Record was configured with `.with_serialization()`
-    /// - Serialization succeeds
-    ///
-    /// Returns `None` otherwise.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// if let Some(json) = record.latest()?.as_json() {
-    ///     println!("{}", json);
-    /// }
-    /// ```
+    /// Returns `Some(JsonValue)` if record was configured with `.with_serialization()`,
+    /// otherwise `None`. Requires `serde_json` (std only). For no_std, use `.get()`,
+    /// `.into_inner()`, or `Deref` for direct access.
+    #[cfg(feature = "std")]
     pub fn as_json(&self) -> Option<serde_json::Value> {
         let serializer = self.serializer.as_ref()?;
         serializer(&self.value)
     }
 }
 
-#[cfg(feature = "std")]
 impl<T: Clone> RecordValue<T> {
     /// Clone the underlying value
     pub fn cloned(&self) -> T {
@@ -89,7 +81,6 @@ impl<T: Clone> RecordValue<T> {
     }
 }
 
-#[cfg(feature = "std")]
 impl<T> core::ops::Deref for RecordValue<T> {
     type Target = T;
 
@@ -192,48 +183,30 @@ pub trait AnyRecord: Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
     /// Returns the number of registered connectors
-    ///
-    /// Allows runtime adapters to discover connectors without knowing the concrete type.
     fn connector_count(&self) -> usize;
 
     /// Returns the connector URLs as strings
-    ///
-    /// Provides access to connector configuration through the type-erased interface.
-    /// Useful for logging and debugging.
     #[cfg(feature = "std")]
     fn connector_urls(&self) -> Vec<String>;
 
     /// Gets the connector links
     ///
-    /// Returns a reference to the connector configuration list.
-    /// This allows connector spawning logic to access the serializer callbacks
-    /// and other connector-specific configuration.
+    /// Returns connector configuration list for spawning logic.
     fn connectors(&self) -> &[crate::connector::ConnectorLink];
 
     /// Returns the number of registered consumers (tap observers)
-    ///
-    /// Used to check if automatic spawning is needed.
     fn consumer_count(&self) -> usize;
 
     /// Returns whether a producer service is registered
-    ///
-    /// Used to check if producer spawning is needed.
     fn has_producer_service(&self) -> bool;
 
     /// Collects metadata for this record (std only)
-    ///
-    /// Returns record metadata for remote access introspection.
-    /// Available only when the `std` feature is enabled.
     #[cfg(feature = "std")]
     fn collect_metadata(&self, type_id: core::any::TypeId) -> crate::remote::RecordMetadata;
 
     /// Internal: Returns JSON for type-erased remote access (std only)
     ///
-    /// This method is used internally by the remote access protocol handler.
-    /// **Users should use `record.latest()?.as_json()` instead.**
-    ///
-    /// Required by `AnyRecord` trait for type-erased access where the concrete
-    /// type `T` is not known at compile time.
+    /// Used internally by remote access protocol. **Users should use `record.latest()?.as_json()`.**
     #[doc(hidden)]
     #[cfg(feature = "std")]
     fn latest_json(&self) -> Option<serde_json::Value>;
@@ -282,8 +255,7 @@ impl AnyRecordExt for Box<dyn AnyRecord> {
 
 /// Helper for spawning tasks for a specific record type
 ///
-/// This struct captures the record type `T` using PhantomData and provides
-/// a way to spawn tasks without making AnyRecord non-object-safe.
+/// Captures record type `T` via PhantomData to spawn tasks without making AnyRecord non-object-safe.
 pub struct RecordSpawner<T> {
     _phantom: core::marker::PhantomData<T>,
 }
@@ -294,8 +266,7 @@ where
 {
     /// Spawns all tasks (producer and consumers) for a record
     ///
-    /// This function takes a type-erased AnyRecord, downcasts it to TypedRecord<T, R>,
-    /// and spawns the producer service and consumer tasks.
+    /// Downcasts type-erased AnyRecord to TypedRecord<T, R> and spawns tasks.
     pub fn spawn_all_tasks<R>(
         record: &dyn AnyRecord,
         runtime: &Arc<R>,
@@ -337,8 +308,7 @@ where
 
 /// Typed record storage with producer/consumer functions
 ///
-/// Stores type-safe producer and consumer functions for a specific record type,
-/// with optional buffering for async dispatch patterns.
+/// Stores type-safe producer and consumer functions with optional buffering for async dispatch.
 pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> {
     /// Optional producer service - a task that generates data
     /// This will be auto-spawned during build() if present
@@ -381,22 +351,21 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     #[cfg(feature = "std")]
     json_serializer: Option<JsonSerializer<T>>,
 
-    /// Latest value snapshot (std only - for remote access)
-    /// Cached atomically on every produce() call to support latest() and latest_json()
+    /// Latest value snapshot - for latest() API
+    /// Cached atomically on every produce() call to support latest()
     /// This provides a buffer-agnostic way to query the latest value
+    /// Available in both std and no_std environments
     #[cfg(feature = "std")]
-    latest_snapshot: std::sync::Arc<std::sync::Mutex<Option<T>>>,
+    latest_snapshot: Arc<std::sync::Mutex<Option<T>>>,
+
+    #[cfg(not(feature = "std"))]
+    latest_snapshot: Arc<spin::Mutex<Option<T>>>,
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> TypedRecord<T, R> {
     /// Creates a new empty typed record
     ///
-    /// # Returns
-    /// A `TypedRecord<T, R>` with no producer or consumers
-    ///
-    /// # JSON Serialization
-    /// Call `.with_serialization()` to enable JSON serialization for types
-    /// implementing `serde::Serialize`.
+    /// Call `.with_serialization()` to enable JSON (std only).
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "std")]
@@ -416,32 +385,18 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             #[cfg(feature = "std")]
             json_serializer: None,
             #[cfg(feature = "std")]
-            latest_snapshot: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            latest_snapshot: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(not(feature = "std"))]
+            latest_snapshot: Arc::new(spin::Mutex::new(None)),
         }
     }
 
     /// Sets the producer service for this record
     ///
-    /// The producer service is a long-running task that generates data and calls
-    /// `producer.produce()` to emit values. It will be automatically spawned during `build()`.
-    ///
-    /// # Arguments
-    /// * `f` - A function taking `(Producer<T>, RuntimeContext)` and returning a Future
+    /// Long-running task that generates data via `producer.produce()`. Auto-spawned during `build()`.
     ///
     /// # Panics
-    /// Panics if a producer service is already set (each record can have only one source)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// record.set_producer_service(|producer, ctx| async move {
-    ///     loop {
-    ///         let value = generate_data();
-    ///         producer.produce(value).await?;
-    ///         ctx.time().sleep(ctx.time().secs(1)).await;
-    ///     }
-    /// });
-    /// ```
+    /// Panics if producer already set (one producer per record).
     pub fn set_producer_service<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(crate::Producer<T, R>, Arc<dyn Any + Send + Sync>) -> Fut + Send + Sync + 'static,
@@ -519,22 +474,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Sets the buffer for this record
     ///
-    /// When a buffer is set, `produce()` will enqueue values instead of
-    /// calling producer/consumers directly. A separate dispatcher task
-    /// should drain the buffer and invoke the functions.
-    ///
-    /// # Arguments
-    /// * `buffer` - A buffer backend implementation
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_core::buffer::BufferCfg;
-    ///
-    /// // Configure buffer (adapter-specific implementation)
-    /// let buffer = runtime.create_buffer(BufferCfg::SpmcRing { capacity: 1024 });
-    /// record.set_buffer(buffer);
-    /// ```
+    /// When set, `produce()` enqueues values for async dispatch to consumers.
     pub fn set_buffer(&mut self, buffer: Box<dyn DynBuffer<T>>) {
         // Cache buffer configuration for metadata (std only)
         #[cfg(feature = "std")]
@@ -570,26 +510,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Subscribes to the buffer for this record type
     ///
-    /// Creates a new subscription that can receive values asynchronously.
-    ///
-    /// # Returns
-    /// A boxed `BufferReader<T>` for receiving values
-    ///
     /// # Errors
-    /// Returns `DbError::MissingConfiguration` if no buffer is configured
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let mut reader = record.subscribe()?;
-    ///
-    /// loop {
-    ///     match reader.recv().await {
-    ///         Ok(value) => process(value),
-    ///         Err(_) => break,
-    ///     }
-    /// }
-    /// ```
+    /// Returns `DbError::MissingConfiguration` if no buffer configured
     pub fn subscribe(&self) -> crate::DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
         let buffer = self.buffer.as_ref().ok_or({
             #[cfg(feature = "std")]
@@ -609,47 +531,18 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Adds a connector link for external system integration
     ///
-    /// Connectors bridge AimDB records to external protocols (MQTT, Kafka, HTTP, etc.).
-    /// Multiple connectors can be registered for the same record type.
-    ///
-    /// # Arguments
-    /// * `link` - The connector configuration
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_core::connector::{ConnectorUrl, ConnectorLink};
-    ///
-    /// let url = ConnectorUrl::parse("mqtt://broker.local:1883")?;
-    /// let link = ConnectorLink::new(url);
-    /// record.add_connector(link);
-    /// ```
+    /// Bridges records to external protocols (MQTT, Kafka, HTTP, etc.).
+    /// Multiple connectors supported per record.
     pub fn add_connector(&mut self, link: crate::connector::ConnectorLink) {
         self.connectors.push(link);
     }
 
     /// Enables JSON serialization for remote access (std only)
     ///
-    /// Call this method to enable JSON serialization for types that implement `serde::Serialize`.
-    /// Once enabled, you can use:
-    /// - `record.latest()?.as_json()` - Fluent API for accessing and serializing
-    /// - Remote access `record.get` protocol method
+    /// Enables `record.latest()?.as_json()` and remote access `record.get` protocol.
+    /// Requires `std` feature and `T: serde::Serialize`.
     ///
-    /// # Type Requirements
-    /// * `T: serde::Serialize` - The record type must be serializable to JSON
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// db.configure::<Temperature>(|reg| {
-    ///     reg.buffer(BufferCfg::SingleLatest)
-    ///        .with_serialization();  // Enable JSON support
-    /// });
-    ///
-    /// // Later, use the fluent API:
-    /// if let Some(json) = record.latest()?.as_json() {
-    ///     println!("{}", json);
-    /// }
-    /// ```
+    /// For no_std, use `record.latest()` for value access or custom serialization.
     #[cfg(feature = "std")]
     pub fn with_serialization(&mut self) -> &mut Self
     where
@@ -703,19 +596,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Spawns all registered consumer tasks
     ///
-    /// This method takes all registered `.tap()` consumers and spawns them as
-    /// background tasks using the provided runtime adapter. Called automatically
-    /// by `Database::new()` during database construction.
-    ///
-    /// # Arguments
-    /// * `runtime` - The runtime adapter for spawning tasks  
-    /// * `db` - The database instance for creating Consumer handles
-    ///
-    /// # Returns
-    /// `DbResult<()>` - Ok if all tasks spawned successfully
-    ///
-    /// # Note
-    /// This consumes all registered consumers (FnOnce), so it can only be called once.
+    /// Spawns `.tap()` consumers as background tasks. Called automatically by `Database::new()`.
+    /// Consumes registered consumers (FnOnce), can only be called once.
     pub fn spawn_consumer_tasks(
         &self,
         runtime: &Arc<R>,
@@ -775,15 +657,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Spawns consumer tasks from a type-erased runtime
     ///
-    /// This is a helper for the automatic spawning system. It uses the database's
-    /// spawn_task method which has access to the concrete runtime type.
-    ///
-    /// # Arguments
-    /// * `runtime` - The runtime adapter for spawning tasks
-    /// * `db` - The database instance for creating Producer handles
-    ///
-    /// # Returns
-    /// `DbResult<()>` - Ok if spawning succeeded
+    /// Helper for automatic spawning system via database's spawn_task method.
     pub fn spawn_producer_service(
         &self,
         runtime: &Arc<R>,
@@ -836,21 +710,17 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Produces a value by pushing to the buffer
     ///
-    /// Enqueues the value to the buffer where consumer tasks will pick it up.
-    ///
-    /// # Arguments
-    /// * `val` - The value to produce
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// record.produce(SensorData { temp: 23.5 }).await;
-    /// ```
+    /// Enqueues value for consumer tasks and updates latest snapshot.
     pub async fn produce(&self, val: T) {
-        // Cache snapshot for remote access (std only)
+        // Cache snapshot for latest() API (both std and no_std)
         #[cfg(feature = "std")]
         {
             *self.latest_snapshot.lock().unwrap() = Some(val.clone());
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            *self.latest_snapshot.lock() = Some(val.clone());
         }
 
         // Push to buffer - consumer tasks will receive it
@@ -876,59 +746,44 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     }
 
     /// Marks this record as writable for remote access (std only)
-    ///
-    /// This is used by the remote access system to control which records
-    /// can be written to via the protocol.
     #[cfg(feature = "std")]
     pub fn set_writable(&mut self, writable: bool) {
         self.metadata.set_writable(writable);
     }
 
-    /// Returns the latest produced value wrapped with serialization helpers (std only)
+    /// Returns the latest produced value
     ///
-    /// Returns the most recently produced value wrapped in `RecordValue<T>` if available.
-    /// This snapshot is maintained atomically on every `produce()` call.
+    /// Returns most recent value wrapped in `RecordValue<T>`, updated atomically on each `produce()`.
+    /// Non-blocking and buffer-agnostic.
     ///
-    /// The returned `RecordValue` provides:
-    /// - Direct access via `Deref` trait
-    /// - `.as_json()` for JSON serialization (if `.with_serialization()` was configured)
-    /// - `.get()` for explicit reference access
-    /// - `.into_inner()` to extract the value
+    /// **Both std and no_std**: Direct access via `Deref`, `.get()`, `.into_inner()`
     ///
-    /// Unlike subscribing to the buffer, this method:
-    /// - Does not require a subscription
-    /// - Returns immediately (non-blocking)
-    /// - Always returns the latest value (no intermediate values)
-    /// - Works regardless of buffer type
-    ///
-    /// # Returns
-    /// `Some(RecordValue<T>)` if a value has been produced, `None` if no value yet
-    ///
-    /// # Use Cases
-    /// - Remote access (record.get protocol)
-    /// - Polling for current state
-    /// - Diagnostics and monitoring
-    /// - Initial value queries
+    /// **std only**: `.as_json()` (if `.with_serialization()` configured)
     ///
     /// # Examples
     /// ```rust,ignore
-    /// // Access the value directly
+    /// // Direct access (std and no_std)
     /// if let Some(value) = record.latest() {
-    ///     println!("Current temperature: {:.1}°C", value.celsius);
+    ///     println!("Temp: {:.1}°C", value.celsius);
     /// }
     ///
-    /// // Serialize to JSON with method chaining
+    /// // JSON serialization (std only)
     /// if let Some(json) = record.latest()?.as_json() {
-    ///     println!("JSON: {}", json);
+    ///     println!("{}", json);
     /// }
-    ///
-    /// // Extract the inner value
-    /// let temp = record.latest()?.into_inner();
     /// ```
-    #[cfg(feature = "std")]
     pub fn latest(&self) -> Option<RecordValue<T>> {
-        let value = self.latest_snapshot.lock().unwrap().clone()?;
-        Some(RecordValue::new(value, self.json_serializer.clone()))
+        #[cfg(feature = "std")]
+        {
+            let value = self.latest_snapshot.lock().unwrap().clone()?;
+            Some(RecordValue::new(value, self.json_serializer.clone()))
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            let value = self.latest_snapshot.lock().clone()?;
+            Some(RecordValue::new(value, None))
+        }
     }
 }
 
