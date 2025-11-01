@@ -17,6 +17,87 @@ use std::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::buffer::DynBuffer;
 
+/// Type alias for JSON serializer function (std only)
+#[cfg(feature = "std")]
+type JsonSerializer<T> = Arc<dyn Fn(&T) -> Option<serde_json::Value> + Send + Sync>;
+
+/// Wrapper for a record's latest value with serialization helpers (std only)
+///
+/// Provides methods to serialize the value to various formats.
+/// Created by `TypedRecord::latest()`.
+///
+/// # Example
+/// ```rust,ignore
+/// if let Some(value) = record.latest() {
+///     // Use the value directly
+///     println!("Temperature: {:.1}°C", value.celsius);
+///     
+///     // Or serialize to JSON
+///     if let Some(json) = value.as_json() {
+///         println!("JSON: {}", json);
+///     }
+/// }
+/// ```
+#[cfg(feature = "std")]
+pub struct RecordValue<T> {
+    value: T,
+    serializer: Option<JsonSerializer<T>>,
+}
+
+#[cfg(feature = "std")]
+impl<T> RecordValue<T> {
+    /// Create a new RecordValue with optional serializer
+    fn new(value: T, serializer: Option<JsonSerializer<T>>) -> Self {
+        Self { value, serializer }
+    }
+
+    /// Get a reference to the underlying value
+    pub fn get(&self) -> &T {
+        &self.value
+    }
+
+    /// Consume the wrapper and return the underlying value
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+
+    /// Serialize the value to JSON
+    ///
+    /// Returns `Some(JsonValue)` if:
+    /// - Record was configured with `.with_serialization()`
+    /// - Serialization succeeds
+    ///
+    /// Returns `None` otherwise.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if let Some(json) = record.latest()?.as_json() {
+    ///     println!("{}", json);
+    /// }
+    /// ```
+    pub fn as_json(&self) -> Option<serde_json::Value> {
+        let serializer = self.serializer.as_ref()?;
+        serializer(&self.value)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T: Clone> RecordValue<T> {
+    /// Clone the underlying value
+    pub fn cloned(&self) -> T {
+        self.value.clone()
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T> core::ops::Deref for RecordValue<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
 /// Metadata tracking for records (std only - used for remote access introspection)
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
@@ -145,6 +226,17 @@ pub trait AnyRecord: Send + Sync {
     /// Available only when the `std` feature is enabled.
     #[cfg(feature = "std")]
     fn collect_metadata(&self, type_id: core::any::TypeId) -> crate::remote::RecordMetadata;
+
+    /// Internal: Returns JSON for type-erased remote access (std only)
+    ///
+    /// This method is used internally by the remote access protocol handler.
+    /// **Users should use `record.latest()?.as_json()` instead.**
+    ///
+    /// Required by `AnyRecord` trait for type-erased access where the concrete
+    /// type `T` is not known at compile time.
+    #[doc(hidden)]
+    #[cfg(feature = "std")]
+    fn latest_json(&self) -> Option<serde_json::Value>;
 }
 
 // Helper extension trait for type-safe downcasting
@@ -282,6 +374,18 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     /// Metadata tracking (std only - for remote access)
     #[cfg(feature = "std")]
     metadata: RecordMetadataTracker,
+
+    /// JSON serializer function (std only - for remote access)
+    /// When set via .with_serialization(), automatically serializes values for record.get queries
+    /// Stores the serialization logic where T: Serialize is known at call site
+    #[cfg(feature = "std")]
+    json_serializer: Option<JsonSerializer<T>>,
+
+    /// Latest value snapshot (std only - for remote access)
+    /// Cached atomically on every produce() call to support latest() and latest_json()
+    /// This provides a buffer-agnostic way to query the latest value
+    #[cfg(feature = "std")]
+    latest_snapshot: std::sync::Arc<std::sync::Mutex<Option<T>>>,
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> TypedRecord<T, R> {
@@ -289,6 +393,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// # Returns
     /// A `TypedRecord<T, R>` with no producer or consumers
+    ///
+    /// # JSON Serialization
+    /// Call `.with_serialization()` to enable JSON serialization for types
+    /// implementing `serde::Serialize`.
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "std")]
@@ -305,6 +413,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             connectors: Vec::new(),
             #[cfg(feature = "std")]
             metadata: RecordMetadataTracker::new::<T>(),
+            #[cfg(feature = "std")]
+            json_serializer: None,
+            #[cfg(feature = "std")]
+            latest_snapshot: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -516,6 +628,47 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         self.connectors.push(link);
     }
 
+    /// Enables JSON serialization for remote access (std only)
+    ///
+    /// Call this method to enable JSON serialization for types that implement `serde::Serialize`.
+    /// Once enabled, you can use:
+    /// - `record.latest()?.as_json()` - Fluent API for accessing and serializing
+    /// - Remote access `record.get` protocol method
+    ///
+    /// # Type Requirements
+    /// * `T: serde::Serialize` - The record type must be serializable to JSON
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// db.configure::<Temperature>(|reg| {
+    ///     reg.buffer(BufferCfg::SingleLatest)
+    ///        .with_serialization();  // Enable JSON support
+    /// });
+    ///
+    /// // Later, use the fluent API:
+    /// if let Some(json) = record.latest()?.as_json() {
+    ///     println!("{}", json);
+    /// }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn with_serialization(&mut self) -> &mut Self
+    where
+        T: serde::Serialize,
+    {
+        // Store serialization function where T: Serialize is known
+        self.json_serializer = Some(std::sync::Arc::new(|val: &T| {
+            serde_json::to_value(val).ok()
+        }));
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            "with_serialization() called for record type: {}",
+            core::any::type_name::<T>()
+        );
+
+        self
+    }
+
     /// Returns a reference to the registered connectors
     ///
     /// # Returns
@@ -694,6 +847,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// record.produce(SensorData { temp: 23.5 }).await;
     /// ```
     pub async fn produce(&self, val: T) {
+        // Cache snapshot for remote access (std only)
+        #[cfg(feature = "std")]
+        {
+            *self.latest_snapshot.lock().unwrap() = Some(val.clone());
+        }
+
         // Push to buffer - consumer tasks will receive it
         if let Some(buf) = &self.buffer {
             buf.push(val);
@@ -723,6 +882,53 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     #[cfg(feature = "std")]
     pub fn set_writable(&mut self, writable: bool) {
         self.metadata.set_writable(writable);
+    }
+
+    /// Returns the latest produced value wrapped with serialization helpers (std only)
+    ///
+    /// Returns the most recently produced value wrapped in `RecordValue<T>` if available.
+    /// This snapshot is maintained atomically on every `produce()` call.
+    ///
+    /// The returned `RecordValue` provides:
+    /// - Direct access via `Deref` trait
+    /// - `.as_json()` for JSON serialization (if `.with_serialization()` was configured)
+    /// - `.get()` for explicit reference access
+    /// - `.into_inner()` to extract the value
+    ///
+    /// Unlike subscribing to the buffer, this method:
+    /// - Does not require a subscription
+    /// - Returns immediately (non-blocking)
+    /// - Always returns the latest value (no intermediate values)
+    /// - Works regardless of buffer type
+    ///
+    /// # Returns
+    /// `Some(RecordValue<T>)` if a value has been produced, `None` if no value yet
+    ///
+    /// # Use Cases
+    /// - Remote access (record.get protocol)
+    /// - Polling for current state
+    /// - Diagnostics and monitoring
+    /// - Initial value queries
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// // Access the value directly
+    /// if let Some(value) = record.latest() {
+    ///     println!("Current temperature: {:.1}°C", value.celsius);
+    /// }
+    ///
+    /// // Serialize to JSON with method chaining
+    /// if let Some(json) = record.latest()?.as_json() {
+    ///     println!("JSON: {}", json);
+    /// }
+    ///
+    /// // Extract the inner value
+    /// let temp = record.latest()?.into_inner();
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn latest(&self) -> Option<RecordValue<T>> {
+        let value = self.latest_snapshot.lock().unwrap().clone()?;
+        Some(RecordValue::new(value, self.json_serializer.clone()))
     }
 }
 
@@ -810,5 +1016,23 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
             self.connector_count(),
         )
         .with_last_update_opt(last_update)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "std")]
+    fn latest_json(&self) -> Option<serde_json::Value> {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "latest_json called for type: {}",
+            core::any::type_name::<T>()
+        );
+
+        // Delegate to latest() which returns RecordValue<T> with serializer attached
+        let result = self.latest().and_then(|v| v.as_json());
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!("Serialization result: {:?}", result.is_some());
+
+        result
     }
 }

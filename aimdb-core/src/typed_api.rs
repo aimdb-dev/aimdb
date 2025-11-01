@@ -296,6 +296,27 @@ where
         self
     }
 
+    /// Enables JSON serialization for remote access (std only)
+    ///
+    /// Configures this record to support the `record.get` protocol method.
+    /// Requires `T: serde::Serialize`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// builder.configure::<Temperature>(|reg| {
+    ///     reg.buffer(BufferCfg::SingleLatest)
+    ///        .with_serialization();  // Enable remote queries
+    /// });
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn with_serialization(&'a mut self) -> &'a mut Self
+    where
+        T: serde::Serialize,
+    {
+        self.rec.with_serialization();
+        self
+    }
+
     /// Adds a connector link for external system integration
     pub fn link(&'a mut self, url: &str) -> ConnectorBuilder<'a, T, R> {
         ConnectorBuilder {

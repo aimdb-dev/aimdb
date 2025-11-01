@@ -132,6 +132,107 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!();
+
+    // Test record.get for Temperature
+    println!("📤 Requesting Temperature value...");
+    let get_request = Request {
+        id: 2,
+        method: "record.get".to_string(),
+        params: Some(json!({"record": "server::Temperature"})),
+    };
+
+    let get_request_json = serde_json::to_string(&get_request)?;
+    writeln!(stream, "{}", get_request_json)?;
+    stream.flush()?;
+
+    // Read response
+    let mut get_response_line = String::new();
+    reader.read_line(&mut get_response_line)?;
+
+    let get_response: Response = serde_json::from_str(&get_response_line)?;
+
+    match get_response {
+        Response::Success { id, result } => {
+            println!("✅ Success! (request_id: {})", id);
+            println!();
+            println!("🌡️  Current Temperature:");
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Response::Error { id, error } => {
+            println!("❌ Error! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+            if let Some(details) = error.details {
+                println!("   Details: {}", details);
+            }
+        }
+    }
+
+    println!();
+
+    // Test record.get for SystemStatus
+    println!("📤 Requesting SystemStatus value...");
+    let status_request = Request {
+        id: 3,
+        method: "record.get".to_string(),
+        params: Some(json!({"record": "server::SystemStatus"})),
+    };
+
+    let status_request_json = serde_json::to_string(&status_request)?;
+    writeln!(stream, "{}", status_request_json)?;
+    stream.flush()?;
+
+    let mut status_response_line = String::new();
+    reader.read_line(&mut status_response_line)?;
+    let status_response: Response = serde_json::from_str(&status_response_line)?;
+
+    match status_response {
+        Response::Success { id, result } => {
+            println!("✅ Success! (request_id: {})", id);
+            println!();
+            println!("💻 Current System Status:");
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Response::Error { id, error } => {
+            println!("❌ Error! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+        }
+    }
+
+    println!();
+
+    // Test record.get for Config
+    println!("📤 Requesting Config value...");
+    let config_request = Request {
+        id: 4,
+        method: "record.get".to_string(),
+        params: Some(json!({"record": "server::Config"})),
+    };
+
+    let config_request_json = serde_json::to_string(&config_request)?;
+    writeln!(stream, "{}", config_request_json)?;
+    stream.flush()?;
+
+    let mut config_response_line = String::new();
+    reader.read_line(&mut config_response_line)?;
+    let config_response: Response = serde_json::from_str(&config_response_line)?;
+
+    match config_response {
+        Response::Success { id, result } => {
+            println!("✅ Success! (request_id: {})", id);
+            println!();
+            println!("⚙️  Current Config:");
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Response::Error { id, error } => {
+            println!("❌ Error! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+        }
+    }
+
+    println!();
     println!("👋 Disconnecting...");
 
     Ok(())

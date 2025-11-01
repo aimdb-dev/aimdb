@@ -85,6 +85,30 @@ impl AimDbInner {
             .map(|(type_id, record)| record.collect_metadata(*type_id))
             .collect()
     }
+
+    /// Try to get record's latest value as JSON by record name (std only)
+    ///
+    /// Searches for a record with the given name and returns its current value
+    /// serialized to JSON. Returns `None` if:
+    /// - Record not found
+    /// - Record not configured with `.with_serialization()`
+    /// - No value available in the atomic snapshot
+    ///
+    /// # Arguments
+    /// * `record_name` - The full Rust type name (e.g., "server::Temperature")
+    ///
+    /// # Returns
+    /// `Some(JsonValue)` with the current record value, or `None`
+    #[cfg(feature = "std")]
+    pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
+        for (type_id, record) in &self.records {
+            let metadata = record.collect_metadata(*type_id);
+            if metadata.name == record_name {
+                return record.latest_json();
+            }
+        }
+        None
+    }
 }
 
 /// Database builder for producer-consumer pattern
@@ -606,6 +630,20 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     #[cfg(feature = "std")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.inner.list_records()
+    }
+
+    /// Try to get record's latest value as JSON by name (std only)
+    ///
+    /// Convenience wrapper around `AimDbInner::try_latest_as_json()`.
+    ///
+    /// # Arguments
+    /// * `record_name` - The full Rust type name (e.g., "server::Temperature")
+    ///
+    /// # Returns
+    /// `Some(JsonValue)` with current value, or `None` if unavailable
+    #[cfg(feature = "std")]
+    pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
+        self.inner.try_latest_as_json(record_name)
     }
 }
 

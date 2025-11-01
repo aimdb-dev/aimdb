@@ -329,6 +329,7 @@ where
 
     match request.method.as_str() {
         "record.list" => handle_record_list(db, config, request.id).await,
+        "record.get" => handle_record_get(db, config, request.id, request.params).await,
         _ => {
             #[cfg(feature = "tracing")]
             tracing::warn!("Unknown method: {}", request.method);
@@ -373,6 +374,83 @@ where
 
     // Convert to JSON and return
     Response::success(request_id, json!(records))
+}
+
+/// Handles record.get method
+///
+/// Returns the current value of a record as JSON.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `config` - Remote access configuration (for permission checks)
+/// * `request_id` - Request ID for the response
+/// * `params` - Request parameters (must contain "record" field with record name)
+///
+/// # Returns
+/// Success response with record value as JSON, or error if:
+/// - Missing/invalid "record" parameter
+/// - Record not found
+/// - Record not configured with `.with_serialization()`
+/// - No value available in atomic snapshot
+#[cfg(feature = "std")]
+async fn handle_record_get<R>(
+    db: &Arc<AimDb<R>>,
+    _config: &AimxConfig,
+    request_id: u64,
+    params: Option<serde_json::Value>,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    // Extract record name from params
+    let record_name = match params {
+        Some(serde_json::Value::Object(map)) => match map.get("record") {
+            Some(serde_json::Value::String(name)) => name.clone(),
+            _ => {
+                #[cfg(feature = "tracing")]
+                tracing::warn!("Missing or invalid 'record' parameter");
+
+                return Response::error(
+                    request_id,
+                    "invalid_params",
+                    "Missing or invalid 'record' parameter".to_string(),
+                );
+            }
+        },
+        _ => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("Missing params object");
+
+            return Response::error(
+                request_id,
+                "invalid_params",
+                "Missing params object".to_string(),
+            );
+        }
+    };
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Getting value for record: {}", record_name);
+
+    // Try to peek the record's JSON value
+    match db.try_latest_as_json(&record_name) {
+        Some(value) => {
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Successfully retrieved value for {}", record_name);
+
+            Response::success(request_id, value)
+        }
+        None => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("No value available for record: {}", record_name);
+
+            Response::error(
+                request_id,
+                "not_found",
+                format!("No value available for record: {}", record_name),
+            )
+        }
+    }
 }
 
 /// Sends a response to the client
