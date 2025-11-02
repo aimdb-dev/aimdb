@@ -814,10 +814,7 @@ where
     // Check if record is in the writable_records set
     if !writable_records.contains(&type_id) {
         #[cfg(feature = "tracing")]
-        tracing::warn!(
-            "Record '{}' not in writable_records set",
-            record_name
-        );
+        tracing::warn!("Record '{}' not in writable_records set", record_name);
 
         return Response::error(
             request_id,
@@ -861,9 +858,10 @@ where
                     // This is the "has active producers" error
                     ("permission_denied", operation)
                 }
-                crate::DbError::JsonWithContext { context, .. } => {
-                    ("validation_error", format!("JSON validation failed: {}", context))
-                }
+                crate::DbError::JsonWithContext { context, .. } => (
+                    "validation_error",
+                    format!("JSON validation failed: {}", context),
+                ),
                 crate::DbError::RuntimeError { message } => ("internal_error", message),
                 _ => ("internal_error", format!("Failed to set value: {}", e)),
             };
@@ -1017,7 +1015,7 @@ where
     conn_state.add_subscription(handle);
 
     // Detach the streaming task (it will run until cancelled or channel closes)
-    let _ = stream_handle;
+    std::mem::drop(stream_handle);
 
     #[cfg(feature = "tracing")]
     tracing::info!(

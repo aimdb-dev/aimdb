@@ -1136,13 +1136,15 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
             })?;
 
         // Check if buffer exists
-        let buffer = self.buffer.as_ref().ok_or_else(|| DbError::RuntimeError {
-            message: format!(
-                "Record '{}' has no buffer configured. \
-                 Cannot produce value without buffer.",
-                core::any::type_name::<T>()
-            ),
-        })?;
+        if self.buffer.is_none() {
+            return Err(DbError::RuntimeError {
+                message: format!(
+                    "Record '{}' has no buffer configured. \
+                     Cannot produce value without buffer.",
+                    core::any::type_name::<T>()
+                ),
+            });
+        }
 
         // Deserialize JSON -> T
         let value: T = deserializer(&json_value).ok_or_else(|| DbError::RuntimeError {
