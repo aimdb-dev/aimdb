@@ -1058,8 +1058,7 @@ async fn stream_subscription_events(
     );
 
     while let Some(json_value) = value_rx.recv().await {
-        // Generate timestamp (ISO 8601 format)
-        // Using a simple format for now - in production would use a proper ISO 8601 library
+        // Generate timestamp in "secs.nanosecs" format
         let timestamp = format!(
             "{:?}",
             std::time::SystemTime::now()

@@ -148,7 +148,7 @@ pub struct Event {
     /// Event data (record value)
     pub data: JsonValue,
 
-    /// ISO 8601 timestamp
+    /// Unix timestamp in "secs.nanosecs" format (e.g., "1730379296.123456789")
     pub timestamp: String,
 
     /// Number of dropped events since last delivery (optional)
@@ -297,7 +297,7 @@ mod tests {
             subscription_id: "sub-123".to_string(),
             sequence: 42,
             data: serde_json::json!({"temp": 23.5}),
-            timestamp: "2025-10-31T12:34:56.789Z".to_string(),
+            timestamp: "1730379296.123456789".to_string(),
             dropped: None,
         };
 
@@ -313,7 +313,7 @@ mod tests {
             subscription_id: "sub-456".to_string(),
             sequence: 100,
             data: serde_json::json!({"value": 1}),
-            timestamp: "2025-10-31T12:35:00.000Z".to_string(),
+            timestamp: "1730379300.987654321".to_string(),
             dropped: Some(5),
         };
 

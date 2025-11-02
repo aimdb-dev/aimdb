@@ -149,7 +149,7 @@ Server pushes subscription updates asynchronously.
     "subscription_id": "sub-123",
     "sequence": 42,
     "data": { ... },
-    "timestamp": "2025-10-31T12:34:56.789Z"
+    "timestamp": "1730379296.123456789"
   }
 }
 ```
@@ -158,7 +158,7 @@ Server pushes subscription updates asynchronously.
 - `subscription_id` (string, required): Subscription identifier from subscribe response
 - `sequence` (integer, required): Monotonic sequence number per subscription
 - `data` (any, required): Record value (JSON-serialized)
-- `timestamp` (string, required): ISO 8601 timestamp with milliseconds
+- `timestamp` (string, required): Unix timestamp in "secs.nanosecs" format (e.g., "1730379296.123456789")
 - `dropped` (integer, optional): Number of dropped events since last delivery (backpressure)
 
 ---
@@ -211,8 +211,8 @@ Lists all registered records with metadata.
 - `producer_count` (integer): Number of registered producers
 - `consumer_count` (integer): Number of registered consumers
 - `writable` (boolean): Whether write operations are permitted
-- `created_at` (string): ISO 8601 timestamp when record was registered
-- `last_update` (string, nullable): ISO 8601 timestamp of last value update
+- `created_at` (string): Unix timestamp in "secs.nanosecs" format when record was registered
+- `last_update` (string, nullable): Unix timestamp in "secs.nanosecs" format of last value update
 
 ### `record.get`
 
@@ -239,7 +239,7 @@ Retrieves current snapshot of a record.
       "humidity": 45.2,
       "timestamp": 1698753296
     },
-    "timestamp": "2025-10-31T12:34:56.789Z",
+    "timestamp": "1730379296.123456789",
     "sequence": 42
   }
 }
@@ -250,7 +250,7 @@ Retrieves current snapshot of a record.
 
 **Result Fields:**
 - `value` (any): Current record value (JSON-serialized)
-- `timestamp` (string): When value was updated
+- `timestamp` (string): Unix timestamp in "secs.nanosecs" format when value was updated
 - `sequence` (integer): Value sequence number (monotonic per record)
 
 **Errors:**
@@ -302,7 +302,7 @@ After subscription, server sends `event` messages:
     "subscription_id": "sub-123",
     "sequence": 1,
     "data": { "temperature": 23.5, "humidity": 45.2 },
-    "timestamp": "2025-10-31T12:34:56.789Z"
+    "timestamp": "1730379296.123456789"
   }
 }
 ```
@@ -315,7 +315,7 @@ If backpressure occurs:
     "subscription_id": "sub-123",
     "sequence": 50,
     "data": { "temperature": 24.1, "humidity": 46.0 },
-    "timestamp": "2025-10-31T12:35:10.123Z",
+    "timestamp": "1730379310.456789123",
     "dropped": 5
   }
 }
@@ -377,7 +377,7 @@ Sets a record value (only allowed if explicitly enabled).
   "id": 5,
   "result": {
     "sequence": 10,
-    "timestamp": "2025-10-31T12:35:20.000Z"
+    "timestamp": "1730379320.987654321"
   }
 }
 ```
@@ -388,7 +388,7 @@ Sets a record value (only allowed if explicitly enabled).
 
 **Result Fields:**
 - `sequence` (integer): New sequence number
-- `timestamp` (string): When value was set
+- `timestamp` (string): Unix timestamp in "secs.nanosecs" format when value was set
 
 **Errors:**
 - `NOT_FOUND` - Record doesn't exist
@@ -522,7 +522,7 @@ Or rejects:
     "subscription_id": "sub-123",
     "sequence": 105,
     "data": { ... },
-    "timestamp": "2025-10-31T12:40:00.000Z",
+    "timestamp": "1730379600.123456789",
     "dropped": 20
   }
 }
@@ -621,16 +621,16 @@ Clients use this to:
 ← {"welcome":{"version":"1.0","server":"aimdb/0.3.0","permissions":["read","subscribe"],"writable_records":[],"max_subscriptions":10}}\n
 
 → {"id":1,"method":"record.list","params":{}}\n
-← {"id":1,"result":{"records":[{"name":"SensorData","type_id":"0x7f8a4c2b1e90","buffer_type":"spmc_ring","buffer_capacity":100,"producer_count":1,"consumer_count":2,"writable":false,"created_at":"2025-10-31T10:00:00.000Z","last_update":"2025-10-31T12:34:56.789Z"}]}}\n
+← {"id":1,"result":{"records":[{"name":"SensorData","type_id":"0x7f8a4c2b1e90","buffer_type":"spmc_ring","buffer_capacity":100,"producer_count":1,"consumer_count":2,"writable":false,"created_at":"1730372400.0","last_update":"1730379296.123456789"}]}}\n
 
 → {"id":2,"method":"record.get","params":{"name":"SensorData"}}\n
-← {"id":2,"result":{"value":{"temperature":23.5,"humidity":45.2},"timestamp":"2025-10-31T12:34:56.789Z","sequence":42}}\n
+← {"id":2,"result":{"value":{"temperature":23.5,"humidity":45.2},"timestamp":"1730379296.123456789","sequence":42}}\n
 
 → {"id":3,"method":"record.subscribe","params":{"name":"SensorData","send_initial":true}}\n
 ← {"id":3,"result":{"subscription_id":"sub-123","queue_size":100}}\n
-← {"event":{"subscription_id":"sub-123","sequence":43,"data":{"temperature":23.5,"humidity":45.2},"timestamp":"2025-10-31T12:34:56.789Z"}}\n
-← {"event":{"subscription_id":"sub-123","sequence":44,"data":{"temperature":23.6,"humidity":45.1},"timestamp":"2025-10-31T12:35:00.123Z"}}\n
-← {"event":{"subscription_id":"sub-123","sequence":45,"data":{"temperature":23.7,"humidity":45.0},"timestamp":"2025-10-31T12:35:05.456Z"}}\n
+← {"event":{"subscription_id":"sub-123","sequence":43,"data":{"temperature":23.5,"humidity":45.2},"timestamp":"1730379296.123456789"}}\n
+← {"event":{"subscription_id":"sub-123","sequence":44,"data":{"temperature":23.6,"humidity":45.1},"timestamp":"1730379300.456789123"}}\n
+← {"event":{"subscription_id":"sub-123","sequence":45,"data":{"temperature":23.7,"humidity":45.0},"timestamp":"1730379305.789012345"}}\n
 
 → {"id":4,"method":"record.unsubscribe","params":{"subscription_id":"sub-123"}}\n
 ← {"id":4,"result":{}}\n
@@ -652,7 +652,7 @@ Clients use this to:
 
 **Backpressure notification:**
 ```json
-← {"event":{"subscription_id":"sub-123","sequence":150,"data":{...},"timestamp":"2025-10-31T12:40:00.000Z","dropped":25}}\n
+← {"event":{"subscription_id":"sub-123","sequence":150,"data":{...},"timestamp":"1730379600.123456789","dropped":25}}\n
 ```
 
 ### Manual Testing with `nc`
