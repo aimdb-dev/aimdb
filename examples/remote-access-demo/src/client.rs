@@ -28,21 +28,26 @@ enum Response {
 }
 
 #[derive(Debug, Deserialize)]
+struct EventMessage {
+    event: Event,
+}
+
+#[derive(Debug, Deserialize)]
+struct Event {
+    subscription_id: String,
+    sequence: u64,
+    timestamp: String,
+    data: serde_json::Value,
+    #[serde(default)]
+    dropped: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ErrorObject {
     code: String,
     message: String,
     #[serde(default)]
     details: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HelloMessage {
-    version: String,
-    client: String,
-    #[serde(default)]
-    capabilities: Option<Vec<String>>,
-    #[serde(default)]
-    auth_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +59,7 @@ struct WelcomeMessage {
     #[serde(default)]
     max_subscriptions: Option<usize>,
     #[serde(default)]
+    #[allow(dead_code)] // Parsed from JSON but not used in demo
     authenticated: Option<bool>,
 }
 
@@ -232,6 +238,141 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    println!();
+
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("📡 Testing Subscriptions");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    // Subscribe to Temperature updates
+    println!("📤 Subscribing to Temperature updates...");
+    let subscribe_request = Request {
+        id: 5,
+        method: "record.subscribe".to_string(),
+        params: Some(json!({
+            "name": "server::Temperature",
+            "queue_size": 50
+        })),
+    };
+
+    let subscribe_json = serde_json::to_string(&subscribe_request)?;
+    writeln!(stream, "{}", subscribe_json)?;
+    stream.flush()?;
+
+    // Read subscription response
+    let mut subscribe_response_line = String::new();
+    reader.read_line(&mut subscribe_response_line)?;
+
+    let subscribe_response: Response = serde_json::from_str(&subscribe_response_line)?;
+
+    let subscription_id = match subscribe_response {
+        Response::Success { id, result } => {
+            println!("✅ Subscribed! (request_id: {})", id);
+            let sub_id = result["subscription_id"].as_str().unwrap().to_string();
+            let queue_size = result["queue_size"].as_u64().unwrap();
+            println!("   Subscription ID: {}", sub_id);
+            println!("   Queue Size: {}", queue_size);
+            println!();
+            println!("📊 Receiving live temperature updates (will receive 5 events)...");
+            println!();
+            sub_id
+        }
+        Response::Error { id, error } => {
+            println!("❌ Subscription failed! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+            return Ok(());
+        }
+    };
+
+    // Receive 5 events
+    for i in 1..=5 {
+        let mut event_line = String::new();
+        reader.read_line(&mut event_line)?;
+
+        // Try to parse as EventMessage
+        if let Ok(event_msg) = serde_json::from_str::<EventMessage>(&event_line) {
+            let event = event_msg.event;
+            println!("📨 Event #{} (seq: {})", i, event.sequence);
+            println!("   Subscription: {}", event.subscription_id);
+            println!("   Timestamp: {}", event.timestamp);
+            if let Some(dropped) = event.dropped {
+                println!("   ⚠️  Dropped events: {}", dropped);
+            }
+            println!("   Data: {}", serde_json::to_string_pretty(&event.data)?);
+            println!();
+        } else {
+            println!("⚠️  Received unexpected message: {}", event_line.trim());
+        }
+
+        // Small delay to show streaming behavior
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    // Unsubscribe
+    println!("📤 Unsubscribing from Temperature...");
+    let unsubscribe_request = Request {
+        id: 6,
+        method: "record.unsubscribe".to_string(),
+        params: Some(json!({
+            "subscription_id": subscription_id
+        })),
+    };
+
+    let unsubscribe_json = serde_json::to_string(&unsubscribe_request)?;
+    writeln!(stream, "{}", unsubscribe_json)?;
+    stream.flush()?;
+
+    // Read unsubscribe response
+    let mut unsubscribe_response_line = String::new();
+    reader.read_line(&mut unsubscribe_response_line)?;
+
+    // Parse response - filter out any stray events
+    let unsubscribe_response: Result<Response, _> =
+        serde_json::from_str(&unsubscribe_response_line);
+
+    match unsubscribe_response {
+        Ok(Response::Success { id, result }) => {
+            println!("✅ Unsubscribed! (request_id: {})", id);
+            println!(
+                "   Status: {}",
+                result["status"].as_str().unwrap_or("unknown")
+            );
+            println!();
+        }
+        Ok(Response::Error { id, error }) => {
+            println!("❌ Unsubscribe failed! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+        }
+        Err(_) => {
+            // Might be a stray event, try reading next line
+            println!("⚠️  Received unexpected message, retrying...");
+            let mut retry_line = String::new();
+            reader.read_line(&mut retry_line)?;
+            match serde_json::from_str::<Response>(&retry_line) {
+                Ok(Response::Success { id, result }) => {
+                    println!("✅ Unsubscribed! (request_id: {})", id);
+                    println!(
+                        "   Status: {}",
+                        result["status"].as_str().unwrap_or("unknown")
+                    );
+                    println!();
+                }
+                Ok(Response::Error { id, error }) => {
+                    println!("❌ Unsubscribe failed! (request_id: {})", id);
+                    println!("   Code: {}", error.code);
+                    println!("   Message: {}", error.message);
+                }
+                Err(e) => {
+                    println!("⚠️  Failed to parse unsubscribe response: {}", e);
+                }
+            }
+        }
+    }
+
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
     println!("👋 Disconnecting...");
 

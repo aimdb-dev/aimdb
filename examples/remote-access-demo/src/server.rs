@@ -140,6 +140,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     info!("✅ Initial data populated");
+
+    // Spawn background task to continuously update Temperature
+    info!("🌡️  Starting live temperature simulator...");
+    let temp_producer_clone = temp_producer.clone();
+    tokio::spawn(async move {
+        let mut counter = 0u64;
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+            counter += 1;
+            let temp = 20.0 + (counter as f64 * 0.5) + (counter as f64 % 10.0);
+
+            let reading = Temperature {
+                sensor_id: format!("sensor-{:02}", (counter % 3) + 1),
+                celsius: temp,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            };
+
+            if let Err(e) = temp_producer_clone.produce(reading.clone()).await {
+                tracing::error!("Failed to produce temperature: {}", e);
+            } else {
+                tracing::debug!(
+                    "📊 Produced temperature: {} °C from {}",
+                    reading.celsius,
+                    reading.sensor_id
+                );
+            }
+        }
+    });
+
+    // Spawn background task to update SystemStatus
+    info!("💻 Starting system status simulator...");
+    let status_producer_clone = status_producer.clone();
+    tokio::spawn(async move {
+        let mut uptime = 3600u64;
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+            uptime += 5;
+            let status = SystemStatus {
+                uptime_seconds: uptime,
+                cpu_usage: 10.0 + (uptime as f64 % 30.0),
+                memory_usage: 40.0 + ((uptime as f64 / 10.0) % 20.0),
+            };
+
+            if let Err(e) = status_producer_clone.produce(status.clone()).await {
+                tracing::error!("Failed to produce system status: {}", e);
+            } else {
+                tracing::debug!(
+                    "📊 Produced system status: CPU {:.1}%, MEM {:.1}%",
+                    status.cpu_usage,
+                    status.memory_usage
+                );
+            }
+        }
+    });
+
     info!("");
     info!("🎯 Server ready! Connect with:");
     info!("   cargo run --bin client");
@@ -149,6 +209,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "   echo '{{\"id\":1,\"method\":\"record.list\"}}' | socat - UNIX-CONNECT:{}",
         socket_path
     );
+    info!("");
+    info!("📡 Live updates:");
+    info!("   Temperature: every 2 seconds");
+    info!("   SystemStatus: every 5 seconds");
     info!("");
     info!("Press Ctrl+C to stop the server");
 
