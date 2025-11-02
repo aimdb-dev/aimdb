@@ -21,6 +21,8 @@ pub mod context;
 pub mod database;
 mod error;
 pub mod ext_macros;
+#[cfg(feature = "std")]
+pub mod remote;
 pub mod time;
 pub mod transport;
 pub mod typed_api;

@@ -101,15 +101,17 @@ macro_rules! impl_record_registrar_ext {
                 use $crate::buffer::Buffer;
 
                 #[cfg(feature = "std")]
-                let buffer = Box::new($buffer_new(&cfg));
+                {
+                    let buffer = Box::new($buffer_new(&cfg));
+                    self.buffer_with_cfg(buffer, cfg)
+                }
 
                 #[cfg(not(feature = "std"))]
-                let buffer = {
+                {
                     extern crate alloc;
-                    alloc::boxed::Box::new($buffer_new(&cfg))
-                };
-
-                self.buffer_raw(buffer)
+                    let buffer = alloc::boxed::Box::new($buffer_new(&cfg));
+                    self.buffer_raw(buffer)
+                }
             }
 
             fn source<F, Fut>(
@@ -205,15 +207,17 @@ macro_rules! impl_record_registrar_ext {
                 use $crate::buffer::Buffer;
 
                 #[cfg(feature = "std")]
-                let buffer = Box::new($buffer_new(&cfg));
+                {
+                    let buffer = Box::new($buffer_new(&cfg));
+                    self.buffer_with_cfg(buffer, cfg)
+                }
 
                 #[cfg(not(feature = "std"))]
-                let buffer = {
+                {
                     extern crate alloc;
-                    alloc::boxed::Box::new($buffer_new(&cfg))
-                };
-
-                self.buffer_raw(buffer)
+                    let buffer = alloc::boxed::Box::new($buffer_new(&cfg));
+                    self.buffer_raw(buffer)
+                }
             }
 
             fn source<F, Fut>(

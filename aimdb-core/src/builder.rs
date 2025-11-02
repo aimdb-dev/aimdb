@@ -73,6 +73,91 @@ impl AimDbInner {
 
         Ok(typed_record)
     }
+
+    /// Collects metadata for all registered records (std only)
+    ///
+    /// Returns a vector of `RecordMetadata` for remote access introspection.
+    /// Available only when the `std` feature is enabled.
+    #[cfg(feature = "std")]
+    pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
+        self.records
+            .iter()
+            .map(|(type_id, record)| record.collect_metadata(*type_id))
+            .collect()
+    }
+
+    /// Try to get record's latest value as JSON by record name (std only)
+    ///
+    /// Searches for a record with the given name and returns its current value
+    /// serialized to JSON. Returns `None` if:
+    /// - Record not found
+    /// - Record not configured with `.with_serialization()`
+    /// - No value available in the atomic snapshot
+    ///
+    /// # Arguments
+    /// * `record_name` - The full Rust type name (e.g., "server::Temperature")
+    ///
+    /// # Returns
+    /// `Some(JsonValue)` with the current record value, or `None`
+    #[cfg(feature = "std")]
+    pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
+        for (type_id, record) in &self.records {
+            let metadata = record.collect_metadata(*type_id);
+            if metadata.name == record_name {
+                return record.latest_json();
+            }
+        }
+        None
+    }
+
+    /// Sets a record value from JSON (remote access API)
+    ///
+    /// Deserializes the JSON value and writes it to the record's buffer.
+    ///
+    /// **SAFETY:** Enforces the "No Producer Override" rule:
+    /// - Only works for records with `producer_count == 0`
+    /// - Returns error if the record has active producers
+    ///
+    /// # Arguments
+    /// * `record_name` - The full Rust type name (e.g., "server::AppConfig")
+    /// * `json_value` - JSON representation of the value
+    ///
+    /// # Returns
+    /// - `Ok(())` - Successfully set the value
+    /// - `Err(DbError)` - If record not found, has producers, or deserialization fails
+    ///
+    /// # Errors
+    /// - `RecordNotFound` - Record with given name doesn't exist
+    /// - `PermissionDenied` - Record has active producers (safety check)
+    /// - `RuntimeError` - Record not configured with `.with_serialization()`
+    /// - `JsonWithContext` - JSON deserialization failed (schema mismatch)
+    ///
+    /// # Example (internal use - called by remote access protocol)
+    /// ```rust,ignore
+    /// let json_val = serde_json::json!({"log_level": "debug", "version": "1.0"});
+    /// db.set_record_from_json("server::AppConfig", json_val)?;
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn set_record_from_json(
+        &self,
+        record_name: &str,
+        json_value: serde_json::Value,
+    ) -> DbResult<()> {
+        // Find the record by name
+        for (type_id, record) in &self.records {
+            let metadata = record.collect_metadata(*type_id);
+            if metadata.name == record_name {
+                // Delegate to the type-erased set_from_json method
+                // which will enforce the "no producer override" rule
+                return record.set_from_json(json_value);
+            }
+        }
+
+        // Record not found
+        Err(DbError::RecordNotFound {
+            record_name: record_name.to_string(),
+        })
+    }
 }
 
 /// Database builder for producer-consumer pattern
@@ -92,6 +177,10 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Spawn functions indexed by TypeId
     spawn_fns: BTreeMap<TypeId, Box<dyn core::any::Any + Send>>,
 
+    /// Remote access configuration (std only)
+    #[cfg(feature = "std")]
+    remote_config: Option<crate::remote::AimxConfig>,
+
     /// PhantomData to track the runtime type parameter
     _phantom: PhantomData<R>,
 }
@@ -106,6 +195,8 @@ impl AimDbBuilder<NoRuntime> {
             runtime: None,
             connectors: BTreeMap::new(),
             spawn_fns: BTreeMap::new(),
+            #[cfg(feature = "std")]
+            remote_config: None,
             _phantom: PhantomData,
         }
     }
@@ -122,6 +213,8 @@ impl AimDbBuilder<NoRuntime> {
             runtime: Some(rt),
             connectors: self.connectors,
             spawn_fns: BTreeMap::new(),
+            #[cfg(feature = "std")]
+            remote_config: None,
             _phantom: PhantomData,
         }
     }
@@ -165,6 +258,36 @@ where
         connector: Arc<dyn crate::transport::Connector>,
     ) -> Self {
         self.connectors.insert(scheme.into(), connector);
+        self
+    }
+
+    /// Enables remote access via AimX protocol (std only)
+    ///
+    /// Configures the database to accept remote connections over a Unix domain socket,
+    /// allowing external clients to introspect records, subscribe to updates, and
+    /// (optionally) write data.
+    ///
+    /// The remote access supervisor will be spawned automatically during `build()`.
+    ///
+    /// # Arguments
+    /// * `config` - Remote access configuration (socket path, security policy, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::remote::{AimxConfig, SecurityPolicy};
+    ///
+    /// let config = AimxConfig::new("/tmp/aimdb.sock")
+    ///     .with_security(SecurityPolicy::read_only());
+    ///
+    /// let db = AimDbBuilder::new()
+    ///     .runtime(runtime)
+    ///     .with_remote_access(config)
+    ///     .build()?;
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn with_remote_access(mut self, config: crate::remote::AimxConfig) -> Self {
+        self.remote_config = Some(config);
         self
     }
 
@@ -347,6 +470,23 @@ where
         #[cfg(feature = "tracing")]
         tracing::info!("Automatic spawning complete");
 
+        // Spawn remote access supervisor if configured (std only)
+        #[cfg(feature = "std")]
+        if let Some(remote_cfg) = self.remote_config {
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "Spawning remote access supervisor on socket: {}",
+                remote_cfg.socket_path.display()
+            );
+
+            // Spawn the remote supervisor task
+            // This will be implemented in Task 6
+            crate::remote::supervisor::spawn_supervisor(db.clone(), runtime.clone(), remote_cfg)?;
+
+            #[cfg(feature = "tracing")]
+            tracing::info!("Remote access supervisor spawned successfully");
+        }
+
         // Unwrap the Arc to return the owned AimDb
         // This is safe because we just created it and hold the only reference
         let db_owned = Arc::try_unwrap(db).unwrap_or_else(|arc| (*arc).clone());
@@ -522,6 +662,210 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// Provides direct access to the concrete runtime type.
     pub fn runtime(&self) -> &R {
         &self.runtime
+    }
+
+    /// Lists all registered records (std only)
+    ///
+    /// Returns metadata for all registered records, useful for remote access introspection.
+    /// Available only when the `std` feature is enabled.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let records = db.list_records();
+    /// for record in records {
+    ///     println!("Record: {} ({})", record.name, record.type_id);
+    /// }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
+        self.inner.list_records()
+    }
+
+    /// Try to get record's latest value as JSON by name (std only)
+    ///
+    /// Convenience wrapper around `AimDbInner::try_latest_as_json()`.
+    ///
+    /// # Arguments
+    /// * `record_name` - The full Rust type name (e.g., "server::Temperature")
+    ///
+    /// # Returns
+    /// `Some(JsonValue)` with current value, or `None` if unavailable
+    #[cfg(feature = "std")]
+    pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
+        self.inner.try_latest_as_json(record_name)
+    }
+
+    /// Sets a record value from JSON (remote access API)
+    ///
+    /// Deserializes JSON and produces the value to the record's buffer.
+    ///
+    /// **SAFETY:** Enforces "No Producer Override" rule - only works for configuration
+    /// records without active producers.
+    ///
+    /// # Arguments
+    /// * `record_name` - Full Rust type name
+    /// * `json_value` - JSON value to set
+    ///
+    /// # Returns
+    /// `Ok(())` on success, error if record not found, has producers, or deserialization fails
+    ///
+    /// # Example (internal use)
+    /// ```rust,ignore
+    /// db.set_record_from_json("AppConfig", json!({"debug": true}))?;
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn set_record_from_json(
+        &self,
+        record_name: &str,
+        json_value: serde_json::Value,
+    ) -> DbResult<()> {
+        self.inner.set_record_from_json(record_name, json_value)
+    }
+
+    /// Subscribe to record updates as JSON stream (std only)
+    ///
+    /// Creates a subscription to a record's buffer and forwards updates as JSON
+    /// to a bounded channel. This is used internally by the remote access protocol
+    /// for implementing `record.subscribe`.
+    ///
+    /// # Architecture
+    ///
+    /// Spawns a consumer task that:
+    /// 1. Subscribes to the record's buffer using the existing buffer API
+    /// 2. Reads values as they arrive
+    /// 3. Serializes each value to JSON
+    /// 4. Sends JSON values to a bounded channel (with backpressure handling)
+    /// 5. Terminates when either:
+    ///    - The cancel signal is received (unsubscribe)
+    ///    - The channel receiver is dropped (client disconnected)
+    ///
+    /// # Arguments
+    /// * `type_id` - TypeId of the record to subscribe to
+    /// * `queue_size` - Size of the bounded channel for this subscription
+    ///
+    /// # Returns
+    /// `Ok((receiver, cancel_tx))` where:
+    /// - `receiver`: Bounded channel receiver for JSON values
+    /// - `cancel_tx`: One-shot sender to cancel the subscription
+    ///
+    /// `Err` if:
+    /// - Record not found for the given TypeId
+    /// - Record not configured with `.with_serialization()`
+    /// - Failed to subscribe to buffer
+    ///
+    /// # Example (internal use)
+    ///
+    /// ```rust,ignore
+    /// let type_id = TypeId::of::<Temperature>();
+    /// let (mut rx, cancel_tx) = db.subscribe_record_updates(type_id, 100)?;
+    ///
+    /// // Read events
+    /// while let Some(json_value) = rx.recv().await {
+    ///     // Forward to client...
+    /// }
+    ///
+    /// // Cancel subscription
+    /// let _ = cancel_tx.send(());
+    /// ```
+    #[cfg(feature = "std")]
+    #[allow(unused_variables)] // Variables used only in tracing feature
+    pub fn subscribe_record_updates(
+        &self,
+        type_id: TypeId,
+        queue_size: usize,
+    ) -> DbResult<(
+        tokio::sync::mpsc::Receiver<serde_json::Value>,
+        tokio::sync::oneshot::Sender<()>,
+    )> {
+        use tokio::sync::{mpsc, oneshot};
+
+        // Find the record by TypeId
+        let record = self
+            .inner
+            .records
+            .get(&type_id)
+            .ok_or(DbError::RecordNotFound {
+                record_name: format!("TypeId({:?})", type_id),
+            })?;
+
+        // Subscribe to the record's buffer as JSON stream
+        // This will fail if record not configured with .with_serialization()
+        let mut json_reader = record.subscribe_json()?;
+
+        // Create channels for the subscription
+        let (value_tx, value_rx) = mpsc::channel(queue_size);
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
+
+        // Get metadata for logging
+        let record_metadata = record.collect_metadata(type_id);
+        let runtime = self.runtime.clone();
+
+        // Spawn consumer task that forwards JSON values from buffer to channel
+        let spawn_result = runtime.spawn(async move {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                "Subscription consumer task started for {}",
+                record_metadata.name
+            );
+
+            // Main event loop: read from buffer and forward to channel
+            loop {
+                tokio::select! {
+                    // Handle cancellation signal
+                    _ = &mut cancel_rx => {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!("Subscription cancelled");
+                        break;
+                    }
+                    // Read next JSON value from buffer
+                    result = json_reader.recv_json() => {
+                        match result {
+                            Ok(json_val) => {
+                                // Send JSON value to subscription channel
+                                if value_tx.send(json_val).await.is_err() {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::debug!("Subscription receiver dropped");
+                                    break;
+                                }
+                            }
+                            Err(DbError::BufferLagged { lag_count, .. }) => {
+                                // Consumer fell behind - log warning but continue
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!(
+                                    "Subscription for {} lagged by {} messages",
+                                    record_metadata.name,
+                                    lag_count
+                                );
+                                // Continue reading - next recv will get latest
+                            }
+                            Err(DbError::BufferClosed { .. }) => {
+                                // Buffer closed (shutdown) - exit gracefully
+                                #[cfg(feature = "tracing")]
+                                tracing::debug!("Buffer closed for {}", record_metadata.name);
+                                break;
+                            }
+                            Err(e) => {
+                                // Other error (shouldn't happen in practice)
+                                #[cfg(feature = "tracing")]
+                                tracing::error!(
+                                    "Subscription error for {}: {:?}",
+                                    record_metadata.name,
+                                    e
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Subscription consumer task terminated");
+        });
+
+        spawn_result.map_err(DbError::from)?;
+
+        Ok((value_rx, cancel_tx))
     }
 }
 

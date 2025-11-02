@@ -24,3 +24,6 @@ yanked = "warn"
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    "https://github.com/embassy-rs/stm32-data-generated", # Required for embassy-stm32
+]
