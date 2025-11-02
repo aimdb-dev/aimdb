@@ -24,7 +24,7 @@ use tracing::info;
 struct Temperature {
     sensor_id: String,
     celsius: f64,
-    timestamp: u64,
+    timestamp: f64, // Unix timestamp in seconds.nanoseconds format
 }
 
 /// System status information
@@ -130,11 +130,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Produce some initial data
     let temp_producer = db.producer::<Temperature>();
+    let initial_duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let initial_timestamp = initial_duration.as_secs() as f64
+        + initial_duration.subsec_nanos() as f64 / 1_000_000_000.0;
+
     temp_producer
         .produce(Temperature {
             sensor_id: "sensor-01".to_string(),
             celsius: 22.5,
-            timestamp: 1698764400,
+            timestamp: initial_timestamp,
         })
         .await?;
 
@@ -180,13 +186,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             counter += 1;
             let temp = 20.0 + (counter as f64 * 0.5) + (counter as f64 % 10.0);
 
+            let duration = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            let timestamp =
+                duration.as_secs() as f64 + duration.subsec_nanos() as f64 / 1_000_000_000.0;
+
             let reading = Temperature {
                 sensor_id: format!("sensor-{:02}", (counter % 3) + 1),
                 celsius: temp,
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                timestamp,
             };
 
             if let Err(e) = temp_producer_clone.produce(reading.clone()).await {
