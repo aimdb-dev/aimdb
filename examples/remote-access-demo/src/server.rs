@@ -24,7 +24,7 @@ use tracing::info;
 struct Temperature {
     sensor_id: String,
     celsius: f64,
-    timestamp: f64, // Unix timestamp in seconds.nanoseconds format
+    timestamp: f64, // Unix timestamp as f64 (seconds since epoch with fractional nanoseconds, e.g., 1730379296.123456789)
 }
 
 /// System status information
