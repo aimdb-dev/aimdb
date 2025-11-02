@@ -34,8 +34,8 @@ anyhow = "1"
 thiserror = "1"
 
 # Output formatting
-tabled = "0.16"
-colored = "2"
+tabled = "0.20"
+colored = "3"
 chrono = "0.4"
 
 # Optional: YAML output

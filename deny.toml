@@ -8,6 +8,7 @@ allow = [
     "ISC",          # ISC License - used by ring, rustls-webpki, untrusted
     "0BSD",         # BSD Zero Clause License - used by embassy-net dependencies
     "Unicode-3.0",
+    "MPL-2.0",      # Mozilla Public License 2.0 - used by colored crate (CLI only)
 ]
 
 confidence-threshold = 0.8
