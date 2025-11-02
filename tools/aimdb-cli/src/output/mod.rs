@@ -7,9 +7,10 @@ pub mod live;
 pub mod table;
 
 /// Output format selection
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Default, Debug, Clone, Copy, clap::ValueEnum)]
 pub enum OutputFormat {
     /// Human-readable table format
+    #[default]
     Table,
     /// Pretty-printed JSON
     Json,
@@ -18,10 +19,4 @@ pub enum OutputFormat {
     /// YAML format
     #[cfg(feature = "yaml")]
     Yaml,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Table
-    }
 }
