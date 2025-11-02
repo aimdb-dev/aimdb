@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y \
     # Additional dependencies for probe-rs
     libusb-1.0-0-dev \
     libudev-dev \
+    # JSON processing
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------------------------
