@@ -2,6 +2,7 @@
 members = [
     "aimdb-executor",
     "aimdb-core",
+    "aimdb-client",
     "aimdb-embassy-adapter",
     "aimdb-tokio-adapter",
     "aimdb-sync",

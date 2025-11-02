@@ -27,6 +27,7 @@ dependencies = [
 name = "aimdb-cli"
 version = "0.1.0"
 dependencies = [
+ "aimdb-client",
  "aimdb-core",
  "anyhow",
  "chrono",
@@ -36,6 +37,20 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tabled",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+]
+
+[[package]]
+name = "aimdb-client"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "anyhow",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
