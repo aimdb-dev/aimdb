@@ -147,7 +147,7 @@ examples:
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Convenience commands
-check: fmt clippy test test-embedded
+check: fmt-check clippy test test-embedded
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
