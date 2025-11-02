@@ -10,6 +10,9 @@ name = "aimdb"
 path = "src/main.rs"
 
 [dependencies]
+# AimDB client library
+aimdb-client = { path = "../../aimdb-client" }
+
 # Core dependencies - reuse protocol types from aimdb-core
 aimdb-core = { path = "../../aimdb-core", features = ["std"] }
 serde = { version = "1", features = ["derive"] }

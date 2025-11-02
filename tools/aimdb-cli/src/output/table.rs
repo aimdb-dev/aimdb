@@ -1,7 +1,7 @@
 //! Table Output Formatting
 
-use crate::client::discovery::InstanceInfo;
-use crate::client::protocol::RecordMetadata;
+use aimdb_client::discovery::InstanceInfo;
+use aimdb_client::protocol::RecordMetadata;
 use colored::Colorize;
 use tabled::{builder::Builder, settings::Style};
 

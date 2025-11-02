@@ -1,9 +1,9 @@
 //! Watch Command - Real-time Record Monitoring
 
-use crate::client::connection::AimxClient;
-use crate::client::discovery::find_instance;
 use crate::error::CliResult;
 use crate::output::live;
+use aimdb_client::connection::AimxClient;
+use aimdb_client::discovery::find_instance;
 use clap::Args;
 use tokio::signal;
 
