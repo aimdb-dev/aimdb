@@ -43,12 +43,20 @@ struct UserEvent {
     message: String,
 }
 
-/// Configuration settings
+/// Configuration settings (has producer, NOT remotely writable)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
     app_name: String,
     version: String,
     debug_mode: bool,
+}
+
+/// Application settings (NO producer, remotely writable)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AppSettings {
+    log_level: String,
+    max_connections: u32,
+    feature_flag_alpha: bool,
 }
 
 #[tokio::main]
@@ -69,14 +77,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Remove existing socket if present
     let _ = std::fs::remove_file(socket_path);
 
+    let mut security_policy = SecurityPolicy::read_write();
+    security_policy.allow_write::<AppSettings>();
+
     let remote_config = AimxConfig::uds_default()
         .socket_path(socket_path)
-        .security_policy(SecurityPolicy::ReadOnly)
+        .security_policy(security_policy)
         .max_connections(10)
         .subscription_queue_size(100);
 
     info!("📡 Remote access will be available at: {}", socket_path);
-    info!("🔒 Security policy: ReadOnly");
+    info!("🔒 Security policy: ReadWrite");
+    info!("✍️  Writable records: AppSettings");
 
     // Build database with remote access enabled
     let mut builder = AimDbBuilder::new()
@@ -101,13 +113,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.buffer(BufferCfg::SingleLatest).with_serialization();
     });
 
+    builder.configure::<AppSettings>(|reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_serialization();
+    });
+
     let db = builder.build()?;
 
-    info!("✅ Database initialized with 4 record types");
-    info!("   - Temperature");
-    info!("   - SystemStatus");
-    info!("   - UserEvent");
-    info!("   - Config");
+    info!("✅ Database initialized with 5 record types");
+    info!("   - Temperature (has producer, NOT writable)");
+    info!("   - SystemStatus (has producer, NOT writable)");
+    info!("   - UserEvent (buffer only, no data)");
+    info!("   - Config (has producer, NOT writable)");
+    info!("   - AppSettings (NO producer, remotely writable ✍️)");
 
     info!("📝 Populating initial record data...");
 
@@ -138,6 +155,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             debug_mode: true,
         })
         .await?;
+
+    // Initialize AppSettings WITHOUT creating a producer
+    // This makes it writable via remote access (record.set)
+    db.set_record_from_json(
+        "server::AppSettings",
+        serde_json::json!({
+            "log_level": "info",
+            "max_connections": 100,
+            "feature_flag_alpha": false
+        }),
+    )?;
 
     info!("✅ Initial data populated");
 
