@@ -645,6 +645,152 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)
     }
+
+    /// Subscribe to record updates as JSON stream (std only)
+    ///
+    /// Creates a subscription to a record's buffer and forwards updates as JSON
+    /// to a bounded channel. This is used internally by the remote access protocol
+    /// for implementing `record.subscribe`.
+    ///
+    /// # Architecture
+    ///
+    /// Spawns a consumer task that:
+    /// 1. Subscribes to the record's buffer using the existing buffer API
+    /// 2. Reads values as they arrive
+    /// 3. Serializes each value to JSON
+    /// 4. Sends JSON values to a bounded channel (with backpressure handling)
+    /// 5. Terminates when either:
+    ///    - The cancel signal is received (unsubscribe)
+    ///    - The channel receiver is dropped (client disconnected)
+    ///
+    /// # Arguments
+    /// * `type_id` - TypeId of the record to subscribe to
+    /// * `queue_size` - Size of the bounded channel for this subscription
+    ///
+    /// # Returns
+    /// `Ok((receiver, cancel_tx))` where:
+    /// - `receiver`: Bounded channel receiver for JSON values
+    /// - `cancel_tx`: One-shot sender to cancel the subscription
+    ///
+    /// `Err` if:
+    /// - Record not found for the given TypeId
+    /// - Record not configured with `.with_serialization()`
+    /// - Failed to subscribe to buffer
+    ///
+    /// # Example (internal use)
+    ///
+    /// ```rust,ignore
+    /// let type_id = TypeId::of::<Temperature>();
+    /// let (mut rx, cancel_tx) = db.subscribe_record_updates(type_id, 100)?;
+    ///
+    /// // Read events
+    /// while let Some(json_value) = rx.recv().await {
+    ///     // Forward to client...
+    /// }
+    ///
+    /// // Cancel subscription
+    /// let _ = cancel_tx.send(());
+    /// ```
+    #[cfg(feature = "std")]
+    #[allow(unused_variables)] // Variables used only in tracing feature
+    pub fn subscribe_record_updates(
+        &self,
+        type_id: TypeId,
+        queue_size: usize,
+    ) -> DbResult<(
+        tokio::sync::mpsc::Receiver<serde_json::Value>,
+        tokio::sync::oneshot::Sender<()>,
+    )> {
+        use tokio::sync::{mpsc, oneshot};
+
+        // Find the record by TypeId
+        let record = self
+            .inner
+            .records
+            .get(&type_id)
+            .ok_or(DbError::RecordNotFound {
+                record_name: format!("TypeId({:?})", type_id),
+            })?;
+
+        // Subscribe to the record's buffer as JSON stream
+        // This will fail if record not configured with .with_serialization()
+        let mut json_reader = record.subscribe_json()?;
+
+        // Create channels for the subscription
+        let (value_tx, value_rx) = mpsc::channel(queue_size);
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
+
+        // Get metadata for logging
+        let record_metadata = record.collect_metadata(type_id);
+        let runtime = self.runtime.clone();
+
+        // Spawn consumer task that forwards JSON values from buffer to channel
+        let spawn_result = runtime.spawn(async move {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                "Subscription consumer task started for {}",
+                record_metadata.name
+            );
+
+            // Main event loop: read from buffer and forward to channel
+            loop {
+                tokio::select! {
+                    // Handle cancellation signal
+                    _ = &mut cancel_rx => {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!("Subscription cancelled");
+                        break;
+                    }
+                    // Read next JSON value from buffer
+                    result = json_reader.recv_json() => {
+                        match result {
+                            Ok(json_val) => {
+                                // Send JSON value to subscription channel
+                                if value_tx.send(json_val).await.is_err() {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::debug!("Subscription receiver dropped");
+                                    break;
+                                }
+                            }
+                            Err(DbError::BufferLagged { lag_count, .. }) => {
+                                // Consumer fell behind - log warning but continue
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!(
+                                    "Subscription for {} lagged by {} messages",
+                                    record_metadata.name,
+                                    lag_count
+                                );
+                                // Continue reading - next recv will get latest
+                            }
+                            Err(DbError::BufferClosed { .. }) => {
+                                // Buffer closed (shutdown) - exit gracefully
+                                #[cfg(feature = "tracing")]
+                                tracing::debug!("Buffer closed for {}", record_metadata.name);
+                                break;
+                            }
+                            Err(e) => {
+                                // Other error (shouldn't happen in practice)
+                                #[cfg(feature = "tracing")]
+                                tracing::error!(
+                                    "Subscription error for {}: {:?}",
+                                    record_metadata.name,
+                                    e
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Subscription consumer task terminated");
+        });
+
+        spawn_result.map_err(DbError::from)?;
+
+        Ok((value_rx, cancel_tx))
+    }
 }
 
 #[cfg(test)]

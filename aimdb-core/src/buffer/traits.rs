@@ -96,6 +96,42 @@ pub trait BufferReader<T: Clone + Send>: Send {
     fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>>;
 }
 
+/// Reader trait for consuming JSON-serialized values from a buffer (std only)
+///
+/// Type-erased reader that subscribes to a typed buffer and emits values as
+/// `serde_json::Value`. Used by remote access protocol for subscriptions.
+///
+/// This trait enables subscribing to a buffer without knowing the concrete type `T`
+/// at compile time, by serializing values to JSON on each `recv_json()` call.
+///
+/// # Requirements
+/// - Record must be configured with `.with_serialization()`
+/// - Only available with `std` feature (requires serde_json)
+///
+/// # Example
+/// ```rust,ignore
+/// // Internal use in remote access handler
+/// let json_reader: Box<dyn JsonBufferReader> = record.subscribe_json()?;
+/// while let Ok(json_val) = json_reader.recv_json().await {
+///     // Forward JSON value to remote client...
+/// }
+/// ```
+#[cfg(feature = "std")]
+pub trait JsonBufferReader: Send {
+    /// Receive the next value as JSON (async)
+    ///
+    /// Waits for the next value from the underlying buffer and serializes it to JSON.
+    ///
+    /// # Returns
+    /// - `Ok(JsonValue)` - Successfully received and serialized value
+    /// - `Err(BufferLagged)` - Missed messages (can continue reading)
+    /// - `Err(BufferClosed)` - Buffer closed (graceful shutdown)
+    /// - `Err(SerializationFailed)` - Failed to serialize value to JSON
+    fn recv_json(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, DbError>> + Send + '_>>;
+}
+
 /// Blanket implementation of DynBuffer for all Buffer types
 impl<T, B> DynBuffer<T> for B
 where

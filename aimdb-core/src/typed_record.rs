@@ -89,6 +89,55 @@ impl<T> core::ops::Deref for RecordValue<T> {
     }
 }
 
+/// Adapter that wraps a typed BufferReader and serializes values to JSON (std only)
+///
+/// Bridges the gap between typed buffers and type-erased JSON streaming for
+/// remote access subscriptions. Each `recv_json()` call:
+/// 1. Receives a typed value `T` from the buffer
+/// 2. Serializes it to JSON using the configured serializer
+/// 3. Returns the JSON value
+///
+/// Used internally by `TypedRecord::subscribe_json()`.
+#[cfg(feature = "std")]
+struct JsonReaderAdapter<T: Clone + Send + 'static> {
+    /// The underlying typed buffer reader
+    inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
+    /// JSON serializer function (from .with_serialization())
+    serializer: JsonSerializer<T>,
+}
+
+#[cfg(feature = "std")]
+impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAdapter<T> {
+    fn recv_json(
+        &mut self,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<serde_json::Value, crate::DbError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            // Receive typed value from buffer
+            let value = self.inner.recv().await?;
+
+            // Serialize to JSON
+            (self.serializer)(&value).ok_or_else(|| {
+                #[cfg(feature = "std")]
+                {
+                    crate::DbError::RuntimeError {
+                        message: "Failed to serialize value to JSON".to_string(),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    crate::DbError::RuntimeError { _message: () }
+                }
+            })
+        })
+    }
+}
+
 /// Metadata tracking for records (std only - used for remote access introspection)
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
@@ -210,6 +259,37 @@ pub trait AnyRecord: Send + Sync {
     #[doc(hidden)]
     #[cfg(feature = "std")]
     fn latest_json(&self) -> Option<serde_json::Value>;
+
+    /// Subscribe to record updates as JSON stream (std only)
+    ///
+    /// Creates a type-erased subscription that emits `serde_json::Value` instead of
+    /// the concrete type `T`. This enables subscribing to a record without knowing
+    /// its type at compile time.
+    ///
+    /// Used internally by remote access protocol for `record.subscribe` functionality.
+    ///
+    /// # Returns
+    /// - `Ok(Box<dyn JsonBufferReader>)` - Successfully created subscription
+    /// - `Err(DbError)` - If serialization not configured or buffer subscription failed
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Record not configured with `.with_serialization()`
+    /// - Buffer subscription fails (shouldn't happen in practice)
+    ///
+    /// # Example (internal use)
+    /// ```rust,ignore
+    /// let type_id = TypeId::of::<Temperature>();
+    /// let record: &Box<dyn AnyRecord> = db.records.get(&type_id)?;
+    /// let mut json_reader = record.subscribe_json()?;
+    ///
+    /// while let Ok(json_val) = json_reader.recv_json().await {
+    ///     // Forward to remote client...
+    /// }
+    /// ```
+    #[doc(hidden)]
+    #[cfg(feature = "std")]
+    fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>>;
 }
 
 // Helper extension trait for type-safe downcasting
@@ -889,5 +969,46 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
         tracing::debug!("Serialization result: {:?}", result.is_some());
 
         result
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "std")]
+    fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>> {
+        use crate::DbError;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "subscribe_json called for type: {}",
+            core::any::type_name::<T>()
+        );
+
+        // 1. Check if serialization is configured
+        let serializer = self
+            .json_serializer
+            .clone()
+            .ok_or_else(|| DbError::RuntimeError {
+                message: format!(
+                    "Record '{}' not configured with .with_serialization(). \
+                     Cannot subscribe to JSON stream.",
+                    core::any::type_name::<T>()
+                ),
+            })?;
+
+        // 2. Subscribe to the buffer (get Box<dyn BufferReader<T>>)
+        let reader = self.subscribe()?;
+
+        // 3. Wrap in JsonReaderAdapter
+        let json_reader = JsonReaderAdapter {
+            inner: reader,
+            serializer,
+        };
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "Successfully created JSON subscription for type: {}",
+            core::any::type_name::<T>()
+        );
+
+        Ok(Box::new(json_reader))
     }
 }

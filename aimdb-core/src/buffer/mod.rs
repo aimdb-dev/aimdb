@@ -63,6 +63,10 @@ mod traits;
 pub use cfg::BufferCfg;
 pub use traits::{Buffer, BufferReader, DynBuffer};
 
+// JSON streaming support (std only)
+#[cfg(feature = "std")]
+pub use traits::JsonBufferReader;
+
 // Re-export buffer-specific errors from core error module
 // These are type aliases for convenience
 pub use crate::DbError as BufferError;
