@@ -562,6 +562,7 @@ where
     match request.method.as_str() {
         "record.list" => handle_record_list(db, config, request.id).await,
         "record.get" => handle_record_get(db, config, request.id, request.params).await,
+        "record.set" => handle_record_set(db, config, request.id, request.params).await,
         "record.subscribe" => {
             handle_record_subscribe(db, config, conn_state, request.id, request.params).await
         }
@@ -687,6 +688,187 @@ where
                 "not_found",
                 format!("No value available for record: {}", record_name),
             )
+        }
+    }
+}
+
+/// Handles record.set method
+///
+/// Sets a record value from JSON (write operation).
+///
+/// **SAFETY:** Enforces the "No Producer Override" rule:
+/// - Only allows writes to configuration records (producer_count == 0)
+/// - Prevents remote access from interfering with application logic
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `config` - Remote access configuration (for permission checks)
+/// * `request_id` - Request ID for the response
+/// * `params` - Request parameters (must contain "name" and "value" fields)
+///
+/// # Returns
+/// Success response, or error if:
+/// - Missing/invalid parameters
+/// - Record not found
+/// - Permission denied (not writable or has active producers)
+/// - Deserialization failed
+#[cfg(feature = "std")]
+async fn handle_record_set<R>(
+    db: &Arc<AimDb<R>>,
+    config: &AimxConfig,
+    request_id: u64,
+    params: Option<serde_json::Value>,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    use crate::remote::SecurityPolicy;
+
+    // Check if write operations are allowed
+    let writable_records = match &config.security_policy {
+        SecurityPolicy::ReadOnly => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("record.set called but security policy is ReadOnly");
+
+            return Response::error(
+                request_id,
+                "permission_denied",
+                "Write operations not allowed (ReadOnly security policy)".to_string(),
+            );
+        }
+        SecurityPolicy::ReadWrite { writable_records } => writable_records,
+    };
+
+    // Extract record name and value from params
+    let (record_name, value) = match params {
+        Some(serde_json::Value::Object(ref map)) => {
+            let name = match map.get("name") {
+                Some(serde_json::Value::String(n)) => n.clone(),
+                _ => {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("Missing or invalid 'name' parameter in record.set");
+
+                    return Response::error(
+                        request_id,
+                        "invalid_params",
+                        "Missing or invalid 'name' parameter (expected string)".to_string(),
+                    );
+                }
+            };
+
+            let val = match map.get("value") {
+                Some(v) => v.clone(),
+                None => {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("Missing 'value' parameter in record.set");
+
+                    return Response::error(
+                        request_id,
+                        "invalid_params",
+                        "Missing 'value' parameter".to_string(),
+                    );
+                }
+            };
+
+            (name, val)
+        }
+        _ => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("Missing params object in record.set");
+
+            return Response::error(
+                request_id,
+                "invalid_params",
+                "Missing params object".to_string(),
+            );
+        }
+    };
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Setting value for record: {}", record_name);
+
+    // Find the record's TypeId by name
+    let type_id_opt = db.inner().records.iter().find_map(|(tid, record)| {
+        let metadata = record.collect_metadata(*tid);
+        if metadata.name == record_name {
+            Some(*tid)
+        } else {
+            None
+        }
+    });
+
+    let type_id = match type_id_opt {
+        Some(tid) => tid,
+        None => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("Record not found: {}", record_name);
+
+            return Response::error(
+                request_id,
+                "not_found",
+                format!("Record '{}' not found", record_name),
+            );
+        }
+    };
+
+    // Check if record is in the writable_records set
+    if !writable_records.contains(&type_id) {
+        #[cfg(feature = "tracing")]
+        tracing::warn!(
+            "Record '{}' not in writable_records set",
+            record_name
+        );
+
+        return Response::error(
+            request_id,
+            "permission_denied",
+            format!(
+                "Record '{}' is not writable. \
+                 Configure with .with_writable_record() to allow writes.",
+                record_name
+            ),
+        );
+    }
+
+    // Attempt to set the value
+    // This will enforce the "no producer override" rule internally
+    match db.set_record_from_json(&record_name, value) {
+        Ok(()) => {
+            #[cfg(feature = "tracing")]
+            tracing::info!("Successfully set value for record: {}", record_name);
+
+            // Get the updated value to return in response
+            let result = if let Some(updated_value) = db.try_latest_as_json(&record_name) {
+                serde_json::json!({
+                    "status": "success",
+                    "value": updated_value,
+                })
+            } else {
+                serde_json::json!({
+                    "status": "success",
+                })
+            };
+
+            Response::success(request_id, result)
+        }
+        Err(e) => {
+            #[cfg(feature = "tracing")]
+            tracing::error!("Failed to set value for record '{}': {}", record_name, e);
+
+            // Map internal errors to appropriate response codes
+            let (code, message) = match e {
+                crate::DbError::PermissionDenied { operation } => {
+                    // This is the "has active producers" error
+                    ("permission_denied", operation)
+                }
+                crate::DbError::JsonWithContext { context, .. } => {
+                    ("validation_error", format!("JSON validation failed: {}", context))
+                }
+                crate::DbError::RuntimeError { message } => ("internal_error", message),
+                _ => ("internal_error", format!("Failed to set value: {}", e)),
+            };
+
+            Response::error(request_id, code, message)
         }
     }
 }

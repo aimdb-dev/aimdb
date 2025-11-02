@@ -109,6 +109,55 @@ impl AimDbInner {
         }
         None
     }
+
+    /// Sets a record value from JSON (remote access API)
+    ///
+    /// Deserializes the JSON value and writes it to the record's buffer.
+    ///
+    /// **SAFETY:** Enforces the "No Producer Override" rule:
+    /// - Only works for records with `producer_count == 0`
+    /// - Returns error if the record has active producers
+    ///
+    /// # Arguments
+    /// * `record_name` - The full Rust type name (e.g., "server::AppConfig")
+    /// * `json_value` - JSON representation of the value
+    ///
+    /// # Returns
+    /// - `Ok(())` - Successfully set the value
+    /// - `Err(DbError)` - If record not found, has producers, or deserialization fails
+    ///
+    /// # Errors
+    /// - `RecordNotFound` - Record with given name doesn't exist
+    /// - `PermissionDenied` - Record has active producers (safety check)
+    /// - `RuntimeError` - Record not configured with `.with_serialization()`
+    /// - `JsonWithContext` - JSON deserialization failed (schema mismatch)
+    ///
+    /// # Example (internal use - called by remote access protocol)
+    /// ```rust,ignore
+    /// let json_val = serde_json::json!({"log_level": "debug", "version": "1.0"});
+    /// db.set_record_from_json("server::AppConfig", json_val)?;
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn set_record_from_json(
+        &self,
+        record_name: &str,
+        json_value: serde_json::Value,
+    ) -> DbResult<()> {
+        // Find the record by name
+        for (type_id, record) in &self.records {
+            let metadata = record.collect_metadata(*type_id);
+            if metadata.name == record_name {
+                // Delegate to the type-erased set_from_json method
+                // which will enforce the "no producer override" rule
+                return record.set_from_json(json_value);
+            }
+        }
+
+        // Record not found
+        Err(DbError::RecordNotFound {
+            record_name: record_name.to_string(),
+        })
+    }
 }
 
 /// Database builder for producer-consumer pattern
@@ -644,6 +693,33 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     #[cfg(feature = "std")]
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)
+    }
+
+    /// Sets a record value from JSON (remote access API)
+    ///
+    /// Deserializes JSON and produces the value to the record's buffer.
+    ///
+    /// **SAFETY:** Enforces "No Producer Override" rule - only works for configuration
+    /// records without active producers.
+    ///
+    /// # Arguments
+    /// * `record_name` - Full Rust type name
+    /// * `json_value` - JSON value to set
+    ///
+    /// # Returns
+    /// `Ok(())` on success, error if record not found, has producers, or deserialization fails
+    ///
+    /// # Example (internal use)
+    /// ```rust,ignore
+    /// db.set_record_from_json("AppConfig", json!({"debug": true}))?;
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn set_record_from_json(
+        &self,
+        record_name: &str,
+        json_value: serde_json::Value,
+    ) -> DbResult<()> {
+        self.inner.set_record_from_json(record_name, json_value)
     }
 
     /// Subscribe to record updates as JSON stream (std only)

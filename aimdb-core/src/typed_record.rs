@@ -29,6 +29,10 @@ use crate::buffer::DynBuffer;
 #[cfg(feature = "std")]
 type JsonSerializer<T> = Arc<dyn Fn(&T) -> Option<serde_json::Value> + Send + Sync>;
 
+/// Type alias for JSON deserializer function (std only)
+#[cfg(feature = "std")]
+type JsonDeserializer<T> = Arc<dyn Fn(&serde_json::Value) -> Option<T> + Send + Sync>;
+
 /// Wrapper for a record's latest value with optional serialization
 ///
 /// Created by `TypedRecord::latest()`. Core methods (`get()`, `into_inner()`, `Deref`) work in
@@ -290,6 +294,41 @@ pub trait AnyRecord: Send + Sync {
     #[doc(hidden)]
     #[cfg(feature = "std")]
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>>;
+
+    /// Sets a record value from JSON (std only)
+    ///
+    /// Deserializes JSON and produces the value to the record's buffer.
+    ///
+    /// **SAFETY:** This method enforces the "No Producer Override" rule:
+    /// - Returns error if `producer_count > 0` (prevents overriding application logic)
+    /// - Only configuration records (no producers) should be settable via remote access
+    ///
+    /// Used internally by remote access protocol for `record.set` functionality.
+    ///
+    /// # Arguments
+    /// * `json_value` - JSON representation of the value to set
+    ///
+    /// # Returns
+    /// - `Ok(())` - Successfully set the value
+    /// - `Err(DbError)` - If deserialization fails, producers exist, or no buffer
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Record has active producers (`producer_count > 0`) - **safety check**
+    /// - JSON deserialization fails (schema mismatch)
+    /// - Record not configured with buffer
+    /// - Record not configured with `.with_serialization()`
+    ///
+    /// # Example (internal use)
+    /// ```rust,ignore
+    /// let type_id = TypeId::of::<AppConfig>();
+    /// let record: &Box<dyn AnyRecord> = db.records.get(&type_id)?;
+    /// let json_val = serde_json::json!({"log_level": "debug"});
+    /// record.set_from_json(json_val)?; // Only works if producer_count == 0
+    /// ```
+    #[doc(hidden)]
+    #[cfg(feature = "std")]
+    fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
 }
 
 // Helper extension trait for type-safe downcasting
@@ -431,6 +470,12 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     #[cfg(feature = "std")]
     json_serializer: Option<JsonSerializer<T>>,
 
+    /// JSON deserializer function (std only - for remote access)
+    /// When set via .with_serialization(), automatically deserializes JSON for record.set operations
+    /// Stores the deserialization logic where T: Deserialize is known at call site
+    #[cfg(feature = "std")]
+    json_deserializer: Option<JsonDeserializer<T>>,
+
     /// Latest value snapshot - for latest() API
     /// Cached atomically on every produce() call to support latest()
     /// This provides a buffer-agnostic way to query the latest value
@@ -464,6 +509,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             metadata: RecordMetadataTracker::new::<T>(),
             #[cfg(feature = "std")]
             json_serializer: None,
+            #[cfg(feature = "std")]
+            json_deserializer: None,
             #[cfg(feature = "std")]
             latest_snapshot: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(not(feature = "std"))]
@@ -626,16 +673,51 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     #[cfg(feature = "std")]
     pub fn with_serialization(&mut self) -> &mut Self
     where
-        T: serde::Serialize,
+        T: serde::Serialize + serde::de::DeserializeOwned,
     {
         // Store serialization function where T: Serialize is known
         self.json_serializer = Some(std::sync::Arc::new(|val: &T| {
             serde_json::to_value(val).ok()
         }));
 
+        // Store deserialization function where T: DeserializeOwned is known
+        self.json_deserializer = Some(std::sync::Arc::new(|json_val: &serde_json::Value| {
+            serde_json::from_value(json_val.clone()).ok()
+        }));
+
         #[cfg(feature = "tracing")]
         tracing::info!(
             "with_serialization() called for record type: {}",
+            core::any::type_name::<T>()
+        );
+
+        self
+    }
+
+    /// Enables JSON serialization (backward compatible, read-only)
+    ///
+    /// This version only adds serialization support (for `record.get` and `record.subscribe`).
+    /// For write support via `record.set`, use `.with_serialization()` which requires
+    /// both `Serialize` and `DeserializeOwned` bounds.
+    ///
+    /// This method exists for backward compatibility with records that don't implement
+    /// `DeserializeOwned` but still need to be readable via remote access.
+    #[cfg(feature = "std")]
+    pub fn with_read_only_serialization(&mut self) -> &mut Self
+    where
+        T: serde::Serialize,
+    {
+        // Store only serialization function
+        self.json_serializer = Some(std::sync::Arc::new(|val: &T| {
+            serde_json::to_value(val).ok()
+        }));
+
+        // Deserialization intentionally left as None - will fail at runtime if
+        // someone tries to use record.set on this record
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            "with_read_only_serialization() called for record type: {}",
             core::any::type_name::<T>()
         );
 
@@ -1010,5 +1092,114 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
         );
 
         Ok(Box::new(json_reader))
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "std")]
+    fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()> {
+        use crate::DbError;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "set_from_json called for type: {}",
+            core::any::type_name::<T>()
+        );
+
+        // SAFETY CHECK 1: Enforce "No Producer Override" rule
+        if self.has_producer_service() {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(
+                "Rejected set_from_json for '{}': has active producer (producer_count=1)",
+                core::any::type_name::<T>()
+            );
+
+            return Err(DbError::PermissionDenied {
+                operation: format!(
+                    "Cannot set record '{}' - has active producer. \
+                     Use internal application logic instead. \
+                     Remote access can only set configuration records without producers.",
+                    core::any::type_name::<T>()
+                ),
+            });
+        }
+
+        // Check if deserialization is configured (need json_deserializer)
+        let deserializer = self
+            .json_deserializer
+            .clone()
+            .ok_or_else(|| DbError::RuntimeError {
+                message: format!(
+                    "Record '{}' not configured with .with_serialization(). \
+                     Cannot deserialize from JSON.",
+                    core::any::type_name::<T>()
+                ),
+            })?;
+
+        // Check if buffer exists
+        let buffer = self.buffer.as_ref().ok_or_else(|| DbError::RuntimeError {
+            message: format!(
+                "Record '{}' has no buffer configured. \
+                 Cannot produce value without buffer.",
+                core::any::type_name::<T>()
+            ),
+        })?;
+
+        // Deserialize JSON -> T
+        let value: T = deserializer(&json_value).ok_or_else(|| DbError::RuntimeError {
+            message: format!(
+                "Failed to deserialize JSON to type '{}'. \
+                 JSON structure does not match the expected schema.",
+                core::any::type_name::<T>()
+            ),
+        })?;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "Successfully deserialized JSON to type: {}",
+            core::any::type_name::<T>()
+        );
+
+        // Check if buffer exists before trying to produce
+        if self.buffer.is_none() {
+            return Err(DbError::RuntimeError {
+                message: format!(
+                    "Record '{}' has no buffer configured. \
+                     Cannot produce value without buffer.",
+                    core::any::type_name::<T>()
+                ),
+            });
+        }
+
+        // Use the existing produce() method which handles:
+        // 1. Updating latest_snapshot
+        // 2. Pushing to buffer
+        // 3. Updating metadata timestamp (std only)
+        // This is a synchronous wrapper around the async produce()
+        {
+            #[cfg(feature = "std")]
+            {
+                *self.latest_snapshot.lock().unwrap() = Some(value.clone());
+            }
+
+            #[cfg(not(feature = "std"))]
+            {
+                *self.latest_snapshot.lock() = Some(value.clone());
+            }
+
+            if let Some(buf) = &self.buffer {
+                buf.push(value);
+
+                #[cfg(feature = "std")]
+                self.metadata.mark_updated();
+            }
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::info!(
+            "Successfully set value from JSON for record: {}",
+            core::any::type_name::<T>()
+        );
+
+        Ok(())
     }
 }

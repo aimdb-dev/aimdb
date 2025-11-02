@@ -311,7 +311,7 @@ where
     #[cfg(feature = "std")]
     pub fn with_serialization(&'a mut self) -> &'a mut Self
     where
-        T: serde::Serialize,
+        T: serde::Serialize + serde::de::DeserializeOwned,
     {
         self.rec.with_serialization();
         self
