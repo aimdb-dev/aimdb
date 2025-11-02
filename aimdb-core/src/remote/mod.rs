@@ -41,7 +41,7 @@ mod protocol;
 pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
 pub use metadata::RecordMetadata;
-pub use protocol::{Event, HelloMessage, Request, Response, WelcomeMessage};
+pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage};
 
 // Internal exports for implementation
 pub(crate) mod handler;

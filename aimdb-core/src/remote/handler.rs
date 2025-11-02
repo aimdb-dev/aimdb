@@ -1059,12 +1059,10 @@ async fn stream_subscription_events(
 
     while let Some(json_value) = value_rx.recv().await {
         // Generate timestamp in "secs.nanosecs" format
-        let timestamp = format!(
-            "{:?}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-        );
+        let duration = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let timestamp = format!("{}.{:09}", duration.as_secs(), duration.subsec_nanos());
 
         // Create event
         let event = Event {

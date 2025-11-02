@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded examples
+.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded examples deny audit security
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -28,6 +28,11 @@ help:
 	@printf "  $(YELLOW)Testing Commands:$(NC)\n"
 	@printf "    check                Comprehensive development check (fmt + clippy + all tests)\n"
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
+	@printf "\n"
+	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
+	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
+	@printf "    audit                Audit dependencies for known vulnerabilities\n"
+	@printf "    security             Run all security checks (deny + audit)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Convenience:$(NC)\n"
 	@printf "    all           Build everything\n"
@@ -146,13 +151,40 @@ examples:
 	cargo build --package embassy-mqtt-connector-demo --target thumbv7em-none-eabihf
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
+## Security & Quality commands
+deny:
+	@printf "$(GREEN)Checking dependencies with cargo-deny...$(NC)\n"
+	@if ! command -v cargo-deny >/dev/null 2>&1; then \
+		printf "$(YELLOW)  ⚠ cargo-deny not found, installing...$(NC)\n"; \
+		cargo install cargo-deny --locked; \
+	fi
+	@printf "$(YELLOW)  → Checking licenses$(NC)\n"
+	@printf "$(YELLOW)  → Checking security advisories$(NC)\n"
+	@printf "$(YELLOW)  → Checking banned dependencies$(NC)\n"
+	@printf "$(YELLOW)  → Checking dependency sources$(NC)\n"
+	cargo deny check
+
+audit:
+	@printf "$(GREEN)Auditing dependencies for vulnerabilities...$(NC)\n"
+	@if ! command -v cargo-audit >/dev/null 2>&1; then \
+		printf "$(YELLOW)  ⚠ cargo-audit not found, installing...$(NC)\n"; \
+		cargo install cargo-audit --locked; \
+	fi
+	cargo audit
+
+security: deny audit
+	@printf "$(GREEN)All security checks completed!$(NC)\n"
+	@printf "$(BLUE)✓ Dependencies verified (licenses, advisories, bans)$(NC)\n"
+	@printf "$(BLUE)✓ Known vulnerabilities checked$(NC)\n"
+
 ## Convenience commands
-check: fmt-check clippy test test-embedded
+check: fmt-check clippy test test-embedded deny
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
 	@printf "$(BLUE)✓ All valid feature combinations tested$(NC)\n"
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
+	@printf "$(BLUE)✓ Dependencies verified (deny)$(NC)\n"
 	
 all: build test examples
 	@printf "$(GREEN)Build and test completed!$(NC)\n"
