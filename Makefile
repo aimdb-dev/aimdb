@@ -50,6 +50,8 @@ build:
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
 	cargo build --package aimdb-cli
+	@printf "$(YELLOW)  → Building MCP server$(NC)\n"
+	cargo build --package aimdb-mcp
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
@@ -65,10 +67,12 @@ test:
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
 	cargo test --package aimdb-cli
+	@printf "$(YELLOW)  → Testing MCP server$(NC)\n"
+	cargo test --package aimdb-mcp
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+	@for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -77,7 +81,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+	for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -106,6 +110,8 @@ clippy:
 	cargo clippy --package aimdb-client --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on CLI tools$(NC)\n"
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MCP server$(NC)\n"
+	cargo clippy --package aimdb-mcp --all-targets -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
@@ -118,6 +124,7 @@ doc:
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-cli --no-deps
+	cargo doc --package aimdb-mcp --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
 	cargo doc --package aimdb-core --no-default-features --no-deps

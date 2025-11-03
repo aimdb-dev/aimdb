@@ -105,6 +105,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aimdb-mcp"
+version = "0.1.0"
+dependencies = [
+ "aimdb-client",
+ "aimdb-core",
+ "anyhow",
+ "chrono",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "aimdb-mqtt-connector"
 version = "0.1.0"
 dependencies = [

@@ -8,6 +8,7 @@ members = [
     "aimdb-sync",
     "aimdb-mqtt-connector",
     "tools/aimdb-cli",
+    "tools/aimdb-mcp",
     "examples/tokio-mqtt-connector-demo",
     "examples/embassy-mqtt-connector-demo",
     "examples/sync-api-demo",
