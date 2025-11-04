@@ -23,6 +23,8 @@
 
 pub mod connection;
 pub mod error;
+pub mod notification_writer;
+pub mod prompts;
 pub mod protocol;
 pub mod resources;
 pub mod server;
@@ -31,5 +33,6 @@ pub mod tools;
 pub mod transport;
 
 pub use error::{McpError, McpResult};
+pub use notification_writer::NotificationFileWriter;
 pub use server::McpServer;
 pub use transport::StdioTransport;

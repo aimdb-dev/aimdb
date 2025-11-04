@@ -5,14 +5,16 @@
 use crate::connection::ConnectionPool;
 use crate::error::{McpError, McpResult};
 use crate::protocol::{
-    InitializeParams, InitializeResult, Notification, ResourceReadParams, ResourceReadResult,
+    InitializeParams, InitializeResult, Notification, PromptsCapability, PromptsGetParams,
+    PromptsGetResult, PromptsListResult, ResourceReadParams, ResourceReadResult,
     ResourcesCapability, ResourcesListResult, ServerCapabilities, ServerInfo, Tool, ToolCallParams,
     ToolCallResult, ToolContent, ToolsCapability, ToolsListResult, MCP_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
 };
 use crate::subscription_manager::SubscriptionManager;
-use crate::{resources, tools};
+use crate::{prompts, resources, tools};
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
@@ -33,13 +35,14 @@ pub struct McpServer {
     state: Arc<Mutex<ServerState>>,
     connection_pool: ConnectionPool,
     subscription_manager: Arc<SubscriptionManager>,
+    notification_dir: Arc<PathBuf>,
     #[allow(dead_code)] // TODO: Phase 3 - Wire up notification forwarding to stdio
     notification_tx: mpsc::UnboundedSender<Notification>,
 }
 
 impl McpServer {
     /// Create a new MCP server
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<Notification>) {
+    pub fn new(notification_dir: PathBuf) -> (Self, mpsc::UnboundedReceiver<Notification>) {
         let (notification_tx, notification_rx) = mpsc::unbounded_channel();
         let subscription_manager = Arc::new(SubscriptionManager::new(notification_tx.clone()));
 
@@ -47,6 +50,7 @@ impl McpServer {
             state: Arc::new(Mutex::new(ServerState::Uninitialized)),
             connection_pool: ConnectionPool::new(),
             subscription_manager,
+            notification_dir: Arc::new(notification_dir),
             notification_tx,
         };
 
@@ -98,6 +102,9 @@ impl McpServer {
         // Initialize subscription manager for tools (if not already done)
         tools::init_subscription_manager(self.subscription_manager.clone());
 
+        // Initialize notification directory for tools (if not already done)
+        tools::init_notification_dir((*self.notification_dir).clone());
+
         // Build server capabilities
         let capabilities = ServerCapabilities {
             tools: Some(ToolsCapability {
@@ -106,13 +113,20 @@ impl McpServer {
             resources: Some(ResourcesCapability {
                 subscribe: Some(true), // Phase 3: Resource subscriptions via subscribe_record tool
             }),
-            prompts: None, // Prompts not yet implemented
+            prompts: Some(PromptsCapability {
+                list_changed: Some(false), // Prompt list is static
+            }),
         };
 
         // Build server info (version from Cargo.toml)
         let server_info = ServerInfo {
             name: "aimdb-mcp".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            metadata: Some(json!({
+                "notification_directory": self.notification_dir.display().to_string(),
+                "prompts_available": ["notification-directory", "subscription-help", "troubleshooting"],
+                "tip": "📁 Subscription notifications are automatically saved to files. Use the 'notification-directory' prompt to learn more."
+            })),
         };
 
         Ok(InitializeResult {
@@ -215,7 +229,22 @@ impl McpServer {
             },
             Tool {
                 name: "subscribe_record".to_string(),
-                description: "Subscribe to real-time updates for a specific record. Sends notifications when the record value changes.".to_string(),
+                description: "Subscribe to real-time updates for a specific record.\n\n\
+                    ⚠️  IMPORTANT: You MUST ask the user how many samples to collect before subscribing.\n\
+                    Unlimited subscriptions can fill disk space.\n\n\
+                    Behavior:\n\
+                    - If max_samples is set (e.g., 50): Auto-unsubscribe after N samples\n\
+                    - If max_samples is null: Runs indefinitely (requires explicit user confirmation)\n\n\
+                    Always suggest appropriate sample limits:\n\
+                    - Quick check: 10-30 samples (~20-60 seconds)\n\
+                    - Short monitoring: 50-100 samples (~2-3 minutes)\n\
+                    - Extended analysis: 200-500 samples (~7-17 minutes)\n\
+                    - Continuous: null (only if user explicitly confirms)\n\n\
+                    📁 NOTIFICATIONS: Subscription data is automatically saved to JSONL files.\n\
+                    The response includes 'notification_file' path. You can also use:\n\
+                    - 'get_notification_directory' tool to find where files are stored\n\
+                    - 'notification-directory' prompt for detailed file format info\n\
+                    - 'subscription-help' prompt for complete subscription guide".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -226,9 +255,16 @@ impl McpServer {
                         "record_name": {
                             "type": "string",
                             "description": "Name of the record to subscribe to (e.g., server::Temperature)"
+                        },
+                        "max_samples": {
+                            "type": ["integer", "null"],
+                            "description": "Maximum samples before auto-unsubscribe. \
+                                Set to null for unlimited (requires explicit user confirmation). \
+                                Examples: 50 for quick check, 200 for analysis, null for continuous.",
+                            "minimum": 1
                         }
                     },
-                    "required": ["socket_path", "record_name"],
+                    "required": ["socket_path", "record_name", "max_samples"],
                     "additionalProperties": false
                 }),
             },
@@ -249,7 +285,20 @@ impl McpServer {
             },
             Tool {
                 name: "list_subscriptions".to_string(),
-                description: "List all active subscriptions with their metadata.".to_string(),
+                description: "List all active subscriptions with their metadata. \
+                    Each subscription includes the 'notification_file' path where data is saved. \
+                    Use 'subscription-help' prompt for tips on analyzing subscription data.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "get_notification_directory".to_string(),
+                description: "Get the path where subscription notifications are saved. \
+                    Notifications are automatically saved as JSONL files when you subscribe to records. \
+                    Use this tool to find where the data is stored.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -280,6 +329,9 @@ impl McpServer {
             "subscribe_record" => tools::subscribe_record(params.arguments).await?,
             "unsubscribe_record" => tools::unsubscribe_record(params.arguments).await?,
             "list_subscriptions" => tools::list_subscriptions(params.arguments).await?,
+            "get_notification_directory" => {
+                tools::get_notification_directory(params.arguments).await?
+            }
             _ => {
                 return Err(McpError::MethodNotFound(format!(
                     "Unknown tool: {}",
@@ -373,7 +425,8 @@ impl McpServer {
             .subscribe(
                 std::path::PathBuf::from(socket_path),
                 record_name.to_string(),
-                10, // queue_size
+                10,   // queue_size
+                None, // max_samples (unlimited for resource subscriptions)
             )
             .await?;
 
@@ -402,10 +455,47 @@ impl McpServer {
 
         Ok(())
     }
+
+    /// Handle prompts/list request
+    ///
+    /// Returns the list of available prompts.
+    pub async fn handle_prompts_list(&self) -> McpResult<PromptsListResult> {
+        if !self.is_ready().await {
+            return Err(McpError::NotInitialized);
+        }
+
+        debug!("📋 Listing available prompts");
+
+        let prompts = prompts::list_prompts();
+
+        Ok(PromptsListResult { prompts })
+    }
+
+    /// Handle prompts/get request
+    ///
+    /// Returns a specific prompt with its messages.
+    pub async fn handle_prompts_get(
+        &self,
+        params: PromptsGetParams,
+    ) -> McpResult<PromptsGetResult> {
+        if !self.is_ready().await {
+            return Err(McpError::NotInitialized);
+        }
+
+        debug!("📝 Getting prompt: {}", params.name);
+
+        let messages = prompts::get_prompt(&params.name, &self.notification_dir)
+            .ok_or_else(|| McpError::InvalidParams(format!("Unknown prompt: {}", params.name)))?;
+
+        Ok(PromptsGetResult {
+            description: Some(format!("Prompt: {}", params.name)),
+            messages,
+        })
+    }
 }
 
 impl Default for McpServer {
     fn default() -> Self {
-        Self::new().0
+        Self::new(PathBuf::from("/tmp")).0
     }
 }

@@ -97,11 +97,15 @@ pub struct PromptsCapability {
 
 /// Server info
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
     /// Server name
     pub name: String,
     /// Server version
     pub version: String,
+    /// Optional metadata (custom server-specific information)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 /// Tool definition
@@ -154,6 +158,82 @@ pub enum ToolContent {
     Image { data: String, mime_type: String },
     /// Resource content (not used in aimdb-mcp)
     Resource { resource: Value },
+}
+
+/// Prompt definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prompt {
+    /// Prompt name (unique identifier)
+    pub name: String,
+    /// Prompt description (human-readable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Optional arguments schema
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<PromptArgument>>,
+}
+
+/// Prompt argument definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptArgument {
+    /// Argument name
+    pub name: String,
+    /// Argument description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Whether this argument is required
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+}
+
+/// Prompts list result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsListResult {
+    /// Available prompts
+    pub prompts: Vec<Prompt>,
+}
+
+/// Prompts get parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsGetParams {
+    /// Prompt name to retrieve
+    pub name: String,
+    /// Optional arguments for the prompt
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Value>,
+}
+
+/// Prompts get result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsGetResult {
+    /// Prompt description (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Prompt messages
+    pub messages: Vec<PromptMessage>,
+}
+
+/// Prompt message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptMessage {
+    /// Message role (user, assistant, system)
+    pub role: String,
+    /// Message content
+    pub content: PromptMessageContent,
+}
+
+/// Prompt message content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptMessageContent {
+    /// Content type (always "text" for now)
+    #[serde(rename = "type")]
+    pub content_type: String,
+    /// Text content
+    pub text: String,
 }
 
 /// Resource definition
@@ -242,14 +322,20 @@ impl Notification {
     }
 
     /// Create a notification for record value change
-    pub fn record_changed(subscription_id: &str, record_name: &str, value: Value) -> Self {
+    pub fn record_changed(
+        subscription_id: &str,
+        record_name: &str,
+        value: Value,
+        sequence: u64,
+    ) -> Self {
         Self::new(
             "notifications/resources/updated",
             Some(json!({
                 "subscription_id": subscription_id,
                 "record_name": record_name,
                 "value": value,
-                "timestamp": chrono::Utc::now().timestamp_millis()
+                "timestamp": chrono::Utc::now().timestamp_millis(),
+                "sequence": sequence
             })),
         )
     }
@@ -261,6 +347,18 @@ impl Notification {
             Some(json!({
                 "subscription_id": subscription_id,
                 "error": error
+            })),
+        )
+    }
+
+    /// Create a notification for subscription completion
+    pub fn subscription_completed(subscription_id: &str, samples_collected: usize) -> Self {
+        Self::new(
+            "notifications/subscription/completed",
+            Some(json!({
+                "subscription_id": subscription_id,
+                "reason": "max_samples_reached",
+                "samples_collected": samples_collected
             })),
         )
     }

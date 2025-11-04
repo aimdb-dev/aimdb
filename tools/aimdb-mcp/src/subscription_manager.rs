@@ -26,6 +26,10 @@ pub struct SubscriptionInfo {
     pub aimx_subscription_id: String,
     /// Creation timestamp (Unix millis)
     pub created_at: i64,
+    /// Sequence counter for notifications
+    pub sequence: Arc<std::sync::atomic::AtomicU64>,
+    /// Maximum number of samples before auto-unsubscribe (None = unlimited)
+    pub max_samples: Option<usize>,
 }
 
 /// Manager for handling AimDB subscriptions and forwarding events
@@ -56,6 +60,7 @@ impl SubscriptionManager {
         socket_path: PathBuf,
         record_name: String,
         queue_size: usize,
+        max_samples: Option<usize>,
     ) -> McpResult<String> {
         // Generate unique subscription ID
         let subscription_id = format!("sub_{}", chrono::Utc::now().timestamp_millis());
@@ -97,6 +102,8 @@ impl SubscriptionManager {
             record_name: record_name.clone(),
             aimx_subscription_id: aimx_subscription_id.clone(),
             created_at: chrono::Utc::now().timestamp_millis(),
+            sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            max_samples,
         };
 
         // Store subscription
@@ -226,16 +233,62 @@ impl SubscriptionManager {
                             subscription_id, event.sequence
                         );
 
+                        // Get subscription info to access sequence counter and max_samples
+                        let (sequence, max_samples) =
+                            if let Some(info) = subscriptions.read().await.get(&subscription_id) {
+                                let seq = info
+                                    .sequence
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                (seq, info.max_samples)
+                            } else {
+                                (0, None) // Subscription was removed
+                            };
+
                         // Forward as MCP notification
                         let notification = Notification::record_changed(
                             &subscription_id,
                             &record_name,
                             event.data,
+                            sequence,
                         );
 
                         if let Err(e) = notification_tx.send(notification) {
                             error!("Failed to send notification for {}: {}", subscription_id, e);
                             break;
+                        }
+
+                        // Check if sample limit reached (sequence is 0-based, so check >= max_samples)
+                        if let Some(max) = max_samples {
+                            let samples_received = sequence + 1;
+                            if samples_received >= max as u64 {
+                                info!(
+                                    "🎯 Sample limit reached for {}: {}/{} samples",
+                                    subscription_id, samples_received, max
+                                );
+
+                                // Send completion notification
+                                let completion_notification = Notification::subscription_completed(
+                                    &subscription_id,
+                                    samples_received as usize,
+                                );
+
+                                if let Err(e) = notification_tx.send(completion_notification) {
+                                    error!(
+                                        "Failed to send completion notification for {}: {}",
+                                        subscription_id, e
+                                    );
+                                }
+
+                                // Remove subscription (auto-unsubscribe)
+                                subscriptions.write().await.remove(&subscription_id);
+                                tasks.lock().await.remove(&subscription_id);
+
+                                info!(
+                                    "✅ Auto-unsubscribed {} after {} samples",
+                                    subscription_id, samples_received
+                                );
+                                break;
+                            }
                         }
                     }
                     Err(e) => {
@@ -301,6 +354,8 @@ mod tests {
             record_name: "test::Record".to_string(),
             aimx_subscription_id: "aimx_sub_456".to_string(),
             created_at: 1234567890,
+            sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            max_samples: Some(100),
         };
 
         let cloned = info.clone();

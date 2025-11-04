@@ -6,10 +6,11 @@
 
 use aimdb_mcp::protocol::{
     InitializeParams, JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, ResourceReadParams, ToolCallParams,
+    JsonRpcResponse, PromptsGetParams, ResourceReadParams, ToolCallParams,
 };
-use aimdb_mcp::{McpServer, StdioTransport};
+use aimdb_mcp::{McpServer, NotificationFileWriter, StdioTransport};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use tracing::{debug, error, info, warn};
 
 #[tokio::main]
@@ -27,8 +28,58 @@ async fn main() {
     info!("📡 Protocol: MCP 2025-06-18 over JSON-RPC 2.0");
     info!("🔌 Transport: stdio (NDJSON)");
 
+    // Configuration from environment
+    let notification_files_enabled = std::env::var("AIMDB_MCP_NOTIFICATION_FILES")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+
+    let notification_dir = std::env::var("AIMDB_MCP_NOTIFICATION_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(".aimdb-mcp")
+                .join("notifications")
+        });
+
+    info!(
+        "📁 Notification files: {} (dir: {})",
+        if notification_files_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        notification_dir.display()
+    );
+
+    info!(
+        "📁 Notification files: {} (dir: {})",
+        if notification_files_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        notification_dir.display()
+    );
+
+    // Create notification file writer
+    let notification_writer =
+        match NotificationFileWriter::new(notification_dir.clone(), notification_files_enabled)
+            .await
+        {
+            Ok(writer) => writer,
+            Err(e) => {
+                error!("❌ Failed to initialize notification writer: {}", e);
+                error!("   Continuing without notification file support");
+                NotificationFileWriter::new(PathBuf::from("/tmp"), false)
+                    .await
+                    .unwrap()
+            }
+        };
+
     // Create server and transport
-    let (server, mut notification_rx) = McpServer::new();
+    let (server, mut notification_rx) = McpServer::new(notification_dir);
     let mut transport = StdioTransport::new();
 
     info!("✅ Server ready, waiting for initialize request...");
@@ -60,6 +111,14 @@ async fn main() {
             // Handle outgoing notifications
             Some(notification) = notification_rx.recv() => {
                 debug!("📢 Forwarding notification: {:?}", notification);
+
+                // Write notification to file (if enabled)
+                if let Err(e) = notification_writer.write(&notification).await {
+                    error!("⚠️  Failed to write notification to file: {}", e);
+                    // Continue processing - don't break on file write errors
+                }
+
+                // Forward notification to client
                 if let Ok(notification_line) = serde_json::to_string(&notification) {
                     if let Err(e) = transport.write_line(&notification_line).await {
                         error!("❌ Failed to forward notification: {}", e);
@@ -70,6 +129,11 @@ async fn main() {
                 }
             }
         }
+    }
+
+    // Flush all notification files before shutdown
+    if let Err(e) = notification_writer.flush_all().await {
+        error!("⚠️  Failed to flush notification files: {}", e);
     }
 
     info!("👋 AimDB MCP Server stopped");
@@ -387,6 +451,66 @@ async fn process_request(
                     let error_response = JsonRpcErrorResponse::new(
                         request_id.clone(),
                         JsonRpcError::new(-32602, "Invalid params".to_string(), None),
+                    );
+                    if let Ok(response_line) = serde_json::to_string(&error_response) {
+                        let _ = transport.write_line(&response_line).await;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        "prompts/list" => {
+            debug!("📋 Handling prompts/list request");
+            match server.handle_prompts_list().await {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        error!("Failed to serialize prompts/list result: {}", e);
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!("prompts/list failed: {}", e);
+                    let error_response = JsonRpcErrorResponse::new(
+                        request_id.clone(),
+                        JsonRpcError::new(e.error_code(), e.message(), None),
+                    );
+                    if let Ok(response_line) = serde_json::to_string(&error_response) {
+                        let _ = transport.write_line(&response_line).await;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        "prompts/get" => {
+            debug!("📝 Handling prompts/get request");
+            match serde_json::from_value::<PromptsGetParams>(request.params.unwrap_or(Value::Null))
+            {
+                Ok(params) => match server.handle_prompts_get(params).await {
+                    Ok(result) => match serde_json::to_value(result) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            error!("Failed to serialize prompts/get result: {}", e);
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        warn!("prompts/get failed: {}", e);
+                        let error_response = JsonRpcErrorResponse::new(
+                            request_id.clone(),
+                            JsonRpcError::new(e.error_code(), e.message(), None),
+                        );
+                        if let Ok(response_line) = serde_json::to_string(&error_response) {
+                            let _ = transport.write_line(&response_line).await;
+                        }
+                        return Ok(());
+                    }
+                },
+                Err(e) => {
+                    error!("Invalid prompts/get params: {}", e);
+                    let error_response = JsonRpcErrorResponse::new(
+                        request_id.clone(),
+                        JsonRpcError::new(-32602, format!("Invalid params: {}", e), None),
                     );
                     if let Ok(response_line) = serde_json::to_string(&error_response) {
                         let _ = transport.write_line(&response_line).await;

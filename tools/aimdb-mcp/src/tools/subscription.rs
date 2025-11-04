@@ -5,6 +5,7 @@
 use crate::error::{McpError, McpResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::Path;
 use tracing::debug;
 
 /// Parameters for subscribe_record tool
@@ -14,6 +15,8 @@ pub struct SubscribeRecordParams {
     pub socket_path: String,
     /// Name of the record to subscribe to
     pub record_name: String,
+    /// Maximum number of samples before auto-unsubscribe (None = unlimited)
+    pub max_samples: Option<usize>,
 }
 
 /// Parameters for unsubscribe_record tool
@@ -21,6 +24,30 @@ pub struct SubscribeRecordParams {
 pub struct UnsubscribeRecordParams {
     /// Subscription ID to cancel
     pub subscription_id: String,
+}
+
+/// Sanitize record name for safe filesystem usage
+///
+/// Converts "server::Temperature" to "server__Temperature" and removes
+/// any characters that could cause issues in filenames.
+fn sanitize_record_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
+            ':' => '_', // Keep :: -> __ pattern
+            _ => '_',
+        })
+        .collect()
+}
+
+/// Generate notification file path for a record
+///
+/// Returns the path where notifications for this record will be saved.
+fn get_notification_file_path(notification_dir: &Path, record_name: &str) -> String {
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let sanitized_record = sanitize_record_name(record_name);
+    let filename = format!("{}__{}.jsonl", date, sanitized_record);
+    notification_dir.join(filename).display().to_string()
 }
 
 /// Subscribe to record value changes
@@ -75,6 +102,7 @@ pub async fn subscribe_record(args: Option<Value>) -> McpResult<Value> {
             std::path::PathBuf::from(&params.socket_path),
             params.record_name.clone(),
             10, // queue_size
+            params.max_samples,
         )
         .await?;
 
@@ -84,13 +112,27 @@ pub async fn subscribe_record(args: Option<Value>) -> McpResult<Value> {
         .await
         .ok_or_else(|| McpError::Internal("Subscription vanished after creation".to_string()))?;
 
-    Ok(json!({
+    // Get notification directory and generate file path
+    let notification_file = crate::tools::notification_dir()
+        .map(|dir| get_notification_file_path(dir, &params.record_name));
+
+    let mut result = json!({
         "subscription_id": info.subscription_id,
         "socket_path": info.socket_path.display().to_string(),
         "record_name": info.record_name,
         "aimx_subscription_id": info.aimx_subscription_id,
         "created_at": info.created_at
-    }))
+    });
+
+    // Add notification file path if available
+    if let Some(file_path) = notification_file {
+        result
+            .as_object_mut()
+            .unwrap()
+            .insert("notification_file".to_string(), json!(file_path));
+    }
+
+    Ok(result)
 }
 
 /// Unsubscribe from record value changes
@@ -187,22 +229,74 @@ pub async fn list_subscriptions(_args: Option<Value>) -> McpResult<Value> {
     // Get all subscriptions
     let subscriptions = manager.list_subscriptions().await;
 
+    // Get notification directory
+    let notification_dir = crate::tools::notification_dir();
+
     let subs_json: Vec<Value> = subscriptions
         .iter()
         .map(|info| {
-            json!({
+            let mut sub_json = json!({
                 "subscription_id": info.subscription_id,
                 "socket_path": info.socket_path.display().to_string(),
                 "record_name": info.record_name,
                 "aimx_subscription_id": info.aimx_subscription_id,
                 "created_at": info.created_at
-            })
+            });
+
+            // Add notification file path if available
+            if let Some(dir) = notification_dir {
+                let file_path = get_notification_file_path(dir, &info.record_name);
+                sub_json
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("notification_file".to_string(), json!(file_path));
+            }
+
+            sub_json
         })
         .collect();
 
     Ok(json!({
         "count": subs_json.len(),
         "subscriptions": subs_json
+    }))
+}
+
+/// Get the notification directory path
+///
+/// Returns the directory where subscription notifications are saved.
+///
+/// # Arguments
+///
+/// * `args` - No arguments required
+///
+/// # Returns
+///
+/// JSON object with notification directory information
+///
+/// # Example
+///
+/// Returns:
+/// ```json
+/// {
+///   "notification_directory": "/home/user/.aimdb-mcp/notifications",
+///   "enabled": true,
+///   "tip": "Subscription data is saved as JSONL files: {date}__{record_name}.jsonl"
+/// }
+/// ```
+pub async fn get_notification_directory(_args: Option<Value>) -> McpResult<Value> {
+    debug!("📁 Getting notification directory");
+
+    // Get notification directory
+    let notification_dir = crate::tools::notification_dir()
+        .ok_or_else(|| McpError::Internal("Notification directory not initialized".to_string()))?;
+
+    Ok(json!({
+        "notification_directory": notification_dir.display().to_string(),
+        "enabled": true,
+        "file_pattern": "{date}__{record_name}.jsonl",
+        "example": format!("{}/2025-11-04__server__Temperature.jsonl", notification_dir.display()),
+        "tip": "Use list_dir to see available files, then read_file to access notification data"
     }))
 }
 
