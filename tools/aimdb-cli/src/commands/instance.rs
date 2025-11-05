@@ -1,8 +1,8 @@
 //! Instance Management Commands
 
-use crate::client::discovery::{discover_instances, find_instance};
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
+use aimdb_client::discovery::{discover_instances, find_instance};
 use clap::Args;
 
 /// Instance management commands

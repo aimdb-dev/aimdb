@@ -1,0 +1,12 @@
+{
+    "servers": {
+        "aimdb": {
+            "type": "stdio",
+            "command": "/aimdb/target/debug/aimdb-mcp",
+            "args": [],
+            "env": {
+                "RUST_LOG": "info"
+            }
+        }
+    }
+}

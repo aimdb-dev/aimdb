@@ -185,6 +185,116 @@ where
             mpsc::TryRecvError::Disconnected => DbError::RuntimeShutdown,
         })
     }
+
+    /// Get the latest value by draining all queued values.
+    ///
+    /// This method drains the internal channel to get the most recent value,
+    /// discarding any intermediate values. This is useful for SingleLatest-like
+    /// semantics where you only care about the most recent data.
+    ///
+    /// Blocks until at least one value is available, then drains all queued
+    /// values and returns the last one.
+    ///
+    /// # Returns
+    ///
+    /// The most recent available record of type `T`.
+    ///
+    /// # Errors
+    ///
+    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use aimdb_core::AimDbBuilder;
+    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_tokio_adapter::TokioAdapter;
+    /// use std::sync::Arc;
+    ///
+    /// # #[derive(Debug, Clone)]
+    /// # struct MyData { value: i32 }
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let handle = AimDbBuilder::new()
+    ///     .runtime(Arc::new(TokioAdapter))
+    ///     .attach()?;
+    /// let consumer = handle.consumer::<MyData>()?;
+    ///
+    /// // Get the latest value, skipping any queued intermediate values
+    /// let latest = consumer.get_latest()?;
+    /// println!("Latest: {:?}", latest);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_latest(&self) -> DbResult<T> {
+        let rx = self.rx.lock().unwrap();
+
+        // First, block until we have at least one value
+        let mut latest = rx.recv().map_err(|_| DbError::RuntimeShutdown)?;
+
+        // Then drain all remaining values to get the most recent
+        while let Ok(value) = rx.try_recv() {
+            latest = value;
+        }
+
+        Ok(latest)
+    }
+
+    /// Get the latest value with a timeout, draining all queued values.
+    ///
+    /// Like `get_latest()`, but with a timeout. Blocks until at least one
+    /// value is available or the timeout expires, then drains all queued
+    /// values and returns the last one.
+    ///
+    /// # Arguments
+    ///
+    /// - `timeout`: Maximum time to wait for the first value
+    ///
+    /// # Errors
+    ///
+    /// - `DbError::GetTimeout` if the timeout expires before any value arrives
+    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use aimdb_core::AimDbBuilder;
+    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_tokio_adapter::TokioAdapter;
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    ///
+    /// # #[derive(Debug, Clone)]
+    /// # struct MyData { value: i32 }
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let handle = AimDbBuilder::new()
+    ///     .runtime(Arc::new(TokioAdapter))
+    ///     .attach()?;
+    /// let consumer = handle.consumer::<MyData>()?;
+    ///
+    /// // Get the latest value within 100ms
+    /// match consumer.get_latest_with_timeout(Duration::from_millis(100)) {
+    ///     Ok(latest) => println!("Latest: {:?}", latest),
+    ///     Err(_) => println!("No data available"),
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_latest_with_timeout(&self, timeout: Duration) -> DbResult<T> {
+        let rx = self.rx.lock().unwrap();
+
+        // First, block with timeout until we have at least one value
+        let mut latest = rx.recv_timeout(timeout).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => DbError::GetTimeout,
+            mpsc::RecvTimeoutError::Disconnected => DbError::RuntimeShutdown,
+        })?;
+
+        // Then drain all remaining values to get the most recent
+        while let Ok(value) = rx.try_recv() {
+            latest = value;
+        }
+
+        Ok(latest)
+    }
 }
 
 impl<T> Clone for SyncConsumer<T>

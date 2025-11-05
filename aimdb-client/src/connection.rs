@@ -2,11 +2,11 @@
 //!
 //! Async client for connecting to AimDB instances via Unix domain sockets.
 
-use crate::client::protocol::{
+use crate::error::{ClientError, ClientResult};
+use crate::protocol::{
     cli_hello, parse_message, serialize_message, Event, EventMessage, RecordMetadata, Request,
     RequestExt, Response, ResponseExt, WelcomeMessage,
 };
-use crate::error::{CliError, CliResult};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -28,17 +28,20 @@ pub struct AimxClient {
 
 impl AimxClient {
     /// Connect to an AimDB instance
-    pub async fn connect(socket_path: impl AsRef<Path>) -> CliResult<Self> {
+    pub async fn connect(socket_path: impl AsRef<Path>) -> ClientResult<Self> {
         let socket_path = socket_path.as_ref().to_path_buf();
 
         // Connect with timeout
         let stream = tokio::time::timeout(CONNECTION_TIMEOUT, UnixStream::connect(&socket_path))
             .await
             .map_err(|_| {
-                CliError::connection_failed(socket_path.display().to_string(), "connection timeout")
+                ClientError::connection_failed(
+                    socket_path.display().to_string(),
+                    "connection timeout",
+                )
             })?
             .map_err(|e| {
-                CliError::connection_failed(socket_path.display().to_string(), e.to_string())
+                ClientError::connection_failed(socket_path.display().to_string(), e.to_string())
             })?;
 
         // Split into reader and writer
@@ -67,7 +70,7 @@ impl AimxClient {
     }
 
     /// Perform protocol handshake
-    async fn handshake(&mut self) -> CliResult<()> {
+    async fn handshake(&mut self) -> ClientResult<()> {
         // Send Hello
         let hello = cli_hello();
         self.write_message(&hello).await?;
@@ -89,7 +92,7 @@ impl AimxClient {
         &mut self,
         method: &str,
         params: Option<serde_json::Value>,
-    ) -> CliResult<serde_json::Value> {
+    ) -> ClientResult<serde_json::Value> {
         self.request_id_counter += 1;
         let id = self.request_id_counter;
 
@@ -105,7 +108,7 @@ impl AimxClient {
 
         match response.into_result() {
             Ok(result) => Ok(result),
-            Err(error) => Err(CliError::server_error(
+            Err(error) => Err(ClientError::server_error(
                 error.code,
                 error.message,
                 error.details,
@@ -114,14 +117,14 @@ impl AimxClient {
     }
 
     /// List all registered records
-    pub async fn list_records(&mut self) -> CliResult<Vec<RecordMetadata>> {
+    pub async fn list_records(&mut self) -> ClientResult<Vec<RecordMetadata>> {
         let result = self.send_request("record.list", None).await?;
         let records: Vec<RecordMetadata> = serde_json::from_value(result)?;
         Ok(records)
     }
 
     /// Get current value of a record
-    pub async fn get_record(&mut self, name: &str) -> CliResult<serde_json::Value> {
+    pub async fn get_record(&mut self, name: &str) -> ClientResult<serde_json::Value> {
         let params = json!({ "record": name });
         self.send_request("record.get", Some(params)).await
     }
@@ -131,7 +134,7 @@ impl AimxClient {
         &mut self,
         name: &str,
         value: serde_json::Value,
-    ) -> CliResult<serde_json::Value> {
+    ) -> ClientResult<serde_json::Value> {
         let params = json!({
             "name": name,
             "value": value
@@ -140,7 +143,7 @@ impl AimxClient {
     }
 
     /// Subscribe to record updates
-    pub async fn subscribe(&mut self, name: &str, queue_size: usize) -> CliResult<String> {
+    pub async fn subscribe(&mut self, name: &str, queue_size: usize) -> ClientResult<String> {
         let params = json!({
             "name": name,
             "queue_size": queue_size
@@ -149,14 +152,16 @@ impl AimxClient {
 
         let subscription_id = result["subscription_id"]
             .as_str()
-            .ok_or_else(|| CliError::Other(anyhow::anyhow!("Missing subscription_id in response")))?
+            .ok_or_else(|| {
+                ClientError::Other(anyhow::anyhow!("Missing subscription_id in response"))
+            })?
             .to_string();
 
         Ok(subscription_id)
     }
 
     /// Unsubscribe from record updates
-    pub async fn unsubscribe(&mut self, subscription_id: &str) -> CliResult<()> {
+    pub async fn unsubscribe(&mut self, subscription_id: &str) -> ClientResult<()> {
         let params = json!({ "subscription_id": subscription_id });
         self.send_request("record.unsubscribe", Some(params))
             .await?;
@@ -164,13 +169,13 @@ impl AimxClient {
     }
 
     /// Receive next event from subscription
-    pub async fn receive_event(&mut self) -> CliResult<Event> {
+    pub async fn receive_event(&mut self) -> ClientResult<Event> {
         let event_msg: EventMessage = self.read_message().await?;
         Ok(event_msg.event)
     }
 
     /// Write a message to the stream
-    async fn write_message<T: serde::Serialize>(&mut self, msg: &T) -> CliResult<()> {
+    async fn write_message<T: serde::Serialize>(&mut self, msg: &T) -> ClientResult<()> {
         let data = serialize_message(msg)?;
         self.stream.write_all(data.as_bytes()).await?;
         self.stream.flush().await?;
@@ -178,12 +183,12 @@ impl AimxClient {
     }
 
     /// Read a message from the stream
-    async fn read_message<T: for<'de> serde::Deserialize<'de>>(&mut self) -> CliResult<T> {
+    async fn read_message<T: for<'de> serde::Deserialize<'de>>(&mut self) -> ClientResult<T> {
         let mut line = String::new();
         self.reader.read_line(&mut line).await?;
 
         if line.is_empty() {
-            return Err(CliError::connection_failed(
+            return Err(ClientError::connection_failed(
                 self.socket_path.display().to_string(),
                 "connection closed by server",
             ));

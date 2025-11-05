@@ -6,7 +6,6 @@
 use clap::{Parser, Subcommand};
 use commands::{instance::InstanceCommand, record::RecordCommand, watch::WatchCommand};
 
-mod client;
 mod commands;
 mod error;
 mod output;

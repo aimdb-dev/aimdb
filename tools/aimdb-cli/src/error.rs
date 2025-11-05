@@ -61,6 +61,29 @@ pub enum CliError {
     Other(#[from] anyhow::Error),
 }
 
+impl From<aimdb_client::ClientError> for CliError {
+    fn from(err: aimdb_client::ClientError) -> Self {
+        match err {
+            aimdb_client::ClientError::NoInstancesFound => CliError::NoInstancesFound,
+            aimdb_client::ClientError::ConnectionFailed { socket, reason } => {
+                CliError::ConnectionFailed { socket, reason }
+            }
+            aimdb_client::ClientError::ServerError {
+                code,
+                message,
+                details,
+            } => CliError::ServerError {
+                code,
+                message,
+                details,
+            },
+            aimdb_client::ClientError::Io(e) => CliError::Io(e),
+            aimdb_client::ClientError::Json(e) => CliError::Json(e),
+            aimdb_client::ClientError::Other(e) => CliError::Other(e),
+        }
+    }
+}
+
 fn format_details(details: &Option<serde_json::Value>) -> String {
     match details {
         Some(val) => format!("\n  Details: {}", val),

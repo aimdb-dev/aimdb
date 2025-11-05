@@ -1,9 +1,9 @@
 //! Record Management Commands
 
-use crate::client::connection::AimxClient;
-use crate::client::discovery::find_instance;
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
+use aimdb_client::connection::AimxClient;
+use aimdb_client::discovery::find_instance;
 use clap::Args;
 
 /// Record management commands

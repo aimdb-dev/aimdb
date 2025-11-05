@@ -1,0 +1,26 @@
+[package]
+name = "aimdb-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AimX protocol client library for connecting to AimDB instances"
+
+[dependencies]
+# Core dependencies - protocol types from aimdb-core
+aimdb-core = { path = "../aimdb-core", features = ["std"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime (must match AimDB runtime)
+tokio = { version = "1", features = ["net", "io-util", "macros", "fs"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
+tokio-test = "0.4"
+tempfile = "3"

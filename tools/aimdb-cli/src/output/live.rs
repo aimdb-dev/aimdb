@@ -1,6 +1,6 @@
 //! Live Output Formatting (for watch command)
 
-use crate::client::protocol::Event;
+use aimdb_client::protocol::Event;
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 

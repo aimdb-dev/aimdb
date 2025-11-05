@@ -2,9 +2,9 @@
 //!
 //! Scans known directories for running AimDB instances.
 
-use crate::client::connection::AimxClient;
-use crate::client::protocol::WelcomeMessage;
-use crate::error::{CliError, CliResult};
+use crate::connection::AimxClient;
+use crate::error::{ClientError, ClientResult};
+use crate::protocol::WelcomeMessage;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ impl From<(PathBuf, WelcomeMessage)> for InstanceInfo {
 }
 
 /// Discover all running AimDB instances
-pub async fn discover_instances() -> CliResult<Vec<InstanceInfo>> {
+pub async fn discover_instances() -> ClientResult<Vec<InstanceInfo>> {
     let mut instances = Vec::new();
 
     for dir_path in SOCKET_SEARCH_DIRS {
@@ -48,7 +48,7 @@ pub async fn discover_instances() -> CliResult<Vec<InstanceInfo>> {
     }
 
     if instances.is_empty() {
-        return Err(CliError::NoInstancesFound);
+        return Err(ClientError::NoInstancesFound);
     }
 
     Ok(instances)
@@ -74,14 +74,14 @@ async fn scan_directory(mut entries: tokio::fs::ReadDir) -> Vec<InstanceInfo> {
 }
 
 /// Try to connect to a socket and get instance information
-async fn probe_instance(socket_path: &PathBuf) -> CliResult<InstanceInfo> {
+async fn probe_instance(socket_path: &PathBuf) -> ClientResult<InstanceInfo> {
     // Try to connect with a short timeout
     let connect_timeout = Duration::from_millis(500);
 
     let client = tokio::time::timeout(connect_timeout, AimxClient::connect(socket_path))
         .await
         .map_err(|_| {
-            CliError::connection_failed(
+            ClientError::connection_failed(
                 socket_path.display().to_string(),
                 "timeout during discovery probe",
             )
@@ -93,14 +93,14 @@ async fn probe_instance(socket_path: &PathBuf) -> CliResult<InstanceInfo> {
 }
 
 /// Find a specific instance by socket path or name
-pub async fn find_instance(socket_hint: Option<&str>) -> CliResult<InstanceInfo> {
+pub async fn find_instance(socket_hint: Option<&str>) -> ClientResult<InstanceInfo> {
     // If socket path provided, try that directly
     if let Some(socket_path) = socket_hint {
         let path = PathBuf::from(socket_path);
         if path.exists() {
             return probe_instance(&path).await;
         } else {
-            return Err(CliError::connection_failed(
+            return Err(ClientError::connection_failed(
                 socket_path.to_string(),
                 "socket file does not exist",
             ));
@@ -113,5 +113,5 @@ pub async fn find_instance(socket_hint: Option<&str>) -> CliResult<InstanceInfo>
     instances
         .into_iter()
         .next()
-        .ok_or(CliError::NoInstancesFound)
+        .ok_or(ClientError::NoInstancesFound)
 }
