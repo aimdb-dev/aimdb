@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub mod instance;
 pub mod record;
+pub mod schema;
 pub mod subscription;
 
 // Global connection pool (initialized once)
@@ -54,6 +55,7 @@ pub(crate) fn notification_dir() -> Option<&'static PathBuf> {
 // Re-export tool functions
 pub use instance::{discover_instances, get_instance_info};
 pub use record::{get_record, list_records, set_record};
+pub use schema::query_schema;
 pub use subscription::{
     get_notification_directory, list_subscriptions, subscribe_record, unsubscribe_record,
 };

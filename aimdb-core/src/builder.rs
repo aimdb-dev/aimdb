@@ -479,6 +479,18 @@ where
                 remote_cfg.socket_path.display()
             );
 
+            // Apply security policy to mark writable records
+            let writable_type_ids = remote_cfg.security_policy.writable_records();
+            for (type_id, record) in inner.records.iter() {
+                if writable_type_ids.contains(type_id) {
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!("Marking record {:?} as writable", type_id);
+
+                    // Mark the record as writable (type-erased call)
+                    record.set_writable_erased(true);
+                }
+            }
+
             // Spawn the remote supervisor task
             // This will be implemented in Task 6
             crate::remote::supervisor::spawn_supervisor(db.clone(), runtime.clone(), remote_cfg)?;

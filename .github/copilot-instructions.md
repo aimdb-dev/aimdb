@@ -9,6 +9,7 @@ AimDB is an async, in-memory database for real-time data synchronization across 
 - ✅ **Buffer Systems** - SPMC Ring, SingleLatest, Mailbox with simplified config
 - ✅ **Producer-Consumer** - Complete with typed patterns
 - ✅ **MQTT Connector** - Both std (rumqttc) and embedded (mountain-mqtt)
+- ✅ **MCP Server** - LLM-powered introspection with schema inference
 - ✅ **Examples & Tests** - Comprehensive coverage including embedded cross-compilation
 - 🚧 **Kafka/DDS Connectors** - Planned
 - 🚧 **CLI Tools** - Skeleton only
@@ -20,9 +21,65 @@ aimdb-executor/          # Runtime trait abstractions
 aimdb-tokio-adapter/     # Tokio runtime adapter
 aimdb-embassy-adapter/   # Embassy runtime adapter (configurable task pool)
 aimdb-mqtt-connector/    # MQTT for std and embedded
-examples/                # Working demos (tokio-mqtt, embassy-mqtt)
+aimdb-mcp/               # MCP server for LLM-powered introspection
+examples/                # Working demos (tokio-mqtt, embassy-mqtt, remote-access-demo)
 tools/aimdb-cli/         # CLI (skeleton)
 ```
+
+## AimDB MCP Tools
+
+**IMPORTANT - Use MCP tools whenever possible for AimDB introspection:**
+
+When working with running AimDB instances, **always prefer using the MCP tools** instead of writing custom code or using other methods. The MCP tools provide direct access to live database instances.
+
+**Available MCP Tools:**
+- `mcp_aimdb_discover_instances` - Find running AimDB servers
+- `mcp_aimdb_list_records` - List all records in an instance
+- `mcp_aimdb_get_record` - Get current value of a record
+- `mcp_aimdb_set_record` - Set value of writable records
+- `mcp_aimdb_query_schema` - Infer JSON Schema from record values
+- `mcp_aimdb_subscribe_record` - Subscribe to real-time updates
+- `mcp_aimdb_unsubscribe_record` - Unsubscribe from updates
+- `mcp_aimdb_get_instance_info` - Get server version and capabilities
+- `mcp_aimdb_list_subscriptions` - List active subscriptions
+- `mcp_aimdb_get_notification_directory` - Get subscription data directory
+
+**Usage Examples:**
+```
+# Find running instances
+mcp_aimdb_discover_instances()
+
+# Query schema for a record
+mcp_aimdb_query_schema(
+  socket_path: "/tmp/aimdb-demo.sock",
+  record_name: "server::Config",
+  include_example: true
+)
+
+# Get record value
+mcp_aimdb_get_record(
+  socket_path: "/tmp/aimdb-demo.sock", 
+  record_name: "server::Temperature"
+)
+
+# Set writable record
+mcp_aimdb_set_record(
+  socket_path: "/tmp/aimdb-demo.sock",
+  record_name: "server::AppSettings",
+  value: {"log_level": "debug", "max_connections": 100, "feature_flag_alpha": false}
+)
+```
+
+**When to use MCP tools:**
+- ✅ Inspecting running AimDB instances
+- ✅ Testing record schemas and values
+- ✅ Debugging database state
+- ✅ Monitoring real-time data
+- ✅ Validating record configurations
+- ✅ Quick data exploration
+
+**Test server:**
+The `examples/remote-access-demo` provides a test server with sample records at `/tmp/aimdb-demo.sock`.
 
 ## Development Workflow
 

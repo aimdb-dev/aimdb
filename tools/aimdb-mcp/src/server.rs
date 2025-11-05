@@ -305,6 +305,35 @@ impl McpServer {
                     "additionalProperties": false
                 }),
             },
+            Tool {
+                name: "query_schema".to_string(),
+                description: "Get JSON schema and type information for a record.\n\n\
+                    Returns the data structure, field types, and metadata.\n\
+                    Use this before setting record values to understand expected format.\n\n\
+                    Schema is inferred from current value + database metadata.\n\n\
+                    💡 TIP: Field names like 'celsius', 'timestamp', 'sensor_id' carry semantic meaning.\n\
+                    If units or formats are unclear, ask the user for clarification.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        },
+                        "record_name": {
+                            "type": "string",
+                            "description": "Name of the record to query schema for (e.g., server::Temperature)"
+                        },
+                        "include_example": {
+                            "type": "boolean",
+                            "description": "Include current value as example (default: true)",
+                            "default": true
+                        }
+                    },
+                    "required": ["socket_path", "record_name"],
+                    "additionalProperties": false
+                }),
+            },
         ];
 
         Ok(ToolsListResult { tools })
@@ -332,6 +361,7 @@ impl McpServer {
             "get_notification_directory" => {
                 tools::get_notification_directory(params.arguments).await?
             }
+            "query_schema" => tools::query_schema(params.arguments).await?,
             _ => {
                 return Err(McpError::MethodNotFound(format!(
                     "Unknown tool: {}",

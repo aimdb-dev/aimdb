@@ -152,8 +152,8 @@ struct RecordMetadataTracker {
     created_at: (u64, u32),
     /// Last update timestamp (seconds, nanoseconds since UNIX_EPOCH, None if never updated)
     last_update: std::sync::Arc<std::sync::Mutex<Option<(u64, u32)>>>,
-    /// Whether this record allows writes via remote access
-    writable: bool,
+    /// Whether this record allows writes via remote access (using interior mutability)
+    writable: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(feature = "std")]
@@ -169,7 +169,7 @@ impl RecordMetadataTracker {
             name: core::any::type_name::<T>().to_string(),
             created_at: (duration.as_secs(), duration.subsec_nanos()),
             last_update: Arc::new(std::sync::Mutex::new(None)),
-            writable: false,
+            writable: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -185,8 +185,9 @@ impl RecordMetadataTracker {
         }
     }
 
-    fn set_writable(&mut self, writable: bool) {
-        self.writable = writable;
+    fn set_writable(&self, writable: bool) {
+        self.writable
+            .store(writable, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Formats a Unix timestamp as "secs.nanosecs" string
@@ -252,6 +253,11 @@ pub trait AnyRecord: Send + Sync {
 
     /// Returns whether a producer service is registered
     fn has_producer_service(&self) -> bool;
+
+    /// Sets the writable flag for this record (type-erased)
+    ///
+    /// Used internally by the builder to apply security policy to records.
+    fn set_writable_erased(&self, writable: bool);
 
     /// Collects metadata for this record (std only)
     #[cfg(feature = "std")]
@@ -909,7 +915,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Marks this record as writable for remote access (std only)
     #[cfg(feature = "std")]
-    pub fn set_writable(&mut self, writable: bool) {
+    pub fn set_writable(&self, writable: bool) {
         self.metadata.set_writable(writable);
     }
 
@@ -1001,6 +1007,17 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
         TypedRecord::has_producer_service(self)
     }
 
+    fn set_writable_erased(&self, writable: bool) {
+        #[cfg(feature = "std")]
+        {
+            self.metadata.set_writable(writable);
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = writable; // Suppress unused warning
+        }
+    }
+
     #[cfg(feature = "std")]
     fn collect_metadata(&self, type_id: core::any::TypeId) -> crate::remote::RecordMetadata {
         let (buffer_type, buffer_capacity) = if let Some(cfg) = &self.buffer_cfg {
@@ -1028,7 +1045,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
             buffer_capacity,
             if self.has_producer_service() { 1 } else { 0 },
             self.consumer_count(),
-            self.metadata.writable,
+            self.metadata
+                .writable
+                .load(std::sync::atomic::Ordering::SeqCst),
             RecordMetadataTracker::format_timestamp(self.metadata.created_at),
             self.connector_count(),
         )
