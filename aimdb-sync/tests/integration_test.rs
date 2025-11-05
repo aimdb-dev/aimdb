@@ -382,7 +382,10 @@ fn test_spmc_ring_semantics() {
     handle.detach().expect("Failed to detach");
 }
 
-/// Test buffer semantics - SingleLatest
+/// Test buffer semantics - SingleLatest with get_latest()
+///
+/// This test demonstrates the proper way to use SingleLatest semantics
+/// with the sync API by using the get_latest() method.
 #[test]
 fn test_single_latest_semantics() {
     let adapter = Arc::new(TokioAdapter);
@@ -400,6 +403,7 @@ fn test_single_latest_semantics() {
     let producer = handle
         .producer::<TestData>()
         .expect("Failed to create producer");
+
     let consumer = handle
         .consumer::<TestData>()
         .expect("Failed to create consumer");
@@ -416,31 +420,83 @@ fn test_single_latest_semantics() {
     let first = consumer.get().expect("Failed to consume initial value");
     assert_eq!(first.id, 100);
 
-    // Now produce multiple values quickly (target: <50ms end-to-end)
-    // Use try_set() for fire-and-forget semantics - this allows queuing all values
-    // without blocking, which lets SingleLatest skip intermediates
+    // Now produce multiple values rapidly
     for i in 1..=5 {
         let data = TestData {
             id: i,
             value: format!("value-{}", i),
         };
-        // Use try_set() instead of set() to avoid blocking on each produce
-        // This allows all values to be queued quickly, demonstrating SingleLatest semantics
-        producer.try_set(data).expect("Failed to queue value");
+        producer.set(data).expect("Failed to produce value");
+        thread::sleep(Duration::from_millis(5));
     }
 
-    // Wait for propagation - with <50ms target
+    // Wait for all values to propagate
+    thread::sleep(Duration::from_millis(100));
+
+    // Use get_latest() to drain the channel and get the most recent value
+    let latest = consumer.get_latest().expect("Failed to get latest");
+
+    // Should get the last value (5) since get_latest() drains the channel
+    assert_eq!(
+        latest.id, 5,
+        "get_latest() should return the most recent value by draining the channel. Got {}",
+        latest.id
+    );
+
+    // Verify channel is now empty
+    let result = consumer.try_get();
+    assert!(
+        matches!(result, Err(DbError::GetTimeout)),
+        "Channel should be empty after get_latest()"
+    );
+
+    handle.detach().expect("Failed to detach");
+}
+
+/// Test get_latest() with timeout
+#[test]
+fn test_get_latest_with_timeout() {
+    let adapter = Arc::new(TokioAdapter);
+    let mut builder = AimDbBuilder::new().runtime(adapter);
+
+    builder.configure::<TestData>(|reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .tap(|_ctx, _consumer| async move {
+                // No-op tap just to satisfy validation
+            });
+    });
+
+    let handle = builder.attach().expect("Failed to attach");
+
+    let producer = handle
+        .producer::<TestData>()
+        .expect("Failed to create producer");
+
+    let consumer = handle
+        .consumer::<TestData>()
+        .expect("Failed to create consumer");
+
+    // Test timeout on empty buffer
+    let result = consumer.get_latest_with_timeout(Duration::from_millis(50));
+    assert!(matches!(result, Err(DbError::GetTimeout)));
+
+    // Produce values rapidly
+    for i in 1..=3 {
+        let data = TestData {
+            id: i,
+            value: format!("value-{}", i),
+        };
+        producer.set(data).expect("Failed to produce value");
+    }
+
     thread::sleep(Duration::from_millis(50));
 
-    // Consumer should get the latest value (5)
-    // With SingleLatest semantics, intermediate values (1,2,3,4) are skipped
-    let received = consumer.get().expect("Failed to consume");
+    // Should get the latest value with timeout
+    let latest = consumer
+        .get_latest_with_timeout(Duration::from_secs(1))
+        .expect("Failed to get latest with timeout");
 
-    assert_eq!(
-        received.id, 5,
-        "Expected latest value (5), got {}. SingleLatest should skip intermediate values and deliver only the most recent.",
-        received.id
-    );
+    assert_eq!(latest.id, 3, "Should get the most recent value (3)");
 
     handle.detach().expect("Failed to detach");
 }

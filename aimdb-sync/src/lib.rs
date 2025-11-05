@@ -128,12 +128,43 @@
 //!
 //! // Rare events can use smaller buffer
 //! let consumer = handle.consumer_with_capacity::<RareEvent>(10)?;
+//!
+//! // SingleLatest-like behavior: use capacity=1 to minimize queueing
+//! let consumer = handle.consumer_with_capacity::<LatestOnly>(1)?;
 //! ```
 //!
 //! **When to adjust capacity:**
 //! - **Increase**: High-frequency data, bursty traffic, slow consumers
 //! - **Decrease**: Memory-constrained, rare events, strict backpressure needed
+//! - **Capacity=1**: Approximate SingleLatest semantics (see limitation below)
 //! - **Default (100)**: Good for most use cases
+//!
+//! ## Buffer Semantics Limitation
+//!
+//! **Important**: The sync API adds a queueing layer (`std::sync::mpsc` channel)
+//! between the database buffer and your code. This means:
+//!
+//! - ✅ **SPMC Ring**: Works as expected - each consumer gets independent data
+//! - ✅ **Mailbox**: Works well - last value is preserved
+//! - ⚠️ **SingleLatest**: Best effort only - the sync channel may queue multiple values
+//!
+//! ### Solutions for SingleLatest Semantics
+//!
+//! 1. **Use `get_latest()`** - Drains the channel to get the most recent value:
+//!    ```rust,ignore
+//!    // Always get the latest value, skipping queued intermediates
+//!    let latest = consumer.get_latest()?;
+//!    ```
+//!
+//! 2. **Use capacity=1** - Minimize queueing:
+//!    ```rust,ignore
+//!    let consumer = handle.consumer_with_capacity::<T>(1)?;
+//!    ```
+//!
+//! 3. **Use the async API directly** - For perfect semantic preservation.
+//!
+//! The sync API is optimized for simplicity and ease of use, not for perfect
+//! semantic preservation across all buffer types.
 //!
 //! ## Threading Model
 //!
