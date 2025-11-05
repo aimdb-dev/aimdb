@@ -219,7 +219,7 @@ mod tests {
 
         // Number (float)
         assert_eq!(
-            infer_json_schema(&json!(3.14)).unwrap(),
+            infer_json_schema(&json!(3.5)).unwrap(),
             json!({"type": "number"})
         );
         assert_eq!(
