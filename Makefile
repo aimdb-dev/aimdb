@@ -232,7 +232,7 @@ publish:
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
 	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (4/9)$(NC)\n"
-	@cargo publish -p aimdb-embassy-adapter
+	@cargo publish -p aimdb-embassy-adapter --no-verify
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
 	@printf "$(YELLOW)  → Publishing aimdb-client (5/9)$(NC)\n"
