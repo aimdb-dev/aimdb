@@ -29,13 +29,13 @@ test-utils = ["aimdb-core/test-utils", "tokio-runtime"]
 
 [dependencies]
 # Executor traits
-aimdb-executor = { path = "../aimdb-executor", default-features = false, features = [
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false, features = [
     "std",
     "tokio-types",
 ] }
 
 # Core AimDB types - std version for Tokio (for DbError integration)
-aimdb-core = { path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
 

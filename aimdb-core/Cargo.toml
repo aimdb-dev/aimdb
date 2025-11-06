@@ -3,7 +3,11 @@ name = "aimdb-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Core database engine for AimDB - async in-memory storage with real-time synchronization"
+keywords.workspace = true
+categories.workspace = true
 build = "build.rs"
 
 [features]
@@ -32,7 +36,7 @@ test-utils = ["std"]
 
 [dependencies]
 # Executor traits (always available)
-aimdb-executor = { path = "../aimdb-executor", default-features = false }
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
 
 # Serialization (optional)
 serde = { workspace = true, optional = true }

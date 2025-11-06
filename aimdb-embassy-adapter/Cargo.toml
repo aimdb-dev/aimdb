@@ -3,7 +3,11 @@ name = "aimdb-embassy-adapter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Embassy async runtime adapter for AimDB embedded targets"
+keywords.workspace = true
+categories.workspace = true
 build = "build.rs"
 
 [features]
@@ -32,12 +36,12 @@ std = []
 
 [dependencies]
 # Executor traits
-aimdb-executor = { path = "../aimdb-executor", default-features = false, features = [
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false, features = [
     "embassy-types",
 ] }
 
 # Core AimDB types - no_std for Embassy (for DbError integration)
-aimdb-core = { path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false }
 
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }

@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded examples deny audit security
+.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded examples deny audit security publish publish-check
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -33,6 +33,10 @@ help:
 	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
 	@printf "    audit                Audit dependencies for known vulnerabilities\n"
 	@printf "    security             Run all security checks (deny + audit)\n"
+	@printf "\n"
+	@printf "  $(YELLOW)Release Management:$(NC)\n"
+	@printf "    publish-check        Test crates.io publish (dry-run, no git commit required)\n"
+	@printf "    publish              Publish all crates to crates.io (requires clean git state)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Convenience:$(NC)\n"
 	@printf "    all           Build everything\n"
@@ -185,6 +189,72 @@ security: deny audit
 	@printf "$(GREEN)All security checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Dependencies verified (licenses, advisories, bans)$(NC)\n"
 	@printf "$(BLUE)✓ Known vulnerabilities checked$(NC)\n"
+
+## Release Management commands
+publish-check:
+	@printf "$(GREEN)Testing crates.io publish readiness...$(NC)\n"
+	@printf "$(YELLOW)Note: cargo package requires dependencies to exist on crates.io.$(NC)\n"
+	@printf "$(YELLOW)      Only aimdb-executor (no deps) will fully validate before first publish.$(NC)\n"
+	@printf "$(YELLOW)      This is expected behavior - actual publish will work in order.$(NC)\n"
+	@printf "\n"
+	@printf "$(YELLOW)  → Testing aimdb-executor (full validation)$(NC)\n"
+	@cargo publish --dry-run -p aimdb-executor
+	@printf "$(GREEN)✓ aimdb-executor is ready to publish!$(NC)\n"
+	@printf "\n"
+	@printf "$(BLUE)ℹ  Other crates cannot be fully validated until dependencies are published.$(NC)\n"
+	@printf "$(BLUE)   Run 'make publish' to publish all crates in dependency order.$(NC)\n"
+
+publish:
+	@printf "$(GREEN)Publishing AimDB crates to crates.io...$(NC)\n"
+	@printf "$(YELLOW)⚠  This will publish crates in dependency order$(NC)\n"
+	@printf "$(YELLOW)⚠  Ensure git state is clean and version tags are correct$(NC)\n"
+	@printf "\n"
+	@if [ -z "$$CI" ]; then \
+		read -p "Continue with publish? [y/N] " -n 1 -r; \
+		echo; \
+		if [[ ! $$REPLY =~ ^[Yy]$$ ]]; then \
+			printf "$(RED)Publish cancelled$(NC)\n"; \
+			exit 1; \
+		fi; \
+	else \
+		printf "$(BLUE)Running in CI mode - skipping confirmation$(NC)\n"; \
+	fi
+	@printf "$(YELLOW)  → Publishing aimdb-executor (1/9)$(NC)\n"
+	@cargo publish -p aimdb-executor
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-core (2/9)$(NC)\n"
+	@cargo publish -p aimdb-core
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (3/9)$(NC)\n"
+	@cargo publish -p aimdb-tokio-adapter
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (4/9)$(NC)\n"
+	@cargo publish -p aimdb-embassy-adapter
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-client (5/9)$(NC)\n"
+	@cargo publish -p aimdb-client
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-sync (6/9)$(NC)\n"
+	@cargo publish -p aimdb-sync
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (7/9)$(NC)\n"
+	@cargo publish -p aimdb-mqtt-connector
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-cli (8/9)$(NC)\n"
+	@cargo publish -p aimdb-cli
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-mcp (9/9)$(NC)\n"
+	@cargo publish -p aimdb-mcp
+	@printf "$(GREEN)✓ All crates published successfully!$(NC)\n"
+	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
 
 ## Convenience commands
 check: fmt-check clippy test test-embedded deny
