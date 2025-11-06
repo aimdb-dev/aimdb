@@ -12,6 +12,9 @@ jobs:
   release:
     name: Create Release and Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      discussions: write
     steps:
     - uses: actions/checkout@v4
       with:
