@@ -192,45 +192,32 @@ security: deny audit
 
 ## Release Management commands
 publish-check:
-	@printf "$(GREEN)Testing crates.io publish (dry-run)...$(NC)\n"
-	@printf "$(YELLOW)Note: Only first crate (aimdb-executor) will fully validate.$(NC)\n"
-	@printf "$(YELLOW)      Others may fail looking for unpublished dependencies - this is expected.$(NC)\n"
+	@printf "$(GREEN)Testing crates.io publish readiness...$(NC)\n"
+	@printf "$(YELLOW)Note: cargo package requires dependencies to exist on crates.io.$(NC)\n"
+	@printf "$(YELLOW)      Only aimdb-executor (no deps) will fully validate before first publish.$(NC)\n"
+	@printf "$(YELLOW)      This is expected behavior - actual publish will work in order.$(NC)\n"
 	@printf "\n"
-	@printf "$(YELLOW)  → Testing aimdb-executor (no dependencies - full validation)$(NC)\n"
-	@cargo publish --dry-run --allow-dirty -p aimdb-executor
-	@printf "$(GREEN)✓ aimdb-executor ready to publish$(NC)\n"
+	@printf "$(YELLOW)  → Testing aimdb-executor (full validation)$(NC)\n"
+	@cargo publish --dry-run -p aimdb-executor
+	@printf "$(GREEN)✓ aimdb-executor is ready to publish!$(NC)\n"
 	@printf "\n"
-	@printf "$(YELLOW)  → Testing aimdb-core (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-core > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-core package OK$(NC)\n" || printf "$(RED)✗ aimdb-core package failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-tokio-adapter (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-tokio-adapter > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-tokio-adapter package OK$(NC)\n" || printf "$(RED)✗ aimdb-tokio-adapter package failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-embassy-adapter (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-embassy-adapter > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-embassy-adapter package OK$(NC)\n" || printf "$(RED)✗ aimdb-embassy-adapter package failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-client (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-client > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-client package OK$(NC)\n" || printf "$(RED)✗ aimdb-client package failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-sync (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-sync > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-sync package OK$(NC)\n" || printf "$(RED)✗ aimdb-sync package failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-mqtt-connector (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-mqtt-connector > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-mqtt-connector package OK$(NC)\n" || printf "$(RED)✗ aimdb-mqtt-connector package failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-cli (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-cli > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-cli package OK$(NC)\n" || printf "$(RED)✗ aimdb-cli package failed$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-mcp (basic validation only)$(NC)\n"
-	@cargo package --allow-dirty -p aimdb-mcp > /dev/null 2>&1 && printf "$(GREEN)✓ aimdb-mcp package OK$(NC)\n" || printf "$(RED)✗ aimdb-mcp package failed$(NC)\n"
-	@printf "\n"
-	@printf "$(GREEN)✓ All crates passed packaging validation!$(NC)\n"
-	@printf "$(BLUE)Ready to publish with 'make publish'$(NC)\n"
-	@printf "$(BLUE)Full dependency validation will occur during actual publish.$(NC)\n"
+	@printf "$(BLUE)ℹ  Other crates cannot be fully validated until dependencies are published.$(NC)\n"
+	@printf "$(BLUE)   Run 'make publish' to publish all crates in dependency order.$(NC)\n"
 
 publish:
 	@printf "$(GREEN)Publishing AimDB crates to crates.io...$(NC)\n"
 	@printf "$(YELLOW)⚠  This will publish crates in dependency order$(NC)\n"
 	@printf "$(YELLOW)⚠  Ensure git state is clean and version tags are correct$(NC)\n"
 	@printf "\n"
-	@read -p "Continue with publish? [y/N] " -n 1 -r; \
-	echo; \
-	if [[ ! $$REPLY =~ ^[Yy]$$ ]]; then \
-		printf "$(RED)Publish cancelled$(NC)\n"; \
-		exit 1; \
+	@if [ -z "$$CI" ]; then \
+		read -p "Continue with publish? [y/N] " -n 1 -r; \
+		echo; \
+		if [[ ! $$REPLY =~ ^[Yy]$$ ]]; then \
+			printf "$(RED)Publish cancelled$(NC)\n"; \
+			exit 1; \
+		fi; \
+	else \
+		printf "$(BLUE)Running in CI mode - skipping confirmation$(NC)\n"; \
 	fi
 	@printf "$(YELLOW)  → Publishing aimdb-executor (1/9)$(NC)\n"
 	@cargo publish -p aimdb-executor
