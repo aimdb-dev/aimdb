@@ -19,6 +19,8 @@ jobs:
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: thumbv7em-none-eabihf
     
     - name: Cache dependencies
       uses: actions/cache@v3
