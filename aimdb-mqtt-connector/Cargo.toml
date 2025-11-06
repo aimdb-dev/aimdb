@@ -28,7 +28,7 @@ tracing = ["dep:tracing", "aimdb-core/tracing"]
 defmt = ["dep:defmt", "aimdb-core/defmt"]
 
 [dependencies]
-aimdb-core = { path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false }
 
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }

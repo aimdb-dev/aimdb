@@ -12,8 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 # AimDB dependencies
-aimdb-client = { path = "../../aimdb-client" }
-aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-client = { version = "0.1.0", path = "../../aimdb-client" }
+aimdb-core = { version = "0.1.0", path = "../../aimdb-core", features = [
+    "std",
+] }
 
 # Async runtime
 tokio = { version = "1.48", features = [

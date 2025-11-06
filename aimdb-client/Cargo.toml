@@ -3,11 +3,15 @@ name = "aimdb-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "AimX protocol client library for connecting to AimDB instances"
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 # Core dependencies - protocol types from aimdb-core
-aimdb-core = { path = "../aimdb-core", features = ["std"] }
+aimdb-core = { version = "0.1.0", path = "../aimdb-core", features = ["std"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
