@@ -42,10 +42,10 @@ rumqttc = { version = "0.24", optional = true }
 
 # Embassy runtime dependencies (no_std)
 # Note: These use the workspace's local embassy checkout to avoid conflicts
-embassy-executor = { path = "../_external/embassy/embassy-executor", optional = true }
-embassy-time = { path = "../_external/embassy/embassy-time", optional = true }
-embassy-sync = { path = "../_external/embassy/embassy-sync", optional = true }
-embassy-net = { path = "../_external/embassy/embassy-net", optional = true, features = [
+embassy-executor = { version = "0.9.1", path = "../_external/embassy/embassy-executor", optional = true }
+embassy-time = { version = "0.5.0", path = "../_external/embassy/embassy-time", optional = true }
+embassy-sync = { version = "0.7.2", path = "../_external/embassy/embassy-sync", optional = true }
+embassy-net = { version = "0.7.1", path = "../_external/embassy/embassy-net", optional = true, features = [
     "tcp",
     "dhcpv4",
     "medium-ethernet",
@@ -54,12 +54,12 @@ embassy-net = { path = "../_external/embassy/embassy-net", optional = true, feat
 
 # MQTT library for Embassy (native embassy-net support!)
 # Using local checkout to match Embassy version
-mountain-mqtt = { path = "../_external/mountain-mqtt/mountain-mqtt", default-features = false, optional = true, features = [
+mountain-mqtt = { version = "0.2.0", path = "../_external/mountain-mqtt/mountain-mqtt", default-features = false, optional = true, features = [
     "embedded-io-async",
     "embedded-hal-async",
     "defmt",
 ] }
-mountain-mqtt-embassy = { path = "../_external/mountain-mqtt/mountain-mqtt-embassy", optional = true }
+mountain-mqtt-embassy = { version = "0.2.0", path = "../_external/mountain-mqtt/mountain-mqtt-embassy", optional = true }
 
 # Embedded utilities
 heapless = { workspace = true, optional = true }
