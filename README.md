@@ -11,8 +11,8 @@
 [![Docs](https://docs.rs/aimdb/badge.svg)](https://docs.rs/aimdb)
 [![Website](https://img.shields.io/badge/website-aimdb.dev-blue.svg)](https://aimdb.dev)
 
-> **⚠️ ACTIVE DEVELOPMENT**  
-> AimDB is in active development. Core architecture is functional with working runtime adapters (Tokio & Embassy), buffer systems, and MQTT connectivity. API may change as we refine the design.
+> **⚠️ PRE-RELEASE v0.1.0**  
+> AimDB v0.1.0 is the initial release with core functionality complete. The architecture is stable, but APIs may evolve based on community feedback. Production use is possible but proceed with caution and thorough testing.
 
 > **One codebase. Any hardware. Always in sync.**
 
@@ -45,55 +45,125 @@ Modern IoT stacks are fragmented:
 
 ---
 
+## 🎉 What's New in v0.1.0
+
+**Initial Release** - November 6, 2025
+
+This is the first public release of AimDB! Highlights include:
+
+- ✅ **Type-Safe Core**: `TypeId`-based record routing eliminates runtime string lookups
+- ✅ **Dual Runtime**: Works on both Tokio (std) and Embassy (no_std/embedded)
+- ✅ **Three Buffer Types**: SPMC Ring, SingleLatest, and Mailbox patterns
+- ✅ **MQTT Integration**: Connector works in both std and embedded environments
+- ✅ **Developer Tools**: MCP server for LLM-powered debugging, CLI tools, and client library
+- ✅ **Production Ready**: Comprehensive tests, CI/CD, security audits, and documentation
+
+See [CHANGELOG.md](CHANGELOG.md) for complete details.
+
+---
+
+## 📦 Installation
+
+Add AimDB to your project:
+
+```toml
+# For standard library (Tokio runtime)
+[dependencies]
+aimdb-core = "0.1"
+aimdb-tokio-adapter = "0.1"
+
+# Optional: MQTT connector
+aimdb-mqtt-connector = { version = "0.1", features = ["tokio-runtime"] }
+
+# Optional: Synchronous API
+aimdb-sync = "0.1"
+```
+
+For embedded systems using Embassy:
+
+```toml
+[dependencies]
+aimdb-core = { version = "0.1", default-features = false }
+aimdb-embassy-adapter = { version = "0.1", default-features = false, features = ["embassy-runtime"] }
+aimdb-mqtt-connector = { version = "0.1", default-features = false, features = ["embassy-runtime"] }
+```
+
+---
+
 ## 🏃 Quick Start
 
-**Prerequisites**: Docker (for dev container) or Rust 1.75+
+### Option 1: Use the Dev Container (Recommended)
+
+The fastest way to get started with a complete development environment:
 
 ```bash
-# Clone and open in VS Code dev container
+# Clone the repository
 git clone https://github.com/aimdb-dev/aimdb.git
 cd aimdb
+
+# Open in VS Code and reopen in container
 code .  # Then: Dev Containers: Reopen in Container
 
 # Build and test
 make check
 
-# Run examples
-cargo run --example tokio-mqtt-connector-demo
+# Run an example
+cargo run --example tokio-mqtt-connector-demo --features tokio-runtime,tracing
+```
+
+### Option 2: Local Development
+
+**Prerequisites**: Rust 1.75+ (2021 edition)
+
+```bash
+# Clone and build
+git clone https://github.com/aimdb-dev/aimdb.git
+cd aimdb
+cargo build --all-features
+
+# Run tests
+make test
+
+# Generate documentation
+make doc
 ```
 
 ### Basic Usage
 
 ```rust
-use aimdb_core::{AimDbBuilder, DbResult};
-use aimdb_tokio_adapter::TokioAdapter;
+use aimdb_core::{AimDbBuilder, DbResult, Producer, RuntimeContext};
+use aimdb_core::buffer::BufferCfg;
+use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct Temperature { celsius: f32 }
 
+// Producer: generates temperature readings
+async fn temperature_producer(
+    ctx: RuntimeContext<TokioAdapter>,
+    producer: Producer<Temperature, TokioAdapter>,
+) {
+    let temp = Temperature { celsius: 23.5 };
+    producer.produce(temp).await.ok();
+}
+
 #[tokio::main]
 async fn main() -> DbResult<()> {
-    let runtime = Arc::new(TokioAdapter::new());
+    let runtime = Arc::new(TokioAdapter::new()?);
     
-    let db = AimDbBuilder::new()
-        .runtime(runtime)
-        .with_record::<Temperature>(|reg| {
-            reg.buffer_sized::<32>(TokioBufferType::SpmcRing);
-        })
-        .build()?;
+    let mut builder = AimDbBuilder::new().runtime(runtime);
     
-    // Produce data
-    db.produce(Temperature { celsius: 23.5 }).await?;
+    builder.configure::<Temperature>(|reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 32 })
+           .source(temperature_producer);
+    });
     
-    // Subscribe to updates
-    let mut reader = db.subscribe::<Temperature>()?;
-    if let Ok(temp) = reader.recv().await {
-        println!("Temperature: {:.1}°C", temp.celsius);
-    }
-    
-    Ok(())
+    builder.run().await
 }
 ```
+
+For complete examples with consumers and MQTT integration, see the `/examples` directory.
 
 ---
 
@@ -130,38 +200,66 @@ Single slot with overwrite. Latest command wins.
 - Tokio & Embassy runtime adapters
 - Three buffer types with simplified API
 - MQTT connector (std and embedded)
-- Extension trait macro system
+- MCP server for LLM-powered introspection
+- CLI tools (basic implementation)
+- Remote access protocol (AimX v1)
+- Synchronous API wrapper
+- Comprehensive CI/CD and security auditing
 
-**� In Progress:**
+**🔨 In Progress:**
+- Performance benchmarks and optimization
 - Kafka connector (std environments)
-- CLI tools for debugging and introspection
-- Performance benchmarks
 
 **📋 Planned:**
 - DDS connector for real-time systems
 - HTTP/REST bridge
-- Advanced observability
+- Advanced observability and metrics
+- Multi-instance clustering
 
 ---
 
 ## 🤝 Contributing
 
-Contributions welcome! Here's how:
+We welcome contributions! AimDB is open source and community-driven.
 
-1. Clone the repository
+**Ways to contribute:**
+- 🐛 Report bugs and request features via [GitHub Issues](https://github.com/aimdb-dev/aimdb/issues)
+- 💡 Join discussions on design and architecture
+- 📝 Improve documentation and examples
+- 🔧 Submit pull requests with bug fixes or features
+- ⭐ Star the repo to show your support!
+
+**Getting Started:**
+1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-idea`
-3. Run `make check` to validate (fmt + clippy + tests)
-4. Submit a PR with a clear description
+3. Make your changes and add tests
+4. Run `make check` to validate (fmt + clippy + tests)
+5. Submit a PR with a clear description
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines, coding standards, and development workflow.
 
 ---
 
-## � Documentation
+## 🌟 Community & Support
 
-- **Examples**: Check `/examples` for working demos
+- **Issues**: Report bugs or request features at [GitHub Issues](https://github.com/aimdb-dev/aimdb/issues)
+- **Discussions**: Join the conversation in [GitHub Discussions](https://github.com/aimdb-dev/aimdb/discussions)
+- **Documentation**: Full API docs at [docs.rs/aimdb](https://docs.rs/aimdb)
+- **Examples**: Working demos in the `/examples` directory
+
+---
+
+## 📚 Documentation
+
+- **Changelog**: See [CHANGELOG.md](CHANGELOG.md) for release history
+- **Examples**: Check `/examples` for working demos:
+  - `tokio-mqtt-connector-demo` - Full MQTT integration with Tokio
+  - `embassy-mqtt-connector-demo` - Embedded MQTT on RP2040
+  - `sync-api-demo` - Synchronous API wrapper usage
+  - `remote-access-demo` - Cross-process introspection server
 - **Design Docs**: See `/docs/design` for architecture details
 - **API Docs**: Run `make doc` to generate rustdoc
+- **Contributing**: Read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 
 ---
 
