@@ -229,7 +229,7 @@ impl McpServer {
             },
             Tool {
                 name: "subscribe_record".to_string(),
-                description: "Subscribe to real-time updates for a specific record.\n\n\
+                description: "Subscribe to live updates for a specific record.\n\n\
                     ⚠️  IMPORTANT: You MUST ask the user how many samples to collect before subscribing.\n\
                     Unlimited subscriptions can fill disk space.\n\n\
                     Behavior:\n\

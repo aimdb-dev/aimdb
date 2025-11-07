@@ -8,7 +8,7 @@ The AimDB CLI is a thin client over the AimX v1 remote access protocol, providin
 - Discovering running AimDB instances
 - Listing and inspecting records
 - Getting current record values
-- Watching records in real-time
+- Watching records for live updates
 - Setting writable record values
 
 ## Installation
@@ -70,7 +70,7 @@ Example output:
 }
 ```
 
-### 4. Watch a Record in Real-Time
+### 4. Watch a Record for Live Updates
 
 ```bash
 aimdb watch server::Temperature
@@ -173,7 +173,7 @@ Options:
 ### Watch Command
 
 #### `watch`
-Watch a record in real-time, displaying updates as they arrive.
+Watch a record for live updates, displaying updates as they arrive.
 
 ```bash
 aimdb watch <RECORD> [OPTIONS]

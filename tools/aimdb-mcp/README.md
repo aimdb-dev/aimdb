@@ -10,7 +10,7 @@ Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspectio
 - **LLM-Powered**: Natural language queries to AimDB instances
 - **Auto-Discovery**: Automatically finds running AimDB servers
 - **Schema Inference**: Infers JSON schemas from record values
-- **Real-time Subscriptions**: Subscribe to record updates with automatic data capture
+- **Live Subscriptions**: Subscribe to record updates with automatic data capture
 - **Rich Toolset**: 11 tools covering all AimDB operations
 - **VS Code Integration**: Works seamlessly with GitHub Copilot
 
@@ -176,7 +176,7 @@ Result: JSON Schema with types, required fields, and example
 
 ### 7. subscribe_record
 
-Subscribe to real-time record updates:
+Subscribe to live record updates:
 
 ```
 Query: "Subscribe to temperature for 50 samples"

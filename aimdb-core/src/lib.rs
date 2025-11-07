@@ -1,6 +1,8 @@
 //! AimDB Core Database Engine
 //!
-//! Type-safe, async in-memory database for real-time data synchronization
+//! # aimdb-core
+//!
+//! Type-safe, async in-memory database for data synchronization
 //! across MCU → edge → cloud environments.
 //!
 //! # Architecture

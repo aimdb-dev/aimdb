@@ -9,7 +9,10 @@
 3. ❌ LLM has no way to access notification history
 4. ❌ LLM must poll via `get_record` instead of using subscription data
 
-**Impact**: Real-time monitoring, alerting, and event-driven workflows are impossible for LLMs despite having a working notification system.
+## Problem Statement
+
+**Status**: Implemented ✅  
+**Impact**: Monitoring, alerting, and event-driven workflows are impossible for LLMs despite having a working notification system.
 
 ## Proposed Solution: MCP Notification Memory
 
@@ -125,7 +128,7 @@ pub struct NotificationEntry {
 - ✅ **Easy cleanup** - `rm 2025-10-*` to delete old month
 - ✅ **Human-readable** filenames for debugging
 - ✅ **Append-only** (no corruption risk)
-- ✅ **Can be tailed** for real-time monitoring
+- ✅ **Can be tailed** for live monitoring
 
 **File Rotation Strategy**:
 - **Daily rotation**: New file created automatically for each date
@@ -508,7 +511,7 @@ LLM: (Reads error, consults schema, asks user)
    ```rust
    Tool {
        name: "subscribe_record".to_string(),
-       description: "Subscribe to real-time updates for a specific record.\n\n\
+       description: "Subscribe to live updates for a specific record.\n\n\
            ⚠️  IMPORTANT: You MUST ask the user how many samples to collect before subscribing.\n\
            Unlimited subscriptions can fill disk space.\n\n\
            Behavior:\n\
@@ -868,7 +871,7 @@ The MCP Notification Memory feature has been successfully implemented and tested
 
 ✅ **Verified Features**:
 - Files created at `~/.aimdb-mcp/notifications/{date}__{record}.jsonl`
-- Real-time notification capture and persistence
+- Live notification capture and persistence
 - Proper JSONL format with timestamp, value, and sequence
 - File sanitization and error handling
 - LLM-friendly analysis (demonstrated with mean/max calculations)

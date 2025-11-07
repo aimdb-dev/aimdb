@@ -56,7 +56,10 @@ From implementing **AimX v1** protocol and the **aimdb-cli** tool, we gained cri
 2. **Unix Domain Sockets**: Low overhead, OS-level security, no network exposure
 3. **Discovery Pattern**: Scanning `/tmp` and `/var/run/aimdb` for `.sock` files
 4. **Request/Response Model**: Clean separation of concerns, easy to reason about
-5. **Subscription Pattern**: Efficient for real-time monitoring (event funnel architecture)
+4. **Connection Management**: Automatic reconnection on failures
+5. **Subscription Pattern**: Efficient for monitoring (event funnel architecture)
+
+---
 6. **Security Model**: Read-only default with explicit write permissions per record
 7. **Connection Handling**: Tokio-based async I/O, bounded queues prevent backpressure
 
@@ -176,7 +179,7 @@ aimdb-mcp/
 │   │   ├── mod.rs
 │   │   ├── instance.rs      # Instance discovery tools
 │   │   ├── record.rs        # Record operations (list, get, set)
-│   │   └── subscription.rs  # Real-time monitoring tools
+│   │   └── subscription.rs  # Live monitoring tools
 │   ├── resources/           # MCP resource providers
 │   │   ├── mod.rs
 │   │   ├── schemas.rs       # Record schema resources
@@ -617,7 +620,7 @@ instructions: |
 - [ ] Connection failures are handled gracefully
 - [ ] 80%+ code coverage for tools
 
-### Phase 3: Real-time Monitoring (Week 3)
+### Phase 3: Live Monitoring (Week 3)
 
 **Goal**: Enable subscription-based monitoring.
 
@@ -766,7 +769,7 @@ rate_limit = 100
 
 - **Tracing Integration**: Distributed tracing for tool invocations
 - **Metrics Export**: Prometheus metrics for MCP server performance
-- **Dashboard Resource**: Real-time dashboard data in MCP resource
+- **Dashboard Resource**: Live dashboard data in MCP resource
 - **Alerting Templates**: LLM-assisted alert rule generation
 
 ### v2.0 - Advanced Workflows

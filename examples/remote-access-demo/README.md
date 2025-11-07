@@ -90,8 +90,7 @@ echo '{"version":"1.0","client":"test"}' | socat - UNIX-CONNECT:/tmp/aimdb-demo.
 ## Next Steps
 
 Future enhancements will add:
-- `record.get` - Read current value of a record
-- `record.subscribe` - Stream real-time updates
-- `record.unsubscribe` - Stop streaming
-- Authentication with tokens
-- Read-write mode with `record.set`
+- `record.get` - Get current value
+- `record.set` - Set writable records
+- `record.subscribe` - Stream live updates
+- `instance.shutdown` - Graceful shutdown

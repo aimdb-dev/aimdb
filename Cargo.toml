@@ -26,8 +26,8 @@ authors = ["AimDB Team <team@aimdb.dev>"]
 license = "Apache-2.0"
 repository = "https://github.com/aimdb-dev/aimdb"
 homepage = "https://aimdb.dev"
-description = "Async in-memory database for real-time synchronization across MCU → edge → cloud environments"
-keywords = ["database", "async", "embedded", "real-time", "sync"]
+description = "Async in-memory database for data synchronization across MCU → edge → cloud environments"
+keywords = ["database", "async", "embedded", "sync", "iot"]
 categories = ["database-implementations", "embedded", "asynchronous"]
 
 [workspace.dependencies]

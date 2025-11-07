@@ -1,4 +1,4 @@
-//! Watch Command - Real-time Record Monitoring
+//! Watch Command - Live Record Monitoring
 
 use crate::error::CliResult;
 use crate::output::live;
@@ -7,7 +7,7 @@ use aimdb_client::discovery::find_instance;
 use clap::Args;
 use tokio::signal;
 
-/// Watch a record in real-time
+/// Watch a record for live updates
 #[derive(Debug, Args)]
 pub struct WatchCommand {
     /// Record name to watch

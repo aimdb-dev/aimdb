@@ -1,4 +1,4 @@
-//! Subscription management tools for real-time record monitoring
+//! Subscription management tools for live record monitoring
 //!
 //! Implements subscribe_record, unsubscribe_record, and list_subscriptions tools.
 

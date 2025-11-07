@@ -873,7 +873,7 @@ where
 
 /// Handles record.subscribe method
 ///
-/// Subscribes to real-time updates for a record.
+/// Subscribes to live updates for a record.
 ///
 /// # Arguments
 /// * `db` - Database instance

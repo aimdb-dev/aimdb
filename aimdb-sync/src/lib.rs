@@ -176,7 +176,7 @@
 //!
 //! - **Overhead**: ~100-500μs per operation vs pure async (channel + context switch)
 //! - **Throughput**: Limited by channel capacity (default: 100 items)
-//! - **Latency**: Excellent for <50ms target, not suitable for hard real-time
+//! - **Latency**: Excellent for <50ms target, not suitable for hard low-latency requirements
 //!
 //! ## Error Handling
 //!

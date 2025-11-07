@@ -16,7 +16,7 @@
 
 > **One codebase. Any hardware. Always in sync.**
 
-AimDB is an **async, in-memory database** for real-time data synchronization across **MCU → edge → cloud** — without internal brokers or vendor lock-in. Built in Rust with `no_std` support for embedded systems.
+AimDB is an **async, in-memory database** for data synchronization across **MCU → edge → cloud** — without internal brokers or vendor lock-in. Built in Rust with `no_std` support for embedded systems.
 
 ---
 
@@ -25,7 +25,7 @@ AimDB is an **async, in-memory database** for real-time data synchronization acr
 Modern IoT stacks are fragmented:
 - Multiple brokers/databases to sync MCU, edge, and cloud
 - Device-specific integrations that make hardware swaps risky
-- Batch-oriented pipelines that miss real-time insights
+- Batch-oriented pipelines that miss low-latency insights
 
 **AimDB simplifies this:**
 - **Fast**: Lock-free buffers + async transforms for <50ms reactivity
@@ -211,7 +211,7 @@ Single slot with overwrite. Latest command wins.
 - Kafka connector (std environments)
 
 **📋 Planned:**
-- DDS connector for real-time systems
+- DDS connector for low-latency systems
 - HTTP/REST bridge
 - Advanced observability and metrics
 - Multi-instance clustering

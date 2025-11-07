@@ -1,7 +1,7 @@
-//! AimDB Database Implementation
+//! Core database implementation
 //!
-//! This module provides the unified database implementation for AimDB, supporting async
-//! in-memory storage with type-safe records and real-time synchronization across
+//! `AimDb` is the central coordination point for AimDB, managing type-safe
+//! in-memory storage with type-safe records and data synchronization across
 //! MCU → edge → cloud environments.
 
 use crate::{AimDb, DbError, DbResult, RuntimeAdapter, RuntimeContext};

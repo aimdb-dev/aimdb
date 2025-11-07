@@ -1,7 +1,7 @@
 # GitHub Copilot Instructions for AimDB
 
 ## Project Status & Quick Start
-AimDB is an async, in-memory database for real-time data synchronization across **MCU → edge → cloud** environments, targeting <50ms reactivity. The core architecture is fully implemented and functional.
+AimDB is an async, in-memory database for data synchronization across **MCU → edge → cloud** environments, targeting <50ms reactivity. The core architecture is fully implemented and functional.
 
 **Implementation Status:**
 - ✅ **Core Database** - Type-safe records with optimized TypeId lookups
@@ -38,7 +38,7 @@ When working with running AimDB instances, **always prefer using the MCP tools**
 - `mcp_aimdb_get_record` - Get current value of a record
 - `mcp_aimdb_set_record` - Set value of writable records
 - `mcp_aimdb_query_schema` - Infer JSON Schema from record values
-- `mcp_aimdb_subscribe_record` - Subscribe to real-time updates
+- `mcp_aimdb_subscribe_record` - Subscribe to live updates
 - `mcp_aimdb_unsubscribe_record` - Unsubscribe from updates
 - `mcp_aimdb_get_instance_info` - Get server version and capabilities
 - `mcp_aimdb_list_subscriptions` - List active subscriptions
@@ -74,7 +74,7 @@ mcp_aimdb_set_record(
 - ✅ Inspecting running AimDB instances
 - ✅ Testing record schemas and values
 - ✅ Debugging database state
-- ✅ Monitoring real-time data
+- ✅ Monitoring live data
 - ✅ Validating record configurations
 - ✅ Quick data exploration
 

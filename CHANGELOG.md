@@ -47,14 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP Server** (`aimdb-mcp`): LLM-powered introspection and debugging
   - Discover running AimDB instances
   - Query record values and schemas
-  - Subscribe to real-time updates
+  - Subscribe to live updates
   - Set writable record values
   - JSON Schema inference from record values
   - Notification persistence to JSONL files
 - **CLI Tool** (`aimdb-cli`): Command-line interface (skeleton)
   - Instance discovery and management commands
   - Record inspection capabilities
-  - Real-time watch functionality
+  - Live watch functionality
 - **Client Library** (`aimdb-client`): Reusable connection and discovery logic
   - Unix domain socket communication
   - AimX v1 protocol implementation
@@ -88,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dev container setup for consistent development environment
 
 ### Design Goals Achieved
-- ✅ Sub-50ms latency for real-time synchronization
+- ✅ Sub-50ms latency for data synchronization
 - ✅ Lock-free buffer operations
 - ✅ Cross-platform support (MCU → edge → cloud)
 - ✅ Type safety with zero-cost abstractions
@@ -123,7 +123,7 @@ AimDB v0.1.0 establishes the foundational architecture for async, in-memory data
 **Highlights:**
 - 🚀 Dual runtime support: Works on both standard library (Tokio) and embedded (Embassy)
 - 🔒 Type-safe record system eliminates runtime string lookups
-- 📦 Three buffer types cover most real-time data patterns
+- 📦 Three buffer types cover most data patterns
 - 🔌 MQTT connector works in both std and `no_std` environments
 - 🤖 MCP server enables LLM-powered introspection
 - ✅ 27+ core tests, comprehensive CI/CD, security auditing

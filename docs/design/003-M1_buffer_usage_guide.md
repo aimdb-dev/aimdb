@@ -31,10 +31,10 @@ This guide explains **when to use each buffer type**, **how to configure them**,
 #### When to Use
 
 ```
-📊 Sensor Data Streaming
-   → 100 Hz temperature readings
-   → Multiple analysis pipelines (real-time, historical, ML)
-   → Some consumers may lag, but latest data matters most
+**Example**: Temperature sensor → Multiple consumers
+   → Edge processor (real-time display)
+   → Cloud logger (historical storage)
+   → ML pipeline (real-time analysis, historical training)
 
 🔍 System Event Monitoring  
    → Application events, errors, warnings

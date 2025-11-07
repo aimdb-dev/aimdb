@@ -90,7 +90,7 @@ Each file contains JSONL (JSON Lines) format with one notification per line:
 
 ## Tips
 - Files are append-only (safe for concurrent reads)
-- Use `tail -f` for real-time monitoring
+- Use `tail -f` for live monitoring
 - Process with standard tools: `jq`, `grep`, `awk`
 - Each subscription maintains independent sequence numbers
 "#,

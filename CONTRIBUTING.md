@@ -4,7 +4,9 @@ Thank you for your interest in contributing to AimDB! This document provides gui
 
 ## Project Overview
 
-AimDB is an async, in-memory database designed for real-time data synchronization across **MCU → edge → cloud** environments, targeting <50ms reactivity. The project is built in Rust and supports multiple platform targets from embedded microcontrollers to cloud deployments.
+---
+
+AimDB is an async, in-memory database designed for data synchronization across **MCU → edge → cloud** environments, targeting <50ms reactivity. The project is built in Rust and supports multiple platform targets from embedded microcontrollers to cloud deployments.
 
 ## Getting Started
 
@@ -204,12 +206,9 @@ cargo test test_name --features tokio-runtime
 Use clear, descriptive commit messages:
 
 ```
-add async stream handler for real-time data sync
+add async stream handler for data sync
 
-- Implement lock-free ring buffer for <50ms latency
-- Add feature flag for embedded targets
-- Include comprehensive tests and examples
-```
+Implements bidirectional streaming between embedded and cloud layers
 
 ## Project Structure
 

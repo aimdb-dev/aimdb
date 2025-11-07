@@ -1,10 +1,10 @@
 # aimdb-core
 
-Core database engine for AimDB - async in-memory storage with real-time synchronization.
+Core database engine for AimDB - async in-memory storage with data synchronization.
 
 ## Overview
 
-`aimdb-core` provides the foundational database engine for AimDB, designed for real-time data synchronization across **MCU → edge → cloud** environments with low-latency synchronization.
+`aimdb-core` provides the foundational database engine for AimDB, designed for data synchronization across **MCU → edge → cloud** environments with low-latency synchronization.
 
 **Key Features:**
 - **Type-Safe Records**: `TypeId`-based routing eliminates string keys and enables compile-time safety

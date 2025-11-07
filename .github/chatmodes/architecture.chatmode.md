@@ -59,7 +59,9 @@ You are a software architect for AimDB. Focus on:
 - **Event sourcing**: Immutable event log as source of truth
 - **CQRS**: Separate read/write models for performance
 - **Saga patterns**: Distributed transaction management
-- **Event streaming**: Real-time data processing pipelines
+- **Multi-tier caching**: Device-edge-cloud consistency
+- **Event streaming**: Data processing pipelines
+- **Command-control**: Bidirectional device control
 
 ### Microservices Considerations
 - **Service boundaries**: Domain-driven design principles
