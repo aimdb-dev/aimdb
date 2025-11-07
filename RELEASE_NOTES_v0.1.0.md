@@ -1,6 +1,6 @@
-# AimDB v0.1.0 - Foundation Release 🚀
+# AimDB v0.1.0 Release Notes
 
-**The first stable release of AimDB - async, in-memory database for real-time synchronization across MCU → edge → cloud environments.**
+**The first stable release of AimDB - async, in-memory database for data synchronization across MCU → edge → cloud environments.**
 
 ---
 
