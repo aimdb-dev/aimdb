@@ -64,6 +64,8 @@ dependencies = [
  "aimdb-executor",
  "anyhow",
  "defmt 1.0.1",
+ "futures",
+ "futures-core",
  "heapless 0.9.1",
  "metrics",
  "portable-atomic",
@@ -89,6 +91,7 @@ dependencies = [
  "embedded-hal-async",
  "embedded-hal-nb",
  "futures",
+ "futures-core",
  "heapless 0.9.1",
  "rand",
  "tracing",
@@ -712,7 +715,7 @@ dependencies = [
  "panic-probe",
  "rand",
  "static_cell",
- "stm32-fmc",
+ "stm32-fmc 0.3.2",
 ]
 
 [[package]]
@@ -781,7 +784,7 @@ dependencies = [
  "rand_core 0.9.3",
  "sdio-host",
  "static_assertions",
- "stm32-fmc",
+ "stm32-fmc 0.4.0",
  "stm32-metapac",
  "vcell",
  "volatile-register",
@@ -1985,9 +1988,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32-fmc"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72692594faa67f052e5e06dd34460951c21e83bc55de4feb8d2666e2f15480a2"
+dependencies = [
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
 name = "stm32-metapac"
 version = "18.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-b9f6b0c542d85ee695d71c35ced195e0cef51ac0#9b8fb67703361e2237b6c1ec4f1ee5949223d412"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-b77c8d968f53b18d6bdcd052e354b5070ec2bbc2#9c7a4afd16fd9733b346d6803adeef43622cac00"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

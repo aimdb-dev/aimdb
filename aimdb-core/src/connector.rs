@@ -32,6 +32,7 @@ use core::fmt::{self, Debug};
 extern crate alloc;
 
 use alloc::{
+    boxed::Box,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -338,6 +339,93 @@ impl ConnectorLink {
     pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.config.push((key.into(), value.into()));
         self
+    }
+}
+
+/// Type alias for type-erased deserializer callbacks
+///
+/// Converts raw bytes to a boxed Any that can be downcast to the concrete type.
+/// This allows storing deserializers for different types in a unified collection.
+pub type DeserializerFn =
+    Arc<dyn Fn(&[u8]) -> Result<Box<dyn core::any::Any + Send>, String> + Send + Sync>;
+
+/// Configuration for an inbound connector link (External → AimDB)
+///
+/// Stores the parsed URL, configuration, and type-erased deserializer until
+/// the record is built. During build, the adapter spawns a background task
+/// that subscribes to the external source and produces values into AimDB.
+#[derive(Clone)]
+pub struct InboundConnectorLink {
+    /// Parsed connector URL
+    pub url: ConnectorUrl,
+
+    /// Additional configuration options (protocol-specific)
+    pub config: Vec<(String, String)>,
+
+    /// Deserialization callback that converts bytes to typed values
+    ///
+    /// This is a type-erased function that takes `&[u8]` and returns
+    /// `Result<Box<dyn Any + Send>, String>`. The spawned task will
+    /// downcast to the concrete type before producing.
+    ///
+    /// Available in both `std` and `no_std` (with `alloc` feature) environments.
+    pub deserializer: DeserializerFn,
+}
+
+impl Debug for InboundConnectorLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InboundConnectorLink")
+            .field("url", &self.url)
+            .field("config", &self.config)
+            .field("deserializer", &"<function>")
+            .finish()
+    }
+}
+
+impl InboundConnectorLink {
+    /// Creates a new inbound connector link from a URL and deserializer
+    pub fn new(url: ConnectorUrl, deserializer: DeserializerFn) -> Self {
+        Self {
+            url,
+            config: Vec::new(),
+            deserializer,
+        }
+    }
+
+    /// Adds a configuration option
+    pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.push((key.into(), value.into()));
+        self
+    }
+
+    /// Converts this link's config to a ConnectorConfig
+    pub fn to_connector_config(&self) -> crate::transport::ConnectorConfig {
+        let mut cfg = crate::transport::ConnectorConfig::default();
+
+        for (key, value) in &self.config {
+            match key.as_str() {
+                "qos" => {
+                    if let Ok(qos) = value.parse::<u8>() {
+                        cfg.qos = qos;
+                    }
+                }
+                "retain" => {
+                    if let Ok(retain) = value.parse::<bool>() {
+                        cfg.retain = retain;
+                    }
+                }
+                "timeout_ms" => {
+                    if let Ok(timeout) = value.parse::<u32>() {
+                        cfg.timeout_ms = Some(timeout);
+                    }
+                }
+                _ => {
+                    cfg.protocol_options.push((key.clone(), value.clone()));
+                }
+            }
+        }
+
+        cfg
     }
 }
 

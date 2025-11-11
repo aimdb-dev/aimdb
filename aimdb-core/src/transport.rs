@@ -16,6 +16,8 @@ extern crate alloc;
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::future::Future;
 use core::pin::Pin;
+use core::task::{Context, Poll};
+use futures_core::Stream;
 
 /// Protocol-agnostic connector configuration
 ///
@@ -176,6 +178,65 @@ pub trait Connector: Send + Sync {
         config: &ConnectorConfig,
         payload: &[u8],
     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>>;
+
+    /// Subscribe to data from external system (inbound: External → AimDB)
+    ///
+    /// Returns a stream of raw bytes from the external system.
+    /// Each item represents a message/event that should be deserialized and
+    /// published to an AimDB record.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns an empty stream (immediately ends). Connectors that don't support
+    /// inbound data flow can use this default implementation.
+    ///
+    /// # Arguments
+    /// * `source` - Protocol-specific subscription path:
+    ///   - MQTT: "sensors/temperature" or "sensors/#" (wildcards)
+    ///   - Kafka: "topic-name"
+    ///   - WebSocket: "ws/events"
+    /// * `config` - Subscription configuration (QoS, protocol options)
+    ///
+    /// # Returns
+    /// A stream of `Result<Vec<u8>, PublishError>` where:
+    /// - `Ok(bytes)` - Successfully received message payload
+    /// - `Err(error)` - Connection error, deserialization failure, etc.
+    ///
+    /// # Example Implementation
+    ///
+    /// ```rust,ignore
+    /// fn subscribe(
+    ///     &self,
+    ///     source: &str,
+    ///     config: &ConnectorConfig,
+    /// ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, PublishError>> + Send + '_>> {
+    ///     let stream = self.event_receiver
+    ///         .filter_map(|event| match event {
+    ///             Event::Message { payload, .. } => Some(Ok(payload)),
+    ///             Event::Error(e) => Some(Err(e.into())),
+    ///             _ => None,
+    ///         });
+    ///     Box::pin(stream)
+    /// }
+    /// ```
+    fn subscribe(
+        &self,
+        _source: &str,
+        _config: &ConnectorConfig,
+    ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, PublishError>> + Send + '_>> {
+        /// Empty stream that immediately ends (no inbound support)
+        struct EmptyStream;
+
+        impl Stream for EmptyStream {
+            type Item = Result<Vec<u8>, PublishError>;
+
+            fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                Poll::Ready(None)
+            }
+        }
+
+        Box::pin(EmptyStream)
+    }
 }
 
 #[cfg(test)]
@@ -219,5 +280,20 @@ mod tests {
         let err = PublishError::ConnectionFailed;
         let err2 = err; // Should be Copy
         assert_eq!(err, err2);
+    }
+
+    #[tokio::test]
+    async fn test_connector_default_subscribe() {
+        let connector = Arc::new(MockConnector);
+
+        // Test that default subscribe() returns an empty stream
+        let mut stream = connector.subscribe("test/topic", &ConnectorConfig::default());
+
+        // Use StreamExt to test the stream
+        use futures::StreamExt;
+
+        // Empty stream should return None immediately
+        let result = stream.next().await;
+        assert!(result.is_none(), "Expected empty stream to return None");
     }
 }

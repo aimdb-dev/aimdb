@@ -462,9 +462,14 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     #[cfg(feature = "std")]
     buffer_cfg: Option<crate::buffer::BufferCfg>,
 
-    /// List of connector links for external system integration
+    /// List of outbound connector links (AimDB → External)
     /// Each link represents a protocol connector (MQTT, Kafka, HTTP, etc.)
     connectors: Vec<crate::connector::ConnectorLink>,
+
+    /// List of inbound connector links (External → AimDB)
+    /// Each link spawns a background task that subscribes to an external source
+    /// and produces values into this record's buffer
+    inbound_connectors: Vec<crate::connector::InboundConnectorLink>,
 
     /// Metadata tracking (std only - for remote access)
     #[cfg(feature = "std")]
@@ -511,6 +516,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             #[cfg(feature = "std")]
             buffer_cfg: None,
             connectors: Vec::new(),
+            inbound_connectors: Vec::new(),
             #[cfg(feature = "std")]
             metadata: RecordMetadataTracker::new::<T>(),
             #[cfg(feature = "std")]
@@ -744,6 +750,29 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// The count of connectors
     pub fn connector_count(&self) -> usize {
         self.connectors.len()
+    }
+
+    /// Returns all inbound connector links (External → AimDB)
+    ///
+    /// # Returns
+    /// A slice of inbound connector links
+    pub fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
+        &self.inbound_connectors
+    }
+
+    /// Returns the number of registered inbound connectors
+    ///
+    /// # Returns
+    /// The count of inbound connectors
+    pub fn inbound_connector_count(&self) -> usize {
+        self.inbound_connectors.len()
+    }
+
+    /// Adds an inbound connector link (External → AimDB)
+    ///
+    /// Called by `.link_from()` builder API during record configuration.
+    pub fn add_inbound_connector(&mut self, link: crate::connector::InboundConnectorLink) {
+        self.inbound_connectors.push(link);
     }
 
     /// Returns the number of registered consumers
