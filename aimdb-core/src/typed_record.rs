@@ -963,8 +963,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
                 continue;
             };
 
-            // Subscribe to the external source
-            let stream = connector.subscribe(link.url.path(), &link.to_connector_config());
+            // Subscribe to the external source (use resource_id for protocols like MQTT)
+            let source = link.url.resource_id();
+            let stream = connector.subscribe(&source, &link.to_connector_config());
 
             // Create a producer for this record type
             let producer = crate::typed_api::Producer::new(db.clone());

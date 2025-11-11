@@ -7,9 +7,10 @@
 //! - Explicit lifecycle management (user controls when clients are created)
 
 use aimdb_core::connector::ConnectorUrl;
-use rumqttc::{AsyncClient, EventLoop, MqttOptions};
+use rumqttc::{AsyncClient, EventLoop, MqttOptions, Packet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 
 /// MQTT connector for a single broker connection
 ///
@@ -31,6 +32,9 @@ use std::time::Duration;
 /// ```
 pub struct MqttConnector {
     client: Arc<AsyncClient>,
+    /// Broadcast channel for incoming MQTT messages
+    /// Each message is (topic, payload) tuple
+    message_tx: Arc<broadcast::Sender<(String, Vec<u8>)>>,
 }
 
 impl MqttConnector {
@@ -94,11 +98,16 @@ impl MqttConnector {
         // Create client and event loop
         let (client, event_loop) = AsyncClient::new(mqtt_opts, 10);
 
+        // Create broadcast channel for incoming messages
+        let (message_tx, _rx) = broadcast::channel(1024);
+        let message_tx = Arc::new(message_tx);
+
         // Spawn event loop task (required by rumqttc)
-        spawn_event_loop(event_loop, broker_key);
+        spawn_event_loop(event_loop, broker_key, message_tx.clone());
 
         Ok(Self {
             client: Arc::new(client),
+            message_tx,
         })
     }
 }
@@ -119,7 +128,7 @@ impl aimdb_core::transport::Connector for MqttConnector {
     > {
         use aimdb_core::transport::PublishError;
 
-        // Extract topic from destination (destination is already the topic)
+        // Destination is already the MQTT topic (from ConnectorUrl::resource_id())
         let topic = destination.to_string();
         let payload_owned = payload.to_vec();
         let qos = config.qos;
@@ -154,6 +163,65 @@ impl aimdb_core::transport::Connector for MqttConnector {
             Ok(())
         })
     }
+
+    fn subscribe(
+        &self,
+        source: &str,
+        config: &aimdb_core::transport::ConnectorConfig,
+    ) -> core::pin::Pin<
+        Box<
+            dyn futures_core::Stream<Item = Result<Vec<u8>, aimdb_core::transport::PublishError>>
+                + Send
+                + 'static,
+        >,
+    > {
+        // Source is already the MQTT topic (from ConnectorUrl::resource_id())
+        let topic = source.to_string();
+        let qos = config.qos;
+        let client = self.client.clone();
+        let mut message_rx = self.message_tx.subscribe();
+
+        #[cfg(feature = "tracing")]
+        {
+            tracing::debug!("subscribe() called with source: '{}' (MQTT topic)", topic);
+        }
+
+        #[cfg(feature = "tracing")]
+        let topic_for_log = topic.clone();
+
+        // Clone topic for the async stream
+        let topic_for_stream = topic.clone();
+
+        // Spawn a task to subscribe to the MQTT topic
+        tokio::spawn(async move {
+            let qos_level = match qos {
+                0 => rumqttc::QoS::AtMostOnce,
+                1 => rumqttc::QoS::AtLeastOnce,
+                2 => rumqttc::QoS::ExactlyOnce,
+                _ => rumqttc::QoS::AtMostOnce,
+            };
+
+            #[cfg(feature = "tracing")]
+            tracing::info!("Subscribing to MQTT topic: {}", topic_for_log);
+
+            if let Err(_e) = client.subscribe(&topic, qos_level).await {
+                #[cfg(feature = "tracing")]
+                tracing::error!("Failed to subscribe to topic {}: {}", topic_for_log, _e);
+            }
+        });
+
+        // Create a stream that filters messages for this specific topic
+        let stream = async_stream::stream! {
+            while let Ok((msg_topic, payload)) = message_rx.recv().await {
+                // Simple topic matching (no wildcards yet)
+                if msg_topic == topic_for_stream {
+                    yield Ok(payload);
+                }
+            }
+        };
+
+        Box::pin(stream)
+    }
 }
 
 /// Spawn the MQTT event loop in a background task
@@ -162,20 +230,39 @@ impl aimdb_core::transport::Connector for MqttConnector {
 /// - Network I/O (reading/writing packets)
 /// - Reconnection logic
 /// - QoS handshakes
+/// - Forwarding incoming publishes to subscribers
 ///
 /// # Arguments
 /// * `event_loop` - The rumqttc EventLoop to run
 /// * `_broker_key` - Broker identifier for logging (unused in release builds)
-fn spawn_event_loop(mut event_loop: EventLoop, _broker_key: String) {
+/// * `message_tx` - Broadcast sender for incoming MQTT messages
+fn spawn_event_loop(
+    mut event_loop: EventLoop,
+    _broker_key: String,
+    message_tx: Arc<broadcast::Sender<(String, Vec<u8>)>>,
+) {
     tokio::spawn(async move {
         #[cfg(feature = "tracing")]
         tracing::debug!("MQTT event loop started for {}", _broker_key);
 
         loop {
             match event_loop.poll().await {
-                Ok(_notification) => {
-                    // Event loop is running normally
-                    // Notifications include: Incoming publishes, connection status, etc.
+                Ok(notification) => {
+                    // Forward incoming publishes to subscribers
+                    if let rumqttc::Event::Incoming(Packet::Publish(publish)) = notification {
+                        let topic = publish.topic.clone();
+                        let payload = publish.payload.to_vec();
+
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!(
+                            "Received MQTT message on topic '{}' ({} bytes)",
+                            topic,
+                            payload.len()
+                        );
+
+                        // Broadcast to all subscribers (ignore if no one is listening)
+                        let _ = message_tx.send((topic, payload));
+                    }
                 }
                 Err(_e) => {
                     #[cfg(feature = "tracing")]

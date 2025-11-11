@@ -194,6 +194,35 @@ impl ConnectorUrl {
     pub fn path(&self) -> &str {
         self.path.as_deref().unwrap_or("/")
     }
+
+    /// Returns the resource identifier for protocols where the URL specifies a topic/key
+    ///
+    /// This is designed for the simplified connector model where each connector manages
+    /// a single broker/server connection, and URLs only specify the resource (topic, key, path).
+    ///
+    /// # Examples
+    ///
+    /// - `mqtt://commands/temperature` → `"commands/temperature"` (topic)
+    /// - `mqtt://sensors/temp` → `"sensors/temp"` (topic)
+    /// - `kafka://events` → `"events"` (topic)
+    ///
+    /// The format is `scheme://resource` where resource = host + path combined.
+    pub fn resource_id(&self) -> String {
+        let path = self.path().trim_start_matches('/');
+
+        // Combine host and path to form the complete resource identifier
+        // For mqtt://commands/temperature: host="commands", path="/temperature"
+        // Result: "commands/temperature"
+        if !self.host.is_empty() && !path.is_empty() {
+            alloc::format!("{}/{}", self.host, path)
+        } else if !self.host.is_empty() {
+            self.host.clone()
+        } else if !path.is_empty() {
+            path.to_string()
+        } else {
+            String::new()
+        }
+    }
 }
 
 impl fmt::Display for ConnectorUrl {

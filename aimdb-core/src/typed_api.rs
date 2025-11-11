@@ -669,16 +669,8 @@ async fn publish_via_connector(
     let parsed_url =
         ConnectorUrl::parse(url).map_err(|_| crate::transport::PublishError::InvalidDestination)?;
 
-    let destination: String = if let Some(path) = parsed_url.path.as_deref() {
-        let path_part = path.trim_start_matches('/');
-        if path_part.is_empty() {
-            parsed_url.host.clone()
-        } else {
-            alloc::format!("{}/{}", parsed_url.host, path_part)
-        }
-    } else {
-        parsed_url.host.clone()
-    };
+    // Use resource_id() to get the topic/destination from the URL
+    let destination = parsed_url.resource_id();
 
     let mut connector_config = ConnectorConfig {
         qos: 0,

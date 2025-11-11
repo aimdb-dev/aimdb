@@ -13,7 +13,14 @@ categories = ["database-implementations", "embedded", "network-programming"]
 [features]
 default = []
 std = ["aimdb-core/std", "thiserror"]
-tokio-runtime = ["std", "tokio", "rumqttc", "uuid"]
+tokio-runtime = [
+    "std",
+    "tokio",
+    "rumqttc",
+    "uuid",
+    "async-stream",
+    "futures-util",
+]
 embassy-runtime = [
     "embassy-executor",
     "embassy-time",
@@ -39,6 +46,11 @@ uuid = { version = "1.0", features = ["v4"], optional = true }
 # Tokio runtime dependencies (std)
 tokio = { workspace = true, optional = true, features = ["sync", "time"] }
 rumqttc = { version = "0.24", optional = true }
+async-stream = { version = "0.3", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = [
+    "alloc",
+] }
+futures-core = { version = "0.3", default-features = false }
 
 # Embassy runtime dependencies (no_std)
 # Note: These use the workspace's local embassy checkout to avoid conflicts

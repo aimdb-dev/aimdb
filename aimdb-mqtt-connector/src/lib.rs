@@ -1,6 +1,8 @@
 //! MQTT connector for AimDB
 //!
-//! Provides MQTT publishing for AimDB records with automatic consumer registration.
+//! Provides bidirectional MQTT integration for AimDB records:
+//! - **Outbound**: Automatic publishing from AimDB to MQTT topics
+//! - **Inbound**: Subscribe to MQTT topics and produce into AimDB buffers
 //!
 //! ## Features
 //!
@@ -8,7 +10,7 @@
 //! - `embassy-runtime`: Embassy connector for embedded systems (planned)
 //! - `tracing`: Debug logging support
 //!
-//! ## Usage
+//! ## Outbound Usage (AimDB → MQTT)
 //!
 //! ```rust,ignore
 //! use aimdb_core::AimDb;
@@ -30,6 +32,49 @@
 //!
 //! // Publishing happens automatically
 //! db.produce(Temperature { celsius: 22.5 }).await?;
+//! ```
+//!
+//! ## Inbound Usage (MQTT → AimDB)
+//!
+//! ```rust,ignore
+//! use aimdb_core::AimDb;
+//! use aimdb_mqtt_connector::MqttConnector;
+//! use std::sync::Arc;
+//!
+//! // Create connector
+//! let connector = Arc::new(MqttConnector::new("mqtt://localhost:1883").await?);
+//! let db = AimDb::build_with(runtime, |builder| {
+//!     builder
+//!         .with_connector("mqtt", connector)
+//!         .configure::<Command>(|reg| {
+//!             reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
+//!                .tap(|_ctx, consumer| async move { /* process commands */ })
+//!                .link_from("mqtt://commands/device")
+//!                    .with_deserializer(|data| {
+//!                        serde_json::from_slice::<Command>(data)
+//!                            .map_err(|e| e.to_string())
+//!                    })
+//!                    .finish();
+//!         });
+//! })?;
+//!
+//! // Commands from MQTT are automatically produced into AimDB buffer
+//! ```
+//!
+//! ## Bidirectional Usage
+//!
+//! ```rust,ignore
+//! builder.configure::<SensorData>(|reg| {
+//!     reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
+//!        // Inbound: MQTT → AimDB
+//!        .link_from("mqtt://sensors/raw")
+//!            .with_deserializer(|data| parse_sensor_data(data))
+//!            .finish()
+//!        // Outbound: AimDB → MQTT (after processing)
+//!        .link_to("mqtt://sensors/processed")
+//!            .with_serializer(|data| serde_json::to_vec(data).map_err(|e| e.to_string()))
+//!            .finish();
+//! });
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
