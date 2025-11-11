@@ -209,7 +209,7 @@ pub trait Connector: Send + Sync {
     ///     &self,
     ///     source: &str,
     ///     config: &ConnectorConfig,
-    /// ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, PublishError>> + Send + '_>> {
+    /// ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, PublishError>> + Send + 'static>> {
     ///     let stream = self.event_receiver
     ///         .filter_map(|event| match event {
     ///             Event::Message { payload, .. } => Some(Ok(payload)),
@@ -223,7 +223,7 @@ pub trait Connector: Send + Sync {
         &self,
         _source: &str,
         _config: &ConnectorConfig,
-    ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, PublishError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, PublishError>> + Send + 'static>> {
         /// Empty stream that immediately ends (no inbound support)
         struct EmptyStream;
 

@@ -18,10 +18,10 @@ use core::fmt::Debug;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
 use crate::buffer::DynBuffer;
 
@@ -335,6 +335,15 @@ pub trait AnyRecord: Send + Sync {
     #[doc(hidden)]
     #[cfg(feature = "std")]
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
+
+    /// Returns the number of registered inbound connectors
+    fn inbound_connector_count(&self) -> usize;
+
+    /// Spawns inbound connector tasks for this record
+    ///
+    /// This method is called by runtime adapters to spawn background tasks
+    /// Get the inbound connector links for this record
+    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
 }
 
 // Helper extension trait for type-safe downcasting
@@ -389,13 +398,20 @@ impl<T> RecordSpawner<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
-    /// Spawns all tasks (producer and consumers) for a record
+    /// Spawns all tasks (producer, consumers, and inbound connectors) for a record
     ///
     /// Downcasts type-erased AnyRecord to TypedRecord<T, R> and spawns tasks.
+    ///
+    /// # Arguments
+    /// * `record` - The type-erased record to spawn tasks for
+    /// * `runtime` - The runtime adapter for spawning tasks
+    /// * `db` - The database instance
+    /// * `connectors` - Map of registered connectors by scheme
     pub fn spawn_all_tasks<R>(
         record: &dyn AnyRecord,
         runtime: &Arc<R>,
         db: &Arc<crate::builder::AimDb<R>>,
+        connectors: &BTreeMap<String, Arc<dyn crate::transport::Connector>>,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
@@ -425,6 +441,11 @@ where
         // Spawn consumer tasks if present
         if typed_record.consumer_count() > 0 {
             typed_record.spawn_consumer_tasks(runtime, db)?;
+        }
+
+        // Spawn inbound connector tasks if present
+        if typed_record.inbound_connector_count() > 0 {
+            typed_record.spawn_inbound_tasks(db, connectors)?;
         }
 
         Ok(())
@@ -905,6 +926,119 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         Ok(())
     }
 
+    /// Spawns inbound connector tasks for this record
+    ///
+    /// For each inbound connector registered via `.link_from()`, this method spawns
+    /// a background task that:
+    /// 1. Subscribes to the external system (via `Connector::subscribe()`)
+    /// 2. Receives messages as a Stream of bytes
+    /// 3. Deserializes bytes to typed values
+    /// 4. Produces values into this record's buffer
+    ///
+    /// # Arguments
+    /// * `db` - The database instance (used to create producers and spawn tasks)
+    /// * `connectors` - Map of registered connectors by scheme
+    ///
+    /// # Returns
+    /// `Ok(())` if all tasks were spawned successfully
+    pub fn spawn_inbound_tasks(
+        &self,
+        db: &Arc<crate::AimDb<R>>,
+        connectors: &BTreeMap<String, Arc<dyn crate::transport::Connector>>,
+    ) -> crate::DbResult<()>
+    where
+        R: aimdb_executor::Spawn,
+        T: Sync,
+    {
+        use futures_util::StreamExt;
+
+        // For each inbound connector link
+        for link in &self.inbound_connectors {
+            let scheme = link.url.scheme();
+
+            // Get the connector for this scheme
+            let Some(connector) = connectors.get(scheme) else {
+                #[cfg(feature = "tracing")]
+                tracing::error!("No connector registered for scheme: {}", scheme);
+                continue;
+            };
+
+            // Subscribe to the external source
+            let stream = connector.subscribe(link.url.path(), &link.to_connector_config());
+
+            // Create a producer for this record type
+            let producer = crate::typed_api::Producer::new(db.clone());
+            let deserializer = link.deserializer.clone();
+
+            #[cfg(feature = "tracing")]
+            tracing::info!("Spawning inbound connector task for: {}", link.url);
+
+            #[cfg(feature = "tracing")]
+            let url_for_logging = link.url.clone();
+
+            // Spawn a background task that bridges stream → producer
+            db.spawn_task(async move {
+                let mut stream = Box::pin(stream);
+
+                #[cfg(feature = "tracing")]
+                tracing::debug!("Inbound connector task started for: {}", url_for_logging);
+
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(ref bytes) => {
+                            // Deserialize bytes → Box<dyn Any>
+                            match (deserializer)(bytes.as_slice()) {
+                                Ok(boxed_any) => {
+                                    // Downcast to T
+                                    if let Some(value) = boxed_any.downcast_ref::<T>() {
+                                        // Produce into buffer
+                                        if let Err(_e) = producer.produce(value.clone()).await {
+                                            #[cfg(feature = "tracing")]
+                                            tracing::error!(
+                                                "Inbound connector produce failed for {}: {:?}",
+                                                url_for_logging,
+                                                _e
+                                            );
+                                        }
+                                    } else {
+                                        #[cfg(feature = "tracing")]
+                                        tracing::error!(
+                                            "Inbound connector type mismatch for {}: expected {}",
+                                            url_for_logging,
+                                            core::any::type_name::<T>()
+                                        );
+                                    }
+                                }
+                                Err(_e) => {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::error!(
+                                        "Inbound connector deserialize failed for {}: {}",
+                                        url_for_logging,
+                                        _e
+                                    );
+                                }
+                            }
+                        }
+                        Err(ref _e) => {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!(
+                                "Inbound connector stream error for {}: {:?}",
+                                url_for_logging,
+                                _e
+                            );
+                            // Connector should handle reconnection
+                        }
+                    }
+                }
+
+                #[cfg(feature = "tracing")]
+                tracing::info!("Inbound connector stream ended for: {}", url_for_logging);
+            })?;
+        }
+
+        Ok(())
+    }
+
     /// Produces a value by pushing to the buffer
     ///
     /// Enqueues value for consumer tasks and updates latest snapshot.
@@ -1251,5 +1385,13 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
         );
 
         Ok(())
+    }
+
+    fn inbound_connector_count(&self) -> usize {
+        self.inbound_connectors.len()
+    }
+
+    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
+        &self.inbound_connectors
     }
 }

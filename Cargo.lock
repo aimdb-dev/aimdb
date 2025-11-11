@@ -66,6 +66,7 @@ dependencies = [
  "defmt 1.0.1",
  "futures",
  "futures-core",
+ "futures-util",
  "heapless 0.9.1",
  "metrics",
  "portable-atomic",

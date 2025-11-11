@@ -316,8 +316,10 @@ where
         };
         f(&mut reg);
 
-        // Store a spawn function that captures the concrete type T
+        // Store a spawn function that captures the concrete type T and connectors
         let type_id = TypeId::of::<T>();
+        let connectors_clone = self.connectors.clone();
+
         #[allow(clippy::type_complexity)]
         let spawn_fn: Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>) -> DbResult<()> + Send> =
             Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>| {
@@ -325,7 +327,7 @@ where
                 use crate::typed_record::RecordSpawner;
 
                 let typed_record = db.inner().get_typed_record::<T, R>()?;
-                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db)
+                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db, &connectors_clone)
             });
 
         // Store the spawn function (type-erased in Box<dyn Any>)

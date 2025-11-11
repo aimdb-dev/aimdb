@@ -40,6 +40,9 @@ aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-featur
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
 
 # Serialization (optional)
 serde = { workspace = true, optional = true }
