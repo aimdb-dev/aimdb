@@ -22,7 +22,7 @@
 //!         .with_connector("mqtt", connector)
 //!         .configure::<Temperature>(|reg| {
 //!             reg.producer(|_em, temp| async move { /* ... */ })
-//!                .link("mqtt://sensors/temperature")
+//!                .link_to("mqtt://sensors/temperature")
 //!                    .with_serializer(|t| serde_json::to_vec(t).map_err(|e| e.to_string()))
 //!                    .finish();
 //!         });

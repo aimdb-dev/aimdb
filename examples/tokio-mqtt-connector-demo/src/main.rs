@@ -98,14 +98,14 @@ async fn main() -> DbResult<()> {
             .source(temperature_producer)
             .tap(temperature_consumer)
             // Publish to MQTT as JSON
-            .link("mqtt://sensors/temperature")
+            .link_to("mqtt://sensors/temperature")
             .with_serializer(|temp: &Temperature| {
                 serde_json::to_vec(temp)
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
             })
             .finish()
             // Publish to MQTT as CSV with QoS 1 and retain
-            .link("mqtt://sensors/raw")
+            .link_to("mqtt://sensors/raw")
             .with_config("qos", "1")
             .with_config("retain", "true")
             .with_serializer(|temp: &Temperature| {

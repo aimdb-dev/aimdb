@@ -248,9 +248,9 @@ where
     ///     .with_connector("mqtt", Arc::new(mqtt_connector))
     ///     .with_connector("shmem", Arc::new(shmem_connector));
     ///
-    /// // Now .link() can route to either:
-    /// //   .link("mqtt://sensors/temp")  → mqtt_connector
-    /// //   .link("shmem://temp_data")    → shmem_connector
+    /// // Now .link_to() can route to either:
+    /// //   .link_to("mqtt://sensors/temp")  → mqtt_connector
+    /// //   .link_to("shmem://temp_data")    → shmem_connector
     /// ```
     pub fn with_connector(
         mut self,

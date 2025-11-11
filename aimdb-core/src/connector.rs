@@ -19,7 +19,7 @@
 //! fn weather_alert_record() -> RecordConfig<WeatherAlert> {
 //!     RecordConfig::builder()
 //!         .buffer(BufferCfg::SingleLatest)
-//!         .link("mqtt://broker.example.com:1883")
+//!         .link_to("mqtt://broker.example.com:1883")
 //!             .out::<WeatherAlert>(|reader, mqtt| {
 //!                 publish_alerts_to_mqtt(reader, mqtt)
 //!             })

@@ -352,11 +352,11 @@ async fn main(spawner: Spawner) {
             .source(temperature_producer)
             .tap(temperature_consumer)
             // Publish to MQTT as JSON
-            .link("mqtt://sensors/temperature")
+            .link_to("mqtt://sensors/temperature")
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish()
             // Publish to MQTT as CSV with QoS 1 and retain
-            .link("mqtt://sensors/raw")
+            .link_to("mqtt://sensors/raw")
             .with_qos(1)
             .with_retain(true)
             .with_serializer(|temp: &Temperature| Ok(temp.to_csv()))

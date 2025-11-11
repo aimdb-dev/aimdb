@@ -147,7 +147,7 @@ impl std::error::Error for PublishError {}
 ///     .runtime(runtime)
 ///     .with_connector("mqtt", Arc::new(mqtt_connector))
 ///     .configure::<Temperature>(|reg| {
-///         reg.link("mqtt://sensors/temp")
+///         reg.link_to("mqtt://sensors/temp")
 ///            .with_qos(1)
 ///            .finish()
 ///     })

@@ -39,7 +39,7 @@ impl TokioAdapter {
     ///     let db = AimDb::build_with(runtime.clone(), |builder| {
     ///         builder.configure::<WeatherAlert>(|reg| {
     ///             reg.source(|_em, alert| async { /* ... */ })
-    ///                .link("mqtt://broker:1883").finish();
+    ///                .link_to("mqtt://broker:1883").finish();
     ///         });
     ///     })?;
     ///     
@@ -131,9 +131,9 @@ mod tests {
         builder.configure::<TestMessage>(|reg| {
             reg.source(|_ctx, _msg| async {})
                 .tap(|_ctx, _consumer| async {})
-                .link("mqtt://broker.example.com:1883")
+                .link_to("mqtt://broker.example.com:1883")
                 .finish()
-                .link("kafka://kafka1:9092/messages")
+                .link_to("kafka://kafka1:9092/messages")
                 .finish();
         });
 
