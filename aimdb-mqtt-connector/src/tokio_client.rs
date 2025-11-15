@@ -7,56 +7,131 @@
 //! - Explicit lifecycle management (user controls when clients are created)
 
 use aimdb_core::connector::ConnectorUrl;
+use aimdb_core::router::{Router, RouterBuilder};
+use aimdb_core::ConnectorBuilder;
 use rumqttc::{AsyncClient, EventLoop, MqttOptions, Packet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
 
-/// MQTT connector for a single broker connection
+/// MQTT connector for a single broker connection with router-based dispatch
 ///
-/// Each connector manages ONE MQTT broker connection. For multiple brokers,
-/// create multiple connectors and register them with different schemes.
+/// Each connector manages ONE MQTT broker connection. The router determines
+/// how incoming messages are dispatched to AimDB producers.
 ///
-/// # Example
+/// # Usage Pattern
 ///
 /// ```rust,ignore
 /// use aimdb_mqtt_connector::MqttConnector;
 ///
-/// // Create connector for a specific broker
-/// let connector = MqttConnector::new("mqtt://localhost:1883").await?;
-///
-/// // Register with database
+/// // Configure database with MQTT links
 /// let db = AimDbBuilder::new()
-///     .with_connector("mqtt", Arc::new(connector))
-///     .build()?;
+///     .runtime(runtime)
+///     .with_connector(MqttConnector::new("mqtt://localhost:1883"))
+///     .configure::<Temperature>(|reg| {
+///         reg.link_from("mqtt://commands/temp")
+///            .with_deserializer(deserialize_temp)
+///            .with_buffer(BufferCfg::SingleLatest)
+///            .with_serialization();
+///     })
+///     .build().await?;
 /// ```
-pub struct MqttConnector {
-    client: Arc<AsyncClient>,
-    /// Broadcast channel for incoming MQTT messages
-    /// Each message is (topic, payload) tuple
-    message_tx: Arc<broadcast::Sender<(String, Vec<u8>)>>,
+///
+/// The connector collects routes from the database during build() and
+/// automatically subscribes to all required MQTT topics.
+pub struct MqttConnectorBuilder {
+    broker_url: String,
 }
 
-impl MqttConnector {
-    /// Create a new MQTT connector for a specific broker
-    ///
-    /// Creates an MQTT client and spawns its event loop immediately.
+impl MqttConnectorBuilder {
+    /// Create a new MQTT connector builder
     ///
     /// # Arguments
     /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
-    ///   Note: The URL should NOT include a topic - just the broker address
-    ///
-    /// # Returns
-    /// * `Ok(connector)` if connection was created successfully
-    /// * `Err(_)` if URL is invalid
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let connector = MqttConnector::new("mqtt://localhost:1883").await?;
-    /// let connector_secure = MqttConnector::new("mqtts://cloud.example.com:8883").await?;
+    /// let builder = MqttConnector::new("mqtt://localhost:1883");
     /// ```
-    pub async fn new(broker_url: &str) -> Result<Self, String> {
+    pub fn new(broker_url: impl Into<String>) -> Self {
+        Self {
+            broker_url: broker_url.into(),
+        }
+    }
+}
+
+impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for MqttConnectorBuilder {
+    fn build<'a>(
+        &'a self,
+        db: &'a aimdb_core::builder::AimDb<R>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = aimdb_core::DbResult<Arc<dyn aimdb_core::transport::Connector>>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            // Collect inbound routes from database
+            let routes = db.collect_inbound_routes("mqtt");
+
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "Collected {} inbound routes for MQTT connector",
+                routes.len()
+            );
+
+            // Convert routes to Router
+            let router = RouterBuilder::from_routes(routes).build();
+
+            #[cfg(feature = "tracing")]
+            tracing::info!("MQTT router has {} topics", router.resource_ids().len());
+
+            // Build the actual connector
+            let connector = MqttConnectorImpl::build_internal(&self.broker_url, router)
+                .await
+                .map_err(|e| {
+                    #[cfg(feature = "std")]
+                    {
+                        aimdb_core::DbError::RuntimeError {
+                            message: format!("Failed to build MQTT connector: {}", e).into(),
+                        }
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        aimdb_core::DbError::RuntimeError { _message: () }
+                    }
+                })?;
+
+            Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
+        })
+    }
+
+    fn scheme(&self) -> &str {
+        "mqtt"
+    }
+}
+
+/// Internal MQTT connector implementation
+///
+/// This is the actual connector created after collecting routes from the database.
+pub struct MqttConnectorImpl {
+    client: Arc<AsyncClient>,
+    router: Arc<Router>,
+}
+
+impl MqttConnectorImpl {
+    /// Create a new MQTT connector with pre-configured router (internal)
+    ///
+    /// Creates a connection to the MQTT broker and subscribes to all topics
+    /// defined in the router. The event loop is spawned automatically.
+    ///
+    /// # Arguments
+    /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
+    /// * `router` - Pre-configured router with all routes
+    async fn build_internal(broker_url: &str, router: Router) -> Result<Self, String> {
         // Parse the broker URL - we accept it with or without a topic
         let mut url = broker_url.to_string();
 
@@ -98,22 +173,49 @@ impl MqttConnector {
         // Create client and event loop
         let (client, event_loop) = AsyncClient::new(mqtt_opts, 10);
 
-        // Create broadcast channel for incoming messages
-        let (message_tx, _rx) = broadcast::channel(1024);
-        let message_tx = Arc::new(message_tx);
+        let router_arc = Arc::new(router);
+        let client_arc = Arc::new(client);
 
-        // Spawn event loop task (required by rumqttc)
-        spawn_event_loop(event_loop, broker_key, message_tx.clone());
+        // Subscribe to topics from the router
+        let topics = router_arc.resource_ids();
+        for topic in &topics {
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Subscribing to MQTT topic: {}", topic);
+
+            client_arc
+                .subscribe(*topic, rumqttc::QoS::AtLeastOnce)
+                .await
+                .map_err(|e| format!("Failed to subscribe to topic '{}': {}", topic, e))?;
+        }
+
+        // Spawn event loop task with router
+        spawn_event_loop(event_loop, broker_key, router_arc.clone());
 
         Ok(Self {
-            client: Arc::new(client),
-            message_tx,
+            client: client_arc,
+            router: router_arc,
         })
+    }
+
+    /// Get list of all MQTT topics this connector is subscribed to
+    ///
+    /// Returns the unique topics from the router configuration.
+    /// Useful for debugging and monitoring.
+    pub fn topics(&self) -> Vec<&'static str> {
+        self.router.resource_ids()
+    }
+
+    /// Get the number of routes configured in this connector
+    ///
+    /// Each route represents a (topic, type) mapping.
+    /// Multiple routes can exist for the same topic if different types subscribe to it.
+    pub fn route_count(&self) -> usize {
+        self.router.route_count()
     }
 }
 
 // Implement the connector trait from aimdb-core
-impl aimdb_core::transport::Connector for MqttConnector {
+impl aimdb_core::transport::Connector for MqttConnectorImpl {
     fn publish(
         &self,
         destination: &str,
@@ -164,83 +266,23 @@ impl aimdb_core::transport::Connector for MqttConnector {
         })
     }
 
-    fn subscribe(
-        &self,
-        source: &str,
-        config: &aimdb_core::transport::ConnectorConfig,
-    ) -> core::pin::Pin<
-        Box<
-            dyn futures_core::Stream<Item = Result<Vec<u8>, aimdb_core::transport::PublishError>>
-                + Send
-                + 'static,
-        >,
-    > {
-        // Source is already the MQTT topic (from ConnectorUrl::resource_id())
-        let topic = source.to_string();
-        let qos = config.qos;
-        let client = self.client.clone();
-        let mut message_rx = self.message_tx.subscribe();
-
-        #[cfg(feature = "tracing")]
-        {
-            tracing::debug!("subscribe() called with source: '{}' (MQTT topic)", topic);
-        }
-
-        #[cfg(feature = "tracing")]
-        let topic_for_log = topic.clone();
-
-        // Clone topic for the async stream
-        let topic_for_stream = topic.clone();
-
-        // Spawn a task to subscribe to the MQTT topic
-        tokio::spawn(async move {
-            let qos_level = match qos {
-                0 => rumqttc::QoS::AtMostOnce,
-                1 => rumqttc::QoS::AtLeastOnce,
-                2 => rumqttc::QoS::ExactlyOnce,
-                _ => rumqttc::QoS::AtMostOnce,
-            };
-
-            #[cfg(feature = "tracing")]
-            tracing::info!("Subscribing to MQTT topic: {}", topic_for_log);
-
-            if let Err(_e) = client.subscribe(&topic, qos_level).await {
-                #[cfg(feature = "tracing")]
-                tracing::error!("Failed to subscribe to topic {}: {}", topic_for_log, _e);
-            }
-        });
-
-        // Create a stream that filters messages for this specific topic
-        let stream = async_stream::stream! {
-            while let Ok((msg_topic, payload)) = message_rx.recv().await {
-                // Simple topic matching (no wildcards yet)
-                if msg_topic == topic_for_stream {
-                    yield Ok(payload);
-                }
-            }
-        };
-
-        Box::pin(stream)
-    }
+    // Note: subscribe() method removed in v0.2.0
+    // Inbound routing now uses the MqttRouter passed to new()
 }
 
-/// Spawn the MQTT event loop in a background task
+/// Spawn the MQTT event loop in a background task with router-based dispatch
 ///
 /// The event loop is required by rumqttc to handle:
 /// - Network I/O (reading/writing packets)
 /// - Reconnection logic
 /// - QoS handshakes
-/// - Forwarding incoming publishes to subscribers
+/// - Routing incoming publishes to AimDB producers
 ///
 /// # Arguments
 /// * `event_loop` - The rumqttc EventLoop to run
 /// * `_broker_key` - Broker identifier for logging (unused in release builds)
-/// * `message_tx` - Broadcast sender for incoming MQTT messages
-fn spawn_event_loop(
-    mut event_loop: EventLoop,
-    _broker_key: String,
-    message_tx: Arc<broadcast::Sender<(String, Vec<u8>)>>,
-) {
+/// * `router` - Router for dispatching messages to producers
+fn spawn_event_loop(mut event_loop: EventLoop, _broker_key: String, router: Arc<Router>) {
     tokio::spawn(async move {
         #[cfg(feature = "tracing")]
         tracing::debug!("MQTT event loop started for {}", _broker_key);
@@ -248,7 +290,7 @@ fn spawn_event_loop(
         loop {
             match event_loop.poll().await {
                 Ok(notification) => {
-                    // Forward incoming publishes to subscribers
+                    // Route incoming publishes via the router
                     if let rumqttc::Event::Incoming(Packet::Publish(publish)) = notification {
                         let topic = publish.topic.clone();
                         let payload = publish.payload.to_vec();
@@ -260,8 +302,11 @@ fn spawn_event_loop(
                             payload.len()
                         );
 
-                        // Broadcast to all subscribers (ignore if no one is listening)
-                        let _ = message_tx.send((topic, payload));
+                        // Route to appropriate producer(s)
+                        if let Err(_e) = router.route(&topic, &payload).await {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!("Failed to route message on topic '{}': {}", topic, _e);
+                        }
                     }
                 }
                 Err(_e) => {
@@ -279,22 +324,26 @@ fn spawn_event_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aimdb_core::router::RouterBuilder;
 
     #[tokio::test]
-    async fn test_connector_creation() {
-        let connector = MqttConnector::new("mqtt://localhost:1883").await;
+    async fn test_connector_creation_with_router() {
+        let router = RouterBuilder::new().build();
+        let connector = MqttConnectorImpl::build_internal("mqtt://localhost:1883", router).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_connector_with_port() {
-        let connector = MqttConnector::new("mqtt://broker.local:9999").await;
+        let router = RouterBuilder::new().build();
+        let connector = MqttConnectorImpl::build_internal("mqtt://broker.local:9999", router).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_invalid_url() {
-        let connector = MqttConnector::new("not-a-valid-url").await;
+        let router = RouterBuilder::new().build();
+        let connector = MqttConnectorImpl::build_internal("not-a-valid-url", router).await;
         assert!(connector.is_err());
     }
 }

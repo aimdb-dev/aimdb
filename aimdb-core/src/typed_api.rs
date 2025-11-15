@@ -57,7 +57,7 @@ use core::marker::PhantomData;
 extern crate alloc;
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    format,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -133,6 +133,29 @@ where
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Producer<T, R> {}
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Producer<T, R> {}
 
+// Implement ProducerTrait for type-erased routing
+#[async_trait::async_trait]
+impl<T, R> crate::connector::ProducerTrait for Producer<T, R>
+where
+    T: Send + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+{
+    async fn produce_any(&self, value: Box<dyn core::any::Any + Send>) -> Result<(), String> {
+        // Downcast the Box<dyn Any> to Box<T>
+        let value = value.downcast::<T>().map_err(|_| {
+            format!(
+                "Failed to downcast value to type {}",
+                core::any::type_name::<T>()
+            )
+        })?;
+
+        // Produce the value
+        self.produce(*value)
+            .await
+            .map_err(|e| format!("Failed to produce value: {}", e))
+    }
+}
+
 // ============================================================================
 // Consumer - Type-safe value consumption
 // ============================================================================
@@ -167,7 +190,7 @@ where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
 {
-    /// Create a new consumer (internal use only)
+    /// Create a new consumer
     pub(crate) fn new(db: Arc<AimDb<R>>) -> Self {
         Self {
             db,
@@ -204,8 +227,8 @@ pub struct RecordRegistrar<
 > {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T, R>,
-    /// Connectors indexed by scheme
-    pub(crate) connectors: &'a BTreeMap<String, Arc<dyn crate::transport::Connector>>,
+    /// Connector builders indexed by scheme
+    pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder<R>>],
 }
 
 impl<'a, T, R> RecordRegistrar<'a, T, R>
@@ -446,7 +469,7 @@ where
         let mut link = ConnectorLink::new(url.clone());
         link.config = self.config.clone();
 
-        let serializer_opt = if let Some(typed_callback) = self.serializer.clone() {
+        if let Some(typed_callback) = self.serializer.clone() {
             let erased: crate::connector::SerializerFn =
                 Arc::new(move |any: &dyn core::any::Any| {
                     if let Some(value) = any.downcast_ref::<T>() {
@@ -456,80 +479,32 @@ where
                     }
                 });
             link.serializer = Some(erased);
-            Some(self.serializer.clone().unwrap())
-        } else {
-            None
-        };
+        }
 
-        let has_serializer = serializer_opt.is_some();
-        let has_connector = self.registrar.connectors.get(&scheme).is_some();
+        // Validation: Check that connector builder is registered
+        let has_connector = self
+            .registrar
+            .connector_builders
+            .iter()
+            .any(|b| b.scheme() == scheme);
 
-        if let (Some(serializer), Some(connector)) =
-            (serializer_opt, self.registrar.connectors.get(&scheme))
-        {
-            let connector_clone = connector.clone();
-            let url_clone = url_string.clone();
-            let config_clone = self.config.clone();
-
-            let rec = &mut self.registrar.rec;
-            rec.add_consumer(move |consumer, _ctx_any| {
-                let connector_ref = connector_clone.clone();
-                let url_ref = url_clone.clone();
-                let config_ref = config_clone.clone();
-                let ser = serializer.clone();
-
-                async move {
-                    let Ok(mut reader) = consumer.subscribe() else {
-                        #[cfg(feature = "tracing")]
-                        tracing::error!("Failed to subscribe to buffer for connector {}", url_ref);
-                        return;
-                    };
-
-                    while let Ok(value) = reader.recv().await {
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!(
-                            "Connector triggered for {} with type {}",
-                            url_ref,
-                            core::any::type_name::<T>()
-                        );
-
-                        match ser(&value) {
-                            Ok(bytes) => {
-                                if let Err(_e) = publish_via_connector(
-                                    &connector_ref,
-                                    &url_ref,
-                                    &config_ref,
-                                    bytes,
-                                )
-                                .await
-                                {
-                                    #[cfg(feature = "tracing")]
-                                    tracing::error!("Failed to publish: {:?}", _e);
-                                }
-                            }
-                            Err(_e) => {
-                                #[cfg(feature = "tracing")]
-                                tracing::error!("Failed to serialize: {:?}", _e);
-                            }
-                        }
-                    }
-                }
-            });
-        } else if !has_serializer {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                "Connector configured for {} but no serializer provided.",
-                url_string
-            );
-        } else if !has_connector {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                "Connector configured for {} but no connector registered for scheme '{}'.",
-                url_string,
-                scheme
+        if !has_connector {
+            panic!(
+                "No connector registered for scheme '{}'. Register via .with_connector() for {}",
+                scheme, url_string
             );
         }
 
+        // Validation: Serializer must be provided
+        if link.serializer.is_none() {
+            panic!(
+                "Outbound connector requires a serializer. Call .with_serializer() for {}",
+                url_string
+            );
+        }
+
+        // Store the connector link - consumers will be created later in build()
+        // after connectors are actually built
         self.registrar.rec.add_connector(link);
         self.registrar
     }
@@ -632,8 +607,14 @@ where
             );
         };
 
-        // Validation: Connector must be registered
-        if !self.registrar.connectors.contains_key(&scheme) {
+        // Validation: Connector builder must be registered
+        let has_connector = self
+            .registrar
+            .connector_builders
+            .iter()
+            .any(|b| b.scheme() == scheme);
+
+        if !has_connector {
             panic!(
                 "No connector registered for scheme '{}'. Register via .with_connector() for {}",
                 scheme, self.url
@@ -650,57 +631,22 @@ where
         let mut link = InboundConnectorLink::new(url, erased_deserializer);
         link.config = self.config;
 
+        // Add producer factory callback that captures type T (std only)
+        #[cfg(feature = "std")]
+        {
+            link = link.with_producer_factory(|db_any| {
+                // Downcast Arc<dyn Any> to Arc<AimDb<R>>
+                let db = db_any
+                    .downcast::<crate::builder::AimDb<R>>()
+                    .expect("Failed to downcast to AimDb");
+                Box::new(Producer::<T, R>::new(db)) as Box<dyn crate::connector::ProducerTrait>
+            });
+        }
+
         // Add to record
         self.registrar.rec.add_inbound_connector(link);
         self.registrar
     }
-}
-
-/// Helper function to publish via a connector
-async fn publish_via_connector(
-    connector: &Arc<dyn crate::transport::Connector>,
-    url: &str,
-    config: &[(String, String)],
-    bytes: Vec<u8>,
-) -> Result<(), crate::transport::PublishError> {
-    use crate::connector::ConnectorUrl;
-    use crate::transport::ConnectorConfig;
-
-    let parsed_url =
-        ConnectorUrl::parse(url).map_err(|_| crate::transport::PublishError::InvalidDestination)?;
-
-    // Use resource_id() to get the topic/destination from the URL
-    let destination = parsed_url.resource_id();
-
-    let mut connector_config = ConnectorConfig {
-        qos: 0,
-        retain: false,
-        timeout_ms: Some(5000),
-        protocol_options: Vec::new(),
-    };
-
-    for (key, value) in config {
-        match key.as_str() {
-            "qos" => {
-                connector_config.qos = value.parse().unwrap_or(0).min(2);
-            }
-            "retain" => {
-                connector_config.retain = value.parse().unwrap_or(false);
-            }
-            "timeout_ms" => {
-                connector_config.timeout_ms = value.parse().ok();
-            }
-            _ => {
-                connector_config
-                    .protocol_options
-                    .push((key.clone(), value.clone()));
-            }
-        }
-    }
-
-    connector
-        .publish(&destination, &connector_config, &bytes)
-        .await
 }
 
 // ============================================================================

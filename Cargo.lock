@@ -63,6 +63,7 @@ version = "0.1.0"
 dependencies = [
  "aimdb-executor",
  "anyhow",
+ "async-trait",
  "defmt 1.0.1",
  "futures",
  "futures-core",
@@ -133,8 +134,10 @@ name = "aimdb-mqtt-connector"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-executor",
  "aimdb-tokio-adapter",
  "async-stream",
+ "async-trait",
  "defmt 1.0.1",
  "embassy-executor",
  "embassy-net",
@@ -277,6 +280,17 @@ name = "async-stream-impl"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.108",
+]
+
+[[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -790,6 +804,7 @@ dependencies = [
  "static_assertions",
  "stm32-fmc 0.4.0",
  "stm32-metapac",
+ "trait-set",
  "vcell",
  "volatile-register",
 ]
@@ -2321,6 +2336,17 @@ checksum = "04659ddb06c87d233c566112c1c9c5b9e98256d9af50ec3bc9c8327f873a7568"
 dependencies = [
  "quote",
  "syn 2.0.108",
+]
+
+[[package]]
+name = "trait-set"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b79e2e9c9ab44c6d7c20d5976961b47e8f49ac199154daa514b77cd1ab536625"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]

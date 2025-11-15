@@ -131,17 +131,11 @@ async fn main() -> DbResult<()> {
 
     let runtime = Arc::new(TokioAdapter::new()?);
 
-    let mqtt_connector = Arc::new(
-        aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883")
-            .await
-            .expect("Failed to create MQTT connector"),
-    );
-
     println!("🔧 Creating database with bidirectional MQTT connector...");
 
-    let mut builder = AimDbBuilder::new()
-        .runtime(runtime)
-        .with_connector("mqtt", mqtt_connector.clone());
+    let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
+        aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883"),
+    );
 
     // Configure Temperature record (outbound: AimDB → MQTT)
     builder.configure::<Temperature>(|reg| {

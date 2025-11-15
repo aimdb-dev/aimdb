@@ -28,6 +28,8 @@
 //! ```
 
 use core::fmt::{self, Debug};
+use core::future::Future;
+use core::pin::Pin;
 
 extern crate alloc;
 
@@ -41,7 +43,7 @@ use alloc::{
 #[cfg(feature = "std")]
 use alloc::format;
 
-use crate::DbResult;
+use crate::{builder::AimDb, transport::Connector, DbResult};
 
 /// Error that can occur during serialization
 ///
@@ -378,12 +380,34 @@ impl ConnectorLink {
 pub type DeserializerFn =
     Arc<dyn Fn(&[u8]) -> Result<Box<dyn core::any::Any + Send>, String> + Send + Sync>;
 
+/// Type alias for producer factory callback (std only)
+///
+/// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ProducerTrait.
+/// This allows capturing the record type T at link_from() time while storing
+/// the factory in a type-erased InboundConnectorLink.
+#[cfg(feature = "std")]
+pub type ProducerFactoryFn =
+    Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait> + Send + Sync>;
+
+/// Type-erased producer trait for MQTT router
+///
+/// Allows the router to call produce() on different record types without knowing
+/// the concrete type at compile time. The value is passed as Box<dyn Any> and
+/// downcast to the correct type inside the implementation.
+#[async_trait::async_trait]
+pub trait ProducerTrait: Send + Sync {
+    /// Produce a value into the record's buffer
+    ///
+    /// The value must be passed as Box<dyn Any> and will be downcast to the correct type.
+    /// Returns an error if the downcast fails or if production fails.
+    async fn produce_any(&self, value: Box<dyn core::any::Any + Send>) -> Result<(), String>;
+}
+
 /// Configuration for an inbound connector link (External → AimDB)
 ///
-/// Stores the parsed URL, configuration, and type-erased deserializer until
-/// the record is built. During build, the adapter spawns a background task
-/// that subscribes to the external source and produces values into AimDB.
-#[derive(Clone)]
+/// Stores the parsed URL, configuration, deserializer, and a producer creation callback.
+/// The callback captures the type T at creation time, allowing type-safe producer creation
+/// later without needing PhantomData or type parameters.
 pub struct InboundConnectorLink {
     /// Parsed connector URL
     pub url: ConnectorUrl,
@@ -399,6 +423,25 @@ pub struct InboundConnectorLink {
     ///
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
     pub deserializer: DeserializerFn,
+
+    /// Producer creation callback (std only)
+    ///
+    /// Takes Arc<AimDb<R>> and returns Box<dyn ProducerTrait>.
+    /// Captures the record type T at link_from() call time.
+    #[cfg(feature = "std")]
+    pub producer_factory: Option<ProducerFactoryFn>,
+}
+
+impl Clone for InboundConnectorLink {
+    fn clone(&self) -> Self {
+        Self {
+            url: self.url.clone(),
+            config: self.config.clone(),
+            deserializer: self.deserializer.clone(),
+            #[cfg(feature = "std")]
+            producer_factory: self.producer_factory.clone(),
+        }
+    }
 }
 
 impl Debug for InboundConnectorLink {
@@ -418,44 +461,38 @@ impl InboundConnectorLink {
             url,
             config: Vec::new(),
             deserializer,
+            #[cfg(feature = "std")]
+            producer_factory: None,
         }
     }
 
-    /// Adds a configuration option
-    pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.config.push((key.into(), value.into()));
+    /// Sets the producer factory callback (std only)
+    #[cfg(feature = "std")]
+    pub fn with_producer_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.producer_factory = Some(Arc::new(factory));
         self
     }
 
-    /// Converts this link's config to a ConnectorConfig
-    pub fn to_connector_config(&self) -> crate::transport::ConnectorConfig {
-        let mut cfg = crate::transport::ConnectorConfig::default();
-
-        for (key, value) in &self.config {
-            match key.as_str() {
-                "qos" => {
-                    if let Ok(qos) = value.parse::<u8>() {
-                        cfg.qos = qos;
-                    }
-                }
-                "retain" => {
-                    if let Ok(retain) = value.parse::<bool>() {
-                        cfg.retain = retain;
-                    }
-                }
-                "timeout_ms" => {
-                    if let Ok(timeout) = value.parse::<u32>() {
-                        cfg.timeout_ms = Some(timeout);
-                    }
-                }
-                _ => {
-                    cfg.protocol_options.push((key.clone(), value.clone()));
-                }
-            }
-        }
-
-        cfg
+    /// Creates a producer using the stored factory (std only)
+    #[cfg(feature = "std")]
+    pub fn create_producer(
+        &self,
+        db_any: Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Option<Box<dyn ProducerTrait>> {
+        self.producer_factory.as_ref().map(|f| f(db_any))
     }
+}
+
+/// Configuration for an outbound connector link (AimDB → External)
+pub struct OutboundConnectorLink {
+    pub url: ConnectorUrl,
+    pub config: Vec<(String, String)>,
 }
 
 /// Parses a connector URL string into structured components
@@ -551,6 +588,74 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
         password,
         query_params,
     })
+}
+
+/// Trait for building connectors after the database is constructed
+///
+/// Connectors that need to collect routes from the database (for inbound routing)
+/// implement this trait. The builder pattern allows connectors to be constructed
+/// in two phases:
+///
+/// 1. Configuration phase: User provides broker URLs and settings
+/// 2. Build phase: Connector collects routes from the database and initializes
+///
+/// # Example
+///
+/// ```rust,ignore
+/// pub struct MqttConnectorBuilder {
+///     broker_url: String,
+/// }
+///
+/// impl<R> ConnectorBuilder<R> for MqttConnectorBuilder
+/// where
+///     R: aimdb_executor::Spawn + 'static,
+/// {
+///     fn build<'a>(
+///         &'a self,
+///         db: &'a AimDb<R>,
+///     ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn Connector>>> + Send + 'a>> {
+///         Box::pin(async move {
+///             let routes = db.collect_inbound_routes(self.scheme());
+///             let router = RouterBuilder::from_routes(routes).build();
+///             let connector = MqttConnector::new(&self.broker_url, router).await?;
+///             Ok(Arc::new(connector) as Arc<dyn Connector>)
+///         })
+///     }
+///     
+///     fn scheme(&self) -> &str {
+///         "mqtt"
+///     }
+/// }
+/// ```
+pub trait ConnectorBuilder<R>: Send + Sync
+where
+    R: aimdb_executor::Spawn + 'static,
+{
+    /// Build the connector using the database
+    ///
+    /// This method is called during `AimDbBuilder::build()` after the database
+    /// has been constructed. The builder can use the database to:
+    /// - Collect inbound routes via `db.collect_inbound_routes()`
+    /// - Access database configuration
+    /// - Register subscriptions
+    ///
+    /// # Arguments
+    /// * `db` - The constructed database instance
+    ///
+    /// # Returns
+    /// An `Arc<dyn Connector>` that will be registered with the database
+    #[allow(clippy::type_complexity)]
+    fn build<'a>(
+        &'a self,
+        db: &'a AimDb<R>,
+    ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn Connector>>> + Send + 'a>>;
+
+    /// The URL scheme this connector handles
+    ///
+    /// Returns the scheme (e.g., "mqtt", "kafka", "http") that this connector
+    /// will be registered under. Used for routing `.link_from()` and `.link_to()`
+    /// declarations to the appropriate connector.
+    fn scheme(&self) -> &str;
 }
 
 #[cfg(test)]

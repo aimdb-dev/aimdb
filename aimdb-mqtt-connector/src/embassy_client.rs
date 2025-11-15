@@ -81,7 +81,7 @@ impl MqttOperations for AimdbMqttAction {
         client: &mut C,
         _client_id: &'a str,
         _connection_id: ConnectionId,
-        _is_retry: bool,
+        is_retry: bool,
     ) -> Result<(), ClientError>
     where
         C: Client<'a>,

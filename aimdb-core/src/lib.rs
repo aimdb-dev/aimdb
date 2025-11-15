@@ -25,6 +25,7 @@ mod error;
 pub mod ext_macros;
 #[cfg(feature = "std")]
 pub mod remote;
+pub mod router;
 pub mod time;
 pub mod transport;
 pub mod typed_api;
@@ -45,9 +46,13 @@ pub use database::Database;
 
 // Producer-Consumer Pattern exports
 pub use builder::{AimDb, AimDbBuilder};
+pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
 pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // Connector Infrastructure exports
 pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError};
+
+// Router exports for connector implementations
+pub use router::{Route, Router, RouterBuilder};

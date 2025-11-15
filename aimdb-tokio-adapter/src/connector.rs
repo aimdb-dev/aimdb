@@ -105,8 +105,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_spawn_connectors_empty_database() {
-        let adapter = TokioAdapter::new().expect("Failed to create adapter");
+    async fn test_spawn_connectors_no_connectors() -> DbResult<()> {
+        let adapter = TokioAdapter::new()?;
         let mut builder = AimDbBuilder::new().runtime(Arc::new(adapter));
 
         // Configure a test record type but don't add any connectors
@@ -115,35 +115,83 @@ mod tests {
                 .tap(|_ctx, _consumer| async {});
         });
 
-        let db = builder.build().unwrap();
+        let db = builder.build().await?;
 
         // Should succeed even with no connectors
         let result = adapter.spawn_connectors(&db);
         assert!(result.is_ok());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_spawn_connectors_with_links() {
-        let adapter = TokioAdapter::new().unwrap();
+    async fn test_spawn_connectors_with_links() -> DbResult<()> {
+        use core::future::Future;
+        use core::pin::Pin;
+
+        let adapter = TokioAdapter::new()?;
         let mut builder = AimDbBuilder::new().runtime(Arc::new(adapter));
 
-        // Register a record with connectors
+        // Register a mock connector builder for testing
+        struct MockConnector;
+
+        impl aimdb_core::transport::Connector for MockConnector {
+            fn publish(
+                &self,
+                _destination: &str,
+                _config: &aimdb_core::transport::ConnectorConfig,
+                _payload: &[u8],
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = Result<(), aimdb_core::transport::PublishError>>
+                        + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async move { Ok(()) })
+            }
+        }
+
+        struct MockBuilder;
+
+        impl aimdb_core::connector::ConnectorBuilder<TokioAdapter> for MockBuilder {
+            fn scheme(&self) -> &str {
+                "mqtt"
+            }
+
+            fn build<'a>(
+                &'a self,
+                _db: &'a aimdb_core::builder::AimDb<TokioAdapter>,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = DbResult<Arc<dyn aimdb_core::transport::Connector>>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async {
+                    Ok(Arc::new(MockConnector) as Arc<dyn aimdb_core::transport::Connector>)
+                })
+            }
+        }
+
+        // Register the mock connector
+        builder = builder.with_connector(MockBuilder);
+
+        // Register a record with connector links
         builder.configure::<TestMessage>(|reg| {
             reg.source(|_ctx, _msg| async {})
                 .tap(|_ctx, _consumer| async {})
                 .link_to("mqtt://broker.example.com:1883")
-                .finish()
-                .link_to("kafka://kafka1:9092/messages")
+                .with_serializer(|_msg: &TestMessage| {
+                    // Dummy serializer for testing
+                    Ok(vec![1, 2, 3])
+                })
                 .finish();
         });
 
-        let db = builder.build().unwrap();
+        let db = builder.build().await?;
 
-        // Should discover and validate connectors
-        let result = adapter.spawn_connectors(&db);
-        assert!(result.is_ok());
-
-        // Verify connectors were registered
+        // Verify record was registered with the connector link
         let inner = db.inner();
         let record = inner
             .records
@@ -151,13 +199,14 @@ mod tests {
             .next()
             .expect("Should have one record");
 
-        assert_eq!(record.connector_count(), 2);
+        assert_eq!(record.connector_count(), 1);
 
         #[cfg(feature = "std")]
         {
             let urls = record.connector_urls();
             assert!(urls[0].contains("mqtt://"));
-            assert!(urls[1].contains("kafka://"));
         }
+
+        Ok(())
     }
 }
