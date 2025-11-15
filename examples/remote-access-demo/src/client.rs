@@ -384,7 +384,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   ⚠️  This is a security issue - producer protection not working!");
         }
         Response::Error { id, error } => {
-            println!("✅ EXPECTED FAILURE! Safety check worked (request_id: {})", id);
+            println!(
+                "✅ EXPECTED FAILURE! Safety check worked (request_id: {})",
+                id
+            );
             println!("   Code: {}", error.code);
             println!("   Message: {}", error.message);
             println!("   🛡️  Protection confirmed: Cannot override records with producers");

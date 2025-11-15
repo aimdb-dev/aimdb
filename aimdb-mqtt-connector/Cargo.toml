@@ -22,7 +22,8 @@ tokio-runtime = [
     "futures-util",
 ]
 embassy-runtime = [
-    "aimdb-core/alloc",      # Need alloc for collect_inbound_routes
+    "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
+    "aimdb-embassy-adapter/embassy-net-support", # For EmbassyNetwork trait
     "embassy-executor",
     "embassy-time",
     "embassy-sync",
@@ -38,6 +39,7 @@ defmt = ["dep:defmt", "aimdb-core/defmt"]
 [dependencies]
 aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false }
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
+aimdb-embassy-adapter = { version = "0.1.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # Async trait support
 async-trait = "0.1"

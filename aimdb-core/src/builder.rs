@@ -14,6 +14,9 @@ use alloc::collections::BTreeMap;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+use alloc::string::String;
+
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc, vec::Vec};
 

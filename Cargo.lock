@@ -86,6 +86,7 @@ dependencies = [
  "aimdb-executor",
  "defmt 1.0.1",
  "embassy-executor",
+ "embassy-net",
  "embassy-sync",
  "embassy-time",
  "embedded-hal 0.2.7",
@@ -133,6 +134,7 @@ name = "aimdb-mqtt-connector"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-embassy-adapter",
  "aimdb-executor",
  "aimdb-tokio-adapter",
  "async-stream",

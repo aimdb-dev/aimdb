@@ -37,15 +37,18 @@ tokio = { version = "1.47.1", default-features = false, features = [
     "rt-multi-thread",
 ] }
 
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
+# Serialization (no_std compatible by default)
+serde = { version = "1.0", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
 
 # Error handling
 thiserror = "2.0.16"
 anyhow = "1.0"
 
 # Serialization - extend with error handling
-serde_json = "1.0"
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
 # Basic observability
 tracing = { version = "0.1", default-features = false }
