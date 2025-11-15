@@ -939,7 +939,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// let router = RouterBuilder::from_routes(routes).build();
     /// connector.set_router(router).await?;
     /// ```
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     pub fn collect_inbound_routes(
         &self,
         scheme: &str,

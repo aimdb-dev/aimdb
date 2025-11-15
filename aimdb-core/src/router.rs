@@ -14,7 +14,10 @@
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
+
+#[cfg(feature = "std")]
+use std::sync::Arc;
 
 use crate::connector::{DeserializerFn, ProducerTrait};
 
@@ -31,10 +34,13 @@ use crate::connector::{DeserializerFn, ProducerTrait};
 /// - DDS: "TelemetryData" (topic name)
 /// - Shmem: "temperature_buffer" (segment name)
 pub struct Route {
-    /// Resource identifier to match (static lifetime for efficiency)
+    /// Resource identifier to match (reference-counted for proper memory management)
     ///
     /// Examples: MQTT topic, Kafka topic, HTTP path, DDS topic, shmem segment
-    pub resource_id: &'static str,
+    ///
+    /// Uses Arc<str> instead of &'static str to avoid memory leaks from Box::leak().
+    /// This adds ~8 bytes overhead per route (Arc control block) but enables proper cleanup.
+    pub resource_id: Arc<str>,
 
     /// Type-erased producer for this route
     pub producer: Box<dyn ProducerTrait>,
@@ -93,7 +99,7 @@ impl Router {
         // Linear search through all routes
         // Note: Multiple routes may match the same resource_id (different types)
         for route in &self.routes {
-            if route.resource_id == resource_id {
+            if route.resource_id.as_ref() == resource_id {
                 // Deserialize the payload
                 match (route.deserializer)(payload) {
                     Ok(value_any) => {
@@ -156,12 +162,12 @@ impl Router {
     ///
     /// Useful for subscribing at the protocol level (e.g., MQTT SUBSCRIBE).
     /// Returns unique resource IDs (deduplicated even if multiple routes per resource).
-    pub fn resource_ids(&self) -> Vec<&'static str> {
-        let mut ids: Vec<&'static str> = self.routes.iter().map(|r| r.resource_id).collect();
+    pub fn resource_ids(&self) -> Vec<Arc<str>> {
+        let mut ids: Vec<Arc<str>> = self.routes.iter().map(|r| r.resource_id.clone()).collect();
 
-        // Deduplicate
-        ids.sort_unstable();
-        ids.dedup();
+        // Deduplicate by converting to strings for comparison
+        ids.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        ids.dedup_by(|a, b| a.as_ref() == b.as_ref());
 
         ids
     }
@@ -215,8 +221,8 @@ impl RouterBuilder {
     /// Create a router builder from a collection of routes
     ///
     /// This is a convenience method for automatic router construction from
-    /// `AimDb::collect_inbound_routes()`. The resource_ids are leaked to satisfy
-    /// the 'static lifetime requirement.
+    /// `AimDb::collect_inbound_routes()`. The resource_ids are converted to
+    /// Arc<str> for proper memory management.
     ///
     /// # Arguments
     /// * `routes` - Vector of (resource_id, producer, deserializer) tuples
@@ -230,9 +236,9 @@ impl RouterBuilder {
     pub fn from_routes(routes: Vec<(String, Box<dyn ProducerTrait>, DeserializerFn)>) -> Self {
         let mut builder = Self::new();
         for (resource_id, producer, deserializer) in routes {
-            // Leak the string to get 'static lifetime
-            let resource_id_static: &'static str = Box::leak(resource_id.into_boxed_str());
-            builder = builder.add_route(resource_id_static, producer, deserializer);
+            // Convert String to Arc<str> - no leaking needed!
+            let resource_id_arc: Arc<str> = Arc::from(resource_id.as_str());
+            builder = builder.add_route(resource_id_arc, producer, deserializer);
         }
         builder
     }
@@ -240,17 +246,18 @@ impl RouterBuilder {
     /// Add a route to the router
     ///
     /// # Arguments
-    /// * `resource_id` - Resource identifier to match (must have 'static lifetime)
+    /// * `resource_id` - Resource identifier to match (as Arc<str>)
     /// * `producer` - Producer that implements ProducerTrait
     /// * `deserializer` - Function to deserialize bytes to the target type
     ///
-    /// # Resource ID Lifetime
-    /// The resource_id must have 'static lifetime. Use string literals or leak strings:
-    /// - String literal: `"sensors/temperature"`
-    /// - Leaked string: `Box::leak(resource_id.into_boxed_str())`
+    /// # Resource ID Memory Management
+    /// The resource_id is stored as Arc<str> for proper reference counting and cleanup.
+    /// You can create an Arc<str> from:
+    /// - String literal: `Arc::from("sensors/temperature")`
+    /// - Owned String: `Arc::from(string.as_str())`
     pub fn add_route(
         mut self,
-        resource_id: &'static str,
+        resource_id: Arc<str>,
         producer: Box<dyn ProducerTrait>,
         deserializer: DeserializerFn,
     ) -> Self {
@@ -285,6 +292,8 @@ impl Default for RouterBuilder {
 mod tests {
     use super::*;
     use crate::connector::ProducerTrait;
+    use core::future::Future;
+    use core::pin::Pin;
     use std::any::Any;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -294,11 +303,16 @@ mod tests {
         call_count: Arc<AtomicUsize>,
     }
 
-    #[async_trait::async_trait]
     impl ProducerTrait for MockProducer {
-        async fn produce_any(&self, _value: Box<dyn Any + Send>) -> Result<(), String> {
-            self.call_count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+        fn produce_any<'a>(
+            &'a self,
+            _value: Box<dyn Any + Send>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+            let call_count = self.call_count.clone();
+            Box::pin(async move {
+                call_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
         }
     }
 
@@ -307,7 +321,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
 
         let routes = vec![Route {
-            resource_id: "test/resource",
+            resource_id: Arc::from("test/resource"),
             producer: Box::new(MockProducer {
                 call_count: call_count.clone(),
             }),
@@ -328,14 +342,14 @@ mod tests {
 
         let routes = vec![
             Route {
-                resource_id: "shared/resource",
+                resource_id: Arc::from("shared/resource"),
                 producer: Box::new(MockProducer {
                     call_count: call_count1.clone(),
                 }),
                 deserializer: Arc::new(|_bytes| Ok(Box::new(42i32))),
             },
             Route {
-                resource_id: "shared/resource",
+                resource_id: Arc::from("shared/resource"),
                 producer: Box::new(MockProducer {
                     call_count: call_count2.clone(),
                 }),
@@ -355,7 +369,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_resource() {
         let routes = vec![Route {
-            resource_id: "test/resource",
+            resource_id: Arc::from("test/resource"),
             producer: Box::new(MockProducer {
                 call_count: Arc::new(AtomicUsize::new(0)),
             }),
@@ -372,21 +386,21 @@ mod tests {
     async fn test_resource_ids_deduplication() {
         let routes = vec![
             Route {
-                resource_id: "resource1",
+                resource_id: Arc::from("resource1"),
                 producer: Box::new(MockProducer {
                     call_count: Arc::new(AtomicUsize::new(0)),
                 }),
                 deserializer: Arc::new(|_bytes| Ok(Box::new(42i32))),
             },
             Route {
-                resource_id: "resource1", // Duplicate
+                resource_id: Arc::from("resource1"), // Duplicate
                 producer: Box::new(MockProducer {
                     call_count: Arc::new(AtomicUsize::new(0)),
                 }),
                 deserializer: Arc::new(|_bytes| Ok(Box::new("test".to_string()))),
             },
             Route {
-                resource_id: "resource2",
+                resource_id: Arc::from("resource2"),
                 producer: Box::new(MockProducer {
                     call_count: Arc::new(AtomicUsize::new(0)),
                 }),
@@ -398,7 +412,7 @@ mod tests {
         let ids = router.resource_ids();
 
         assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&"resource1"));
-        assert!(ids.contains(&"resource2"));
+        assert!(ids.iter().any(|id| id.as_ref() == "resource1"));
+        assert!(ids.iter().any(|id| id.as_ref() == "resource2"));
     }
 }

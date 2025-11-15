@@ -53,6 +53,7 @@
 use core::fmt::Debug;
 use core::future::Future;
 use core::marker::PhantomData;
+use core::pin::Pin;
 
 extern crate alloc;
 use alloc::{
@@ -134,25 +135,29 @@ unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Producer<T, R>
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Producer<T, R> {}
 
 // Implement ProducerTrait for type-erased routing
-#[async_trait::async_trait]
 impl<T, R> crate::connector::ProducerTrait for Producer<T, R>
 where
     T: Send + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
 {
-    async fn produce_any(&self, value: Box<dyn core::any::Any + Send>) -> Result<(), String> {
-        // Downcast the Box<dyn Any> to Box<T>
-        let value = value.downcast::<T>().map_err(|_| {
-            format!(
-                "Failed to downcast value to type {}",
-                core::any::type_name::<T>()
-            )
-        })?;
+    fn produce_any<'a>(
+        &'a self,
+        value: Box<dyn core::any::Any + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            // Downcast the Box<dyn Any> to Box<T>
+            let value = value.downcast::<T>().map_err(|_| {
+                format!(
+                    "Failed to downcast value to type {}",
+                    core::any::type_name::<T>()
+                )
+            })?;
 
-        // Produce the value
-        self.produce(*value)
-            .await
-            .map_err(|e| format!("Failed to produce value: {}", e))
+            // Produce the value
+            self.produce(*value)
+                .await
+                .map_err(|e| format!("Failed to produce value: {}", e))
+        })
     }
 }
 
@@ -631,8 +636,8 @@ where
         let mut link = InboundConnectorLink::new(url, erased_deserializer);
         link.config = self.config;
 
-        // Add producer factory callback that captures type T (std only)
-        #[cfg(feature = "std")]
+        // Add producer factory callback that captures type T (alloc feature)
+        #[cfg(feature = "alloc")]
         {
             link = link.with_producer_factory(|db_any| {
                 // Downcast Arc<dyn Any> to Arc<AimDb<R>>

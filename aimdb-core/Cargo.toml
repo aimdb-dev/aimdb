@@ -15,6 +15,7 @@ default = ["std"]
 
 # Core capabilities
 std = [
+    "alloc",              # std includes alloc
     "serde",
     "thiserror",
     "anyhow",
@@ -37,9 +38,6 @@ test-utils = ["std"]
 [dependencies]
 # Executor traits (always available)
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
-
-# Async trait support
-async-trait = "0.1"
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }

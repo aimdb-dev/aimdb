@@ -63,7 +63,6 @@ version = "0.1.0"
 dependencies = [
  "aimdb-executor",
  "anyhow",
- "async-trait",
  "defmt 1.0.1",
  "futures",
  "futures-core",

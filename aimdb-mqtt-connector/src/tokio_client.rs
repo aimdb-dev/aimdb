@@ -183,7 +183,7 @@ impl MqttConnectorImpl {
             tracing::debug!("Subscribing to MQTT topic: {}", topic);
 
             client_arc
-                .subscribe(*topic, rumqttc::QoS::AtLeastOnce)
+                .subscribe(topic.as_ref(), rumqttc::QoS::AtLeastOnce)
                 .await
                 .map_err(|e| format!("Failed to subscribe to topic '{}': {}", topic, e))?;
         }
@@ -201,7 +201,7 @@ impl MqttConnectorImpl {
     ///
     /// Returns the unique topics from the router configuration.
     /// Useful for debugging and monitoring.
-    pub fn topics(&self) -> Vec<&'static str> {
+    pub fn topics(&self) -> Vec<Arc<str>> {
         self.router.resource_ids()
     }
 

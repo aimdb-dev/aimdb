@@ -380,12 +380,14 @@ impl ConnectorLink {
 pub type DeserializerFn =
     Arc<dyn Fn(&[u8]) -> Result<Box<dyn core::any::Any + Send>, String> + Send + Sync>;
 
-/// Type alias for producer factory callback (std only)
+/// Type alias for producer factory callback (alloc feature)
 ///
 /// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ProducerTrait.
 /// This allows capturing the record type T at link_from() time while storing
 /// the factory in a type-erased InboundConnectorLink.
-#[cfg(feature = "std")]
+///
+/// Available in both `std` and `no_std + alloc` environments.
+#[cfg(feature = "alloc")]
 pub type ProducerFactoryFn =
     Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait> + Send + Sync>;
 
@@ -394,13 +396,21 @@ pub type ProducerFactoryFn =
 /// Allows the router to call produce() on different record types without knowing
 /// the concrete type at compile time. The value is passed as Box<dyn Any> and
 /// downcast to the correct type inside the implementation.
-#[async_trait::async_trait]
+///
+/// # Implementation Note
+///
+/// This trait uses manual futures instead of `#[async_trait]` to enable `no_std`
+/// compatibility. The `async_trait` macro generates code that depends on `std`,
+/// while manual `Pin<Box<dyn Future>>` works in both `std` and `no_std + alloc`.
 pub trait ProducerTrait: Send + Sync {
     /// Produce a value into the record's buffer
     ///
     /// The value must be passed as Box<dyn Any> and will be downcast to the correct type.
     /// Returns an error if the downcast fails or if production fails.
-    async fn produce_any(&self, value: Box<dyn core::any::Any + Send>) -> Result<(), String>;
+    fn produce_any<'a>(
+        &'a self,
+        value: Box<dyn core::any::Any + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 }
 
 /// Configuration for an inbound connector link (External → AimDB)
@@ -424,11 +434,13 @@ pub struct InboundConnectorLink {
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
     pub deserializer: DeserializerFn,
 
-    /// Producer creation callback (std only)
+    /// Producer creation callback (alloc feature)
     ///
     /// Takes Arc<AimDb<R>> and returns Box<dyn ProducerTrait>.
     /// Captures the record type T at link_from() call time.
-    #[cfg(feature = "std")]
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
     pub producer_factory: Option<ProducerFactoryFn>,
 }
 
@@ -438,7 +450,7 @@ impl Clone for InboundConnectorLink {
             url: self.url.clone(),
             config: self.config.clone(),
             deserializer: self.deserializer.clone(),
-            #[cfg(feature = "std")]
+            #[cfg(feature = "alloc")]
             producer_factory: self.producer_factory.clone(),
         }
     }
@@ -461,13 +473,15 @@ impl InboundConnectorLink {
             url,
             config: Vec::new(),
             deserializer,
-            #[cfg(feature = "std")]
+            #[cfg(feature = "alloc")]
             producer_factory: None,
         }
     }
 
-    /// Sets the producer factory callback (std only)
-    #[cfg(feature = "std")]
+    /// Sets the producer factory callback (alloc feature)
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
     pub fn with_producer_factory<F>(mut self, factory: F) -> Self
     where
         F: Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait>
@@ -479,8 +493,10 @@ impl InboundConnectorLink {
         self
     }
 
-    /// Creates a producer using the stored factory (std only)
-    #[cfg(feature = "std")]
+    /// Creates a producer using the stored factory (alloc feature)
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
     pub fn create_producer(
         &self,
         db_any: Arc<dyn core::any::Any + Send + Sync>,
