@@ -22,6 +22,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
+        targets: thumbv7em-none-eabihf
         components: rustfmt, clippy
     
     - name: Cache dependencies
