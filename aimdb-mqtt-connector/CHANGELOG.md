@@ -14,12 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ConnectorBuilder Pattern**: New `MqttConnectorBuilder` for both Tokio and Embassy runtimes
 - **Automatic Task Spawning**: Background tasks (connection management, message routing) now spawn automatically during `build()`
 - **Router Integration**: Uses new `Router` system for type-safe message dispatch to correct record producers
+- **Outbound Publisher Support**: Added `spawn_outbound_publishers()` method for both Tokio and Embassy implementations to handle AimDB → MQTT publishing via `ConsumerTrait`
 
 ### Changed
 
 - **Breaking: Builder API**: Changed from `MqttConnector::new()` to `MqttConnectorBuilder::new()` with automatic initialization
 - **Breaking: Task Management**: Removed manual `mqtt_background_task` spawning - tasks spawn automatically during database `build()`
 - **Breaking: Configuration**: Simplified Embassy configuration with automatic network stack access
+- **Breaking: Outbound Architecture**: Refactored to use `ConsumerTrait`-based outbound routing:
+  - Added: `spawn_outbound_publishers()` method in both Tokio and Embassy implementations
+  - Required: Must call `spawn_outbound_publishers()` in `ConnectorBuilder::build()` for outbound publishing to work
+  - Changed: Outbound publishing now uses type-erased `ConsumerTrait` instead of automatic spawning
 - **Tokio Client**: Refactored for bidirectional support with unified client and automatic reconnection
 - **Embassy Client**: Simplified API with integrated task spawning and network stack management
 - **Client ID**: Now properly passes client ID from user configuration instead of generating random IDs

@@ -215,6 +215,51 @@ unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Consumer<T, R>
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Consumer<T, R> {}
 
 // ============================================================================
+// Type-erased Consumer Trait Implementation
+// ============================================================================
+
+/// Adapter that wraps a typed BufferReader<T> and type-erases it
+///
+/// This allows the reader to be used through the AnyReader trait without
+/// knowing the concrete type T at compile time.
+struct TypedAnyReader<T: Clone + Send + 'static> {
+    inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
+}
+
+impl<T: Clone + Send + 'static> crate::connector::AnyReader for TypedAnyReader<T> {
+    fn recv_any<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn core::any::Any + Send>>> + Send + 'a>> {
+        Box::pin(async move {
+            let value = self.inner.recv().await?;
+            Ok(Box::new(value) as Box<dyn core::any::Any + Send>)
+        })
+    }
+}
+
+/// Implement ConsumerTrait for type-erased routing
+///
+/// This allows connectors to subscribe to records without knowing the concrete
+/// type T at compile time. The factory pattern captures T during link_to()
+/// configuration, and this implementation provides the runtime subscription logic.
+impl<T, R> crate::connector::ConsumerTrait for Consumer<T, R>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+{
+    fn subscribe_any<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn crate::connector::AnyReader>>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let reader = self.subscribe()?;
+            Ok(Box::new(TypedAnyReader::<T> { inner: reader })
+                as Box<dyn crate::connector::AnyReader>)
+        })
+    }
+}
+
+// ============================================================================
 // RecordRegistrar - Fluent registration API
 // ============================================================================
 
@@ -506,6 +551,24 @@ where
                 "Outbound connector requires a serializer. Call .with_serializer() for {}",
                 url_string
             );
+        }
+
+        // Store consumer factory that captures type T
+        // This allows the connector to subscribe to values without knowing T at compile time
+        #[cfg(feature = "alloc")]
+        {
+            link.consumer_factory = Some(Arc::new(
+                move |db_any: Arc<dyn core::any::Any + Send + Sync>| {
+                    // Downcast Arc<dyn Any> to AimDb<R>, then wrap in Arc
+                    let db_ref = db_any
+                        .downcast_ref::<AimDb<R>>()
+                        .expect("Invalid db type in consumer factory");
+                    let db = Arc::new(db_ref.clone());
+
+                    // Create Consumer<T, R> with captured type T
+                    Box::new(Consumer::<T, R>::new(db)) as Box<dyn crate::connector::ConsumerTrait>
+                },
+            ));
         }
 
         // Store the connector link - consumers will be created later in build()

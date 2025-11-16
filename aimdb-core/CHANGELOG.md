@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Producer Trait**: New `ProducerTrait` for type-erased producer calls, enabling dynamic routing of messages to different record types
 - **Resource ID Extraction**: Added `ConnectorUrl::resource_id()` method to extract protocol-specific resource identifiers (topics, keys, paths)
 - **Producer Factory Pattern**: New `ProducerFactoryFn` and `InboundConnectorLink` types for creating producers dynamically at runtime
+- **Consumer Trait for Outbound Routing**: New `ConsumerTrait` and `AnyReader` traits in `src/connector.rs` enable type-erased outbound message publishing, mirroring `ProducerTrait` architecture
+- **Outbound Route Collection**: Added `AimDb::collect_outbound_routes()` method to gather all configured outbound connectors with their type-erased consumers, serializers, and configs
+- **Consumer Factory Pattern**: New `ConsumerFactoryFn` type alias and factory storage in `OutboundConnectorLink` for capturing types at configuration time
+- **Type-Erased Consumer Adapter**: Added `TypedAnyReader` in `src/typed_api.rs` implementing `AnyReader` trait for `Consumer<T, R>`
 
 ### Changed
 
@@ -35,16 +39,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Inbound methods (`inbound_connectors()`, `add_inbound_connector()`) remain unchanged for clarity
 - **Deprecated `.link()`**: Generic `.link()` method deprecated in favor of explicit `.link_to()` and `.link_from()`
 - **Builder API**: Enhanced builder to validate buffer requirements for inbound connectors at configuration time
+- **Breaking: Outbound Consumer Architecture**: Refactored outbound connector system to use trait-based type erasure:
+  - Removed: `TypedRecord::spawn_outbound_consumers()` method (automatic spawning)
+  - Changed: `OutboundConnectorLink` now stores `consumer_factory: Arc<ConsumerFactoryFn>` instead of direct consumer
+  - Changed: Connectors must now implement `spawn_outbound_publishers()` and explicitly call `db.collect_outbound_routes()`
+  - Impact: All connectors require code changes to support outbound publishing via the new trait system
 
 ### Fixed
 
 - **Memory Management**: Removed `async-trait` dependency that leaked `std` into `no_std` builds, replaced with manual `Pin<Box<dyn Future>>`
 - **Type-Erased Routing**: Fixed producer storage in collections by implementing `ProducerTrait` with `Box<dyn Any>` downcasting
 - **Buffer Validation**: Added validation ensuring inbound connectors have configured buffers before link creation
+- **Consumer Factory Downcasting**: Fixed type downcasting in `typed_api.rs` line 565 - changed from downcasting to `Arc<AimDb<R>>` to downcasting to `AimDb<R>` then wrapping in Arc, resolving "Invalid db type in consumer factory" runtime panic
 
 ### Removed
 
 - **Channel Stream**: Removed obsolete channel-based stream abstraction in favor of router-based routing
+- **Automatic Outbound Spawning**: Removed `TypedRecord::spawn_outbound_consumers()` method - outbound publisher spawning now explicit via `ConsumerTrait` and `spawn_outbound_publishers()`
 
 ## [0.1.0] - 2025-11-06
 

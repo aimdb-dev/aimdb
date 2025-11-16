@@ -311,6 +311,17 @@ where
                 aimdb_core::DbError::RuntimeError { _message: () }
             })?;
 
+            // Collect and spawn outbound publishers
+            let outbound_routes = db.collect_outbound_routes("mqtt");
+
+            #[cfg(feature = "defmt")]
+            defmt::info!(
+                "Collected {} outbound routes for MQTT connector",
+                outbound_routes.len()
+            );
+
+            connector.spawn_outbound_publishers(db, outbound_routes)?;
+
             Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
         }))
     }
@@ -519,6 +530,104 @@ impl MqttConnectorImpl {
             router: router_arc,
             action_sender,
         })
+    }
+
+    /// Spawns outbound publisher tasks for all configured routes (internal)
+    ///
+    /// Called automatically during build() to start publishing data from AimDB to MQTT.
+    /// Each route spawns an independent task that subscribes to the record
+    /// and publishes to the MQTT broker.
+    ///
+    /// This method uses the ConsumerTrait + factory pattern to subscribe to
+    /// typed records without knowing the concrete type T at compile time.
+    fn spawn_outbound_publishers<R>(
+        &self,
+        db: &aimdb_core::builder::AimDb<R>,
+        routes: alloc::vec::Vec<(
+            alloc::string::String,
+            alloc::boxed::Box<dyn aimdb_core::connector::ConsumerTrait>,
+            aimdb_core::connector::SerializerFn,
+            alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
+        )>,
+    ) -> aimdb_core::DbResult<()>
+    where
+        R: aimdb_executor::Spawn + 'static,
+    {
+        let runtime = db.runtime();
+
+        for (topic, consumer, serializer, config) in routes {
+            let action_sender = self.action_sender.clone();
+            let topic_clone = topic.clone();
+
+            // Parse config options
+            let mut qos = QualityOfService::Qos1; // Default
+            let mut retain = false;
+
+            for (key, value) in &config {
+                match key.as_str() {
+                    "qos" => {
+                        if let Ok(qos_val) = value.parse::<u8>() {
+                            qos = Self::map_qos(qos_val);
+                        }
+                    }
+                    "retain" => {
+                        if let Ok(retain_val) = value.parse::<bool>() {
+                            retain = retain_val;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            runtime.spawn(SendFutureWrapper(async move {
+                // Subscribe to typed values (type-erased)
+                let mut reader = match consumer.subscribe_any().await {
+                    Ok(r) => r,
+                    Err(_e) => {
+                        #[cfg(feature = "defmt")]
+                        defmt::error!("Failed to subscribe for outbound topic '{}'", topic_clone);
+                        return;
+                    }
+                };
+
+                #[cfg(feature = "defmt")]
+                defmt::info!("MQTT outbound publisher started for topic: {}", topic_clone);
+
+                while let Ok(value_any) = reader.recv_any().await {
+                    // Serialize the type-erased value
+                    let bytes = match serializer(&*value_any) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            #[cfg(feature = "defmt")]
+                            defmt::error!(
+                                "Failed to serialize for topic '{}': {:?}",
+                                topic_clone,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Publish to MQTT via action channel
+                    let action = AimdbMqttAction::Publish {
+                        topic: topic_clone.clone(),
+                        payload: bytes,
+                        qos,
+                        retain,
+                    };
+
+                    action_sender.send(action).await;
+
+                    #[cfg(feature = "defmt")]
+                    defmt::debug!("Published to MQTT topic: {}", topic_clone);
+                }
+
+                #[cfg(feature = "defmt")]
+                defmt::info!("MQTT outbound publisher stopped for topic: {}", topic_clone);
+            }))?;
+        }
+
+        Ok(())
     }
 }
 

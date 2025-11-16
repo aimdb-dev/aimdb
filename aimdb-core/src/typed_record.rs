@@ -18,7 +18,7 @@ use core::fmt::Debug;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 #[cfg(feature = "std")]
 use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
@@ -272,19 +272,6 @@ pub trait AnyRecord: Send + Sync {
     ///
     /// Used internally by the builder to apply security policy to records.
     fn set_writable_erased(&self, writable: bool);
-
-    /// Spawns outbound consumers for connector links (internal use)
-    ///
-    /// Called during build() after connectors are constructed. Creates consumer tasks
-    /// that subscribe to the buffer and publish to external systems via connectors.
-    ///
-    /// Takes type-erased parameters to maintain dyn-compatibility.
-    fn spawn_outbound_consumers(
-        &self,
-        runtime: &dyn core::any::Any,
-        db: &dyn core::any::Any,
-        connectors: &dyn core::any::Any,
-    ) -> crate::DbResult<()>;
 
     /// Collects metadata for this record (std only)
     #[cfg(feature = "std")]
@@ -1094,182 +1081,6 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
         {
             let _ = writable; // Suppress unused warning
         }
-    }
-
-    fn spawn_outbound_consumers(
-        &self,
-        runtime_any: &dyn core::any::Any,
-        db_any: &dyn core::any::Any,
-        connectors_any: &dyn core::any::Any,
-    ) -> crate::DbResult<()> {
-        #[cfg(not(feature = "std"))]
-        use alloc::collections::BTreeMap;
-        #[cfg(feature = "std")]
-        use std::collections::BTreeMap;
-
-        // Downcast parameters
-        let runtime = runtime_any.downcast_ref::<Arc<R>>().ok_or({
-            #[cfg(feature = "std")]
-            {
-                crate::DbError::Internal {
-                    code: 0x7001,
-                    message: "Failed to downcast runtime in spawn_outbound_consumers".into(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                crate::DbError::Internal {
-                    code: 0x7001,
-                    _message: (),
-                }
-            }
-        })?;
-
-        let db = db_any
-            .downcast_ref::<Arc<crate::builder::AimDb<R>>>()
-            .ok_or({
-                #[cfg(feature = "std")]
-                {
-                    crate::DbError::Internal {
-                        code: 0x7001,
-                        message: "Failed to downcast db in spawn_outbound_consumers".into(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    crate::DbError::Internal {
-                        code: 0x7001,
-                        _message: (),
-                    }
-                }
-            })?;
-
-        let connectors = connectors_any
-            .downcast_ref::<BTreeMap<String, Arc<dyn crate::transport::Connector>>>()
-            .ok_or({
-                #[cfg(feature = "std")]
-                {
-                    crate::DbError::Internal {
-                        code: 0x7001,
-                        message: "Failed to downcast connectors in spawn_outbound_consumers".into(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    crate::DbError::Internal {
-                        code: 0x7001,
-                        _message: (),
-                    }
-                }
-            })?;
-
-        // Get the connector links for this record
-        let links = self.outbound_connectors();
-
-        for link in links {
-            let scheme = link.url.scheme();
-
-            // Get the connector for this scheme
-            let Some(connector) = connectors.get(scheme) else {
-                #[cfg(feature = "tracing")]
-                tracing::warn!(
-                    "No connector found for scheme '{}' (link: {})",
-                    scheme,
-                    link.url
-                );
-                continue;
-            };
-
-            let Some(serializer) = &link.serializer else {
-                #[cfg(feature = "tracing")]
-                tracing::warn!("No serializer for outbound link: {}", link.url);
-                continue;
-            };
-
-            // Create consumer closure that publishes to the connector
-            let connector_clone = connector.clone();
-            let url_string = format!("{}", link.url);
-            let config = link.config.clone();
-            let serializer_clone = serializer.clone();
-            let db_clone = db.clone();
-
-            runtime.spawn(async move {
-                // Get consumer for this record type - use pub(crate) constructor
-                let consumer = crate::typed_api::Consumer::<T, R>::new(db_clone.clone());
-
-                let Ok(mut reader) = consumer.subscribe() else {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!("Failed to subscribe to buffer for connector {}", url_string);
-                    return;
-                };
-
-                while let Ok(value) = reader.recv().await {
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!(
-                        "Connector triggered for {} with type {}",
-                        url_string,
-                        core::any::type_name::<T>()
-                    );
-
-                    // Serialize the value using type-erased serializer
-                    let bytes = match serializer_clone(&value as &dyn core::any::Any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!("Failed to serialize for {}: {:?}", url_string, _e);
-                            continue;
-                        }
-                    };
-
-                    // Publish via connector
-                    let publish_result = {
-                        use crate::connector::ConnectorUrl;
-                        let url = ConnectorUrl::parse(&url_string).expect("Invalid URL");
-                        let destination = url.resource_id();
-
-                        let mut connector_config = crate::transport::ConnectorConfig {
-                            qos: 0,
-                            retain: false,
-                            timeout_ms: Some(5000),
-                            protocol_options: Vec::new(),
-                        };
-
-                        // Parse config
-                        for (key, value) in &config {
-                            match key.as_str() {
-                                "qos" => {
-                                    if let Ok(qos) = value.parse::<u8>() {
-                                        connector_config.qos = qos;
-                                    }
-                                }
-                                "retain" => {
-                                    if let Ok(retain) = value.parse::<bool>() {
-                                        connector_config.retain = retain;
-                                    }
-                                }
-                                "timeout_ms" => {
-                                    if let Ok(timeout) = value.parse::<u32>() {
-                                        connector_config.timeout_ms = Some(timeout);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        connector_clone
-                            .publish(&destination, &connector_config, &bytes)
-                            .await
-                    };
-
-                    if let Err(_e) = publish_result {
-                        #[cfg(feature = "tracing")]
-                        tracing::error!("Failed to publish to {}: {:?}", url_string, _e);
-                    }
-                }
-            })?;
-        }
-
-        Ok(())
     }
 
     #[cfg(feature = "std")]

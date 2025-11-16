@@ -24,6 +24,21 @@ use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 use crate::{DbError, DbResult};
 
+/// Type alias for outbound route tuples returned by `collect_outbound_routes`
+///
+/// Each tuple contains:
+/// - `String` - Topic/key from the URL path
+/// - `Box<dyn ConsumerTrait>` - Callback to create a consumer for this record
+/// - `SerializerFn` - User-provided serializer for the record type
+/// - `Vec<(String, String)>` - Configuration options from the URL query
+#[cfg(feature = "alloc")]
+type OutboundRoute = (
+    String,
+    Box<dyn crate::connector::ConsumerTrait>,
+    crate::connector::SerializerFn,
+    Vec<(String, String)>,
+);
+
 /// Marker type for untyped builder (before runtime is set)
 pub struct NoRuntime;
 
@@ -555,16 +570,6 @@ where
             tracing::info!("Connector built and spawned successfully: {}", scheme);
         }
 
-        // Create outbound consumers for all records with connector links
-        // Now that connectors are built, we can capture them in the consumer closures
-        for (_type_id, record) in inner.records.iter() {
-            record.spawn_outbound_consumers(
-                &runtime as &dyn core::any::Any,
-                &db as &dyn core::any::Any,
-                &built_connectors as &dyn core::any::Any,
-            )?;
-        }
-
         // Unwrap the Arc to return the owned AimDb
         // This is safe because we just created it and hold the only reference
         let db_owned = Arc::try_unwrap(db).unwrap_or_else(|arc| (*arc).clone());
@@ -1000,6 +1005,77 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         if !routes.is_empty() {
             tracing::debug!(
                 "Collected {} inbound routes for scheme '{}'",
+                routes.len(),
+                scheme
+            );
+        }
+
+        routes
+    }
+
+    /// Collects outbound routes for a specific protocol scheme
+    ///
+    /// Mirrors `collect_inbound_routes()` for symmetry. Iterates all records,
+    /// filters their outbound_connectors by scheme, and returns routes with
+    /// consumer creation callbacks.
+    ///
+    /// This method is called by connectors during their `build()` phase to
+    /// collect all configured outbound routes and spawn publisher tasks.
+    ///
+    /// # Arguments
+    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
+    ///
+    /// # Returns
+    /// Vector of tuples: (destination, consumer_trait, serializer, config)
+    ///
+    /// The config Vec contains protocol-specific options (e.g., qos, retain).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // In MqttConnector::build()
+    /// let routes = db.collect_outbound_routes("mqtt");
+    /// for (topic, consumer, serializer, config) in routes {
+    ///     connector.spawn_publisher(topic, consumer, serializer, config)?;
+    /// }
+    /// ```
+    #[cfg(feature = "alloc")]
+    pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
+        let mut routes = Vec::new();
+
+        // Convert self to Arc<dyn Any> for consumer factory
+        // This is necessary because the factory takes Arc<dyn Any> to avoid
+        // needing to know the runtime type R at the factory definition site
+        let db_any: Arc<dyn core::any::Any + Send + Sync> = Arc::new(self.clone());
+
+        for record in self.inner.records.values() {
+            let outbound_links = record.outbound_connectors();
+
+            for link in outbound_links {
+                // Filter by scheme
+                if link.url.scheme() != scheme {
+                    continue;
+                }
+
+                let destination = link.url.resource_id();
+
+                // Skip links without serializer
+                let Some(serializer) = link.serializer.clone() else {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("Outbound link '{}' has no serializer, skipping", link.url);
+                    continue;
+                };
+
+                // Create consumer using the stored factory
+                if let Some(consumer) = link.create_consumer(db_any.clone()) {
+                    routes.push((destination, consumer, serializer, link.config.clone()));
+                }
+            }
+        }
+
+        #[cfg(feature = "tracing")]
+        if !routes.is_empty() {
+            tracing::debug!(
+                "Collected {} outbound routes for scheme '{}'",
                 routes.len(),
                 scheme
             );

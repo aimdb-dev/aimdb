@@ -341,6 +341,18 @@ pub struct ConnectorLink {
     ///
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
     pub serializer: Option<SerializerFn>,
+
+    /// Consumer factory callback (alloc feature)
+    ///
+    /// Creates ConsumerTrait from Arc<AimDb<R>> to enable type-safe subscription.
+    /// The factory captures the record type T at link_to() configuration time,
+    /// allowing the connector to subscribe without knowing T at compile time.
+    ///
+    /// Mirrors the producer_factory pattern used for inbound connectors.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
+    pub consumer_factory: Option<ConsumerFactoryFn>,
 }
 
 impl Debug for ConnectorLink {
@@ -351,6 +363,13 @@ impl Debug for ConnectorLink {
             .field(
                 "serializer",
                 &self.serializer.as_ref().map(|_| "<function>"),
+            )
+            .field(
+                "consumer_factory",
+                #[cfg(feature = "alloc")]
+                &self.consumer_factory.as_ref().map(|_| "<function>"),
+                #[cfg(not(feature = "alloc"))]
+                &None::<()>,
             )
             .finish()
     }
@@ -363,6 +382,8 @@ impl ConnectorLink {
             url,
             config: Vec::new(),
             serializer: None,
+            #[cfg(feature = "alloc")]
+            consumer_factory: None,
         }
     }
 
@@ -370,6 +391,22 @@ impl ConnectorLink {
     pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.config.push((key.into(), value.into()));
         self
+    }
+
+    /// Creates a consumer using the stored factory (alloc feature)
+    ///
+    /// Takes an Arc<dyn Any> (which should contain Arc<AimDb<R>>) and invokes
+    /// the consumer factory to create a ConsumerTrait instance.
+    ///
+    /// Returns None if no factory is configured.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
+    pub fn create_consumer(
+        &self,
+        db_any: Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Option<Box<dyn ConsumerTrait>> {
+        self.consumer_factory.as_ref().map(|f| f(db_any))
     }
 }
 
@@ -411,6 +448,56 @@ pub trait ProducerTrait: Send + Sync {
         &'a self,
         value: Box<dyn core::any::Any + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+}
+
+/// Type alias for consumer factory callback (alloc feature)
+///
+/// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ConsumerTrait.
+/// This allows capturing the record type T at link_to() time while storing
+/// the factory in a type-erased ConnectorLink.
+///
+/// Mirrors the ProducerFactoryFn pattern for symmetry between inbound and outbound.
+///
+/// Available in both `std` and `no_std + alloc` environments.
+#[cfg(feature = "alloc")]
+pub type ConsumerFactoryFn =
+    Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ConsumerTrait> + Send + Sync>;
+
+/// Type-erased consumer trait for outbound routing
+///
+/// Mirrors ProducerTrait but for consumption. Allows connectors to subscribe
+/// to typed values without knowing the concrete type T at compile time.
+///
+/// # Implementation Note
+///
+/// Like ProducerTrait, this uses manual futures instead of `#[async_trait]`
+/// to enable `no_std` compatibility.
+pub trait ConsumerTrait: Send + Sync {
+    /// Subscribe to typed values from this record
+    ///
+    /// Returns a type-erased reader that can be polled for Box<dyn Any> values.
+    /// The connector will downcast to the expected type after deserialization.
+    fn subscribe_any<'a>(&'a self) -> SubscribeAnyFuture<'a>;
+}
+
+/// Type alias for the future returned by `ConsumerTrait::subscribe_any`
+type SubscribeAnyFuture<'a> =
+    Pin<Box<dyn Future<Output = DbResult<Box<dyn AnyReader>>> + Send + 'a>>;
+
+/// Type alias for the future returned by `AnyReader::recv_any`
+type RecvAnyFuture<'a> =
+    Pin<Box<dyn Future<Output = DbResult<Box<dyn core::any::Any + Send>>> + Send + 'a>>;
+
+/// Helper trait for type-erased reading
+///
+/// Allows reading values from a buffer without knowing the concrete type at compile time.
+/// The value is returned as Box<dyn Any> and must be downcast by the caller.
+pub trait AnyReader: Send {
+    /// Receive a type-erased value from the buffer
+    ///
+    /// Returns Box<dyn Any> which must be downcast to the concrete type.
+    /// Returns an error if the buffer is closed or an I/O error occurs.
+    fn recv_any<'a>(&'a mut self) -> RecvAnyFuture<'a>;
 }
 
 /// Configuration for an inbound connector link (External → AimDB)

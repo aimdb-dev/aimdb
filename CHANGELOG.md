@@ -35,7 +35,13 @@ This release introduces **bidirectional connector support**, enabling true two-w
 
 - **aimdb-core**: `.build()` is now async; connector registration changed from `.with_connector(scheme, instance)` to `.with_connector(builder)`
 - **aimdb-core**: `.link()` deprecated in favor of `.link_to()` (outbound) and `.link_from()` (inbound)
+- **aimdb-core**: Outbound connector architecture refactored to trait-based system:
+  - Removed: `TypedRecord::spawn_outbound_consumers()` method (was called automatically)
+  - Added: `ConsumerTrait`, `AnyReader` traits for type-erased outbound routing
+  - Added: `AimDb::collect_outbound_routes()` method to gather configured routes
+  - **Required**: Connectors must implement `spawn_outbound_publishers()` and call it in `ConnectorBuilder::build()`
 - **aimdb-mqtt-connector**: API changed from `MqttConnector::new()` to `MqttConnectorBuilder::new()`; automatic task spawning removes need for manual background task management
+- **aimdb-mqtt-connector**: Added `spawn_outbound_publishers()` method; must be called in `build()` for outbound publishing to work
 
 ### Modified Crates
 
@@ -88,6 +94,86 @@ builder.with_connector("mqtt", Arc::new(mqtt_result.connector))
 builder.with_connector(MqttConnectorBuilder::new("mqtt://broker:1883"))
 // Tasks spawn automatically during build()
 ```
+
+**5. Update custom connectors to spawn outbound publishers:**
+
+If you've implemented a custom connector, you **must** add `spawn_outbound_publishers()` support:
+
+```rust
+// Old (v0.1.0) - Outbound consumers spawned automatically
+impl ConnectorBuilder for MyConnectorBuilder {
+    fn build<R>(&self, db: &AimDb<R>) -> DbResult<Arc<dyn Connector>> {
+        // ... setup code ...
+        Ok(Arc::new(MyConnector { /* fields */ }))
+    }
+    // Outbound publishing happened automatically via TypedRecord::spawn_outbound_consumers()
+}
+
+// New (v0.2.0) - Must explicitly spawn outbound publishers
+impl ConnectorBuilder for MyConnectorBuilder {
+    fn build<R>(&self, db: &AimDb<R>) -> DbResult<Arc<dyn Connector>> {
+        // ... setup code ...
+        let connector = MyConnector { /* fields */ };
+        
+        // REQUIRED: Collect and spawn outbound publishers
+        let outbound_routes = db.collect_outbound_routes(self.protocol_name());
+        connector.spawn_outbound_publishers(db, outbound_routes)?;
+        
+        Ok(Arc::new(connector))
+    }
+}
+
+// REQUIRED: Implement spawn_outbound_publishers method
+impl MyConnector {
+    fn spawn_outbound_publishers<R: RuntimeAdapter + 'static>(
+        &self,
+        db: &AimDb<R>,
+        routes: Vec<(String, Box<dyn ConsumerTrait>, SerializerFn, Vec<(String, String)>)>,
+    ) -> DbResult<()> {
+        for (topic, consumer, serializer, _config) in routes {
+            let client = self.client.clone();
+            let topic_clone = topic.clone();
+            
+            db.runtime().spawn(async move {
+                // Subscribe to record updates using ConsumerTrait
+                match consumer.subscribe_any().await {
+                    Ok(mut reader) => {
+                        loop {
+                            match reader.recv_any().await {
+                                Ok(value) => {
+                                    // Serialize and publish
+                                    if let Ok(bytes) = serializer(&*value) {
+                                        let _ = client.publish(&topic_clone, bytes).await;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    Err(_) => { /* Log error */ }
+                }
+            })?;
+        }
+        Ok(())
+    }
+}
+```
+
+**Why this change?** The new trait-based architecture provides:
+- ✅ Symmetry with inbound routing (`ProducerTrait` ↔ `ConsumerTrait`)
+- ✅ Testability (can mock `ConsumerTrait` without real records)
+- ✅ Type safety via factory pattern (type capture at configuration time)
+- ✅ Maintainability (connector logic stays in connector crate)
+
+**Migration checklist for custom connectors:**
+- [ ] Add `spawn_outbound_publishers()` method to connector implementation
+- [ ] Call `db.collect_outbound_routes(protocol_name)` in `ConnectorBuilder::build()`
+- [ ] Call `connector.spawn_outbound_publishers(db, routes)?` before returning
+- [ ] Use `ConsumerTrait::subscribe_any()` to get type-erased readers
+- [ ] Handle serialization with provided `SerializerFn`
+- [ ] Test both inbound (`.link_from()`) and outbound (`.link_to()`) data flows
+
+See [Connector Development Guide](docs/design/012-M5-connector-development-guide.md) for complete examples.
 
 ### Documentation
 
