@@ -5,7 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **Note**: This is the global changelog for the AimDB project. For detailed changes to individual crates, see their respective CHANGELOG.md files:
+> - [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md)
+> - [aimdb-executor/CHANGELOG.md](aimdb-executor/CHANGELOG.md)
+> - [aimdb-tokio-adapter/CHANGELOG.md](aimdb-tokio-adapter/CHANGELOG.md)
+> - [aimdb-embassy-adapter/CHANGELOG.md](aimdb-embassy-adapter/CHANGELOG.md)
+> - [aimdb-mqtt-connector/CHANGELOG.md](aimdb-mqtt-connector/CHANGELOG.md)
+> - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
+> - [aimdb-client/CHANGELOG.md](aimdb-client/CHANGELOG.md)
+> - [tools/aimdb-cli/CHANGELOG.md](tools/aimdb-cli/CHANGELOG.md)
+> - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
+
 ## [Unreleased]
+
+### Summary
+
+This release introduces **bidirectional connector support**, enabling true two-way data synchronization between AimDB and external systems. The new architecture supports simultaneous publishing and subscribing with automatic message routing, working seamlessly across both Tokio (std) and Embassy (no_std) runtimes.
+
+### Highlights
+
+- 🔄 **Bidirectional Connectors**: New `.link_to()` and `.link_from()` APIs for clear directional data flows
+- 🎯 **Type-Erased Router**: Automatic routing of incoming messages to correct typed producers
+- 🏗️ **ConnectorBuilder Pattern**: Simplified connector registration with automatic initialization
+- 📡 **Enhanced MQTT Connector**: Complete rewrite supporting simultaneous pub/sub with automatic reconnection
+- 🌐 **Embassy Network Integration**: Connectors can now access Embassy's network stack for network operations
+- 📚 **Comprehensive Guide**: New 1000+ line connector development guide with real-world examples
+
+### Breaking Changes
+
+- **aimdb-core**: `.build()` is now async; connector registration changed from `.with_connector(scheme, instance)` to `.with_connector(builder)`
+- **aimdb-core**: `.link()` deprecated in favor of `.link_to()` (outbound) and `.link_from()` (inbound)
+- **aimdb-mqtt-connector**: API changed from `MqttConnector::new()` to `MqttConnectorBuilder::new()`; automatic task spawning removes need for manual background task management
+
+### Modified Crates
+
+See individual changelogs for detailed changes:
+- **[aimdb-core](aimdb-core/CHANGELOG.md)**: Core connector architecture, router system, bidirectional APIs
+- **[aimdb-tokio-adapter](aimdb-tokio-adapter/CHANGELOG.md)**: Connector builder integration
+- **[aimdb-embassy-adapter](aimdb-embassy-adapter/CHANGELOG.md)**: Network stack access, connector support
+- **[aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md)**: Complete bidirectional rewrite for both runtimes
+- **[aimdb-sync](aimdb-sync/CHANGELOG.md)**: Compatibility with async build
+
+### Migration Guide
+
+**1. Update connector registration:**
+```rust
+// Old (v0.1.0)
+let mqtt = MqttConnector::new("mqtt://broker:1883").await?;
+builder.with_connector("mqtt", Arc::new(mqtt))
+
+// New (v0.2.0)
+builder.with_connector(MqttConnectorBuilder::new("mqtt://broker:1883"))
+```
+
+**2. Make build() async:**
+```rust
+// Old (v0.1.0)
+let db = builder.build()?;
+
+// New (v0.2.0)
+let db = builder.build().await?;
+```
+
+**3. Use directional link methods:**
+```rust
+// Old (v0.1.0)
+.link("mqtt://sensors/temp")
+
+// New (v0.2.0)
+.link_to("mqtt://sensors/temp")    // For publishing (AimDB → External)
+.link_from("mqtt://commands/temp")  // For subscribing (External → AimDB)
+```
+
+**4. Remove manual MQTT task spawning (Embassy):**
+```rust
+// Old (v0.1.0) - Manual task spawning required
+let mqtt_result = MqttConnector::create(...).await?;
+spawner.spawn(mqtt_task(mqtt_result.task))?;
+builder.with_connector("mqtt", Arc::new(mqtt_result.connector))
+
+// New (v0.2.0) - Automatic task spawning
+builder.with_connector(MqttConnectorBuilder::new("mqtt://broker:1883"))
+// Tasks spawn automatically during build()
+```
+
+### Documentation
+
+- Added comprehensive [Connector Development Guide](docs/design/012-M5-connector-development-guide.md)
+- Updated MQTT connector examples for both Tokio and Embassy
+- Enhanced API documentation with bidirectional patterns
 
 ## [0.1.0] - 2025-11-06
 
