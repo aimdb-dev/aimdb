@@ -42,6 +42,7 @@ use std::time::Duration;
 /// automatically subscribes to all required MQTT topics.
 pub struct MqttConnectorBuilder {
     broker_url: String,
+    client_id: Option<String>,
 }
 
 impl MqttConnectorBuilder {
@@ -58,7 +59,29 @@ impl MqttConnectorBuilder {
     pub fn new(broker_url: impl Into<String>) -> Self {
         Self {
             broker_url: broker_url.into(),
+            client_id: None,
         }
+    }
+
+    /// Set the MQTT client ID
+    ///
+    /// The client ID should be unique for each client connecting to the broker.
+    /// It's used for session persistence and message delivery guarantees.
+    ///
+    /// If not set, a random UUID-based client ID will be generated automatically.
+    ///
+    /// # Arguments
+    /// * `client_id` - Unique identifier for this client
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let builder = MqttConnector::new("mqtt://localhost:1883")
+    ///     .with_client_id("my-app-001");
+    /// ```
+    pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = Some(client_id.into());
+        self
     }
 }
 
@@ -90,20 +113,21 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for MqttConnectorBu
             tracing::info!("MQTT router has {} topics", router.resource_ids().len());
 
             // Build the actual connector
-            let connector = MqttConnectorImpl::build_internal(&self.broker_url, router)
-                .await
-                .map_err(|e| {
-                    #[cfg(feature = "std")]
-                    {
-                        aimdb_core::DbError::RuntimeError {
-                            message: format!("Failed to build MQTT connector: {}", e).into(),
+            let connector =
+                MqttConnectorImpl::build_internal(&self.broker_url, self.client_id.clone(), router)
+                    .await
+                    .map_err(|e| {
+                        #[cfg(feature = "std")]
+                        {
+                            aimdb_core::DbError::RuntimeError {
+                                message: format!("Failed to build MQTT connector: {}", e).into(),
+                            }
                         }
-                    }
-                    #[cfg(not(feature = "std"))]
-                    {
-                        aimdb_core::DbError::RuntimeError { _message: () }
-                    }
-                })?;
+                        #[cfg(not(feature = "std"))]
+                        {
+                            aimdb_core::DbError::RuntimeError { _message: () }
+                        }
+                    })?;
 
             Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
         })
@@ -130,8 +154,13 @@ impl MqttConnectorImpl {
     ///
     /// # Arguments
     /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
+    /// * `client_id` - Optional client ID (if None, generates UUID-based ID)
     /// * `router` - Pre-configured router with all routes
-    async fn build_internal(broker_url: &str, router: Router) -> Result<Self, String> {
+    async fn build_internal(
+        broker_url: &str,
+        client_id: Option<String>,
+        router: Router,
+    ) -> Result<Self, String> {
         // Parse the broker URL - we accept it with or without a topic
         let mut url = broker_url.to_string();
 
@@ -157,7 +186,8 @@ impl MqttConnectorImpl {
         #[cfg(feature = "tracing")]
         tracing::info!("Creating MQTT client for {}", broker_key);
 
-        let client_id = format!("aimdb-{}", uuid::Uuid::new_v4());
+        // Use provided client_id or generate a UUID-based one
+        let client_id = client_id.unwrap_or_else(|| format!("aimdb-{}", uuid::Uuid::new_v4()));
 
         let mut mqtt_opts = MqttOptions::new(client_id, host, port);
 
@@ -329,21 +359,23 @@ mod tests {
     #[tokio::test]
     async fn test_connector_creation_with_router() {
         let router = RouterBuilder::new().build();
-        let connector = MqttConnectorImpl::build_internal("mqtt://localhost:1883", router).await;
+        let connector =
+            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, router).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_connector_with_port() {
         let router = RouterBuilder::new().build();
-        let connector = MqttConnectorImpl::build_internal("mqtt://broker.local:9999", router).await;
+        let connector =
+            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, router).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_invalid_url() {
         let router = RouterBuilder::new().build();
-        let connector = MqttConnectorImpl::build_internal("not-a-valid-url", router).await;
+        let connector = MqttConnectorImpl::build_internal("not-a-valid-url", None, router).await;
         assert!(connector.is_err());
     }
 }

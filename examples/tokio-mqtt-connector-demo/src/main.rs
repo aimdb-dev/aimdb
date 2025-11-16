@@ -134,7 +134,8 @@ async fn main() -> DbResult<()> {
     println!("🔧 Creating database with bidirectional MQTT connector...");
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883"),
+        aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883")
+            .with_client_id("tokio-demo-001"),
     );
 
     // Configure Temperature record (outbound: AimDB → MQTT)

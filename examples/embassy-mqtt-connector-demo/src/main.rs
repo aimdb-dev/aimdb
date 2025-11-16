@@ -399,10 +399,7 @@ async fn main(spawner: Spawner) {
 
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector(
-            MqttConnectorBuilder::new(&broker_url)
-                .with_client_id("embassy-demo-001")
-        );
+        .with_connector(MqttConnectorBuilder::new(&broker_url).with_client_id("embassy-demo-001"));
 
     // Configure Temperature record with custom buffer sizing (outbound: AimDB → MQTT)
     //
