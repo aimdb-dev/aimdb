@@ -45,6 +45,15 @@ use core::str::FromStr;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpAddress, Ipv4Address, Stack};
 
+/// Type alias for outbound route configuration
+/// (resource_id, consumer, serializer, config_params)
+type OutboundRoute = (
+    String,
+    Box<dyn aimdb_core::connector::ConsumerTrait>,
+    aimdb_core::connector::SerializerFn,
+    Vec<(String, String)>,
+);
+
 #[cfg(feature = "defmt")]
 use defmt::{debug, error, info, trace, warn};
 
@@ -52,14 +61,19 @@ use defmt::{debug, error, info, trace, warn};
 use tracing::{debug, error, info, trace, warn};
 
 #[cfg(all(not(feature = "defmt"), not(feature = "tracing")))]
+#[allow(unused_macros)]
 macro_rules! debug { ($($arg:tt)*) => { let _ = ($($arg)*,); }; }
 #[cfg(all(not(feature = "defmt"), not(feature = "tracing")))]
+#[allow(unused_macros)]
 macro_rules! info { ($($arg:tt)*) => { let _ = ($($arg)*,); }; }
 #[cfg(all(not(feature = "defmt"), not(feature = "tracing")))]
+#[allow(unused_macros)]
 macro_rules! warn { ($($arg:tt)*) => { let _ = ($($arg)*,); }; }
 #[cfg(all(not(feature = "defmt"), not(feature = "tracing")))]
+#[allow(unused_macros)]
 macro_rules! error { ($($arg:tt)*) => { let _ = ($($arg)*,); }; }
 #[cfg(all(not(feature = "defmt"), not(feature = "tracing")))]
+#[allow(unused_macros)]
 macro_rules! trace { ($($arg:tt)*) => { let _ = ($($arg)*,); }; }
 
 /// KNX connector builder for Embassy runtime
@@ -230,7 +244,7 @@ impl KnxConnectorImpl {
                 gateway_port
             );
 
-            match Self::connect_and_listen(&stack, gateway_addr, gateway_port, &router).await {
+            match Self::connect_and_listen(stack, gateway_addr, gateway_port, &router).await {
                 Ok(()) => {
                     #[cfg(feature = "defmt")]
                     defmt::warn!("KNX connection ended normally (unexpected)");
@@ -477,12 +491,7 @@ impl KnxConnectorImpl {
     fn spawn_outbound_publishers<R>(
         &self,
         _db: &aimdb_core::builder::AimDb<R>,
-        _outbound_routes: Vec<(
-            String,
-            Box<dyn aimdb_core::connector::ConsumerTrait>,
-            aimdb_core::connector::SerializerFn,
-            Vec<(String, String)>,
-        )>,
+        _outbound_routes: Vec<OutboundRoute>,
     ) -> aimdb_core::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,

@@ -16,6 +16,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
+/// Type alias for outbound route configuration
+/// (resource_id, consumer, serializer, config_params)
+type OutboundRoute = (
+    String,
+    Box<dyn aimdb_core::connector::ConsumerTrait>,
+    aimdb_core::connector::SerializerFn,
+    Vec<(String, String)>,
+);
+
 /// KNX connector for a single gateway connection with router-based dispatch
 ///
 /// Each connector manages ONE KNX/IP gateway connection. The router determines
@@ -100,7 +109,7 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
                     #[cfg(feature = "std")]
                     {
                         aimdb_core::DbError::RuntimeError {
-                            message: format!("Failed to build KNX connector: {}", e).into(),
+                            message: format!("Failed to build KNX connector: {}", e),
                         }
                     }
                     #[cfg(not(feature = "std"))]
@@ -206,12 +215,7 @@ impl KnxConnectorImpl {
     fn spawn_outbound_publishers<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
-        routes: Vec<(
-            String,
-            Box<dyn aimdb_core::connector::ConsumerTrait>,
-            aimdb_core::connector::SerializerFn,
-            Vec<(String, String)>,
-        )>,
+        routes: Vec<OutboundRoute>,
     ) -> aimdb_core::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
