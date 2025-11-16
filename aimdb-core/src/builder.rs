@@ -207,6 +207,28 @@ impl AimDbBuilder<NoRuntime> {
     /// Sets the runtime adapter
     ///
     /// This transitions the builder from untyped to typed with concrete runtime `R`.
+    ///
+    /// # Type Safety Note
+    ///
+    /// The `connector_builders` field is intentionally reset to `Vec::new()` during this
+    /// transition because connectors are parameterized by the runtime type:
+    ///
+    /// - Before: `Vec<Box<dyn ConnectorBuilder<NoRuntime>>>`
+    /// - After: `Vec<Box<dyn ConnectorBuilder<R>>>`
+    ///
+    /// These types are incompatible and cannot be transferred. However, this is not a bug
+    /// because `.with_connector()` is only available AFTER calling `.runtime()` (it's defined
+    /// in the `impl<R> where R: Spawn` block, not in `impl AimDbBuilder<NoRuntime>`).
+    ///
+    /// This means the type system **enforces** the correct call order:
+    /// ```rust,ignore
+    /// AimDbBuilder::new()
+    ///     .runtime(runtime)           // ← Must be called first
+    ///     .with_connector(connector)  // ← Now available
+    /// ```
+    ///
+    /// The `records` and `remote_config` are preserved across the transition since they
+    /// are not parameterized by the runtime type.
     pub fn runtime<R>(self, rt: Arc<R>) -> AimDbBuilder<R>
     where
         R: aimdb_executor::Spawn + 'static,
@@ -217,7 +239,7 @@ impl AimDbBuilder<NoRuntime> {
             connector_builders: Vec::new(),
             spawn_fns: BTreeMap::new(),
             #[cfg(feature = "std")]
-            remote_config: None,
+            remote_config: self.remote_config,
             _phantom: PhantomData,
         }
     }
