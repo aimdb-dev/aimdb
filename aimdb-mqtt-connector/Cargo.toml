@@ -23,7 +23,8 @@ tokio-runtime = [
 ]
 embassy-runtime = [
     "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
-    "aimdb-embassy-adapter/embassy-net-support", # For EmbassyNetwork trait
+    "dep:aimdb-embassy-adapter",                 # Enable the optional dependency
+    "aimdb-embassy-adapter/embassy-net-support", # Enable EmbassyNetwork trait for network stack access
     "embassy-executor",
     "embassy-time",
     "embassy-sync",
