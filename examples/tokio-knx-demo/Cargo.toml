@@ -1,0 +1,38 @@
+[package]
+name = "tokio-knx-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AimDB example demonstrating KNX connector integration with Tokio runtime"
+publish = false
+
+[features]
+default = ["tokio-runtime", "tracing"]
+tokio-runtime = ["aimdb-knx-connector/tokio-runtime"]
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
+
+[dependencies]
+# Core AimDB dependencies
+aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-executor = { path = "../../aimdb-executor", features = ["std"] }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+    "tracing",
+] }
+
+# KNX connector
+aimdb-knx-connector = { path = "../../aimdb-knx-connector", features = [
+    "tokio-runtime",
+    "tracing",
+] }
+
+# Tokio runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Optional tracing
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { version = "0.3", optional = true }

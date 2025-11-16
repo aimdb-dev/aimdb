@@ -110,6 +110,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aimdb-knx-connector"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-embassy-adapter",
+ "aimdb-executor",
+ "aimdb-tokio-adapter",
+ "async-stream",
+ "defmt 1.0.1",
+ "embassy-executor",
+ "embassy-net",
+ "embassy-sync",
+ "embassy-time",
+ "futures-core",
+ "futures-util",
+ "heapless 0.8.0",
+ "knx-pico",
+ "static_cell",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aimdb-mcp"
 version = "0.1.0"
 dependencies = [
@@ -1171,6 +1197,7 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1edcd5a338e64688fbdcb7531a846cfd3476a54784dcb918a0844682bc7ada5"
 dependencies = [
+ "defmt 1.0.1",
  "hash32",
  "stable_deref_trait",
 ]
@@ -1241,6 +1268,16 @@ checksum = "b011eec8cc36da2aab2d5cff675ec18454fad408585853910a202391cf9f8e65"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "knx-pico"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c47a52e84dfd618634b5e8293a74503cb32519672f00ad085fb63661027cc896"
+dependencies = [
+ "defmt 1.0.1",
+ "heapless 0.9.1",
 ]
 
 [[package]]
@@ -2182,6 +2219,21 @@ dependencies = [
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-knx-demo"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
+ "aimdb-knx-connector",
+ "aimdb-tokio-adapter",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
