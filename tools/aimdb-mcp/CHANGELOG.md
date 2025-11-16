@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes in this release.
+### Changed
+
+- **Internal: Field Rename**: Updated internal usage of `RecordMetadata` to use `outbound_connector_count` field (renamed from `connector_count`) in tools and resources
+- Updated record listing, schema inference, and metadata display to reflect new field name
 
 ## [0.1.0] - 2025-11-06
 

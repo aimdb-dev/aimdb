@@ -510,7 +510,7 @@ where
 
         // Store the connector link - consumers will be created later in build()
         // after connectors are actually built
-        self.registrar.rec.add_connector(link);
+        self.registrar.rec.add_outbound_connector(link);
         self.registrar
     }
 }

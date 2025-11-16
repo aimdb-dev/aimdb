@@ -250,17 +250,17 @@ pub trait AnyRecord: Send + Sync {
     /// Returns self as mutable Any for downcasting
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
-    /// Returns the number of registered connectors
-    fn connector_count(&self) -> usize;
+    /// Returns the number of registered outbound connectors
+    fn outbound_connector_count(&self) -> usize;
 
-    /// Returns the connector URLs as strings
+    /// Returns the outbound connector URLs as strings
     #[cfg(feature = "std")]
-    fn connector_urls(&self) -> Vec<String>;
+    fn outbound_connector_urls(&self) -> Vec<String>;
 
-    /// Gets the connector links
+    /// Gets the outbound connector links
     ///
-    /// Returns connector configuration list for spawning logic.
-    fn connectors(&self) -> &[crate::connector::ConnectorLink];
+    /// Returns outbound connector configuration list for spawning logic.
+    fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink];
 
     /// Returns the number of registered consumers (tap observers)
     fn consumer_count(&self) -> usize;
@@ -499,12 +499,11 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
 
     /// List of outbound connector links (AimDB → External)
     /// Each link represents a protocol connector (MQTT, Kafka, HTTP, etc.)
-    connectors: Vec<crate::connector::ConnectorLink>,
+    outbound_connectors: Vec<crate::connector::ConnectorLink>,
 
     /// List of inbound connector links (External → AimDB)
     /// Each link spawns a background task that subscribes to an external source
     /// and produces values into this record's buffer
-    /// Inbound connector links (External → AimDB)
     inbound_connectors: Vec<crate::connector::InboundConnectorLink>,
 
     /// Metadata tracking (std only - for remote access)
@@ -551,7 +550,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             buffer: None,
             #[cfg(feature = "std")]
             buffer_cfg: None,
-            connectors: Vec::new(),
+            outbound_connectors: Vec::new(),
             inbound_connectors: Vec::new(),
             #[cfg(feature = "std")]
             metadata: RecordMetadataTracker::new::<T>(),
@@ -704,12 +703,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         Ok(buffer.subscribe_boxed())
     }
 
-    /// Adds a connector link for external system integration
+    /// Adds an outbound connector link for external system integration
     ///
     /// Bridges records to external protocols (MQTT, Kafka, HTTP, etc.).
     /// Multiple connectors supported per record.
-    pub fn add_connector(&mut self, link: crate::connector::ConnectorLink) {
-        self.connectors.push(link);
+    pub fn add_outbound_connector(&mut self, link: crate::connector::ConnectorLink) {
+        self.outbound_connectors.push(link);
     }
 
     /// Enables JSON serialization for remote access (std only)
@@ -772,20 +771,20 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         self
     }
 
-    /// Returns a reference to the registered connectors
+    /// Returns a reference to the registered outbound connectors
     ///
     /// # Returns
-    /// A slice of connector links
-    pub fn connectors(&self) -> &[crate::connector::ConnectorLink] {
-        &self.connectors
+    /// A slice of outbound connector links
+    pub fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink] {
+        &self.outbound_connectors
     }
 
-    /// Returns the number of registered connectors
+    /// Returns the number of registered outbound connectors
     ///
     /// # Returns
-    /// The count of connectors
-    pub fn connector_count(&self) -> usize {
-        self.connectors.len()
+    /// The count of outbound connectors
+    pub fn outbound_connector_count(&self) -> usize {
+        self.outbound_connectors.len()
     }
 
     /// Returns all inbound connector links (External → AimDB)
@@ -1062,20 +1061,20 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
         self
     }
 
-    fn connector_count(&self) -> usize {
-        self.connectors.len()
+    fn outbound_connector_count(&self) -> usize {
+        self.outbound_connectors.len()
     }
 
     #[cfg(feature = "std")]
-    fn connector_urls(&self) -> Vec<String> {
-        self.connectors
+    fn outbound_connector_urls(&self) -> Vec<String> {
+        self.outbound_connectors
             .iter()
             .map(|link| format!("{}", link.url))
             .collect()
     }
 
-    fn connectors(&self) -> &[crate::connector::ConnectorLink] {
-        &self.connectors
+    fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink] {
+        &self.outbound_connectors
     }
 
     fn consumer_count(&self) -> usize {
@@ -1165,7 +1164,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             })?;
 
         // Get the connector links for this record
-        let links = self.connectors();
+        let links = self.outbound_connectors();
 
         for link in links {
             let scheme = link.url.scheme();
@@ -1304,7 +1303,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
                 .writable
                 .load(std::sync::atomic::Ordering::SeqCst),
             RecordMetadataTracker::format_timestamp(self.metadata.created_at),
-            self.connector_count(),
+            self.outbound_connector_count(),
         )
         .with_last_update_opt(last_update)
     }

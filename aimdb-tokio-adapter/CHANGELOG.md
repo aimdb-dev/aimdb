@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: Connector API Update**: Updated internal connector introspection to use renamed methods:
+  - `record.connector_count()` → `record.outbound_connector_count()`
+  - `record.connector_urls()` → `record.outbound_connector_urls()`
 - Updated connector integration to support new `ConnectorBuilder` pattern
 - Enhanced runtime adapter to work with async connector initialization
 

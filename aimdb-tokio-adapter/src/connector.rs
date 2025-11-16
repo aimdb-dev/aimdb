@@ -59,14 +59,14 @@ impl TokioAdapter {
 
         // Iterate through all registered records
         for (_type_id, record) in inner.records.iter() {
-            let connector_count = record.connector_count();
+            let connector_count = record.outbound_connector_count();
 
             if connector_count > 0 {
                 #[cfg(feature = "tracing")]
                 {
                     tracing::info!("Record {:?} has {} connector(s)", _type_id, connector_count);
 
-                    let urls = record.connector_urls();
+                    let urls = record.outbound_connector_urls();
                     for url in urls {
                         tracing::debug!("  → Connector URL: {}", url);
                         total_connectors += 1;
@@ -199,11 +199,11 @@ mod tests {
             .next()
             .expect("Should have one record");
 
-        assert_eq!(record.connector_count(), 1);
+        assert_eq!(record.outbound_connector_count(), 1);
 
         #[cfg(feature = "std")]
         {
-            let urls = record.connector_urls();
+            let urls = record.outbound_connector_urls();
             assert!(urls[0].contains("mqtt://"));
         }
 

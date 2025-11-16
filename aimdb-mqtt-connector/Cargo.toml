@@ -42,9 +42,6 @@ aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = fal
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
 aimdb-embassy-adapter = { version = "0.1.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
-# Async trait support
-async-trait = "0.1"
-
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }
 

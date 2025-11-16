@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking: Async Build**: `AimDbBuilder::build()` is now async to support connector initialization during database construction
 - **Breaking: ConnectorBuilder Trait**: Updated `build()` signature to take `&AimDb<R>`, enabling route collection via `db.collect_inbound_routes()`
 - **Breaking: Sync Bound on Records**: Added `Sync` bound to `AnyRecord` trait and `TypedRecord<T, R>` implementation. Record types must now be `Send + Sync` (previously only `Send`). This enables safe concurrent access from multiple connector tasks in the bidirectional routing system. Types that were `Send` but not `Sync` must be wrapped in `Arc<Mutex<_>>` or `Arc<RwLock<_>>` for interior mutability.
+- **Breaking: Connector Naming Refactor**: Renamed connector-related APIs to explicitly distinguish outbound (AimDB → External) from inbound (External → AimDB) flows:
+  - `TypedRecord::connectors` field → `outbound_connectors`
+  - `TypedRecord::add_connector()` → `add_outbound_connector()`
+  - `TypedRecord::connectors()` → `outbound_connectors()`
+  - `TypedRecord::connector_count()` → `outbound_connector_count()`
+  - `AnyRecord::connector_count()` → `outbound_connector_count()`
+  - `AnyRecord::connector_urls()` → `outbound_connector_urls()`
+  - `AnyRecord::connectors()` → `outbound_connectors()`
+  - `RecordMetadata::connector_count` → `outbound_connector_count`
+  - Inbound methods (`inbound_connectors()`, `add_inbound_connector()`) remain unchanged for clarity
 - **Deprecated `.link()`**: Generic `.link()` method deprecated in favor of explicit `.link_to()` and `.link_from()`
 - **Builder API**: Enhanced builder to validate buffer requirements for inbound connectors at configuration time
 

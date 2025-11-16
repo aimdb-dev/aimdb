@@ -39,8 +39,8 @@ pub struct RecordMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_update: Option<String>,
 
-    /// Number of connector links registered
-    pub connector_count: usize,
+    /// Number of outbound connector links registered
+    pub outbound_connector_count: usize,
 }
 
 impl RecordMetadata {
@@ -55,7 +55,7 @@ impl RecordMetadata {
     /// * `consumer_count` - Number of consumers
     /// * `writable` - Whether writes are permitted
     /// * `created_at` - Creation timestamp (ISO 8601)
-    /// * `connector_count` - Number of connectors
+    /// * `outbound_connector_count` - Number of outbound connectors
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         type_id: TypeId,
@@ -66,7 +66,7 @@ impl RecordMetadata {
         consumer_count: usize,
         writable: bool,
         created_at: String,
-        connector_count: usize,
+        outbound_connector_count: usize,
     ) -> Self {
         Self {
             name,
@@ -78,7 +78,7 @@ impl RecordMetadata {
             writable,
             created_at,
             last_update: None,
-            connector_count,
+            outbound_connector_count,
         }
     }
 
@@ -119,8 +119,8 @@ mod tests {
         assert_eq!(metadata.buffer_capacity, Some(100));
         assert_eq!(metadata.producer_count, 1);
         assert_eq!(metadata.consumer_count, 2);
+        assert_eq!(metadata.outbound_connector_count, 0);
         assert!(!metadata.writable);
-        assert_eq!(metadata.connector_count, 0);
     }
 
     #[test]
@@ -143,6 +143,6 @@ mod tests {
         assert!(json.contains("\"name\":\"String\""));
         assert!(json.contains("\"buffer_type\":\"single_latest\""));
         assert!(json.contains("\"writable\":true"));
-        assert!(json.contains("\"connector_count\":2"));
+        assert!(json.contains("\"outbound_connector_count\":2"));
     }
 }
