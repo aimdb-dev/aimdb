@@ -97,11 +97,9 @@ async fn main() -> DbResult<()> {
     println!("🔧 Creating database with KNX bus monitor...");
     println!("⚠️  NOTE: Update gateway URL and group addresses to match your setup!\n");
 
-    let mut builder = AimDbBuilder::new()
-        .runtime(runtime)
-        .with_connector(aimdb_knx_connector::KnxConnector::new(
-            "knx://192.168.1.19:3671",
-        ));
+    let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
+        aimdb_knx_connector::KnxConnector::new("knx://192.168.1.19:3671"),
+    );
 
     // Configure LightState record (inbound monitoring only)
     builder.configure::<LightState>(|reg| {
@@ -136,7 +134,11 @@ async fn main() -> DbResult<()> {
                     let raw = i16::from_be_bytes([data[0], data[1]]);
                     let exponent = ((raw as u16) >> 11) & 0x0F;
                     let mantissa = (raw as u16) & 0x7FF;
-                    let sign = if (raw as u16 & 0x8000) != 0 { -1.0 } else { 1.0 };
+                    let sign = if (raw as u16 & 0x8000) != 0 {
+                        -1.0
+                    } else {
+                        1.0
+                    };
                     sign * (mantissa as f32) * 2f32.powi(exponent as i32 - 12) * 0.01
                 } else {
                     0.0

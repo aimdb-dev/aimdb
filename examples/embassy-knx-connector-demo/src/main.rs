@@ -43,7 +43,7 @@ use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
-use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config};
+use embassy_stm32::{Config, bind_interrupts, eth, peripherals, rng};
 use embassy_time::{Duration, Timer};
 use heapless::String as HeaplessString;
 use static_cell::StaticCell;
@@ -95,7 +95,7 @@ impl Temperature {
     /// Parse DPT 9.001 (2-byte float temperature)
     fn from_knx_dpt9(data: &[u8]) -> Result<f32, alloc::string::String> {
         use alloc::string::ToString;
-        
+
         if data.len() < 2 {
             return Err("DPT 9.001 requires 2 bytes".to_string());
         }
@@ -110,7 +110,8 @@ impl Temperature {
         };
 
         // Formula: value = sign * mantissa * 2^(exponent - 12) * 0.01
-        let value = sign * (mantissa as f32) * micromath::F32Ext::powi(2.0, exponent as i32 - 12) * 0.01;
+        let value =
+            sign * (mantissa as f32) * micromath::F32Ext::powi(2.0, exponent as i32 - 12) * 0.01;
 
         Ok(value)
     }
@@ -318,7 +319,7 @@ async fn main(spawner: Spawner) {
                 let is_on = data.first().map(|&b| b != 0).unwrap_or(false);
                 let mut group_address = HeaplessString::<16>::new();
                 let _ = group_address.push_str("1/0/7");
-                
+
                 Ok(LightState {
                     group_address,
                     is_on,
@@ -338,7 +339,7 @@ async fn main(spawner: Spawner) {
                 let celsius = Temperature::from_knx_dpt9(data)?;
                 let mut group_address = HeaplessString::<16>::new();
                 let _ = group_address.push_str("1/1/10");
-                
+
                 Ok(Temperature {
                     group_address,
                     celsius,

@@ -110,21 +110,21 @@ where
             let router = RouterBuilder::from_routes(routes).build();
 
             #[cfg(feature = "defmt")]
-            defmt::info!("KNX router has {} group addresses", router.resource_ids().len());
+            defmt::info!(
+                "KNX router has {} group addresses",
+                router.resource_ids().len()
+            );
 
             // Build the actual connector
-            let connector = KnxConnectorImpl::build_internal(
-                self.gateway_url.as_str(),
-                router,
-                db.runtime(),
-            )
-            .await
-            .map_err(|_e| {
-                #[cfg(feature = "defmt")]
-                defmt::error!("Failed to build KNX connector");
+            let connector =
+                KnxConnectorImpl::build_internal(self.gateway_url.as_str(), router, db.runtime())
+                    .await
+                    .map_err(|_e| {
+                        #[cfg(feature = "defmt")]
+                        defmt::error!("Failed to build KNX connector");
 
-                aimdb_core::DbError::RuntimeError { _message: () }
-            })?;
+                        aimdb_core::DbError::RuntimeError { _message: () }
+                    })?;
 
             // Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("knx");
@@ -224,7 +224,11 @@ impl KnxConnectorImpl {
     ) {
         loop {
             #[cfg(feature = "defmt")]
-            defmt::info!("Connecting to KNX gateway {}:{}", gateway_addr, gateway_port);
+            defmt::info!(
+                "Connecting to KNX gateway {}:{}",
+                gateway_addr,
+                gateway_port
+            );
 
             match Self::connect_and_listen(&stack, gateway_addr, gateway_port, &router).await {
                 Ok(()) => {
@@ -240,7 +244,7 @@ impl KnxConnectorImpl {
             // Wait before reconnecting
             #[cfg(feature = "defmt")]
             defmt::info!("Reconnecting to KNX gateway in 5 seconds...");
-            
+
             embassy_time::Timer::after(embassy_time::Duration::from_secs(5)).await;
         }
     }
@@ -445,7 +449,7 @@ impl KnxConnectorImpl {
 
         // Extract destination address (group address)
         let dest_addr = u16::from_be_bytes([data[ctrl1_offset + 4], data[ctrl1_offset + 5]]);
-        
+
         // Use GroupAddress::from() instead of from_raw()
         let addr = GroupAddress::from(dest_addr);
 
@@ -499,18 +503,13 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
         _resource_id: &str,
         _config: &aimdb_core::transport::ConnectorConfig,
         _payload: &[u8],
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(), aimdb_core::transport::PublishError>>
-                + Send
-                + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<(), aimdb_core::transport::PublishError>> + Send + '_>>
+    {
         Box::pin(async move {
             // TODO: Implement KNX telegram publishing
             #[cfg(feature = "defmt")]
             defmt::warn!("KNX publish not yet implemented");
-            
+
             Err(aimdb_core::transport::PublishError::ConnectionFailed)
         })
     }

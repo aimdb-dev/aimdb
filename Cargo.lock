@@ -2254,7 +2254,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-knx-demo"
+name = "tokio-knx-connector-demo"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",

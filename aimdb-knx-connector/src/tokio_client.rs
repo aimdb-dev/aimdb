@@ -94,21 +94,20 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
             );
 
             // Build the actual connector
-            let connector =
-                KnxConnectorImpl::build_internal(&self.gateway_url, router)
-                    .await
-                    .map_err(|e| {
-                        #[cfg(feature = "std")]
-                        {
-                            aimdb_core::DbError::RuntimeError {
-                                message: format!("Failed to build KNX connector: {}", e).into(),
-                            }
+            let connector = KnxConnectorImpl::build_internal(&self.gateway_url, router)
+                .await
+                .map_err(|e| {
+                    #[cfg(feature = "std")]
+                    {
+                        aimdb_core::DbError::RuntimeError {
+                            message: format!("Failed to build KNX connector: {}", e).into(),
                         }
-                        #[cfg(not(feature = "std"))]
-                        {
-                            aimdb_core::DbError::RuntimeError { _message: () }
-                        }
-                    })?;
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        aimdb_core::DbError::RuntimeError { _message: () }
+                    }
+                })?;
 
             // Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("knx");
@@ -149,10 +148,7 @@ impl KnxConnectorImpl {
     /// # Arguments
     /// * `gateway_url` - Gateway URL (knx://host:port)
     /// * `router` - Pre-configured router with all routes
-    async fn build_internal(
-        gateway_url: &str,
-        router: Router,
-    ) -> Result<Self, String> {
+    async fn build_internal(gateway_url: &str, router: Router) -> Result<Self, String> {
         // Parse the gateway URL
         let mut url = gateway_url.to_string();
 
@@ -312,13 +308,8 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
         destination: &str,
         _config: &aimdb_core::transport::ConnectorConfig,
         payload: &[u8],
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(), aimdb_core::transport::PublishError>>
-                + Send
-                + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<(), aimdb_core::transport::PublishError>> + Send + '_>>
+    {
         use aimdb_core::transport::PublishError;
 
         // Destination is the group address (from ConnectorUrl::resource_id())
@@ -378,10 +369,7 @@ fn spawn_connection_task(gateway_ip: String, gateway_port: u16, router: Arc<Rout
                 }
                 Err(_e) => {
                     #[cfg(feature = "tracing")]
-                    tracing::error!(
-                        "KNX connection failed: {:?}, reconnecting in 5s...",
-                        _e
-                    );
+                    tracing::error!("KNX connection failed: {:?}, reconnecting in 5s...", _e);
                 }
             }
 
@@ -422,11 +410,7 @@ async fn connect_and_listen(
         .map_err(|e| format!("Invalid gateway address: {}", e))?;
 
     #[cfg(feature = "tracing")]
-    tracing::debug!(
-        "KNX: Connecting from {} to {}",
-        local_addr,
-        gateway_addr
-    );
+    tracing::debug!("KNX: Connecting from {} to {}", local_addr, gateway_addr);
 
     // 2. Send CONNECT_REQUEST (using knx-pico types)
     let connect_req = build_connect_request(local_addr)?;
@@ -458,11 +442,8 @@ async fn connect_and_listen(
     let mut seq_counter: u8 = 0;
 
     loop {
-        let result = tokio::time::timeout(
-            Duration::from_secs(30),
-            socket.recv_from(&mut buf)
-        )
-        .await;
+        let result =
+            tokio::time::timeout(Duration::from_secs(30), socket.recv_from(&mut buf)).await;
 
         match result {
             Ok(Ok((len, _))) => {
@@ -471,11 +452,7 @@ async fn connect_and_listen(
                     let resource_id = format_group_address(group_addr);
 
                     #[cfg(feature = "tracing")]
-                    tracing::debug!(
-                        "KNX telegram: {} ({} bytes)",
-                        resource_id,
-                        data.len()
-                    );
+                    tracing::debug!("KNX telegram: {} ({} bytes)", resource_id, data.len());
 
                     // Dispatch via router
                     if let Err(_e) = router.route(&resource_id, &data).await {
@@ -508,8 +485,8 @@ fn build_connect_request(local_addr: SocketAddr) -> Result<Vec<u8>, String> {
 
     // KNXnet/IP Header (6 bytes)
     let mut frame = vec![
-        0x06,       // Header length
-        0x10,       // Protocol version
+        0x06, // Header length
+        0x10, // Protocol version
         0x02, 0x05, // CONNECT_REQUEST
         0x00, 0x1A, // Total length (26 bytes)
     ];
@@ -573,14 +550,16 @@ fn parse_connect_response(data: &[u8]) -> Result<(u8, u8), String> {
 /// Build TUNNELING_ACK frame
 fn build_tunneling_ack(channel_id: u8, seq_counter: u8) -> Vec<u8> {
     vec![
-        0x06,       // Header length
-        0x10,       // Protocol version
-        0x04, 0x21, // TUNNELING_ACK
-        0x00, 0x0A, // Total length (10 bytes)
-        0x04,       // Connection header length
+        0x06, // Header length
+        0x10, // Protocol version
+        0x04,
+        0x21, // TUNNELING_ACK
+        0x00,
+        0x0A, // Total length (10 bytes)
+        0x04, // Connection header length
         channel_id,
         seq_counter,
-        0x00,       // Status (OK)
+        0x00, // Status (OK)
     ]
 }
 
@@ -626,10 +605,7 @@ fn parse_telegram(data: &[u8]) -> Option<(u16, Vec<u8>)> {
     }
 
     // Destination address (group)
-    let dest_raw = u16::from_be_bytes([
-        data[addr_start + 4],
-        data[addr_start + 5],
-    ]);
+    let dest_raw = u16::from_be_bytes([data[addr_start + 4], data[addr_start + 5]]);
 
     // NPDU length
     let npdu_len = data.get(addr_start + 6).copied()? as usize;
@@ -722,16 +698,14 @@ mod tests {
     #[tokio::test]
     async fn test_connector_creation_with_router() {
         let router = RouterBuilder::new().build();
-        let connector =
-            KnxConnectorImpl::build_internal("knx://192.168.1.19:3671", router).await;
+        let connector = KnxConnectorImpl::build_internal("knx://192.168.1.19:3671", router).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_connector_with_port() {
         let router = RouterBuilder::new().build();
-        let connector =
-            KnxConnectorImpl::build_internal("knx://gateway.local:3672", router).await;
+        let connector = KnxConnectorImpl::build_internal("knx://gateway.local:3672", router).await;
         assert!(connector.is_ok());
     }
 
