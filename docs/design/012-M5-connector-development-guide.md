@@ -1,7 +1,7 @@
 # AimDB Connector Development Guide
 
 **Version:** 0.1.0  
-**Last Updated:** November 15, 2025  
+**Last Updated:** November 16, 2025  
 **Status:** Complete
 
 ## Overview
@@ -739,23 +739,38 @@ test-myconnector:
 .with_embassy_connector(...)
 ```
 
-### 2. **Handle Reconnection**
+### 2. **Handle Reconnection in Background Task**
 
+Reconnection logic belongs in the spawned event loop task, **not** in `publish()`.
+
+✅ **Do**: Reconnect in background task
 ```rust
-loop {
-    match connect().await {
-        Ok(connection) => {
-            if let Err(e) = handle_connection(connection).await {
-                eprintln!("Connection lost: {:?}", e);
+// In spawned background task
+tokio::spawn(async move {
+    loop {
+        match connect_and_run(&broker_url).await {
+            Ok(_) => { /* Connection closed gracefully */ }
+            Err(e) => {
+                eprintln!("Connection failed: {:?}, reconnecting...", e);
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
-        Err(e) => {
-            eprintln!("Connection failed: {:?}", e);
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
     }
+});
+```
+
+❌ **Don't**: Block publish() waiting for reconnection
+```rust
+fn publish(...) {
+    // Bad - blocks all publishers
+    if !self.connected {
+        reconnect().await?;
+    }
+    client.publish(...).await
 }
 ```
+
+**Why?** The background task maintains the connection continuously. The `publish()` method should fail fast if disconnected, letting the application decide how to handle it.
 
 ### 3. **Use Router for Inbound Messages**
 
@@ -805,6 +820,37 @@ static CHANNEL: StaticCell<Channel<...>> = StaticCell::new();
 
 // Bad - stack allocation won't work
 let channel = Channel::new(); // Doesn't live long enough
+```
+
+### 8. **Quality of Service Configuration**
+
+Pass through `ConnectorConfig` to support protocol-specific options:
+
+```rust
+impl Connector for MyConnectorImpl {
+    fn publish(
+        &self,
+        destination: &str,
+        config: &ConnectorConfig,  // ← Use this!
+        payload: &[u8],
+    ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
+        // Extract QoS, retain, timeout, etc.
+        let qos = config.qos.unwrap_or(0);
+        let retain = config.retain.unwrap_or(false);
+        
+        // Pass to protocol client
+        client.publish(destination, qos, retain, payload).await
+    }
+}
+```
+
+Users configure it per link:
+```rust
+.link_to("mqtt://sensors/temp")
+.with_config(ConnectorConfig {
+    qos: Some(2),        // Exactly-once delivery
+    retain: Some(true),  // Keep last message
+})
 ```
 
 ---
