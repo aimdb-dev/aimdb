@@ -18,6 +18,7 @@ alloc = []
 
 # Runtime features
 embassy-runtime = ["embassy-executor", "embassy-time", "embassy-sync"]
+embassy-net-support = ["embassy-net"]                                  # Network stack support for connectors
 
 # Task pool size configuration for dynamic spawning
 # Only one should be enabled at a time (default is 8)
@@ -43,10 +44,14 @@ aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-featur
 # Core AimDB types - no_std for Embassy (for DbError integration)
 aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false }
 
+# Stream trait for bidirectional connectors (minimal, no_std compatible)
+futures-core = { version = "0.3", default-features = false }
+
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }
 embassy-time = { workspace = true, optional = true }
 embassy-sync = { workspace = true, optional = true }
+embassy-net = { workspace = true, optional = true }
 
 # Embedded HAL for peripheral abstractions
 embedded-hal = { workspace = true }

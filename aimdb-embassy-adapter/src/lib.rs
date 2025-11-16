@@ -97,13 +97,17 @@ pub mod time;
 #[cfg(not(feature = "std"))]
 pub use error::EmbassyErrorSupport;
 
+// Runtime exports
+#[cfg(not(feature = "std"))]
+pub use runtime::EmbassyAdapter;
+
+// Network trait export
+#[cfg(all(not(feature = "std"), feature = "embassy-net-support"))]
+pub use runtime::EmbassyNetwork;
+
 // Buffer implementation exports
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
 pub use buffer::EmbassyBuffer;
-
-// Runtime adapter exports
-#[cfg(feature = "embassy-runtime")]
-pub use runtime::EmbassyAdapter;
 
 /// Type alias for Embassy database
 ///

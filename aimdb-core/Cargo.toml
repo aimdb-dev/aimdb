@@ -15,6 +15,7 @@ default = ["std"]
 
 # Core capabilities
 std = [
+    "alloc",              # std includes alloc
     "serde",
     "thiserror",
     "anyhow",
@@ -37,6 +38,12 @@ test-utils = ["std"]
 [dependencies]
 # Executor traits (always available)
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
+
+# Stream trait for bidirectional connectors (minimal, no_std compatible)
+futures-core = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
 
 # Serialization (optional)
 serde = { workspace = true, optional = true }
@@ -73,3 +80,4 @@ spin = { version = "0.9", default-features = false, features = [
 heapless = "0.9.1"
 # For async testing
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }

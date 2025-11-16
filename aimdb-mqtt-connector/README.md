@@ -82,7 +82,7 @@ Example:
 
 use aimdb_core::AimDbBuilder;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt};
-use aimdb_mqtt_connector::embassy_client::MqttConnector;
+use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 use alloc::sync::Arc;
 
 #[embassy_executor::main]
@@ -90,44 +90,37 @@ async fn main(spawner: Spawner) {
     // Initialize network stack
     let stack = /* ... */;
     
-    // Create MQTT connector and background task
-    let mqtt_result = MqttConnector::create(
-        stack, 
-        "broker.example.com", 
-        1883, 
-        "embedded-sensor"
-    ).await.unwrap();
+    // Create runtime adapter with network stack access
+    let runtime = Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
     
-    // Spawn MQTT background task
-    spawner.spawn(mqtt_task(mqtt_result.task)).unwrap();
-    
-    // Create database with connector
-    let runtime = Arc::new(EmbassyAdapter::new_with_spawner(spawner));
-    let mqtt_connector = Arc::new(mqtt_result.connector);
-    
+    // Build database with MQTT connector - background tasks spawn automatically
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector("mqtt", mqtt_connector);
+        .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883"));
     
     builder.configure::<SensorData>(|reg| {
         reg.buffer_sized::<4, 1>(EmbassyBufferType::SingleLatest)
-           .link("mqtt://data/sensor")
+           .source(sensor_producer)
+           // Outbound: Publish to MQTT
+           .link_to("mqtt://data/sensor")
            .with_serializer(|data| {
                // Use postcard or similar no_std serializer
                postcard::to_vec(data)
                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
            })
+           .finish()
+           // Inbound: Subscribe from MQTT
+           .link_from("mqtt://commands/sensor")
+           .with_deserializer(|data| SensorCommand::from_bytes(data))
            .finish();
     });
     
-    let _db = builder.build().unwrap();
+    let _db = builder.build().await.unwrap();
     
-    // Database runs in background
-}
-
-#[embassy_executor::task]
-async fn mqtt_task(task: aimdb_mqtt_connector::embassy_client::MqttBackgroundTask) {
-    task.run().await;
+    // Database and MQTT run in background automatically
+    loop {
+        // Main application loop
+    }
 }
 ```
 

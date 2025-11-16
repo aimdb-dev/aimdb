@@ -12,14 +12,32 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+use alloc::string::String;
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, string::String, sync::Arc};
+use std::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 use crate::{DbError, DbResult};
+
+/// Type alias for outbound route tuples returned by `collect_outbound_routes`
+///
+/// Each tuple contains:
+/// - `String` - Topic/key from the URL path
+/// - `Box<dyn ConsumerTrait>` - Callback to create a consumer for this record
+/// - `SerializerFn` - User-provided serializer for the record type
+/// - `Vec<(String, String)>` - Configuration options from the URL query
+#[cfg(feature = "alloc")]
+type OutboundRoute = (
+    String,
+    Box<dyn crate::connector::ConsumerTrait>,
+    crate::connector::SerializerFn,
+    Vec<(String, String)>,
+);
 
 /// Marker type for untyped builder (before runtime is set)
 pub struct NoRuntime;
@@ -171,8 +189,8 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Runtime adapter
     runtime: Option<Arc<R>>,
 
-    /// Connectors indexed by scheme (mqtt, shmem, kafka, etc.)
-    pub(crate) connectors: BTreeMap<String, Arc<dyn crate::transport::Connector>>,
+    /// Connector builders that will be invoked during build()
+    connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder<R>>>,
 
     /// Spawn functions indexed by TypeId
     spawn_fns: BTreeMap<TypeId, Box<dyn core::any::Any + Send>>,
@@ -193,7 +211,7 @@ impl AimDbBuilder<NoRuntime> {
         Self {
             records: BTreeMap::new(),
             runtime: None,
-            connectors: BTreeMap::new(),
+            connector_builders: Vec::new(),
             spawn_fns: BTreeMap::new(),
             #[cfg(feature = "std")]
             remote_config: None,
@@ -204,6 +222,28 @@ impl AimDbBuilder<NoRuntime> {
     /// Sets the runtime adapter
     ///
     /// This transitions the builder from untyped to typed with concrete runtime `R`.
+    ///
+    /// # Type Safety Note
+    ///
+    /// The `connector_builders` field is intentionally reset to `Vec::new()` during this
+    /// transition because connectors are parameterized by the runtime type:
+    ///
+    /// - Before: `Vec<Box<dyn ConnectorBuilder<NoRuntime>>>`
+    /// - After: `Vec<Box<dyn ConnectorBuilder<R>>>`
+    ///
+    /// These types are incompatible and cannot be transferred. However, this is not a bug
+    /// because `.with_connector()` is only available AFTER calling `.runtime()` (it's defined
+    /// in the `impl<R> where R: Spawn` block, not in `impl AimDbBuilder<NoRuntime>`).
+    ///
+    /// This means the type system **enforces** the correct call order:
+    /// ```rust,ignore
+    /// AimDbBuilder::new()
+    ///     .runtime(runtime)           // ← Must be called first
+    ///     .with_connector(connector)  // ← Now available
+    /// ```
+    ///
+    /// The `records` and `remote_config` are preserved across the transition since they
+    /// are not parameterized by the runtime type.
     pub fn runtime<R>(self, rt: Arc<R>) -> AimDbBuilder<R>
     where
         R: aimdb_executor::Spawn + 'static,
@@ -211,10 +251,10 @@ impl AimDbBuilder<NoRuntime> {
         AimDbBuilder {
             records: self.records,
             runtime: Some(rt),
-            connectors: self.connectors,
+            connector_builders: Vec::new(),
             spawn_fns: BTreeMap::new(),
             #[cfg(feature = "std")]
-            remote_config: None,
+            remote_config: self.remote_config,
             _phantom: PhantomData,
         }
     }
@@ -224,40 +264,32 @@ impl<R> AimDbBuilder<R>
 where
     R: aimdb_executor::Spawn + 'static,
 {
-    /// Registers a connector for a specific URL scheme
+    /// Registers a connector builder that will be invoked during `build()`
     ///
-    /// The scheme (e.g., "mqtt", "shmem", "kafka") determines how `.link()` URLs
-    /// are routed. Each scheme can have ONE connector, which manages connections to
-    /// a specific endpoint (broker, segment, cluster, etc.).
+    /// The connector builder will be called after the database is constructed,
+    /// allowing it to collect routes and initialize the connector properly.
     ///
     /// # Arguments
-    /// * `scheme` - URL scheme without "://" (e.g., "mqtt", "shmem", "kafka")
-    /// * `connector` - Connector implementing the Connector trait
+    /// * `builder` - A connector builder that implements `ConnectorBuilder<R>`
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// use aimdb_mqtt_connector::MqttConnector;
-    /// use std::sync::Arc;
     ///
-    /// let mqtt_connector = MqttConnector::new("mqtt://broker.local:1883").await?;
-    /// let shmem_connector = ShmemConnector::new("/dev/shm/aimdb");
-    ///
-    /// let builder = AimDbBuilder::new()
+    /// let db = AimDbBuilder::new()
     ///     .runtime(runtime)
-    ///     .with_connector("mqtt", Arc::new(mqtt_connector))
-    ///     .with_connector("shmem", Arc::new(shmem_connector));
-    ///
-    /// // Now .link() can route to either:
-    /// //   .link("mqtt://sensors/temp")  → mqtt_connector
-    /// //   .link("shmem://temp_data")    → shmem_connector
+    ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"))
+    ///     .configure::<Temperature>(|reg| {
+    ///         reg.link_from("mqtt://commands/temp")...
+    ///     })
+    ///     .build().await?;
     /// ```
     pub fn with_connector(
         mut self,
-        scheme: impl Into<String>,
-        connector: Arc<dyn crate::transport::Connector>,
+        builder: impl crate::connector::ConnectorBuilder<R> + 'static,
     ) -> Self {
-        self.connectors.insert(scheme.into(), connector);
+        self.connector_builders.push(Box::new(builder));
         self
     }
 
@@ -312,12 +344,13 @@ where
 
         let mut reg = RecordRegistrar {
             rec,
-            connectors: &self.connectors,
+            connector_builders: &self.connector_builders,
         };
         f(&mut reg);
 
-        // Store a spawn function that captures the concrete type T
+        // Store a spawn function that captures the concrete type T and connectors
         let type_id = TypeId::of::<T>();
+
         #[allow(clippy::type_complexity)]
         let spawn_fn: Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>) -> DbResult<()> + Send> =
             Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>| {
@@ -371,8 +404,10 @@ where
     /// }
     /// ```
     pub async fn run(self) -> DbResult<()> {
-        // Build the database and spawn all tasks
-        let _db = self.build()?;
+        #[cfg(feature = "tracing")]
+        tracing::info!("Building database and spawning background tasks...");
+
+        let _db = self.build().await?;
 
         #[cfg(feature = "tracing")]
         tracing::info!("Database running, background tasks active. Press Ctrl+C to stop.");
@@ -384,7 +419,7 @@ where
         Ok(())
     }
 
-    /// Builds the database and returns the handle (advanced use)
+    /// Builds the database and returns the handle (async)
     ///
     /// Use this when you need programmatic access to the database handle for
     /// manual subscriptions or production. For typical services, use `.run().await` instead.
@@ -392,21 +427,36 @@ where
     /// **Automatic Task Spawning:** This method spawns all producer services and
     /// `.tap()` observer tasks that were registered during configuration.
     ///
-    /// # Returns
-    /// `DbResult<AimDb<R>>` - The database instance
-    ///
-    /// # Example
+    /// **Connector Setup:** Connectors must be created manually before calling `build()`:
     ///
     /// ```rust,ignore
-    /// let db = AimDbBuilder::new()
-    ///     .runtime(Arc::new(TokioAdapter::new()?))
-    ///     .configure::<MyData>(|reg| { /* ... */ })
-    ///     .build()?;
+    /// use aimdb_mqtt_connector::{MqttConnector, router::RouterBuilder};
     ///
-    /// // Manually subscribe or produce
-    /// let mut reader = db.subscribe::<MyData>()?;
+    /// // Configure records with connector links
+    /// let builder = AimDbBuilder::new()
+    ///     .runtime(runtime)
+    ///     .configure::<Temp>(|reg| {
+    ///         reg.link_from("mqtt://commands/temp")
+    ///            .with_buffer(BufferCfg::SingleLatest)
+    ///            .with_serialization();
+    ///     });
+    ///
+    /// // Create MQTT connector with router
+    /// let router = RouterBuilder::new()
+    ///     .route("commands/temp", /* deserializer */)
+    ///     .build();
+    /// let connector = MqttConnector::new("mqtt://localhost:1883", router).await?;
+    ///
+    /// // Register connector and build
+    /// let db = builder
+    ///     .with_connector("mqtt", Arc::new(connector))
+    ///     .build().await?;
     /// ```
-    pub fn build(self) -> DbResult<AimDb<R>> {
+    ///
+    /// # Returns
+    /// `DbResult<AimDb<R>>` - The database instance
+    #[cfg_attr(not(feature = "std"), allow(unused_mut))]
+    pub async fn build(self) -> DbResult<AimDb<R>> {
         use crate::DbError;
 
         // Validate all records
@@ -497,6 +547,27 @@ where
 
             #[cfg(feature = "tracing")]
             tracing::info!("Remote access supervisor spawned successfully");
+        }
+
+        // Build connectors from builders (after database is fully constructed)
+        // This allows connectors to use collect_inbound_routes() which creates
+        // producers tied to this specific database instance
+        let mut built_connectors = BTreeMap::new();
+        for builder in self.connector_builders {
+            #[cfg(feature = "std")]
+            let scheme = builder.scheme().to_string();
+
+            #[cfg(not(feature = "std"))]
+            let scheme = alloc::string::String::from(builder.scheme());
+
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Building connector for scheme: {}", scheme);
+
+            let connector = builder.build(&db).await?;
+            built_connectors.insert(scheme.clone(), connector);
+
+            #[cfg(feature = "tracing")]
+            tracing::info!("Connector built and spawned successfully: {}", scheme);
         }
 
         // Unwrap the Arc to return the owned AimDb
@@ -879,48 +950,137 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
 
         Ok((value_rx, cancel_tx))
     }
-}
 
-#[cfg(test)]
-mod tests {
-    // NOTE: Tests commented out because RecordT<R> now requires R: aimdb_executor::Spawn,
-    // and we can't use () as a dummy runtime. See examples/ for working tests with real runtimes.
+    /// Collects inbound connector routes for automatic router construction (std only)
+    ///
+    /// Iterates all records, filters their inbound_connectors by scheme,
+    /// and returns routes with producer creation callbacks.
+    ///
+    /// # Arguments
+    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
+    ///
+    /// # Returns
+    /// Vector of tuples: (topic, producer_trait, deserializer)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // In MqttConnector after db.build()
+    /// let routes = db.collect_inbound_routes("mqtt");
+    /// let router = RouterBuilder::from_routes(routes).build();
+    /// connector.set_router(router).await?;
+    /// ```
+    #[cfg(feature = "alloc")]
+    pub fn collect_inbound_routes(
+        &self,
+        scheme: &str,
+    ) -> Vec<(
+        String,
+        Box<dyn crate::connector::ProducerTrait>,
+        crate::connector::DeserializerFn,
+    )> {
+        let mut routes = Vec::new();
 
-    /*
-    use super::*;
+        // Convert self to Arc<dyn Any> for producer factory
+        let db_any: Arc<dyn core::any::Any + Send + Sync> = Arc::new(self.clone());
 
-    #[derive(Debug, Clone, PartialEq)]
-    struct TestData {
-        value: i32,
-    }
+        for record in self.inner.records.values() {
+            let inbound_links = record.inbound_connectors();
 
-    struct TestConfig;
+            for link in inbound_links {
+                // Filter by scheme
+                if link.url.scheme() != scheme {
+                    continue;
+                }
 
-    impl RecordT<R> for TestData {
-        type Config = TestConfig;
+                let topic = link.url.resource_id();
 
-        fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self, R>, _cfg: &Self::Config) {
-            reg.source(|_prod, _ctx| async {}).tap(|_consumer| async {});
+                // Create producer using the stored factory
+                if let Some(producer) = link.create_producer(db_any.clone()) {
+                    routes.push((topic, producer, link.deserializer.clone()));
+                }
+            }
         }
+
+        #[cfg(feature = "tracing")]
+        if !routes.is_empty() {
+            tracing::debug!(
+                "Collected {} inbound routes for scheme '{}'",
+                routes.len(),
+                scheme
+            );
+        }
+
+        routes
     }
 
-    #[test]
-    fn test_builder_basic() {
-        let mut builder = AimDbBuilder::new();
-        builder.register_record::<TestData>(&TestConfig);
+    /// Collects outbound routes for a specific protocol scheme
+    ///
+    /// Mirrors `collect_inbound_routes()` for symmetry. Iterates all records,
+    /// filters their outbound_connectors by scheme, and returns routes with
+    /// consumer creation callbacks.
+    ///
+    /// This method is called by connectors during their `build()` phase to
+    /// collect all configured outbound routes and spawn publisher tasks.
+    ///
+    /// # Arguments
+    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
+    ///
+    /// # Returns
+    /// Vector of tuples: (destination, consumer_trait, serializer, config)
+    ///
+    /// The config Vec contains protocol-specific options (e.g., qos, retain).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // In MqttConnector::build()
+    /// let routes = db.collect_outbound_routes("mqtt");
+    /// for (topic, consumer, serializer, config) in routes {
+    ///     connector.spawn_publisher(topic, consumer, serializer, config)?;
+    /// }
+    /// ```
+    #[cfg(feature = "alloc")]
+    pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
+        let mut routes = Vec::new();
 
-        // Should have one record registered
-        assert_eq!(builder.records.len(), 1);
+        // Convert self to Arc<dyn Any> for consumer factory
+        // This is necessary because the factory takes Arc<dyn Any> to avoid
+        // needing to know the runtime type R at the factory definition site
+        let db_any: Arc<dyn core::any::Any + Send + Sync> = Arc::new(self.clone());
+
+        for record in self.inner.records.values() {
+            let outbound_links = record.outbound_connectors();
+
+            for link in outbound_links {
+                // Filter by scheme
+                if link.url.scheme() != scheme {
+                    continue;
+                }
+
+                let destination = link.url.resource_id();
+
+                // Skip links without serializer
+                let Some(serializer) = link.serializer.clone() else {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("Outbound link '{}' has no serializer, skipping", link.url);
+                    continue;
+                };
+
+                // Create consumer using the stored factory
+                if let Some(consumer) = link.create_consumer(db_any.clone()) {
+                    routes.push((destination, consumer, serializer, link.config.clone()));
+                }
+            }
+        }
+
+        #[cfg(feature = "tracing")]
+        if !routes.is_empty() {
+            tracing::debug!(
+                "Collected {} outbound routes for scheme '{}'",
+                routes.len(),
+                scheme
+            );
+        }
+
+        routes
     }
-
-    #[test]
-    fn test_builder_configure() {
-        let mut builder = AimDbBuilder::new();
-        builder.configure::<TestData>(|reg| {
-            reg.source(|_prod, _ctx| async {}).tap(|_consumer| async {});
-        });
-
-        assert_eq!(builder.records.len(), 1);
-    }
-    */
 }

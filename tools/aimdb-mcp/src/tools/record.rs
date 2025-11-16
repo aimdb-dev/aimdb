@@ -56,8 +56,8 @@ struct RecordInfo {
     /// Last update timestamp (ISO 8601)
     #[serde(skip_serializing_if = "Option::is_none")]
     last_update: Option<String>,
-    /// Number of connector links
-    connector_count: usize,
+    /// Number of outbound connector links
+    outbound_connector_count: usize,
 }
 
 /// List all records from a specific AimDB instance
@@ -109,7 +109,7 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
             writable: r.writable,
             created_at: r.created_at,
             last_update: r.last_update,
-            connector_count: r.connector_count,
+            outbound_connector_count: r.outbound_connector_count,
         })
         .collect();
 

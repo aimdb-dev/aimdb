@@ -5,7 +5,181 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **Note**: This is the global changelog for the AimDB project. For detailed changes to individual crates, see their respective CHANGELOG.md files:
+> - [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md)
+> - [aimdb-executor/CHANGELOG.md](aimdb-executor/CHANGELOG.md)
+> - [aimdb-tokio-adapter/CHANGELOG.md](aimdb-tokio-adapter/CHANGELOG.md)
+> - [aimdb-embassy-adapter/CHANGELOG.md](aimdb-embassy-adapter/CHANGELOG.md)
+> - [aimdb-mqtt-connector/CHANGELOG.md](aimdb-mqtt-connector/CHANGELOG.md)
+> - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
+> - [aimdb-client/CHANGELOG.md](aimdb-client/CHANGELOG.md)
+> - [tools/aimdb-cli/CHANGELOG.md](tools/aimdb-cli/CHANGELOG.md)
+> - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
+
 ## [Unreleased]
+
+### Summary
+
+This release introduces **bidirectional connector support**, enabling true two-way data synchronization between AimDB and external systems. The new architecture supports simultaneous publishing and subscribing with automatic message routing, working seamlessly across both Tokio (std) and Embassy (no_std) runtimes.
+
+### Highlights
+
+- 🔄 **Bidirectional Connectors**: New `.link_to()` and `.link_from()` APIs for clear directional data flows
+- 🎯 **Type-Erased Router**: Automatic routing of incoming messages to correct typed producers
+- 🏗️ **ConnectorBuilder Pattern**: Simplified connector registration with automatic initialization
+- 📡 **Enhanced MQTT Connector**: Complete rewrite supporting simultaneous pub/sub with automatic reconnection
+- 🌐 **Embassy Network Integration**: Connectors can now access Embassy's network stack for network operations
+- 📚 **Comprehensive Guide**: New 1000+ line connector development guide with real-world examples
+
+### Breaking Changes
+
+- **aimdb-core**: `.build()` is now async; connector registration changed from `.with_connector(scheme, instance)` to `.with_connector(builder)`
+- **aimdb-core**: `.link()` deprecated in favor of `.link_to()` (outbound) and `.link_from()` (inbound)
+- **aimdb-core**: Outbound connector architecture refactored to trait-based system:
+  - Removed: `TypedRecord::spawn_outbound_consumers()` method (was called automatically)
+  - Added: `ConsumerTrait`, `AnyReader` traits for type-erased outbound routing
+  - Added: `AimDb::collect_outbound_routes()` method to gather configured routes
+  - **Required**: Connectors must implement `spawn_outbound_publishers()` and call it in `ConnectorBuilder::build()`
+- **aimdb-mqtt-connector**: API changed from `MqttConnector::new()` to `MqttConnectorBuilder::new()`; automatic task spawning removes need for manual background task management
+- **aimdb-mqtt-connector**: Added `spawn_outbound_publishers()` method; must be called in `build()` for outbound publishing to work
+
+### Modified Crates
+
+See individual changelogs for detailed changes:
+- **[aimdb-core](aimdb-core/CHANGELOG.md)**: Core connector architecture, router system, bidirectional APIs
+- **[aimdb-tokio-adapter](aimdb-tokio-adapter/CHANGELOG.md)**: Connector builder integration
+- **[aimdb-embassy-adapter](aimdb-embassy-adapter/CHANGELOG.md)**: Network stack access, connector support
+- **[aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md)**: Complete bidirectional rewrite for both runtimes
+- **[aimdb-sync](aimdb-sync/CHANGELOG.md)**: Compatibility with async build
+
+### Migration Guide
+
+**1. Update connector registration:**
+```rust
+// Old (v0.1.0)
+let mqtt = MqttConnector::new("mqtt://broker:1883").await?;
+builder.with_connector("mqtt", Arc::new(mqtt))
+
+// New (v0.2.0)
+builder.with_connector(MqttConnectorBuilder::new("mqtt://broker:1883"))
+```
+
+**2. Make build() async:**
+```rust
+// Old (v0.1.0)
+let db = builder.build()?;
+
+// New (v0.2.0)
+let db = builder.build().await?;
+```
+
+**3. Use directional link methods:**
+```rust
+// Old (v0.1.0)
+.link("mqtt://sensors/temp")
+
+// New (v0.2.0)
+.link_to("mqtt://sensors/temp")    // For publishing (AimDB → External)
+.link_from("mqtt://commands/temp")  // For subscribing (External → AimDB)
+```
+
+**4. Remove manual MQTT task spawning (Embassy):**
+```rust
+// Old (v0.1.0) - Manual task spawning required
+let mqtt_result = MqttConnector::create(...).await?;
+spawner.spawn(mqtt_task(mqtt_result.task))?;
+builder.with_connector("mqtt", Arc::new(mqtt_result.connector))
+
+// New (v0.2.0) - Automatic task spawning
+builder.with_connector(MqttConnectorBuilder::new("mqtt://broker:1883"))
+// Tasks spawn automatically during build()
+```
+
+**5. Update custom connectors to spawn outbound publishers:**
+
+If you've implemented a custom connector, you **must** add `spawn_outbound_publishers()` support:
+
+```rust
+// Old (v0.1.0) - Outbound consumers spawned automatically
+impl ConnectorBuilder for MyConnectorBuilder {
+    fn build<R>(&self, db: &AimDb<R>) -> DbResult<Arc<dyn Connector>> {
+        // ... setup code ...
+        Ok(Arc::new(MyConnector { /* fields */ }))
+    }
+    // Outbound publishing happened automatically via TypedRecord::spawn_outbound_consumers()
+}
+
+// New (v0.2.0) - Must explicitly spawn outbound publishers
+impl ConnectorBuilder for MyConnectorBuilder {
+    fn build<R>(&self, db: &AimDb<R>) -> DbResult<Arc<dyn Connector>> {
+        // ... setup code ...
+        let connector = MyConnector { /* fields */ };
+        
+        // REQUIRED: Collect and spawn outbound publishers
+        let outbound_routes = db.collect_outbound_routes(self.protocol_name());
+        connector.spawn_outbound_publishers(db, outbound_routes)?;
+        
+        Ok(Arc::new(connector))
+    }
+}
+
+// REQUIRED: Implement spawn_outbound_publishers method
+impl MyConnector {
+    fn spawn_outbound_publishers<R: RuntimeAdapter + 'static>(
+        &self,
+        db: &AimDb<R>,
+        routes: Vec<(String, Box<dyn ConsumerTrait>, SerializerFn, Vec<(String, String)>)>,
+    ) -> DbResult<()> {
+        for (topic, consumer, serializer, _config) in routes {
+            let client = self.client.clone();
+            let topic_clone = topic.clone();
+            
+            db.runtime().spawn(async move {
+                // Subscribe to record updates using ConsumerTrait
+                match consumer.subscribe_any().await {
+                    Ok(mut reader) => {
+                        loop {
+                            match reader.recv_any().await {
+                                Ok(value) => {
+                                    // Serialize and publish
+                                    if let Ok(bytes) = serializer(&*value) {
+                                        let _ = client.publish(&topic_clone, bytes).await;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    Err(_) => { /* Log error */ }
+                }
+            })?;
+        }
+        Ok(())
+    }
+}
+```
+
+**Why this change?** The new trait-based architecture provides:
+- ✅ Symmetry with inbound routing (`ProducerTrait` ↔ `ConsumerTrait`)
+- ✅ Testability (can mock `ConsumerTrait` without real records)
+- ✅ Type safety via factory pattern (type capture at configuration time)
+- ✅ Maintainability (connector logic stays in connector crate)
+
+**Migration checklist for custom connectors:**
+- [ ] Add `spawn_outbound_publishers()` method to connector implementation
+- [ ] Call `db.collect_outbound_routes(protocol_name)` in `ConnectorBuilder::build()`
+- [ ] Call `connector.spawn_outbound_publishers(db, routes)?` before returning
+- [ ] Use `ConsumerTrait::subscribe_any()` to get type-erased readers
+- [ ] Handle serialization with provided `SerializerFn`
+- [ ] Test both inbound (`.link_from()`) and outbound (`.link_to()`) data flows
+
+See [Connector Development Guide](docs/design/012-M5-connector-development-guide.md) for complete examples.
+
+### Documentation
+
+- Added comprehensive [Connector Development Guide](docs/design/012-M5-connector-development-guide.md)
+- Updated MQTT connector examples for both Tokio and Embassy
+- Enhanced API documentation with bidirectional patterns
 
 ## [0.1.0] - 2025-11-06
 

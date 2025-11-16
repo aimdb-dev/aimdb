@@ -177,7 +177,7 @@ impl AimDbHandle {
                 // Build the database inside the async context
                 runtime.block_on(async move {
                     // Build the database (now we're in Tokio context where it can spawn tasks!)
-                    let db = match builder.build() {
+                    let db = match builder.build().await {
                         Ok(d) => Arc::new(d),
                         Err(e) => {
                             eprintln!("Failed to build database: {}", e);

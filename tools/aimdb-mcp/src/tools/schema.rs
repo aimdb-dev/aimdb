@@ -170,7 +170,7 @@ pub async fn query_schema(args: Option<Value>) -> McpResult<Value> {
             "consumer_count": metadata.consumer_count,
             "created_at": metadata.created_at,
             "last_update": metadata.last_update,
-            "connector_count": metadata.connector_count,
+            "outbound_connector_count": metadata.outbound_connector_count,
         },
         "inferred_at": chrono::Utc::now().to_rfc3339_opts(
             chrono::SecondsFormat::Nanos,

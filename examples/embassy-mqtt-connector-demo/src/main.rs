@@ -3,7 +3,7 @@
 
 //! MQTT Connector Demo for Embassy Runtime
 //!
-//! Demonstrates MQTT integration with automatic publishing to multiple topics on embedded hardware.
+//! Demonstrates bidirectional MQTT integration with automatic publishing and subscription on embedded hardware.
 //!
 //! ## Hardware Requirements
 //!
@@ -17,14 +17,19 @@
 //! docker run -d -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
 //! ```
 //!
-//! 2. Subscribe to topics:
+//! 2. Subscribe to sensor data:
 //! ```bash
 //! mosquitto_sub -h <broker-ip> -t 'sensors/#' -v
 //! ```
 //!
-//! 3. Update MQTT_BROKER_IP constant below to match your broker
+//! 3. Send commands to device:
+//! ```bash
+//! mosquitto_pub -h <broker-ip> -t 'commands/temperature' -m '{"action":"read","sensor_id":"sensor-001"}'
+//! ```
 //!
-//! 4. Flash to target:
+//! 4. Update MQTT_BROKER_IP constant below to match your broker
+//!
+//! 5. Flash to target:
 //! ```bash
 //! cargo run --example embassy-mqtt-connector-demo --features embassy-runtime,tracing
 //! ```
@@ -48,7 +53,7 @@ use heapless::String as HeaplessString;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use aimdb_mqtt_connector::embassy_client::MqttConnector;
+use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 
 // Simple embedded allocator (required by some dependencies)
 #[global_allocator]
@@ -68,13 +73,6 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
     runner.run().await
 }
 
-/// MQTT background task that maintains connection and processes publish requests
-#[embassy_executor::task]
-async fn mqtt_task(task: aimdb_mqtt_connector::embassy_client::MqttBackgroundTask) {
-    task.run().await;
-}
-
-//
 // ============================================================================
 // SENSOR DATA TYPES
 // ============================================================================
@@ -117,6 +115,57 @@ impl Temperature {
         use alloc::format;
         let csv = format!("{},{},{}", self.sensor_id, self.celsius, self.timestamp);
         csv.into_bytes()
+    }
+}
+
+/// Command for controlling temperature sensor (inbound from MQTT)
+#[derive(Clone, Debug)]
+struct TemperatureCommand {
+    action: HeaplessString<32>,
+    sensor_id: HeaplessString<64>,
+}
+
+impl TemperatureCommand {
+    /// Simple JSON parser for no_std
+    /// Expected format: {"action":"read","sensor_id":"sensor-001"}
+    fn from_json(data: &[u8]) -> Result<Self, alloc::string::String> {
+        use alloc::string::ToString;
+
+        let text = core::str::from_utf8(data).map_err(|_| "Invalid UTF-8".to_string())?;
+
+        // Simple JSON parsing for {"action":"xxx","sensor_id":"yyy"}
+        let mut action = HeaplessString::<32>::new();
+        let mut sensor_id = HeaplessString::<64>::new();
+
+        for pair in text.trim_matches(|c| c == '{' || c == '}').split(',') {
+            let parts: alloc::vec::Vec<&str> = pair.split(':').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+
+            let key = parts[0].trim().trim_matches('"');
+            let value = parts[1].trim().trim_matches('"');
+
+            match key {
+                "action" => {
+                    action
+                        .push_str(value)
+                        .map_err(|_| "Action too long".to_string())?;
+                }
+                "sensor_id" => {
+                    sensor_id
+                        .push_str(value)
+                        .map_err(|_| "Sensor ID too long".to_string())?;
+                }
+                _ => {}
+            }
+        }
+
+        if action.is_empty() || sensor_id.is_empty() {
+            return Err("Missing required fields".to_string());
+        }
+
+        Ok(TemperatureCommand { action, sensor_id })
     }
 }
 
@@ -167,6 +216,45 @@ async fn temperature_consumer(
     }
 }
 
+/// Consumer that processes commands received from MQTT
+async fn command_consumer(
+    ctx: RuntimeContext<EmbassyAdapter>,
+    consumer: Consumer<TemperatureCommand, EmbassyAdapter>,
+) {
+    let log = ctx.log();
+
+    let Ok(mut reader) = consumer.subscribe() else {
+        log.error("Failed to subscribe to command buffer");
+        return;
+    };
+
+    log.info("📡 Listening for commands from MQTT...");
+
+    while let Ok(cmd) = reader.recv().await {
+        log.info(&alloc::format!(
+            "📨 Command received: action='{}', sensor_id='{}'",
+            cmd.action.as_str(),
+            cmd.sensor_id.as_str()
+        ));
+
+        // Process command based on action
+        match cmd.action.as_str() {
+            "read" => log.info(&alloc::format!(
+                "  → Would read from sensor {}",
+                cmd.sensor_id.as_str()
+            )),
+            "reset" => log.info(&alloc::format!(
+                "  → Would reset sensor {}",
+                cmd.sensor_id.as_str()
+            )),
+            _ => log.warn(&alloc::format!(
+                "  ⚠️  Unknown action: {}",
+                cmd.action.as_str()
+            )),
+        }
+    }
+}
+
 //
 // ============================================================================
 // MQTT CONFIGURATION
@@ -178,9 +266,6 @@ const MQTT_BROKER_IP: &str = "192.168.1.3";
 
 /// MQTT broker port
 const MQTT_BROKER_PORT: u16 = 1883;
-
-/// MQTT client ID for this device
-const MQTT_CLIENT_ID: &str = "embassy-sensor-node";
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -273,8 +358,12 @@ async fn main(spawner: Spawner) {
 
     // Initialize network stack
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-    let (stack, runner) =
+    static STACK_CELL: StaticCell<embassy_net::Stack<'static>> = StaticCell::new();
+
+    let (stack_obj, runner) =
         embassy_net::new(device, config, RESOURCES.init(StackResources::new()), seed);
+
+    let stack: &'static _ = STACK_CELL.init(stack_obj);
 
     // Spawn network task
     spawner.spawn(unwrap!(net_task(runner)));
@@ -299,45 +388,20 @@ async fn main(spawner: Spawner) {
 
     info!("🔌 Initializing MQTT client...");
 
-    // Create MQTT connector and background task
-    let mqtt_result =
-        MqttConnector::create(stack, MQTT_BROKER_IP, MQTT_BROKER_PORT, MQTT_CLIENT_ID).await;
-
-    let mqtt = match mqtt_result {
-        Ok(m) => m,
-        Err(_e) => {
-            error!("Failed to create MQTT connector - check broker IP and network");
-            core::panic!("MQTT initialization failed");
-        }
-    };
-
-    info!("✅ MQTT connector created");
-
-    // Spawn the MQTT background task
-    // This task maintains the connection and processes publish requests
-    spawner.spawn(unwrap!(mqtt_task(mqtt.task)));
-
-    info!("✅ MQTT background task spawned");
-
-    // Make connector available for MQTT consumer
-    static MQTT_CONNECTOR: StaticCell<aimdb_mqtt_connector::embassy_client::MqttConnector> =
-        StaticCell::new();
-    let mqtt_connector = MQTT_CONNECTOR.init(mqtt.connector);
-
-    info!("🎉 MQTT connector ready");
-
     // Create AimDB database with Embassy adapter
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_spawner(spawner));
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
 
-    let mqtt_connector = alloc::sync::Arc::new(mqtt_connector.clone());
+    info!("🔧 Creating database with bidirectional MQTT connector...");
 
-    info!("🔧 Creating database with MQTT connector...");
+    // Build MQTT broker URL
+    use alloc::format;
+    let broker_url = format!("mqtt://{}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
 
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector("mqtt", mqtt_connector.clone());
+        .with_connector(MqttConnectorBuilder::new(&broker_url).with_client_id("embassy-demo-001"));
 
-    // Configure Temperature record with custom buffer sizing
+    // Configure Temperature record with custom buffer sizing (outbound: AimDB → MQTT)
     //
     // For SPMC (Single Producer, Multiple Consumer) ring buffer:
     // - CAP=32: Ring buffer holds 32 temperature readings
@@ -352,25 +416,46 @@ async fn main(spawner: Spawner) {
             .source(temperature_producer)
             .tap(temperature_consumer)
             // Publish to MQTT as JSON
-            .link("mqtt://sensors/temperature")
+            .link_to("mqtt://sensors/temperature")
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish()
             // Publish to MQTT as CSV with QoS 1 and retain
-            .link("mqtt://sensors/raw")
-            .with_qos(1)
-            .with_retain(true)
+            .link_to("mqtt://sensors/raw")
+            .with_config("qos", "1")
+            .with_config("retain", "true")
             .with_serializer(|temp: &Temperature| Ok(temp.to_csv()))
             .finish();
     });
 
-    info!("✅ Database configured with MQTT connectors");
-    info!("   - mqtt://sensors/temperature (JSON format)");
-    info!("   - mqtt://sensors/raw (CSV format, QoS=1, retain=true)");
+    // Configure TemperatureCommand record (inbound: MQTT → AimDB)
+    builder.configure::<TemperatureCommand>(|reg| {
+        reg.buffer_sized::<10, 2>(EmbassyBufferType::SpmcRing)
+            .tap(command_consumer)
+            // Subscribe from MQTT commands topic
+            .link_from("mqtt://commands/temperature")
+            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
+            .finish();
+    });
+
+    info!("✅ Database configured with bidirectional MQTT:");
+    info!("   OUTBOUND (AimDB → MQTT):");
+    info!("     - mqtt://sensors/temperature (JSON format)");
+    info!("     - mqtt://sensors/raw (CSV format, QoS=1, retain=true)");
+    info!("   INBOUND (MQTT → AimDB):");
+    info!("     - mqtt://commands/temperature (JSON commands)");
     info!("   Broker: {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
+    info!("");
+    info!("💡 Try publishing a command:");
+    info!(
+        "   mosquitto_pub -h {} -t 'commands/temperature' \\",
+        MQTT_BROKER_IP
+    );
+    info!("     -m '{{\"action\":\"read\",\"sensor_id\":\"sensor-001\"}}'");
+    info!("");
     info!("   Press Reset button to restart.\n");
 
     static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
-    let _db = DB_CELL.init(builder.build().expect("Failed to build database"));
+    let _db = DB_CELL.init(builder.build().await.expect("Failed to build database"));
 
     info!("✅ Database running with background services");
 

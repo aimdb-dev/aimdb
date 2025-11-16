@@ -12,11 +12,41 @@ use tracing::{debug, warn};
 #[cfg(feature = "embassy-runtime")]
 use embassy_executor::Spawner;
 
+#[cfg(feature = "embassy-net-support")]
+use embassy_net::Stack;
+
+/// Trait for accessing Embassy network stack
+///
+/// This trait provides connectors with access to the network stack for
+/// creating TCP/UDP connections. It's implemented by EmbassyAdapter when
+/// the `embassy-net-support` feature is enabled.
+///
+/// # Example
+/// ```rust,ignore
+/// use aimdb_embassy_adapter::EmbassyNetwork;
+///
+/// fn create_mqtt_connector<R: EmbassyNetwork>(runtime: &R) {
+///     let network = runtime.network_stack();
+///     // Use network to create TCP connection
+/// }
+/// ```
+#[cfg(feature = "embassy-net-support")]
+pub trait EmbassyNetwork {
+    /// Get a reference to the Embassy network stack
+    ///
+    /// Returns a reference to the static network stack that can be used
+    /// for creating network connections (TCP, UDP, etc.).
+    fn network_stack(&self) -> &'static Stack<'static>;
+}
+
 /// Embassy runtime adapter for async task execution in embedded systems
 ///
 /// This adapter provides AimDB's runtime interface for Embassy-based embedded
 /// applications. It can either work standalone or store an Embassy spawner
 /// for integrated task management.
+///
+/// When the `embassy-net-support` feature is enabled, it can also store a
+/// reference to the network stack for connector use.
 ///
 /// # Example
 /// ```rust,no_run
@@ -39,7 +69,9 @@ use embassy_executor::Spawner;
 pub struct EmbassyAdapter {
     #[cfg(feature = "embassy-runtime")]
     spawner: Option<Spawner>,
-    #[cfg(not(feature = "embassy-runtime"))]
+    #[cfg(feature = "embassy-net-support")]
+    network: Option<&'static Stack<'static>>,
+    #[cfg(not(any(feature = "embassy-runtime", feature = "embassy-net-support")))]
     _phantom: core::marker::PhantomData<()>,
 }
 
@@ -55,15 +87,18 @@ impl core::fmt::Debug for EmbassyAdapter {
         #[cfg(feature = "embassy-runtime")]
         debug_struct.field("spawner", &self.spawner.is_some());
 
-        #[cfg(not(feature = "embassy-runtime"))]
-        debug_struct.field("_phantom", &"no spawner support");
+        #[cfg(feature = "embassy-net-support")]
+        debug_struct.field("network", &self.network.is_some());
+
+        #[cfg(not(any(feature = "embassy-runtime", feature = "embassy-net-support")))]
+        debug_struct.field("_phantom", &"no features enabled");
 
         debug_struct.finish()
     }
 }
 
 impl EmbassyAdapter {
-    /// Creates a new EmbassyAdapter without a spawner
+    /// Creates a new EmbassyAdapter without a spawner or network
     ///
     /// This creates a stateless adapter suitable for basic task execution.
     ///
@@ -71,12 +106,14 @@ impl EmbassyAdapter {
     /// `Ok(EmbassyAdapter)` - Always succeeds
     pub fn new() -> ExecutorResult<Self> {
         #[cfg(feature = "tracing")]
-        debug!("Creating EmbassyAdapter (no spawner)");
+        debug!("Creating EmbassyAdapter (no spawner, no network)");
 
         Ok(Self {
             #[cfg(feature = "embassy-runtime")]
             spawner: None,
-            #[cfg(not(feature = "embassy-runtime"))]
+            #[cfg(feature = "embassy-net-support")]
+            network: None,
+            #[cfg(not(any(feature = "embassy-runtime", feature = "embassy-net-support")))]
             _phantom: core::marker::PhantomData,
         })
     }
@@ -105,6 +142,30 @@ impl EmbassyAdapter {
 
         Self {
             spawner: Some(spawner),
+            #[cfg(feature = "embassy-net-support")]
+            network: None,
+        }
+    }
+
+    /// Creates a new EmbassyAdapter with spawner and network stack
+    ///
+    /// This creates an adapter with full capabilities for task execution
+    /// and network operations.
+    ///
+    /// # Arguments
+    /// * `spawner` - The Embassy spawner to use for task management
+    /// * `network` - Static reference to the network stack
+    ///
+    /// # Returns
+    /// An EmbassyAdapter configured with spawner and network
+    #[cfg(all(feature = "embassy-runtime", feature = "embassy-net-support"))]
+    pub fn new_with_network(spawner: Spawner, network: &'static Stack<'static>) -> Self {
+        #[cfg(feature = "tracing")]
+        debug!("Creating EmbassyAdapter with spawner and network");
+
+        Self {
+            spawner: Some(spawner),
+            network: Some(network),
         }
     }
 
@@ -258,3 +319,13 @@ impl aimdb_executor::Logger for EmbassyAdapter {
 }
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are all implemented
+
+// Implement EmbassyNetwork trait for accessing network stack
+#[cfg(feature = "embassy-net-support")]
+impl EmbassyNetwork for EmbassyAdapter {
+    fn network_stack(&self) -> &'static Stack<'static> {
+        self.network.expect(
+            "Network stack not available - connectors requiring network access need the 'embassy-net-support' feature enabled and must use EmbassyAdapter::new_with_network() to provide a network stack",
+        )
+    }
+}

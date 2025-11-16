@@ -21,7 +21,7 @@ extern crate alloc;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use crate::buffer::DynBuffer;
 
@@ -220,10 +220,24 @@ type ProducerServiceFn<T, R> = Box<
 /// Allows storage of heterogeneous record types in a single collection
 /// while maintaining type safety through downcast operations.
 ///
-/// Note: This trait requires both `Send` and `Sync` because:
-/// - Records are stored in Arc and shared across threads
-/// - Emitter needs to be Send+Sync to work in async contexts
-/// - The FnOnce consumers are moved out during spawning, so they don't affect Sync
+/// # Thread Safety Requirements
+///
+/// This trait requires both `Send` and `Sync` because:
+/// - Records are stored in `Arc<Box<dyn AnyRecord>>` and shared across threads
+/// - The router system needs to access records from multiple connector tasks
+/// - Emitter needs to be `Send+Sync` to work in async contexts
+/// - The `FnOnce` consumers are moved out during spawning, so they don't affect `Sync`
+///
+/// **BREAKING CHANGE (v0.2.0):** Added `Sync` bound to `AnyRecord` trait.
+/// Record types must now be both `Send + Sync`. Types that were previously
+/// `Send` but not `Sync` can no longer be used as records. This change enables:
+/// - Concurrent access to records from multiple connector tasks
+/// - Safe sharing of record metadata across thread boundaries
+/// - Type-safe routing in the bidirectional connector system
+///
+/// **Migration:** If your record type `T` is not `Sync`, wrap non-`Sync` fields
+/// in `Arc<Mutex<_>>` or `Arc<RwLock<_>>` to achieve interior mutability with
+/// thread-safe sharing.
 pub trait AnyRecord: Send + Sync {
     /// Validates that the record has correct producer/consumer setup
     ///
@@ -236,17 +250,17 @@ pub trait AnyRecord: Send + Sync {
     /// Returns self as mutable Any for downcasting
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
-    /// Returns the number of registered connectors
-    fn connector_count(&self) -> usize;
+    /// Returns the number of registered outbound connectors
+    fn outbound_connector_count(&self) -> usize;
 
-    /// Returns the connector URLs as strings
+    /// Returns the outbound connector URLs as strings
     #[cfg(feature = "std")]
-    fn connector_urls(&self) -> Vec<String>;
+    fn outbound_connector_urls(&self) -> Vec<String>;
 
-    /// Gets the connector links
+    /// Gets the outbound connector links
     ///
-    /// Returns connector configuration list for spawning logic.
-    fn connectors(&self) -> &[crate::connector::ConnectorLink];
+    /// Returns outbound connector configuration list for spawning logic.
+    fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink];
 
     /// Returns the number of registered consumers (tap observers)
     fn consumer_count(&self) -> usize;
@@ -335,6 +349,9 @@ pub trait AnyRecord: Send + Sync {
     #[doc(hidden)]
     #[cfg(feature = "std")]
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
+
+    /// Get the inbound connector links for this record
+    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
 }
 
 // Helper extension trait for type-safe downcasting
@@ -389,9 +406,14 @@ impl<T> RecordSpawner<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
-    /// Spawns all tasks (producer and consumers) for a record
+    /// Spawns all tasks (producer, consumers, and inbound connectors) for a record
     ///
     /// Downcasts type-erased AnyRecord to TypedRecord<T, R> and spawns tasks.
+    ///
+    /// # Arguments
+    /// * `record` - The type-erased record to spawn tasks for
+    /// * `runtime` - The runtime adapter for spawning tasks
+    /// * `db` - The database instance
     pub fn spawn_all_tasks<R>(
         record: &dyn AnyRecord,
         runtime: &Arc<R>,
@@ -462,9 +484,14 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     #[cfg(feature = "std")]
     buffer_cfg: Option<crate::buffer::BufferCfg>,
 
-    /// List of connector links for external system integration
+    /// List of outbound connector links (AimDB → External)
     /// Each link represents a protocol connector (MQTT, Kafka, HTTP, etc.)
-    connectors: Vec<crate::connector::ConnectorLink>,
+    outbound_connectors: Vec<crate::connector::ConnectorLink>,
+
+    /// List of inbound connector links (External → AimDB)
+    /// Each link spawns a background task that subscribes to an external source
+    /// and produces values into this record's buffer
+    inbound_connectors: Vec<crate::connector::InboundConnectorLink>,
 
     /// Metadata tracking (std only - for remote access)
     #[cfg(feature = "std")]
@@ -510,7 +537,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             buffer: None,
             #[cfg(feature = "std")]
             buffer_cfg: None,
-            connectors: Vec::new(),
+            outbound_connectors: Vec::new(),
+            inbound_connectors: Vec::new(),
             #[cfg(feature = "std")]
             metadata: RecordMetadataTracker::new::<T>(),
             #[cfg(feature = "std")]
@@ -662,12 +690,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         Ok(buffer.subscribe_boxed())
     }
 
-    /// Adds a connector link for external system integration
+    /// Adds an outbound connector link for external system integration
     ///
     /// Bridges records to external protocols (MQTT, Kafka, HTTP, etc.).
     /// Multiple connectors supported per record.
-    pub fn add_connector(&mut self, link: crate::connector::ConnectorLink) {
-        self.connectors.push(link);
+    pub fn add_outbound_connector(&mut self, link: crate::connector::ConnectorLink) {
+        self.outbound_connectors.push(link);
     }
 
     /// Enables JSON serialization for remote access (std only)
@@ -730,20 +758,35 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         self
     }
 
-    /// Returns a reference to the registered connectors
+    /// Returns a reference to the registered outbound connectors
     ///
     /// # Returns
-    /// A slice of connector links
-    pub fn connectors(&self) -> &[crate::connector::ConnectorLink] {
-        &self.connectors
+    /// A slice of outbound connector links
+    pub fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink] {
+        &self.outbound_connectors
     }
 
-    /// Returns the number of registered connectors
+    /// Returns the number of registered outbound connectors
     ///
     /// # Returns
-    /// The count of connectors
-    pub fn connector_count(&self) -> usize {
-        self.connectors.len()
+    /// The count of outbound connectors
+    pub fn outbound_connector_count(&self) -> usize {
+        self.outbound_connectors.len()
+    }
+
+    /// Returns all inbound connector links (External → AimDB)
+    ///
+    /// # Returns
+    /// A slice of inbound connector links
+    pub fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
+        &self.inbound_connectors
+    }
+
+    /// Adds an inbound connector link (External → AimDB)
+    ///
+    /// Called by `.link_from()` builder API during record configuration.
+    pub fn add_inbound_connector(&mut self, link: crate::connector::InboundConnectorLink) {
+        self.inbound_connectors.push(link);
     }
 
     /// Returns the number of registered consumers
@@ -953,6 +996,24 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             Some(RecordValue::new(value, None))
         }
     }
+
+    /// Creates a boxed ProducerTrait for this record type (std only)
+    ///
+    /// Returns a type-erased producer that implements ProducerTrait,
+    /// allowing inbound connectors to produce values without knowing the concrete type.
+    ///
+    /// # Arguments
+    /// * `db` - Database reference for creating the typed producer
+    ///
+    /// # Returns
+    /// Box<dyn ProducerTrait> that can be used for routing
+    #[cfg(feature = "std")]
+    pub fn create_producer_trait(
+        &self,
+        db: Arc<crate::builder::AimDb<R>>,
+    ) -> Box<dyn crate::connector::ProducerTrait> {
+        Box::new(crate::typed_api::Producer::<T, R>::new(db))
+    }
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Default
@@ -963,7 +1024,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Defa
     }
 }
 
-impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyRecord
+// BREAKING CHANGE (v0.2.0): TypedRecord now requires T: Sync
+// This enables safe concurrent access to records from multiple connector tasks
+// in the bidirectional routing system. The Sync bound propagates from AnyRecord
+// trait and ensures thread-safe sharing of record values.
+impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyRecord
     for TypedRecord<T, R>
 {
     fn validate(&self) -> Result<(), &'static str> {
@@ -983,20 +1048,20 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
         self
     }
 
-    fn connector_count(&self) -> usize {
-        self.connectors.len()
+    fn outbound_connector_count(&self) -> usize {
+        self.outbound_connectors.len()
     }
 
     #[cfg(feature = "std")]
-    fn connector_urls(&self) -> Vec<String> {
-        self.connectors
+    fn outbound_connector_urls(&self) -> Vec<String> {
+        self.outbound_connectors
             .iter()
             .map(|link| format!("{}", link.url))
             .collect()
     }
 
-    fn connectors(&self) -> &[crate::connector::ConnectorLink] {
-        &self.connectors
+    fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink] {
+        &self.outbound_connectors
     }
 
     fn consumer_count(&self) -> usize {
@@ -1049,7 +1114,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
                 .writable
                 .load(std::sync::atomic::Ordering::SeqCst),
             RecordMetadataTracker::format_timestamp(self.metadata.created_at),
-            self.connector_count(),
+            self.outbound_connector_count(),
         )
         .with_last_update_opt(last_update)
     }
@@ -1222,5 +1287,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyR
         );
 
         Ok(())
+    }
+
+    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
+        &self.inbound_connectors
     }
 }

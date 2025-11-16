@@ -103,7 +103,7 @@ pub async fn read_records_resource(socket_path: &str) -> McpResult<ResourceReadR
                 "writable": r.writable,
                 "created_at": r.created_at,
                 "last_update": r.last_update,
-                "connector_count": r.connector_count,
+                "outbound_connector_count": r.outbound_connector_count,
             })
         })
         .collect();

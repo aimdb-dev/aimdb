@@ -44,7 +44,7 @@
 //!     reg.buffer(buffer)
 //!        .source(|producer, ctx| temperature_service(ctx, producer))
 //!        .tap(|consumer| temperature_logger(consumer))
-//!        .link("mqtt://sensors/temp")
+//!        .link_to("mqtt://sensors/temp")
 //!        .with_serializer(|t| serde_json::to_vec(t))
 //!        .finish();
 //! });
@@ -53,11 +53,12 @@
 use core::fmt::Debug;
 use core::future::Future;
 use core::marker::PhantomData;
+use core::pin::Pin;
 
 extern crate alloc;
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    format,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -133,6 +134,33 @@ where
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Producer<T, R> {}
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Producer<T, R> {}
 
+// Implement ProducerTrait for type-erased routing
+impl<T, R> crate::connector::ProducerTrait for Producer<T, R>
+where
+    T: Send + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+{
+    fn produce_any<'a>(
+        &'a self,
+        value: Box<dyn core::any::Any + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            // Downcast the Box<dyn Any> to Box<T>
+            let value = value.downcast::<T>().map_err(|_| {
+                format!(
+                    "Failed to downcast value to type {}",
+                    core::any::type_name::<T>()
+                )
+            })?;
+
+            // Produce the value
+            self.produce(*value)
+                .await
+                .map_err(|e| format!("Failed to produce value: {}", e))
+        })
+    }
+}
+
 // ============================================================================
 // Consumer - Type-safe value consumption
 // ============================================================================
@@ -167,7 +195,7 @@ where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
 {
-    /// Create a new consumer (internal use only)
+    /// Create a new consumer
     pub(crate) fn new(db: Arc<AimDb<R>>) -> Self {
         Self {
             db,
@@ -187,6 +215,51 @@ unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Consumer<T, R>
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Consumer<T, R> {}
 
 // ============================================================================
+// Type-erased Consumer Trait Implementation
+// ============================================================================
+
+/// Adapter that wraps a typed BufferReader<T> and type-erases it
+///
+/// This allows the reader to be used through the AnyReader trait without
+/// knowing the concrete type T at compile time.
+struct TypedAnyReader<T: Clone + Send + 'static> {
+    inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
+}
+
+impl<T: Clone + Send + 'static> crate::connector::AnyReader for TypedAnyReader<T> {
+    fn recv_any<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn core::any::Any + Send>>> + Send + 'a>> {
+        Box::pin(async move {
+            let value = self.inner.recv().await?;
+            Ok(Box::new(value) as Box<dyn core::any::Any + Send>)
+        })
+    }
+}
+
+/// Implement ConsumerTrait for type-erased routing
+///
+/// This allows connectors to subscribe to records without knowing the concrete
+/// type T at compile time. The factory pattern captures T during link_to()
+/// configuration, and this implementation provides the runtime subscription logic.
+impl<T, R> crate::connector::ConsumerTrait for Consumer<T, R>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+{
+    fn subscribe_any<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn crate::connector::AnyReader>>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let reader = self.subscribe()?;
+            Ok(Box::new(TypedAnyReader::<T> { inner: reader })
+                as Box<dyn crate::connector::AnyReader>)
+        })
+    }
+}
+
+// ============================================================================
 // RecordRegistrar - Fluent registration API
 // ============================================================================
 
@@ -204,8 +277,8 @@ pub struct RecordRegistrar<
 > {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T, R>,
-    /// Connectors indexed by scheme
-    pub(crate) connectors: &'a BTreeMap<String, Arc<dyn crate::transport::Connector>>,
+    /// Connector builders indexed by scheme
+    pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder<R>>],
 }
 
 impl<'a, T, R> RecordRegistrar<'a, T, R>
@@ -317,23 +390,73 @@ where
         self
     }
 
-    /// Adds a connector link for external system integration
-    pub fn link(&'a mut self, url: &str) -> ConnectorBuilder<'a, T, R> {
-        ConnectorBuilder {
+    /// Adds a connector link for external system integration (DEPRECATED)
+    ///
+    /// **Deprecated**: Use `.link_to()` for outbound connectors or `.link_from()` for inbound.
+    /// This method will be removed in a future version.
+    #[deprecated(since = "0.2.0", note = "Use link_to() or link_from() instead")]
+    pub fn link(&'a mut self, url: &str) -> OutboundConnectorBuilder<'a, T, R> {
+        OutboundConnectorBuilder {
             registrar: self,
             url: url.to_string(),
             config: Vec::new(),
             serializer: None,
         }
     }
+
+    /// Link TO external system (outbound: AimDB → External)
+    ///
+    /// Subscribes to buffer updates and publishes them to an external system.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// builder.configure::<Temperature>(|reg| {
+    ///     reg.buffer(BufferCfg::SingleLatest)
+    ///        .link_to("mqtt://broker/sensors/temp")
+    ///            .with_serializer(|t| serde_json::to_vec(t).unwrap())
+    ///            .finish()
+    /// });
+    /// ```
+    pub fn link_to(&'a mut self, url: &str) -> OutboundConnectorBuilder<'a, T, R> {
+        OutboundConnectorBuilder {
+            registrar: self,
+            url: url.to_string(),
+            config: Vec::new(),
+            serializer: None,
+        }
+    }
+
+    /// Link FROM external system (inbound: External → AimDB)
+    ///
+    /// Subscribes to an external data source and produces values into this record's buffer.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// builder.configure::<LightState>(|reg| {
+    ///     reg.buffer(BufferCfg::SingleLatest)
+    ///        .link_from("mqtt://broker/lights/+/state")
+    ///            .with_deserializer(|bytes| parse_light_state(bytes))
+    ///            .finish()
+    /// });
+    /// ```
+    pub fn link_from(&'a mut self, url: &str) -> InboundConnectorBuilder<'a, T, R> {
+        InboundConnectorBuilder {
+            registrar: self,
+            url: url.to_string(),
+            config: Vec::new(),
+            deserializer: None,
+        }
+    }
 }
 
 // ============================================================================
-// ConnectorBuilder - Fluent connector configuration
+// OutboundConnectorBuilder - Fluent outbound connector configuration
 // ============================================================================
 
-/// Builder for configuring connector links
-pub struct ConnectorBuilder<
+/// Builder for configuring outbound connector links (AimDB → External)
+pub struct OutboundConnectorBuilder<
     'a,
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
@@ -344,7 +467,7 @@ pub struct ConnectorBuilder<
     serializer: Option<TypedSerializerFn<T>>,
 }
 
-impl<'a, T, R> ConnectorBuilder<'a, T, R>
+impl<'a, T, R> OutboundConnectorBuilder<'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
@@ -396,7 +519,7 @@ where
         let mut link = ConnectorLink::new(url.clone());
         link.config = self.config.clone();
 
-        let serializer_opt = if let Some(typed_callback) = self.serializer.clone() {
+        if let Some(typed_callback) = self.serializer.clone() {
             let erased: crate::connector::SerializerFn =
                 Arc::new(move |any: &dyn core::any::Any| {
                     if let Some(value) = any.downcast_ref::<T>() {
@@ -406,138 +529,192 @@ where
                     }
                 });
             link.serializer = Some(erased);
-            Some(self.serializer.clone().unwrap())
-        } else {
-            None
-        };
+        }
 
-        let has_serializer = serializer_opt.is_some();
-        let has_connector = self.registrar.connectors.get(&scheme).is_some();
+        // Validation: Check that connector builder is registered
+        let has_connector = self
+            .registrar
+            .connector_builders
+            .iter()
+            .any(|b| b.scheme() == scheme);
 
-        if let (Some(serializer), Some(connector)) =
-            (serializer_opt, self.registrar.connectors.get(&scheme))
-        {
-            let connector_clone = connector.clone();
-            let url_clone = url_string.clone();
-            let config_clone = self.config.clone();
-
-            let rec = &mut self.registrar.rec;
-            rec.add_consumer(move |consumer, _ctx_any| {
-                let connector_ref = connector_clone.clone();
-                let url_ref = url_clone.clone();
-                let config_ref = config_clone.clone();
-                let ser = serializer.clone();
-
-                async move {
-                    let Ok(mut reader) = consumer.subscribe() else {
-                        #[cfg(feature = "tracing")]
-                        tracing::error!("Failed to subscribe to buffer for connector {}", url_ref);
-                        return;
-                    };
-
-                    while let Ok(value) = reader.recv().await {
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!(
-                            "Connector triggered for {} with type {}",
-                            url_ref,
-                            core::any::type_name::<T>()
-                        );
-
-                        match ser(&value) {
-                            Ok(bytes) => {
-                                if let Err(_e) = publish_via_connector(
-                                    &connector_ref,
-                                    &url_ref,
-                                    &config_ref,
-                                    bytes,
-                                )
-                                .await
-                                {
-                                    #[cfg(feature = "tracing")]
-                                    tracing::error!("Failed to publish: {:?}", _e);
-                                }
-                            }
-                            Err(_e) => {
-                                #[cfg(feature = "tracing")]
-                                tracing::error!("Failed to serialize: {:?}", _e);
-                            }
-                        }
-                    }
-                }
-            });
-        } else if !has_serializer {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                "Connector configured for {} but no serializer provided.",
-                url_string
-            );
-        } else if !has_connector {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                "Connector configured for {} but no connector registered for scheme '{}'.",
-                url_string,
-                scheme
+        if !has_connector {
+            panic!(
+                "No connector registered for scheme '{}'. Register via .with_connector() for {}",
+                scheme, url_string
             );
         }
 
-        self.registrar.rec.add_connector(link);
+        // Validation: Serializer must be provided
+        if link.serializer.is_none() {
+            panic!(
+                "Outbound connector requires a serializer. Call .with_serializer() for {}",
+                url_string
+            );
+        }
+
+        // Store consumer factory that captures type T
+        // This allows the connector to subscribe to values without knowing T at compile time
+        #[cfg(feature = "alloc")]
+        {
+            link.consumer_factory = Some(Arc::new(
+                move |db_any: Arc<dyn core::any::Any + Send + Sync>| {
+                    // Downcast Arc<dyn Any> to AimDb<R>, then wrap in Arc
+                    let db_ref = db_any
+                        .downcast_ref::<AimDb<R>>()
+                        .expect("Invalid db type in consumer factory");
+                    let db = Arc::new(db_ref.clone());
+
+                    // Create Consumer<T, R> with captured type T
+                    Box::new(Consumer::<T, R>::new(db)) as Box<dyn crate::connector::ConsumerTrait>
+                },
+            ));
+        }
+
+        // Store the connector link - consumers will be created later in build()
+        // after connectors are actually built
+        self.registrar.rec.add_outbound_connector(link);
         self.registrar
     }
 }
 
-/// Helper function to publish via a connector
-async fn publish_via_connector(
-    connector: &Arc<dyn crate::transport::Connector>,
-    url: &str,
-    config: &[(String, String)],
-    bytes: Vec<u8>,
-) -> Result<(), crate::transport::PublishError> {
-    use crate::connector::ConnectorUrl;
-    use crate::transport::ConnectorConfig;
+// ============================================================================
+// InboundConnectorBuilder - Fluent inbound connector configuration
+// ============================================================================
 
-    let parsed_url =
-        ConnectorUrl::parse(url).map_err(|_| crate::transport::PublishError::InvalidDestination)?;
+/// Type alias for typed deserializer callbacks
+type TypedDeserializerFn<T> = Arc<dyn Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static>;
 
-    let destination: String = if let Some(path) = parsed_url.path.as_deref() {
-        let path_part = path.trim_start_matches('/');
-        if path_part.is_empty() {
-            parsed_url.host.clone()
-        } else {
-            alloc::format!("{}/{}", parsed_url.host, path_part)
-        }
-    } else {
-        parsed_url.host.clone()
-    };
+/// Builder for configuring inbound connector links (External → AimDB)
+pub struct InboundConnectorBuilder<
+    'a,
+    T: Send + Sync + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+> {
+    registrar: &'a mut RecordRegistrar<'a, T, R>,
+    url: String,
+    config: Vec<(String, String)>,
+    deserializer: Option<TypedDeserializerFn<T>>,
+}
 
-    let mut connector_config = ConnectorConfig {
-        qos: 0,
-        retain: false,
-        timeout_ms: Some(5000),
-        protocol_options: Vec::new(),
-    };
-
-    for (key, value) in config {
-        match key.as_str() {
-            "qos" => {
-                connector_config.qos = value.parse().unwrap_or(0).min(2);
-            }
-            "retain" => {
-                connector_config.retain = value.parse().unwrap_or(false);
-            }
-            "timeout_ms" => {
-                connector_config.timeout_ms = value.parse().ok();
-            }
-            _ => {
-                connector_config
-                    .protocol_options
-                    .push((key.clone(), value.clone()));
-            }
-        }
+impl<'a, T, R> InboundConnectorBuilder<'a, T, R>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+{
+    /// Adds a configuration option to the connector
+    pub fn with_config(mut self, key: &str, value: &str) -> Self {
+        self.config.push((key.to_string(), value.to_string()));
+        self
     }
 
-    connector
-        .publish(&destination, &connector_config, &bytes)
-        .await
+    /// Sets a deserialization callback
+    ///
+    /// The deserializer takes raw bytes from the external system and converts
+    /// them to the typed value `T`. Returns `Err(String)` if deserialization fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// .link_from("mqtt://broker/sensors/temp")
+    ///     .with_deserializer(|bytes| {
+    ///         serde_json::from_slice::<Temperature>(bytes)
+    ///             .map_err(|e| e.to_string())
+    ///     })
+    /// ```
+    pub fn with_deserializer<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static,
+    {
+        self.deserializer = Some(Arc::new(f));
+        self
+    }
+
+    /// Sets the MQTT Quality of Service level
+    pub fn with_qos(mut self, qos: u8) -> Self {
+        self.config.push(("qos".to_string(), qos.to_string()));
+        self
+    }
+
+    /// Sets the publish timeout in milliseconds
+    pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
+        self.config
+            .push(("timeout_ms".to_string(), timeout_ms.to_string()));
+        self
+    }
+
+    /// Finalizes the inbound connector registration
+    ///
+    /// # Panics
+    ///
+    /// - If no buffer is configured (inbound connectors require a buffer)
+    /// - If no deserializer is provided
+    /// - If no connector is registered for the URL scheme
+    /// - If the URL is invalid
+    pub fn finish(self) -> &'a mut RecordRegistrar<'a, T, R> {
+        use crate::connector::{ConnectorUrl, InboundConnectorLink};
+
+        let url = ConnectorUrl::parse(&self.url)
+            .unwrap_or_else(|_| panic!("Invalid connector URL: {}", self.url));
+
+        let scheme = url.scheme().to_string();
+
+        // Validation: Buffer must exist for inbound connectors
+        if !self.registrar.rec.has_buffer() {
+            panic!(
+                "Inbound connector requires a buffer. Call .buffer() before .link_from() for record type {}",
+                core::any::type_name::<T>()
+            );
+        }
+
+        // Validation: Deserializer must be provided
+        let Some(deserializer) = self.deserializer else {
+            panic!(
+                "Inbound connector requires a deserializer. Call .with_deserializer() for {}",
+                self.url
+            );
+        };
+
+        // Validation: Connector builder must be registered
+        let has_connector = self
+            .registrar
+            .connector_builders
+            .iter()
+            .any(|b| b.scheme() == scheme);
+
+        if !has_connector {
+            panic!(
+                "No connector registered for scheme '{}'. Register via .with_connector() for {}",
+                scheme, self.url
+            );
+        }
+
+        // Create type-erased deserializer
+        let erased_deserializer: crate::connector::DeserializerFn =
+            Arc::new(move |bytes: &[u8]| {
+                deserializer(bytes).map(|val| Box::new(val) as Box<dyn core::any::Any + Send>)
+            });
+
+        // Create inbound connector link
+        let mut link = InboundConnectorLink::new(url, erased_deserializer);
+        link.config = self.config;
+
+        // Add producer factory callback that captures type T (alloc feature)
+        #[cfg(feature = "alloc")]
+        {
+            link = link.with_producer_factory(|db_any| {
+                // Downcast Arc<dyn Any> to Arc<AimDb<R>>
+                let db = db_any
+                    .downcast::<crate::builder::AimDb<R>>()
+                    .expect("Failed to downcast to AimDb");
+                Box::new(Producer::<T, R>::new(db)) as Box<dyn crate::connector::ProducerTrait>
+            });
+        }
+
+        // Add to record
+        self.registrar.rec.add_inbound_connector(link);
+        self.registrar
+    }
 }
 
 // ============================================================================

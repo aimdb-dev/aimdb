@@ -19,7 +19,7 @@
 //! fn weather_alert_record() -> RecordConfig<WeatherAlert> {
 //!     RecordConfig::builder()
 //!         .buffer(BufferCfg::SingleLatest)
-//!         .link("mqtt://broker.example.com:1883")
+//!         .link_to("mqtt://broker.example.com:1883")
 //!             .out::<WeatherAlert>(|reader, mqtt| {
 //!                 publish_alerts_to_mqtt(reader, mqtt)
 //!             })
@@ -28,10 +28,13 @@
 //! ```
 
 use core::fmt::{self, Debug};
+use core::future::Future;
+use core::pin::Pin;
 
 extern crate alloc;
 
 use alloc::{
+    boxed::Box,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -40,7 +43,7 @@ use alloc::{
 #[cfg(feature = "std")]
 use alloc::format;
 
-use crate::DbResult;
+use crate::{builder::AimDb, transport::Connector, DbResult};
 
 /// Error that can occur during serialization
 ///
@@ -193,6 +196,35 @@ impl ConnectorUrl {
     pub fn path(&self) -> &str {
         self.path.as_deref().unwrap_or("/")
     }
+
+    /// Returns the resource identifier for protocols where the URL specifies a topic/key
+    ///
+    /// This is designed for the simplified connector model where each connector manages
+    /// a single broker/server connection, and URLs only specify the resource (topic, key, path).
+    ///
+    /// # Examples
+    ///
+    /// - `mqtt://commands/temperature` → `"commands/temperature"` (topic)
+    /// - `mqtt://sensors/temp` → `"sensors/temp"` (topic)
+    /// - `kafka://events` → `"events"` (topic)
+    ///
+    /// The format is `scheme://resource` where resource = host + path combined.
+    pub fn resource_id(&self) -> String {
+        let path = self.path().trim_start_matches('/');
+
+        // Combine host and path to form the complete resource identifier
+        // For mqtt://commands/temperature: host="commands", path="/temperature"
+        // Result: "commands/temperature"
+        if !self.host.is_empty() && !path.is_empty() {
+            alloc::format!("{}/{}", self.host, path)
+        } else if !self.host.is_empty() {
+            self.host.clone()
+        } else if !path.is_empty() {
+            path.to_string()
+        } else {
+            String::new()
+        }
+    }
 }
 
 impl fmt::Display for ConnectorUrl {
@@ -309,6 +341,18 @@ pub struct ConnectorLink {
     ///
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
     pub serializer: Option<SerializerFn>,
+
+    /// Consumer factory callback (alloc feature)
+    ///
+    /// Creates ConsumerTrait from Arc<AimDb<R>> to enable type-safe subscription.
+    /// The factory captures the record type T at link_to() configuration time,
+    /// allowing the connector to subscribe without knowing T at compile time.
+    ///
+    /// Mirrors the producer_factory pattern used for inbound connectors.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
+    pub consumer_factory: Option<ConsumerFactoryFn>,
 }
 
 impl Debug for ConnectorLink {
@@ -319,6 +363,13 @@ impl Debug for ConnectorLink {
             .field(
                 "serializer",
                 &self.serializer.as_ref().map(|_| "<function>"),
+            )
+            .field(
+                "consumer_factory",
+                #[cfg(feature = "alloc")]
+                &self.consumer_factory.as_ref().map(|_| "<function>"),
+                #[cfg(not(feature = "alloc"))]
+                &None::<()>,
             )
             .finish()
     }
@@ -331,6 +382,8 @@ impl ConnectorLink {
             url,
             config: Vec::new(),
             serializer: None,
+            #[cfg(feature = "alloc")]
+            consumer_factory: None,
         }
     }
 
@@ -339,6 +392,210 @@ impl ConnectorLink {
         self.config.push((key.into(), value.into()));
         self
     }
+
+    /// Creates a consumer using the stored factory (alloc feature)
+    ///
+    /// Takes an Arc<dyn Any> (which should contain Arc<AimDb<R>>) and invokes
+    /// the consumer factory to create a ConsumerTrait instance.
+    ///
+    /// Returns None if no factory is configured.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
+    pub fn create_consumer(
+        &self,
+        db_any: Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Option<Box<dyn ConsumerTrait>> {
+        self.consumer_factory.as_ref().map(|f| f(db_any))
+    }
+}
+
+/// Type alias for type-erased deserializer callbacks
+///
+/// Converts raw bytes to a boxed Any that can be downcast to the concrete type.
+/// This allows storing deserializers for different types in a unified collection.
+pub type DeserializerFn =
+    Arc<dyn Fn(&[u8]) -> Result<Box<dyn core::any::Any + Send>, String> + Send + Sync>;
+
+/// Type alias for producer factory callback (alloc feature)
+///
+/// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ProducerTrait.
+/// This allows capturing the record type T at link_from() time while storing
+/// the factory in a type-erased InboundConnectorLink.
+///
+/// Available in both `std` and `no_std + alloc` environments.
+#[cfg(feature = "alloc")]
+pub type ProducerFactoryFn =
+    Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait> + Send + Sync>;
+
+/// Type-erased producer trait for MQTT router
+///
+/// Allows the router to call produce() on different record types without knowing
+/// the concrete type at compile time. The value is passed as Box<dyn Any> and
+/// downcast to the correct type inside the implementation.
+///
+/// # Implementation Note
+///
+/// This trait uses manual futures instead of `#[async_trait]` to enable `no_std`
+/// compatibility. The `async_trait` macro generates code that depends on `std`,
+/// while manual `Pin<Box<dyn Future>>` works in both `std` and `no_std + alloc`.
+pub trait ProducerTrait: Send + Sync {
+    /// Produce a value into the record's buffer
+    ///
+    /// The value must be passed as Box<dyn Any> and will be downcast to the correct type.
+    /// Returns an error if the downcast fails or if production fails.
+    fn produce_any<'a>(
+        &'a self,
+        value: Box<dyn core::any::Any + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+}
+
+/// Type alias for consumer factory callback (alloc feature)
+///
+/// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ConsumerTrait.
+/// This allows capturing the record type T at link_to() time while storing
+/// the factory in a type-erased ConnectorLink.
+///
+/// Mirrors the ProducerFactoryFn pattern for symmetry between inbound and outbound.
+///
+/// Available in both `std` and `no_std + alloc` environments.
+#[cfg(feature = "alloc")]
+pub type ConsumerFactoryFn =
+    Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ConsumerTrait> + Send + Sync>;
+
+/// Type-erased consumer trait for outbound routing
+///
+/// Mirrors ProducerTrait but for consumption. Allows connectors to subscribe
+/// to typed values without knowing the concrete type T at compile time.
+///
+/// # Implementation Note
+///
+/// Like ProducerTrait, this uses manual futures instead of `#[async_trait]`
+/// to enable `no_std` compatibility.
+pub trait ConsumerTrait: Send + Sync {
+    /// Subscribe to typed values from this record
+    ///
+    /// Returns a type-erased reader that can be polled for Box<dyn Any> values.
+    /// The connector will downcast to the expected type after deserialization.
+    fn subscribe_any<'a>(&'a self) -> SubscribeAnyFuture<'a>;
+}
+
+/// Type alias for the future returned by `ConsumerTrait::subscribe_any`
+type SubscribeAnyFuture<'a> =
+    Pin<Box<dyn Future<Output = DbResult<Box<dyn AnyReader>>> + Send + 'a>>;
+
+/// Type alias for the future returned by `AnyReader::recv_any`
+type RecvAnyFuture<'a> =
+    Pin<Box<dyn Future<Output = DbResult<Box<dyn core::any::Any + Send>>> + Send + 'a>>;
+
+/// Helper trait for type-erased reading
+///
+/// Allows reading values from a buffer without knowing the concrete type at compile time.
+/// The value is returned as Box<dyn Any> and must be downcast by the caller.
+pub trait AnyReader: Send {
+    /// Receive a type-erased value from the buffer
+    ///
+    /// Returns Box<dyn Any> which must be downcast to the concrete type.
+    /// Returns an error if the buffer is closed or an I/O error occurs.
+    fn recv_any<'a>(&'a mut self) -> RecvAnyFuture<'a>;
+}
+
+/// Configuration for an inbound connector link (External → AimDB)
+///
+/// Stores the parsed URL, configuration, deserializer, and a producer creation callback.
+/// The callback captures the type T at creation time, allowing type-safe producer creation
+/// later without needing PhantomData or type parameters.
+pub struct InboundConnectorLink {
+    /// Parsed connector URL
+    pub url: ConnectorUrl,
+
+    /// Additional configuration options (protocol-specific)
+    pub config: Vec<(String, String)>,
+
+    /// Deserialization callback that converts bytes to typed values
+    ///
+    /// This is a type-erased function that takes `&[u8]` and returns
+    /// `Result<Box<dyn Any + Send>, String>`. The spawned task will
+    /// downcast to the concrete type before producing.
+    ///
+    /// Available in both `std` and `no_std` (with `alloc` feature) environments.
+    pub deserializer: DeserializerFn,
+
+    /// Producer creation callback (alloc feature)
+    ///
+    /// Takes Arc<AimDb<R>> and returns Box<dyn ProducerTrait>.
+    /// Captures the record type T at link_from() call time.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
+    pub producer_factory: Option<ProducerFactoryFn>,
+}
+
+impl Clone for InboundConnectorLink {
+    fn clone(&self) -> Self {
+        Self {
+            url: self.url.clone(),
+            config: self.config.clone(),
+            deserializer: self.deserializer.clone(),
+            #[cfg(feature = "alloc")]
+            producer_factory: self.producer_factory.clone(),
+        }
+    }
+}
+
+impl Debug for InboundConnectorLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InboundConnectorLink")
+            .field("url", &self.url)
+            .field("config", &self.config)
+            .field("deserializer", &"<function>")
+            .finish()
+    }
+}
+
+impl InboundConnectorLink {
+    /// Creates a new inbound connector link from a URL and deserializer
+    pub fn new(url: ConnectorUrl, deserializer: DeserializerFn) -> Self {
+        Self {
+            url,
+            config: Vec::new(),
+            deserializer,
+            #[cfg(feature = "alloc")]
+            producer_factory: None,
+        }
+    }
+
+    /// Sets the producer factory callback (alloc feature)
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
+    pub fn with_producer_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.producer_factory = Some(Arc::new(factory));
+        self
+    }
+
+    /// Creates a producer using the stored factory (alloc feature)
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    #[cfg(feature = "alloc")]
+    pub fn create_producer(
+        &self,
+        db_any: Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Option<Box<dyn ProducerTrait>> {
+        self.producer_factory.as_ref().map(|f| f(db_any))
+    }
+}
+
+/// Configuration for an outbound connector link (AimDB → External)
+pub struct OutboundConnectorLink {
+    pub url: ConnectorUrl,
+    pub config: Vec<(String, String)>,
 }
 
 /// Parses a connector URL string into structured components
@@ -434,6 +691,74 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
         password,
         query_params,
     })
+}
+
+/// Trait for building connectors after the database is constructed
+///
+/// Connectors that need to collect routes from the database (for inbound routing)
+/// implement this trait. The builder pattern allows connectors to be constructed
+/// in two phases:
+///
+/// 1. Configuration phase: User provides broker URLs and settings
+/// 2. Build phase: Connector collects routes from the database and initializes
+///
+/// # Example
+///
+/// ```rust,ignore
+/// pub struct MqttConnectorBuilder {
+///     broker_url: String,
+/// }
+///
+/// impl<R> ConnectorBuilder<R> for MqttConnectorBuilder
+/// where
+///     R: aimdb_executor::Spawn + 'static,
+/// {
+///     fn build<'a>(
+///         &'a self,
+///         db: &'a AimDb<R>,
+///     ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn Connector>>> + Send + 'a>> {
+///         Box::pin(async move {
+///             let routes = db.collect_inbound_routes(self.scheme());
+///             let router = RouterBuilder::from_routes(routes).build();
+///             let connector = MqttConnector::new(&self.broker_url, router).await?;
+///             Ok(Arc::new(connector) as Arc<dyn Connector>)
+///         })
+///     }
+///     
+///     fn scheme(&self) -> &str {
+///         "mqtt"
+///     }
+/// }
+/// ```
+pub trait ConnectorBuilder<R>: Send + Sync
+where
+    R: aimdb_executor::Spawn + 'static,
+{
+    /// Build the connector using the database
+    ///
+    /// This method is called during `AimDbBuilder::build()` after the database
+    /// has been constructed. The builder can use the database to:
+    /// - Collect inbound routes via `db.collect_inbound_routes()`
+    /// - Access database configuration
+    /// - Register subscriptions
+    ///
+    /// # Arguments
+    /// * `db` - The constructed database instance
+    ///
+    /// # Returns
+    /// An `Arc<dyn Connector>` that will be registered with the database
+    #[allow(clippy::type_complexity)]
+    fn build<'a>(
+        &'a self,
+        db: &'a AimDb<R>,
+    ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn Connector>>> + Send + 'a>>;
+
+    /// The URL scheme this connector handles
+    ///
+    /// Returns the scheme (e.g., "mqtt", "kafka", "http") that this connector
+    /// will be registered under. Used for routing `.link_from()` and `.link_to()`
+    /// declarations to the appropriate connector.
+    fn scheme(&self) -> &str;
 }
 
 #[cfg(test)]

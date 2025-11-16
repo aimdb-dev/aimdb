@@ -5,45 +5,59 @@
 //!
 //! # Architecture
 //!
-//! Uses the channel-based pattern from mountain-mqtt-embassy:
-//! - Background task calls `mqtt_manager::run()` with action/event channels
-//! - `MqttClientPool` sends publish actions through the action channel
-//! - Events (connected/disconnected) can be monitored through event channel
-//! - Automatic reconnection handled by the run() function
+//! Uses the ConnectorBuilder pattern integrated with AimDB:
+//! - `MqttConnectorBuilder` is used with `.with_connector()` during database setup
+//! - Background tasks are spawned automatically during connector initialization
+//! - MQTT manager handles connection, reconnection, and message delivery
+//! - Event router forwards incoming MQTT messages to appropriate record producers
 //!
 //! # Usage
 //!
-//! # Example
+//! ```rust,ignore
+//! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+//! use aimdb_core::AimDbBuilder;
 //!
-//! ```rust,no_run
-//! use aimdb_mqtt_connector::embassy_client::MqttConnector;
-//!
-//! // Create connector and get task spawner
-//! let mqtt = MqttConnector::create(
-//!     network_stack,
-//!     "192.168.1.100",
-//!     1883,
-//!     "my-client-id"
-//! ).await.unwrap();
-//!
-//! // Spawn the MQTT background task
-//! spawner.spawn(async move { mqtt.task.run().await }).unwrap();
-//!
-//! // Publish messages
-//! mqtt.connector.publish_async("sensor/temp", b"23.5", 1, false).await.unwrap();
+//! // Configure database with MQTT connector
+//! let db = AimDbBuilder::new()
+//!     .runtime(embassy_adapter)
+//!     .with_connector(
+//!         MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+//!             .with_client_id("my-unique-device-id")
+//!     )
+//!     .configure::<Temperature>(|reg| {
+//!         // Outbound: Publish temperature readings to MQTT
+//!         reg.link_to("mqtt://sensors/temperature")
+//!            .with_serializer(|temp| Ok(temp.to_json()))
+//!            .finish();
+//!         
+//!         // Inbound: Subscribe to commands from MQTT
+//!         reg.link_from("mqtt://commands/temperature")
+//!            .with_deserializer(|data| TemperatureCommand::from_json(data))
+//!            .finish();
+//!     })
+//!     .build().await?;
 //! ```
 
 extern crate alloc;
 
+use aimdb_core::connector::ConnectorUrl;
+use aimdb_core::router::{Router, RouterBuilder};
 use aimdb_core::transport::PublishError;
+use aimdb_core::ConnectorBuilder;
+use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
 use core::net::Ipv4Addr;
+use core::pin::Pin;
 use core::str::FromStr;
 
-use embassy_net::{Ipv4Address, Stack};
+use embassy_net::Ipv4Address;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, Receiver, Sender};
+use embassy_sync::channel::{Channel, Sender};
+use embassy_sync::once_lock::OnceLock;
 use static_cell::StaticCell;
 
 use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
@@ -71,6 +85,11 @@ pub enum AimdbMqttAction {
         payload: Vec<u8>,
         qos: QualityOfService,
         retain: bool,
+    },
+    /// Subscribe to a topic
+    Subscribe {
+        topic: String,
+        qos: QualityOfService,
     },
 }
 
@@ -114,269 +133,563 @@ impl MqttOperations for AimdbMqttAction {
 
                 Ok(())
             }
+            Self::Subscribe { topic, qos } => {
+                #[cfg(feature = "defmt")]
+                {
+                    if is_retry {
+                        defmt::debug!("Retrying subscribe to {} (QoS={:?})", topic, qos);
+                    } else {
+                        defmt::info!("Subscribing to {} (QoS={:?})", topic, qos);
+                    }
+                }
+
+                client.subscribe(topic, *qos).await?;
+
+                #[cfg(feature = "defmt")]
+                defmt::info!("Subscribed to {}", topic);
+
+                Ok(())
+            }
         }
     }
 }
 
-/// Empty event type since we're only publishing, not subscribing
+/// MQTT events for received messages
 ///
-/// mountain-mqtt-embassy requires an event type for received messages.
-/// Since we're only publishing, we use an empty enum.
+/// Handles incoming MQTT messages that will be routed to the appropriate
+/// record producers via the router.
 #[derive(Clone)]
-pub enum AimdbMqttEvent {}
+pub enum AimdbMqttEvent {
+    /// A message was received from a subscribed topic
+    MessageReceived {
+        /// The topic the message was received on
+        topic: String,
+        /// The message payload
+        payload: Vec<u8>,
+    },
+}
 
 impl mountain_mqtt_embassy::mqtt_manager::FromApplicationMessage<MAX_PROPERTIES>
     for AimdbMqttEvent
 {
     fn from_application_message(
-        _message: &mountain_mqtt::packets::publish::ApplicationMessage<MAX_PROPERTIES>,
+        message: &mountain_mqtt::packets::publish::ApplicationMessage<MAX_PROPERTIES>,
     ) -> Result<Self, mountain_mqtt::client::EventHandlerError> {
-        // We don't expect to receive any messages, so return an error
-        Err(mountain_mqtt::client::EventHandlerError::UnexpectedApplicationMessageTopic)
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "Received message on topic '{}', {} bytes",
+            message.topic_name,
+            message.payload.len()
+        );
+
+        Ok(Self::MessageReceived {
+            topic: message.topic_name.to_string(),
+            payload: message.payload.to_vec(),
+        })
     }
 }
 
-/// Background task that runs the MQTT connection loop forever
+/// MQTT connector builder for Embassy with router-based dispatch
 ///
-/// This task should be spawned and will run indefinitely, maintaining
-/// the MQTT connection and processing publish requests.
-pub struct MqttBackgroundTask {
-    network_stack: Stack<'static>,
-    connection_settings: ConnectionSettings<'static>,
-    settings: Settings,
-    event_sender: Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>,
-    action_receiver: Receiver<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>,
-}
-
-impl MqttBackgroundTask {
-    /// Run the MQTT background task (never returns)
-    ///
-    /// This should be spawned as an embassy task:
-    /// ```rust,no_run
-    /// spawner.spawn(async move { mqtt_task.run().await }).unwrap();
-    /// ```
-    ///
-    /// Note: This function never returns - it runs the MQTT connection loop forever.
-    pub async fn run(self) {
-        // Call mqtt_manager::run which returns ! (never type)
-        // We need to use a type annotation to avoid exposing ! in our signature
-        #[allow(unreachable_code)]
-        {
-            let _never: () = mqtt_manager::run::<
-                AimdbMqttAction,
-                AimdbMqttEvent,
-                MAX_PROPERTIES,
-                BUFFER_SIZE,
-                CHANNEL_SIZE,
-            >(
-                self.network_stack,
-                self.connection_settings,
-                self.settings,
-                self.event_sender,
-                self.action_receiver,
-            )
-            .await;
-            // The above never actually assigns to _never since it returns !
-            // But it allows us to have a () return type
-        }
-    }
-}
-
-/// Return type from MqttConnector::create() containing the connector and background task
-pub struct MqttConnectorWithTask {
-    /// The connector for publishing messages
-    pub connector: MqttConnector,
-    /// Background task that must be spawned to run the MQTT connection
-    pub task: MqttBackgroundTask,
-}
-
-/// MQTT connector for Embassy runtime
+/// Similar to the Tokio version, this builder creates an MQTT connector
+/// that integrates with AimDB's routing system. The builder collects routes
+/// from the database during build() and automatically subscribes to topics.
 ///
-/// This provides a simple interface for publishing MQTT messages.
-/// The actual MQTT connection is managed by a background task.
-#[derive(Clone)]
-pub struct MqttConnector {
-    /// Channel sender for MQTT actions
-    action_sender: Sender<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>,
+/// # Usage Pattern
+///
+/// ```rust,ignore
+/// use aimdb_mqtt_connector::embassy::MqttConnectorBuilder;
+///
+/// // Configure database with MQTT links
+/// let db = AimDbBuilder::new()
+///     .runtime(embassy_adapter)
+///     .with_connector(
+///         MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+///             .with_client_id("my-device-001")
+///     )
+///     .configure::<Temperature>(|reg| {
+///         reg.link_from("mqtt://commands/temp")
+///            .with_deserializer(deserialize_temp)
+///            .with_buffer(BufferCfg::SingleLatest);
+///     })
+///     .build().await?;
+/// ```
+pub struct MqttConnectorBuilder {
+    broker_url: String,
+    client_id: String,
 }
 
-impl MqttConnector {
-    /// Create a new MQTT connector and prepare the background task
-    ///
-    /// This sets up all the infrastructure needed for MQTT communication:
-    /// - Creates channels for actions and events
-    /// - Configures connection settings
-    /// - Returns a struct containing the connector and background task
+impl MqttConnectorBuilder {
+    /// Create a new MQTT connector builder for Embassy
     ///
     /// # Arguments
-    ///
-    /// * `network_stack` - Embassy network stack for TCP connections
-    /// * `broker_host` - MQTT broker IP address (e.g., "192.168.1.100")
-    /// * `broker_port` - MQTT broker port (typically 1883)
-    /// * `client_id` - MQTT client identifier (must be 'static)
-    ///
-    /// # Returns
-    ///
-    /// A `MqttConnectorWithTask` containing the connector and background task.
+    /// * `broker_url` - Broker URL in format `mqtt://host:port`
+    ///   - Scheme: `mqtt://` (plain TCP)
+    ///   - Host: IP address or hostname (e.g., "192.168.1.100")
+    ///   - Port: MQTT broker port (default: 1883)
     ///
     /// # Example
     ///
-    /// ```rust,no_run
-    /// let mqtt = MqttConnector::create(
-    ///     network_stack,
-    ///     "192.168.1.100",
-    ///     1883,
-    ///     "sensor-node-1"
-    /// ).await?;
-    ///
-    /// // Spawn the background task
-    /// spawner.spawn(async move { mqtt.task.run().await }).unwrap();
-    ///
-    /// // Use the connector
-    /// mqtt.connector.publish_async("sensor/temp", b"23.5", 1, false).await?;
+    /// ```rust,ignore
+    /// let builder = MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+    ///     .with_client_id("sensor-node-42");
     /// ```
-    pub async fn create(
-        network_stack: Stack<'static>,
-        broker_host: &str,
-        broker_port: u16,
-        client_id: &'static str,
-    ) -> Result<MqttConnectorWithTask, PublishError> {
+    pub fn new(broker_url: impl Into<String>) -> Self {
+        Self {
+            broker_url: broker_url.into(),
+            client_id: "aimdb-client".to_string(),
+        }
+    }
+
+    /// Set the MQTT client ID
+    ///
+    /// The client ID should be unique for each device connecting to the broker.
+    /// It's used for session persistence and message delivery guarantees.
+    ///
+    /// # Arguments
+    /// * `client_id` - Unique identifier for this client (max 32 chars recommended)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let builder = MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+    ///     .with_client_id("my-unique-device-id");
+    /// ```
+    pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = client_id.into();
+        self
+    }
+}
+
+/// Implement ConnectorBuilder trait for Embassy runtime with network stack access
+///
+/// This implementation requires the runtime to provide the `EmbassyNetwork` trait
+/// so the connector can access the network stack for creating TCP connections.
+impl<R> ConnectorBuilder<R> for MqttConnectorBuilder
+where
+    R: aimdb_executor::Spawn + aimdb_embassy_adapter::EmbassyNetwork + 'static,
+{
+    fn build<'a>(
+        &'a self,
+        db: &'a aimdb_core::builder::AimDb<R>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = aimdb_core::DbResult<Arc<dyn aimdb_core::transport::Connector>>>
+                + Send
+                + 'a,
+        >,
+    > {
+        // Wrap in SendFutureWrapper since Embassy types aren't Send but we're single-threaded
+        Box::pin(SendFutureWrapper(async move {
+            // Collect inbound routes from database
+            let routes = db.collect_inbound_routes("mqtt");
+
+            #[cfg(feature = "defmt")]
+            defmt::info!(
+                "Collected {} inbound routes for MQTT connector",
+                routes.len()
+            );
+
+            // Convert routes to Router
+            let router = RouterBuilder::from_routes(routes).build();
+
+            #[cfg(feature = "defmt")]
+            defmt::info!("MQTT router has {} topics", router.resource_ids().len());
+
+            // Build the actual connector
+            let connector = MqttConnectorImpl::build_internal(
+                &self.broker_url,
+                &self.client_id,
+                router,
+                db.runtime(),
+            )
+            .await
+            .map_err(|_e| {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Failed to build MQTT connector");
+
+                aimdb_core::DbError::RuntimeError { _message: () }
+            })?;
+
+            // Collect and spawn outbound publishers
+            let outbound_routes = db.collect_outbound_routes("mqtt");
+
+            #[cfg(feature = "defmt")]
+            defmt::info!(
+                "Collected {} outbound routes for MQTT connector",
+                outbound_routes.len()
+            );
+
+            connector.spawn_outbound_publishers(db, outbound_routes)?;
+
+            Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
+        }))
+    }
+
+    fn scheme(&self) -> &str {
+        "mqtt"
+    }
+}
+
+/// Internal MQTT connector implementation for Embassy
+///
+/// This is the actual connector created after collecting routes from the database.
+/// It manages the MQTT connection and routing of incoming messages to producers.
+pub struct MqttConnectorImpl {
+    #[allow(dead_code)] // Stored for future use (stats, topic lists, etc.)
+    router: Arc<Router>,
+    action_sender: Sender<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>,
+}
+
+// SAFETY: MqttConnectorImpl is safe to use in Embassy's single-threaded environment.
+// The Sender is not Sync, but Embassy tasks run on a single thread.
+unsafe impl Send for MqttConnectorImpl {}
+unsafe impl Sync for MqttConnectorImpl {}
+
+impl MqttConnectorImpl {
+    /// Create a new MQTT connector with pre-configured router (internal)
+    ///
+    /// Creates a connection to the MQTT broker and subscribes to all topics
+    /// defined in the router. The background task is spawned automatically.
+    ///
+    /// # Arguments
+    /// * `broker_url` - Broker URL (mqtt://host:port)
+    /// * `client_id` - MQTT client identifier
+    /// * `router` - Pre-configured router with all routes
+    /// * `runtime` - Embassy runtime adapter for spawning and network access
+    async fn build_internal<R>(
+        broker_url: &str,
+        client_id: &str,
+        router: Router,
+        runtime: &R,
+    ) -> Result<Self, &'static str>
+    where
+        R: aimdb_executor::Spawn + aimdb_embassy_adapter::EmbassyNetwork + 'static,
+    {
+        // Parse the broker URL
+        let mut url = broker_url.to_string();
+
+        // If no topic is provided, add a dummy one for parsing
+        if !url.contains('/') || url.matches('/').count() < 3 {
+            url = format!("{}/dummy", url.trim_end_matches('/'));
+        }
+
+        let connector_url = ConnectorUrl::parse(&url).map_err(|_| "Invalid MQTT URL")?;
+
+        let host = connector_url.host.clone();
+        let port = connector_url.port.unwrap_or(1883);
+
+        #[cfg(feature = "defmt")]
+        defmt::info!("Creating MQTT connector for {}:{}", host, port);
+
         // Parse broker IP address
-        let broker_ip =
-            Ipv4Addr::from_str(broker_host).map_err(|_| PublishError::ConnectionFailed)?;
+        let broker_ip = Ipv4Addr::from_str(&host).map_err(|_| "Invalid broker IP address")?;
 
         // Convert to embassy Ipv4Address
         let octets = broker_ip.octets();
         let broker_addr = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
 
-        #[cfg(feature = "defmt")]
-        defmt::info!(
-            "Initializing MQTT: broker={}:{}, client_id={}",
-            broker_host,
-            broker_port,
-            client_id
-        );
+        // Store client_id in static memory for 'static lifetime requirement
+        // Uses OnceLock to gracefully handle multiple initialization attempts
+        static CLIENT_ID_STORAGE: OnceLock<String> = OnceLock::new();
+        let client_id_static: &'static str =
+            CLIENT_ID_STORAGE.get_or_init(|| client_id.to_string());
 
-        // Create static channels for MQTT communication using StaticCell
+        #[cfg(feature = "defmt")]
+        defmt::info!("MQTT client ID: {}", client_id_static);
+
+        // Create static channels for MQTT communication
         static ACTION_CHANNEL: StaticCell<Channel<NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>> =
             StaticCell::new();
         static EVENT_CHANNEL: StaticCell<
             Channel<NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>,
         > = StaticCell::new();
 
+        // Try to initialize channels (will panic if called twice - expected in embedded)
         let action_channel = ACTION_CHANNEL.init(Channel::new());
         let event_channel = EVENT_CHANNEL.init(Channel::new());
 
         let action_sender = action_channel.sender();
         let action_receiver = action_channel.receiver();
         let event_sender = event_channel.sender();
-        let _event_receiver = event_channel.receiver(); // Could be used for monitoring
+        let event_receiver = event_channel.receiver();
 
         // Create connection settings
-        let connection_settings = ConnectionSettings::unauthenticated(client_id);
+        let connection_settings = ConnectionSettings::unauthenticated(client_id_static);
 
         // Create mqtt_manager settings
-        let settings = Settings::new(broker_addr, broker_port);
+        let settings = Settings::new(broker_addr, port);
 
-        // Create the connector
-        let connector = Self { action_sender };
+        // Clone router for background task
+        let router_arc = Arc::new(router);
+        let router_for_task = router_arc.clone();
 
-        // Create the background task
-        let mqtt_task = MqttBackgroundTask {
-            network_stack,
-            connection_settings,
-            settings,
-            event_sender,
-            action_receiver,
-        };
+        // Get topics to subscribe to from router
+        let topics = router_arc.resource_ids();
 
-        Ok(MqttConnectorWithTask {
-            connector,
-            task: mqtt_task,
+        #[cfg(feature = "defmt")]
+        defmt::info!("Will subscribe to {} MQTT topics", topics.len());
+
+        // Get network stack for background task
+        let network = runtime.network_stack();
+
+        // Spawn MQTT manager background task
+        let mqtt_task_future = SendFutureWrapper(async move {
+            #[cfg(feature = "defmt")]
+            defmt::info!("MQTT background task starting");
+
+            // Run the MQTT manager (this never returns)
+            #[allow(unreachable_code)]
+            {
+                let _: () = mqtt_manager::run::<
+                    AimdbMqttAction,
+                    AimdbMqttEvent,
+                    MAX_PROPERTIES,
+                    BUFFER_SIZE,
+                    CHANNEL_SIZE,
+                >(
+                    *network, // Dereference the network stack reference
+                    connection_settings,
+                    settings,
+                    event_sender,
+                    action_receiver,
+                )
+                .await;
+            }
+        });
+
+        // Spawn the task
+        runtime
+            .spawn(mqtt_task_future)
+            .map_err(|_| "Failed to spawn MQTT manager task")?;
+
+        #[cfg(feature = "defmt")]
+        defmt::info!("MQTT manager task spawned successfully");
+
+        // Spawn event monitoring task for inbound message routing
+        let event_router_future = SendFutureWrapper(async move {
+            #[cfg(feature = "defmt")]
+            defmt::info!("MQTT event router task starting");
+
+            loop {
+                let event = event_receiver.receive().await;
+
+                match event {
+                    MqttEvent::ApplicationEvent {
+                        event: AimdbMqttEvent::MessageReceived { topic, payload },
+                        ..
+                    } => {
+                        #[cfg(feature = "defmt")]
+                        defmt::debug!(
+                            "Routing MQTT message from topic '{}', {} bytes",
+                            topic,
+                            payload.len()
+                        );
+
+                        // Route the message through the router to the appropriate producer
+                        if let Err(_e) = router_for_task.route(&topic, &payload).await {
+                            #[cfg(feature = "defmt")]
+                            defmt::warn!("Failed to route MQTT message from '{}': {:?}", topic, _e);
+                        }
+                    }
+                    _ => {
+                        // Ignore other events (Connected, Disconnected, etc.)
+                        #[cfg(feature = "defmt")]
+                        defmt::trace!("Ignoring MQTT event (not a message)");
+                    }
+                }
+            }
+        });
+
+        // Spawn the event router task
+        runtime
+            .spawn(event_router_future)
+            .map_err(|_| "Failed to spawn MQTT event router task")?;
+
+        #[cfg(feature = "defmt")]
+        defmt::info!("MQTT event router task spawned successfully");
+
+        // Subscribe to all topics from the router
+        for topic in &topics {
+            #[cfg(feature = "defmt")]
+            defmt::info!("Subscribing to MQTT topic: {}", topic);
+
+            let subscribe_action = AimdbMqttAction::Subscribe {
+                topic: topic.to_string(),
+                qos: QualityOfService::Qos1, // Use QoS 1 for reliable delivery
+            };
+
+            action_sender.send(subscribe_action).await;
+        }
+
+        #[cfg(feature = "defmt")]
+        defmt::info!("Queued subscriptions for {} topics", topics.len());
+
+        // Return the connector with action sender
+        Ok(Self {
+            router: router_arc,
+            action_sender,
         })
     }
 
-    /// Helper to map QoS level from u8 to QualityOfService enum
-    fn map_qos(qos: u8) -> QualityOfService {
-        match qos {
-            0 => QualityOfService::Qos0,
-            1 => QualityOfService::Qos1,
-            2 => {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("QoS 2 not fully supported, using QoS 1");
-                QualityOfService::Qos1
-            }
-            _ => {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("Invalid QoS {}, defaulting to QoS 0", qos);
-                QualityOfService::Qos0
-            }
-        }
-    }
-
-    /// Publish a message to an MQTT topic
+    /// Spawns outbound publisher tasks for all configured routes (internal)
     ///
-    /// This queues the publish action which will be processed by the
-    /// background task. The method returns immediately after queuing.
+    /// Called automatically during build() to start publishing data from AimDB to MQTT.
+    /// Each route spawns an independent task that subscribes to the record
+    /// and publishes to the MQTT broker.
     ///
-    /// # Arguments
-    ///
-    /// * `topic` - MQTT topic name
-    /// * `payload` - Message payload bytes
-    /// * `qos` - Quality of Service level (0, 1, or 2)
-    /// * `retain` - Whether the broker should retain this message
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if queued successfully, or `PublishError::BufferFull` if
-    /// the action channel is full.
-    pub async fn publish_async(
+    /// This method uses the ConsumerTrait + factory pattern to subscribe to
+    /// typed records without knowing the concrete type T at compile time.
+    fn spawn_outbound_publishers<R>(
         &self,
-        topic: &str,
-        payload: &[u8],
-        qos: u8,
-        retain: bool,
-    ) -> Result<(), PublishError> {
-        let qos_enum = Self::map_qos(qos);
+        db: &aimdb_core::builder::AimDb<R>,
+        routes: alloc::vec::Vec<(
+            alloc::string::String,
+            alloc::boxed::Box<dyn aimdb_core::connector::ConsumerTrait>,
+            aimdb_core::connector::SerializerFn,
+            alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
+        )>,
+    ) -> aimdb_core::DbResult<()>
+    where
+        R: aimdb_executor::Spawn + 'static,
+    {
+        let runtime = db.runtime();
 
-        let action = AimdbMqttAction::Publish {
-            topic: topic.to_string(),
-            payload: payload.to_vec(),
-            qos: qos_enum,
-            retain,
-        };
+        for (topic, consumer, serializer, config) in routes {
+            let action_sender = self.action_sender.clone();
+            let topic_clone = topic.clone();
 
-        #[cfg(feature = "defmt")]
-        defmt::debug!(
-            "Queuing publish: topic={}, len={}, qos={:?}",
-            topic,
-            payload.len(),
-            qos_enum
-        );
+            // Parse config options
+            let mut qos = QualityOfService::Qos1; // Default
+            let mut retain = false;
 
-        // Note: send().await waits indefinitely until there's space in the channel
-        // It does not return a Result - it always succeeds once space is available
-        self.action_sender.send(action).await;
+            for (key, value) in &config {
+                match key.as_str() {
+                    "qos" => {
+                        if let Ok(qos_val) = value.parse::<u8>() {
+                            qos = Self::map_qos(qos_val);
+                        }
+                    }
+                    "retain" => {
+                        if let Ok(retain_val) = value.parse::<bool>() {
+                            retain = retain_val;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            runtime.spawn(SendFutureWrapper(async move {
+                // Subscribe to typed values (type-erased)
+                let mut reader = match consumer.subscribe_any().await {
+                    Ok(r) => r,
+                    Err(_e) => {
+                        #[cfg(feature = "defmt")]
+                        defmt::error!("Failed to subscribe for outbound topic '{}'", topic_clone);
+                        return;
+                    }
+                };
+
+                #[cfg(feature = "defmt")]
+                defmt::info!("MQTT outbound publisher started for topic: {}", topic_clone);
+
+                while let Ok(value_any) = reader.recv_any().await {
+                    // Serialize the type-erased value
+                    let bytes = match serializer(&*value_any) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            #[cfg(feature = "defmt")]
+                            defmt::error!(
+                                "Failed to serialize for topic '{}': {:?}",
+                                topic_clone,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Publish to MQTT via action channel
+                    let action = AimdbMqttAction::Publish {
+                        topic: topic_clone.clone(),
+                        payload: bytes,
+                        qos,
+                        retain,
+                    };
+
+                    action_sender.send(action).await;
+
+                    #[cfg(feature = "defmt")]
+                    defmt::debug!("Published to MQTT topic: {}", topic_clone);
+                }
+
+                #[cfg(feature = "defmt")]
+                defmt::info!("MQTT outbound publisher stopped for topic: {}", topic_clone);
+            }))?;
+        }
 
         Ok(())
     }
 }
 
-// SAFETY: Embassy is single-threaded, so we can safely implement Send + Sync
-// even though NoopRawMutex doesn't implement them.
-//
-// Embassy executors run cooperatively on a single core, so there's no actual
-// concurrent access. These markers allow MqttConnector to work with the
-// Connector trait which requires Send + Sync for Tokio compatibility.
-//
-// This is safe because:
-// 1. Embassy tasks run cooperatively (no preemption on single core)
-// 2. NoopRawMutex is safe for single-threaded access
-// 3. No actual thread migration occurs in Embassy
-unsafe impl Send for MqttConnector {}
-unsafe impl Sync for MqttConnector {}
+/// Implement the Connector trait for MqttConnectorImpl
+impl aimdb_core::transport::Connector for MqttConnectorImpl {
+    fn publish(
+        &self,
+        destination: &str,
+        config: &aimdb_core::transport::ConnectorConfig,
+        payload: &[u8],
+    ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
+        // Destination is the MQTT topic
+        let topic = destination.to_string();
+        let payload_owned = payload.to_vec();
+        let qos = Self::map_qos(config.qos);
+        let retain = config.retain;
+        let action_sender = self.action_sender.clone();
 
-// Helper wrapper to make the publish future Send
+        Box::pin(SendFutureWrapper(async move {
+            #[cfg(feature = "defmt")]
+            defmt::debug!(
+                "Publishing to MQTT topic '{}', {} bytes",
+                topic,
+                payload_owned.len()
+            );
+
+            // Create publish action
+            let action = AimdbMqttAction::Publish {
+                topic,
+                payload: payload_owned,
+                qos,
+                retain,
+            };
+
+            // Send via channel (this will queue the publish)
+            action_sender.send(action).await;
+
+            #[cfg(feature = "defmt")]
+            defmt::debug!("MQTT publish queued successfully");
+
+            Ok(())
+        }))
+    }
+}
+
+impl MqttConnectorImpl {
+    /// Map QoS level to mountain-mqtt QualityOfService
+    fn map_qos(qos: u8) -> QualityOfService {
+        match qos {
+            0 => QualityOfService::Qos0,
+            1 => QualityOfService::Qos1,
+            2 => QualityOfService::Qos1, // Downgrade to QoS 1
+            _ => QualityOfService::Qos0, // Default to QoS 0
+        }
+    }
+}
+
+// Helper wrapper to make futures Send for Embassy's single-threaded environment
+//
+// SAFETY: Embassy is single-threaded, so we can safely implement Send
+// even though some Embassy types don't implement it. Embassy executors run
+// cooperatively on a single core with no preemption or thread migration.
 struct SendFutureWrapper<F>(F);
 
 unsafe impl<F> Send for SendFutureWrapper<F> {}
@@ -393,52 +706,27 @@ impl<F: core::future::Future> core::future::Future for SendFutureWrapper<F> {
     }
 }
 
-/// Implement the connector trait for Embassy
-///
-/// This allows using the same `.with_connector()` and `.link()` pattern
-/// as the Tokio version, despite Embassy being single-threaded.
-impl aimdb_core::transport::Connector for MqttConnector {
-    fn publish(
-        &self,
-        destination: &str,
-        config: &aimdb_core::transport::ConnectorConfig,
-        payload: &[u8],
-    ) -> core::pin::Pin<
-        alloc::boxed::Box<
-            dyn core::future::Future<Output = Result<(), aimdb_core::transport::PublishError>>
-                + Send
-                + '_,
-        >,
-    > {
-        use alloc::boxed::Box;
-        use alloc::vec::Vec;
-
-        // destination is the topic for MQTT
-        let topic_owned = destination.to_string();
-        let payload_owned: Vec<u8> = payload.to_vec();
-        let qos = config.qos;
-        let retain = config.retain;
-
-        // Wrap the future in our Send wrapper
-        // SAFETY: Safe in Embassy's single-threaded environment
-        let fut = SendFutureWrapper(async move {
-            self.publish_async(&topic_owned, &payload_owned, qos, retain)
-                .await
-        });
-
-        Box::pin(fut)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_qos_mapping() {
-        assert!(matches!(MqttConnector::map_qos(0), QualityOfService::Qos0));
-        assert!(matches!(MqttConnector::map_qos(1), QualityOfService::Qos1));
-        assert!(matches!(MqttConnector::map_qos(2), QualityOfService::Qos1)); // Downgrades
-        assert!(matches!(MqttConnector::map_qos(99), QualityOfService::Qos0)); // Defaults
+        assert!(matches!(
+            MqttConnectorImpl::map_qos(0),
+            QualityOfService::Qos0
+        ));
+        assert!(matches!(
+            MqttConnectorImpl::map_qos(1),
+            QualityOfService::Qos1
+        ));
+        assert!(matches!(
+            MqttConnectorImpl::map_qos(2),
+            QualityOfService::Qos1
+        )); // Downgrades to QoS 1
+        assert!(matches!(
+            MqttConnectorImpl::map_qos(99),
+            QualityOfService::Qos0
+        )); // Defaults to QoS 0
     }
 }
