@@ -93,9 +93,6 @@ mod runtime;
 #[cfg(all(not(feature = "std"), feature = "embassy-time"))]
 pub mod time;
 
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-pub mod stream;
-
 // Error handling exports
 #[cfg(not(feature = "std"))]
 pub use error::EmbassyErrorSupport;
@@ -111,10 +108,6 @@ pub use runtime::EmbassyNetwork;
 // Buffer implementation exports
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
 pub use buffer::EmbassyBuffer;
-
-// Stream adapter exports
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
-pub use stream::ChannelStream;
 
 /// Type alias for Embassy database
 ///
