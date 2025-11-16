@@ -13,6 +13,7 @@ members = [
     "examples/tokio-mqtt-connector-demo",
     "examples/tokio-knx-demo",
     "examples/embassy-mqtt-connector-demo",
+    "examples/embassy-knx-connector-demo",
     "examples/sync-api-demo",
     "examples/remote-access-demo",
 ]
