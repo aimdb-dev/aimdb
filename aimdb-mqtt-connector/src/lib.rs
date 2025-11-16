@@ -243,20 +243,20 @@ pub mod tokio_client;
 pub mod embassy_client;
 
 // Re-export platform-specific types
-// Both implementations export the same MqttConnector name for API compatibility
+// Both implementations use MqttConnectorBuilder for API consistency
 // When both features are enabled (e.g., during testing), prefer tokio
 #[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
 pub use tokio_client::MqttConnectorBuilder as MqttConnector;
 
 #[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_client::MqttConnector;
+pub use embassy_client::MqttConnectorBuilder as MqttConnector;
 
 // When both features are enabled, export both with different names
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub use tokio_client::MqttConnectorBuilder as TokioMqttConnector;
 
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_client::MqttConnector as EmbassyMqttConnector;
+pub use embassy_client::MqttConnectorBuilder as EmbassyMqttConnector;
 
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub use tokio_client::MqttConnectorBuilder as MqttConnector; // Default to tokio when both enabled
