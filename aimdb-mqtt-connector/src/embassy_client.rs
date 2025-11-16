@@ -20,7 +20,10 @@
 //! // Configure database with MQTT connector
 //! let db = AimDbBuilder::new()
 //!     .runtime(embassy_adapter)
-//!     .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883"))
+//!     .with_connector(
+//!         MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+//!             .with_client_id("my-unique-device-id")
+//!     )
 //!     .configure::<Temperature>(|reg| {
 //!         // Outbound: Publish temperature readings to MQTT
 //!         reg.link_to("mqtt://sensors/temperature")
@@ -199,7 +202,10 @@ impl mountain_mqtt_embassy::mqtt_manager::FromApplicationMessage<MAX_PROPERTIES>
 /// // Configure database with MQTT links
 /// let db = AimDbBuilder::new()
 ///     .runtime(embassy_adapter)
-///     .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883"))
+///     .with_connector(
+///         MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+///             .with_client_id("my-device-001")
+///     )
 ///     .configure::<Temperature>(|reg| {
 ///         reg.link_from("mqtt://commands/temp")
 ///            .with_deserializer(deserialize_temp)
@@ -209,6 +215,7 @@ impl mountain_mqtt_embassy::mqtt_manager::FromApplicationMessage<MAX_PROPERTIES>
 /// ```
 pub struct MqttConnectorBuilder {
     broker_url: String,
+    client_id: String,
 }
 
 impl MqttConnectorBuilder {
@@ -223,12 +230,33 @@ impl MqttConnectorBuilder {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let builder = MqttConnectorBuilder::new("mqtt://192.168.1.100:1883");
+    /// let builder = MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+    ///     .with_client_id("sensor-node-42");
     /// ```
     pub fn new(broker_url: impl Into<String>) -> Self {
         Self {
             broker_url: broker_url.into(),
+            client_id: "aimdb-client".to_string(),
         }
+    }
+
+    /// Set the MQTT client ID
+    ///
+    /// The client ID should be unique for each device connecting to the broker.
+    /// It's used for session persistence and message delivery guarantees.
+    ///
+    /// # Arguments
+    /// * `client_id` - Unique identifier for this client (max 32 chars recommended)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let builder = MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+    ///     .with_client_id("my-unique-device-id");
+    /// ```
+    pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = client_id.into();
+        self
     }
 }
 
@@ -268,15 +296,19 @@ where
             defmt::info!("MQTT router has {} topics", router.resource_ids().len());
 
             // Build the actual connector
-            let connector =
-                MqttConnectorImpl::build_internal(&self.broker_url, router, db.runtime())
-                    .await
-                    .map_err(|_e| {
-                        #[cfg(feature = "defmt")]
-                        defmt::error!("Failed to build MQTT connector");
+            let connector = MqttConnectorImpl::build_internal(
+                &self.broker_url,
+                &self.client_id,
+                router,
+                db.runtime(),
+            )
+            .await
+            .map_err(|_e| {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Failed to build MQTT connector");
 
-                        aimdb_core::DbError::RuntimeError { _message: () }
-                    })?;
+                aimdb_core::DbError::RuntimeError { _message: () }
+            })?;
 
             Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
         }))
@@ -310,10 +342,12 @@ impl MqttConnectorImpl {
     ///
     /// # Arguments
     /// * `broker_url` - Broker URL (mqtt://host:port)
+    /// * `client_id` - MQTT client identifier
     /// * `router` - Pre-configured router with all routes
     /// * `runtime` - Embassy runtime adapter for spawning and network access
     async fn build_internal<R>(
         broker_url: &str,
+        client_id: &str,
         router: Router,
         runtime: &R,
     ) -> Result<Self, &'static str>
@@ -343,30 +377,13 @@ impl MqttConnectorImpl {
         let octets = broker_ip.octets();
         let broker_addr = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
 
-        // Generate a unique client ID
-        // In a real implementation, this should be configurable or use a hardware ID
-        static CLIENT_ID_COUNTER: core::sync::atomic::AtomicU32 =
-            core::sync::atomic::AtomicU32::new(0);
-        let counter = CLIENT_ID_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-        // Create a client ID in static memory
-        static mut CLIENT_ID_BUF: [u8; 32] = [0u8; 32];
-        let client_id = unsafe {
-            use core::fmt::Write;
-            let mut buf = heapless::String::<32>::new();
-            write!(&mut buf, "aimdb-{}", counter).ok();
-
-            // Copy to static buffer
-            let len = buf.len().min(31);
-            CLIENT_ID_BUF[..len].copy_from_slice(&buf.as_bytes()[..len]);
-            CLIENT_ID_BUF[len] = 0; // Null terminate
-
-            // Return as &'static str
-            core::str::from_utf8_unchecked(&CLIENT_ID_BUF[..len])
-        };
+        // Store client_id in static memory for 'static lifetime requirement
+        // We need to leak the string to get &'static str since StaticCell requires
+        // knowing the value at init time, but we allocate it dynamically
+        let client_id_static: &'static str = Box::leak(client_id.to_string().into_boxed_str());
 
         #[cfg(feature = "defmt")]
-        defmt::info!("MQTT client ID: {}", client_id);
+        defmt::info!("MQTT client ID: {}", client_id_static);
 
         // Create static channels for MQTT communication
         static ACTION_CHANNEL: StaticCell<Channel<NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>> =
@@ -385,7 +402,7 @@ impl MqttConnectorImpl {
         let event_receiver = event_channel.receiver();
 
         // Create connection settings
-        let connection_settings = ConnectionSettings::unauthenticated(client_id);
+        let connection_settings = ConnectionSettings::unauthenticated(client_id_static);
 
         // Create mqtt_manager settings
         let settings = Settings::new(broker_addr, port);
