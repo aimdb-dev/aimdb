@@ -57,6 +57,7 @@ use core::str::FromStr;
 use embassy_net::Ipv4Address;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, Sender};
+use embassy_sync::once_lock::OnceLock;
 use static_cell::StaticCell;
 
 use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
@@ -378,9 +379,10 @@ impl MqttConnectorImpl {
         let broker_addr = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
 
         // Store client_id in static memory for 'static lifetime requirement
-        // We need to leak the string to get &'static str since StaticCell requires
-        // knowing the value at init time, but we allocate it dynamically
-        let client_id_static: &'static str = Box::leak(client_id.to_string().into_boxed_str());
+        // Uses OnceLock to gracefully handle multiple initialization attempts
+        static CLIENT_ID_STORAGE: OnceLock<String> = OnceLock::new();
+        let client_id_static: &'static str =
+            CLIENT_ID_STORAGE.get_or_init(|| client_id.to_string());
 
         #[cfg(feature = "defmt")]
         defmt::info!("MQTT client ID: {}", client_id_static);

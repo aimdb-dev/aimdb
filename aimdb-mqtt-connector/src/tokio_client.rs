@@ -48,6 +48,10 @@ pub struct MqttConnectorBuilder {
 impl MqttConnectorBuilder {
     /// Create a new MQTT connector builder
     ///
+    /// If no client ID is explicitly set via `with_client_id()`, a random
+    /// UUID-based client ID will be generated automatically when the connector
+    /// is built.
+    ///
     /// # Arguments
     /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
     ///

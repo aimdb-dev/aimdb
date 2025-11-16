@@ -325,7 +325,7 @@ impl aimdb_executor::Logger for EmbassyAdapter {
 impl EmbassyNetwork for EmbassyAdapter {
     fn network_stack(&self) -> &'static Stack<'static> {
         self.network.expect(
-            "Network stack not available - use EmbassyAdapter::new_with_network() to provide one",
+            "Network stack not available - connectors requiring network access need the 'embassy-net-support' feature enabled and must use EmbassyAdapter::new_with_network() to provide a network stack",
         )
     }
 }

@@ -220,10 +220,24 @@ type ProducerServiceFn<T, R> = Box<
 /// Allows storage of heterogeneous record types in a single collection
 /// while maintaining type safety through downcast operations.
 ///
-/// Note: This trait requires both `Send` and `Sync` because:
-/// - Records are stored in Arc and shared across threads
-/// - Emitter needs to be Send+Sync to work in async contexts
-/// - The FnOnce consumers are moved out during spawning, so they don't affect Sync
+/// # Thread Safety Requirements
+///
+/// This trait requires both `Send` and `Sync` because:
+/// - Records are stored in `Arc<Box<dyn AnyRecord>>` and shared across threads
+/// - The router system needs to access records from multiple connector tasks
+/// - Emitter needs to be `Send+Sync` to work in async contexts
+/// - The `FnOnce` consumers are moved out during spawning, so they don't affect `Sync`
+///
+/// **BREAKING CHANGE (v0.2.0):** Added `Sync` bound to `AnyRecord` trait.
+/// Record types must now be both `Send + Sync`. Types that were previously
+/// `Send` but not `Sync` can no longer be used as records. This change enables:
+/// - Concurrent access to records from multiple connector tasks
+/// - Safe sharing of record metadata across thread boundaries
+/// - Type-safe routing in the bidirectional connector system
+///
+/// **Migration:** If your record type `T` is not `Sync`, wrap non-`Sync` fields
+/// in `Arc<Mutex<_>>` or `Arc<RwLock<_>>` to achieve interior mutability with
+/// thread-safe sharing.
 pub trait AnyRecord: Send + Sync {
     /// Validates that the record has correct producer/consumer setup
     ///
@@ -1024,6 +1038,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Defa
     }
 }
 
+// BREAKING CHANGE (v0.2.0): TypedRecord now requires T: Sync
+// This enables safe concurrent access to records from multiple connector tasks
+// in the bidirectional routing system. The Sync bound propagates from AnyRecord
+// trait and ensures thread-safe sharing of record values.
 impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyRecord
     for TypedRecord<T, R>
 {

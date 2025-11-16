@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking: Connector Registration**: Changed from `.with_connector(scheme, instance)` to `.with_connector(builder)` - connectors now registered as builders
 - **Breaking: Async Build**: `AimDbBuilder::build()` is now async to support connector initialization during database construction
 - **Breaking: ConnectorBuilder Trait**: Updated `build()` signature to take `&AimDb<R>`, enabling route collection via `db.collect_inbound_routes()`
+- **Breaking: Sync Bound on Records**: Added `Sync` bound to `AnyRecord` trait and `TypedRecord<T, R>` implementation. Record types must now be `Send + Sync` (previously only `Send`). This enables safe concurrent access from multiple connector tasks in the bidirectional routing system. Types that were `Send` but not `Sync` must be wrapped in `Arc<Mutex<_>>` or `Arc<RwLock<_>>` for interior mutability.
 - **Deprecated `.link()`**: Generic `.link()` method deprecated in favor of explicit `.link_to()` and `.link_from()`
 - **Builder API**: Enhanced builder to validate buffer requirements for inbound connectors at configuration time
 
