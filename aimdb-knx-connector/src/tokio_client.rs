@@ -494,7 +494,7 @@ impl ChannelState {
 /// 2. Send CONNECT_REQUEST
 /// 3. Receive CONNECT_RESPONSE (get channel_id)
 /// 4. Loop: receive TUNNELING_REQUEST, parse, route, send ACK
-///          and process outbound commands from the command queue
+///    and process outbound commands from the command queue
 ///
 /// # Arguments
 /// * `gateway_ip` - Gateway IP address
@@ -796,19 +796,12 @@ fn parse_telegram(data: &[u8]) -> Option<(u16, Vec<u8>)> {
 
 /// Build GroupValueWrite cEMI frame (L_Data.req)
 fn build_group_write_cemi(group_addr: u16, data: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::new();
-
-    // cEMI message code: L_Data.req (0x11)
-    frame.push(0x11);
-
-    // Additional info length: 0
-    frame.push(0x00);
-
-    // Control field 1: Standard frame, no repeat, broadcast, priority low
-    frame.push(0xBC);
-
-    // Control field 2: Group address, hop count 6
-    frame.push(0xE0);
+    let mut frame = vec![
+        0x11, // cEMI message code: L_Data.req
+        0x00, // Additional info length: 0
+        0xBC, // Control field 1: Standard frame, no repeat, broadcast, priority low
+        0xE0, // Control field 2: Group address, hop count 6
+    ];
 
     // Source address: 0.0.0 (device address)
     frame.extend_from_slice(&[0x00, 0x00]);
