@@ -54,13 +54,16 @@ pub struct KnxCommand {
 
 pub enum KnxCommandKind {
     /// Send GroupValueWrite telegram
-    GroupWrite {
-        group_addr: u16,
-        data: heapless::Vec<u8, 254>,
-    },
+    GroupWrite(Box<GroupWriteData>),
     /// Graceful shutdown signal
     #[allow(dead_code)]
     Shutdown,
+}
+
+/// Data for GroupValueWrite command (boxed to reduce enum size)
+pub struct GroupWriteData {
+    pub group_addr: u16,
+    pub data: heapless::Vec<u8, 254>,
 }
 
 /// Type alias for outbound route configuration
@@ -528,7 +531,7 @@ impl KnxConnectorImpl {
         gateway_port: u16,
     ) {
         match cmd.kind {
-            KnxCommandKind::GroupWrite { group_addr, data } => {
+            KnxCommandKind::GroupWrite(data_box) => {
                 if !state.connected {
                     #[cfg(feature = "defmt")]
                     defmt::warn!("Not connected, dropping GroupWrite");
@@ -538,7 +541,7 @@ impl KnxConnectorImpl {
                 let seq = state.next_outbound_seq();
 
                 // Build frames
-                let cemi = Self::build_group_write_cemi(group_addr, &data);
+                let cemi = Self::build_group_write_cemi(data_box.group_addr, &data_box.data);
                 let request = Self::build_tunneling_request(state.channel_id, seq, &cemi);
 
                 // Send to gateway
@@ -552,11 +555,11 @@ impl KnxConnectorImpl {
                     #[cfg(feature = "defmt")]
                     defmt::debug!(
                         "Sent GroupWrite: {}/{}/{} seq={} ({} bytes)",
-                        (group_addr >> 11) & 0x1F,
-                        (group_addr >> 8) & 0x07,
-                        group_addr & 0xFF,
+                        (data_box.group_addr >> 11) & 0x1F,
+                        (data_box.group_addr >> 8) & 0x07,
+                        data_box.group_addr & 0xFF,
                         seq,
-                        data.len()
+                        data_box.data.len()
                     );
                 }
             }
@@ -924,10 +927,10 @@ impl KnxConnectorImpl {
 
                     // Send command to connection task
                     let cmd = KnxCommand {
-                        kind: KnxCommandKind::GroupWrite {
+                        kind: KnxCommandKind::GroupWrite(Box::new(GroupWriteData {
                             group_addr,
                             data: vec_data,
-                        },
+                        })),
                     };
 
                     command_channel.send(cmd).await;
@@ -974,10 +977,10 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
         }
 
         let cmd = KnxCommand {
-            kind: KnxCommandKind::GroupWrite {
+            kind: KnxCommandKind::GroupWrite(Box::new(GroupWriteData {
                 group_addr,
                 data: vec_data,
-            },
+            })),
         };
 
         let command_channel = self.command_channel;
