@@ -3,7 +3,10 @@
 
 //! KNX Connector Demo for Embassy Runtime
 //!
-//! Demonstrates KNX/IP bus monitoring on embedded hardware with AimDB.
+//! Demonstrates bidirectional KNX/IP integration on embedded hardware with AimDB:
+//! - Inbound: Monitor KNX bus telegrams → process in AimDB
+//! - Outbound: Control KNX devices from AimDB (toggle light on button press)
+//! - Real-time logging of light switches and temperature sensors
 //!
 //! ## Hardware Requirements
 //!
@@ -25,10 +28,11 @@
 //! ```
 //!
 //! 5. Trigger KNX events by:
+//!    - Pressing USER button (blue button) to toggle light on 1/0/6
 //!    - Pressing physical KNX switches
 //!    - Sending telegrams via ETS
 //!
-//! The demo will log all received KNX telegrams in real-time.
+//! The demo will log all KNX activity in real-time.
 
 extern crate alloc;
 
@@ -40,7 +44,8 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
-use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
 use embassy_stm32::{Config, bind_interrupts, eth, peripherals, rng};
@@ -85,8 +90,18 @@ struct LightState {
 /// Temperature from KNX bus (DPT 9.001)
 #[derive(Clone, Debug)]
 struct Temperature {
-    group_address: HeaplessString<16>, // "1/1/10"
+    group_address: HeaplessString<16>, // "9/1/0"
     celsius: f32,
+    #[allow(dead_code)]
+    timestamp: u32,
+}
+
+/// Light control command to send to KNX bus (DPT 1.001)
+#[derive(Clone, Debug)]
+struct LightControl {
+    #[allow(dead_code)]
+    group_address: HeaplessString<16>, // "1/0/6"
+    is_on: bool,
     #[allow(dead_code)]
     timestamp: u32,
 }
@@ -96,22 +111,38 @@ impl Temperature {
     fn from_knx_dpt9(data: &[u8]) -> Result<f32, alloc::string::String> {
         use alloc::string::ToString;
 
-        if data.len() < 2 {
-            return Err("DPT 9.001 requires 2 bytes".to_string());
-        }
-
-        let raw = i16::from_be_bytes([data[0], data[1]]);
-        let exponent = ((raw as u16) >> 11) & 0x0F;
-        let mantissa = (raw as u16) & 0x7FF;
-        let sign = if (raw as u16 & 0x8000) != 0 {
-            -1.0
+        // Determine where the actual temperature bytes are based on frame length
+        let temp_bytes = if data.len() >= 4 {
+            // Full frame: TPCI + APCI + 2 data bytes
+            // Temperature is in bytes [2] and [3]
+            [data[2], data[3]]
+        } else if data.len() == 3 {
+            // Short frame with control byte: TPCI/APCI + 2 data bytes
+            // Temperature is in bytes [1] and [2]
+            [data[1], data[2]]
+        } else if data.len() == 2 {
+            // Just the temperature bytes (no control bytes)
+            [data[0], data[1]]
         } else {
-            1.0
+            return Err("DPT 9.001 requires at least 2 bytes".to_string());
         };
 
-        // Formula: value = sign * mantissa * 2^(exponent - 12) * 0.01
-        let value =
-            sign * (mantissa as f32) * micromath::F32Ext::powi(2.0, exponent as i32 - 12) * 0.01;
+        let raw = u16::from_be_bytes(temp_bytes);
+
+        // DPT 9.001 format:
+        // Bit 15: Sign (0=positive, 1=negative)
+        // Bits 14-11: Exponent (4 bits, unsigned)
+        // Bits 10-0: Mantissa (11 bits, unsigned)
+        // Formula: value = (0.01 * mantissa) * 2^exponent * (sign ? -1 : 1)
+        let sign_bit = (raw >> 15) & 0x01;
+        let exponent = ((raw >> 11) & 0x0F) as i32;
+        let mantissa = (raw & 0x07FF) as i16;
+
+        // Apply sign to mantissa
+        let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
+
+        // Calculate temperature: (0.01 * mantissa) * 2^exponent
+        let value = (0.01 * signed_mantissa as f32) * micromath::F32Ext::powi(2.0, exponent);
 
         Ok(value)
     }
@@ -160,6 +191,77 @@ async fn temperature_monitor(
             temp.group_address.as_str(),
             temp.celsius
         ));
+    }
+}
+
+/// Button handler that toggles light on button press
+/// Uses the blue USER button (PC13) on STM32 Nucleo boards
+async fn button_handler(
+    ctx: RuntimeContext<EmbassyAdapter>,
+    producer: aimdb_core::Producer<LightControl, EmbassyAdapter>,
+    mut button: ExtiInput<'static>,
+) {
+    let log = ctx.log();
+
+    log.info("🔘 Button handler started - press USER button to toggle light\n");
+    log.info("   (This sends GroupValueWrite to KNX bus on 1/0/6)\n");
+
+    // Check initial button state
+    let initial_state = if button.is_high() {
+        "HIGH (not pressed)"
+    } else {
+        "LOW (pressed)"
+    };
+    log.info(&alloc::format!(
+        "   Initial button state: {}\n",
+        initial_state
+    ));
+
+    let mut light_on = false;
+
+    loop {
+        log.info("⏳ Waiting for button press...\n");
+
+        // Wait for button press (button is active low)
+        button.wait_for_falling_edge().await;
+
+        log.info("🔽 Button press detected!\n");
+
+        // Debounce delay
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
+
+        // Ignore if button is no longer pressed (debounce)
+        if button.is_high() {
+            continue;
+        }
+
+        // Toggle light state
+        light_on = !light_on;
+
+        let mut group_address = HeaplessString::<16>::new();
+        let _ = group_address.push_str("1/0/6");
+
+        let state = LightControl {
+            group_address,
+            is_on: light_on,
+            timestamp: 0,
+        };
+
+        match producer.produce(state).await {
+            Ok(_) => {
+                log.info(&alloc::format!(
+                    "✅ Published to KNX: 1/0/6 = {} (sent to bus)",
+                    if light_on { "ON ✨" } else { "OFF" }
+                ));
+            }
+            Err(e) => {
+                log.error(&alloc::format!("❌ Failed to publish: {:?}", e));
+            }
+        }
+
+        // Wait for button release
+        button.wait_for_rising_edge().await;
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
     }
 }
 
@@ -221,8 +323,11 @@ async fn main(spawner: Spawner) {
 
     info!("✅ MCU initialized");
 
-    // Setup LED for visual feedback
+    // Setup LED for visual feedback (green LED on Nucleo)
     let mut led = Output::new(p.PB0, Level::Low, Speed::Low);
+
+    // Setup USER button (blue button PC13 on Nucleo) with pull-up and interrupt support
+    let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Down);
 
     // Generate random seed for network stack
     let mut rng = Rng::new(p.RNG, Irqs);
@@ -333,12 +438,21 @@ async fn main(spawner: Spawner) {
     builder.configure::<Temperature>(|reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SingleLatest)
             .tap(temperature_monitor)
-            // Subscribe from KNX temperature sensor (group address 1/1/10)
-            .link_from("knx://1/1/10")
+            // Subscribe from KNX temperature sensor (group address 9/1/0)
+            .link_from("knx://9/1/0")
             .with_deserializer(|data: &[u8]| {
+                // Check if we have enough data for DPT 9.001 (need at least 2 temperature bytes)
+                // Full NPDU: [TPCI, APCI, data1, data2] = 4 bytes minimum
+                if data.len() < 4 {
+                    return Err(alloc::format!(
+                        "Temperature data too short: {} bytes",
+                        data.len()
+                    ));
+                }
+
                 let celsius = Temperature::from_knx_dpt9(data)?;
                 let mut group_address = HeaplessString::<16>::new();
-                let _ = group_address.push_str("1/1/10");
+                let _ = group_address.push_str("9/1/0");
 
                 Ok(Temperature {
                     group_address,
@@ -349,18 +463,36 @@ async fn main(spawner: Spawner) {
             .finish();
     });
 
+    // Configure LightControl record (outbound: AimDB → KNX)
+    // Configure outbound light control with button handler as data source
+    builder.configure::<LightControl>(|reg| {
+        reg.buffer_sized::<8, 2>(EmbassyBufferType::SingleLatest)
+            .source_with_context(button, button_handler)
+            // Publish to KNX group address 1/0/6 (light control)
+            .link_to("knx://1/0/6")
+            .with_serializer(|state: &LightControl| {
+                // DPT 1.001 - boolean (1 byte)
+                Ok(alloc::vec![if state.is_on { 0x01 } else { 0x00 }])
+            })
+            .finish();
+    });
+
     info!("✅ Database configured with KNX bus monitor:");
     info!("   INBOUND (KNX → AimDB):");
     info!("     - knx://1/0/7 (light monitoring, DPT 1.001)");
-    info!("     - knx://1/1/10 (temperature monitoring, DPT 9.001)");
+    info!("     - knx://9/1/0 (temperature monitoring, DPT 9.001)");
+    info!("   OUTBOUND (AimDB → KNX):");
+    info!("     - knx://1/0/6 (light control, DPT 1.001)");
     info!("   Gateway: {}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);
     info!("");
     info!("💡 The demo will:");
     info!("   1. Connect to the KNX/IP gateway");
     info!("   2. Monitor KNX bus for telegrams on configured addresses");
-    info!("   3. Log all received KNX telegrams in real-time");
+    info!("   3. Control light on 1/0/6 when USER button is pressed");
+    info!("   4. Log all KNX activity in real-time");
     info!("");
     info!("   Trigger events by:");
+    info!("   - Pressing USER button (blue) to toggle light (1/0/6)");
     info!("   - Pressing physical KNX switches");
     info!("   - Sending telegrams via ETS");
     info!("");
@@ -370,9 +502,13 @@ async fn main(spawner: Spawner) {
     let _db = DB_CELL.init(builder.build().await.expect("Failed to build database"));
 
     info!("✅ Database running with background services");
+    info!("   - light_monitor (consumes LightState from KNX)");
+    info!("   - temperature_monitor (consumes Temperature from KNX)");
+    info!("   - button_handler (produces LightControl to KNX)");
+    info!("   - KNX connector (handles bus communication)\n");
 
     // Main loop - blink LED to show system is alive
-    // All services (producer, consumer, MQTT) run in the background
+    // All services run in the background
     loop {
         led.set_high();
         Timer::after(Duration::from_millis(100)).await;

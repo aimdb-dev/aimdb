@@ -120,6 +120,7 @@ dependencies = [
  "async-stream",
  "defmt 1.0.1",
  "embassy-executor",
+ "embassy-futures",
  "embassy-net",
  "embassy-sync",
  "embassy-time",

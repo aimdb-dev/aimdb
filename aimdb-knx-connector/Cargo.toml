@@ -22,6 +22,7 @@ embassy-runtime = [
     "embassy-time",
     "embassy-sync",
     "embassy-net",
+    "embassy-futures",
     "heapless",
     "static_cell",
 ]
@@ -64,6 +65,7 @@ futures-core = { version = "0.3", default-features = false }
 embassy-executor = { version = "0.9.1", path = "../_external/embassy/embassy-executor", optional = true }
 embassy-time = { version = "0.5.0", path = "../_external/embassy/embassy-time", optional = true }
 embassy-sync = { version = "0.7.2", path = "../_external/embassy/embassy-sync", optional = true }
+embassy-futures = { version = "0.1", path = "../_external/embassy/embassy-futures", optional = true }
 embassy-net = { version = "0.7.1", path = "../_external/embassy/embassy-net", optional = true, features = [
     "tcp",
     "udp",
