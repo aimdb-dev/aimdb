@@ -195,6 +195,7 @@ impl<
         // Clone the Arc for the reader
         EmbassyBufferReader {
             buffer: Arc::clone(&self.inner),
+            watch_receiver: None, // Will be initialized on first recv() for Watch buffers
         }
     }
 }
@@ -264,8 +265,8 @@ impl<
 
 /// Reader for Embassy buffers
 ///
-/// Holds an Arc reference to the buffer. Each recv() call creates a temporary
-/// subscription to read one value.
+/// Holds persistent subscription state for each buffer type.
+/// For Watch buffers, stores a persistent Receiver to track which value has been seen.
 pub struct EmbassyBufferReader<
     T: Clone + Send + 'static,
     const CAP: usize,
@@ -274,6 +275,9 @@ pub struct EmbassyBufferReader<
     const WATCH_N: usize,
 > {
     buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
+    /// Persistent Watch receiver. The 'static lifetime is safe because the Arc keeps the Watch alive.
+    watch_receiver:
+        Option<embassy_sync::watch::Receiver<'static, CriticalSectionRawMutex, T, WATCH_N>>,
 }
 
 impl<
@@ -289,8 +293,6 @@ impl<
     ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<T, DbError>> + Send + '_>>
     {
         Box::pin(async move {
-            // Create a temporary subscription for this recv() call
-            // This works because the Arc keeps the buffer alive
             match &*self.buffer {
                 EmbassyBufferInner::SpmcRing(channel) => match channel.subscriber() {
                     Ok(mut sub) => match sub.next_message().await {
@@ -302,10 +304,32 @@ impl<
                     },
                     Err(_) => Err(DbError::BufferClosed { _buffer_name: () }),
                 },
-                EmbassyBufferInner::Watch(watch) => match watch.receiver() {
-                    Some(mut rx) => Ok(rx.changed().await),
-                    None => Err(DbError::BufferClosed { _buffer_name: () }),
-                },
+                EmbassyBufferInner::Watch(watch) => {
+                    // Watch requires a persistent receiver to track seen values.
+                    // Creating a new receiver each time causes infinite loops (always returns current value).
+                    if self.watch_receiver.is_none() {
+                        // SAFETY: The Arc in self.buffer keeps the Watch alive for this reader's lifetime.
+                        // We extend the lifetime to 'static to store the receiver, which is safe because
+                        // the receiver is just (&Watch, u64 counter) and will be dropped with the reader.
+                        let watch_static: &'static embassy_sync::watch::Watch<
+                            CriticalSectionRawMutex,
+                            T,
+                            WATCH_N,
+                        > = unsafe { &*(watch as *const _) };
+
+                        self.watch_receiver = watch_static.receiver();
+                        if self.watch_receiver.is_none() {
+                            return Err(DbError::BufferClosed { _buffer_name: () });
+                        }
+                    }
+
+                    // Use the persistent receiver to detect changes
+                    if let Some(ref mut rx) = self.watch_receiver {
+                        Ok(rx.changed().await)
+                    } else {
+                        Err(DbError::BufferClosed { _buffer_name: () })
+                    }
+                }
                 EmbassyBufferInner::Mailbox(channel) => {
                     let rx = channel.receiver();
                     Ok(rx.receive().await)
