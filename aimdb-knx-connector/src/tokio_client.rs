@@ -15,6 +15,23 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
+
+/// Command sent from outbound publishers to connection task
+#[derive(Debug)]
+enum KnxCommand {
+    /// Send a GroupValueWrite telegram
+    GroupWrite {
+        group_addr: u16,
+        data: Vec<u8>,
+        /// Optional response channel for error reporting
+        response: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    },
+
+    /// Graceful shutdown signal
+    #[allow(dead_code)]
+    Shutdown,
+}
 
 /// Type alias for outbound route configuration
 /// (resource_id, consumer, serializer, config_params)
@@ -142,9 +159,13 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
 ///
 /// This is the actual connector created after collecting routes from the database.
 pub struct KnxConnectorImpl {
+    #[allow(dead_code)]
     gateway_ip: String,
+    #[allow(dead_code)]
     gateway_port: u16,
     router: Arc<Router>,
+    /// Command sender for outbound publishing
+    command_tx: mpsc::Sender<KnxCommand>,
 }
 
 impl KnxConnectorImpl {
@@ -182,12 +203,14 @@ impl KnxConnectorImpl {
         let router_arc = Arc::new(router);
 
         // Spawn background connection task with reconnection
-        spawn_connection_task(gateway_ip.clone(), gateway_port, router_arc.clone());
+        let command_tx =
+            spawn_connection_task(gateway_ip.clone(), gateway_port, router_arc.clone());
 
         Ok(Self {
             gateway_ip,
             gateway_port,
             router: router_arc,
+            command_tx,
         })
     }
 
@@ -211,7 +234,7 @@ impl KnxConnectorImpl {
     ///
     /// Called automatically during build() to start publishing data from AimDB to KNX.
     /// Each route spawns an independent task that subscribes to the record
-    /// and publishes to the KNX gateway.
+    /// and publishes to the KNX gateway via the command queue.
     fn spawn_outbound_publishers<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
@@ -223,8 +246,7 @@ impl KnxConnectorImpl {
         let runtime = db.runtime();
 
         for (group_addr_str, consumer, serializer, _config) in routes {
-            let gateway_ip = self.gateway_ip.clone();
-            let gateway_port = self.gateway_port;
+            let command_tx = self.command_tx.clone();
             let group_addr_clone = group_addr_str.clone();
 
             runtime.spawn(async move {
@@ -234,9 +256,8 @@ impl KnxConnectorImpl {
                     Err(_e) => {
                         #[cfg(feature = "tracing")]
                         tracing::error!(
-                            "Invalid group address for outbound: '{}': {:?}",
-                            group_addr_clone,
-                            _e
+                            "Invalid group address for outbound: '{}'",
+                            group_addr_clone
                         );
                         return;
                     }
@@ -247,20 +268,13 @@ impl KnxConnectorImpl {
                     Ok(r) => r,
                     Err(_e) => {
                         #[cfg(feature = "tracing")]
-                        tracing::error!(
-                            "Failed to subscribe for outbound group address '{}': {:?}",
-                            group_addr_clone,
-                            _e
-                        );
+                        tracing::error!("Failed to subscribe for outbound: '{}'", group_addr_clone);
                         return;
                     }
                 };
 
                 #[cfg(feature = "tracing")]
-                tracing::info!(
-                    "KNX outbound publisher started for group address: {}",
-                    group_addr_clone
-                );
+                tracing::info!("KNX outbound publisher started for: {}", group_addr_clone);
 
                 while let Ok(value_any) = reader.recv_any().await {
                     // Serialize the type-erased value
@@ -277,27 +291,28 @@ impl KnxConnectorImpl {
                         }
                     };
 
-                    // Send GroupValueWrite
-                    if let Err(_e) =
-                        send_group_write(&gateway_ip, gateway_port, group_addr, &bytes).await
-                    {
+                    // Send command to connection task
+                    let cmd = KnxCommand::GroupWrite {
+                        group_addr,
+                        data: bytes,
+                        response: None, // Fire-and-forget
+                    };
+
+                    if let Err(_e) = command_tx.send(cmd).await {
                         #[cfg(feature = "tracing")]
                         tracing::error!(
-                            "Failed to publish to KNX group address '{}': {:?}",
-                            group_addr_clone,
-                            _e
+                            "Failed to send command for group address '{}': channel closed",
+                            group_addr_clone
                         );
-                    } else {
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!("Published to KNX group address: {}", group_addr_clone);
+                        break; // Connection task died, stop publishing
                     }
+
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!("Published to KNX: {}", group_addr_clone);
                 }
 
                 #[cfg(feature = "tracing")]
-                tracing::info!(
-                    "KNX outbound publisher stopped for group address: {}",
-                    group_addr_clone
-                );
+                tracing::info!("KNX outbound publisher stopped for: {}", group_addr_clone);
             })?;
         }
 
@@ -319,17 +334,32 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
         // Destination is the group address (from ConnectorUrl::resource_id())
         let group_addr_str = destination.to_string();
         let payload_owned = payload.to_vec();
-        let gateway_ip = self.gateway_ip.clone();
-        let gateway_port = self.gateway_port;
+        let command_tx = self.command_tx.clone();
 
         Box::pin(async move {
             // Parse group address
             let group_addr = parse_group_address(&group_addr_str)
                 .map_err(|_| PublishError::InvalidDestination)?;
 
-            // Send GroupValueWrite
-            send_group_write(&gateway_ip, gateway_port, group_addr, &payload_owned)
+            // Create response channel for error reporting
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+            // Send command to connection task
+            let cmd = KnxCommand::GroupWrite {
+                group_addr,
+                data: payload_owned,
+                response: Some(response_tx),
+            };
+
+            command_tx
+                .send(cmd)
                 .await
+                .map_err(|_| PublishError::ConnectionFailed)?;
+
+            // Wait for response from connection task
+            response_rx
+                .await
+                .map_err(|_| PublishError::ConnectionFailed)?
                 .map_err(|_e| {
                     #[cfg(feature = "tracing")]
                     tracing::error!("KNX publish failed: {}", _e);
@@ -350,13 +380,23 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
 /// - KNXnet/IP connection establishment
 /// - Telegram reception and parsing
 /// - Router-based dispatch to producers
+/// - Outbound command processing
 /// - Automatic reconnection on failure
 ///
 /// # Arguments
 /// * `gateway_ip` - Gateway IP address
 /// * `gateway_port` - Gateway port (typically 3671)
 /// * `router` - Router for dispatching telegrams to producers
-fn spawn_connection_task(gateway_ip: String, gateway_port: u16, router: Arc<Router>) {
+///
+/// # Returns
+/// * Command sender for publishing outbound telegrams
+fn spawn_connection_task(
+    gateway_ip: String,
+    gateway_port: u16,
+    router: Arc<Router>,
+) -> mpsc::Sender<KnxCommand> {
+    let (command_tx, mut command_rx) = mpsc::channel(32); // Queue size: 32
+
     tokio::spawn(async move {
         #[cfg(feature = "tracing")]
         tracing::info!(
@@ -366,7 +406,9 @@ fn spawn_connection_task(gateway_ip: String, gateway_port: u16, router: Arc<Rout
         );
 
         loop {
-            match connect_and_listen(&gateway_ip, gateway_port, router.clone()).await {
+            match connect_and_listen(&gateway_ip, gateway_port, router.clone(), &mut command_rx)
+                .await
+            {
                 Ok(_) => {
                     #[cfg(feature = "tracing")]
                     tracing::info!("KNX connection closed gracefully");
@@ -381,6 +423,68 @@ fn spawn_connection_task(gateway_ip: String, gateway_port: u16, router: Arc<Rout
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
+
+    command_tx
+}
+
+/// Build CONNECTIONSTATE_REQUEST for heartbeat
+fn build_connectionstate_request(channel_id: u8) -> Vec<u8> {
+    // Get local address (0.0.0.0:0 for "any")
+    let local_ip = [0u8, 0u8, 0u8, 0u8];
+    let local_port = 0u16;
+
+    vec![
+        0x06, // Header length
+        0x10, // Protocol version
+        0x02,
+        0x07, // CONNECTIONSTATE_REQUEST
+        0x00,
+        0x10,       // Total length (16 bytes)
+        channel_id, // Channel ID
+        0x00,       // Reserved
+        // Control endpoint HPAI (8 bytes)
+        0x08, // Structure length
+        0x01, // UDP protocol
+        local_ip[0],
+        local_ip[1],
+        local_ip[2],
+        local_ip[3], // IP
+        (local_port >> 8) as u8,
+        local_port as u8, // Port
+    ]
+}
+
+/// Connection state shared within the connection task
+struct ChannelState {
+    /// KNXnet/IP channel ID from CONNECT_RESPONSE
+    channel_id: u8,
+
+    /// Last received sequence counter (inbound telegrams)
+    inbound_seq: u8,
+
+    /// Next sequence counter to use for outbound telegrams
+    outbound_seq: u8,
+
+    /// Connection status
+    #[allow(dead_code)]
+    connected: bool,
+}
+
+impl ChannelState {
+    fn new(channel_id: u8) -> Self {
+        Self {
+            channel_id,
+            inbound_seq: 0,
+            outbound_seq: 0,
+            connected: true,
+        }
+    }
+
+    fn next_outbound_seq(&mut self) -> u8 {
+        let seq = self.outbound_seq;
+        self.outbound_seq = self.outbound_seq.wrapping_add(1);
+        seq
+    }
 }
 
 /// Connect to KNX gateway and listen for telegrams
@@ -390,15 +494,18 @@ fn spawn_connection_task(gateway_ip: String, gateway_port: u16, router: Arc<Rout
 /// 2. Send CONNECT_REQUEST
 /// 3. Receive CONNECT_RESPONSE (get channel_id)
 /// 4. Loop: receive TUNNELING_REQUEST, parse, route, send ACK
+///          and process outbound commands from the command queue
 ///
 /// # Arguments
 /// * `gateway_ip` - Gateway IP address
 /// * `gateway_port` - Gateway port
 /// * `router` - Router for dispatching messages
+/// * `command_rx` - Command receiver for outbound publishing
 async fn connect_and_listen(
     gateway_ip: &str,
     gateway_port: u16,
     router: Arc<Router>,
+    command_rx: &mut mpsc::Receiver<KnxCommand>,
 ) -> Result<(), String> {
     // 1. Create UDP socket
     let socket = UdpSocket::bind("0.0.0.0:0")
@@ -442,45 +549,95 @@ async fn connect_and_listen(
     #[cfg(feature = "tracing")]
     tracing::info!("✅ KNX connected, channel_id: {}", channel_id);
 
-    // 4. Listen loop
-    let mut seq_counter: u8 = 0;
+    // 4. Listen loop with command queue
+    let mut channel_state = ChannelState::new(channel_id);
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(55));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        let result =
-            tokio::time::timeout(Duration::from_secs(30), socket.recv_from(&mut buf)).await;
+        tokio::select! {
+            // Inbound: Receive telegrams from gateway
+            result = socket.recv_from(&mut buf) => {
+                match result {
+                    Ok((len, _)) => {
+                        // Parse telegram
+                        if let Some((group_addr, data)) = parse_telegram(&buf[..len]) {
+                            let resource_id = format_group_address(group_addr);
 
-        match result {
-            Ok(Ok((len, _))) => {
-                // Parse telegram
-                if let Some((group_addr, data)) = parse_telegram(&buf[..len]) {
-                    let resource_id = format_group_address(group_addr);
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!("KNX telegram: {} ({} bytes)", resource_id, data.len());
 
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("KNX telegram: {} ({} bytes)", resource_id, data.len());
+                            // Dispatch via router
+                            if let Err(_e) = router.route(&resource_id, &data).await {
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!("Router dispatch failed for {}: {:?}", resource_id, _e);
+                            }
+                        }
 
-                    // Dispatch via router
-                    if let Err(_e) = router.route(&resource_id, &data).await {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!("Router dispatch failed for {}: {:?}", resource_id, _e);
+                        // Send ACK if TUNNELING_REQUEST
+                        if is_tunneling_request(&buf[..len]) {
+                            // Extract received sequence from telegram
+                            let recv_seq = if len > 8 { buf[8] } else { 0 };
+                            channel_state.inbound_seq = recv_seq;
+
+                            let ack = build_tunneling_ack(channel_state.channel_id, recv_seq);
+                            let _ = socket.send_to(&ack, gateway_addr).await;
+
+                            #[cfg(feature = "tracing")]
+                            tracing::trace!("Sent TUNNELING_ACK with seq={}", recv_seq);
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("Socket error: {}", e));
                     }
                 }
+            }
 
-                // Send ACK if TUNNELING_REQUEST
-                if is_tunneling_request(&buf[..len]) {
-                    seq_counter = seq_counter.wrapping_add(1);
-                    let ack = build_tunneling_ack(channel_id, seq_counter);
-                    let _ = socket.send_to(&ack, gateway_addr).await;
+            // Outbound: Process commands from queue
+            Some(cmd) = command_rx.recv() => {
+                match cmd {
+                    KnxCommand::GroupWrite { group_addr, data, response } => {
+                        let result = send_group_write_internal(
+                            &socket,
+                            gateway_addr,
+                            &mut channel_state,
+                            group_addr,
+                            &data,
+                        ).await;
+
+                        // Report result if response channel provided
+                        if let Some(tx) = response {
+                            let _ = tx.send(result);
+                        } else if let Err(_e) = result {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!("GroupWrite failed: {}", _e);
+                        }
+                    }
+                    #[allow(dead_code)]
+                    KnxCommand::Shutdown => {
+                        #[cfg(feature = "tracing")]
+                        tracing::info!("Shutdown requested");
+                        break;
+                    }
                 }
             }
-            Ok(Err(e)) => {
-                return Err(format!("UDP error: {}", e));
-            }
-            Err(_) => {
-                // Timeout - continue listening
-                continue;
+
+            // Heartbeat: Send CONNECTIONSTATE_REQUEST every 55s
+            _ = heartbeat_interval.tick() => {
+                #[cfg(feature = "tracing")]
+                tracing::trace!("Sending heartbeat (CONNECTIONSTATE_REQUEST)");
+
+                let heartbeat = build_connectionstate_request(channel_state.channel_id);
+                if let Err(e) = socket.send_to(&heartbeat, gateway_addr).await {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("Failed to send heartbeat: {}", e);
+                    return Err(format!("Heartbeat send failed: {}", e));
+                }
             }
         }
     }
+
+    Ok(())
 }
 
 /// Build KNXnet/IP CONNECT_REQUEST frame
@@ -611,8 +768,9 @@ fn parse_telegram(data: &[u8]) -> Option<(u16, Vec<u8>)> {
     // Destination address (group)
     let dest_raw = u16::from_be_bytes([data[addr_start + 4], data[addr_start + 5]]);
 
-    // NPDU length
-    let npdu_len = data.get(addr_start + 6).copied()? as usize;
+    // NPDU length (this is the length field value, actual bytes = length + 1)
+    let npdu_len_field = data.get(addr_start + 6).copied()? as usize;
+    let npdu_len = npdu_len_field + 1; // Actual byte count
 
     if npdu_len == 0 {
         return None;
@@ -629,29 +787,108 @@ fn parse_telegram(data: &[u8]) -> Option<(u16, Vec<u8>)> {
         data[tpci_apci_pos..tpci_apci_pos + npdu_len].to_vec()
     } else {
         // 6-bit data in APCI (short frame)
-        vec![data.get(tpci_apci_pos + 1).copied()? & 0x3F]
+        let short_val = data.get(tpci_apci_pos + 1).copied()? & 0x3F;
+        vec![short_val]
     };
 
     Some((dest_raw, payload))
 }
 
-/// Send GroupValueWrite telegram to KNX gateway
-///
-/// Note: This is a simplified implementation that creates a new connection
-/// for each write. A production implementation should reuse the connection
-/// from the listen task.
-async fn send_group_write(
-    _gateway_ip: &str,
-    _gateway_port: u16,
-    _group_addr: u16,
-    _data: &[u8],
-) -> Result<(), String> {
-    // TODO: Implement GroupValueWrite using knx-pico frame builders
-    // For now, return error to indicate it's not implemented
-    #[cfg(feature = "tracing")]
-    tracing::warn!("GroupValueWrite not fully implemented yet");
+/// Build GroupValueWrite cEMI frame (L_Data.req)
+fn build_group_write_cemi(group_addr: u16, data: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::new();
 
-    Err("GroupValueWrite not implemented".to_string())
+    // cEMI message code: L_Data.req (0x11)
+    frame.push(0x11);
+
+    // Additional info length: 0
+    frame.push(0x00);
+
+    // Control field 1: Standard frame, no repeat, broadcast, priority low
+    frame.push(0xBC);
+
+    // Control field 2: Group address, hop count 6
+    frame.push(0xE0);
+
+    // Source address: 0.0.0 (device address)
+    frame.extend_from_slice(&[0x00, 0x00]);
+
+    // Destination address (group address)
+    frame.extend_from_slice(&group_addr.to_be_bytes());
+
+    // Check if this is a short telegram (1 byte, value < 64)
+    if data.len() == 1 && data[0] < 64 {
+        // Short telegram: encode data in APCI lower 6 bits
+        frame.push(0x01); // NPDU length = 1 (TPCI/APCI only)
+        frame.push(0x00); // TPCI
+        frame.push(0x80 | (data[0] & 0x3F)); // APCI: GroupValueWrite + 6-bit data
+    } else {
+        // Long telegram: APCI + separate data bytes
+        let npdu_len = 2 + data.len(); // TPCI + APCI + data
+        frame.push(npdu_len as u8);
+        frame.push(0x00); // TPCI
+        frame.push(0x80); // APCI: GroupValueWrite
+        frame.extend_from_slice(data); // Payload data
+    }
+
+    frame
+}
+
+/// Build TUNNELING_REQUEST containing cEMI frame
+fn build_tunneling_request(channel_id: u8, seq: u8, cemi: &[u8]) -> Vec<u8> {
+    let total_len = 10 + cemi.len();
+
+    let mut frame = vec![
+        0x06,
+        0x10, // Header
+        0x04,
+        0x20,                   // TUNNELING_REQUEST
+        (total_len >> 8) as u8, // Total length high
+        total_len as u8,        // Total length low
+        0x04,                   // Connection header length
+        channel_id,             // Channel ID
+        seq,                    // Sequence counter
+        0x00,                   // Reserved
+    ];
+
+    frame.extend_from_slice(cemi);
+    frame
+}
+
+/// Send GroupValueWrite telegram (internal, called from connection task)
+async fn send_group_write_internal(
+    socket: &UdpSocket,
+    gateway_addr: SocketAddr,
+    channel_state: &mut ChannelState,
+    group_addr: u16,
+    data: &[u8],
+) -> Result<(), String> {
+    // Build cEMI frame
+    let cemi = build_group_write_cemi(group_addr, data);
+
+    // Get next sequence number
+    let seq = channel_state.next_outbound_seq();
+
+    // Build TUNNELING_REQUEST
+    let telegram = build_tunneling_request(channel_state.channel_id, seq, &cemi);
+
+    // Send via UDP
+    socket
+        .send_to(&telegram, gateway_addr)
+        .await
+        .map_err(|e| format!("Send failed: {}", e))?;
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Sent GroupWrite: {} seq={} ({} bytes)",
+        format_group_address(group_addr),
+        seq,
+        data.len()
+    );
+
+    // TODO Phase 2: Wait for ACK with timeout
+
+    Ok(())
 }
 
 /// Parse group address string "main/middle/sub" to raw u16

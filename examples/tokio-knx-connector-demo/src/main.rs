@@ -1,7 +1,8 @@
-//! KNX Connector Demo - Bus Monitor
+//! KNX Connector Demo - Bidirectional Bus Monitor
 //!
-//! Demonstrates KNX bus monitoring with AimDB:
+//! Demonstrates bidirectional KNX integration with AimDB:
 //! - Inbound: Monitor KNX bus telegrams → process in AimDB
+//! - Outbound: Control KNX devices from AimDB (toggle light on key press)
 //! - Real-time logging of light switches and temperature sensors
 //!
 //! ## Running
@@ -19,14 +20,16 @@
 //!
 //! Update the gateway URL and group addresses in main() to match your setup:
 //! - Gateway: "knx://192.168.1.19:3671"
-//! - Light switch: "knx://1/0/7"
-//! - Temperature sensor: "knx://1/1/10"
+//! - Light switch (monitor): "knx://1/0/7"
+//! - Light control (publish): "knx://1/0/6"
+//! - Temperature sensor: "knx://9/1/0"
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::{AimDbBuilder, DbResult, RuntimeContext};
+use aimdb_core::{AimDbBuilder, DbResult, Producer, RuntimeContext};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LightState {
@@ -40,6 +43,63 @@ struct Temperature {
     group_address: String,
     celsius: f32,
     timestamp: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LightControl {
+    group_address: String,
+    is_on: bool,
+    timestamp: u64,
+}
+
+/// Input handler that toggles light on key press
+async fn input_handler(
+    _ctx: RuntimeContext<TokioAdapter>,
+    producer: Producer<LightControl, TokioAdapter>,
+) {
+    println!("\n⌨️  Input handler started. Press ENTER to toggle light on 1/0/6");
+    println!("   (This sends GroupValueWrite to the KNX bus)\n");
+
+    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin);
+    let mut line = String::new();
+    let mut light_on = false;
+
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                // Toggle light state
+                light_on = !light_on;
+
+                let state = LightControl {
+                    group_address: "1/0/6".to_string(),
+                    is_on: light_on,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                };
+
+                match producer.produce(state).await {
+                    Ok(_) => {
+                        println!(
+                            "✅ Published to KNX: 1/0/6 = {} (sent to bus)",
+                            if light_on { "ON ✨" } else { "OFF" }
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to publish: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error reading input: {}", e);
+                break;
+            }
+        }
+    }
 }
 
 /// Consumer that logs incoming KNX light telegrams
@@ -125,27 +185,47 @@ async fn main() -> DbResult<()> {
     builder.configure::<Temperature>(|reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor)
-            // Subscribe from KNX temperature sensor (group address 1/1/10)
-            .link_from("knx://1/1/10")
+            // Subscribe from KNX temperature sensor (group address 9/1/0)
+            .link_from("knx://9/1/0")
             .with_deserializer(|data: &[u8]| {
                 // DPT 9.001 - 2-byte float temperature
-                // Simple parsing: combine bytes as i16, then convert to celsius
-                let celsius = if data.len() >= 2 {
-                    let raw = i16::from_be_bytes([data[0], data[1]]);
-                    let exponent = ((raw as u16) >> 11) & 0x0F;
-                    let mantissa = (raw as u16) & 0x7FF;
-                    let sign = if (raw as u16 & 0x8000) != 0 {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                    sign * (mantissa as f32) * 2f32.powi(exponent as i32 - 12) * 0.01
+                let celsius = if data.len() >= 4 {
+                    // Full frame: TPCI + APCI + 2 data bytes
+                    let temp_bytes = [data[2], data[3]];
+                    let raw = u16::from_be_bytes(temp_bytes);
+
+                    // DPT 9.001 format:
+                    // Bit 15: Sign (0=positive, 1=negative)
+                    // Bits 14-11: Exponent (4 bits, unsigned)
+                    // Bits 10-0: Mantissa (11 bits, unsigned)
+                    // Formula: value = (0.01 * mantissa) * 2^exponent * (sign ? -1 : 1)
+                    let sign_bit = (raw >> 15) & 0x01;
+                    let exponent = ((raw >> 11) & 0x0F) as i32;
+                    let mantissa = (raw & 0x07FF) as i16;
+
+                    // Apply sign
+                    let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
+
+                    // Calculate temperature
+                    (0.01 * signed_mantissa as f32) * 2f32.powi(exponent)
+                } else if data.len() == 3 {
+                    // Short frame: TPCI + APCI with 6-bit data
+                    // DPT 9.001 requires 2 data bytes, this telegram is malformed
+                    0.0
+                } else if data.len() == 2 {
+                    // Just the temperature bytes (no TPCI/APCI)
+                    let raw = u16::from_be_bytes([data[0], data[1]]);
+                    let sign_bit = (raw >> 15) & 0x01;
+                    let exponent = ((raw >> 11) & 0x0F) as i32;
+                    let mantissa = (raw & 0x07FF) as i16;
+                    let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
+                    (0.01 * signed_mantissa as f32) * 2f32.powi(exponent)
                 } else {
                     0.0
                 };
 
                 Ok(Temperature {
-                    group_address: "1/1/10".to_string(),
+                    group_address: "9/1/0".to_string(),
                     celsius,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -156,16 +236,33 @@ async fn main() -> DbResult<()> {
             .finish();
     });
 
-    println!("✅ Database configured with KNX bus monitor:");
+    // Configure LightControl record (outbound - control KNX device)
+    builder.configure::<LightControl>(|reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .source(input_handler)
+            // Publish to KNX group address 1/0/6 (outbound)
+            .link_to("knx://1/0/6")
+            .with_serializer(|state: &LightControl| {
+                // DPT 1.001 - boolean (1 byte)
+                Ok(vec![if state.is_on { 0x01 } else { 0x00 }])
+            })
+            .finish();
+    });
+
+    println!("✅ Database configured with bidirectional KNX integration:");
     println!("   INBOUND (KNX → AimDB):");
     println!("     - knx://1/0/7 (light monitoring, DPT 1.001)");
-    println!("     - knx://1/1/10 (temperature monitoring, DPT 9.001)");
+    println!("     - knx://9/1/0 (temperature monitoring, DPT 9.001)");
+    println!("   OUTBOUND (AimDB → KNX):");
+    println!("     - knx://1/0/6 (light control, DPT 1.001)");
     println!("   Gateway: 192.168.1.19:3671");
     println!("\n💡 The demo will:");
     println!("   1. Connect to the KNX/IP gateway");
-    println!("   2. Monitor KNX bus for telegrams on configured addresses");
-    println!("   3. Log all received KNX telegrams in real-time");
+    println!("   2. Monitor KNX bus for telegrams on 1/0/7 and 9/1/0");
+    println!("   3. Control light on 1/0/6 when you press ENTER");
+    println!("   4. Log all KNX activity in real-time");
     println!("\n   Trigger events by:");
+    println!("   - Pressing ENTER to toggle light (1/0/6)");
     println!("   - Pressing physical KNX switches");
     println!("   - Sending telegrams via ETS");
     println!("\n   Press Ctrl+C to stop.\n");
