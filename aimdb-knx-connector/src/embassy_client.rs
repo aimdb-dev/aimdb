@@ -38,6 +38,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -53,9 +54,6 @@ type OutboundRoute = (
     aimdb_core::connector::SerializerFn,
     Vec<(String, String)>,
 );
-
-#[cfg(feature = "defmt")]
-use defmt::{debug, error, info, trace, warn};
 
 #[cfg(all(not(feature = "defmt"), feature = "tracing"))]
 use tracing::{debug, error, info, trace, warn};
@@ -115,7 +113,7 @@ where
             let routes = db.collect_inbound_routes("knx");
 
             #[cfg(feature = "defmt")]
-            defmt::info!(
+            defmt::trace!(
                 "Collected {} inbound routes for KNX connector",
                 routes.len()
             );
@@ -124,8 +122,8 @@ where
             let router = RouterBuilder::from_routes(routes).build();
 
             #[cfg(feature = "defmt")]
-            defmt::info!(
-                "KNX router has {} group addresses",
+            defmt::trace!(
+                "KNX router has {} unique group addresses",
                 router.resource_ids().len()
             );
 
@@ -144,7 +142,7 @@ where
             let outbound_routes = db.collect_outbound_routes("knx");
 
             #[cfg(feature = "defmt")]
-            defmt::info!(
+            defmt::trace!(
                 "Collected {} outbound routes for KNX connector",
                 outbound_routes.len()
             );
@@ -185,7 +183,7 @@ impl KnxConnectorImpl {
         let port = connector_url.port.unwrap_or(3671); // KNX/IP default port
 
         #[cfg(feature = "defmt")]
-        defmt::info!("Creating KNX connector for {}:{}", host, port);
+        defmt::trace!("Creating KNX connector for {}:{}", host.as_str(), port);
 
         // Parse gateway IP address
         let gateway_ip = Ipv4Address::from_str(&host).map_err(|_| "Invalid gateway IP address")?;
@@ -200,7 +198,7 @@ impl KnxConnectorImpl {
         // Spawn KNX connection background task
         let knx_task_future = SendFutureWrapper(async move {
             #[cfg(feature = "defmt")]
-            defmt::info!("KNX background task starting");
+            defmt::trace!("KNX background task starting for {}:{}", gateway_ip, port);
 
             // Run the connection listener (this never returns under normal conditions)
             #[allow(unreachable_code)]
@@ -220,7 +218,7 @@ impl KnxConnectorImpl {
             .map_err(|_| "Failed to spawn KNX connection task")?;
 
         #[cfg(feature = "defmt")]
-        defmt::info!("KNX connector initialized");
+        defmt::trace!("KNX connector initialized");
 
         Ok(Self {
             gateway_ip,
@@ -239,7 +237,7 @@ impl KnxConnectorImpl {
         loop {
             #[cfg(feature = "defmt")]
             defmt::info!(
-                "Connecting to KNX gateway {}:{}",
+                "🔌 Connecting to KNX gateway {}:{}",
                 gateway_addr,
                 gateway_port
             );
@@ -251,13 +249,13 @@ impl KnxConnectorImpl {
                 }
                 Err(_e) => {
                     #[cfg(feature = "defmt")]
-                    defmt::error!("KNX connection error: {:?}", _e);
+                    defmt::error!("❌ KNX connection error: {:?}", _e);
                 }
             }
 
             // Wait before reconnecting
             #[cfg(feature = "defmt")]
-            defmt::info!("Reconnecting to KNX gateway in 5 seconds...");
+            defmt::trace!("Reconnecting to KNX gateway in 5 seconds...");
 
             embassy_time::Timer::after(embassy_time::Duration::from_secs(5)).await;
         }
@@ -312,9 +310,7 @@ impl KnxConnectorImpl {
         let channel_id = Self::parse_connect_response(&recv_buf[..len])?;
 
         #[cfg(feature = "defmt")]
-        defmt::info!("Connected to KNX gateway, channel_id: {}", channel_id);
-
-        let mut sequence_counter = 0u8;
+        defmt::info!("✅ Connected to KNX gateway, channel_id: {}", channel_id);
 
         // Listen for incoming telegrams
         loop {
@@ -341,31 +337,46 @@ impl KnxConnectorImpl {
                 continue;
             }
 
-            // Send TUNNELING_ACK
-            let ack = Self::build_tunneling_ack(channel_id, sequence_counter);
+            // Extract sequence counter from TUNNELING_REQUEST (byte 8)
+            // KNXnet/IP frame structure:
+            // [0-5]: Header
+            // [6]: Structure length (4)
+            // [7]: Channel ID
+            // [8]: Sequence counter  <-- We need this!
+            // [9]: Reserved
+            // [10+]: cEMI frame
+            let received_seq = if len > 8 { recv_buf[8] } else { 0 };
+
+            // Send TUNNELING_ACK with the same sequence number
+            let ack = Self::build_tunneling_ack(channel_id, received_seq);
             let _ = socket
                 .send_to(&ack, (IpAddress::Ipv4(gateway_addr), gateway_port))
                 .await;
 
-            sequence_counter = sequence_counter.wrapping_add(1);
+            #[cfg(feature = "defmt")]
+            defmt::trace!("Sent TUNNELING_ACK with seq={}", received_seq);
 
             // Parse telegram
             if let Some((addr, data)) = Self::parse_telegram(&recv_buf[..len]) {
+                // Route to record producers (without scheme prefix - router expects just "1/0/7")
+                let resource_id = format!("{}/{}/{}", addr.main(), addr.middle(), addr.sub());
+
                 #[cfg(feature = "defmt")]
-                defmt::debug!(
-                    "Received telegram for {}/{}/{}: {:?}",
+                defmt::trace!(
+                    "KNX telegram: {}/{}/{} (len={}) -> routing",
                     addr.main(),
                     addr.middle(),
                     addr.sub(),
-                    data
+                    data.len()
                 );
 
-                // Route to record producers
-                let url = format!("knx://{}/{}/{}", addr.main(), addr.middle(), addr.sub());
-                if let Err(_e) = router.route(&url, &data).await {
+                if let Err(_e) = router.route(&resource_id, &data).await {
                     #[cfg(feature = "defmt")]
-                    defmt::warn!("Failed to route telegram to {}: {:?}", url, _e);
+                    defmt::warn!("Failed to route telegram to {}", resource_id.as_str());
                 }
+            } else {
+                #[cfg(feature = "defmt")]
+                defmt::trace!("❌ Failed to parse telegram (len={})", len);
             }
         }
     }
@@ -475,14 +486,22 @@ impl KnxConnectorImpl {
 
         // Extract APCI and data
         let tpci_apci_offset = ctrl1_offset + 7;
-        let apci_data = &data[tpci_apci_offset..tpci_apci_offset + npdu_len];
 
-        if apci_data.is_empty() {
-            return None;
-        }
-
-        // Convert to Vec for routing
-        let payload = apci_data.to_vec();
+        // Handle short telegrams (6-bit data) vs multi-byte data
+        let payload = if npdu_len > 1 {
+            // Multi-byte data: return full APCI + data
+            if data.len() < tpci_apci_offset + npdu_len {
+                return None;
+            }
+            data[tpci_apci_offset..tpci_apci_offset + npdu_len].to_vec()
+        } else {
+            // Short telegram: extract 6-bit data from APCI byte
+            // The 6-bit value is in the lower 6 bits of APCI (byte at tpci_apci_offset + 1)
+            if data.len() < tpci_apci_offset + 2 {
+                return None;
+            }
+            vec![data[tpci_apci_offset + 1] & 0x3F]
+        };
 
         Some((addr, payload))
     }
@@ -497,9 +516,8 @@ impl KnxConnectorImpl {
         R: aimdb_executor::Spawn + 'static,
     {
         // TODO: Implement outbound publishers similar to MQTT
-        // For now, just log that we collected them
         #[cfg(feature = "defmt")]
-        defmt::info!("Outbound publishers not yet implemented for Embassy KNX");
+        defmt::trace!("Outbound publishers not yet implemented for Embassy KNX");
 
         Ok(())
     }
