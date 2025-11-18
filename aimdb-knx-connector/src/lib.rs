@@ -11,6 +11,24 @@
 //! - `tracing`: Debug logging support (std)
 //! - `defmt`: Debug logging support (no_std)
 //!
+//! ## Production Status
+//!
+//! **Current Version: 0.1.0 - Beta Quality**
+//!
+//! ✅ **Ready for production use with caveats:**
+//! - Core protocol implementation is stable
+//! - ACK handling and timeout detection implemented
+//! - Automatic reconnection on failures
+//! - Comprehensive unit tests
+//!
+//! ⚠️ **Known limitations:**
+//! - No KNX Secure support (plaintext only)
+//! - No group address discovery
+//! - Limited DPT helpers (use `knx-pico` crate)
+//! - Fire-and-forget publish (no bus-level confirmation)
+//!
+//! See README.md for full deployment guide.
+//!
 //! ## Tokio Usage (Standard Library)
 //!
 //! ```rust,ignore

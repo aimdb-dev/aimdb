@@ -209,9 +209,14 @@ async fn main() -> DbResult<()> {
                     // Calculate temperature
                     (0.01 * signed_mantissa as f32) * 2f32.powi(exponent)
                 } else if data.len() == 3 {
-                    // Short frame: TPCI + APCI with 6-bit data
-                    // DPT 9.001 requires 2 data bytes, this telegram is malformed
-                    0.0
+                    // Standard frame: TPCI + APCI + 2 data bytes (3 bytes total with correct NPDU length)
+                    let temp_bytes = [data[1], data[2]];
+                    let raw = u16::from_be_bytes(temp_bytes);
+                    let sign_bit = (raw >> 15) & 0x01;
+                    let exponent = ((raw >> 11) & 0x0F) as i32;
+                    let mantissa = (raw & 0x07FF) as i16;
+                    let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
+                    (0.01 * signed_mantissa as f32) * 2f32.powi(exponent)
                 } else if data.len() == 2 {
                     // Just the temperature bytes (no TPCI/APCI)
                     let raw = u16::from_be_bytes([data[0], data[1]]);

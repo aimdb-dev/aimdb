@@ -441,11 +441,13 @@ async fn main(spawner: Spawner) {
             // Subscribe from KNX temperature sensor (group address 9/1/0)
             .link_from("knx://9/1/0")
             .with_deserializer(|data: &[u8]| {
-                // Check if we have enough data for DPT 9.001 (need at least 2 temperature bytes)
-                // Full NPDU: [TPCI, APCI, data1, data2] = 4 bytes minimum
-                if data.len() < 4 {
+                // DPT 9.001 can arrive in different formats depending on how the NPDU is structured:
+                // - 4 bytes: [TPCI, APCI, temp_high, temp_low] (standard)
+                // - 3 bytes: [combined_TPCI_APCI, temp_high, temp_low] (some gateways)
+                // - 2 bytes: [temp_high, temp_low] (raw temperature data)
+                if data.len() < 2 {
                     return Err(alloc::format!(
-                        "Temperature data too short: {} bytes",
+                        "Temperature data too short: {} bytes (need at least 2)",
                         data.len()
                     ));
                 }

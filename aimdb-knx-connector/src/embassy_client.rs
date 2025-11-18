@@ -55,9 +55,6 @@ pub struct KnxCommand {
 pub enum KnxCommandKind {
     /// Send GroupValueWrite telegram
     GroupWrite(Box<GroupWriteData>),
-    /// Graceful shutdown signal
-    #[allow(dead_code)]
-    Shutdown,
 }
 
 /// Data for GroupValueWrite command (boxed to reduce enum size)
@@ -191,6 +188,11 @@ where
     }
 }
 
+/// Pending ACK entry for outbound telegram (Embassy, no oneshot channels)
+struct PendingAck {
+    sent_at: embassy_time::Instant,
+}
+
 /// Connection state shared within the connection task
 struct ChannelState {
     /// KNXnet/IP channel ID from CONNECT_RESPONSE
@@ -201,6 +203,8 @@ struct ChannelState {
     inbound_seq: u8,
     /// Next sequence counter to use for outbound telegrams
     outbound_seq: u8,
+    /// Pending ACKs waiting for confirmation (seq -> PendingAck)
+    pending_acks: heapless::FnvIndexMap<u8, PendingAck, 16>,
 }
 
 impl ChannelState {
@@ -210,6 +214,7 @@ impl ChannelState {
             connected: false,
             inbound_seq: 0,
             outbound_seq: 0,
+            pending_acks: heapless::FnvIndexMap::new(),
         }
     }
 
@@ -223,14 +228,52 @@ impl ChannelState {
         self.outbound_seq = self.outbound_seq.wrapping_add(1);
         seq
     }
+
+    /// Track a pending ACK for an outbound telegram
+    fn add_pending_ack(&mut self, seq: u8) {
+        let _ = self.pending_acks.insert(
+            seq,
+            PendingAck {
+                sent_at: embassy_time::Instant::now(),
+            },
+        );
+    }
+
+    /// Complete a pending ACK (received confirmation)
+    fn complete_ack(&mut self, seq: u8) -> bool {
+        self.pending_acks.remove(&seq).is_some()
+    }
+
+    /// Check for timed-out ACKs (> 3 seconds) and return timed out sequences
+    fn check_ack_timeouts(&mut self) -> heapless::Vec<u8, 16> {
+        let now = embassy_time::Instant::now();
+        let mut timed_out = heapless::Vec::new();
+
+        // Collect sequences to remove
+        let to_remove: heapless::Vec<u8, 16> = self
+            .pending_acks
+            .iter()
+            .filter_map(|(&seq, pending)| {
+                if now.duration_since(pending.sent_at) > embassy_time::Duration::from_secs(3) {
+                    Some(seq)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Remove timed-out entries
+        for seq in &to_remove {
+            self.pending_acks.remove(seq);
+            let _ = timed_out.push(*seq);
+        }
+
+        timed_out
+    }
 }
 
 /// Internal KNX connector implementation
-#[allow(dead_code)]
 pub struct KnxConnectorImpl {
-    gateway_ip: Ipv4Address,
-    gateway_port: u16,
-    router: Arc<Router>,
     command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
 }
 
@@ -292,12 +335,7 @@ impl KnxConnectorImpl {
         #[cfg(feature = "defmt")]
         defmt::trace!("KNX connector initialized");
 
-        Ok(Self {
-            gateway_ip,
-            gateway_port: port,
-            router: router_arc,
-            command_channel,
-        })
+        Ok(Self { command_channel })
     }
 
     /// Background task that maintains KNX connection and receives telegrams
@@ -403,20 +441,25 @@ impl KnxConnectorImpl {
         let mut heartbeat_ticker =
             embassy_time::Ticker::every(embassy_time::Duration::from_secs(55));
 
-        // Main event loop: inbound telegrams, outbound commands, and heartbeat
+        // ACK timeout checker (every 500ms)
+        let mut ack_timeout_ticker =
+            embassy_time::Ticker::every(embassy_time::Duration::from_millis(500));
+
+        // Main event loop: inbound telegrams, outbound commands, heartbeat, and ACK timeouts
         loop {
-            use embassy_futures::select::{select3, Either3};
+            use embassy_futures::select::{select4, Either4};
 
             let mut recv_buf = [0u8; 512];
 
-            // Set up three concurrent operations
+            // Set up four concurrent operations
             let recv_fut = socket.recv_from(&mut recv_buf);
             let cmd_fut = command_channel.receive();
             let heartbeat_fut = heartbeat_ticker.next();
+            let ack_timeout_fut = ack_timeout_ticker.next();
 
-            match select3(recv_fut, cmd_fut, heartbeat_fut).await {
+            match select4(recv_fut, cmd_fut, heartbeat_fut, ack_timeout_fut).await {
                 // Inbound: Process received telegram from KNX gateway
-                Either3::First(result) => {
+                Either4::First(result) => {
                     match result {
                         Ok((len, _peer)) => {
                             // Minimum KNX/IP header is 6 bytes
@@ -428,6 +471,23 @@ impl KnxConnectorImpl {
 
                             // Check service type
                             let service_type = u16::from_be_bytes([recv_buf[2], recv_buf[3]]);
+
+                            // Handle TUNNELING_ACK (0x0421) - acknowledgment for our outbound telegrams
+                            if service_type == 0x0421 {
+                                let ack_seq = if len > 8 { recv_buf[8] } else { 0 };
+
+                                if state.complete_ack(ack_seq) {
+                                    #[cfg(feature = "defmt")]
+                                    defmt::trace!("✅ Received TUNNELING_ACK for seq={}", ack_seq);
+                                } else {
+                                    #[cfg(feature = "defmt")]
+                                    defmt::warn!(
+                                        "⚠️  Unexpected TUNNELING_ACK for seq={}",
+                                        ack_seq
+                                    );
+                                }
+                                continue;
+                            }
 
                             // Handle CONNECTIONSTATE_RESPONSE (0x0208) - 8 bytes
                             if service_type == 0x0208 {
@@ -503,7 +563,7 @@ impl KnxConnectorImpl {
                 }
 
                 // Outbound: Process command from publish() calls
-                Either3::Second(cmd) => {
+                Either4::Second(cmd) => {
                     Self::handle_outbound_command(
                         cmd,
                         &mut state,
@@ -515,8 +575,17 @@ impl KnxConnectorImpl {
                 }
 
                 // Heartbeat: Send keepalive to gateway
-                Either3::Third(_) => {
+                Either4::Third(_) => {
                     Self::send_heartbeat(&socket, gateway_addr, gateway_port, &state).await;
+                }
+
+                // ACK timeout checker: Check for expired ACKs
+                Either4::Fourth(_) => {
+                    let timed_out = state.check_ack_timeouts();
+                    if !timed_out.is_empty() {
+                        #[cfg(feature = "defmt")]
+                        defmt::warn!("⚠️  ACK timeouts for sequences: {:?}", timed_out);
+                    }
                 }
             }
         }
@@ -530,43 +599,40 @@ impl KnxConnectorImpl {
         gateway_addr: Ipv4Address,
         gateway_port: u16,
     ) {
-        match cmd.kind {
-            KnxCommandKind::GroupWrite(data_box) => {
-                if !state.connected {
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!("Not connected, dropping GroupWrite");
-                    return;
-                }
+        let KnxCommandKind::GroupWrite(data_box) = cmd.kind;
 
-                let seq = state.next_outbound_seq();
+        if !state.connected {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("Not connected, dropping GroupWrite");
+            return;
+        }
 
-                // Build frames
-                let cemi = Self::build_group_write_cemi(data_box.group_addr, &data_box.data);
-                let request = Self::build_tunneling_request(state.channel_id, seq, &cemi);
+        let seq = state.next_outbound_seq();
 
-                // Send to gateway
-                if let Err(_e) = socket
-                    .send_to(&request, (IpAddress::Ipv4(gateway_addr), gateway_port))
-                    .await
-                {
-                    #[cfg(feature = "defmt")]
-                    defmt::error!("Failed to send GroupWrite");
-                } else {
-                    #[cfg(feature = "defmt")]
-                    defmt::debug!(
-                        "Sent GroupWrite: {}/{}/{} seq={} ({} bytes)",
-                        (data_box.group_addr >> 11) & 0x1F,
-                        (data_box.group_addr >> 8) & 0x07,
-                        data_box.group_addr & 0xFF,
-                        seq,
-                        data_box.data.len()
-                    );
-                }
-            }
+        // Build frames
+        let cemi = Self::build_group_write_cemi(data_box.group_addr, &data_box.data);
+        let request = Self::build_tunneling_request(state.channel_id, seq, &cemi);
 
-            KnxCommandKind::Shutdown => {
-                state.connected = false;
-            }
+        // Send to gateway
+        if let Err(_e) = socket
+            .send_to(&request, (IpAddress::Ipv4(gateway_addr), gateway_port))
+            .await
+        {
+            #[cfg(feature = "defmt")]
+            defmt::error!("Failed to send GroupWrite");
+        } else {
+            // Track pending ACK
+            state.add_pending_ack(seq);
+
+            #[cfg(feature = "defmt")]
+            defmt::debug!(
+                "Sent GroupWrite: {}/{}/{} seq={} ({} bytes)",
+                (data_box.group_addr >> 11) & 0x1F,
+                (data_box.group_addr >> 8) & 0x07,
+                data_box.group_addr & 0xFF,
+                seq,
+                data_box.data.len()
+            );
         }
     }
 
@@ -688,13 +754,15 @@ impl KnxConnectorImpl {
         // Check if this is a short telegram (1 byte, value < 64)
         if data.len() == 1 && data[0] < 64 {
             // Short telegram: encode data in APCI lower 6 bits
-            let _ = frame.push(0x01); // NPDU length = 1 (TPCI/APCI only)
+            let _ = frame.push(0x01); // NPDU length = 1 (short telegram flag)
             let _ = frame.push(0x00); // TPCI
             let _ = frame.push(0x80 | (data[0] & 0x3F)); // APCI: GroupValueWrite + 6-bit data
         } else {
             // Long telegram: APCI + separate data bytes
-            let npdu_len = 2 + data.len(); // TPCI + APCI + data
-            let _ = frame.push(npdu_len as u8);
+            // NPDU length encoding: field = actual_length - 1
+            let npdu_actual = 2 + data.len(); // TPCI + APCI + data
+            let npdu_len_field = npdu_actual - 1; // Encode as length - 1
+            let _ = frame.push(npdu_len_field as u8);
             let _ = frame.push(0x00); // TPCI
             let _ = frame.push(0x80); // APCI: GroupValueWrite
             let _ = frame.extend_from_slice(data); // Payload data
@@ -792,31 +860,74 @@ impl KnxConnectorImpl {
         let dest_addr = u16::from_be_bytes([data[ctrl1_offset + 4], data[ctrl1_offset + 5]]);
         let addr = GroupAddress::from(dest_addr);
 
-        // NPDU length field + 1 = actual byte count (KNX specification)
+        // NPDU length byte interpretation (KNX cEMI spec):
+        // - For value = 1: Short telegram (6-bit data in APCI)
+        // - For value >= 2: Length-1 encoding (actual bytes = value + 1)
         let npdu_len_field = data[ctrl1_offset + 6] as usize;
-        let npdu_len = npdu_len_field + 1; // Actual byte count
+        let npdu_len = if npdu_len_field == 1 {
+            1 // Short telegram flag
+        } else {
+            npdu_len_field + 1 // Multi-byte: actual = field + 1
+        };
 
-        if data.len() < ctrl1_offset + 7 + npdu_len {
+        if npdu_len == 0 || data.len() < ctrl1_offset + 7 + npdu_len {
             return None;
         }
 
         // Extract APCI and data
         let tpci_apci_offset = ctrl1_offset + 7;
 
+        #[cfg(feature = "defmt")]
+        defmt::trace!(
+            "Parsing telegram: GA={}/{}/{} npdu_len_field={} npdu_len={} data_len={} available_bytes={}",
+            addr.main(), addr.middle(), addr.sub(),
+            npdu_len_field,
+            npdu_len,
+            data.len(),
+            data.len().saturating_sub(tpci_apci_offset)
+        );
+
         // Handle short telegrams (6-bit data) vs multi-byte data
-        let payload = if npdu_len > 1 {
-            // Multi-byte data: return full NPDU (TPCI + APCI + data) just like Tokio
-            if data.len() < tpci_apci_offset + npdu_len {
-                return None;
-            }
-            data[tpci_apci_offset..tpci_apci_offset + npdu_len].to_vec()
-        } else {
+        // Short telegram: NPDU length = 1, only TPCI+APCI (2 bytes, but specified as 1 in older KNX spec)
+        // Multi-byte: NPDU length > 1, TPCI + APCI + data bytes
+        let payload = if npdu_len == 1 {
             // Short telegram: extract 6-bit data from APCI byte
+            // Note: NPDU length =1 means 2 bytes actually present (TPCI + APCI)
             if data.len() < tpci_apci_offset + 2 {
                 return None;
             }
             let short_value = data[tpci_apci_offset + 1] & 0x3F;
+
+            #[cfg(feature = "defmt")]
+            defmt::trace!(
+                "Short telegram parsed: GA={}/{}/{} npdu_len={} tpci=0x{:02x} apci=0x{:02x} value=0x{:02x}",
+                addr.main(), addr.middle(), addr.sub(),
+                npdu_len,
+                data[tpci_apci_offset],
+                data[tpci_apci_offset + 1],
+                short_value
+            );
+
             vec![short_value]
+        } else {
+            // Multi-byte data: return full NPDU (TPCI + APCI + data) just like Tokio
+            if data.len() < tpci_apci_offset + npdu_len {
+                return None;
+            }
+            let payload_data = data[tpci_apci_offset..tpci_apci_offset + npdu_len].to_vec();
+
+            #[cfg(feature = "defmt")]
+            defmt::trace!(
+                "Multi-byte telegram parsed: GA={}/{}/{} npdu_len={} payload_len={} payload={:02x}",
+                addr.main(),
+                addr.middle(),
+                addr.sub(),
+                npdu_len,
+                payload_data.len(),
+                payload_data.as_slice()
+            );
+
+            payload_data
         };
 
         Some((addr, payload))

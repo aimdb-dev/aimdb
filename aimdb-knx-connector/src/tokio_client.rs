@@ -27,10 +27,6 @@ enum KnxCommand {
         /// Optional response channel for error reporting
         response: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     },
-
-    /// Graceful shutdown signal
-    #[allow(dead_code)]
-    Shutdown,
 }
 
 /// Type alias for outbound route configuration
@@ -159,10 +155,6 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
 ///
 /// This is the actual connector created after collecting routes from the database.
 pub struct KnxConnectorImpl {
-    #[allow(dead_code)]
-    gateway_ip: String,
-    #[allow(dead_code)]
-    gateway_port: u16,
     router: Arc<Router>,
     /// Command sender for outbound publishing
     command_tx: mpsc::Sender<KnxCommand>,
@@ -207,8 +199,6 @@ impl KnxConnectorImpl {
             spawn_connection_task(gateway_ip.clone(), gateway_port, router_arc.clone());
 
         Ok(Self {
-            gateway_ip,
-            gateway_port,
             router: router_arc,
             command_tx,
         })
@@ -454,6 +444,12 @@ fn build_connectionstate_request(channel_id: u8) -> Vec<u8> {
     ]
 }
 
+/// Pending ACK for outbound telegram
+struct PendingAck {
+    sent_at: std::time::Instant,
+    response_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+}
+
 /// Connection state shared within the connection task
 struct ChannelState {
     /// KNXnet/IP channel ID from CONNECT_RESPONSE
@@ -465,9 +461,8 @@ struct ChannelState {
     /// Next sequence counter to use for outbound telegrams
     outbound_seq: u8,
 
-    /// Connection status
-    #[allow(dead_code)]
-    connected: bool,
+    /// Pending ACKs waiting for confirmation (seq -> PendingAck)
+    pending_acks: std::collections::HashMap<u8, PendingAck>,
 }
 
 impl ChannelState {
@@ -476,7 +471,7 @@ impl ChannelState {
             channel_id,
             inbound_seq: 0,
             outbound_seq: 0,
-            connected: true,
+            pending_acks: std::collections::HashMap::new(),
         }
     }
 
@@ -484,6 +479,53 @@ impl ChannelState {
         let seq = self.outbound_seq;
         self.outbound_seq = self.outbound_seq.wrapping_add(1);
         seq
+    }
+
+    /// Track a pending ACK for an outbound telegram
+    fn add_pending_ack(
+        &mut self,
+        seq: u8,
+        response_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    ) {
+        self.pending_acks.insert(
+            seq,
+            PendingAck {
+                sent_at: std::time::Instant::now(),
+                response_tx,
+            },
+        );
+    }
+
+    /// Complete a pending ACK (received confirmation)
+    fn complete_ack(&mut self, seq: u8) -> bool {
+        if let Some(pending) = self.pending_acks.remove(&seq) {
+            if let Some(tx) = pending.response_tx {
+                let _ = tx.send(Ok(()));
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check for timed-out ACKs (> 3 seconds)
+    fn check_ack_timeouts(&mut self) -> Vec<u8> {
+        let now = std::time::Instant::now();
+        let mut timed_out = Vec::new();
+
+        self.pending_acks.retain(|&seq, pending| {
+            if now.duration_since(pending.sent_at) > Duration::from_secs(3) {
+                timed_out.push(seq);
+                if let Some(tx) = pending.response_tx.take() {
+                    let _ = tx.send(Err(format!("ACK timeout for seq={}", seq)));
+                }
+                false // Remove from pending
+            } else {
+                true // Keep waiting
+            }
+        });
+
+        timed_out
     }
 }
 
@@ -549,10 +591,14 @@ async fn connect_and_listen(
     #[cfg(feature = "tracing")]
     tracing::info!("✅ KNX connected, channel_id: {}", channel_id);
 
-    // 4. Listen loop with command queue
+    // 4. Listen loop with command queue and ACK timeout checking
     let mut channel_state = ChannelState::new(channel_id);
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(55));
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // ACK timeout checker (runs every 500ms)
+    let mut ack_timeout_interval = tokio::time::interval(Duration::from_millis(500));
+    ack_timeout_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -560,6 +606,21 @@ async fn connect_and_listen(
             result = socket.recv_from(&mut buf) => {
                 match result {
                     Ok((len, _)) => {
+                        // Check if this is a TUNNELING_ACK for our outbound telegram
+                        if is_tunneling_ack(&buf[..len]) {
+                            let ack_seq = if len > 8 { buf[8] } else { 0 };
+
+                            if channel_state.complete_ack(ack_seq) {
+                                #[cfg(feature = "tracing")]
+                                tracing::trace!("✅ Received TUNNELING_ACK for seq={}", ack_seq);
+                            } else {
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!("⚠️  Received unexpected TUNNELING_ACK for seq={}", ack_seq);
+                            }
+
+                            continue; // Don't process ACKs as data telegrams
+                        }
+
                         // Parse telegram
                         if let Some((group_addr, data)) = parse_telegram(&buf[..len]) {
                             let resource_id = format_group_address(group_addr);
@@ -595,30 +656,28 @@ async fn connect_and_listen(
 
             // Outbound: Process commands from queue
             Some(cmd) = command_rx.recv() => {
-                match cmd {
-                    KnxCommand::GroupWrite { group_addr, data, response } => {
-                        let result = send_group_write_internal(
-                            &socket,
-                            gateway_addr,
-                            &mut channel_state,
-                            group_addr,
-                            &data,
-                        ).await;
+                let KnxCommand::GroupWrite { group_addr, data, response } = cmd;
 
-                        // Report result if response channel provided
-                        if let Some(tx) = response {
-                            let _ = tx.send(result);
-                        } else if let Err(_e) = result {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!("GroupWrite failed: {}", _e);
-                        }
-                    }
-                    #[allow(dead_code)]
-                    KnxCommand::Shutdown => {
-                        #[cfg(feature = "tracing")]
-                        tracing::info!("Shutdown requested");
-                        break;
-                    }
+                // Send the telegram (this increments outbound_seq internally)
+                let seq_before = channel_state.outbound_seq;
+
+                let result = send_group_write_internal(
+                    &socket,
+                    gateway_addr,
+                    &mut channel_state,
+                    group_addr,
+                    &data,
+                ).await;
+
+                // If send succeeded, always track pending ACK (even for fire-and-forget)
+                if result.is_ok() {
+                    channel_state.add_pending_ack(seq_before, response);
+                } else if let Some(tx) = response {
+                    // Send immediate response if send failed
+                    let _ = tx.send(result);
+                } else if let Err(_e) = result {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("GroupWrite failed: {}", _e);
                 }
             }
 
@@ -634,10 +693,17 @@ async fn connect_and_listen(
                     return Err(format!("Heartbeat send failed: {}", e));
                 }
             }
+
+            // ACK timeout checker: Check for expired ACKs every 500ms
+            _ = ack_timeout_interval.tick() => {
+                let timed_out = channel_state.check_ack_timeouts();
+                if !timed_out.is_empty() {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("⚠️  ACK timeouts for sequences: {:?}", timed_out);
+                }
+            }
         }
     }
-
-    Ok(())
 }
 
 /// Build KNXnet/IP CONNECT_REQUEST frame
@@ -729,6 +795,11 @@ fn is_tunneling_request(data: &[u8]) -> bool {
     data.len() >= 4 && data[2] == 0x04 && data[3] == 0x20
 }
 
+/// Check if frame is a TUNNELING_ACK
+fn is_tunneling_ack(data: &[u8]) -> bool {
+    data.len() >= 4 && data[2] == 0x04 && data[3] == 0x21
+}
+
 /// Parse KNX telegram and extract group address and data
 ///
 /// Returns (group_address_raw, payload) if this is a valid L_Data.ind telegram
@@ -768,9 +839,15 @@ fn parse_telegram(data: &[u8]) -> Option<(u16, Vec<u8>)> {
     // Destination address (group)
     let dest_raw = u16::from_be_bytes([data[addr_start + 4], data[addr_start + 5]]);
 
-    // NPDU length (this is the length field value, actual bytes = length + 1)
+    // NPDU length byte interpretation (KNX cEMI spec):
+    // - For value = 1: Short telegram (6-bit data in APCI)
+    // - For value >= 2: Length-1 encoding (actual bytes = value + 1)
     let npdu_len_field = data.get(addr_start + 6).copied()? as usize;
-    let npdu_len = npdu_len_field + 1; // Actual byte count
+    let npdu_len = if npdu_len_field == 1 {
+        1 // Short telegram flag
+    } else {
+        npdu_len_field + 1 // Multi-byte: actual = field + 1
+    };
 
     if npdu_len == 0 {
         return None;
@@ -779,16 +856,16 @@ fn parse_telegram(data: &[u8]) -> Option<(u16, Vec<u8>)> {
     // Extract payload
     let tpci_apci_pos = addr_start + 7;
 
-    let payload = if npdu_len > 1 {
+    let payload = if npdu_len == 1 {
+        // Short telegram: 6-bit data in APCI (NPDU length = 1 means 2 bytes: TPCI + APCI)
+        let short_val = data.get(tpci_apci_pos + 1).copied()? & 0x3F;
+        vec![short_val]
+    } else {
         // Multi-byte data
         if data.len() < tpci_apci_pos + npdu_len {
             return None;
         }
         data[tpci_apci_pos..tpci_apci_pos + npdu_len].to_vec()
-    } else {
-        // 6-bit data in APCI (short frame)
-        let short_val = data.get(tpci_apci_pos + 1).copied()? & 0x3F;
-        vec![short_val]
     };
 
     Some((dest_raw, payload))
@@ -812,13 +889,15 @@ fn build_group_write_cemi(group_addr: u16, data: &[u8]) -> Vec<u8> {
     // Check if this is a short telegram (1 byte, value < 64)
     if data.len() == 1 && data[0] < 64 {
         // Short telegram: encode data in APCI lower 6 bits
-        frame.push(0x01); // NPDU length = 1 (TPCI/APCI only)
+        frame.push(0x01); // NPDU length = 1 (short telegram flag)
         frame.push(0x00); // TPCI
         frame.push(0x80 | (data[0] & 0x3F)); // APCI: GroupValueWrite + 6-bit data
     } else {
         // Long telegram: APCI + separate data bytes
-        let npdu_len = 2 + data.len(); // TPCI + APCI + data
-        frame.push(npdu_len as u8);
+        // NPDU length encoding: field = actual_length - 1
+        let npdu_actual = 2 + data.len(); // TPCI + APCI + data
+        let npdu_len_field = npdu_actual - 1; // Encode as length - 1
+        frame.push(npdu_len_field as u8);
         frame.push(0x00); // TPCI
         frame.push(0x80); // APCI: GroupValueWrite
         frame.extend_from_slice(data); // Payload data
@@ -879,7 +958,6 @@ async fn send_group_write_internal(
         data.len()
     );
 
-    // TODO Phase 2: Wait for ACK with timeout
 
     Ok(())
 }
