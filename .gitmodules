@@ -4,3 +4,6 @@
 [submodule "_external/mountain-mqtt"]
 	path = _external/mountain-mqtt
 	url = https://github.com/aimdb-dev/mountain-mqtt.git
+[submodule "_external/knx-pico"]
+	path = _external/knx-pico
+	url = https://github.com/aimdb-dev/knx-pico.git
