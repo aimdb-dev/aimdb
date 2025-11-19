@@ -1305,9 +1305,7 @@ dependencies = [
 
 [[package]]
 name = "knx-pico"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c47a52e84dfd618634b5e8293a74503cb32519672f00ad085fb63661027cc896"
+version = "0.2.4"
 dependencies = [
  "defmt 1.0.1",
  "heapless 0.9.1",

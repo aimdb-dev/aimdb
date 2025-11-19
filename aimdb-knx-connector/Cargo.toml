@@ -38,9 +38,7 @@ aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = fal
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
 aimdb-embassy-adapter = { version = "0.1.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
-# KNX protocol implementation
-# Note: Exclude embassy-rp feature to avoid embassy version conflicts
-knx-pico = { version = "0.3", default-features = false }
+knx-pico = { path = "../_external/knx-pico", default-features = false }
 
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }
