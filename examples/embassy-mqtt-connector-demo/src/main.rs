@@ -65,7 +65,8 @@ bind_interrupts!(struct Irqs {
     RNG => rng::InterruptHandler<peripherals::RNG>;
 });
 
-type Device = Ethernet<'static, ETH, GenericPhy>;
+type Device =
+    Ethernet<'static, ETH, GenericPhy<embassy_stm32::eth::Sma<'static, peripherals::ETH_SMA>>>;
 
 /// Network task that runs the embassy-net stack
 #[embassy_executor::task]
@@ -335,16 +336,16 @@ async fn main(spawner: Spawner) {
         p.ETH,
         Irqs,
         p.PA1,  // ETH_REF_CLK
-        p.PA2,  // ETH_MDIO
-        p.PC1,  // ETH_MDC
         p.PA7,  // ETH_CRS_DV
         p.PC4,  // ETH_RXD0
         p.PC5,  // ETH_RXD1
         p.PG13, // ETH_TXD0
-        p.PB15, // ETH_TXD1 (corrected from PB13)
+        p.PB15, // ETH_TXD1
         p.PG11, // ETH_TX_EN
-        GenericPhy::new_auto(),
         mac_addr,
+        p.ETH_SMA, // SMA peripheral
+        p.PA2,     // ETH_MDIO
+        p.PC1,     // ETH_MDC
     );
 
     // Network configuration (using DHCP)
