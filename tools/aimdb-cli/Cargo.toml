@@ -2,7 +2,10 @@
 name = "aimdb-cli"
 version = "0.2.0"
 edition = "2021"
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Command-line interface for AimDB - development and administration tool"
 keywords = ["cli", "tool", "admin", "database", "debugging"]
 categories = ["command-line-utilities", "database"]
