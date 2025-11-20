@@ -51,7 +51,7 @@ Example: `1/0/7` = main 1, middle 0, sub 7
 
 ```bash
 # From workspace root
-cd examples/tokio-knx-demo
+cd examples/tokio-knx-connector-demo
 
 # Run with tracing enabled
 cargo run --features tokio-runtime,tracing

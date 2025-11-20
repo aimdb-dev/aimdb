@@ -13,7 +13,7 @@
 //!
 //! Run the demo:
 //! ```bash
-//! cargo run --example tokio-knx-demo --features tokio-runtime,tracing
+//! cargo run --example tokio-knx-connector-demo --features tokio-runtime,tracing
 //! ```
 //!
 //! ## Configuration

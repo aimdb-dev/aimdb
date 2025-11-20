@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Quick Start (Embassy)
 
-See `examples/embassy-knx-demo/` for embedded usage.
+See `examples/embassy-knx-connector-demo/` for embedded usage.
 
 ## Group Address Format
 
@@ -83,8 +83,8 @@ let temp = Dpt9::Temperature.decode(data)?;
 
 ## Examples
 
-- `examples/tokio-knx-demo/` - Tokio runtime demo
-- `examples/embassy-knx-demo/` - Embassy runtime demo
+- `examples/tokio-knx-connector-demo/` - Tokio runtime demo
+- `examples/embassy-knx-connector-demo/` - Embassy runtime demo
 
 ## Production Readiness
 
@@ -218,8 +218,8 @@ cargo run --example tokio-knx-connector-demo
 
 ## Examples
 
-- `examples/tokio-knx-demo/` - Tokio runtime demo
-- `examples/embassy-knx-demo/` - Embassy runtime demo
+- `examples/tokio-knx-connector-demo/` - Tokio runtime demo
+- `examples/embassy-knx-connector-demo/` - Embassy runtime demo
 
 ## Protocol Details
 
