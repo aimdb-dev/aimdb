@@ -128,6 +128,27 @@ extern crate alloc;
 // Re-export knx-pico types for user convenience
 pub use knx_pico::GroupAddress;
 
+// Re-export DPT module for encoding/decoding KNX data types
+/// KNX Datapoint Types (DPT) for encoding and decoding telegrams
+///
+/// ```rust
+/// use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptEncode, DptDecode};
+///
+/// let mut buf = [0u8; 4];
+///
+/// // Boolean (DPT 1.001)
+/// let len = Dpt1::Switch.encode(true, &mut buf)?;
+///
+/// // Temperature (DPT 9.001)
+/// let len = Dpt9::Temperature.encode(21.5, &mut buf)?;
+/// let temp = Dpt9::Temperature.decode(&buf[..len])?;
+/// # Ok::<(), knx_pico::error::KnxError>(())
+/// ```
+pub mod dpt {
+    pub use knx_pico::dpt::*;
+}
+
+// Convenience re-exports for common types (std only for backward compat)
 #[cfg(feature = "std")]
 pub use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
 
