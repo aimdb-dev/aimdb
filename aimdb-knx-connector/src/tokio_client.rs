@@ -6,9 +6,14 @@
 //! - Thread-safe access from multiple consumers
 //! - Router-based dispatch for inbound telegrams
 
+use crate::GroupAddress;
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::router::{Router, RouterBuilder};
 use aimdb_core::ConnectorBuilder;
+use knx_pico::protocol::{
+    CEMIFrame, ConnectRequest, ConnectResponse, ConnectionHeader, ConnectionStateRequest, Hpai,
+    KnxnetIpFrame, ServiceType, TunnelingAck, TunnelingRequest,
+};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -22,7 +27,7 @@ use tokio::sync::mpsc;
 enum KnxCommand {
     /// Send a GroupValueWrite telegram
     GroupWrite {
-        group_addr: u16,
+        group_addr: GroupAddress,
         data: Vec<u8>,
         /// Optional response channel for error reporting
         response: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
@@ -240,8 +245,8 @@ impl KnxConnectorImpl {
             let group_addr_clone = group_addr_str.clone();
 
             runtime.spawn(async move {
-                // Parse group address
-                let group_addr = match parse_group_address(&group_addr_clone) {
+                // Parse group address using knx-pico's type-safe parser
+                let group_addr = match group_addr_clone.parse::<GroupAddress>() {
                     Ok(addr) => addr,
                     Err(_e) => {
                         #[cfg(feature = "tracing")]
@@ -327,8 +332,9 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
         let command_tx = self.command_tx.clone();
 
         Box::pin(async move {
-            // Parse group address
-            let group_addr = parse_group_address(&group_addr_str)
+            // Parse group address using knx-pico's type-safe parser
+            let group_addr = group_addr_str
+                .parse::<GroupAddress>()
                 .map_err(|_| PublishError::InvalidDestination)?;
 
             // Create response channel for error reporting
@@ -417,31 +423,17 @@ fn spawn_connection_task(
     command_tx
 }
 
-/// Build CONNECTIONSTATE_REQUEST for heartbeat
+/// Build CONNECTIONSTATE_REQUEST for heartbeat using knx-pico
 fn build_connectionstate_request(channel_id: u8) -> Vec<u8> {
-    // Get local address (0.0.0.0:0 for "any")
-    let local_ip = [0u8, 0u8, 0u8, 0u8];
-    let local_port = 0u16;
+    // Use 0.0.0.0:0 for "any" address
+    let hpai = Hpai::new([0, 0, 0, 0], 0);
+    let request = ConnectionStateRequest::new(channel_id, hpai);
 
-    vec![
-        0x06, // Header length
-        0x10, // Protocol version
-        0x02,
-        0x07, // CONNECTIONSTATE_REQUEST
-        0x00,
-        0x10,       // Total length (16 bytes)
-        channel_id, // Channel ID
-        0x00,       // Reserved
-        // Control endpoint HPAI (8 bytes)
-        0x08, // Structure length
-        0x01, // UDP protocol
-        local_ip[0],
-        local_ip[1],
-        local_ip[2],
-        local_ip[3], // IP
-        (local_port >> 8) as u8,
-        local_port as u8, // Port
-    ]
+    let mut buffer = [0u8; 32];
+    let len = request
+        .build(&mut buffer)
+        .expect("Buffer too small for CONNECTIONSTATE_REQUEST");
+    buffer[..len].to_vec()
 }
 
 /// Pending ACK for outbound telegram
@@ -606,10 +598,42 @@ async fn connect_and_listen(
             result = socket.recv_from(&mut buf) => {
                 match result {
                     Ok((len, _)) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::trace!("Received {} bytes from gateway", len);
+
                         // Check if this is a TUNNELING_ACK for our outbound telegram
                         if is_tunneling_ack(&buf[..len]) {
-                            let ack_seq = if len > 8 { buf[8] } else { 0 };
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!("Received TUNNELING_ACK: {:02X?}", &buf[..len]);
 
+                            // Parse ACK - try knx-pico parser first, fallback to manual parsing
+                            // Some gateways send non-standard ACK format (missing status byte)
+                            let ack_seq = if let Ok(frame) = KnxnetIpFrame::parse(&buf[..len]) {
+                                if let Ok(ack) = TunnelingAck::parse(frame.body()) {
+                                    // Standard parsing succeeded
+                                    ack.connection_header.sequence_counter
+                                } else if frame.body().len() >= 4 {
+                                    // Fallback: manually extract sequence from ConnectionHeader
+                                    // Body format: [struct_len, channel_id, seq, status]
+                                    // Gateway may send 4 bytes instead of 5 (missing final status byte)
+                                    let seq = frame.body()[2];
+
+                                    #[cfg(feature = "tracing")]
+                                    tracing::debug!("Using fallback ACK parsing (non-standard gateway format)");
+
+                                    seq
+                                } else {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::warn!("Failed to parse TUNNELING_ACK body, raw: {:02X?}", &buf[..len]);
+                                    continue;
+                                }
+                            } else {
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!("Failed to parse frame as TUNNELING_ACK, raw: {:02X?}", &buf[..len]);
+                                continue;
+                            };
+
+                            // Complete the pending ACK
                             if channel_state.complete_ack(ack_seq) {
                                 #[cfg(feature = "tracing")]
                                 tracing::trace!("✅ Received TUNNELING_ACK for seq={}", ack_seq);
@@ -619,11 +643,14 @@ async fn connect_and_listen(
                             }
 
                             continue; // Don't process ACKs as data telegrams
+                        } else {
+                            #[cfg(feature = "tracing")]
+                            tracing::trace!("Frame is not TUNNELING_ACK, checking if telegram...");
                         }
 
                         // Parse telegram
                         if let Some((group_addr, data)) = parse_telegram(&buf[..len]) {
-                            let resource_id = format_group_address(group_addr);
+                            let resource_id = group_addr.to_string();
 
                             #[cfg(feature = "tracing")]
                             tracing::debug!("KNX telegram: {} ({} bytes)", resource_id, data.len());
@@ -633,6 +660,9 @@ async fn connect_and_listen(
                                 #[cfg(feature = "tracing")]
                                 tracing::warn!("Router dispatch failed for {}: {:?}", resource_id, _e);
                             }
+                        } else {
+                            #[cfg(feature = "tracing")]
+                            tracing::trace!("Ignoring non-GroupWrite or invalid telegram");
                         }
 
                         // Send ACK if TUNNELING_REQUEST
@@ -706,225 +736,280 @@ async fn connect_and_listen(
     }
 }
 
-/// Build KNXnet/IP CONNECT_REQUEST frame
+/// Build KNXnet/IP CONNECT_REQUEST frame using knx-pico
 fn build_connect_request(local_addr: SocketAddr) -> Result<Vec<u8>, String> {
     use std::net::IpAddr;
 
-    // KNXnet/IP Header (6 bytes)
-    let mut frame = vec![
-        0x06, // Header length
-        0x10, // Protocol version
-        0x02, 0x05, // CONNECT_REQUEST
-        0x00, 0x1A, // Total length (26 bytes)
-    ];
-
-    // Control endpoint HPAI (8 bytes)
-    frame.extend_from_slice(&[
-        0x08, // HPAI length
-        0x01, // UDP protocol
-    ]);
-
-    // Local IP address
-    match local_addr.ip() {
-        IpAddr::V4(ip) => frame.extend_from_slice(&ip.octets()),
+    // Convert local address to Hpai
+    let ip_bytes = match local_addr.ip() {
+        IpAddr::V4(ip) => ip.octets(),
         _ => return Err("IPv6 not supported".to_string()),
-    }
-
-    // Local port
-    frame.extend_from_slice(&local_addr.port().to_be_bytes());
-
-    // Data endpoint HPAI (8 bytes) - same as control
-    frame.extend_from_slice(&[
-        0x08, // HPAI length
-        0x01, // UDP protocol
-    ]);
-
-    match local_addr.ip() {
-        IpAddr::V4(ip) => frame.extend_from_slice(&ip.octets()),
-        _ => return Err("IPv6 not supported".to_string()),
-    }
-
-    frame.extend_from_slice(&local_addr.port().to_be_bytes());
-
-    // Connection Request Information (4 bytes)
-    frame.extend_from_slice(&[
-        0x04, // Structure length
-        0x04, // Connection type: TUNNEL_CONNECTION
-        0x02, // KNX layer: TUNNEL_LINKLAYER
-        0x00, // Reserved
-    ]);
-
-    Ok(frame)
-}
-
-/// Parse CONNECT_RESPONSE and extract channel_id and status
-fn parse_connect_response(data: &[u8]) -> Result<(u8, u8), String> {
-    if data.len() < 8 {
-        return Err("CONNECT_RESPONSE too short".to_string());
-    }
-
-    // Verify service type (0x0206 = CONNECT_RESPONSE)
-    if data[2] != 0x02 || data[3] != 0x06 {
-        return Err("Not a CONNECT_RESPONSE".to_string());
-    }
-
-    let channel_id = data[6];
-    let status = data[7];
-
-    Ok((channel_id, status))
-}
-
-/// Build TUNNELING_ACK frame
-fn build_tunneling_ack(channel_id: u8, seq_counter: u8) -> Vec<u8> {
-    vec![
-        0x06, // Header length
-        0x10, // Protocol version
-        0x04,
-        0x21, // TUNNELING_ACK
-        0x00,
-        0x0A, // Total length (10 bytes)
-        0x04, // Connection header length
-        channel_id,
-        seq_counter,
-        0x00, // Status (OK)
-    ]
-}
-
-/// Check if frame is a TUNNELING_REQUEST
-fn is_tunneling_request(data: &[u8]) -> bool {
-    data.len() >= 4 && data[2] == 0x04 && data[3] == 0x20
-}
-
-/// Check if frame is a TUNNELING_ACK
-fn is_tunneling_ack(data: &[u8]) -> bool {
-    data.len() >= 4 && data[2] == 0x04 && data[3] == 0x21
-}
-
-/// Parse KNX telegram and extract group address and data
-///
-/// Returns (group_address_raw, payload) if this is a valid L_Data.ind telegram
-fn parse_telegram(data: &[u8]) -> Option<(u16, Vec<u8>)> {
-    if data.len() < 20 {
-        return None;
-    }
-
-    // Verify TUNNELING_REQUEST
-    if !is_tunneling_request(data) {
-        return None;
-    }
-
-    // cEMI frame starts at offset 10
-    let cemi_start = 10;
-    let message_code = data[cemi_start];
-
-    // Only process L_Data.ind (0x29)
-    if message_code != 0x29 {
-        return None;
-    }
-
-    // Parse additional info length
-    let add_info_len = data.get(cemi_start + 1).copied()? as usize;
-    let addr_start = cemi_start + 2 + add_info_len;
-
-    if data.len() < addr_start + 8 {
-        return None;
-    }
-
-    // Control field 2 - check if group address
-    let control2 = data[addr_start + 1];
-    if (control2 & 0x80) == 0 {
-        return None; // Physical address, skip
-    }
-
-    // Destination address (group)
-    let dest_raw = u16::from_be_bytes([data[addr_start + 4], data[addr_start + 5]]);
-
-    // NPDU length byte interpretation (KNX cEMI spec):
-    // - For value = 1: Short telegram (6-bit data in APCI)
-    // - For value >= 2: Length-1 encoding (actual bytes = value + 1)
-    let npdu_len_field = data.get(addr_start + 6).copied()? as usize;
-    let npdu_len = if npdu_len_field == 1 {
-        1 // Short telegram flag
-    } else {
-        npdu_len_field + 1 // Multi-byte: actual = field + 1
     };
 
-    if npdu_len == 0 {
+    let hpai = Hpai::new(ip_bytes, local_addr.port());
+    let request = ConnectRequest::new(hpai, hpai);
+
+    let mut buffer = [0u8; 32];
+    let len = request
+        .build(&mut buffer)
+        .map_err(|e| format!("Failed to build CONNECT_REQUEST: {:?}", e))?;
+
+    Ok(buffer[..len].to_vec())
+}
+
+/// Parse CONNECT_RESPONSE using knx-pico and extract channel_id and status
+fn parse_connect_response(data: &[u8]) -> Result<(u8, u8), String> {
+    let frame =
+        KnxnetIpFrame::parse(data).map_err(|e| format!("Failed to parse frame: {:?}", e))?;
+
+    if frame.service_type() != ServiceType::ConnectResponse {
+        return Err(format!(
+            "Not a CONNECT_RESPONSE, got: {:?}",
+            frame.service_type()
+        ));
+    }
+
+    let response = ConnectResponse::parse(frame.body())
+        .map_err(|e| format!("Failed to decode CONNECT_RESPONSE: {:?}", e))?;
+
+    Ok((response.channel_id, response.status))
+}
+
+/// Build TUNNELING_ACK frame using knx-pico
+fn build_tunneling_ack(channel_id: u8, seq_counter: u8) -> Vec<u8> {
+    let conn_header = ConnectionHeader::new(channel_id, seq_counter);
+    let ack = TunnelingAck::new(conn_header, 0); // status = 0 (OK)
+    let mut buffer = [0u8; 16];
+    let len = ack
+        .build(&mut buffer)
+        .expect("Buffer too small for TUNNELING_ACK");
+    buffer[..len].to_vec()
+}
+
+/// Check if frame is a TUNNELING_REQUEST using knx-pico
+fn is_tunneling_request(data: &[u8]) -> bool {
+    if let Ok(frame) = KnxnetIpFrame::parse(data) {
+        frame.service_type() == ServiceType::TunnellingRequest
+    } else {
+        false
+    }
+}
+
+/// Check if frame is a TUNNELING_ACK using knx-pico
+fn is_tunneling_ack(data: &[u8]) -> bool {
+    if let Ok(frame) = KnxnetIpFrame::parse(data) {
+        frame.service_type() == ServiceType::TunnellingAck
+    } else {
+        false
+    }
+}
+
+/// Parse KNX telegram using knx-pico and extract group address and data
+///
+/// Returns (group_address, payload) if this is a valid L_Data.ind telegram
+fn parse_telegram(data: &[u8]) -> Option<(GroupAddress, Vec<u8>)> {
+    // Parse KNXnet/IP frame
+    let frame = KnxnetIpFrame::parse(data).ok()?;
+
+    // Only process TUNNELLING_REQUEST
+    if frame.service_type() != ServiceType::TunnellingRequest {
         return None;
     }
 
-    // Extract payload
-    let tpci_apci_pos = addr_start + 7;
+    // Parse tunneling request to get cEMI
+    let tunneling_req = TunnelingRequest::parse(frame.body()).ok()?;
 
-    let payload = if npdu_len == 1 {
-        // Short telegram: 6-bit data in APCI (NPDU length = 1 means 2 bytes: TPCI + APCI)
-        let short_val = data.get(tpci_apci_pos + 1).copied()? & 0x3F;
-        vec![short_val]
-    } else {
-        // Multi-byte data
-        if data.len() < tpci_apci_pos + npdu_len {
+    // Parse cEMI frame
+    let cemi = CEMIFrame::parse(tunneling_req.cemi_data).ok()?;
+
+    // Only process L_Data frames
+    if !cemi.is_ldata() {
+        return None;
+    }
+
+    // Parse LData frame using knx-pico (handles all encoding variants including 6-bit values)
+    let ldata = match cemi.as_ldata() {
+        Ok(l) => l,
+        Err(_e) => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("Failed to parse L_Data frame: {:?}", _e);
             return None;
         }
-        data[tpci_apci_pos..tpci_apci_pos + npdu_len].to_vec()
     };
 
-    Some((dest_raw, payload))
+    #[cfg(feature = "tracing")]
+    {
+        let dest_addr = ldata.destination_raw;
+        let npdu_len = ldata.npdu_length;
+        tracing::trace!(
+            "LData parsed: dest={:04X}, npdu_len={}, ldata.data.len()={}",
+            dest_addr,
+            npdu_len,
+            ldata.data.len()
+        );
+    }
+
+    // Only process group write commands
+    if !ldata.is_group_write() {
+        return None;
+    }
+
+    // Only process group addresses (not individual addresses)
+    let dest = ldata.destination_group()?;
+
+    // Extract payload (application data)
+    // For 6-bit encoded values (DPT1 boolean), ldata.data is empty
+    // and the value is encoded in the APCI byte. We need to extract it manually.
+    // Note: npdu_length can be 1 (combined TPCI+APCI) or 2 (separate TPCI and APCI)
+    let payload = if ldata.data.is_empty() {
+        // 6-bit encoding: extract value from APCI byte in raw cEMI data
+        // cEMI structure: [msg_code, add_info_len, <add_info>, ctrl1, ctrl2, src(2), dest(2), npdu_len, tpci, apci, ...]
+        // APCI byte position = 2 + add_info_len + 6 (ctrl1, ctrl2, src(2), dest(2), npdu_len) + 1 (tpci) = 2 + add_info_len + 7 + 1
+        let cemi_data = tunneling_req.cemi_data;
+        let add_info_len = if cemi_data.len() > 1 { cemi_data[1] } else { 0 } as usize;
+        let apci_pos = 2 + add_info_len + 8; // TPCI is at +7, APCI is at +8
+
+        if cemi_data.len() > apci_pos {
+            let apci_byte = cemi_data[apci_pos];
+            let value = apci_byte & 0x3F; // Extract 6-bit value
+
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                "6-bit decoding: apci_byte={:02X}, extracted_value={:02X}, add_info_len={}, apci_pos={}",
+                apci_byte, value, add_info_len, apci_pos
+            );
+
+            vec![value]
+        } else {
+            vec![]
+        }
+    } else {
+        // Standard encoding: multi-byte data (DPT5, DPT7, DPT9, etc.)
+        //
+        // cEMI L_Data structure (after msg_code and add_info):
+        // [0] ctrl1, [1] ctrl2, [2-3] src, [4-5] dest, [6] npdu_len, [7] TPCI, [8] APCI_low, [9+] data
+        //
+        // According to knx-pico parser: data starts at position 9 in L_Data
+        // In full cEMI frame: position = 2 + add_info_len + 9 = 11 (when add_info_len=0)
+        let cemi_data = tunneling_req.cemi_data;
+        let add_info_len = if cemi_data.len() > 1 { cemi_data[1] } else { 0 } as usize;
+
+        // Data starts at: msg_code(0) + add_info_len_field(1) + add_info(variable) + L_Data_header(9)
+        let ldata_offset = 2 + add_info_len;
+        let data_start = ldata_offset + 9; // Position 11 when add_info_len=0
+
+        #[cfg(feature = "tracing")]
+        {
+            let npdu_len_pos = ldata_offset + 6;
+            let tpci_pos = ldata_offset + 7;
+            let apci_pos = ldata_offset + 8;
+
+            tracing::debug!(
+                "cEMI: len={}, add_info_len={}, NPDU_len@{}={:02X}, TPCI@{}={:02X}, APCI@{}={:02X}, Data@{}+={:02X?}",
+                cemi_data.len(),
+                add_info_len,
+                npdu_len_pos, cemi_data[npdu_len_pos],
+                tpci_pos, cemi_data[tpci_pos],
+                apci_pos, cemi_data[apci_pos],
+                data_start, &cemi_data[data_start..]
+            );
+        }
+
+        let extracted = if cemi_data.len() > data_start {
+            cemi_data[data_start..].to_vec()
+        } else {
+            // Fallback to knx-pico's parsed data if extraction fails
+            ldata.data.to_vec()
+        };
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!("Extracted {} bytes: {:02X?}", extracted.len(), extracted);
+
+        extracted
+    };
+
+    #[cfg(feature = "tracing")]
+    tracing::trace!(
+        "Parsed telegram for {}: {} payload bytes: {:02X?}",
+        dest,
+        payload.len(),
+        payload
+    );
+
+    Some((dest, payload))
 }
 
 /// Build GroupValueWrite cEMI frame (L_Data.req)
-fn build_group_write_cemi(group_addr: u16, data: &[u8]) -> Vec<u8> {
-    let mut frame = vec![
-        0x11, // cEMI message code: L_Data.req
-        0x00, // Additional info length: 0
-        0xBC, // Control field 1: Standard frame, no repeat, broadcast, priority low
-        0xE0, // Control field 2: Group address, hop count 6
-    ];
+///
+/// Must match knx-pico's exact cEMI structure for proper parsing.
+/// Structure: [msg_code, add_info_len, ctrl1, ctrl2, src(2), dest(2), npdu_len, tpci, apci, data...]
+fn build_group_write_cemi(group_addr: GroupAddress, data: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(16);
 
-    // Source address: 0.0.0 (device address)
+    // Message code: L_Data.req (0x11)
+    frame.push(0x11);
+
+    // Additional info length: 0
+    frame.push(0x00);
+
+    // Control field 1: 0xBC (Standard frame, no repeat, broadcast, priority low)
+    // Use 0xBC instead of 0x94 - this is critical for gateway compatibility
+    frame.push(0xBC);
+
+    // Control field 2: 0xE0 (Group address, hop count 6)
+    frame.push(0xE0);
+
+    // Source address: 0.0.0 (2 bytes, big-endian)
     frame.extend_from_slice(&[0x00, 0x00]);
 
-    // Destination address (group address)
-    frame.extend_from_slice(&group_addr.to_be_bytes());
+    // Destination address (group address) - convert to u16 big-endian
+    let dest_raw: u16 = group_addr.into();
+    let dest_bytes = dest_raw.to_be_bytes();
+    frame.extend_from_slice(&dest_bytes);
 
-    // Check if this is a short telegram (1 byte, value < 64)
+    // Build NPDU: NPDU_length field + TPCI + APCI + data
+    // CRITICAL: NPDU length encoding per KNX spec:
+    // - For short telegram: field = 0x01 (special flag)
+    // - For long telegram: field = actual_length - 1 (encoded as length-1)
     if data.len() == 1 && data[0] < 64 {
-        // Short telegram: encode data in APCI lower 6 bits
-        frame.push(0x01); // NPDU length = 1 (short telegram flag)
-        frame.push(0x00); // TPCI
-        frame.push(0x80 | (data[0] & 0x3F)); // APCI: GroupValueWrite + 6-bit data
+        // 6-bit encoding: value embedded in APCI byte
+        // NPDU length = 0x01 (short telegram flag, NOT byte count)
+        frame.push(0x01);
+
+        // TPCI (UnnumberedData)
+        frame.push(0x00);
+
+        // APCI low byte: GroupValueWrite (0x80) + 6-bit value
+        frame.push(0x80 | (data[0] & 0x3F));
     } else {
         // Long telegram: APCI + separate data bytes
         // NPDU length encoding: field = actual_length - 1
         let npdu_actual = 2 + data.len(); // TPCI + APCI + data
         let npdu_len_field = npdu_actual - 1; // Encode as length - 1
         frame.push(npdu_len_field as u8);
-        frame.push(0x00); // TPCI
-        frame.push(0x80); // APCI: GroupValueWrite
-        frame.extend_from_slice(data); // Payload data
+
+        // TPCI (UnnumberedData)
+        frame.push(0x00);
+
+        // APCI: GroupValueWrite
+        frame.push(0x80);
+
+        // Data bytes
+        frame.extend_from_slice(data);
     }
 
     frame
 }
 
-/// Build TUNNELING_REQUEST containing cEMI frame
+/// Build TUNNELING_REQUEST containing cEMI frame using knx-pico
 fn build_tunneling_request(channel_id: u8, seq: u8, cemi: &[u8]) -> Vec<u8> {
-    let total_len = 10 + cemi.len();
-
-    let mut frame = vec![
-        0x06,
-        0x10, // Header
-        0x04,
-        0x20,                   // TUNNELING_REQUEST
-        (total_len >> 8) as u8, // Total length high
-        total_len as u8,        // Total length low
-        0x04,                   // Connection header length
-        channel_id,             // Channel ID
-        seq,                    // Sequence counter
-        0x00,                   // Reserved
-    ];
-
-    frame.extend_from_slice(cemi);
-    frame
+    let conn_header = ConnectionHeader::new(channel_id, seq);
+    let request = TunnelingRequest::new(conn_header, cemi);
+    let mut buffer = [0u8; 256];
+    let len = request
+        .build(&mut buffer)
+        .expect("Buffer too small for TUNNELING_REQUEST");
+    buffer[..len].to_vec()
 }
 
 /// Send GroupValueWrite telegram (internal, called from connection task)
@@ -932,17 +1017,34 @@ async fn send_group_write_internal(
     socket: &UdpSocket,
     gateway_addr: SocketAddr,
     channel_state: &mut ChannelState,
-    group_addr: u16,
+    group_addr: GroupAddress,
     data: &[u8],
 ) -> Result<(), String> {
     // Build cEMI frame
     let cemi = build_group_write_cemi(group_addr, data);
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Built cEMI frame for {} ({} data bytes): {:02X?}",
+        group_addr,
+        data.len(),
+        &cemi
+    );
 
     // Get next sequence number
     let seq = channel_state.next_outbound_seq();
 
     // Build TUNNELING_REQUEST
     let telegram = build_tunneling_request(channel_state.channel_id, seq, &cemi);
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Built TUNNELING_REQUEST: channel={}, seq={}, total_len={} bytes: {:02X?}",
+        channel_state.channel_id,
+        seq,
+        telegram.len(),
+        &telegram
+    );
 
     // Send via UDP
     socket
@@ -953,53 +1055,12 @@ async fn send_group_write_internal(
     #[cfg(feature = "tracing")]
     tracing::debug!(
         "Sent GroupWrite: {} seq={} ({} bytes)",
-        format_group_address(group_addr),
+        group_addr, // GroupAddress implements Display
         seq,
         data.len()
     );
 
-
     Ok(())
-}
-
-/// Parse group address string "main/middle/sub" to raw u16
-fn parse_group_address(addr_str: &str) -> Result<u16, String> {
-    let parts: Vec<&str> = addr_str.split('/').collect();
-
-    if parts.len() != 3 {
-        return Err(format!("Invalid group address format: {}", addr_str));
-    }
-
-    let main: u8 = parts[0]
-        .parse()
-        .map_err(|_| format!("Invalid main group: {}", parts[0]))?;
-    let middle: u8 = parts[1]
-        .parse()
-        .map_err(|_| format!("Invalid middle group: {}", parts[1]))?;
-    let sub: u8 = parts[2]
-        .parse()
-        .map_err(|_| format!("Invalid sub group: {}", parts[2]))?;
-
-    if main > 31 {
-        return Err(format!("Main group must be 0-31, got {}", main));
-    }
-    if middle > 7 {
-        return Err(format!("Middle group must be 0-7, got {}", middle));
-    }
-
-    // Encode: 5 bits main | 3 bits middle | 8 bits sub
-    let raw = ((main as u16) << 11) | ((middle as u16) << 8) | (sub as u16);
-
-    Ok(raw)
-}
-
-/// Format raw group address u16 to string "main/middle/sub"
-fn format_group_address(raw: u16) -> String {
-    let main = (raw >> 11) & 0x1F;
-    let middle = (raw >> 8) & 0x07;
-    let sub = raw & 0xFF;
-
-    format!("{}/{}/{}", main, middle, sub)
 }
 
 #[cfg(test)]
@@ -1023,20 +1084,26 @@ mod tests {
 
     #[test]
     fn test_group_address_parsing() {
-        assert_eq!(parse_group_address("1/0/7").unwrap(), 0x0807);
-        assert_eq!(parse_group_address("0/0/0").unwrap(), 0x0000);
-        assert_eq!(parse_group_address("31/7/255").unwrap(), 0xFFFF);
+        // Test using knx-pico's GroupAddress parser
+        assert_eq!("1/0/7".parse::<GroupAddress>().unwrap().raw(), 0x0807);
+        assert_eq!("0/0/0".parse::<GroupAddress>().unwrap().raw(), 0x0000);
+        assert_eq!("31/7/255".parse::<GroupAddress>().unwrap().raw(), 0xFFFF);
 
-        assert!(parse_group_address("32/0/0").is_err());
-        assert!(parse_group_address("0/8/0").is_err());
-        assert!(parse_group_address("1/0").is_err());
+        // knx-pico supports both 3-level (main/middle/sub) and 2-level (main/sub) formats
+        assert!("1/0".parse::<GroupAddress>().is_ok()); // 2-level format is valid
+
+        // Invalid formats
+        assert!("32/0/0".parse::<GroupAddress>().is_err()); // main > 31
+        assert!("0/8/0".parse::<GroupAddress>().is_err()); // middle > 7 in 3-level
+        assert!("invalid".parse::<GroupAddress>().is_err()); // not a number
     }
 
     #[test]
     fn test_group_address_formatting() {
-        assert_eq!(format_group_address(0x0807), "1/0/7");
-        assert_eq!(format_group_address(0x0000), "0/0/0");
-        assert_eq!(format_group_address(0xFFFF), "31/7/255");
+        // Test using knx-pico's GroupAddress Display impl
+        assert_eq!(GroupAddress::from(0x0807).to_string(), "1/0/7");
+        assert_eq!(GroupAddress::from(0x0000).to_string(), "0/0/0");
+        assert_eq!(GroupAddress::from(0xFFFF).to_string(), "31/7/255");
     }
 
     #[test]
@@ -1044,8 +1111,8 @@ mod tests {
         let addresses = vec!["1/0/7", "0/0/0", "31/7/255", "5/3/128"];
 
         for addr in addresses {
-            let raw = parse_group_address(addr).unwrap();
-            let formatted = format_group_address(raw);
+            let parsed = addr.parse::<GroupAddress>().unwrap();
+            let formatted = parsed.to_string();
             assert_eq!(formatted, addr);
         }
     }

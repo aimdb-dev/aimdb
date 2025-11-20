@@ -170,10 +170,8 @@ async fn main() -> DbResult<()> {
             .link_from("knx://1/0/7")
             .with_deserializer(|data: &[u8]| {
                 // Use DPT 1.001 (Switch) to decode boolean value
-                let is_on = Dpt1::Switch
-                    .decode(data)
-                    .unwrap_or(false);
-                
+                let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
+
                 Ok(LightState {
                     group_address: "1/0/7".to_string(),
                     is_on,
@@ -194,9 +192,7 @@ async fn main() -> DbResult<()> {
             .link_from("knx://9/1/0")
             .with_deserializer(|data: &[u8]| {
                 // Use DPT 9.001 (Temperature) to decode 2-byte float temperature
-                let celsius = Dpt9::Temperature
-                    .decode(data)
-                    .unwrap_or(0.0);
+                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
 
                 Ok(Temperature {
                     group_address: "9/1/0".to_string(),
@@ -219,9 +215,7 @@ async fn main() -> DbResult<()> {
             .with_serializer(|state: &LightControl| {
                 // Use DPT 1.001 (Switch) to encode boolean value
                 let mut buf = [0u8; 1];
-                let len = Dpt1::Switch
-                    .encode(state.is_on, &mut buf)
-                    .unwrap_or(0);
+                let len = Dpt1::Switch.encode(state.is_on, &mut buf).unwrap_or(0);
                 Ok(buf[..len].to_vec())
             })
             .finish();

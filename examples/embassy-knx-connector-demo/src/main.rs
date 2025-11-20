@@ -40,6 +40,8 @@ use aimdb_core::{AimDbBuilder, Consumer, RuntimeContext};
 use aimdb_embassy_adapter::{
     EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
 };
+use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
+use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
@@ -53,8 +55,6 @@ use embassy_time::{Duration, Timer};
 use heapless::String as HeaplessString;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
-
-use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
 
 // Simple embedded allocator (required by some dependencies)
 #[global_allocator]
@@ -105,48 +105,6 @@ struct LightControl {
     is_on: bool,
     #[allow(dead_code)]
     timestamp: u32,
-}
-
-impl Temperature {
-    /// Parse DPT 9.001 (2-byte float temperature)
-    fn from_knx_dpt9(data: &[u8]) -> Result<f32, alloc::string::String> {
-        use alloc::string::ToString;
-
-        // Determine where the actual temperature bytes are based on frame length
-        let temp_bytes = if data.len() >= 4 {
-            // Full frame: TPCI + APCI + 2 data bytes
-            // Temperature is in bytes [2] and [3]
-            [data[2], data[3]]
-        } else if data.len() == 3 {
-            // Short frame with control byte: TPCI/APCI + 2 data bytes
-            // Temperature is in bytes [1] and [2]
-            [data[1], data[2]]
-        } else if data.len() == 2 {
-            // Just the temperature bytes (no control bytes)
-            [data[0], data[1]]
-        } else {
-            return Err("DPT 9.001 requires at least 2 bytes".to_string());
-        };
-
-        let raw = u16::from_be_bytes(temp_bytes);
-
-        // DPT 9.001 format:
-        // Bit 15: Sign (0=positive, 1=negative)
-        // Bits 14-11: Exponent (4 bits, unsigned)
-        // Bits 10-0: Mantissa (11 bits, unsigned)
-        // Formula: value = (0.01 * mantissa) * 2^exponent * (sign ? -1 : 1)
-        let sign_bit = (raw >> 15) & 0x01;
-        let exponent = ((raw >> 11) & 0x0F) as i32;
-        let mantissa = (raw & 0x07FF) as i16;
-
-        // Apply sign to mantissa
-        let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
-
-        // Calculate temperature: (0.01 * mantissa) * 2^exponent
-        let value = (0.01 * signed_mantissa as f32) * micromath::F32Ext::powi(2.0, exponent);
-
-        Ok(value)
-    }
 }
 
 /// Consumer that logs incoming KNX light telegrams
@@ -422,7 +380,8 @@ async fn main(spawner: Spawner) {
             // Subscribe from KNX group address 1/0/7 (light switch monitoring)
             .link_from("knx://1/0/7")
             .with_deserializer(|data: &[u8]| {
-                let is_on = data.first().map(|&b| b != 0).unwrap_or(false);
+                // Use DPT 1.001 (Switch) to decode boolean value
+                let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
                 let mut group_address = HeaplessString::<16>::new();
                 let _ = group_address.push_str("1/0/7");
 
@@ -442,18 +401,8 @@ async fn main(spawner: Spawner) {
             // Subscribe from KNX temperature sensor (group address 9/1/0)
             .link_from("knx://9/1/0")
             .with_deserializer(|data: &[u8]| {
-                // DPT 9.001 can arrive in different formats depending on how the NPDU is structured:
-                // - 4 bytes: [TPCI, APCI, temp_high, temp_low] (standard)
-                // - 3 bytes: [combined_TPCI_APCI, temp_high, temp_low] (some gateways)
-                // - 2 bytes: [temp_high, temp_low] (raw temperature data)
-                if data.len() < 2 {
-                    return Err(alloc::format!(
-                        "Temperature data too short: {} bytes (need at least 2)",
-                        data.len()
-                    ));
-                }
-
-                let celsius = Temperature::from_knx_dpt9(data)?;
+                // Use DPT 9.001 (Temperature) to decode 2-byte float temperature
+                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
                 let mut group_address = HeaplessString::<16>::new();
                 let _ = group_address.push_str("9/1/0");
 
@@ -474,8 +423,10 @@ async fn main(spawner: Spawner) {
             // Publish to KNX group address 1/0/6 (light control)
             .link_to("knx://1/0/6")
             .with_serializer(|state: &LightControl| {
-                // DPT 1.001 - boolean (1 byte)
-                Ok(alloc::vec![if state.is_on { 0x01 } else { 0x00 }])
+                // Use DPT 1.001 (Switch) to encode boolean value
+                let mut buf = [0u8; 1];
+                let len = Dpt1::Switch.encode(state.is_on, &mut buf).unwrap_or(0);
+                Ok(buf[..len].to_vec())
             })
             .finish();
     });
