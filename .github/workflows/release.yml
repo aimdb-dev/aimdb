@@ -60,7 +60,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Publish to crates.io
-      run: make publish
-      env:
-        CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+    # Publishing to crates.io is done manually to handle version-specific logic
+    # Run `make publish` locally after verifying the release
+    # - name: Publish to crates.io
+    #   run: make publish
+    #   env:
+    #     CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
