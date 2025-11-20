@@ -4,18 +4,13 @@ on:
   push:
     branches: [ main, develop ]
     paths:
-      - '.devcontainer/Dockerfile'
-      - '.devcontainer/devcontainer.json'
+      - '.devcontainer/**'
       - '.github/workflows/devcontainer.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
     paths:
-      - '.devcontainer/Dockerfile'
-      - '.devcontainer/devcontainer.json'
+      - '.devcontainer/**'
       - '.github/workflows/devcontainer.yml'
-  schedule:
-    # Test weekly to catch upstream image changes
-    - cron: '0 6 * * 1'  # Every Monday at 6 AM UTC
   workflow_dispatch:
 
 env:
@@ -168,6 +163,19 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -186,6 +194,7 @@ jobs:
           image-ref: aimdb-devcontainer:scan
           format: 'sarif'
           output: 'trivy-results.sarif'
+          skip-dirs: '/usr/share/dotnet,/usr/local/lib/android'
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3

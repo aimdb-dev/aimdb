@@ -60,6 +60,15 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::once_lock::OnceLock;
 use static_cell::StaticCell;
 
+/// Type alias for outbound route configuration
+/// (resource_id, consumer, serializer, config_params)
+type OutboundRoute = (
+    String,
+    Box<dyn aimdb_core::connector::ConsumerTrait>,
+    aimdb_core::connector::SerializerFn,
+    Vec<(String, String)>,
+);
+
 use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
@@ -543,12 +552,7 @@ impl MqttConnectorImpl {
     fn spawn_outbound_publishers<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
-        routes: alloc::vec::Vec<(
-            alloc::string::String,
-            alloc::boxed::Box<dyn aimdb_core::connector::ConsumerTrait>,
-            aimdb_core::connector::SerializerFn,
-            alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
-        )>,
+        routes: Vec<OutboundRoute>,
     ) -> aimdb_core::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
@@ -556,7 +560,7 @@ impl MqttConnectorImpl {
         let runtime = db.runtime();
 
         for (topic, consumer, serializer, config) in routes {
-            let action_sender = self.action_sender.clone();
+            let action_sender = self.action_sender;
             let topic_clone = topic.clone();
 
             // Parse config options
@@ -597,12 +601,12 @@ impl MqttConnectorImpl {
                     // Serialize the type-erased value
                     let bytes = match serializer(&*value_any) {
                         Ok(b) => b,
-                        Err(e) => {
+                        Err(_e) => {
                             #[cfg(feature = "defmt")]
                             defmt::error!(
                                 "Failed to serialize for topic '{}': {:?}",
                                 topic_clone,
-                                e
+                                _e
                             );
                             continue;
                         }
@@ -644,7 +648,7 @@ impl aimdb_core::transport::Connector for MqttConnectorImpl {
         let payload_owned = payload.to_vec();
         let qos = Self::map_qos(config.qos);
         let retain = config.retain;
-        let action_sender = self.action_sender.clone();
+        let action_sender = self.action_sender;
 
         Box::pin(SendFutureWrapper(async move {
             #[cfg(feature = "defmt")]

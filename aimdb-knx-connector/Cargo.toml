@@ -1,0 +1,92 @@
+[package]
+name = "aimdb-knx-connector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "KNX/IP connector for AimDB - supports both std (Tokio) and no_std (Embassy) environments"
+keywords = ["knx", "aimdb", "connector", "building-automation", "embedded"]
+categories = ["database-implementations", "embedded", "network-programming"]
+
+[features]
+default = []
+std = ["aimdb-core/std", "knx-pico/std", "thiserror"]
+tokio-runtime = ["std", "tokio", "uuid", "async-stream", "futures-util"]
+embassy-runtime = [
+    "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
+    "dep:aimdb-embassy-adapter",                 # Enable the optional dependency
+    "aimdb-embassy-adapter/embassy-net-support", # Enable EmbassyNetwork trait for network stack access
+    "embassy-executor",
+    "embassy-time",
+    "embassy-sync",
+    "embassy-net",
+    "embassy-futures",
+    "heapless",
+    "static_cell",
+]
+tracing = ["dep:tracing", "aimdb-core/tracing"]
+defmt = [
+    "dep:defmt",
+    "aimdb-core/defmt",
+    "knx-pico/defmt",
+] # Only use knx-pico's defmt for logging
+
+[dependencies]
+aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false }
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
+aimdb-embassy-adapter = { version = "0.1.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+
+knx-pico = { path = "../_external/knx-pico", default-features = false }
+
+# Error handling (std only)
+thiserror = { workspace = true, optional = true }
+
+# UUID generation for client IDs (std only)
+uuid = { version = "1.0", features = ["v4"], optional = true }
+
+# Tokio runtime dependencies (std)
+tokio = { workspace = true, optional = true, features = [
+    "sync",
+    "time",
+    "net",
+] }
+async-stream = { version = "0.3", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = [
+    "alloc",
+] }
+futures-core = { version = "0.3", default-features = false }
+
+# Embassy runtime dependencies (no_std)
+# Note: These use the workspace's local embassy checkout to avoid conflicts
+embassy-executor = { version = "0.9.1", path = "../_external/embassy/embassy-executor", optional = true }
+embassy-time = { version = "0.5.0", path = "../_external/embassy/embassy-time", optional = true }
+embassy-sync = { version = "0.7.2", path = "../_external/embassy/embassy-sync", optional = true }
+embassy-futures = { version = "0.1", path = "../_external/embassy/embassy-futures", optional = true }
+embassy-net = { version = "0.7.1", path = "../_external/embassy/embassy-net", optional = true, features = [
+    "tcp",
+    "udp",
+    "dhcpv4",
+    "medium-ethernet",
+    "proto-ipv4",
+] }
+
+# Embedded utilities
+heapless = { workspace = true, optional = true }
+static_cell = { version = "2.0", optional = true }
+
+# Optional observability
+tracing = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-test = "0.4"
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

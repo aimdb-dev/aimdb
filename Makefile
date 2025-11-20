@@ -56,6 +56,8 @@ build:
 	cargo build --package aimdb-cli
 	@printf "$(YELLOW)  → Building MCP server$(NC)\n"
 	cargo build --package aimdb-mcp
+	@printf "$(YELLOW)  → Building KNX connector$(NC)\n"
+	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
@@ -73,10 +75,12 @@ test:
 	cargo test --package aimdb-cli
 	@printf "$(YELLOW)  → Testing MCP server$(NC)\n"
 	cargo test --package aimdb-mcp
+	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
+	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+	@for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -85,7 +89,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo; do \
+	for pkg in aimdb-executor aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -118,6 +122,10 @@ clippy:
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MCP server$(NC)\n"
 	cargo clippy --package aimdb-mcp --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on KNX connector (std)$(NC)\n"
+	cargo clippy --package aimdb-knx-connector --features "std,tokio-runtime" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on KNX connector (embassy)$(NC)\n"
+	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
@@ -129,6 +137,7 @@ doc:
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
+	cargo doc --package aimdb-knx-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-cli --no-deps
 	cargo doc --package aimdb-mcp --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
@@ -136,6 +145,7 @@ doc:
 	cargo doc --package aimdb-core --no-default-features --no-deps
 	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-knx-connector --no-default-features --features "embassy-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
 	@printf "$(YELLOW)  → Creating main index page$(NC)\n"
 	@cp docs/index.html target/doc-final/index.html
@@ -158,6 +168,8 @@ test-embedded:
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-net-support"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
 
 ## Example projects
 examples:
@@ -168,6 +180,10 @@ examples:
 	cargo build --package tokio-mqtt-connector-demo
 	@printf "$(YELLOW)  → Building embassy-mqtt-connector-demo (embedded, embassy runtime)$(NC)\n"
 	cargo build --package embassy-mqtt-connector-demo --target thumbv7em-none-eabihf
+	@printf "$(YELLOW)  → Building tokio-knx-connector-demo (native, tokio runtime)$(NC)\n"
+	cargo build --package tokio-knx-connector-demo
+	@printf "$(YELLOW)  → Building embassy-knx-connector-demo (embedded, embassy runtime)$(NC)\n"
+	cargo build --package embassy-knx-connector-demo --target thumbv7em-none-eabihf
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Security & Quality commands

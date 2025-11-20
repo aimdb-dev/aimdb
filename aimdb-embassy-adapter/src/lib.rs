@@ -263,6 +263,54 @@ where
         &'a mut self,
         buffer_type: EmbassyBufferType,
     ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>;
+
+    /// Registers a producer with additional context (e.g., hardware peripherals)
+    ///
+    /// This is an extension of `.source()` that allows passing extra context
+    /// to the producer function. This is particularly useful for hardware-dependent
+    /// producers that need access to GPIO pins, UART handles, sensors, etc.
+    ///
+    /// # Type Parameters
+    /// - `Ctx`: Additional context type (e.g., `ExtiInput`, UART handle, sensor interface)
+    /// - `F`: Closure that takes (RuntimeContext, Producer, Context) and returns a Future
+    ///
+    /// # Example
+    /// ```ignore
+    /// use embassy_stm32::exti::ExtiInput;
+    ///
+    /// builder.configure::<LightControl>(|reg| {
+    ///     reg.buffer_sized::<8, 2>(EmbassyBufferType::SingleLatest)
+    ///         .link_to("knx://1/0/6")
+    ///         .source_with_context(button, button_handler)
+    ///         .finish()
+    /// });
+    ///
+    /// async fn button_handler(
+    ///     ctx: RuntimeContext<EmbassyAdapter>,
+    ///     producer: Producer<LightControl, EmbassyAdapter>,
+    ///     button: ExtiInput<'static>,
+    /// ) {
+    ///     // Use the button peripheral
+    ///     button.wait_for_falling_edge().await;
+    ///     // Produce data...
+    /// }
+    /// ```
+    fn source_with_context<Ctx, F, Fut>(
+        &'a mut self,
+        context: Ctx,
+        f: F,
+    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
+    where
+        Ctx: Send + Sync + 'static,
+        F: FnOnce(
+                aimdb_core::RuntimeContext<EmbassyAdapter>,
+                aimdb_core::Producer<T, EmbassyAdapter>,
+                Ctx,
+            ) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: core::future::Future<Output = ()> + Send + 'static;
 }
 
 #[cfg(all(feature = "embassy-runtime", feature = "embassy-sync"))]
@@ -298,5 +346,28 @@ where
             &cfg,
         ));
         self.buffer_raw(buffer)
+    }
+
+    fn source_with_context<Ctx, F, Fut>(
+        &'a mut self,
+        context: Ctx,
+        f: F,
+    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
+    where
+        Ctx: Send + Sync + 'static,
+        F: FnOnce(
+                aimdb_core::RuntimeContext<EmbassyAdapter>,
+                aimdb_core::Producer<T, EmbassyAdapter>,
+                Ctx,
+            ) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: core::future::Future<Output = ()> + Send + 'static,
+    {
+        self.source_raw(|producer, ctx_any| {
+            let ctx = aimdb_core::RuntimeContext::extract_from_any(ctx_any);
+            f(ctx, producer, context)
+        })
     }
 }

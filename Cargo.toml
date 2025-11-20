@@ -7,10 +7,13 @@ members = [
     "aimdb-tokio-adapter",
     "aimdb-sync",
     "aimdb-mqtt-connector",
+    "aimdb-knx-connector",
     "tools/aimdb-cli",
     "tools/aimdb-mcp",
     "examples/tokio-mqtt-connector-demo",
+    "examples/tokio-knx-connector-demo",
     "examples/embassy-mqtt-connector-demo",
+    "examples/embassy-knx-connector-demo",
     "examples/sync-api-demo",
     "examples/remote-access-demo",
 ]
