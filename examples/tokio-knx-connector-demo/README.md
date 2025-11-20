@@ -34,7 +34,7 @@ Edit `src/main.rs` to match your KNX setup:
 
 // Group addresses
 .link_from("knx://1/0/7")   // Inbound: light switch
-.link_to("knx://1/0/8")     // Outbound: light control
+.link_to("knx://1/0/6")     // Outbound: light control
 .link_from("knx://1/1/10")  // Inbound: temperature sensor
 ```
 
