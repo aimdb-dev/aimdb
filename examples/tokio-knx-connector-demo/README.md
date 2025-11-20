@@ -166,7 +166,7 @@ The demo includes examples of common Data Point Types:
   let raw = i16::from_be_bytes([data[0], data[1]]);
   let exponent = (raw >> 11) & 0x0F;
   let mantissa = raw & 0x7FF;
-  let celsius = mantissa as f32 * 2^(exponent - 12) * 0.01;
+  let celsius = mantissa as f32 * 2_f32.powi((exponent - 12) as i32) * 0.01;
   ```
 
 For more DPT types, see the [KNX DPT specification](https://www.knx.org/).
