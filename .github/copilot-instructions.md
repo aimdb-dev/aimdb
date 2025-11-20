@@ -9,21 +9,37 @@ AimDB is an async, in-memory database for data synchronization across **MCU → 
 - ✅ **Buffer Systems** - SPMC Ring, SingleLatest, Mailbox with simplified config
 - ✅ **Producer-Consumer** - Complete with typed patterns
 - ✅ **MQTT Connector** - Both std (rumqttc) and embedded (mountain-mqtt)
+- ✅ **KNX Connector** - Building automation support for std and embedded
 - ✅ **MCP Server** - LLM-powered introspection with schema inference
+- ✅ **Client Library** - AimX protocol client for remote database access
+- ✅ **Sync API** - Synchronous wrapper for blocking code integration
+- ✅ **CLI Tools** - Basic introspection and management commands
 - ✅ **Examples & Tests** - Comprehensive coverage including embedded cross-compilation
 - 🚧 **Kafka/DDS Connectors** - Planned
-- 🚧 **CLI Tools** - Skeleton only
 
 **Workspace Structure:**
 ```
-aimdb-core/              # Core database engine
+aimdb-core/              # Core database engine + AimX protocol
 aimdb-executor/          # Runtime trait abstractions
 aimdb-tokio-adapter/     # Tokio runtime adapter
 aimdb-embassy-adapter/   # Embassy runtime adapter (configurable task pool)
+aimdb-client/            # AimX protocol client for remote access
+aimdb-sync/              # Synchronous API wrapper
 aimdb-mqtt-connector/    # MQTT for std and embedded
-aimdb-mcp/               # MCP server for LLM-powered introspection
-examples/                # Working demos (tokio-mqtt, embassy-mqtt, remote-access-demo)
-tools/aimdb-cli/         # CLI (skeleton)
+aimdb-knx-connector/     # KNX/IP for building automation (std and embedded)
+tools/aimdb-cli/         # CLI tools for introspection
+tools/aimdb-mcp/         # MCP server for LLM-powered introspection
+examples/                # Working demos (see below)
+```
+
+**Example Projects:**
+```
+examples/tokio-mqtt-connector-demo/     # MQTT with Tokio runtime
+examples/embassy-mqtt-connector-demo/   # MQTT on embedded (RP2040)
+examples/tokio-knx-connector-demo/      # KNX with Tokio runtime
+examples/embassy-knx-connector-demo/    # KNX on embedded
+examples/sync-api-demo/                 # Synchronous API usage
+examples/remote-access-demo/            # AimX protocol server
 ```
 
 ## AimDB MCP Tools
@@ -144,6 +160,7 @@ Key features in `Cargo.toml`:
 - Producer-consumer patterns
 - `AimDbInner::get_typed_record<T, R>()` helper for lookups
 - Centralized error conversions
+- AimX protocol for remote access (Unix sockets, JSON-based)
 
 **Runtime Adapters:**
 - Tokio and Embassy implementations complete
@@ -151,10 +168,35 @@ Key features in `Cargo.toml`:
 - Embassy: configurable task pool (8/16/32 via features)
 - Simplified Embassy buffer API (2 params vs 4)
 
+**Client Library (`aimdb-client`):**
+- AimX protocol client for remote database access
+- Supports introspection, record read/write, subscriptions
+- Works over Unix sockets for cross-process communication
+
+**Sync API (`aimdb-sync`):**
+- Synchronous wrapper for blocking code integration
+- Bridges async AimDB to sync environments
+- Uses Tokio channels for cross-thread communication
+
 **MQTT Connector:**
 - Tokio support with `rumqttc`
 - Embassy support with `mountain-mqtt`
 - Dual runtime compatibility
+
+**KNX Connector:**
+- Tokio support for std environments
+- Embassy support for embedded environments
+- Building automation integration (KNX/IP protocol)
+- Dual runtime compatibility
+
+**CLI Tools (`aimdb-cli`):**
+- Basic database introspection commands
+- Management and debugging utilities
+
+**MCP Server (`aimdb-mcp`):**
+- LLM-powered introspection with schema inference
+- Provides tools for discovering, reading, and subscribing to records
+- Enables AI-assisted debugging and monitoring
 
 **Testing:**
 - Comprehensive async test coverage
