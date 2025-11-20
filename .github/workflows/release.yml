@@ -41,14 +41,20 @@ jobs:
       id: get_version
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
     
-    - name: Extract release notes from CHANGELOG
-      id: changelog
+    - name: Extract release notes
+      id: release_notes
       run: |
         VERSION="${{ steps.get_version.outputs.VERSION }}"
-        # Extract release notes between version headers
-        awk "/^## \[${VERSION#v}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md > release_notes.md
-        if [ ! -s release_notes.md ]; then
-          echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." > release_notes.md
+        # Try to use detailed release notes from docs/releases/
+        RELEASE_FILE="docs/releases/${VERSION}.md"
+        if [ -f "$RELEASE_FILE" ]; then
+          cp "$RELEASE_FILE" release_notes.md
+        else
+          # Fallback: extract from CHANGELOG.md
+          awk "/^## \[${VERSION#v}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." > release_notes.md
+          fi
         fi
     
     - name: Create GitHub Release
