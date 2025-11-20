@@ -26,6 +26,7 @@
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RuntimeContext};
+use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -168,7 +169,11 @@ async fn main() -> DbResult<()> {
             // Subscribe from KNX group address 1/0/7 (inbound)
             .link_from("knx://1/0/7")
             .with_deserializer(|data: &[u8]| {
-                let is_on = data.first().map(|&b| b != 0).unwrap_or(false);
+                // Use DPT 1.001 (Switch) to decode boolean value
+                let is_on = Dpt1::Switch
+                    .decode(data)
+                    .unwrap_or(false);
+                
                 Ok(LightState {
                     group_address: "1/0/7".to_string(),
                     is_on,
@@ -188,46 +193,10 @@ async fn main() -> DbResult<()> {
             // Subscribe from KNX temperature sensor (group address 9/1/0)
             .link_from("knx://9/1/0")
             .with_deserializer(|data: &[u8]| {
-                // DPT 9.001 - 2-byte float temperature
-                let celsius = if data.len() >= 4 {
-                    // Full frame: TPCI + APCI + 2 data bytes
-                    let temp_bytes = [data[2], data[3]];
-                    let raw = u16::from_be_bytes(temp_bytes);
-
-                    // DPT 9.001 format:
-                    // Bit 15: Sign (0=positive, 1=negative)
-                    // Bits 14-11: Exponent (4 bits, unsigned)
-                    // Bits 10-0: Mantissa (11 bits, unsigned)
-                    // Formula: value = (0.01 * mantissa) * 2^exponent * (sign ? -1 : 1)
-                    let sign_bit = (raw >> 15) & 0x01;
-                    let exponent = ((raw >> 11) & 0x0F) as i32;
-                    let mantissa = (raw & 0x07FF) as i16;
-
-                    // Apply sign
-                    let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
-
-                    // Calculate temperature
-                    (0.01 * signed_mantissa as f32) * 2f32.powi(exponent)
-                } else if data.len() == 3 {
-                    // Standard frame: TPCI + APCI + 2 data bytes (3 bytes total with correct NPDU length)
-                    let temp_bytes = [data[1], data[2]];
-                    let raw = u16::from_be_bytes(temp_bytes);
-                    let sign_bit = (raw >> 15) & 0x01;
-                    let exponent = ((raw >> 11) & 0x0F) as i32;
-                    let mantissa = (raw & 0x07FF) as i16;
-                    let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
-                    (0.01 * signed_mantissa as f32) * 2f32.powi(exponent)
-                } else if data.len() == 2 {
-                    // Just the temperature bytes (no TPCI/APCI)
-                    let raw = u16::from_be_bytes([data[0], data[1]]);
-                    let sign_bit = (raw >> 15) & 0x01;
-                    let exponent = ((raw >> 11) & 0x0F) as i32;
-                    let mantissa = (raw & 0x07FF) as i16;
-                    let signed_mantissa = if sign_bit == 1 { -mantissa } else { mantissa };
-                    (0.01 * signed_mantissa as f32) * 2f32.powi(exponent)
-                } else {
-                    0.0
-                };
+                // Use DPT 9.001 (Temperature) to decode 2-byte float temperature
+                let celsius = Dpt9::Temperature
+                    .decode(data)
+                    .unwrap_or(0.0);
 
                 Ok(Temperature {
                     group_address: "9/1/0".to_string(),
@@ -248,8 +217,12 @@ async fn main() -> DbResult<()> {
             // Publish to KNX group address 1/0/6 (outbound)
             .link_to("knx://1/0/6")
             .with_serializer(|state: &LightControl| {
-                // DPT 1.001 - boolean (1 byte)
-                Ok(vec![if state.is_on { 0x01 } else { 0x00 }])
+                // Use DPT 1.001 (Switch) to encode boolean value
+                let mut buf = [0u8; 1];
+                let len = Dpt1::Switch
+                    .encode(state.is_on, &mut buf)
+                    .unwrap_or(0);
+                Ok(buf[..len].to_vec())
             })
             .finish();
     });
