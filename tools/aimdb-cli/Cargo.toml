@@ -1,9 +1,11 @@
 [package]
 name = "aimdb-cli"
-version.workspace = true
-edition.workspace = true
+version = "0.2.0"
+edition = "2021"
 license.workspace = true
 description = "Command-line interface for AimDB - development and administration tool"
+keywords = ["cli", "tool", "admin", "database", "debugging"]
+categories = ["command-line-utilities", "database"]
 
 [[bin]]
 name = "aimdb"
@@ -11,10 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 # AimDB client library
-aimdb-client = { version = "0.1.0", path = "../../aimdb-client" }
+aimdb-client = { version = "0.2.0", path = "../../aimdb-client" }
 
 # Core dependencies - reuse protocol types from aimdb-core
-aimdb-core = { version = "0.1.0", path = "../../aimdb-core", features = [
+aimdb-core = { version = "0.2.0", path = "../../aimdb-core", features = [
     "std",
 ] }
 serde = { version = "1", features = ["derive"] }

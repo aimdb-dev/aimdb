@@ -1,14 +1,14 @@
 [package]
 name = "aimdb-tokio-adapter"
-version.workspace = true
-edition.workspace = true
+version = "0.2.0"
+edition = "2021"
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description.workspace = true
-keywords.workspace = true
-categories.workspace = true
+description = "Tokio runtime adapter for AimDB - full-featured std async runtime support"
+keywords = ["tokio", "async", "runtime", "adapter", "database"]
+categories = ["asynchronous", "database-implementations"]
 build = "build.rs"
 
 [features]
@@ -35,7 +35,7 @@ aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-featur
 ] }
 
 # Core AimDB types - std version for Tokio (for DbError integration)
-aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "0.2.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
 

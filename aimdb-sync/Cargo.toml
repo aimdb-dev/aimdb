@@ -1,18 +1,18 @@
 [package]
 name = "aimdb-sync"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-authors = ["AimDB Team"]
-license = "MIT OR Apache-2.0"
-description = "Synchronous API wrapper for AimDB - blocking operations for async database"
-repository = "https://github.com/aimdb-dev/aimdb"
-keywords = ["database", "sync", "blocking", "iot"]
-categories = ["database"]
+authors.workspace = true
+license.workspace = true
+description = "Synchronous blocking wrapper for AimDB - bridge async database to sync code"
+repository.workspace = true
+keywords = ["sync", "blocking", "wrapper", "database", "api"]
+categories = ["database", "api-bindings"]
 
 [dependencies]
 # Core dependencies
-aimdb-core = { path = "../aimdb-core", version = "0.1.0" }
-aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", version = "0.1.0" }
+aimdb-core = { path = "../aimdb-core", version = "0.2.0" }
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", version = "0.2.0" }
 
 # Tokio for channels and runtime
 tokio = { version = "1.40", features = ["sync", "rt", "time"] }

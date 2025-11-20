@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.2.0] - 2025-11-20
+
 ### Changed
 
 - **Breaking: RecordMetadata Field Rename (via aimdb-core)**: Re-exported `RecordMetadata` type now has `connector_count` field renamed to `outbound_connector_count`. This change originates from `aimdb-core` and affects code accessing this field through `aimdb-client`.
@@ -26,5 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0

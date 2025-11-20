@@ -1,14 +1,14 @@
 [package]
 name = "aimdb-knx-connector"
-version.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2021"
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "KNX/IP connector for AimDB - supports both std (Tokio) and no_std (Embassy) environments"
-keywords = ["knx", "aimdb", "connector", "building-automation", "embedded"]
-categories = ["database-implementations", "embedded", "network-programming"]
+description = "KNX/IP connector for AimDB - building automation integration for Tokio and Embassy runtimes"
+keywords = ["knx", "knxnet-ip", "building-automation", "iot", "connector"]
+categories = ["network-programming", "embedded", "asynchronous"]
 
 [features]
 default = []
@@ -34,9 +34,9 @@ defmt = [
 ] # Only use knx-pico's defmt for logging
 
 [dependencies]
-aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "0.2.0", path = "../aimdb-core", default-features = false }
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
-aimdb-embassy-adapter = { version = "0.1.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+aimdb-embassy-adapter = { version = "0.2.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 knx-pico = { path = "../_external/knx-pico", default-features = false }
 
