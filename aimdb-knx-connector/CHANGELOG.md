@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.1.0] - 2025-11-20
+
 ### Added
 - Initial implementation of KNX/IP connector
 - Dual runtime support (Tokio and Embassy)
@@ -35,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Single connection per gateway instance
 - No routing mode support
 
-## [0.1.0] - TBD
+## [0.1.0] - 2025-11-20
 
 Initial beta release for production evaluation.
+
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0

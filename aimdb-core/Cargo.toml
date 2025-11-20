@@ -1,13 +1,13 @@
 [package]
 name = "aimdb-core"
-version.workspace = true
-edition.workspace = true
+version = "0.2.0"
+edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Core database engine for AimDB - async in-memory storage with data synchronization"
-keywords.workspace = true
-categories.workspace = true
+description = "Core database engine for AimDB - async in-memory data synchronization with bidirectional connectors"
+keywords = ["database", "async", "in-memory", "sync", "embedded"]
+categories = ["database-implementations", "asynchronous", "embedded"]
 build = "build.rs"
 
 [features]

@@ -1,19 +1,31 @@
 [package]
 name = "aimdb-mcp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 description = "Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspection"
-repository = "https://github.com/aimdb-dev/aimdb"
+repository.workspace = true
+keywords = ["mcp", "llm", "ai", "introspection", "protocol"]
+categories = ["development-tools", "network-programming"]
 
 [[bin]]
 name = "aimdb-mcp"
 path = "src/main.rs"
 
+[package.metadata.cargo-all-features]
+skip_optional_dependencies = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+name = "aimdb_mcp"
+path = "src/lib.rs"
+
 [dependencies]
 # AimDB dependencies
-aimdb-client = { version = "0.1.0", path = "../../aimdb-client" }
-aimdb-core = { version = "0.1.0", path = "../../aimdb-core", features = [
+aimdb-client = { version = "0.2.0", path = "../../aimdb-client" }
+aimdb-core = { version = "0.2.0", path = "../../aimdb-core", features = [
     "std",
 ] }
 

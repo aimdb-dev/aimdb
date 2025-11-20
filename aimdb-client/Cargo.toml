@@ -1,17 +1,17 @@
 [package]
 name = "aimdb-client"
-version.workspace = true
-edition.workspace = true
+version = "0.2.0"
+edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "AimX protocol client library for connecting to AimDB instances"
-keywords.workspace = true
-categories.workspace = true
+description = "AimX protocol client for remote AimDB introspection and management"
+keywords = ["client", "protocol", "database", "remote", "rpc"]
+categories = ["database", "network-programming"]
 
 [dependencies]
 # Core dependencies - protocol types from aimdb-core
-aimdb-core = { version = "0.1.0", path = "../aimdb-core", features = ["std"] }
+aimdb-core = { version = "0.2.0", path = "../aimdb-core", features = ["std"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

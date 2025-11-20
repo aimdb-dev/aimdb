@@ -1,13 +1,13 @@
 [package]
 name = "aimdb-embassy-adapter"
-version.workspace = true
-edition.workspace = true
+version = "0.2.0"
+edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Embassy async runtime adapter for AimDB embedded targets"
-keywords.workspace = true
-categories.workspace = true
+keywords = ["embassy", "embedded", "async", "no_std", "runtime"]
+categories = ["embedded", "asynchronous", "no-std"]
 build = "build.rs"
 
 [features]
@@ -42,7 +42,7 @@ aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-featur
 ] }
 
 # Core AimDB types - no_std for Embassy (for DbError integration)
-aimdb-core = { version = "0.1.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "0.2.0", path = "../aimdb-core", default-features = false }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
