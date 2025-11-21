@@ -70,13 +70,14 @@ embassy-net = { version = "0.7.1", path = "../_external/embassy/embassy-net", op
 ] }
 
 # MQTT library for Embassy (native embassy-net support!)
-# Using local checkout to match Embassy version
-mountain-mqtt = { version = "0.2.0", path = "../_external/mountain-mqtt/mountain-mqtt", default-features = false, optional = true, features = [
+# Use official crates.io versions
+# External users should patch these to aimdb-dev/mountain-mqtt fork for Embassy compatibility
+mountain-mqtt = { version = "0.2.0", default-features = false, optional = true, features = [
     "embedded-io-async",
     "embedded-hal-async",
     "defmt",
 ] }
-mountain-mqtt-embassy = { version = "0.2.0", path = "../_external/mountain-mqtt/mountain-mqtt-embassy", optional = true }
+mountain-mqtt-embassy = { version = "0.2.0", optional = true }
 
 # Embedded utilities
 heapless = { workspace = true, optional = true }

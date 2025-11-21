@@ -2,6 +2,28 @@
 
 KNX/IP connector for AimDB - enables bidirectional communication with KNX building automation networks.
 
+## Installation
+
+⚠️ **Important**: This connector currently requires a patched version of `knx-pico` with critical bug fixes that are not yet published to crates.io.
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+aimdb-knx-connector = { version = "0.1", features = ["tokio-runtime"] }
+
+# REQUIRED: Patch knx-pico to use fork with bug fixes
+[patch.crates-io]
+knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master" }
+```
+
+**Why the patch?**
+- Fixes DPT 9 (float) encoding/decoding bug
+- Prevents panic on malformed telegrams
+- Embassy dependency compatibility
+
+We're working with upstream to get these changes merged. Once published, the patch won't be needed.
+
 ## Features
 
 - **Dual Runtime Support**: Works with both Tokio (std) and Embassy (no_std) runtimes

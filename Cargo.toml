@@ -143,6 +143,15 @@ embassy-sync = { path = "./_external/embassy/embassy-sync" }
 embassy-net = { path = "./_external/embassy/embassy-net" }
 embassy-futures = { path = "./_external/embassy/embassy-futures" }
 
+# Patch mountain-mqtt to use our fork for Embassy version compatibility
+# Required until upstream updates Embassy dependencies to match our workspace
+mountain-mqtt = { path = "./_external/mountain-mqtt/mountain-mqtt" }
+mountain-mqtt-embassy = { path = "./_external/mountain-mqtt/mountain-mqtt-embassy" }
+
+# Patch knx-pico to use our fork with bug fixes until they're upstreamed
+# Required fixes: DPT 9 encoding/decoding, panic prevention, Embassy compat
+knx-pico = { path = "./_external/knx-pico" }
+
 [workspace.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

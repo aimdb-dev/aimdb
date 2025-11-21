@@ -11,8 +11,8 @@
 [![Docs](https://docs.rs/aimdb-core/badge.svg)](https://docs.rs/aimdb-core)
 [![Website](https://img.shields.io/badge/website-aimdb.dev-blue.svg)](https://aimdb.dev)
 
-> **⚠️ PRE-RELEASE v0.1.0**  
-> AimDB v0.1.0 is the initial release with core functionality complete. The architecture is stable, but APIs may evolve based on community feedback. Production use is possible but proceed with caution and thorough testing.
+> **⚠️ PRE-RELEASE v0.2.0**  
+> AimDB v0.2.0 includes core functionality, MQTT/KNX connectors, and developer tools. The architecture is stable, but APIs may evolve based on community feedback. Production use is possible but proceed with caution and thorough testing.
 
 > **One codebase. Any hardware. Always in sync.**
 
@@ -40,21 +40,24 @@ Modern IoT stacks are fragmented:
 - **Language**: Rust 🦀 (async/await, `no_std` capable)
 - **Runtimes**: Embassy (embedded) or Tokio (std)
 - **Data Core**: Type-safe records with `TypeId` routing, three buffer types
-- **Protocols**: MQTT ✅, Kafka 🚧, DDS 🚧
+- **Protocols**: MQTT ✅, KNX ✅, Kafka 🚧, DDS 🚧
 - **Platforms**: MCUs, Linux edge devices, cloud VMs/containers
 
 ---
 
-## 🎉 What's New in v0.1.0
+## 🎉 What's New in v0.2.0
 
-**Initial Release** - November 6, 2025
+**Latest Release** - November 21, 2025
 
-This is the first public release of AimDB! Highlights include:
+Recent additions and improvements:
 
 - ✅ **Type-Safe Core**: `TypeId`-based record routing eliminates runtime string lookups
 - ✅ **Dual Runtime**: Works on both Tokio (std) and Embassy (no_std/embedded)
 - ✅ **Three Buffer Types**: SPMC Ring, SingleLatest, and Mailbox patterns
 - ✅ **MQTT Integration**: Connector works in both std and embedded environments
+- ✅ **KNX Integration**: Building automation support for std and embedded (NEW in v0.2.0)
+- ✅ **Remote Access**: AimX protocol for cross-process introspection
+- ✅ **Sync API**: Blocking wrapper for non-async codebases
 - ✅ **Developer Tools**: MCP server for LLM-powered debugging, CLI tools, and client library
 - ✅ **Production Ready**: Comprehensive tests, CI/CD, security audits, and documentation
 
@@ -69,23 +72,30 @@ Add AimDB to your project:
 ```toml
 # For standard library (Tokio runtime)
 [dependencies]
-aimdb-core = "0.1"
-aimdb-tokio-adapter = "0.1"
+aimdb-core = "0.2"
+aimdb-tokio-adapter = "0.2"
 
 # Optional: MQTT connector
-aimdb-mqtt-connector = { version = "0.1", features = ["tokio-runtime"] }
+aimdb-mqtt-connector = { version = "0.2", features = ["tokio-runtime"] }
+
+# Optional: KNX connector (building automation)
+aimdb-knx-connector = { version = "0.1", features = ["tokio-runtime"] }
 
 # Optional: Synchronous API
-aimdb-sync = "0.1"
+aimdb-sync = "0.2"
+
+# Optional: Remote client
+aimdb-client = "0.2"
 ```
 
 For embedded systems using Embassy:
 
 ```toml
 [dependencies]
-aimdb-core = { version = "0.1", default-features = false }
-aimdb-embassy-adapter = { version = "0.1", default-features = false, features = ["embassy-runtime"] }
-aimdb-mqtt-connector = { version = "0.1", default-features = false, features = ["embassy-runtime"] }
+aimdb-core = { version = "0.2", default-features = false }
+aimdb-embassy-adapter = { version = "0.2", default-features = false, features = ["embassy-runtime"] }
+aimdb-mqtt-connector = { version = "0.2", default-features = false, features = ["embassy-runtime"] }
+aimdb-knx-connector = { version = "0.1", default-features = false, features = ["embassy-runtime"] }
 ```
 
 ---
@@ -200,19 +210,22 @@ Single slot with overwrite. Latest command wins.
 - Tokio & Embassy runtime adapters
 - Three buffer types with simplified API
 - MQTT connector (std and embedded)
+- KNX connector (std and embedded) - building automation
 - MCP server for LLM-powered introspection
 - CLI tools (basic implementation)
 - Remote access protocol (AimX v1)
+- Client library for remote database access
 - Synchronous API wrapper
 - Comprehensive CI/CD and security auditing
 
 **🔨 In Progress:**
 - Performance benchmarks and optimization
-- Kafka connector (std environments)
+- HTTP/REST bridge
+
 
 **📋 Planned:**
+- Kafka connector (std environments)
 - DDS connector for low-latency systems
-- HTTP/REST bridge
 - Advanced observability and metrics
 - Multi-instance clustering
 
@@ -255,6 +268,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines, coding standards
 - **Examples**: Check `/examples` for working demos:
   - `tokio-mqtt-connector-demo` - Full MQTT integration with Tokio
   - `embassy-mqtt-connector-demo` - Embedded MQTT on RP2040
+  - `tokio-knx-connector-demo` - KNX building automation with Tokio
+  - `embassy-knx-connector-demo` - Embedded KNX on microcontroller
   - `sync-api-demo` - Synchronous API wrapper usage
   - `remote-access-demo` - Cross-process introspection server
 - **Design Docs**: See `/docs/design` for architecture details

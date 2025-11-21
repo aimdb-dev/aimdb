@@ -2,6 +2,32 @@
 
 MQTT connector for AimDB - supports both std (Tokio) and no_std (Embassy) environments.
 
+## Installation
+
+⚠️ **Important**: For Embassy runtime support, this connector requires a patched version of `mountain-mqtt` with updated Embassy dependencies.
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+# For Tokio runtime (std)
+aimdb-mqtt-connector = { version = "0.2", features = ["tokio-runtime"] }
+
+# For Embassy runtime (embedded)
+aimdb-mqtt-connector = { version = "0.2", features = ["embassy-runtime"] }
+
+# REQUIRED for Embassy: Patch mountain-mqtt to match Embassy versions
+[patch.crates-io]
+mountain-mqtt = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch = "main" }
+mountain-mqtt-embassy = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch = "main" }
+```
+
+**Why the patch?**
+- Embassy dependency version compatibility
+- Our workspace uses a specific Embassy version that differs from crates.io
+
+**Tokio runtime users**: The patch is optional but recommended for consistency.
+
 ## Overview
 
 `aimdb-mqtt-connector` provides MQTT publishing capabilities for AimDB records with automatic consumer registration. Works seamlessly across standard library (Tokio) and embedded (Embassy) environments.
@@ -16,14 +42,6 @@ MQTT connector for AimDB - supports both std (Tokio) and no_std (Embassy) enviro
 ## Quick Start
 
 ### Tokio (Standard Library)
-
-Add to your `Cargo.toml`:
-```toml
-[dependencies]
-aimdb-core = "0.1"
-aimdb-tokio-adapter = "0.1"
-aimdb-mqtt-connector = { version = "0.1", features = ["tokio-runtime"] }
-```
 
 Example:
 ```rust
