@@ -1103,7 +1103,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             .and_then(|guard| *guard)
             .map(RecordMetadataTracker::format_timestamp);
 
-        crate::remote::RecordMetadata::new(
+        let metadata = crate::remote::RecordMetadata::new(
             type_id,
             self.metadata.name.clone(),
             buffer_type,
@@ -1116,7 +1116,23 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             RecordMetadataTracker::format_timestamp(self.metadata.created_at),
             self.outbound_connector_count(),
         )
-        .with_last_update_opt(last_update)
+        .with_last_update_opt(last_update);
+
+        // Add buffer metrics if available
+        #[cfg(feature = "metrics")]
+        let metadata = {
+            if let Some(ref buffer) = self.buffer {
+                if let Some(snapshot) = buffer.metrics_snapshot() {
+                    metadata.with_buffer_metrics(snapshot)
+                } else {
+                    metadata
+                }
+            } else {
+                metadata
+            }
+        };
+
+        metadata
     }
 
     #[doc(hidden)]

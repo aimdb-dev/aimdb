@@ -8,6 +8,9 @@ use std::string::String;
 ///
 /// Provides information for remote introspection, including buffer
 /// configuration, producer/consumer counts, and timestamps.
+///
+/// When the `metrics` feature is enabled, additional fields are included
+/// for buffer-level statistics (produced_count, consumed_count, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordMetadata {
     /// Record type name (Rust type name)
@@ -41,6 +44,27 @@ pub struct RecordMetadata {
 
     /// Number of outbound connector links registered
     pub outbound_connector_count: usize,
+
+    // ===== Buffer metrics (feature-gated) =====
+    /// Total items pushed to the buffer (metrics feature only)
+    #[cfg(feature = "metrics")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub produced_count: Option<u64>,
+
+    /// Total items consumed from the buffer (metrics feature only)
+    #[cfg(feature = "metrics")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumed_count: Option<u64>,
+
+    /// Total items dropped due to overflow/lag (metrics feature only)
+    #[cfg(feature = "metrics")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped_count: Option<u64>,
+
+    /// Current buffer occupancy: (items, capacity) (metrics feature only)
+    #[cfg(feature = "metrics")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occupancy: Option<(usize, usize)>,
 }
 
 impl RecordMetadata {
@@ -79,6 +103,14 @@ impl RecordMetadata {
             created_at,
             last_update: None,
             outbound_connector_count,
+            #[cfg(feature = "metrics")]
+            produced_count: None,
+            #[cfg(feature = "metrics")]
+            consumed_count: None,
+            #[cfg(feature = "metrics")]
+            dropped_count: None,
+            #[cfg(feature = "metrics")]
+            occupancy: None,
         }
     }
 
@@ -91,6 +123,22 @@ impl RecordMetadata {
     /// Sets the last update timestamp from an Option
     pub fn with_last_update_opt(mut self, timestamp: Option<String>) -> Self {
         self.last_update = timestamp;
+        self
+    }
+
+    /// Sets buffer metrics from a snapshot (metrics feature only)
+    ///
+    /// Populates produced_count, consumed_count, dropped_count, and occupancy
+    /// from the provided metrics snapshot.
+    #[cfg(feature = "metrics")]
+    pub fn with_buffer_metrics(mut self, snapshot: crate::buffer::BufferMetricsSnapshot) -> Self {
+        self.produced_count = Some(snapshot.produced_count);
+        self.consumed_count = Some(snapshot.consumed_count);
+        self.dropped_count = Some(snapshot.dropped_count);
+        // Only include occupancy if it's meaningful (non-zero capacity)
+        if snapshot.occupancy.1 > 0 {
+            self.occupancy = Some(snapshot.occupancy);
+        }
         self
     }
 }

@@ -67,6 +67,10 @@ pub use traits::{Buffer, BufferReader, DynBuffer};
 #[cfg(feature = "std")]
 pub use traits::JsonBufferReader;
 
+// Buffer metrics (std only, feature-gated)
+#[cfg(feature = "metrics")]
+pub use traits::{BufferMetrics, BufferMetricsSnapshot};
+
 // Re-export buffer-specific errors from core error module
 // These are type aliases for convenience
 pub use crate::DbError as BufferError;

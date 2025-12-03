@@ -65,10 +65,14 @@ test:
 	cargo test --package aimdb-core --no-default-features
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
 	cargo test --package aimdb-core --features "std,tracing"
+	@printf "$(YELLOW)  → Testing aimdb-core (std + metrics)$(NC)\n"
+	cargo test --package aimdb-core --features "std,tracing,metrics"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
+	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"
+	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
