@@ -4,6 +4,23 @@
 //! - Inbound: Monitor KNX bus telegrams → process in AimDB
 //! - Outbound: Control KNX devices from AimDB (toggle light on key press)
 //! - Real-time logging of light switches and temperature sensors
+//! - **Multi-source pattern**: Separate record types for each KNX address with shared logic
+//!
+//! ## Multi-Source Temperature Monitoring
+//!
+//! This example demonstrates the recommended pattern for monitoring multiple KNX
+//! addresses of the same data type (e.g., temperature sensors in different rooms):
+//!
+//! 1. **Shared base type**: `TemperatureReading` holds the common data
+//! 2. **Trait for sources**: `TemperatureSource` defines the contract
+//! 3. **Newtype per source**: `LivingRoomTemp`, `BedroomTemp` wrap the base
+//! 4. **Generic handler**: One `temperature_monitor<T>` works for all sources
+//!
+//! This approach provides:
+//! - Type-safe queries: `db.get::<LivingRoomTemp>()` vs runtime key lookup
+//! - Compile-time source validation
+//! - Zero runtime overhead (newtypes are zero-cost)
+//! - No complex indexed buffer machinery
 //!
 //! ## Running
 //!
@@ -22,7 +39,7 @@
 //! - Gateway: "knx://192.168.1.19:3671"
 //! - Light switch (monitor): "knx://1/0/7"
 //! - Light control (publish): "knx://1/0/6"
-//! - Temperature sensor: "knx://9/1/0"
+//! - Temperature sensors: "knx://9/1/0" (Living Room), "knx://9/1/1" (Bedroom)
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RuntimeContext};
@@ -39,12 +56,89 @@ struct LightState {
     timestamp: u64,
 }
 
+// ============================================================================
+// MULTI-SOURCE TEMPERATURE PATTERN
+// ============================================================================
+//
+// This demonstrates the recommended approach for handling multiple KNX addresses
+// of the same data type. Instead of a complex indexed buffer, we use:
+//
+// 1. A shared base struct (TemperatureReading)
+// 2. A trait defining the source contract (TemperatureSource)
+// 3. Zero-cost newtype wrappers per source (LivingRoomTemp, BedroomTemp)
+// 4. A generic handler that works with any source
+//
+// Benefits:
+// - Type-safe: db.get::<LivingRoomTemp>() vs runtime key lookup
+// - Zero overhead: newtypes compile away
+// - Compile-time validation: can't accidentally mix up sources
+// - Simple: no indexed buffer complexity
+// ============================================================================
+
+/// Shared temperature reading data (the actual payload)
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Temperature {
-    group_address: String,
-    celsius: f32,
-    timestamp: u64,
+pub struct TemperatureReading {
+    pub celsius: f32,
+    pub timestamp: u64,
 }
+
+/// Trait for temperature sources - enables generic handlers
+///
+/// Each temperature source implements this trait, providing:
+/// - GROUP_ADDRESS: The KNX group address as a compile-time constant
+/// - LOCATION: Human-readable location name for logging
+/// - Access to the underlying TemperatureReading
+pub trait TemperatureSource: Clone + Send + Sync + std::fmt::Debug + 'static {
+    /// KNX group address for this sensor (e.g., "9/1/0")
+    const GROUP_ADDRESS: &'static str;
+    /// Human-readable location name (e.g., "Living Room")
+    const LOCATION: &'static str;
+
+    /// Create from a temperature reading
+    fn from_reading(reading: TemperatureReading) -> Self;
+    /// Get reference to the underlying reading
+    fn reading(&self) -> &TemperatureReading;
+}
+
+// ----------------------------------------------------------------------------
+// Per-Source Newtypes (zero-cost wrappers)
+// ----------------------------------------------------------------------------
+
+/// Living Room temperature sensor (KNX 9/1/0)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LivingRoomTemp(pub TemperatureReading);
+
+impl TemperatureSource for LivingRoomTemp {
+    const GROUP_ADDRESS: &'static str = "9/1/0";
+    const LOCATION: &'static str = "Living Room";
+
+    fn from_reading(reading: TemperatureReading) -> Self {
+        Self(reading)
+    }
+    fn reading(&self) -> &TemperatureReading {
+        &self.0
+    }
+}
+
+/// Bedroom temperature sensor (KNX 9/1/1)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BedroomTemp(pub TemperatureReading);
+
+impl TemperatureSource for BedroomTemp {
+    const GROUP_ADDRESS: &'static str = "9/1/1";
+    const LOCATION: &'static str = "Bedroom";
+
+    fn from_reading(reading: TemperatureReading) -> Self {
+        Self(reading)
+    }
+    fn reading(&self) -> &TemperatureReading {
+        &self.0
+    }
+}
+
+// ============================================================================
+// END MULTI-SOURCE PATTERN
+// ============================================================================
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LightControl {
@@ -55,11 +149,12 @@ struct LightControl {
 
 /// Input handler that toggles light on key press
 async fn input_handler(
-    _ctx: RuntimeContext<TokioAdapter>,
+    ctx: RuntimeContext<TokioAdapter>,
     producer: Producer<LightControl, TokioAdapter>,
 ) {
-    println!("\n⌨️  Input handler started. Press ENTER to toggle light on 1/0/6");
-    println!("   (This sends GroupValueWrite to the KNX bus)\n");
+    let log = ctx.log();
+    log.info("\n⌨️  Input handler started. Press ENTER to toggle light on 1/0/6");
+    log.info("   (This sends GroupValueWrite to the KNX bus)\n");
 
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
@@ -85,18 +180,18 @@ async fn input_handler(
 
                 match producer.produce(state).await {
                     Ok(_) => {
-                        println!(
+                        log.info(&format!(
                             "✅ Published to KNX: 1/0/6 = {} (sent to bus)",
                             if light_on { "ON ✨" } else { "OFF" }
-                        );
+                        ));
                     }
                     Err(e) => {
-                        eprintln!("❌ Failed to publish: {:?}", e);
+                        log.error(&format!("❌ Failed to publish: {:?}", e));
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Error reading input: {}", e);
+                log.error(&format!("Error reading input: {}", e));
                 break;
             }
         }
@@ -126,25 +221,34 @@ async fn light_monitor(
     }
 }
 
-/// Consumer that logs incoming KNX temperature telegrams
-async fn temperature_monitor(
+/// Generic temperature monitor - works with ANY TemperatureSource implementation
+///
+/// This single function handles all temperature sensors by using the trait's
+/// associated constants for location-specific logging. The compiler generates
+/// specialized versions for each concrete type (monomorphization).
+async fn temperature_monitor<T: TemperatureSource>(
     ctx: RuntimeContext<TokioAdapter>,
-    consumer: aimdb_core::Consumer<Temperature, TokioAdapter>,
+    consumer: aimdb_core::Consumer<T, TokioAdapter>,
 ) {
     let log = ctx.log();
 
-    log.info("🌡️  Temperature monitor started - watching KNX bus...\n");
+    log.info(&format!(
+        "🌡️  {} monitor started ({})\n",
+        T::LOCATION,
+        T::GROUP_ADDRESS
+    ));
 
     let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to temperature buffer");
+        log.error(&format!(
+            "Failed to subscribe to {} temperature buffer",
+            T::LOCATION
+        ));
         return;
     };
 
     while let Ok(temp) = reader.recv().await {
-        log.info(&format!(
-            "🌡️  KNX temperature: {} = {:.1}°C",
-            temp.group_address, temp.celsius
-        ));
+        let reading = temp.reading();
+        log.info(&format!("🌡️  {}: {:.1}°C", T::LOCATION, reading.celsius));
     }
 }
 
@@ -184,27 +288,54 @@ async fn main() -> DbResult<()> {
             .finish();
     });
 
-    // Configure Temperature record (inbound only - monitoring)
-    builder.configure::<Temperature>(|reg| {
-        reg.buffer(BufferCfg::SingleLatest)
-            .tap(temperature_monitor)
-            // Subscribe from KNX temperature sensor (group address 9/1/0)
-            .link_from("knx://9/1/0")
-            .with_deserializer(|data: &[u8]| {
-                // Use DPT 9.001 (Temperature) to decode 2-byte float temperature
-                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
+    // ========================================================================
+    // MULTI-SOURCE TEMPERATURE CONFIGURATION
+    // ========================================================================
+    //
+    // Each temperature source is registered as a separate record type.
+    // The generic temperature_monitor<T> handler works with all of them.
+    // This gives us type-safe queries and compile-time source validation.
+    // ========================================================================
 
-                Ok(Temperature {
-                    group_address: "9/1/0".to_string(),
+    // Living Room temperature sensor (9/1/0)
+    builder.configure::<LivingRoomTemp>(|reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .tap(temperature_monitor::<LivingRoomTemp>)
+            .link_from(&format!("knx://{}", LivingRoomTemp::GROUP_ADDRESS))
+            .with_deserializer(|data: &[u8]| {
+                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
+                Ok(LivingRoomTemp::from_reading(TemperatureReading {
                     celsius,
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs(),
-                })
+                }))
             })
             .finish();
     });
+
+    // Bedroom temperature sensor (9/1/1)
+    builder.configure::<BedroomTemp>(|reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .tap(temperature_monitor::<BedroomTemp>)
+            .link_from(&format!("knx://{}", BedroomTemp::GROUP_ADDRESS))
+            .with_deserializer(|data: &[u8]| {
+                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
+                Ok(BedroomTemp::from_reading(TemperatureReading {
+                    celsius,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                }))
+            })
+            .finish();
+    });
+
+    // ========================================================================
+    // END MULTI-SOURCE TEMPERATURE CONFIGURATION
+    // ========================================================================
 
     // Configure LightControl record (outbound - control KNX device)
     builder.configure::<LightControl>(|reg| {
@@ -224,13 +355,20 @@ async fn main() -> DbResult<()> {
     println!("✅ Database configured with bidirectional KNX integration:");
     println!("   INBOUND (KNX → AimDB):");
     println!("     - knx://1/0/7 (light monitoring, DPT 1.001)");
-    println!("     - knx://9/1/0 (temperature monitoring, DPT 9.001)");
+    println!("     - knx://9/1/0 (Living Room temperature, DPT 9.001)");
+    println!("     - knx://9/1/1 (Bedroom temperature, DPT 9.001)");
     println!("   OUTBOUND (AimDB → KNX):");
     println!("     - knx://1/0/6 (light control, DPT 1.001)");
     println!("   Gateway: 192.168.1.19:3671");
-    println!("\n💡 The demo will:");
+    println!();
+    println!("💡 Multi-source pattern demo:");
+    println!("   - LivingRoomTemp and BedroomTemp are separate record types");
+    println!("   - Both use the same generic temperature_monitor<T> handler");
+    println!("   - Type-safe queries: db.get::<LivingRoomTemp>()");
+    println!();
+    println!("💡 The demo will:");
     println!("   1. Connect to the KNX/IP gateway");
-    println!("   2. Monitor KNX bus for telegrams on 1/0/7 and 9/1/0");
+    println!("   2. Monitor KNX bus for telegrams on configured addresses");
     println!("   3. Control light on 1/0/6 when you press ENTER");
     println!("   4. Log all KNX activity in real-time");
     println!("\n   Trigger events by:");
