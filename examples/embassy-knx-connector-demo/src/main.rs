@@ -265,6 +265,7 @@ async fn button_handler(
     mut button: ExtiInput<'static>,
 ) {
     let log = ctx.log();
+    let time = ctx.time();
 
     log.info("🔘 Button handler started - press USER button to toggle light\n");
     log.info("   (This sends GroupValueWrite to KNX bus on 1/0/6)\n");
@@ -291,7 +292,7 @@ async fn button_handler(
         log.info("🔽 Button press detected!\n");
 
         // Debounce delay
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
+        time.sleep(time.millis(50)).await;
 
         // Ignore if button is no longer pressed (debounce)
         if button.is_high() {
