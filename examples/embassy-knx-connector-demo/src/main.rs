@@ -63,11 +63,11 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
-use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
-use embassy_stm32::{Config, bind_interrupts, eth, peripherals, rng};
+use embassy_stm32::{Config, bind_interrupts, eth, interrupt, peripherals, rng};
 use embassy_time::{Duration, Timer};
 use heapless::String as HeaplessString;
 use static_cell::StaticCell;
@@ -77,10 +77,11 @@ use {defmt_rtt as _, panic_probe as _};
 #[global_allocator]
 static ALLOCATOR: embedded_alloc::LlffHeap = embedded_alloc::LlffHeap::empty();
 
-// Interrupt bindings for Ethernet and RNG
+// Interrupt bindings for Ethernet, RNG, and EXTI
 bind_interrupts!(struct Irqs {
     ETH => eth::InterruptHandler;
     RNG => rng::InterruptHandler<peripherals::RNG>;
+    EXTI13 => exti::InterruptHandler<interrupt::typelevel::EXTI13>;
 });
 
 type Device =
@@ -391,7 +392,7 @@ async fn main(spawner: Spawner) {
     let mut led = Output::new(p.PB0, Level::Low, Speed::Low);
 
     // Setup USER button (blue button PC13 on Nucleo) with pull-up and interrupt support
-    let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Down);
+    let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Down, Irqs);
 
     // Generate random seed for network stack
     let mut rng = Rng::new(p.RNG, Irqs);

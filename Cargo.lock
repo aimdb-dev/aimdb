@@ -2075,7 +2075,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "18.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-b77c8d968f53b18d6bdcd052e354b5070ec2bbc2#9c7a4afd16fd9733b346d6803adeef43622cac00"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-f61ed017ef12ec84ff04c49e3147694bda3b29cb#1219dfcec33b25de6865ca532b755342226fbb6a"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
