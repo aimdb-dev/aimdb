@@ -267,7 +267,7 @@ async fn main() -> DbResult<()> {
     );
 
     // Configure LightState record (inbound monitoring only)
-    builder.configure::<LightState>(|reg| {
+    builder.configure::<LightState>("lights.state", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(light_monitor)
             // Subscribe from KNX group address 1/0/7 (inbound)
@@ -298,7 +298,7 @@ async fn main() -> DbResult<()> {
     // ========================================================================
 
     // Living Room temperature sensor (9/1/0)
-    builder.configure::<LivingRoomTemp>(|reg| {
+    builder.configure::<LivingRoomTemp>("temp.livingroom", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor::<LivingRoomTemp>)
             .link_from(&format!("knx://{}", LivingRoomTemp::GROUP_ADDRESS))
@@ -316,7 +316,7 @@ async fn main() -> DbResult<()> {
     });
 
     // Bedroom temperature sensor (9/1/1)
-    builder.configure::<BedroomTemp>(|reg| {
+    builder.configure::<BedroomTemp>("temp.bedroom", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor::<BedroomTemp>)
             .link_from(&format!("knx://{}", BedroomTemp::GROUP_ADDRESS))
@@ -338,7 +338,7 @@ async fn main() -> DbResult<()> {
     // ========================================================================
 
     // Configure LightControl record (outbound - control KNX device)
-    builder.configure::<LightControl>(|reg| {
+    builder.configure::<LightControl>("lights.control", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(input_handler)
             // Publish to KNX group address 1/0/6 (outbound)

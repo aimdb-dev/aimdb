@@ -412,7 +412,7 @@ async fn main(spawner: Spawner) {
     // - SPMC Ring: CONSUMERS becomes SUBS (independent ring buffer positions)
     // - SingleLatest: CONSUMERS becomes WATCH_N (watchers of latest value)
     // - Mailbox: CONSUMERS is ignored (single-slot)
-    builder.configure::<Temperature>(|reg| {
+    builder.configure::<Temperature>("sensors.temperature", |reg| {
         reg.buffer_sized::<32, 4>(EmbassyBufferType::SpmcRing)
             .source(temperature_producer)
             .tap(temperature_consumer)
@@ -429,7 +429,7 @@ async fn main(spawner: Spawner) {
     });
 
     // Configure TemperatureCommand record (inbound: MQTT → AimDB)
-    builder.configure::<TemperatureCommand>(|reg| {
+    builder.configure::<TemperatureCommand>("commands.temperature", |reg| {
         reg.buffer_sized::<10, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
             // Subscribe from MQTT commands topic

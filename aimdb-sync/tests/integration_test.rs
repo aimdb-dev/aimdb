@@ -22,7 +22,7 @@ fn test_basic_producer_consumer() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -64,7 +64,7 @@ fn test_multi_threaded_producer_consumer() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -150,7 +150,7 @@ fn test_timeout_operations() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -197,7 +197,7 @@ fn test_non_blocking_operations() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -246,7 +246,7 @@ fn test_graceful_shutdown() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -278,7 +278,7 @@ fn test_detach_with_timeout() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -299,7 +299,7 @@ fn test_runtime_shutdown_error() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -340,7 +340,7 @@ fn test_spmc_ring_semantics() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 5 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -391,7 +391,7 @@ fn test_single_latest_semantics() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -459,7 +459,7 @@ fn test_get_latest_with_timeout() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>(|reg| {
+    builder.configure::<TestData>("test.data", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation

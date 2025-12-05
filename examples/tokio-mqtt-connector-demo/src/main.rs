@@ -139,7 +139,7 @@ async fn main() -> DbResult<()> {
     );
 
     // Configure Temperature record (outbound: AimDB → MQTT)
-    builder.configure::<Temperature>(|reg| {
+    builder.configure::<Temperature>("sensor.temperature", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(temperature_producer)
             .tap(temperature_consumer)
@@ -162,7 +162,7 @@ async fn main() -> DbResult<()> {
     });
 
     // Configure TemperatureCommand record (inbound: MQTT → AimDB)
-    builder.configure::<TemperatureCommand>(|reg| {
+    builder.configure::<TemperatureCommand>("command.temperature", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
             // Subscribe from MQTT commands topic

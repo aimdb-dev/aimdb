@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(socket_path);
 
     let mut security_policy = SecurityPolicy::read_write();
-    security_policy.allow_write::<AppSettings>();
+    security_policy.allow_write_key("server::AppSettings");
 
     let remote_config = AimxConfig::uds_default()
         .socket_path(socket_path)
@@ -96,28 +96,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_remote_access(remote_config);
 
     // Configure records
-    builder.configure::<Temperature>(|reg| {
+    builder.configure::<Temperature>("server::Temperature", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_serialization();
     });
 
-    builder.configure::<SystemStatus>(|reg| {
+    builder.configure::<SystemStatus>("server::SystemStatus", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_serialization();
     });
 
-    builder.configure::<UserEvent>(|reg| {
+    builder.configure::<UserEvent>("server::UserEvent", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
             .with_serialization();
     });
 
-    builder.configure::<Config>(|reg| {
+    builder.configure::<Config>("server::Config", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_serialization();
     });
 
-    builder.configure::<AppSettings>(|reg| {
+    builder.configure::<AppSettings>("server::AppSettings", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_serialization();
     });
 
-    let db = builder.build()?;
+    let db = builder.build().await?;
 
     info!("✅ Database initialized with 5 record types");
     info!("   - Temperature (has producer, NOT writable)");
