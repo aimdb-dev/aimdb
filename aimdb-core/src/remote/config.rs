@@ -1,7 +1,8 @@
 //! Configuration types for AimX remote access
 
-use core::any::TypeId;
 use std::{collections::HashSet, path::PathBuf, string::String, vec::Vec};
+
+use crate::record_id::RecordKey;
 
 /// Configuration for AimX remote access
 ///
@@ -107,10 +108,10 @@ pub enum SecurityPolicy {
     /// Read-write access with explicit per-record opt-in
     ///
     /// Write operations (`record.set`) are only allowed for records
-    /// whose TypeId is in the `writable_records` set.
+    /// whose RecordKey is in the `writable_records` set.
     ReadWrite {
-        /// Set of TypeIds that allow write operations
-        writable_records: HashSet<TypeId>,
+        /// Set of RecordKeys that allow write operations
+        writable_records: HashSet<String>,
     },
 }
 
@@ -127,13 +128,13 @@ impl SecurityPolicy {
         }
     }
 
-    /// Adds a record type to the writable set
+    /// Adds a record key to the writable set
     ///
     /// Only has effect for ReadWrite policies. Panics if policy is ReadOnly.
-    pub fn allow_write<T: 'static>(&mut self) {
+    pub fn allow_write_key(&mut self, key: impl Into<String>) {
         match self {
             Self::ReadWrite { writable_records } => {
-                writable_records.insert(TypeId::of::<T>());
+                writable_records.insert(key.into());
             }
             Self::ReadOnly => {
                 panic!("Cannot allow writes in ReadOnly security policy");
@@ -141,11 +142,22 @@ impl SecurityPolicy {
         }
     }
 
-    /// Checks if a record type is writable
-    pub fn is_writable(&self, type_id: TypeId) -> bool {
+    /// Adds a record key to the writable set (builder pattern)
+    pub fn with_writable_key(mut self, key: impl Into<String>) -> Self {
+        if let Self::ReadWrite {
+            ref mut writable_records,
+        } = self
+        {
+            writable_records.insert(key.into());
+        }
+        self
+    }
+
+    /// Checks if a record key is writable
+    pub fn is_writable_key(&self, key: &str) -> bool {
         match self {
             Self::ReadOnly => false,
-            Self::ReadWrite { writable_records } => writable_records.contains(&type_id),
+            Self::ReadWrite { writable_records } => writable_records.contains(key),
         }
     }
 
@@ -157,26 +169,23 @@ impl SecurityPolicy {
         }
     }
 
-    /// Returns the list of writable record TypeIds (for ReadWrite policy)
-    pub fn writable_records(&self) -> Vec<TypeId> {
+    /// Returns the list of writable record keys (for ReadWrite policy)
+    pub fn writable_records(&self) -> Vec<String> {
         match self {
             Self::ReadOnly => Vec::new(),
-            Self::ReadWrite { writable_records } => writable_records.iter().copied().collect(),
+            Self::ReadWrite { writable_records } => writable_records.iter().cloned().collect(),
         }
     }
-}
 
-/// Builder helper for SecurityPolicy with chained API
-impl SecurityPolicy {
-    /// Builder pattern: Creates ReadWrite policy and allows write for a type
-    pub fn with_writable_record<T: 'static>(mut self) -> Self {
-        if let Self::ReadWrite {
-            ref mut writable_records,
-        } = self
-        {
-            writable_records.insert(TypeId::of::<T>());
+    /// Returns the list of writable record keys as RecordKeys
+    pub fn writable_record_keys(&self) -> Vec<RecordKey> {
+        match self {
+            Self::ReadOnly => Vec::new(),
+            Self::ReadWrite { writable_records } => writable_records
+                .iter()
+                .map(|s| RecordKey::from_dynamic(s.as_str()))
+                .collect(),
         }
-        self
     }
 }
 
@@ -215,18 +224,18 @@ mod tests {
     #[test]
     fn test_security_policy_read_only() {
         let policy = SecurityPolicy::read_only();
-        assert!(!policy.is_writable(TypeId::of::<i32>()));
+        assert!(!policy.is_writable_key("test.record"));
         assert_eq!(policy.permissions(), &["read", "subscribe"]);
     }
 
     #[test]
     fn test_security_policy_read_write() {
         let mut policy = SecurityPolicy::read_write();
-        assert!(!policy.is_writable(TypeId::of::<i32>()));
+        assert!(!policy.is_writable_key("test.record"));
 
-        policy.allow_write::<i32>();
-        assert!(policy.is_writable(TypeId::of::<i32>()));
-        assert!(!policy.is_writable(TypeId::of::<String>()));
+        policy.allow_write_key("test.record");
+        assert!(policy.is_writable_key("test.record"));
+        assert!(!policy.is_writable_key("other.record"));
         assert_eq!(policy.permissions(), &["read", "subscribe", "write"]);
     }
 
@@ -234,17 +243,17 @@ mod tests {
     #[should_panic(expected = "Cannot allow writes in ReadOnly security policy")]
     fn test_security_policy_read_only_panic() {
         let mut policy = SecurityPolicy::read_only();
-        policy.allow_write::<i32>();
+        policy.allow_write_key("test.record");
     }
 
     #[test]
     fn test_security_policy_builder() {
         let policy = SecurityPolicy::read_write()
-            .with_writable_record::<i32>()
-            .with_writable_record::<String>();
+            .with_writable_key("sensor.temperature")
+            .with_writable_key("config.app");
 
-        assert!(policy.is_writable(TypeId::of::<i32>()));
-        assert!(policy.is_writable(TypeId::of::<String>()));
-        assert!(!policy.is_writable(TypeId::of::<f64>()));
+        assert!(policy.is_writable_key("sensor.temperature"));
+        assert!(policy.is_writable_key("config.app"));
+        assert!(!policy.is_writable_key("other.record"));
     }
 }

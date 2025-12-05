@@ -98,6 +98,14 @@ impl RecordKey {
         Self(RecordKeyInner::Dynamic(s.into()))
     }
 
+    /// Create from a runtime string (alias for `dynamic`)
+    ///
+    /// Allocates an `Arc<str>` to store the string.
+    #[inline]
+    pub fn from_dynamic(s: &str) -> Self {
+        Self(RecordKeyInner::Dynamic(Arc::from(s)))
+    }
+
     /// Get the string representation
     #[inline]
     pub fn as_str(&self) -> &str {
@@ -205,12 +213,12 @@ impl<'de> serde::Deserialize<'de> for RecordKey {
 pub struct RecordId(pub(crate) u32);
 
 impl RecordId {
-    /// Create a new RecordId
+    /// Create a new RecordId from an index
     ///
-    /// This is crate-internal; users obtain RecordIds from database lookups.
+    /// # Arguments
+    /// * `index` - The index into the record storage array
     #[inline]
-    #[allow(dead_code)] // Will be used in Phase 2 (registry refactor)
-    pub(crate) const fn new(index: u32) -> Self {
+    pub const fn new(index: u32) -> Self {
         Self(index)
     }
 

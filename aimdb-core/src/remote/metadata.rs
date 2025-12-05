@@ -4,6 +4,8 @@ use core::any::TypeId;
 use serde::{Deserialize, Serialize};
 use std::string::String;
 
+use crate::record_id::{RecordId, RecordKey};
+
 /// Metadata about a registered record type
 ///
 /// Provides information for remote introspection, including buffer
@@ -13,6 +15,12 @@ use std::string::String;
 /// for buffer-level statistics (produced_count, consumed_count, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordMetadata {
+    /// Unique record identifier (index in the storage)
+    pub record_id: u32,
+
+    /// Unique record key (stable identifier for lookup)
+    pub record_key: String,
+
     /// Record type name (Rust type name)
     pub name: String,
 
@@ -71,6 +79,8 @@ impl RecordMetadata {
     /// Creates a new record metadata entry
     ///
     /// # Arguments
+    /// * `record_id` - The RecordId index
+    /// * `record_key` - The unique record key
     /// * `type_id` - The TypeId of the record
     /// * `name` - The Rust type name
     /// * `buffer_type` - Buffer type string
@@ -82,6 +92,8 @@ impl RecordMetadata {
     /// * `outbound_connector_count` - Number of outbound connectors
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        record_id: RecordId,
+        record_key: RecordKey,
         type_id: TypeId,
         name: String,
         buffer_type: String,
@@ -93,6 +105,8 @@ impl RecordMetadata {
         outbound_connector_count: usize,
     ) -> Self {
         Self {
+            record_id: record_id.raw(),
+            record_key: record_key.as_str().to_string(),
             name,
             type_id: format!("{:?}", type_id),
             buffer_type,
@@ -151,6 +165,8 @@ mod tests {
     fn test_record_metadata_creation() {
         let type_id = TypeId::of::<i32>();
         let metadata = RecordMetadata::new(
+            RecordId::new(0),
+            RecordKey::new("test.record"),
             type_id,
             "i32".to_string(),
             "spmc_ring".to_string(),
@@ -162,6 +178,8 @@ mod tests {
             0,
         );
 
+        assert_eq!(metadata.record_id, 0);
+        assert_eq!(metadata.record_key, "test.record");
         assert_eq!(metadata.name, "i32");
         assert_eq!(metadata.buffer_type, "spmc_ring");
         assert_eq!(metadata.buffer_capacity, Some(100));
@@ -175,6 +193,8 @@ mod tests {
     fn test_record_metadata_serialization() {
         let type_id = TypeId::of::<String>();
         let metadata = RecordMetadata::new(
+            RecordId::new(1),
+            RecordKey::new("app.config"),
             type_id,
             "String".to_string(),
             "single_latest".to_string(),
@@ -188,6 +208,8 @@ mod tests {
         .with_last_update("2025-10-31T12:00:00.000Z".to_string());
 
         let json = serde_json::to_string(&metadata).unwrap();
+        assert!(json.contains("\"record_id\":1"));
+        assert!(json.contains("\"record_key\":\"app.config\""));
         assert!(json.contains("\"name\":\"String\""));
         assert!(json.contains("\"buffer_type\":\"single_latest\""));
         assert!(json.contains("\"writable\":true"));

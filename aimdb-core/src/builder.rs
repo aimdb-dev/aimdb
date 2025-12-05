@@ -9,17 +9,19 @@ use core::marker::PhantomData;
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use hashbrown::HashMap;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc};
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::string::String;
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, sync::Arc};
 
+use crate::record_id::{RecordId, RecordKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 use crate::{DbError, DbResult};
@@ -44,42 +46,149 @@ pub struct NoRuntime;
 
 /// Internal database state
 ///
-/// Holds the registry of typed records, indexed by `TypeId`.
+/// Holds the registry of typed records with multiple index structures for
+/// efficient access patterns:
+///
+/// - **`storages`**: Vec for O(1) hot-path access by RecordId
+/// - **`by_key`**: HashMap for O(1) lookup by stable RecordKey
+/// - **`by_type`**: HashMap for introspection (find all records of type T)
+/// - **`types`**: Vec for runtime type validation during downcasts
 pub struct AimDbInner {
-    /// Map from TypeId to type-erased records (SPMC buffers for internal data flow)
-    pub records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
+    /// Record storage (hot path - indexed by RecordId)
+    ///
+    /// Order matches registration order. Immutable after build().
+    storages: Vec<Box<dyn AnyRecord>>,
+
+    /// Name → RecordId lookup (control plane)
+    ///
+    /// Used by remote access, CLI, MCP for O(1) name resolution.
+    by_key: HashMap<RecordKey, RecordId>,
+
+    /// TypeId → RecordIds lookup (introspection)
+    ///
+    /// Enables "find all Temperature records" queries.
+    by_type: HashMap<TypeId, Vec<RecordId>>,
+
+    /// RecordId → TypeId lookup (type safety assertions)
+    ///
+    /// Used to validate downcasts at runtime.
+    types: Vec<TypeId>,
+
+    /// RecordId → RecordKey lookup (reverse mapping)
+    ///
+    /// Used to get the key for a given record ID.
+    keys: Vec<RecordKey>,
 }
 
 impl AimDbInner {
-    /// Helper to get a typed record from the registry
+    /// Resolve RecordKey to RecordId (control plane - O(1) average)
+    #[inline]
+    pub fn resolve(&self, key: &RecordKey) -> Option<RecordId> {
+        self.by_key.get(key.as_str()).copied()
+    }
+
+    /// Resolve string to RecordId (convenience for remote access)
+    ///
+    /// O(1) average thanks to `Borrow<str>` implementation on `RecordKey`.
+    #[inline]
+    pub fn resolve_str(&self, name: &str) -> Option<RecordId> {
+        self.by_key.get(name).copied()
+    }
+
+    /// Get storage by RecordId (hot path - O(1))
+    #[inline]
+    pub fn storage(&self, id: RecordId) -> Option<&dyn AnyRecord> {
+        self.storages.get(id.index()).map(|b| b.as_ref())
+    }
+
+    /// Get the RecordKey for a given RecordId
+    #[inline]
+    pub fn key_for(&self, id: RecordId) -> Option<&RecordKey> {
+        self.keys.get(id.index())
+    }
+
+    /// Get all RecordIds for a type (introspection)
+    pub fn records_of_type<T: 'static>(&self) -> &[RecordId] {
+        self.by_type
+            .get(&TypeId::of::<T>())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get the number of registered records
+    #[inline]
+    pub fn record_count(&self) -> usize {
+        self.storages.len()
+    }
+
+    /// Helper to get a typed record by RecordKey
     ///
     /// This encapsulates the common pattern of:
-    /// 1. Getting TypeId for type T
-    /// 2. Looking up the record in the map
+    /// 1. Resolving key to RecordId
+    /// 2. Validating TypeId matches
     /// 3. Downcasting to the typed record
-    pub fn get_typed_record<T, R>(&self) -> DbResult<&TypedRecord<T, R>>
+    pub fn get_typed_record_by_key<T, R>(
+        &self,
+        key: impl AsRef<str>,
+    ) -> DbResult<&TypedRecord<T, R>>
+    where
+        T: Send + 'static + Debug + Clone,
+        R: aimdb_executor::Spawn + 'static,
+    {
+        let key_str = key.as_ref();
+
+        // Resolve key to RecordId
+        let id = self.resolve_str(key_str).ok_or({
+            #[cfg(feature = "std")]
+            {
+                DbError::RecordKeyNotFound {
+                    key: key_str.to_string(),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                DbError::RecordKeyNotFound { _key: () }
+            }
+        })?;
+
+        self.get_typed_record_by_id::<T, R>(id)
+    }
+
+    /// Helper to get a typed record by RecordId with type validation
+    pub fn get_typed_record_by_id<T, R>(&self, id: RecordId) -> DbResult<&TypedRecord<T, R>>
     where
         T: Send + 'static + Debug + Clone,
         R: aimdb_executor::Spawn + 'static,
     {
         use crate::typed_record::AnyRecordExt;
 
-        let type_id = TypeId::of::<T>();
+        // Validate RecordId is in bounds
+        if id.index() >= self.storages.len() {
+            return Err(DbError::InvalidRecordId { id: id.raw() });
+        }
 
-        #[cfg(feature = "std")]
-        let record = self.records.get(&type_id).ok_or(DbError::RecordNotFound {
-            record_name: core::any::type_name::<T>().to_string(),
-        })?;
+        // Validate TypeId matches
+        let expected = TypeId::of::<T>();
+        let actual = self.types[id.index()];
+        if expected != actual {
+            #[cfg(feature = "std")]
+            return Err(DbError::TypeMismatch {
+                record_id: id.raw(),
+                expected_type: core::any::type_name::<T>().to_string(),
+            });
+            #[cfg(not(feature = "std"))]
+            return Err(DbError::TypeMismatch {
+                record_id: id.raw(),
+                _expected_type: (),
+            });
+        }
 
-        #[cfg(not(feature = "std"))]
-        let record = self
-            .records
-            .get(&type_id)
-            .ok_or(DbError::RecordNotFound { _record_name: () })?;
+        // Safe to downcast (type validated above)
+        let record = &self.storages[id.index()];
 
         #[cfg(feature = "std")]
         let typed_record = record.as_typed::<T, R>().ok_or(DbError::InvalidOperation {
-            operation: "get_typed_record".to_string(),
+            operation: "get_typed_record_by_id".to_string(),
             reason: "type mismatch during downcast".to_string(),
         })?;
 
@@ -92,40 +201,76 @@ impl AimDbInner {
         Ok(typed_record)
     }
 
+    /// Helper to get a typed record from the registry (legacy API)
+    ///
+    /// **Deprecated**: Use `get_typed_record_by_key()` instead.
+    ///
+    /// This method only works when exactly one record of type T exists.
+    /// Returns `AmbiguousType` error if multiple records of the same type exist.
+    pub fn get_typed_record<T, R>(&self) -> DbResult<&TypedRecord<T, R>>
+    where
+        T: Send + 'static + Debug + Clone,
+        R: aimdb_executor::Spawn + 'static,
+    {
+        let type_id = TypeId::of::<T>();
+        let ids = self.by_type.get(&type_id);
+
+        match ids.map(|v| v.as_slice()) {
+            None | Some([]) => {
+                #[cfg(feature = "std")]
+                return Err(DbError::RecordNotFound {
+                    record_name: core::any::type_name::<T>().to_string(),
+                });
+                #[cfg(not(feature = "std"))]
+                return Err(DbError::RecordNotFound { _record_name: () });
+            }
+            Some([single_id]) => self.get_typed_record_by_id::<T, R>(*single_id),
+            Some(multiple) => {
+                #[cfg(feature = "std")]
+                return Err(DbError::AmbiguousType {
+                    count: multiple.len() as u32,
+                    type_name: core::any::type_name::<T>().to_string(),
+                });
+                #[cfg(not(feature = "std"))]
+                return Err(DbError::AmbiguousType {
+                    count: multiple.len() as u32,
+                    _type_name: (),
+                });
+            }
+        }
+    }
+
     /// Collects metadata for all registered records (std only)
     ///
     /// Returns a vector of `RecordMetadata` for remote access introspection.
     /// Available only when the `std` feature is enabled.
     #[cfg(feature = "std")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
-        self.records
+        self.storages
             .iter()
-            .map(|(type_id, record)| record.collect_metadata(*type_id))
+            .enumerate()
+            .map(|(i, record)| {
+                let id = RecordId::new(i as u32);
+                let type_id = self.types[i];
+                let key = &self.keys[i];
+                record.collect_metadata(type_id, key.clone(), id)
+            })
             .collect()
     }
 
-    /// Try to get record's latest value as JSON by record name (std only)
+    /// Try to get record's latest value as JSON by record key (std only)
     ///
-    /// Searches for a record with the given name and returns its current value
-    /// serialized to JSON. Returns `None` if:
-    /// - Record not found
-    /// - Record not configured with `.with_serialization()`
-    /// - No value available in the atomic snapshot
+    /// O(1) lookup using the key-based index.
     ///
     /// # Arguments
-    /// * `record_name` - The full Rust type name (e.g., "server::Temperature")
+    /// * `record_key` - The record key (e.g., "sensors.temperature")
     ///
     /// # Returns
     /// `Some(JsonValue)` with the current record value, or `None`
     #[cfg(feature = "std")]
-    pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
-        for (type_id, record) in &self.records {
-            let metadata = record.collect_metadata(*type_id);
-            if metadata.name == record_name {
-                return record.latest_json();
-            }
-        }
-        None
+    pub fn try_latest_as_json(&self, record_key: &str) -> Option<serde_json::Value> {
+        let id = self.resolve_str(record_key)?;
+        self.storages.get(id.index())?.latest_json()
     }
 
     /// Sets a record value from JSON (remote access API)
@@ -137,44 +282,25 @@ impl AimDbInner {
     /// - Returns error if the record has active producers
     ///
     /// # Arguments
-    /// * `record_name` - The full Rust type name (e.g., "server::AppConfig")
+    /// * `record_key` - The record key (e.g., "config.app")
     /// * `json_value` - JSON representation of the value
     ///
     /// # Returns
     /// - `Ok(())` - Successfully set the value
     /// - `Err(DbError)` - If record not found, has producers, or deserialization fails
-    ///
-    /// # Errors
-    /// - `RecordNotFound` - Record with given name doesn't exist
-    /// - `PermissionDenied` - Record has active producers (safety check)
-    /// - `RuntimeError` - Record not configured with `.with_serialization()`
-    /// - `JsonWithContext` - JSON deserialization failed (schema mismatch)
-    ///
-    /// # Example (internal use - called by remote access protocol)
-    /// ```rust,ignore
-    /// let json_val = serde_json::json!({"log_level": "debug", "version": "1.0"});
-    /// db.set_record_from_json("server::AppConfig", json_val)?;
-    /// ```
     #[cfg(feature = "std")]
     pub fn set_record_from_json(
         &self,
-        record_name: &str,
+        record_key: &str,
         json_value: serde_json::Value,
     ) -> DbResult<()> {
-        // Find the record by name
-        for (type_id, record) in &self.records {
-            let metadata = record.collect_metadata(*type_id);
-            if metadata.name == record_name {
-                // Delegate to the type-erased set_from_json method
-                // which will enforce the "no producer override" rule
-                return record.set_from_json(json_value);
-            }
-        }
+        let id = self
+            .resolve_str(record_key)
+            .ok_or_else(|| DbError::RecordKeyNotFound {
+                key: record_key.to_string(),
+            })?;
 
-        // Record not found
-        Err(DbError::RecordNotFound {
-            record_name: record_name.to_string(),
-        })
+        self.storages[id.index()].set_from_json(json_value)
     }
 }
 
@@ -183,8 +309,8 @@ impl AimDbInner {
 /// Provides a fluent API for constructing databases with type-safe record registration.
 /// Use `.runtime()` to set the runtime and transition to a typed builder.
 pub struct AimDbBuilder<R = NoRuntime> {
-    /// Registry of typed records
-    records: BTreeMap<TypeId, Box<dyn AnyRecord>>,
+    /// Registered records with their keys (order matters for RecordId assignment)
+    records: Vec<(RecordKey, TypeId, Box<dyn AnyRecord>)>,
 
     /// Runtime adapter
     runtime: Option<Arc<R>>,
@@ -192,8 +318,8 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Connector builders that will be invoked during build()
     connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder<R>>>,
 
-    /// Spawn functions indexed by TypeId
-    spawn_fns: BTreeMap<TypeId, Box<dyn core::any::Any + Send>>,
+    /// Spawn functions with their keys
+    spawn_fns: Vec<(RecordKey, Box<dyn core::any::Any + Send>)>,
 
     /// Remote access configuration (std only)
     #[cfg(feature = "std")]
@@ -209,10 +335,10 @@ impl AimDbBuilder<NoRuntime> {
     /// Call `.runtime()` to set the runtime adapter.
     pub fn new() -> Self {
         Self {
-            records: BTreeMap::new(),
+            records: Vec::new(),
             runtime: None,
             connector_builders: Vec::new(),
-            spawn_fns: BTreeMap::new(),
+            spawn_fns: Vec::new(),
             #[cfg(feature = "std")]
             remote_config: None,
             _phantom: PhantomData,
@@ -252,7 +378,7 @@ impl AimDbBuilder<NoRuntime> {
             records: self.records,
             runtime: Some(rt),
             connector_builders: Vec::new(),
-            spawn_fns: BTreeMap::new(),
+            spawn_fns: Vec::new(),
             #[cfg(feature = "std")]
             remote_config: self.remote_config,
             _phantom: PhantomData,
@@ -323,24 +449,63 @@ where
         self
     }
 
-    /// Configures a record type manually
+    /// Configures a record type manually with a unique key
     ///
-    /// Low-level method for advanced use cases. Most users should use `register_record` instead.
+    /// The key uniquely identifies this record instance. Multiple records of the same
+    /// type can exist with different keys (e.g., "sensor.temperature.room1" and
+    /// "sensor.temperature.room2").
+    ///
+    /// # Arguments
+    /// * `key` - A unique string identifier for this record (e.g., "sensor.temperature.room1")
+    /// * `f` - Configuration closure
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// builder.configure::<Temperature>("sensor.temp.room1", |reg| {
+    ///     reg.with_buffer(BufferCfg::SingleLatest)
+    ///        .with_serialization();
+    /// });
+    /// ```
     pub fn configure<T>(
         &mut self,
+        key: impl Into<RecordKey>,
         f: impl for<'a> FnOnce(&'a mut RecordRegistrar<'a, T, R>),
     ) -> &mut Self
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        let entry = self
-            .records
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(TypedRecord::<T, R>::new()));
+        let record_key: RecordKey = key.into();
+        let type_id = TypeId::of::<T>();
 
-        let rec = entry
-            .as_typed_mut::<T, R>()
-            .expect("type mismatch in record registry");
+        // Find existing record with this key, or create new one
+        let record_index = self.records.iter().position(|(k, _, _)| k == &record_key);
+
+        let rec = match record_index {
+            Some(idx) => {
+                // Use existing record
+                let (_, existing_type, record) = &mut self.records[idx];
+                assert!(
+                    *existing_type == type_id,
+                    "RecordKey '{}' already registered with different type",
+                    record_key.as_str()
+                );
+                record
+                    .as_typed_mut::<T, R>()
+                    .expect("type mismatch in record registry")
+            }
+            None => {
+                // Create new record
+                self.records.push((
+                    record_key.clone(),
+                    type_id,
+                    Box::new(TypedRecord::<T, R>::new()),
+                ));
+                let (_, _, record) = self.records.last_mut().unwrap();
+                record
+                    .as_typed_mut::<T, R>()
+                    .expect("type mismatch in record registry")
+            }
+        };
 
         let mut reg = RecordRegistrar {
             rec,
@@ -348,21 +513,22 @@ where
         };
         f(&mut reg);
 
-        // Store a spawn function that captures the concrete type T and connectors
-        let type_id = TypeId::of::<T>();
+        // Store a spawn function that captures the concrete type T and the key
+        let spawn_key = record_key.clone();
 
         #[allow(clippy::type_complexity)]
-        let spawn_fn: Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>) -> DbResult<()> + Send> =
-            Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>| {
-                // Use RecordSpawner to spawn tasks for this record type
-                use crate::typed_record::RecordSpawner;
+        let spawn_fn: Box<
+            dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<()> + Send,
+        > = Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>, id: RecordId| {
+            // Use RecordSpawner to spawn tasks for this record type
+            use crate::typed_record::RecordSpawner;
 
-                let typed_record = db.inner().get_typed_record::<T, R>()?;
-                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db)
-            });
+            let typed_record = db.inner().get_typed_record_by_id::<T, R>(id)?;
+            RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db)
+        });
 
         // Store the spawn function (type-erased in Box<dyn Any>)
-        self.spawn_fns.insert(type_id, Box::new(spawn_fn));
+        self.spawn_fns.push((spawn_key, Box::new(spawn_fn)));
 
         self
     }
@@ -370,11 +536,29 @@ where
     /// Registers a self-registering record type
     ///
     /// The record type must implement `RecordT<R>`.
+    ///
+    /// Uses the type name as the default key. For custom keys, use `configure()` directly.
     pub fn register_record<T>(&mut self, cfg: &T::Config) -> &mut Self
     where
         T: RecordT<R>,
     {
-        self.configure::<T>(|reg| T::register(reg, cfg))
+        // Default key is the full type name for backward compatibility
+        let key = RecordKey::new(core::any::type_name::<T>());
+        self.configure::<T>(key, |reg| T::register(reg, cfg))
+    }
+
+    /// Registers a self-registering record type with a custom key
+    ///
+    /// The record type must implement `RecordT<R>`.
+    pub fn register_record_with_key<T>(
+        &mut self,
+        key: impl Into<RecordKey>,
+        cfg: &T::Config,
+    ) -> &mut Self
+    where
+        T: RecordT<R>,
+    {
+        self.configure::<T>(key, |reg| T::register(reg, cfg))
     }
 
     /// Runs the database indefinitely (never returns)
@@ -435,7 +619,7 @@ where
     /// // Configure records with connector links
     /// let builder = AimDbBuilder::new()
     ///     .runtime(runtime)
-    ///     .configure::<Temp>(|reg| {
+    ///     .configure::<Temp>("temp", |reg| {
     ///         reg.link_from("mqtt://commands/temp")
     ///            .with_buffer(BufferCfg::SingleLatest)
     ///            .with_serialization();
@@ -460,12 +644,14 @@ where
         use crate::DbError;
 
         // Validate all records
-        for record in self.records.values() {
+        for (key, _, record) in &self.records {
             record.validate().map_err(|_msg| {
+                // Suppress unused warning for key in no_std
+                let _ = &key;
                 #[cfg(feature = "std")]
                 {
                     DbError::RuntimeError {
-                        message: format!("Record validation failed: {}", _msg),
+                        message: format!("Record '{}' validation failed: {}", key.as_str(), _msg),
                     }
                 }
                 #[cfg(not(feature = "std"))]
@@ -489,8 +675,41 @@ where
             }
         })?;
 
+        // Build the new index structures
+        let record_count = self.records.len();
+        let mut storages: Vec<Box<dyn AnyRecord>> = Vec::with_capacity(record_count);
+        let mut by_key: HashMap<RecordKey, RecordId> = HashMap::with_capacity(record_count);
+        let mut by_type: HashMap<TypeId, Vec<RecordId>> = HashMap::new();
+        let mut types: Vec<TypeId> = Vec::with_capacity(record_count);
+        let mut keys: Vec<RecordKey> = Vec::with_capacity(record_count);
+
+        for (i, (key, type_id, record)) in self.records.into_iter().enumerate() {
+            let id = RecordId::new(i as u32);
+
+            // Check for duplicate keys (should not happen if configure() is used correctly)
+            if by_key.contains_key(&key) {
+                #[cfg(feature = "std")]
+                return Err(DbError::DuplicateRecordKey {
+                    key: key.as_str().to_string(),
+                });
+                #[cfg(not(feature = "std"))]
+                return Err(DbError::DuplicateRecordKey { _key: () });
+            }
+
+            // Build index structures
+            storages.push(record);
+            by_key.insert(key.clone(), id);
+            by_type.entry(type_id).or_default().push(id);
+            types.push(type_id);
+            keys.push(key);
+        }
+
         let inner = Arc::new(AimDbInner {
-            records: self.records,
+            storages,
+            by_key,
+            by_type,
+            types,
+            keys,
         });
 
         let db = Arc::new(AimDb {
@@ -500,21 +719,36 @@ where
 
         #[cfg(feature = "tracing")]
         tracing::info!(
-            "Spawning producer services and tap observers for {} record types",
+            "Spawning producer services and tap observers for {} records",
             self.spawn_fns.len()
         );
 
-        // Execute spawn functions for each record type
-        for (_type_id, spawn_fn_any) in self.spawn_fns {
+        // Execute spawn functions for each record
+        for (key, spawn_fn_any) in self.spawn_fns {
+            // Resolve key to RecordId
+            let id = inner.resolve(&key).ok_or({
+                #[cfg(feature = "std")]
+                {
+                    DbError::RecordKeyNotFound {
+                        key: key.as_str().to_string(),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    DbError::RecordKeyNotFound { _key: () }
+                }
+            })?;
+
             // Downcast from Box<dyn Any> back to the concrete spawn function type
-            type SpawnFnType<R> = Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>) -> DbResult<()> + Send>;
+            type SpawnFnType<R> =
+                Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<()> + Send>;
 
             let spawn_fn = spawn_fn_any
                 .downcast::<SpawnFnType<R>>()
                 .expect("spawn function type mismatch");
 
             // Execute the spawn function
-            (*spawn_fn)(&runtime, &db)?;
+            (*spawn_fn)(&runtime, &db, id)?;
         }
 
         #[cfg(feature = "tracing")]
@@ -530,19 +764,18 @@ where
             );
 
             // Apply security policy to mark writable records
-            let writable_type_ids = remote_cfg.security_policy.writable_records();
-            for (type_id, record) in inner.records.iter() {
-                if writable_type_ids.contains(type_id) {
+            let writable_keys = remote_cfg.security_policy.writable_records();
+            for key_str in writable_keys {
+                if let Some(id) = inner.resolve_str(&key_str) {
                     #[cfg(feature = "tracing")]
-                    tracing::debug!("Marking record {:?} as writable", type_id);
+                    tracing::debug!("Marking record '{}' as writable", key_str);
 
                     // Mark the record as writable (type-erased call)
-                    record.set_writable_erased(true);
+                    inner.storages[id.index()].set_writable_erased(true);
                 }
             }
 
             // Spawn the remote supervisor task
-            // This will be implemented in Task 6
             crate::remote::supervisor::spawn_supervisor(db.clone(), runtime.clone(), remote_cfg)?;
 
             #[cfg(feature = "tracing")]
@@ -552,19 +785,24 @@ where
         // Build connectors from builders (after database is fully constructed)
         // This allows connectors to use collect_inbound_routes() which creates
         // producers tied to this specific database instance
-        let mut built_connectors = BTreeMap::new();
         for builder in self.connector_builders {
-            #[cfg(feature = "std")]
-            let scheme = builder.scheme().to_string();
-
-            #[cfg(not(feature = "std"))]
-            let scheme = alloc::string::String::from(builder.scheme());
+            #[cfg(feature = "tracing")]
+            let scheme = {
+                #[cfg(feature = "std")]
+                {
+                    builder.scheme().to_string()
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    alloc::string::String::from(builder.scheme())
+                }
+            };
 
             #[cfg(feature = "tracing")]
             tracing::debug!("Building connector for scheme: {}", scheme);
 
-            let connector = builder.build(&db).await?;
-            built_connectors.insert(scheme.clone(), connector);
+            // Build the connector (this spawns tasks as a side effect)
+            let _connector = builder.build(&db).await?;
 
             #[cfg(feature = "tracing")]
             tracing::info!("Connector built and spawned successfully: {}", scheme);
@@ -740,6 +978,149 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         crate::typed_api::Consumer::new(Arc::new(self.clone()))
     }
 
+    // ========================================================================
+    // Key-based API (recommended for multi-instance records)
+    // ========================================================================
+
+    /// Produces a value to a specific record by key
+    ///
+    /// This is the recommended method when multiple records of the same type exist.
+    /// Uses O(1) key-based lookup to find the correct record.
+    ///
+    /// # Arguments
+    /// * `key` - The record key (e.g., "sensor.temperature")
+    /// * `value` - The value to produce
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // With multiple Temperature records
+    /// db.produce_by_key::<Temperature>("sensors.indoor", indoor_temp).await?;
+    /// db.produce_by_key::<Temperature>("sensors.outdoor", outdoor_temp).await?;
+    /// ```
+    pub async fn produce_by_key<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
+    where
+        T: Send + 'static + Debug + Clone,
+    {
+        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(key)?;
+        typed_rec.produce(value).await;
+        Ok(())
+    }
+
+    /// Subscribes to a specific record by key
+    ///
+    /// This is the recommended method when multiple records of the same type exist.
+    /// Uses O(1) key-based lookup to find the correct record.
+    ///
+    /// # Arguments
+    /// * `key` - The record key (e.g., "sensor.temperature")
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut reader = db.subscribe_by_key::<Temperature>("sensors.indoor")?;
+    /// while let Ok(temp) = reader.recv().await {
+    ///     println!("Indoor: {:.1}°C", temp.celsius);
+    /// }
+    /// ```
+    pub fn subscribe_by_key<T>(
+        &self,
+        key: impl AsRef<str>,
+    ) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
+    where
+        T: Send + Sync + 'static + Debug + Clone,
+    {
+        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(key)?;
+        typed_rec.subscribe()
+    }
+
+    /// Creates a type-safe producer for a specific record by key
+    ///
+    /// Returns a `ProducerByKey<T, R>` bound to a specific record key.
+    /// Use this when multiple records of the same type exist.
+    ///
+    /// # Arguments
+    /// * `key` - The record key (e.g., "sensor.temperature")
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let indoor_producer = db.producer_by_key::<Temperature>("sensors.indoor");
+    /// let outdoor_producer = db.producer_by_key::<Temperature>("sensors.outdoor");
+    ///
+    /// // Each producer writes to its own record
+    /// indoor_producer.produce(indoor_temp).await?;
+    /// outdoor_producer.produce(outdoor_temp).await?;
+    /// ```
+    #[cfg(feature = "alloc")]
+    pub fn producer_by_key<T>(
+        &self,
+        key: impl Into<alloc::string::String>,
+    ) -> crate::typed_api::ProducerByKey<T, R>
+    where
+        T: Send + 'static + Debug + Clone,
+    {
+        crate::typed_api::ProducerByKey::new(Arc::new(self.clone()), key.into())
+    }
+
+    /// Creates a type-safe consumer for a specific record by key
+    ///
+    /// Returns a `ConsumerByKey<T, R>` bound to a specific record key.
+    /// Use this when multiple records of the same type exist.
+    ///
+    /// # Arguments
+    /// * `key` - The record key (e.g., "sensor.temperature")
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let indoor_consumer = db.consumer_by_key::<Temperature>("sensors.indoor");
+    /// let outdoor_consumer = db.consumer_by_key::<Temperature>("sensors.outdoor");
+    ///
+    /// // Each consumer reads from its own record
+    /// let mut rx = indoor_consumer.subscribe()?;
+    /// ```
+    #[cfg(feature = "alloc")]
+    pub fn consumer_by_key<T>(
+        &self,
+        key: impl Into<alloc::string::String>,
+    ) -> crate::typed_api::ConsumerByKey<T, R>
+    where
+        T: Send + Sync + 'static + Debug + Clone,
+    {
+        crate::typed_api::ConsumerByKey::new(Arc::new(self.clone()), key.into())
+    }
+
+    /// Resolve a record key to its RecordId
+    ///
+    /// Useful for checking if a record exists before operations.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// if let Some(id) = db.resolve_key("sensors.temperature") {
+    ///     println!("Record exists with ID: {}", id);
+    /// }
+    /// ```
+    pub fn resolve_key(&self, key: &str) -> Option<crate::record_id::RecordId> {
+        self.inner.resolve_str(key)
+    }
+
+    /// Get all record IDs for a specific type
+    ///
+    /// Returns a slice of RecordIds for all records of type T.
+    /// Useful for introspection when multiple records of the same type exist.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let temp_ids = db.records_of_type::<Temperature>();
+    /// println!("Found {} temperature records", temp_ids.len());
+    /// ```
+    pub fn records_of_type<T: 'static>(&self) -> &[crate::record_id::RecordId] {
+        self.inner.records_of_type::<T>()
+    }
+
     /// Returns a reference to the runtime adapter
     ///
     /// Provides direct access to the concrete runtime type.
@@ -823,7 +1204,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     ///    - The channel receiver is dropped (client disconnected)
     ///
     /// # Arguments
-    /// * `type_id` - TypeId of the record to subscribe to
+    /// * `record_key` - Key of the record to subscribe to
     /// * `queue_size` - Size of the bounded channel for this subscription
     ///
     /// # Returns
@@ -832,15 +1213,14 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// - `cancel_tx`: One-shot sender to cancel the subscription
     ///
     /// `Err` if:
-    /// - Record not found for the given TypeId
+    /// - Record not found for the given key
     /// - Record not configured with `.with_serialization()`
     /// - Failed to subscribe to buffer
     ///
     /// # Example (internal use)
     ///
     /// ```rust,ignore
-    /// let type_id = TypeId::of::<Temperature>();
-    /// let (mut rx, cancel_tx) = db.subscribe_record_updates(type_id, 100)?;
+    /// let (mut rx, cancel_tx) = db.subscribe_record_updates("sensor.temp", 100)?;
     ///
     /// // Read events
     /// while let Some(json_value) = rx.recv().await {
@@ -854,7 +1234,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     #[allow(unused_variables)] // Variables used only in tracing feature
     pub fn subscribe_record_updates(
         &self,
-        type_id: TypeId,
+        record_key: &str,
         queue_size: usize,
     ) -> DbResult<(
         tokio::sync::mpsc::Receiver<serde_json::Value>,
@@ -862,14 +1242,18 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     )> {
         use tokio::sync::{mpsc, oneshot};
 
-        // Find the record by TypeId
+        // Find the record by key
+        let id = self
+            .inner
+            .resolve_str(record_key)
+            .ok_or_else(|| DbError::RecordKeyNotFound {
+                key: record_key.to_string(),
+            })?;
+
         let record = self
             .inner
-            .records
-            .get(&type_id)
-            .ok_or(DbError::RecordNotFound {
-                record_name: format!("TypeId({:?})", type_id),
-            })?;
+            .storage(id)
+            .ok_or_else(|| DbError::InvalidRecordId { id: id.raw() })?;
 
         // Subscribe to the record's buffer as JSON stream
         // This will fail if record not configured with .with_serialization()
@@ -880,7 +1264,9 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
 
         // Get metadata for logging
-        let record_metadata = record.collect_metadata(type_id);
+        let type_id = self.inner.types[id.index()];
+        let key = self.inner.keys[id.index()].clone();
+        let record_metadata = record.collect_metadata(type_id, key, id);
         let runtime = self.runtime.clone();
 
         // Spawn consumer task that forwards JSON values from buffer to channel
@@ -983,7 +1369,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         // Convert self to Arc<dyn Any> for producer factory
         let db_any: Arc<dyn core::any::Any + Send + Sync> = Arc::new(self.clone());
 
-        for record in self.inner.records.values() {
+        for record in &self.inner.storages {
             let inbound_links = record.inbound_connectors();
 
             for link in inbound_links {
@@ -1047,7 +1433,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         // needing to know the runtime type R at the factory definition site
         let db_any: Arc<dyn core::any::Any + Send + Sync> = Arc::new(self.clone());
 
-        for record in self.inner.records.values() {
+        for record in &self.inner.storages {
             let outbound_links = record.outbound_connectors();
 
             for link in outbound_links {

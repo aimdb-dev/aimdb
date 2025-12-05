@@ -58,13 +58,21 @@ impl TokioAdapter {
         let mut total_connectors = 0;
 
         // Iterate through all registered records
-        for (_type_id, record) in inner.records.iter() {
+        for i in 0..inner.record_count() {
+            let record_id = aimdb_core::record_id::RecordId::new(i as u32);
+            let Some(record) = inner.storage(record_id) else {
+                continue;
+            };
             let connector_count = record.outbound_connector_count();
 
             if connector_count > 0 {
                 #[cfg(feature = "tracing")]
                 {
-                    tracing::info!("Record {:?} has {} connector(s)", _type_id, connector_count);
+                    let key = inner
+                        .key_for(record_id)
+                        .map(|k| k.as_str())
+                        .unwrap_or("unknown");
+                    tracing::info!("Record '{}' has {} connector(s)", key, connector_count);
 
                     let urls = record.outbound_connector_urls();
                     for url in urls {
@@ -110,7 +118,7 @@ mod tests {
         let mut builder = AimDbBuilder::new().runtime(Arc::new(adapter));
 
         // Configure a test record type but don't add any connectors
-        builder.configure::<TestMessage>(|reg| {
+        builder.configure::<TestMessage>("test.message", |reg| {
             reg.source(|_ctx, _msg| async {})
                 .tap(|_ctx, _consumer| async {});
         });
@@ -178,7 +186,7 @@ mod tests {
         builder = builder.with_connector(MockBuilder);
 
         // Register a record with connector links
-        builder.configure::<TestMessage>(|reg| {
+        builder.configure::<TestMessage>("test.message", |reg| {
             reg.source(|_ctx, _msg| async {})
                 .tap(|_ctx, _consumer| async {})
                 .link_to("mqtt://broker.example.com:1883")
@@ -193,11 +201,10 @@ mod tests {
 
         // Verify record was registered with the connector link
         let inner = db.inner();
-        let record = inner
-            .records
-            .values()
-            .next()
-            .expect("Should have one record");
+        let record_id = inner
+            .resolve_str("test.message")
+            .expect("Record should exist");
+        let record = inner.storage(record_id).expect("Should have the record");
 
         assert_eq!(record.outbound_connector_count(), 1);
 

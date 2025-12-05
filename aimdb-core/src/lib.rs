@@ -50,6 +50,8 @@ pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
 pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
+#[cfg(feature = "alloc")]
+pub use typed_api::{ConsumerByKey, ProducerByKey};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // Connector Infrastructure exports
