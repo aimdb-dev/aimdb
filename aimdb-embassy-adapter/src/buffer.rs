@@ -200,7 +200,43 @@ impl<
     }
 }
 
-// Note: DynBuffer is automatically implemented via blanket impl in aimdb-core
+/// Explicit DynBuffer implementation for EmbassyBuffer
+///
+/// Required since there is no blanket impl - each adapter provides its own.
+///
+/// **Note on metrics**: Embassy adapter does not currently support buffer metrics.
+/// The `metrics_snapshot()` method returns `None`. Metrics support for embedded
+/// targets would require careful consideration of atomic availability and memory
+/// constraints. See the Tokio adapter for a reference implementation.
+impl<
+        T: Clone + Send + 'static,
+        const CAP: usize,
+        const SUBS: usize,
+        const PUBS: usize,
+        const WATCH_N: usize,
+    > aimdb_core::buffer::DynBuffer<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+{
+    fn push(&self, value: T) {
+        <Self as Buffer<T>>::push(self, value)
+    }
+
+    fn subscribe_boxed(&self) -> alloc::boxed::Box<dyn aimdb_core::buffer::BufferReader<T> + Send> {
+        alloc::boxed::Box::new(self.subscribe())
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    // Embassy adapter does not support metrics yet.
+    // AtomicU64 availability varies across embedded targets, and memory-constrained
+    // environments may not want the overhead. Future work could add opt-in metrics
+    // with target-specific atomic implementations.
+    #[cfg(feature = "metrics")]
+    fn metrics_snapshot(&self) -> Option<aimdb_core::buffer::BufferMetricsSnapshot> {
+        None
+    }
+}
 
 impl<
         T: Clone + Send + 'static,

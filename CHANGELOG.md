@@ -18,7 +18,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **aimdb-core**: New `BufferMetrics` trait and `BufferMetricsSnapshot` struct for buffer introspection (feature-gated behind `metrics`)
+  - `produced_count`: Total items pushed to the buffer
+  - `consumed_count`: Total items consumed across all readers
+  - `dropped_count`: Total items dropped due to lag (with per-reader semantics documented)
+  - `occupancy`: Current buffer fill level as `(current, capacity)` tuple
+- **aimdb-core**: `RecordMetadata` now includes optional buffer metrics fields when `metrics` feature is enabled
+- **aimdb-tokio-adapter**: Full `BufferMetrics` implementation for all buffer types (SPMC Ring, SingleLatest, Mailbox)
+- **aimdb-tokio-adapter**: Comprehensive test suite for metrics (`metrics_tests` module)
+- **Makefile**: Added test targets for `metrics` feature combinations
+- **docs**: Added design document `015-M6-record-id-architecture.md` for future RecordId-based storage
+
+### Changed
+
+- **aimdb-core**: `DynBuffer` trait no longer has a blanket implementation. Each adapter now provides its own explicit implementation. This enables adapters to provide `metrics_snapshot()` when the `metrics` feature is enabled.
+- **aimdb-mqtt-connector**: Upgraded `rumqttc` dependency from 0.24 to 0.25
+- **deny.toml**: Added `OpenSSL` license allowance (transitive via rumqttc/rustls)
+- **deny.toml**: Ignored `RUSTSEC-2025-0134` advisory (rustls-pemfile unmaintained but not vulnerable)
+
+### Migration Guide
+
+**Breaking: DynBuffer no longer has blanket impl**
+
+If you have custom `Buffer<T>` implementations, you now need to also implement `DynBuffer<T>`:
+
+```rust
+// Before (v0.2.x) - automatic via blanket impl
+impl<T: Clone + Send> Buffer<T> for MyBuffer<T> { ... }
+// DynBuffer was automatically implemented
+
+// After (v0.3.0) - explicit implementation required
+impl<T: Clone + Send> Buffer<T> for MyBuffer<T> { ... }
+
+impl<T: Clone + Send + 'static> DynBuffer<T> for MyBuffer<T> {
+    fn push(&self, value: T) {
+        <Self as Buffer<T>>::push(self, value)
+    }
+    
+    fn subscribe_boxed(&self) -> Box<dyn BufferReader<T> + Send> {
+        Box::new(self.subscribe())
+    }
+    
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    
+    // Optional: implement metrics_snapshot() if you support metrics
+    #[cfg(feature = "metrics")]
+    fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
+        None // or Some(...) if you track metrics
+    }
+}
+```
 
 ## [0.2.0] - 2025-11-20
 

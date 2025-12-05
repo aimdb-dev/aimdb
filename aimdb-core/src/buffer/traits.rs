@@ -74,6 +74,15 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
 
     /// Returns self as Any for downcasting to concrete buffer types
     fn as_any(&self) -> &dyn core::any::Any;
+
+    /// Get buffer metrics snapshot (metrics feature only)
+    ///
+    /// Returns `Some(snapshot)` if the buffer implementation supports metrics,
+    /// `None` otherwise. Default implementation returns `None`.
+    #[cfg(feature = "metrics")]
+    fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
+        None
+    }
 }
 
 /// Reader trait for consuming values from a buffer
@@ -132,23 +141,66 @@ pub trait JsonBufferReader: Send {
     ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, DbError>> + Send + '_>>;
 }
 
-/// Blanket implementation of DynBuffer for all Buffer types
-impl<T, B> DynBuffer<T> for B
-where
-    T: Clone + Send + 'static,
-    B: Buffer<T>,
-{
-    fn push(&self, value: T) {
-        <Self as Buffer<T>>::push(self, value)
-    }
+/// Snapshot of buffer metrics at a point in time
+///
+/// Used for introspection and diagnostics. All counters are monotonically
+/// increasing (except after reset).
+#[cfg(feature = "metrics")]
+#[derive(Debug, Clone, Default)]
+pub struct BufferMetricsSnapshot {
+    /// Total items pushed to this buffer since creation
+    pub produced_count: u64,
 
-    fn subscribe_boxed(&self) -> Box<dyn BufferReader<T> + Send> {
-        Box::new(self.subscribe())
-    }
+    /// Total items successfully consumed from this buffer (aggregate across all readers)
+    pub consumed_count: u64,
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
+    /// Total items dropped due to overflow/lag (SPMC ring only)
+    ///
+    /// **Note**: When multiple readers lag simultaneously on a broadcast buffer,
+    /// each reader reports its own dropped count independently. This means the
+    /// aggregate dropped_count may exceed the actual number of unique items that
+    /// overflowed from the ring buffer (each lagged reader adds its own lag count).
+    /// This is intentional: it reflects total "missed reads" across all consumers,
+    /// which is useful for diagnosing per-consumer backpressure issues.
+    pub dropped_count: u64,
+
+    /// Current buffer occupancy: (items_in_buffer, capacity)
+    /// Returns (0, 0) for SingleLatest/Mailbox where occupancy is not meaningful
+    pub occupancy: (usize, usize),
+}
+
+/// Optional buffer metrics for introspection (std only, feature-gated)
+///
+/// Implemented by buffer types when the `metrics` feature is enabled.
+/// Provides counters for diagnosing producer-consumer imbalances.
+///
+/// # Example
+/// ```rust,ignore
+/// use aimdb_core::buffer::BufferMetrics;
+///
+/// // After enabling `metrics` feature
+/// let metrics = buffer.metrics();
+/// if metrics.produced_count > metrics.consumed_count + 1000 {
+///     println!("Warning: consumer is {} items behind",
+///              metrics.produced_count - metrics.consumed_count);
+/// }
+/// if metrics.dropped_count > 0 {
+///     println!("Warning: {} items dropped due to overflow", metrics.dropped_count);
+/// }
+/// ```
+#[cfg(feature = "metrics")]
+pub trait BufferMetrics {
+    /// Get a snapshot of current buffer metrics
+    ///
+    /// Returns counters for produced, consumed, and dropped items,
+    /// plus current buffer occupancy.
+    fn metrics(&self) -> BufferMetricsSnapshot;
+
+    /// Reset all metrics counters to zero
+    ///
+    /// Useful for windowed metrics collection. Note that this affects
+    /// all observers of this buffer's metrics.
+    fn reset_metrics(&self);
 }
 
 #[cfg(test)]
@@ -184,6 +236,27 @@ mod tests {
         }
     }
 
+    // Explicit DynBuffer implementation for MockBuffer
+    // (no blanket impl - adapters provide their own)
+    impl<T: Clone + Send + Sync + 'static> DynBuffer<T> for MockBuffer<T> {
+        fn push(&self, value: T) {
+            <Self as Buffer<T>>::push(self, value)
+        }
+
+        fn subscribe_boxed(&self) -> Box<dyn BufferReader<T> + Send> {
+            Box::new(self.subscribe())
+        }
+
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+
+        #[cfg(feature = "metrics")]
+        fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
+            None // Mock doesn't track metrics
+        }
+    }
+
     impl<T: Clone + Send> BufferReader<T> for MockReader<T> {
         fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>> {
             Box::pin(async {
@@ -210,8 +283,8 @@ mod tests {
     }
 
     #[test]
-    fn test_dyn_buffer_blanket_impl() {
-        // Verify DynBuffer is automatically implemented
+    fn test_dyn_buffer_impl() {
+        // Verify DynBuffer can be used as trait object
         let buffer = MockBuffer::<i32> {
             _phantom: core::marker::PhantomData,
         };

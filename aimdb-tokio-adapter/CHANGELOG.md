@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Buffer Metrics Implementation**: Full `BufferMetrics` trait implementation for `TokioBuffer` when `metrics` feature is enabled
+  - Tracks `produced_count`, `consumed_count`, `dropped_count` via atomic counters
+  - Reports real-time `occupancy` for all buffer types (SPMC Ring, SingleLatest, Mailbox)
+  - `reset_metrics()` method for windowed metrics collection
+- **Comprehensive Metrics Tests**: New `metrics_tests` module with tests for all buffer types and edge cases
+- **DynBuffer Explicit Implementation**: `TokioBuffer` now explicitly implements `DynBuffer<T>` with `metrics_snapshot()` support
+
+### Changed
+
+- **Breaking: DynBuffer Implementation**: `TokioBuffer` now has an explicit `DynBuffer` implementation instead of relying on the removed blanket impl. This is transparent to users but enables metrics support.
 
 ## [0.2.0] - 2025-11-20
 

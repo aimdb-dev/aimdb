@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- **Dependency Update**: Upgraded `rumqttc` from 0.24 to 0.25
 
 ## [0.2.0] - 2025-11-20
 

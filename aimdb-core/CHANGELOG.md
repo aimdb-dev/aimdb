@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Buffer Metrics API**: New `BufferMetrics` trait and `BufferMetricsSnapshot` struct for buffer introspection (feature-gated behind `metrics`)
+  - `produced_count`: Total items pushed to the buffer
+  - `consumed_count`: Total items consumed across all readers  
+  - `dropped_count`: Total items dropped due to lag (documents per-reader semantics)
+  - `occupancy`: Current buffer fill level as `(current, capacity)` tuple
+- **RecordMetadata Extensions**: `RecordMetadata` now includes optional buffer metrics fields (`produced_count`, `consumed_count`, `dropped_count`, `occupancy`) when `metrics` feature is enabled
+- **DynBuffer Metrics Method**: Added `metrics_snapshot()` method to `DynBuffer` trait (returns `Option<BufferMetricsSnapshot>`)
+
+### Changed
+
+- **Breaking: DynBuffer No Longer Has Blanket Impl**: The blanket `impl<T, B: Buffer<T>> DynBuffer<T> for B` has been removed. Each adapter now provides its own explicit `DynBuffer` implementation. This enables adapters to provide metrics support via `metrics_snapshot()`. Custom `Buffer<T>` implementations must now also implement `DynBuffer<T>` explicitly.
 
 ## [0.2.0] - 2025-11-20
 

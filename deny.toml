@@ -9,6 +9,7 @@ allow = [
     "0BSD",         # BSD Zero Clause License - used by embassy-net dependencies
     "Unicode-3.0",
     "MPL-2.0",      # Mozilla Public License 2.0 - used by colored crate (CLI only)
+    "OpenSSL",      # OpenSSL License - used by aws-lc-sys (transitive via rumqttc/rustls)
 ]
 
 confidence-threshold = 0.8
@@ -20,6 +21,11 @@ wildcards = "allow"
 [advisories]
 version = 2
 yanked = "warn"
+# rustls-pemfile is unmaintained but not vulnerable - waiting for rumqttc to migrate
+# See: https://github.com/rustls/pemfile/issues/61
+ignore = [
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via rumqttc)
+]
 
 [sources]
 unknown-registry = "warn"
