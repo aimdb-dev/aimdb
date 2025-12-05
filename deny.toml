@@ -10,6 +10,7 @@ allow = [
     "Unicode-3.0",
     "MPL-2.0",      # Mozilla Public License 2.0 - used by colored crate (CLI only)
     "OpenSSL",      # OpenSSL License - used by aws-lc-sys (transitive via rumqttc/rustls)
+    "Zlib",         # Zlib License - used by foldhash (hashbrown default hasher)
 ]
 
 confidence-threshold = 0.8
