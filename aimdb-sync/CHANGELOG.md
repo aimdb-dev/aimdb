@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- **Breaking: Record Registration API**: Updated all test code to use new key-based `configure<T>(key, |reg| ...)` API
+- All integration tests now specify explicit record keys (e.g., `"test.data"`) per new RecordId/RecordKey architecture
 
 ## [0.2.0] - 2025-11-20
 

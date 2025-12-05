@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- **Breaking: Record Registration**: Updated demo examples to use new key-based `configure<T>(key, |reg| ...)` API
+- All demo records now have explicit keys (e.g., `"lights.state"`, `"temp.livingroom"`, `"lights.control"`)
 
 ## [0.1.0] - 2025-11-20
 

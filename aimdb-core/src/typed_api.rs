@@ -40,7 +40,7 @@
 //! # Record Registration Example
 //!
 //! ```rust,ignore
-//! builder.configure::<Temperature>(|reg| {
+//! builder.configure::<Temperature>("sensors.outdoor", |reg| {
 //!     reg.buffer(buffer)
 //!        .source(|producer, ctx| temperature_service(ctx, producer))
 //!        .tap(|consumer| temperature_logger(consumer))
