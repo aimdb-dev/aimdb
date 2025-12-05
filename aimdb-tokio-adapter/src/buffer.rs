@@ -21,11 +21,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "metrics")]
 use aimdb_core::buffer::{BufferMetrics, BufferMetricsSnapshot};
 
-/// Internal metrics counters (feature-gated)
+/// Metrics counters for buffer introspection (feature-gated)
 ///
-/// Shared between buffer and all readers via Arc.
+/// Shared between buffer and all readers via `Arc`. Contains atomic
+/// counters for produced, consumed, and dropped items.
 #[cfg(feature = "metrics")]
-pub(crate) struct BufferMetricsInner {
+pub struct BufferMetricsInner {
     /// Total items pushed
     produced: AtomicU64,
     /// Total items consumed (aggregate across all readers)
@@ -169,12 +170,10 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
     }
 }
 
-// When metrics feature is disabled, DynBuffer is provided by the blanket impl in aimdb-core
-// When metrics feature is enabled, we provide our own impl that includes metrics_snapshot
-
-/// Explicit DynBuffer implementation when metrics is enabled
-/// This allows us to provide actual metrics via metrics_snapshot()
-#[cfg(feature = "metrics")]
+/// Explicit DynBuffer implementation for TokioBuffer
+///
+/// When the `metrics` feature is enabled, `metrics_snapshot()` returns actual
+/// buffer statistics. Otherwise it returns `None`.
 impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for TokioBuffer<T> {
     fn push(&self, value: T) {
         <Self as Buffer<T>>::push(self, value)
@@ -188,6 +187,7 @@ impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for Toki
         self
     }
 
+    #[cfg(feature = "metrics")]
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         Some(<Self as BufferMetrics>::metrics(self))
     }
@@ -198,17 +198,10 @@ impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for Toki
 impl<T: Clone + Send + Sync + 'static> BufferMetrics for TokioBuffer<T> {
     fn metrics(&self) -> BufferMetricsSnapshot {
         // Calculate current occupancy based on buffer type
-        // Note: For broadcast, we can't directly query occupancy, so we estimate
-        // For watch/mailbox, occupancy is always 0 or 1
         let current_occupancy = match &*self.inner {
-            TokioBufferInner::Broadcast { tx: _ } => {
-                // Broadcast doesn't expose queue length directly
-                // We can estimate: produced - consumed - dropped
-                let produced = self.metrics.produced.load(Ordering::Relaxed);
-                let consumed = self.metrics.consumed.load(Ordering::Relaxed);
-                let dropped = self.metrics.dropped.load(Ordering::Relaxed);
-                let pending = produced.saturating_sub(consumed).saturating_sub(dropped);
-                pending.min(self.metrics.capacity as u64) as usize
+            TokioBufferInner::Broadcast { tx } => {
+                // Tokio broadcast::Sender exposes len() for queue length
+                tx.len()
             }
             TokioBufferInner::Watch { tx } => {
                 // Watch always has at most 1 value
@@ -308,7 +301,6 @@ impl<T: Clone + Send + Sync + 'static> TokioBuffer<T> {
 }
 
 /// Tokio-based buffer reader
-#[cfg_attr(feature = "metrics", allow(private_interfaces))]
 pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
     Broadcast {
         rx: broadcast::Receiver<T>,

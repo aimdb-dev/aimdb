@@ -332,24 +332,24 @@ impl MqttConnectorImpl {
                     // Serialize the type-erased value
                     let bytes = match serializer(&*value_any) {
                         Ok(b) => b,
-                        Err(e) => {
+                        Err(_e) => {
                             #[cfg(feature = "tracing")]
                             tracing::error!(
                                 "Failed to serialize for topic '{}': {:?}",
                                 topic_clone,
-                                e
+                                _e
                             );
                             continue;
                         }
                     };
 
                     // Publish to MQTT with protocol-specific config
-                    if let Err(e) = client.publish(&topic_clone, qos, retain, bytes).await {
+                    if let Err(_e) = client.publish(&topic_clone, qos, retain, bytes).await {
                         #[cfg(feature = "tracing")]
                         tracing::error!(
                             "Failed to publish to MQTT topic '{}': {:?}",
                             topic_clone,
-                            e
+                            _e
                         );
                     } else {
                         #[cfg(feature = "tracing")]

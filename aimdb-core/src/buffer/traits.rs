@@ -196,30 +196,6 @@ pub trait BufferMetrics {
     fn reset_metrics(&self);
 }
 
-/// Blanket implementation of DynBuffer for all Buffer types
-///
-/// Note: When the `metrics` feature is enabled, adapters may provide their own
-/// implementation that overrides `metrics_snapshot()` to return actual metrics.
-/// For types that don't implement BufferMetrics, this default returns None.
-#[cfg(not(feature = "metrics"))]
-impl<T, B> DynBuffer<T> for B
-where
-    T: Clone + Send + 'static,
-    B: Buffer<T>,
-{
-    fn push(&self, value: T) {
-        <Self as Buffer<T>>::push(self, value)
-    }
-
-    fn subscribe_boxed(&self) -> Box<dyn BufferReader<T> + Send> {
-        Box::new(self.subscribe())
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,9 +229,8 @@ mod tests {
         }
     }
 
-    // Mock DynBuffer implementation - only needed when metrics feature is enabled
-    // (when blanket impl is not available)
-    #[cfg(feature = "metrics")]
+    // Explicit DynBuffer implementation for MockBuffer
+    // (no blanket impl - adapters provide their own)
     impl<T: Clone + Send + Sync + 'static> DynBuffer<T> for MockBuffer<T> {
         fn push(&self, value: T) {
             <Self as Buffer<T>>::push(self, value)
@@ -269,6 +244,7 @@ mod tests {
             self
         }
 
+        #[cfg(feature = "metrics")]
         fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
             None // Mock doesn't track metrics
         }

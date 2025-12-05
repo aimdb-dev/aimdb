@@ -200,7 +200,29 @@ impl<
     }
 }
 
-// Note: DynBuffer is automatically implemented via blanket impl in aimdb-core
+/// Explicit DynBuffer implementation for EmbassyBuffer
+///
+/// Required since there is no blanket impl - each adapter provides its own.
+impl<
+        T: Clone + Send + 'static,
+        const CAP: usize,
+        const SUBS: usize,
+        const PUBS: usize,
+        const WATCH_N: usize,
+    > aimdb_core::buffer::DynBuffer<T> for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+{
+    fn push(&self, value: T) {
+        <Self as Buffer<T>>::push(self, value)
+    }
+
+    fn subscribe_boxed(&self) -> alloc::boxed::Box<dyn aimdb_core::buffer::BufferReader<T> + Send> {
+        alloc::boxed::Box::new(self.subscribe())
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}
 
 impl<
         T: Clone + Send + 'static,
