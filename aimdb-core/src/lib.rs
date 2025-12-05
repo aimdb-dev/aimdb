@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! - **Type-Safe Records**: `TypeId`-based routing, no string keys
+//! - **RecordKey/RecordId**: Stable identifiers for multi-instance records
 //! - **Unified API**: Single `Database<A>` type for all operations
 //! - **Runtime Agnostic**: Works with Tokio (std) or Embassy (embedded)
 //! - **Producer-Consumer**: Built-in typed message passing
@@ -23,6 +23,7 @@ pub mod context;
 pub mod database;
 mod error;
 pub mod ext_macros;
+pub mod record_id;
 #[cfg(feature = "std")]
 pub mod remote;
 pub mod router;
@@ -56,3 +57,6 @@ pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError
 
 // Router exports for connector implementations
 pub use router::{Route, Router, RouterBuilder};
+
+// Record identification exports
+pub use record_id::{RecordId, RecordKey};

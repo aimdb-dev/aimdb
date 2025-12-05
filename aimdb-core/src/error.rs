@@ -82,14 +82,62 @@ pub enum DbError {
         _buffer_name: (),
     },
 
-    // ===== Database Errors (0x7003-0x7004) =====
-    /// Record type not found in database
+    // ===== Database Errors (0x7003-0x7009) =====
+    /// Record type not found in database (legacy, by type name)
     #[cfg_attr(feature = "std", error("Record type not found: {record_name}"))]
     RecordNotFound {
         #[cfg(feature = "std")]
         record_name: String,
         #[cfg(not(feature = "std"))]
         _record_name: (),
+    },
+
+    /// Record key not found in registry
+    #[cfg_attr(feature = "std", error("Record key not found: {key}"))]
+    RecordKeyNotFound {
+        #[cfg(feature = "std")]
+        key: String,
+        #[cfg(not(feature = "std"))]
+        _key: (),
+    },
+
+    /// RecordId out of bounds or invalid
+    #[cfg_attr(feature = "std", error("Invalid record ID: {id}"))]
+    InvalidRecordId { id: u32 },
+
+    /// Type mismatch when accessing record by ID
+    #[cfg_attr(
+        feature = "std",
+        error("Type mismatch: expected {expected_type}, record {record_id} has different type")
+    )]
+    TypeMismatch {
+        record_id: u32,
+        #[cfg(feature = "std")]
+        expected_type: String,
+        #[cfg(not(feature = "std"))]
+        _expected_type: (),
+    },
+
+    /// Multiple records of same type exist (ambiguous type-only lookup)
+    #[cfg_attr(
+        feature = "std",
+        error("Ambiguous type lookup: {type_name} has {count} records, use explicit key")
+    )]
+    AmbiguousType {
+        count: u32,
+        #[cfg(feature = "std")]
+        type_name: String,
+        #[cfg(not(feature = "std"))]
+        _type_name: (),
+    },
+
+    /// Duplicate record key during registration
+    #[cfg_attr(feature = "std", error("Duplicate record key: {key}"))]
+    DuplicateRecordKey {
+        #[cfg(feature = "std")]
+        key: String,
+        #[cfg(not(feature = "std"))]
+        _key: (),
     },
 
     /// Invalid operation attempted
@@ -242,6 +290,11 @@ impl core::fmt::Display for DbError {
             DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
             DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
             DbError::RecordNotFound { .. } => (0x7003, "Record not found"),
+            DbError::RecordKeyNotFound { .. } => (0x7006, "Record key not found"),
+            DbError::InvalidRecordId { .. } => (0x7007, "Invalid record ID"),
+            DbError::TypeMismatch { .. } => (0x7008, "Type mismatch"),
+            DbError::AmbiguousType { .. } => (0x7009, "Ambiguous type lookup"),
+            DbError::DuplicateRecordKey { .. } => (0x700A, "Duplicate record key"),
             DbError::InvalidOperation { .. } => (0x7004, "Invalid operation"),
             DbError::PermissionDenied { .. } => (0x7005, "Permission denied"),
             DbError::MissingConfiguration { .. } => (0x4002, "Missing configuration"),
@@ -329,6 +382,11 @@ impl DbError {
             DbError::RecordNotFound { .. } => 0x7003,
             DbError::InvalidOperation { .. } => 0x7004,
             DbError::PermissionDenied { .. } => 0x7005,
+            DbError::RecordKeyNotFound { .. } => 0x7006,
+            DbError::InvalidRecordId { .. } => 0x7007,
+            DbError::TypeMismatch { .. } => 0x7008,
+            DbError::AmbiguousType { .. } => 0x7009,
+            DbError::DuplicateRecordKey { .. } => 0x700A,
 
             // I/O errors: 0x8000-0x8FFF (std only)
             #[cfg(feature = "std")]
@@ -408,6 +466,35 @@ impl DbError {
             DbError::RecordNotFound { mut record_name } => {
                 Self::prepend_context(&mut record_name, context);
                 DbError::RecordNotFound { record_name }
+            }
+            DbError::RecordKeyNotFound { mut key } => {
+                Self::prepend_context(&mut key, context);
+                DbError::RecordKeyNotFound { key }
+            }
+            DbError::InvalidRecordId { id } => {
+                // No context field, return as-is
+                DbError::InvalidRecordId { id }
+            }
+            DbError::TypeMismatch {
+                record_id,
+                mut expected_type,
+            } => {
+                Self::prepend_context(&mut expected_type, context);
+                DbError::TypeMismatch {
+                    record_id,
+                    expected_type,
+                }
+            }
+            DbError::AmbiguousType {
+                count,
+                mut type_name,
+            } => {
+                Self::prepend_context(&mut type_name, context);
+                DbError::AmbiguousType { count, type_name }
+            }
+            DbError::DuplicateRecordKey { mut key } => {
+                Self::prepend_context(&mut key, context);
+                DbError::DuplicateRecordKey { key }
             }
             DbError::InvalidOperation {
                 operation,
