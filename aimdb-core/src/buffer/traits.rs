@@ -155,6 +155,13 @@ pub struct BufferMetricsSnapshot {
     pub consumed_count: u64,
 
     /// Total items dropped due to overflow/lag (SPMC ring only)
+    ///
+    /// **Note**: When multiple readers lag simultaneously on a broadcast buffer,
+    /// each reader reports its own dropped count independently. This means the
+    /// aggregate dropped_count may exceed the actual number of unique items that
+    /// overflowed from the ring buffer (each lagged reader adds its own lag count).
+    /// This is intentional: it reflects total "missed reads" across all consumers,
+    /// which is useful for diagnosing per-consumer backpressure issues.
     pub dropped_count: u64,
 
     /// Current buffer occupancy: (items_in_buffer, capacity)

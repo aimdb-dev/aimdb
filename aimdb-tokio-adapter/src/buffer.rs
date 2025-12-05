@@ -204,7 +204,10 @@ impl<T: Clone + Send + Sync + 'static> BufferMetrics for TokioBuffer<T> {
                 tx.len()
             }
             TokioBufferInner::Watch { tx } => {
-                // Watch always has at most 1 value
+                // Watch semantically always holds the "latest" value slot.
+                // We report 1 if not closed, even if the inner Option<T> is None,
+                // because watch channels are designed for "current state" patterns
+                // where the slot conceptually always exists.
                 if tx.is_closed() {
                     0
                 } else {
@@ -212,7 +215,7 @@ impl<T: Clone + Send + Sync + 'static> BufferMetrics for TokioBuffer<T> {
                 }
             }
             TokioBufferInner::Notify { slot, .. } => {
-                // Check if slot has a value
+                // Lock held only for is_some() check, released immediately.
                 if slot.lock().unwrap().is_some() {
                     1
                 } else {

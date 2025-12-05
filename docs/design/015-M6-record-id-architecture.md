@@ -1,8 +1,8 @@
 # RecordId Architecture: Replacing TypeId with Stable Record Identifiers
 
 **Version:** 1.0  
-**Status:** Design Document  
-**Milestone:** M7  
+**Status:** Draft  
+**Milestone:** M6  
 **Last Updated:** December 5, 2025
 
 ---

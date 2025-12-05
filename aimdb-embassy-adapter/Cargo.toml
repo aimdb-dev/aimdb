@@ -33,7 +33,10 @@ tracing = ["aimdb-core/tracing", "dep:tracing"]
 # This provides clear error messages when accidentally enabled
 std = []
 
-# Note: metrics feature not supported on embedded - requires std library
+# Metrics feature placeholder - enables cfg(feature = "metrics") checks but does nothing.
+# Actual metrics support requires std (AtomicU64, etc.) and is not implemented for Embassy.
+# This feature exists only to silence cfg warnings and for API consistency.
+metrics = []
 
 [dependencies]
 # Executor traits
