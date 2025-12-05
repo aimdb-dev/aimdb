@@ -76,7 +76,9 @@ spin = { version = "0.9", default-features = false, features = [
 ] }
 
 # Hash map for no_std (same implementation as std::collections::HashMap)
-hashbrown = { version = "0.15", default-features = false }
+hashbrown = { version = "0.15", default-features = false, features = [
+    "default-hasher",
+] }
 
 [dev-dependencies]
 # For no_std testing
