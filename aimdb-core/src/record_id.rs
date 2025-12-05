@@ -70,10 +70,22 @@ use std::sync::Arc;
 /// // Dynamic - for runtime-generated names
 /// let key = RecordKey::dynamic(format!("tenant.{}.sensors", "acme"));
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RecordKey(RecordKeyInner);
 
-#[derive(Clone, Debug)]
+// Custom Debug to show Static vs Dynamic variant
+impl core::fmt::Debug for RecordKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match &self.0 {
+            RecordKeyInner::Static(s) => f.debug_tuple("RecordKey::Static").field(s).finish(),
+            RecordKeyInner::Dynamic(s) => {
+                f.debug_tuple("RecordKey::Dynamic").field(s).finish()
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 enum RecordKeyInner {
     /// Static string literal (zero allocation, pointer comparison possible)
     Static(&'static str),
@@ -86,6 +98,7 @@ impl RecordKey {
     ///
     /// This is a const fn, usable in const contexts.
     #[inline]
+    #[must_use]
     pub const fn new(s: &'static str) -> Self {
         Self(RecordKeyInner::Static(s))
     }
@@ -94,6 +107,7 @@ impl RecordKey {
     ///
     /// Use this for dynamic names (multi-tenant, config-driven, etc.).
     #[inline]
+    #[must_use]
     pub fn dynamic(s: impl Into<Arc<str>>) -> Self {
         Self(RecordKeyInner::Dynamic(s.into()))
     }
@@ -102,6 +116,7 @@ impl RecordKey {
     ///
     /// Allocates an `Arc<str>` to store the string.
     #[inline]
+    #[must_use]
     pub fn from_dynamic(s: &str) -> Self {
         Self(RecordKeyInner::Dynamic(Arc::from(s)))
     }
@@ -139,6 +154,20 @@ impl PartialEq for RecordKey {
 
 impl Eq for RecordKey {}
 
+/// Enable direct comparison with &str
+impl PartialEq<str> for RecordKey {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+/// Enable direct comparison with &str reference
+impl PartialEq<&str> for RecordKey {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 impl PartialOrd for RecordKey {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
@@ -156,6 +185,24 @@ impl From<&'static str> for RecordKey {
     #[inline]
     fn from(s: &'static str) -> Self {
         Self::new(s)
+    }
+}
+
+/// Ergonomic conversion from owned String (no_std with alloc)
+#[cfg(all(feature = "alloc", not(feature = "std")))]
+impl From<alloc::string::String> for RecordKey {
+    #[inline]
+    fn from(s: alloc::string::String) -> Self {
+        Self::dynamic(s)
+    }
+}
+
+/// Ergonomic conversion from owned String (std)
+#[cfg(feature = "std")]
+impl From<String> for RecordKey {
+    #[inline]
+    fn from(s: String) -> Self {
+        Self::dynamic(s)
     }
 }
 
@@ -332,6 +379,41 @@ mod tests {
     fn test_record_key_display() {
         let key: RecordKey = "sensors.temperature".into();
         assert_eq!(format!("{}", key), "sensors.temperature");
+    }
+
+    #[test]
+    fn test_record_key_debug() {
+        let static_key: RecordKey = "sensors.temp".into();
+        let dynamic_key = RecordKey::dynamic("sensors.temp".to_string());
+
+        // Debug output should distinguish static vs dynamic
+        let static_debug = format!("{:?}", static_key);
+        let dynamic_debug = format!("{:?}", dynamic_key);
+
+        assert!(static_debug.contains("Static"));
+        assert!(dynamic_debug.contains("Dynamic"));
+    }
+
+    #[test]
+    fn test_record_key_partial_eq_str() {
+        let key: RecordKey = "sensors.temperature".into();
+
+        // Direct comparison with &str
+        assert!(key == "sensors.temperature");
+        assert!(key != "other.key");
+
+        // Also works with str reference
+        let s: &str = "sensors.temperature";
+        assert!(key == s);
+    }
+
+    #[test]
+    fn test_record_key_from_string() {
+        let owned = "sensors.temperature".to_string();
+        let key: RecordKey = owned.into();
+
+        assert!(!key.is_static());
+        assert_eq!(key.as_str(), "sensors.temperature");
     }
 
     #[test]
