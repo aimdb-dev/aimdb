@@ -143,14 +143,21 @@ impl SecurityPolicy {
     }
 
     /// Adds a record key to the writable set (builder pattern)
+    ///
+    /// # Panics
+    /// Panics if called on a ReadOnly policy
     pub fn with_writable_key(mut self, key: impl Into<String>) -> Self {
-        if let Self::ReadWrite {
-            ref mut writable_records,
-        } = self
-        {
-            writable_records.insert(key.into());
+        match self {
+            Self::ReadWrite {
+                ref mut writable_records,
+            } => {
+                writable_records.insert(key.into());
+                self
+            }
+            Self::ReadOnly => {
+                panic!("Cannot allow writes in ReadOnly security policy");
+            }
         }
-        self
     }
 
     /// Checks if a record key is writable
@@ -244,6 +251,12 @@ mod tests {
     fn test_security_policy_read_only_panic() {
         let mut policy = SecurityPolicy::read_only();
         policy.allow_write_key("test.record");
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot allow writes in ReadOnly security policy")]
+    fn test_security_policy_read_only_builder_panic() {
+        let _policy = SecurityPolicy::read_only().with_writable_key("test.record");
     }
 
     #[test]

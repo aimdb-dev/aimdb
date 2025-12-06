@@ -480,7 +480,7 @@ where
         // Find existing record with this key, or create new one
         let record_index = self.records.iter().position(|(k, _, _)| k == &record_key);
 
-        let rec = match record_index {
+        let (rec, is_new_record) = match record_index {
             Some(idx) => {
                 // Use existing record
                 let (_, existing_type, record) = &mut self.records[idx];
@@ -489,9 +489,12 @@ where
                     "RecordKey '{}' already registered with different type",
                     record_key.as_str()
                 );
-                record
-                    .as_typed_mut::<T, R>()
-                    .expect("type mismatch in record registry")
+                (
+                    record
+                        .as_typed_mut::<T, R>()
+                        .expect("type mismatch in record registry"),
+                    false,
+                )
             }
             None => {
                 // Create new record
@@ -501,9 +504,12 @@ where
                     Box::new(TypedRecord::<T, R>::new()),
                 ));
                 let (_, _, record) = self.records.last_mut().unwrap();
-                record
-                    .as_typed_mut::<T, R>()
-                    .expect("type mismatch in record registry")
+                (
+                    record
+                        .as_typed_mut::<T, R>()
+                        .expect("type mismatch in record registry"),
+                    true,
+                )
             }
         };
 
@@ -513,22 +519,24 @@ where
         };
         f(&mut reg);
 
-        // Store a spawn function that captures the concrete type T and the key
-        let spawn_key = record_key.clone();
+        // Only store spawn function for new records to avoid duplicates
+        if is_new_record {
+            let spawn_key = record_key.clone();
 
-        #[allow(clippy::type_complexity)]
-        let spawn_fn: Box<
-            dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<()> + Send,
-        > = Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>, id: RecordId| {
-            // Use RecordSpawner to spawn tasks for this record type
-            use crate::typed_record::RecordSpawner;
+            #[allow(clippy::type_complexity)]
+            let spawn_fn: Box<
+                dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<()> + Send,
+            > = Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>, id: RecordId| {
+                // Use RecordSpawner to spawn tasks for this record type
+                use crate::typed_record::RecordSpawner;
 
-            let typed_record = db.inner().get_typed_record_by_id::<T, R>(id)?;
-            RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db)
-        });
+                let typed_record = db.inner().get_typed_record_by_id::<T, R>(id)?;
+                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db)
+            });
 
-        // Store the spawn function (type-erased in Box<dyn Any>)
-        self.spawn_fns.push((spawn_key, Box::new(spawn_fn)));
+            // Store the spawn function (type-erased in Box<dyn Any>)
+            self.spawn_fns.push((spawn_key, Box::new(spawn_fn)));
+        }
 
         self
     }

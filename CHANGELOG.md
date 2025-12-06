@@ -73,7 +73,7 @@ builder.configure::<Temperature>("sensor.temperature", |reg| {
 **Key naming conventions:**
 - Use dot-separated hierarchical names: `"sensors.indoor"`, `"config.app"`
 - Keys must be unique across all records (duplicate keys panic at registration)
-- For single-instance records, `RecordKey::from_type_name::<T>()` generates a key from the type name
+- For single-instance records, any descriptive string works (e.g., `"sensor.temperature"`, `"app.config"`)
 
 **Breaking: Type-based lookup may return `AmbiguousType` error**
 
