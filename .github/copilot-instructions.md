@@ -16,6 +16,7 @@ AimDB is an async, in-memory database for data synchronization across **MCU → 
 - ✅ **CLI Tools** - Basic introspection and management commands
 - ✅ **Examples & Tests** - Comprehensive coverage including embedded cross-compilation
 - 🚧 **Kafka/DDS Connectors** - Planned
+- 🚧 **Advanced CLI Features** - Extended introspection and monitoring
 
 **Workspace Structure:**
 ```
@@ -97,6 +98,26 @@ mcp_aimdb_set_record(
 **Test server:**
 The `examples/remote-access-demo` provides a test server with sample records at `/tmp/aimdb-demo.sock`.
 
+## Common Pitfalls to Avoid
+
+**❌ NEVER do these:**
+- Use `std` features in `aimdb-core` or `aimdb-embassy-adapter` (breaks no_std)
+- Add dependencies without checking `no_std` compatibility via `default-features = false`
+- Write custom introspection code when MCP tools exist
+- Run tests from subdirectories - always use workspace root (`/aimdb`)
+- Use both `tokio-runtime` and `embassy-runtime` features simultaneously
+- Use `tokio-runtime` feature for embedded targets
+- Use `embassy-runtime` for cloud/server deployments
+- Forget `#[tokio::test]` for async tests in std environments
+- Use blocking operations in async contexts without proper handling
+
+**✅ DO instead:**
+- Check `cargo check --target thumbv7em-none-eabihf` for no_std compatibility
+- Use MCP tools: `mcp_aimdb_*` functions for database introspection
+- Run `make check` from `/aimdb` before committing
+- Use appropriate runtime features for your target platform
+- Use `#[test]` for sync tests, `#[tokio::test]` for async tests
+
 ## Development Workflow
 
 **CRITICAL - Always test from workspace root:**
@@ -152,6 +173,60 @@ Key features in `Cargo.toml`:
 - `mqtt` - MQTT connector support
 - `tracing` / `metrics` / `defmt` - Observability
 
+## Naming Conventions
+
+**Records & Types:**
+- Record types: `PascalCase` (e.g., `Temperature`, `SensorData`, `AppConfig`)
+- Record names: `namespace::RecordType` format (e.g., `server::Config`, `sensor::Temperature`)
+- Struct fields: `snake_case` (e.g., `celsius`, `timestamp`, `sensor_id`)
+
+**Buffer Parameters:**
+- Use descriptive const generics: `CAPACITY`, `MAX_CONSUMERS`
+- Embassy buffer API: `buffer_sized::<CAP, CONSUMERS>(buffer_type)`
+- Tokio buffer API: `buffer_with_cfg(BufferCfg::new(...))`
+
+**Feature Naming:**
+- Runtime selection: `tokio-runtime` OR `embassy-runtime` (mutually exclusive)
+- Task pool size: `embassy-task-pool-8` | `embassy-task-pool-16` | `embassy-task-pool-32`
+- Connectors: `mqtt`, `knx`, `kafka` (when available)
+- Observability: `tracing`, `metrics`, `defmt`
+
+**File Organization:**
+- Tests: `tests/integration_test.rs` or `tests/feature_name_tests.rs`
+- Examples: `examples/runtime-connector-demo/` pattern
+- Modules: `src/module_name.rs` or `src/module_name/mod.rs`
+
+## Testing Guidelines
+
+**Test Types:**
+```rust
+// Sync test (no async runtime needed)
+#[test]
+fn sync_operation_test() {
+    // Implementation
+}
+
+// Async test in std environments
+#[tokio::test]
+async fn async_operation_test() {
+    // Implementation
+}
+
+// Integration test structure
+use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
+use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+```
+
+**When to use each:**
+- `#[test]` - For pure logic, sync wrapper tests, data structure validation
+- `#[tokio::test]` - For async operations, runtime adapter tests, connector tests
+- Integration tests - In `tests/` directory for cross-crate functionality
+
+**Embedded Testing:**
+- Use `#[test]` (not `#[tokio::test]`) for Embassy adapter tests
+- Cross-compile validation: `cargo check --target thumbv7em-none-eabihf`
+- Embassy examples use `rust-toolchain.toml` with Rust 1.90+
+
 ## Completed Features (Do Not Re-Implement)
 
 **Core (`aimdb-core`):**
@@ -206,9 +281,11 @@ Key features in `Cargo.toml`:
 ## Next Priorities
 
 1. **Kafka Connector** - `aimdb-kafka-connector` using `rdkafka` (std only)
-2. **CLI Tools** - Introspection, monitoring, debugging commands
-3. **Performance** - Benchmarks, profiling, latency measurement
-4. **Documentation** - Quickstart guide, architecture docs, best practices
+2. **Advanced CLI Features** - Extended monitoring, debugging, and performance analysis
+3. **Performance Optimization** - Benchmarks, profiling, latency measurement, memory optimization
+4. **DDS Connector** - Real-time systems integration
+5. **Documentation** - Quickstart guide, architecture docs, best practices
+6. **Monitoring & Metrics** - Enhanced observability and telemetry
 
 ## Code Standards
 
@@ -223,6 +300,42 @@ Key features in `Cargo.toml`:
 - **MCU**: `no_std` + Embassy ✅
 - **Edge**: Linux + Tokio ✅  
 - **Cloud**: Containers + full std ✅
+
+## Troubleshooting
+
+**Build Issues:**
+- **Build fails on embedded target**: Check `no_std` compatibility with `cargo check --target thumbv7em-none-eabihf`
+- **Dependency conflicts**: Ensure `default-features = false` for no_std crates
+- **Feature flag errors**: Don't mix `tokio-runtime` and `embassy-runtime`
+
+**Runtime Issues:**
+- **Tests hang**: Verify async runtime is properly configured (`#[tokio::test]` vs `#[test]`)
+- **Embassy task pool overflow**: Use appropriate `embassy-task-pool-*` feature (8/16/32)
+- **Memory allocation errors**: Check if `alloc` feature is enabled for no_std heap usage
+
+**MCP & Database Issues:**
+- **MCP tools can't find instance**: Ensure AimDB server is running and socket path is correct
+- **Schema inference fails**: Verify record has been written at least once with valid data
+- **Permission denied on socket**: Check Unix socket permissions and user access
+- **Subscription data missing**: Use `mcp_aimdb_get_notification_directory()` to find data location
+
+**Performance Issues:**
+- **High latency (>50ms)**: Check buffer configuration and consumer count
+- **Memory leaks**: Verify consumers are properly dropping subscriptions
+- **Embedded stack overflow**: Reduce buffer sizes or increase stack size
+
+**Quick Diagnostics:**
+```bash
+# Verify workspace health
+make check
+
+# Find running AimDB instances
+# (Use MCP tool in AI context)
+find /tmp -name "aimdb*.sock" 2>/dev/null
+
+# Check embedded compatibility
+cargo check --target thumbv7em-none-eabihf --features embassy-runtime
+```
 
 ---
 
