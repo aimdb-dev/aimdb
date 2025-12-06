@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-knx-connector"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -34,9 +34,9 @@ defmt = [
 ] # Only use knx-pico's defmt for logging
 
 [dependencies]
-aimdb-core = { version = "0.2.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "0.3.0", path = "../aimdb-core", default-features = false }
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
-aimdb-embassy-adapter = { version = "0.2.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+aimdb-embassy-adapter = { version = "0.3.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # Use official crates.io version
 # External users should patch this to aimdb-dev/knx-pico fork until fixes are upstreamed

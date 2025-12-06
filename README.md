@@ -11,8 +11,8 @@
 [![Docs](https://docs.rs/aimdb-core/badge.svg)](https://docs.rs/aimdb-core)
 [![Website](https://img.shields.io/badge/website-aimdb.dev-blue.svg)](https://aimdb.dev)
 
-> **⚠️ PRE-RELEASE v0.2.0**  
-> AimDB v0.2.0 includes core functionality, MQTT/KNX connectors, and developer tools. The architecture is stable, but APIs may evolve based on community feedback. Production use is possible but proceed with caution and thorough testing.
+> **⚠️ PRE-RELEASE v0.3.0**  
+> AimDB v0.3.0 includes core functionality, multi-instance records, buffer metrics, MQTT/KNX connectors, and developer tools. The architecture is stable, but APIs may evolve based on community feedback. Production use is possible but proceed with caution and thorough testing.
 
 > **One codebase. Any hardware. Always in sync.**
 
@@ -45,21 +45,24 @@ Modern IoT stacks are fragmented:
 
 ---
 
-## 🎉 What's New in v0.2.0
+## 🎉 What's New in v0.3.0
 
-**Latest Release** - November 21, 2025
+**Latest Release** - December 6, 2025
 
 Recent additions and improvements:
 
+- ✅ **Multi-Instance Records**: Register multiple records of the same type with unique keys
+- ✅ **RecordId/RecordKey Architecture**: O(1) stable indexing with zero-allocation static keys
+- ✅ **Buffer Metrics**: Comprehensive metrics for monitoring and debugging (feature-gated)
+- ✅ **Enhanced Introspection**: New APIs for runtime record exploration (NEW in v0.3.0)
 - ✅ **Type-Safe Core**: `TypeId`-based record routing eliminates runtime string lookups
 - ✅ **Dual Runtime**: Works on both Tokio (std) and Embassy (no_std/embedded)
 - ✅ **Three Buffer Types**: SPMC Ring, SingleLatest, and Mailbox patterns
 - ✅ **MQTT Integration**: Connector works in both std and embedded environments
-- ✅ **KNX Integration**: Building automation support for std and embedded (NEW in v0.2.0)
+- ✅ **KNX Integration**: Building automation support for std and embedded
 - ✅ **Remote Access**: AimX protocol for cross-process introspection
 - ✅ **Sync API**: Blocking wrapper for non-async codebases
 - ✅ **Developer Tools**: MCP server for LLM-powered debugging, CLI tools, and client library
-- ✅ **Production Ready**: Comprehensive tests, CI/CD, security audits, and documentation
 
 See [CHANGELOG.md](CHANGELOG.md) for complete details.
 
@@ -72,30 +75,34 @@ Add AimDB to your project:
 ```toml
 # For standard library (Tokio runtime)
 [dependencies]
-aimdb-core = "0.2"
-aimdb-tokio-adapter = "0.2"
+aimdb-core = "0.3"
+aimdb-tokio-adapter = "0.3"
 
 # Optional: MQTT connector
-aimdb-mqtt-connector = { version = "0.2", features = ["tokio-runtime"] }
+aimdb-mqtt-connector = { version = "0.3", features = ["tokio-runtime"] }
 
 # Optional: KNX connector (building automation)
-aimdb-knx-connector = { version = "0.1", features = ["tokio-runtime"] }
+aimdb-knx-connector = { version = "0.2", features = ["tokio-runtime"] }
 
 # Optional: Synchronous API
-aimdb-sync = "0.2"
+aimdb-sync = "0.3"
 
 # Optional: Remote client
-aimdb-client = "0.2"
+aimdb-client = "0.3"
+
+# Optional: Enable buffer metrics
+# aimdb-core = { version = "0.3", features = ["metrics"] }
+# aimdb-tokio-adapter = { version = "0.3", features = ["metrics"] }
 ```
 
 For embedded systems using Embassy:
 
 ```toml
 [dependencies]
-aimdb-core = { version = "0.2", default-features = false }
-aimdb-embassy-adapter = { version = "0.2", default-features = false, features = ["embassy-runtime"] }
-aimdb-mqtt-connector = { version = "0.2", default-features = false, features = ["embassy-runtime"] }
-aimdb-knx-connector = { version = "0.1", default-features = false, features = ["embassy-runtime"] }
+aimdb-core = { version = "0.3", default-features = false }
+aimdb-embassy-adapter = { version = "0.3", default-features = false, features = ["embassy-runtime"] }
+aimdb-mqtt-connector = { version = "0.3", default-features = false, features = ["embassy-runtime"] }
+aimdb-knx-connector = { version = "0.2", default-features = false, features = ["embassy-runtime"] }
 ```
 
 ---
@@ -164,7 +171,7 @@ async fn main() -> DbResult<()> {
     
     let mut builder = AimDbBuilder::new().runtime(runtime);
     
-    builder.configure::<Temperature>(|reg| {
+    builder.configure::<Temperature>("sensor.temperature", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 32 })
            .source(temperature_producer);
     });

@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-client"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
@@ -11,7 +11,7 @@ categories = ["database", "network-programming"]
 
 [dependencies]
 # Core dependencies - protocol types from aimdb-core
-aimdb-core = { version = "0.2.0", path = "../aimdb-core", features = ["std"] }
+aimdb-core = { version = "0.3.0", path = "../aimdb-core", features = ["std"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
