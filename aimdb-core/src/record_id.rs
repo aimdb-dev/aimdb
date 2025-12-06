@@ -78,9 +78,7 @@ impl core::fmt::Debug for RecordKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match &self.0 {
             RecordKeyInner::Static(s) => f.debug_tuple("RecordKey::Static").field(s).finish(),
-            RecordKeyInner::Dynamic(s) => {
-                f.debug_tuple("RecordKey::Dynamic").field(s).finish()
-            }
+            RecordKeyInner::Dynamic(s) => f.debug_tuple("RecordKey::Dynamic").field(s).finish(),
         }
     }
 }
