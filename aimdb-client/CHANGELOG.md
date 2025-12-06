@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- **RecordMetadata Updates**: Client now handles new `record_id` and `record_key` fields in `RecordMetadata` from aimdb-core
+- Protocol remains backward-compatible with AimX v1 - new fields are additional data
 
 ## [0.2.0] - 2025-11-20
 

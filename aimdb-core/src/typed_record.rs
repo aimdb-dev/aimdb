@@ -275,7 +275,12 @@ pub trait AnyRecord: Send + Sync {
 
     /// Collects metadata for this record (std only)
     #[cfg(feature = "std")]
-    fn collect_metadata(&self, type_id: core::any::TypeId) -> crate::remote::RecordMetadata;
+    fn collect_metadata(
+        &self,
+        type_id: core::any::TypeId,
+        key: crate::record_id::RecordKey,
+        id: crate::record_id::RecordId,
+    ) -> crate::remote::RecordMetadata;
 
     /// Internal: Returns JSON for type-erased remote access (std only)
     ///
@@ -1084,7 +1089,12 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
     }
 
     #[cfg(feature = "std")]
-    fn collect_metadata(&self, type_id: core::any::TypeId) -> crate::remote::RecordMetadata {
+    fn collect_metadata(
+        &self,
+        type_id: core::any::TypeId,
+        key: crate::record_id::RecordKey,
+        id: crate::record_id::RecordId,
+    ) -> crate::remote::RecordMetadata {
         let (buffer_type, buffer_capacity) = if let Some(cfg) = &self.buffer_cfg {
             let cap = match cfg {
                 crate::buffer::BufferCfg::SpmcRing { capacity } => Some(*capacity),
@@ -1104,6 +1114,8 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             .map(RecordMetadataTracker::format_timestamp);
 
         let metadata = crate::remote::RecordMetadata::new(
+            id,
+            key,
             type_id,
             self.metadata.name.clone(),
             buffer_type,

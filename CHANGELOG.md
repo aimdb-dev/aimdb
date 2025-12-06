@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **aimdb-core**: New `RecordId` type for stable O(1) record indexing (Issue #60)
+- **aimdb-core**: New `RecordKey` type for string-based record identification with zero-alloc static keys
+- **aimdb-core**: Key-based producer/consumer API: `produce_by_key()`, `subscribe_by_key()`, `producer_by_key()`, `consumer_by_key()`
+- **aimdb-core**: `ProducerByKey<T, R>` and `ConsumerByKey<T, R>` types for key-bound access
+- **aimdb-core**: `records_of_type::<T>()` introspection method to find all records of a given type
+- **aimdb-core**: `resolve_key()` method for O(1) key-to-RecordId lookups
+- **aimdb-core**: New error variants: `RecordKeyNotFound`, `InvalidRecordId`, `TypeMismatch`, `AmbiguousType`, `DuplicateRecordKey`
+- **aimdb-core**: `RecordMetadata` now includes `record_id` and `record_key` fields
+- **aimdb-tokio-adapter**: Multi-instance tests validating same-type different-key scenarios
 - **aimdb-core**: New `BufferMetrics` trait and `BufferMetricsSnapshot` struct for buffer introspection (feature-gated behind `metrics`)
   - `produced_count`: Total items pushed to the buffer
   - `consumed_count`: Total items consumed across all readers
@@ -33,12 +42,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **aimdb-core**: `configure<T>()` now requires a key parameter: `configure::<T>("key", |reg| ...)`
+- **aimdb-core**: Internal storage changed from `BTreeMap<TypeId>` to `Vec` + `HashMap` indexes for O(1) hot-path access
+- **aimdb-core**: `SecurityPolicy::ReadWrite` now uses `HashSet<String>` for writable record keys
+- **aimdb-core**: Added `hashbrown` dependency for no_std-compatible HashMap
+- **deny.toml**: Added `Zlib` license allowance (used by `foldhash`, hashbrown's default hasher)
 - **aimdb-core**: `DynBuffer` trait no longer has a blanket implementation. Each adapter now provides its own explicit implementation. This enables adapters to provide `metrics_snapshot()` when the `metrics` feature is enabled.
 - **aimdb-mqtt-connector**: Upgraded `rumqttc` dependency from 0.24 to 0.25
 - **deny.toml**: Added `OpenSSL` license allowance (transitive via rumqttc/rustls)
 - **deny.toml**: Ignored `RUSTSEC-2025-0134` advisory (rustls-pemfile unmaintained but not vulnerable)
 
 ### Migration Guide
+
+**Breaking: `configure<T>()` now requires a key parameter**
+
+The record registration API now requires an explicit key for each record:
+
+```rust
+// Before (v0.2.x)
+builder.configure::<Temperature>(|reg| {
+    reg.buffer(BufferCfg::SingleLatest);
+});
+
+// After (v0.3.0)
+builder.configure::<Temperature>("sensor.temperature", |reg| {
+    reg.buffer(BufferCfg::SingleLatest);
+});
+```
+
+**Key naming conventions:**
+- Use dot-separated hierarchical names: `"sensors.indoor"`, `"config.app"`
+- Keys must be unique across all records (duplicate keys panic at registration)
+- For single-instance records, any descriptive string works (e.g., `"sensor.temperature"`, `"app.config"`)
+
+**Breaking: Type-based lookup may return `AmbiguousType` error**
+
+If you register multiple records of the same type, type-based methods (`produce()`, `subscribe()`, `producer()`, `consumer()`) will return `AmbiguousType` error:
+
+```rust
+// With multiple Temperature records registered...
+db.produce(temp).await  // Returns Err(AmbiguousType { count: 2, ... })
+
+// Use key-based methods instead:
+db.produce_by_key("sensors.indoor", temp).await  // Works correctly
+```
+
+**New key-based API (recommended for multi-instance scenarios):**
+
+```rust
+// Key-bound producer/consumer
+let indoor_producer = db.producer_by_key::<Temperature>("sensors.indoor");
+let outdoor_producer = db.producer_by_key::<Temperature>("sensors.outdoor");
+
+// Each produces to its own record
+indoor_producer.produce(temp).await?;
+outdoor_producer.produce(temp).await?;
+
+// Introspection
+let temp_ids = db.records_of_type::<Temperature>();  // Returns &[RecordId]
+let id = db.resolve_key("sensors.indoor");  // Returns Option<RecordId>
+```
 
 **Breaking: DynBuffer no longer has blanket impl**
 

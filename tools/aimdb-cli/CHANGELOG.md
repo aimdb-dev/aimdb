@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes in this release.
+### Changed
+
+- **RecordMetadata Updates**: Output formatters updated to handle new `record_id` and `record_key` fields in `RecordMetadata`
+- JSON and table output now display RecordId and RecordKey alongside TypeId for complete record identification
 
 ## [0.1.0] - 2025-11-06
 

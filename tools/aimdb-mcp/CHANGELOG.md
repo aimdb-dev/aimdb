@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- **RecordMetadata Updates**: MCP server now exposes `record_id` and `record_key` fields in all record metadata responses
+- Tools and resources updated to display RecordId and RecordKey for improved record identification
+- Schema inference and introspection tools benefit from key-based identification
 
 ## [0.2.0] - 2025-11-20
 

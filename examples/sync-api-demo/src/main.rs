@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Temperature>(|reg| {
+    builder.configure::<Temperature>("sensor.temperature", |reg| {
         // Configure a ring buffer with capacity for 10 values
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             // Add a simple consumer that logs values

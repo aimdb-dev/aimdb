@@ -9,16 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RecordId + RecordKey Architecture (Issue #60)**: Complete rewrite of internal storage for stable record identification
+  - `RecordId`: u32 index wrapper for O(1) Vec-based hot-path access
+  - `RecordKey`: Hybrid `&'static str` / `Arc<str>` with `Borrow<str>` for zero-alloc static keys and flexible dynamic keys
+  - O(1) key resolution via `HashMap<RecordKey, RecordId>`
+  - Type introspection via `HashMap<TypeId, Vec<RecordId>>`
+- **Key-Based Producer/Consumer API**:
+  - `produce_by_key::<T>(key, value)`: Produce to specific record by key
+  - `subscribe_by_key::<T>(key)`: Subscribe to specific record by key  
+  - `producer_by_key::<T>(key)`: Get key-bound producer
+  - `consumer_by_key::<T>(key)`: Get key-bound consumer
+- **New Types**: `ProducerByKey<T, R>` and `ConsumerByKey<T, R>` for key-bound access with `.key()` accessor
+- **Introspection Methods**:
+  - `records_of_type::<T>()`: Returns `&[RecordId]` for all records of type T
+  - `resolve_key(key)`: O(1) lookup returning `Option<RecordId>`
+- **New Error Variants**:
+  - `RecordKeyNotFound`: Key doesn't exist in registry
+  - `InvalidRecordId`: RecordId out of bounds  
+  - `TypeMismatch`: Type assertion failed during downcast
+  - `AmbiguousType`: Multiple records of same type (use key-based API)
+  - `DuplicateRecordKey`: Key already registered
+- **RecordMetadata Extensions**: Now includes `record_id: u32` and `record_key: String` fields
 - **Buffer Metrics API**: New `BufferMetrics` trait and `BufferMetricsSnapshot` struct for buffer introspection (feature-gated behind `metrics`)
   - `produced_count`: Total items pushed to the buffer
   - `consumed_count`: Total items consumed across all readers  
   - `dropped_count`: Total items dropped due to lag (documents per-reader semantics)
   - `occupancy`: Current buffer fill level as `(current, capacity)` tuple
-- **RecordMetadata Extensions**: `RecordMetadata` now includes optional buffer metrics fields (`produced_count`, `consumed_count`, `dropped_count`, `occupancy`) when `metrics` feature is enabled
 - **DynBuffer Metrics Method**: Added `metrics_snapshot()` method to `DynBuffer` trait (returns `Option<BufferMetricsSnapshot>`)
 
 ### Changed
 
+- **Breaking: `configure<T>()` Signature**: Now requires key parameter: `configure::<T>("key", |reg| ...)`
+- **Breaking: Internal Storage**: Changed from `BTreeMap<TypeId, Box<dyn AnyRecord>>` to:
+  - `Vec<Box<dyn AnyRecord>>` for O(1) hot-path access by RecordId
+  - `HashMap<RecordKey, RecordId>` for O(1) name lookups
+  - `HashMap<TypeId, Vec<RecordId>>` for type introspection
+- **Breaking: Type-Based Lookup**: `produce()`, `subscribe()`, `producer()`, `consumer()` now return `AmbiguousType` error when multiple records of the same type exist
+- **SecurityPolicy**: `ReadWrite` variant now uses `HashSet<String>` for writable record keys
+- **Dependencies**: Added `hashbrown` for no_std-compatible HashMap with `default-hasher` feature
 - **Breaking: DynBuffer No Longer Has Blanket Impl**: The blanket `impl<T, B: Buffer<T>> DynBuffer<T> for B` has been removed. Each adapter now provides its own explicit `DynBuffer` implementation. This enables adapters to provide metrics support via `metrics_snapshot()`. Custom `Buffer<T>` implementations must now also implement `DynBuffer<T>` explicitly.
 
 ## [0.2.0] - 2025-11-20

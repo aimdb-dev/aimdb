@@ -115,10 +115,13 @@ mod tests {
 
     #[test]
     fn test_format_records_table() {
+        use aimdb_core::record_id::{RecordId, RecordKey};
         use core::any::TypeId;
 
         let records = vec![
             RecordMetadata::new(
+                RecordId::new(0),
+                RecordKey::new("sensor.temperature"),
                 TypeId::of::<i32>(),
                 "Temperature".to_string(),
                 "spmc_ring".to_string(),
@@ -130,6 +133,8 @@ mod tests {
                 0,
             ),
             RecordMetadata::new(
+                RecordId::new(1),
+                RecordKey::new("app.config"),
                 TypeId::of::<String>(),
                 "Config".to_string(),
                 "mailbox".to_string(),

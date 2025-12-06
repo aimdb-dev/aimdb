@@ -23,6 +23,7 @@
 - [Implementation Plan](#implementation-plan)
 - [Testing Strategy](#testing-strategy)
 - [Future Extensions](#future-extensions)
+- [Implementation Decisions](#implementation-decisions)
 
 ---
 
@@ -226,6 +227,13 @@ impl AsRef<str> for RecordKey {
     }
 }
 
+// Enable O(1) HashMap lookup by &str (see Implementation Decisions)
+impl core::borrow::Borrow<str> for RecordKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 // Serde support (std only)
 #[cfg(feature = "std")]
 impl serde::Serialize for RecordKey {
@@ -361,11 +369,10 @@ impl AimDbInner {
     }
 
     /// Resolve string to RecordId (convenience for remote access)
+    ///
+    /// O(1) average thanks to `Borrow<str>` implementation on `RecordKey`.
     pub fn resolve_str(&self, name: &str) -> Option<RecordId> {
-        // Linear scan through keys - acceptable for control plane
-        self.by_key.iter()
-            .find(|(k, _)| k.as_str() == name)
-            .map(|(_, id)| *id)
+        self.by_key.get(name).copied()
     }
 
     /// Get all RecordIds for a type (introspection)
@@ -835,6 +842,87 @@ db.alias("temperature", "sensors.temperature.primary")?;
 // Subscribe to all temperature records
 let subscription = db.subscribe_group::<Temperature>()?;
 ```
+
+---
+
+## Implementation Decisions
+
+Key technical decisions made during design review:
+
+### 1. HashMap for no_std: Use `hashbrown`
+
+The design requires `HashMap<RecordKey, RecordId>` and `HashMap<TypeId, Vec<RecordId>>`. Since `std::collections::HashMap` is not available in `no_std`, we use `hashbrown`:
+
+```toml
+# aimdb-core/Cargo.toml
+[dependencies]
+hashbrown = { version = "0.15", default-features = false }
+```
+
+**Rationale:** `hashbrown` is the same implementation backing `std::collections::HashMap`. It provides true O(1) lookups and is fully `no_std` compatible with just the `alloc` crate.
+
+**Alternative considered:** `BTreeMap` (already available in `alloc`) provides O(log n) lookups. Rejected because O(1) control plane lookups are worth the small dependency.
+
+### 2. O(1) String Lookups: Implement `Borrow<str>`
+
+To enable `HashMap::get("string_literal")` without allocating a `RecordKey`, we implement `Borrow<str>`:
+
+```rust
+impl core::borrow::Borrow<str> for RecordKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+```
+
+This allows:
+```rust
+// O(1) lookup by &str - no allocation!
+let id = by_key.get("sensors.temperature").copied();
+```
+
+### 3. Spawn Functions: Rekey from TypeId to RecordKey
+
+The current implementation stores spawn functions by `TypeId`:
+```rust
+// Before
+spawn_fns: BTreeMap<TypeId, Box<dyn Any + Send>>,
+```
+
+With multiple records of the same type, this must change to:
+```rust
+// After
+spawn_fns: Vec<(RecordKey, Box<dyn Any + Send>)>,
+```
+
+**Rationale:** Each record instance needs its own spawn function, regardless of type.
+
+### 4. SecurityPolicy: Key-Based API
+
+The current `SecurityPolicy` uses `TypeId` for writable records:
+```rust
+// Before
+pub fn allow_write<T: 'static>(&mut self) { ... }
+```
+
+This changes to key-based:
+```rust
+// After
+pub fn allow_write(&mut self, key: impl Into<RecordKey>) { ... }
+```
+
+**Rationale:** With multiple records of the same type, you need per-instance write permissions.
+
+### 5. No Backward Compatibility Shims
+
+The type-only APIs (`db.producer::<T>()`) will be **removed**, not shimmed. All access requires a `RecordKey`:
+
+```rust
+// Only supported API
+let producer = db.producer::<Temperature>("sensors.outdoor")?;
+```
+
+**Rationale:** Shims add complexity and encourage continued use of the old pattern. Clean break is simpler.
 
 ---
 

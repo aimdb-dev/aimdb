@@ -75,6 +75,11 @@ spin = { version = "0.9", default-features = false, features = [
     "spin_mutex",
 ] }
 
+# Hash map for no_std (same implementation as std::collections::HashMap)
+hashbrown = { version = "0.15", default-features = false, features = [
+    "default-hasher",
+] }
+
 [dev-dependencies]
 # For no_std testing
 heapless = "0.9.1"

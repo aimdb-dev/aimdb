@@ -15,10 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `reset_metrics()` method for windowed metrics collection
 - **Comprehensive Metrics Tests**: New `metrics_tests` module with tests for all buffer types and edge cases
 - **DynBuffer Explicit Implementation**: `TokioBuffer` now explicitly implements `DynBuffer<T>` with `metrics_snapshot()` support
+- **Multi-Instance Record Tests**: Comprehensive test suite (`multi_instance_tests.rs`) validating RecordId/RecordKey architecture:
+  - Tests for multiple records of same type with different keys
+  - Tests for key-based producer/consumer APIs
+  - Tests for error cases (AmbiguousType, RecordKeyNotFound, TypeMismatch)
+  - Tests for RecordId stability and introspection
 
 ### Changed
 
 - **Breaking: DynBuffer Implementation**: `TokioBuffer` now has an explicit `DynBuffer` implementation instead of relying on the removed blanket impl. This is transparent to users but enables metrics support.
+- **Connector Introspection**: Updated to use `by_key` and record iteration by RecordId instead of TypeId-based iteration
 
 ## [0.2.0] - 2025-11-20
 

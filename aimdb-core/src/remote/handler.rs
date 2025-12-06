@@ -787,32 +787,8 @@ where
     #[cfg(feature = "tracing")]
     tracing::debug!("Setting value for record: {}", record_name);
 
-    // Find the record's TypeId by name
-    let type_id_opt = db.inner().records.iter().find_map(|(tid, record)| {
-        let metadata = record.collect_metadata(*tid);
-        if metadata.name == record_name {
-            Some(*tid)
-        } else {
-            None
-        }
-    });
-
-    let type_id = match type_id_opt {
-        Some(tid) => tid,
-        None => {
-            #[cfg(feature = "tracing")]
-            tracing::warn!("Record not found: {}", record_name);
-
-            return Response::error(
-                request_id,
-                "not_found",
-                format!("Record '{}' not found", record_name),
-            );
-        }
-    };
-
-    // Check if record is in the writable_records set
-    if !writable_records.contains(&type_id) {
+    // Check if record is in the writable_records set (using record key)
+    if !writable_records.contains(&record_name) {
         #[cfg(feature = "tracing")]
         tracing::warn!("Record '{}' not in writable_records set", record_name);
 
@@ -854,6 +830,9 @@ where
 
             // Map internal errors to appropriate response codes
             let (code, message) = match e {
+                crate::DbError::RecordKeyNotFound { key } => {
+                    ("not_found", format!("Record '{}' not found", key))
+                }
                 crate::DbError::PermissionDenied { operation } => {
                     // This is the "has active producers" error
                     ("permission_denied", operation)
@@ -936,31 +915,6 @@ where
     #[cfg(feature = "tracing")]
     tracing::debug!("Subscribing to record: {}", record_name);
 
-    // Find the record's TypeId by name
-    // We need to search through the database's records to find the matching TypeId
-    let type_id_opt = db.inner().records.iter().find_map(|(tid, record)| {
-        let metadata = record.collect_metadata(*tid);
-        if metadata.name == record_name {
-            Some(*tid)
-        } else {
-            None
-        }
-    });
-
-    let type_id = match type_id_opt {
-        Some(tid) => tid,
-        None => {
-            #[cfg(feature = "tracing")]
-            tracing::warn!("Record not found: {}", record_name);
-
-            return Response::error(
-                request_id,
-                "not_found",
-                format!("Record '{}' not found", record_name),
-            );
-        }
-    };
-
     // Check max subscriptions limit
     if conn_state.subscriptions.len() >= config.subscription_queue_size {
         #[cfg(feature = "tracing")]
@@ -983,19 +937,26 @@ where
     // Generate unique subscription ID
     let subscription_id = conn_state.generate_subscription_id();
 
-    // Subscribe to record updates via the database API
+    // Subscribe to record updates via the database API (using record key)
     let (value_rx, cancel_tx) =
-        match db.subscribe_record_updates(type_id, config.subscription_queue_size) {
+        match db.subscribe_record_updates(&record_name, config.subscription_queue_size) {
             Ok(channels) => channels,
             Err(e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("Failed to subscribe to record updates: {}", e);
+                // Map internal errors to appropriate response codes
+                let (code, message) = match &e {
+                    crate::DbError::RecordKeyNotFound { key } => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!("Record not found: {}", key);
+                        ("not_found", format!("Record '{}' not found", key))
+                    }
+                    _ => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("Failed to subscribe to record updates: {}", e);
+                        ("internal_error", format!("Failed to subscribe: {}", e))
+                    }
+                };
 
-                return Response::error(
-                    request_id,
-                    "internal_error",
-                    format!("Failed to subscribe: {}", e),
-                );
+                return Response::error(request_id, code, message);
             }
         };
 

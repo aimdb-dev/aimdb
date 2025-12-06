@@ -480,7 +480,7 @@ async fn main(spawner: Spawner) {
         .with_connector(KnxConnectorBuilder::new(&gateway_url));
 
     // Configure LightState record (inbound: KNX → AimDB)
-    builder.configure::<LightState>(|reg| {
+    builder.configure::<LightState>("lights.state", |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SingleLatest)
             .tap(light_monitor)
             // Subscribe from KNX group address 1/0/7 (light switch monitoring)
@@ -510,7 +510,7 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // Living Room temperature sensor (9/1/0)
-    builder.configure::<LivingRoomTemp>(|reg| {
+    builder.configure::<LivingRoomTemp>("temp.livingroom", |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .tap(temperature_monitor::<LivingRoomTemp>)
             .link_from(&alloc::format!("knx://{}", LivingRoomTemp::GROUP_ADDRESS))
@@ -525,7 +525,7 @@ async fn main(spawner: Spawner) {
     });
 
     // Bedroom temperature sensor (9/1/1)
-    builder.configure::<BedroomTemp>(|reg| {
+    builder.configure::<BedroomTemp>("temp.bedroom", |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .tap(temperature_monitor::<BedroomTemp>)
             .link_from(&alloc::format!("knx://{}", BedroomTemp::GROUP_ADDRESS))
@@ -545,7 +545,7 @@ async fn main(spawner: Spawner) {
 
     // Configure LightControl record (outbound: AimDB → KNX)
     // Configure outbound light control with button handler as data source
-    builder.configure::<LightControl>(|reg| {
+    builder.configure::<LightControl>("lights.control", |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SingleLatest)
             .source_with_context(button, button_handler)
             // Publish to KNX group address 1/0/6 (light control)
