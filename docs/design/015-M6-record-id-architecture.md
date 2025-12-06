@@ -1,7 +1,7 @@
 # RecordId Architecture: Replacing TypeId with Stable Record Identifiers
 
 **Version:** 1.0  
-**Status:** Draft  
+**Status:** 🚧 In Progress (Branch: 60-replace-typeid-storage-with-recordid-recordkey-architecture)  
 **Milestone:** M6  
 **Last Updated:** December 5, 2025
 

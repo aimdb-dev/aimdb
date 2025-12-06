@@ -1,10 +1,10 @@
 # RFC: Optional Buffer Introspection Metrics
 
-> **Status**: Draft  
+> **Status**: ✅ Implemented  
 > **Target**: `aimdb-core` (feature-flagged)  
 > **Priority**: Medium  
-> **Estimated Effort**: 3-5 days  
-> **Date**: November 2025
+> **Implementation Date**: November 2025  
+> **Feature Flag**: `metrics`
 
 ---
 

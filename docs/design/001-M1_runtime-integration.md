@@ -1,5 +1,6 @@
 # 🚀 Design: Unified Runtime Integration & Executor Abstractions (M1.1)
 
+**Status**: ✅ Implemented  
 **Milestone**: Runtime Independence & Multi-Platform Execution (follow-up to M1)  
 **Goal**: Establish a clean, trait-based execution & time abstraction layer powering both `std` (Tokio) and `no_std` (Embassy) environments while keeping `aimdb-core` free of concrete runtime dependencies.  
 **Scope of Rework**: This document retrofits experimental work done on branch `8-runtime-adapter-integration-#1` (≈5K LOC delta) into a structured, incremental upstream plan.

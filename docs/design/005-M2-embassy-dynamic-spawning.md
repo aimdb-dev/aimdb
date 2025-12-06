@@ -1,5 +1,7 @@
 # Embassy Dynamic Task Spawning
 
+**Status**: ✅ Implemented  
+
 ## Problem Statement
 
 Embassy's executor requires all tasks to be statically defined with `#[embassy_executor::task]`. This creates a challenge for AimDB, which needs to dynamically spawn producer and consumer services registered via `.source()` and `.tap()` methods.

@@ -1,6 +1,6 @@
 # Design Document: Pluggable Per-Record Buffers
 
-**Status:** Draft  
+**Status:** ✅ Implemented  
 **Author:** AimDB Team  
 **Date:** October 11, 2025  
 **Issue:** [#27](https://github.com/aimdb-dev/aimdb/issues/27)  

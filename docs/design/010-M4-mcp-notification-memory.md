@@ -1,20 +1,9 @@
 # MCP Notification Memory - Design Document
 
-## Problem Statement
-
-**Current Issue**: MCP servers can send notifications to clients, but LLMs (like Copilot, Claude) cannot access these notifications during conversations. This creates a disconnect:
-
-1. ✅ Subscriptions work - notifications are generated and sent
-2. ✅ MCP client receives notifications via stdio
-3. ❌ LLM has no way to access notification history
-4. ❌ LLM must poll via `get_record` instead of using subscription data
+**Status**: ✅ Implemented  
+**Impact**: Monitoring, alerting, and event-driven workflows are now fully supported for LLMs.
 
 ## Problem Statement
-
-**Status**: Implemented ✅  
-**Impact**: Monitoring, alerting, and event-driven workflows are impossible for LLMs despite having a working notification system.
-
-## Proposed Solution: MCP Notification Memory
 
 Create a persistent notification buffer that:
 1. Captures all notifications sent by the MCP server

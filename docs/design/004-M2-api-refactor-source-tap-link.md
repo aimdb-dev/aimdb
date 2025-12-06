@@ -1,6 +1,6 @@
 # API Refactoring: `.source()`, `.tap()`, `.link()`
 
-## Status: Approved for Implementation
+## Status: ✅ Implemented
 **Date**: 2025-10-25
 
 ## Quick Summary

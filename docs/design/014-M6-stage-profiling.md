@@ -1,6 +1,6 @@
 # RFC: Integrated Stage Profiling
 
-> **Status**: Draft  
+> **Status**: 📝 Draft (RFC - Not Yet Implemented)  
 > **Target**: `aimdb-core` (feature-flagged)  
 > **Priority**: Medium  
 > **Estimated Effort**: 2-3 days  
