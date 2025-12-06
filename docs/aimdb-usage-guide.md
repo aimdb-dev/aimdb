@@ -47,17 +47,17 @@ edition = "2021"
 
 [dependencies]
 # AimDB core and Tokio runtime adapter
-aimdb-core = "0.2"
-aimdb-tokio-adapter = { version = "0.2", features = ["tokio-runtime"] }
+aimdb-core = "0.3"
+aimdb-tokio-adapter = { version = "0.3", features = ["tokio-runtime"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.1", features = ["tokio-runtime"] }
+# aimdb-knx-connector = { version = "0.2", features = ["tokio-runtime"] }
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.2", features = ["tokio-runtime"] }
+# aimdb-mqtt-connector = { version = "0.3", features = ["tokio-runtime"] }
 
 # Optional: Sync API wrapper (for blocking code)
-# aimdb-sync = "0.2"
+# aimdb-sync = "0.3"
 
 # Tokio runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build database
     let db = AimDbBuilder::new()
         .runtime(runtime)
-        .configure::<SensorData>(|reg| {
+        .configure::<SensorData>("sensor.data", |reg| {
             reg.buffer(BufferCfg::SingleLatest)
             
             // Simulate a temperature sensor reading every second
@@ -148,14 +148,14 @@ Once you have an Embassy project set up, add AimDB:
 ```toml
 [dependencies]
 # AimDB core and Embassy runtime adapter
-aimdb-core = { version = "0.2", default-features = false }
-aimdb-embassy-adapter = { version = "0.2", features = ["embassy-runtime", "embassy-task-pool-16"] }
+aimdb-core = { version = "0.3", default-features = false }
+aimdb-embassy-adapter = { version = "0.3", features = ["embassy-runtime", "embassy-task-pool-16"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.1", features = ["embassy-runtime"], default-features = false }
+# aimdb-knx-connector = { version = "0.2", features = ["embassy-runtime"], default-features = false }
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.2", features = ["embassy-runtime"], default-features = false }
+# aimdb-mqtt-connector = { version = "0.3", features = ["embassy-runtime"], default-features = false }
 
 # Embassy runtime (example for RP2040)
 embassy-executor = { version = "0.6", features = ["arch-cortex-m", "executor-thread"] }
@@ -242,7 +242,7 @@ async fn main(_spawner: Spawner) {
     // Build database
     let db = AimDbBuilder::new()
         .runtime(runtime)
-        .configure::<ButtonPress>(|reg| {
+        .configure::<ButtonPress>("button.press", |reg| {
             reg.buffer_sized::<1, 1>(BufferType::SingleLatest)
             
             // Use button as data source with context
@@ -284,10 +284,10 @@ The KNX connector provides KNX/IP tunneling support for building automation syst
 **Add to Cargo.toml:**
 ```toml
 # For Tokio
-aimdb-knx-connector = { version = "0.1", features = ["tokio-runtime"] }
+aimdb-knx-connector = { version = "0.2", features = ["tokio-runtime"] }
 
 # For Embassy
-aimdb-knx-connector = { version = "0.1", features = ["embassy-runtime"], default-features = false }
+aimdb-knx-connector = { version = "0.2", features = ["embassy-runtime"], default-features = false }
 
 # REQUIRED PATCH (bug fixes not yet on crates.io)
 [patch.crates-io]
@@ -313,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = AimDbBuilder::new()
         .runtime(runtime)
         .with_connector(KnxConnector::new("knx://192.168.1.19:3671"))
-        .configure::<LightState>(|reg| {
+        .configure::<LightState>("light.state", |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                .link_from("knx://1/0/7")
                .with_deserializer(|data: &[u8]| {
@@ -346,10 +346,10 @@ The MQTT connector enables pub/sub messaging with MQTT brokers.
 **Add to Cargo.toml:**
 ```toml
 # For Tokio
-aimdb-mqtt-connector = { version = "0.2", features = ["tokio-runtime"] }
+aimdb-mqtt-connector = { version = "0.3", features = ["tokio-runtime"] }
 
 # For Embassy
-aimdb-mqtt-connector = { version = "0.2", features = ["embassy-runtime"], default-features = false }
+aimdb-mqtt-connector = { version = "0.3", features = ["embassy-runtime"], default-features = false }
 
 # REQUIRED PATCH for Embassy (version compatibility)
 [patch.crates-io]
@@ -377,7 +377,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = AimDbBuilder::new()
         .runtime(runtime)
         .with_connector(MqttConnector::new("mqtt://broker.example.com:1883"))
-        .configure::<SensorReading>(|reg| {
+        .configure::<SensorReading>("sensor.reading", |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                .link_from("mqtt://sensor/room1")
                .with_deserializer(|data: &[u8]| {
@@ -519,15 +519,17 @@ For maximum stability, you can pin to specific versions on crates.io:
 
 ```toml
 [dependencies]
-aimdb-core = "=0.2.0"
-aimdb-tokio-adapter = "=0.2.0"
-aimdb-knx-connector = "=0.1.0"
+aimdb-core = "=0.3.0"
+aimdb-tokio-adapter = "=0.3.0"
+aimdb-mqtt-connector = "=0.3.0"
+aimdb-knx-connector = "=0.2.0"
 ```
 
 Or use standard semver:
 ```toml
 [dependencies]
-aimdb-core = "0.2"  # Will use latest 0.2.x
+aimdb-core = "0.3"  # Will use latest 0.3.x
+aimdb-knx-connector = "0.2"  # Will use latest 0.2.x
 ```
 
 ## Migration Path
@@ -537,14 +539,14 @@ As bug fixes are upstreamed and published, the patches can be removed:
 ```toml
 # Current (with patches)
 [dependencies]
-aimdb-knx-connector = "0.1"
+aimdb-knx-connector = "0.2"
 
 [patch.crates-io]
 knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master" }
 
 # After upstream fixes are published
 [dependencies]
-aimdb-knx-connector = "0.1"  # or newer version
+aimdb-knx-connector = "0.2"  # or newer version
 
 # [patch.crates-io]  <-- Just delete this section!
 ```
