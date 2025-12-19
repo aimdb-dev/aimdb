@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- MQTT Connector Deadlock with >10 Topics**: Fixed initialization deadlock when subscribing to more than 10 MQTT topics. The fix has two parts:
+  1. **Spawn-before-subscribe**: Event loop is now spawned before subscribing to topics, allowing continuous channel draining
+  2. **Dynamic channel capacity**: Channel capacity now scales with topic count (`topics + 10`) instead of hard-coded `10`
+
 ### Changed
 
 - **Dependency Update**: Upgraded `rumqttc` from 0.24 to 0.25
