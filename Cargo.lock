@@ -785,6 +785,7 @@ dependencies = [
  "embedded-io-async 0.6.1",
  "embedded-storage",
  "heapless 0.8.0",
+ "knx-connector-demo-common",
  "micromath",
  "panic-probe",
  "rand",
@@ -818,6 +819,7 @@ dependencies = [
  "embedded-storage",
  "heapless 0.8.0",
  "micromath",
+ "mqtt-connector-demo-common",
  "panic-probe",
  "rand",
  "static_cell",
@@ -1397,6 +1399,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "knx-connector-demo-common"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
+ "aimdb-knx-connector",
+ "defmt 1.0.1",
+ "serde",
+]
+
+[[package]]
 name = "knx-pico"
 version = "0.2.4"
 dependencies = [
@@ -1540,6 +1553,17 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "mountain-mqtt",
+]
+
+[[package]]
+name = "mqtt-connector-demo-common"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
+ "defmt 1.0.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2368,6 +2392,7 @@ dependencies = [
  "aimdb-executor",
  "aimdb-knx-connector",
  "aimdb-tokio-adapter",
+ "knx-connector-demo-common",
  "serde",
  "serde_json",
  "tokio",
@@ -2394,6 +2419,7 @@ dependencies = [
  "aimdb-executor",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
+ "mqtt-connector-demo-common",
  "serde",
  "serde_json",
  "tokio",

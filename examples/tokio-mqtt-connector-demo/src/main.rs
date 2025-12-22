@@ -1,8 +1,11 @@
-//! MQTT Connector Demo - Bidirectional
+//! MQTT Connector Demo
 //!
-//! Demonstrates bidirectional MQTT integration:
-//! - Inbound: Subscribe to MQTT commands → process in AimDB
-//! - Outbound: Publish temperature readings → MQTT topics
+//! Demonstrates bidirectional MQTT integration with AimDB:
+//! - Multiple temperature sensors publishing to different topics
+//! - Multiple command consumers receiving from different topics
+//!
+//! This demo uses `mqtt-connector-demo-common` for shared types and monitors,
+//! demonstrating AimDB's "write once, run anywhere" capability.
 //!
 //! ## Running
 //!
@@ -11,118 +14,122 @@
 //! docker run -d -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
 //! ```
 //!
-//! In one terminal, subscribe to temperature readings:
+//! Run the demo:
+//! ```bash
+//! cargo run -p tokio-mqtt-connector-demo --features tokio-runtime
+//! ```
+//!
+//! Subscribe to sensor topics:
 //! ```bash
 //! mosquitto_sub -h localhost -t 'sensors/#' -v
 //! ```
 //!
-//! In another terminal, publish commands:
+//! Send commands:
 //! ```bash
-//! mosquitto_pub -h localhost -t 'commands/temperature' -m '{"action":"read","sensor_id":"sensor-001"}'
-//! ```
-//!
-//! Run the demo:
-//! ```bash
-//! cargo run --example mqtt-connector-demo --features tokio-runtime,tracing
+//! mosquitto_pub -h localhost -t 'commands/temp/indoor' -m '{"action":"read","sensor_id":"indoor-001"}'
 //! ```
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RuntimeContext};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Temperature {
-    sensor_id: String,
-    celsius: f32,
-    timestamp: u64,
-}
+// Import shared types and monitors from the common crate
+use mqtt_connector_demo_common::{
+    command_consumer, temperature_logger, Temperature, TemperatureCommand,
+};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct TemperatureCommand {
-    action: String,
-    sensor_id: String,
-}
+// ============================================================================
+// TEMPERATURE PRODUCERS (platform-specific)
+// ============================================================================
 
-/// Simulates a temperature sensor generating readings every second
-async fn temperature_producer(
+/// Indoor temperature sensor producer
+async fn indoor_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
     temperature: Producer<Temperature, TokioAdapter>,
 ) {
     let log = ctx.log();
     let time = ctx.time();
 
-    log.info("📊 Starting temperature producer service...\n");
+    log.info("🏠 Starting INDOOR temperature producer...\n");
 
-    for i in 0..10 {
-        let temp = Temperature {
-            sensor_id: "sensor-001".to_string(),
-            celsius: 20.0 + (i as f32 * 2.0),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        };
+    for i in 0..5 {
+        let temp = Temperature::new("indoor-001", 22.0 + (i as f32 * 0.5)); // Indoor temps: 22-24°C
+
+        log.info(&format!(
+            "🏠 Indoor sensor producing: {:.1}°C",
+            temp.celsius
+        ));
 
         if let Err(e) = temperature.produce(temp).await {
-            log.error(&format!("❌ Failed to produce temperature: {:?}", e));
+            log.error(&format!("❌ Failed to produce indoor temp: {:?}", e));
         }
 
-        time.sleep(time.secs(1)).await;
+        time.sleep(time.secs(2)).await;
     }
 
-    log.info("\n✅ Published 10 temperature readings");
+    log.info("✅ Indoor producer finished");
 }
 
-/// Consumer that logs temperature readings
-async fn temperature_consumer(
+/// Outdoor temperature sensor producer
+async fn outdoor_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
-    consumer: aimdb_core::Consumer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature, TokioAdapter>,
 ) {
     let log = ctx.log();
+    let time = ctx.time();
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to temperature buffer");
-        return;
-    };
+    log.info("🌳 Starting OUTDOOR temperature producer...\n");
 
-    while let Ok(temp) = reader.recv().await {
+    for i in 0..5 {
+        let temp = Temperature::new("outdoor-001", 5.0 + (i as f32 * 1.0)); // Outdoor temps: 5-9°C (cold!)
+
         log.info(&format!(
-            "Temperature produced: {:.1}°C from {}",
-            temp.celsius, temp.sensor_id
-        ));
-    }
-}
-
-/// Consumer that processes incoming commands from MQTT
-async fn command_consumer(
-    ctx: RuntimeContext<TokioAdapter>,
-    consumer: aimdb_core::Consumer<TemperatureCommand, TokioAdapter>,
-) {
-    let log = ctx.log();
-
-    log.info("📥 Command consumer started - waiting for MQTT commands...\n");
-
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to command buffer");
-        return;
-    };
-
-    while let Ok(cmd) = reader.recv().await {
-        log.info(&format!(
-            "📨 Received command from MQTT: action='{}' sensor_id='{}'",
-            cmd.action, cmd.sensor_id
+            "🌳 Outdoor sensor producing: {:.1}°C",
+            temp.celsius
         ));
 
-        // Process command (in real app, this would trigger sensor reading)
-        match cmd.action.as_str() {
-            "read" => log.info(&format!("  → Would read from sensor {}", cmd.sensor_id)),
-            "reset" => log.info(&format!("  → Would reset sensor {}", cmd.sensor_id)),
-            _ => log.warn(&format!("  ⚠️  Unknown action: {}", cmd.action)),
+        if let Err(e) = temperature.produce(temp).await {
+            log.error(&format!("❌ Failed to produce outdoor temp: {:?}", e));
         }
+
+        time.sleep(time.secs(2)).await;
     }
+
+    log.info("✅ Outdoor producer finished");
 }
+
+/// Server room temperature sensor producer
+async fn server_room_temp_producer(
+    ctx: RuntimeContext<TokioAdapter>,
+    temperature: Producer<Temperature, TokioAdapter>,
+) {
+    let log = ctx.log();
+    let time = ctx.time();
+
+    log.info("🖥️  Starting SERVER ROOM temperature producer...\n");
+
+    for i in 0..5 {
+        let temp = Temperature::new("server-room-001", 18.0 + (i as f32 * 0.2)); // Server room: 18-19°C (cooled)
+
+        log.info(&format!(
+            "🖥️  Server room sensor producing: {:.1}°C",
+            temp.celsius
+        ));
+
+        if let Err(e) = temperature.produce(temp).await {
+            log.error(&format!("❌ Failed to produce server room temp: {:?}", e));
+        }
+
+        time.sleep(time.secs(2)).await;
+    }
+
+    log.info("✅ Server room producer finished");
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
 
 #[tokio::main]
 async fn main() -> DbResult<()> {
@@ -131,59 +138,66 @@ async fn main() -> DbResult<()> {
 
     let runtime = Arc::new(TokioAdapter::new()?);
 
-    println!("🔧 Creating database with bidirectional MQTT connector...");
+    println!("MQTT Connector Demo");
+    println!("===================");
+    println!();
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
         aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883")
-            .with_client_id("tokio-demo-001"),
+            .with_client_id("tokio-demo-multi-sensor"),
     );
 
-    // Configure Temperature record (outbound: AimDB → MQTT)
-    builder.configure::<Temperature>("sensor.temperature", |reg| {
+    // Temperature sensors (outbound to MQTT)
+    // Using shared temperature_logger monitor from common crate
+    builder.configure::<Temperature>("sensor.temp.indoor", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .source(temperature_producer)
-            .tap(temperature_consumer)
-            // Publish to MQTT as JSON
-            .link_to("mqtt://sensors/temperature")
-            .with_serializer(|temp: &Temperature| {
-                serde_json::to_vec(temp)
-                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
-            })
-            .finish()
-            // Publish to MQTT as CSV with QoS 1 and retain
-            .link_to("mqtt://sensors/raw")
-            .with_config("qos", "1")
-            .with_config("retain", "true")
-            .with_serializer(|temp: &Temperature| {
-                let csv = format!("{},{},{}", temp.sensor_id, temp.celsius, temp.timestamp);
-                Ok(csv.into_bytes())
-            })
+            .source(indoor_temp_producer)
+            .tap(temperature_logger)
+            .link_to("mqtt://sensors/temp/indoor")
+            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
-    // Configure TemperatureCommand record (inbound: MQTT → AimDB)
-    builder.configure::<TemperatureCommand>("command.temperature", |reg| {
+    builder.configure::<Temperature>("sensor.temp.outdoor", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
+            .source(outdoor_temp_producer)
+            .tap(temperature_logger)
+            .link_to("mqtt://sensors/temp/outdoor")
+            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .finish();
+    });
+
+    builder.configure::<Temperature>("sensor.temp.server_room", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
+            .source(server_room_temp_producer)
+            .tap(temperature_logger)
+            .link_to("mqtt://sensors/temp/server_room")
+            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .finish();
+    });
+
+    // Command consumers (inbound from MQTT)
+    // Using shared command_consumer monitor from common crate
+    builder.configure::<TemperatureCommand>("command.temp.indoor", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
-            // Subscribe from MQTT commands topic
-            .link_from("mqtt://commands/temperature")
-            .with_deserializer(|data: &[u8]| {
-                serde_json::from_slice::<TemperatureCommand>(data)
-                    .map_err(|e| format!("Failed to deserialize command: {}", e))
-            })
+            .link_from("mqtt://commands/temp/indoor")
+            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
-    println!("✅ Database configured with bidirectional MQTT:");
-    println!("   OUTBOUND (AimDB → MQTT):");
-    println!("     - mqtt://sensors/temperature (JSON format)");
-    println!("     - mqtt://sensors/raw (CSV format, QoS=1, retain=true)");
-    println!("   INBOUND (MQTT → AimDB):");
-    println!("     - mqtt://commands/temperature (JSON commands)");
-    println!("   Broker: localhost:1883");
-    println!("\n💡 Try publishing a command:");
-    println!("   mosquitto_pub -h localhost -t 'commands/temperature' -m '{{\"action\":\"read\",\"sensor_id\":\"sensor-001\"}}'");
-    println!("\n   Press Ctrl+C to stop.\n");
+    builder.configure::<TemperatureCommand>("command.temp.outdoor", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
+            .tap(command_consumer)
+            .link_from("mqtt://commands/temp/outdoor")
+            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
+            .finish();
+    });
+
+    println!("Subscribe: mosquitto_sub -h localhost -t 'sensors/#' -v");
+    println!("Command:   mosquitto_pub -h localhost -t 'commands/temp/indoor' -m '{{\"action\":\"read\",\"sensor_id\":\"test\"}}'");
+    println!();
+    println!("Press Ctrl+C to stop.\n");
 
     builder.run().await
 }

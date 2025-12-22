@@ -10,6 +10,8 @@ members = [
     "aimdb-knx-connector",
     "tools/aimdb-cli",
     "tools/aimdb-mcp",
+    "examples/knx-connector-demo-common",
+    "examples/mqtt-connector-demo-common",
     "examples/tokio-mqtt-connector-demo",
     "examples/tokio-knx-connector-demo",
     "examples/embassy-mqtt-connector-demo",

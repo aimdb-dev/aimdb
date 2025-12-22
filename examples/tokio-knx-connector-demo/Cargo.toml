@@ -20,6 +20,11 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tracing",
 ] }
 
+# Shared demo types and monitors
+knx-connector-demo-common = { path = "../knx-connector-demo-common", features = [
+    "std",
+] }
+
 # KNX connector
 aimdb-knx-connector = { path = "../../aimdb-knx-connector", features = [
     "tokio-runtime",

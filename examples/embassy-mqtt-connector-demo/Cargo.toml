@@ -26,6 +26,11 @@ aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", default-features =
     "embassy-runtime",
 ] }
 
+# Shared demo logic
+mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features = [
+    "alloc",
+] }
+
 # Embassy ecosystem - STM32H563ZI with Ethernet
 embassy-stm32 = { workspace = true, features = [
     "defmt",

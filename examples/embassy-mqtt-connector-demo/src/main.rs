@@ -3,7 +3,12 @@
 
 //! MQTT Connector Demo for Embassy Runtime
 //!
-//! Demonstrates bidirectional MQTT integration with automatic publishing and subscription on embedded hardware.
+//! Demonstrates bidirectional MQTT integration with multiple sensors:
+//! - Multiple temperature sensors publishing to different topics
+//! - Multiple command consumers receiving from different topics
+//!
+//! This demo uses `mqtt-connector-demo-common` for shared types and monitors,
+//! demonstrating AimDB's "write once, run anywhere" capability.
 //!
 //! ## Hardware Requirements
 //!
@@ -24,7 +29,7 @@
 //!
 //! 3. Send commands to device:
 //! ```bash
-//! mosquitto_pub -h <broker-ip> -t 'commands/temperature' -m '{"action":"read","sensor_id":"sensor-001"}'
+//! mosquitto_pub -h <broker-ip> -t 'commands/temp/indoor' -m '{"action":"read","sensor_id":"indoor-001"}'
 //! ```
 //!
 //! 4. Update MQTT_BROKER_IP constant below to match your broker
@@ -36,7 +41,7 @@
 
 extern crate alloc;
 
-use aimdb_core::{AimDbBuilder, Consumer, Producer, RuntimeContext};
+use aimdb_core::{AimDbBuilder, Producer, RuntimeContext};
 use aimdb_embassy_adapter::{
     EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
 };
@@ -49,11 +54,15 @@ use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
 use embassy_stm32::{Config, bind_interrupts, eth, peripherals, rng};
 use embassy_time::{Duration, Timer};
-use heapless::String as HeaplessString;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+
+// Import shared types and monitors from the common crate
+use mqtt_connector_demo_common::{
+    Temperature, TemperatureCommand, command_consumer, temperature_logger,
+};
 
 // Simple embedded allocator (required by some dependencies)
 #[global_allocator]
@@ -75,192 +84,96 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 }
 
 // ============================================================================
-// SENSOR DATA TYPES
+// TEMPERATURE PRODUCERS (platform-specific due to embassy-time)
 // ============================================================================
-//
 
-/// Temperature sensor reading (no_std compatible)
-#[derive(Clone, Debug)]
-struct Temperature {
-    sensor_id: &'static str,
-    celsius: f32,
-    timestamp: u32,
-}
-
-impl Temperature {
-    /// Serialize to JSON format using heapless string
-    /// Returns a byte slice ready for MQTT publishing
-    fn to_json(&self) -> HeaplessString<128> {
-        use core::fmt::Write;
-        let mut json = HeaplessString::<128>::new();
-        // Manual JSON formatting for no_std
-        // Note: Simple integer representation of celsius * 10 for no_std compatibility
-        let celsius_int = (self.celsius * 10.0) as i32;
-        let _ = core::write!(
-            &mut json,
-            r#"{{"sensor_id":"{}","celsius_x10":{},"timestamp":{}}}"#,
-            self.sensor_id,
-            celsius_int,
-            self.timestamp
-        );
-        json
-    }
-
-    /// Convert heapless string to Vec for connector compatibility
-    fn to_json_vec(&self) -> alloc::vec::Vec<u8> {
-        self.to_json().as_bytes().to_vec()
-    }
-
-    /// Serialize to CSV format for no_std
-    fn to_csv(&self) -> alloc::vec::Vec<u8> {
-        use alloc::format;
-        let csv = format!("{},{},{}", self.sensor_id, self.celsius, self.timestamp);
-        csv.into_bytes()
-    }
-}
-
-/// Command for controlling temperature sensor (inbound from MQTT)
-#[derive(Clone, Debug)]
-struct TemperatureCommand {
-    action: HeaplessString<32>,
-    sensor_id: HeaplessString<64>,
-}
-
-impl TemperatureCommand {
-    /// Simple JSON parser for no_std
-    /// Expected format: {"action":"read","sensor_id":"sensor-001"}
-    fn from_json(data: &[u8]) -> Result<Self, alloc::string::String> {
-        use alloc::string::ToString;
-
-        let text = core::str::from_utf8(data).map_err(|_| "Invalid UTF-8".to_string())?;
-
-        // Simple JSON parsing for {"action":"xxx","sensor_id":"yyy"}
-        let mut action = HeaplessString::<32>::new();
-        let mut sensor_id = HeaplessString::<64>::new();
-
-        for pair in text.trim_matches(|c| c == '{' || c == '}').split(',') {
-            let parts: alloc::vec::Vec<&str> = pair.split(':').collect();
-            if parts.len() != 2 {
-                continue;
-            }
-
-            let key = parts[0].trim().trim_matches('"');
-            let value = parts[1].trim().trim_matches('"');
-
-            match key {
-                "action" => {
-                    action
-                        .push_str(value)
-                        .map_err(|_| "Action too long".to_string())?;
-                }
-                "sensor_id" => {
-                    sensor_id
-                        .push_str(value)
-                        .map_err(|_| "Sensor ID too long".to_string())?;
-                }
-                _ => {}
-            }
-        }
-
-        if action.is_empty() || sensor_id.is_empty() {
-            return Err("Missing required fields".to_string());
-        }
-
-        Ok(TemperatureCommand { action, sensor_id })
-    }
-}
-
-/// Simulates a temperature sensor generating readings
-async fn temperature_producer(
+/// Indoor temperature sensor producer
+async fn indoor_temp_producer(
     ctx: RuntimeContext<EmbassyAdapter>,
     temperature: Producer<Temperature, EmbassyAdapter>,
 ) {
     let log = ctx.log();
+    log.info("🏠 Starting INDOOR temperature producer...\n");
 
-    log.info("📊 Starting temperature producer service...\n");
+    for i in 0..5 {
+        let temp = Temperature::new("indoor-001", 22.0 + (i as f32 * 0.5)); // Indoor temps: 22-24°C
 
-    for i in 0..10 {
-        let temp = Temperature {
-            sensor_id: "sensor-001",
-            celsius: 20.0 + (i as f32 * 2.0),
-            timestamp: i,
-        };
+        log.info(&alloc::format!(
+            "🏠 Indoor sensor producing: {:.1}°C",
+            temp.celsius
+        ));
 
         if let Err(e) = temperature.produce(temp).await {
-            log.error(&alloc::format!("❌ Failed to produce temperature: {:?}", e));
+            log.error(&alloc::format!("❌ Failed to produce indoor temp: {:?}", e));
         }
 
         Timer::after(Duration::from_secs(2)).await;
     }
 
-    log.info("\n✅ Published 10 temperature readings");
+    log.info("✅ Indoor producer finished");
 }
 
-/// Consumer that logs temperature readings
-async fn temperature_consumer(
+/// Outdoor temperature sensor producer
+async fn outdoor_temp_producer(
     ctx: RuntimeContext<EmbassyAdapter>,
-    consumer: Consumer<Temperature, EmbassyAdapter>,
+    temperature: Producer<Temperature, EmbassyAdapter>,
 ) {
     let log = ctx.log();
+    log.info("🌳 Starting OUTDOOR temperature producer...\n");
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to temperature buffer");
-        return;
-    };
+    for i in 0..5 {
+        let temp = Temperature::new("outdoor-001", 5.0 + (i as f32 * 1.0)); // Outdoor temps: 5-9°C (cold!)
 
-    while let Ok(temp) = reader.recv().await {
         log.info(&alloc::format!(
-            "Temperature produced: {:.1}°C from {}",
-            temp.celsius,
-            temp.sensor_id
-        ));
-    }
-}
-
-/// Consumer that processes commands received from MQTT
-async fn command_consumer(
-    ctx: RuntimeContext<EmbassyAdapter>,
-    consumer: Consumer<TemperatureCommand, EmbassyAdapter>,
-) {
-    let log = ctx.log();
-
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to command buffer");
-        return;
-    };
-
-    log.info("📡 Listening for commands from MQTT...");
-
-    while let Ok(cmd) = reader.recv().await {
-        log.info(&alloc::format!(
-            "📨 Command received: action='{}', sensor_id='{}'",
-            cmd.action.as_str(),
-            cmd.sensor_id.as_str()
+            "🌳 Outdoor sensor producing: {:.1}°C",
+            temp.celsius
         ));
 
-        // Process command based on action
-        match cmd.action.as_str() {
-            "read" => log.info(&alloc::format!(
-                "  → Would read from sensor {}",
-                cmd.sensor_id.as_str()
-            )),
-            "reset" => log.info(&alloc::format!(
-                "  → Would reset sensor {}",
-                cmd.sensor_id.as_str()
-            )),
-            _ => log.warn(&alloc::format!(
-                "  ⚠️  Unknown action: {}",
-                cmd.action.as_str()
-            )),
+        if let Err(e) = temperature.produce(temp).await {
+            log.error(&alloc::format!(
+                "❌ Failed to produce outdoor temp: {:?}",
+                e
+            ));
         }
+
+        Timer::after(Duration::from_secs(2)).await;
     }
+
+    log.info("✅ Outdoor producer finished");
 }
 
-//
+/// Server room temperature sensor producer
+async fn server_room_temp_producer(
+    ctx: RuntimeContext<EmbassyAdapter>,
+    temperature: Producer<Temperature, EmbassyAdapter>,
+) {
+    let log = ctx.log();
+    log.info("🖥️  Starting SERVER ROOM temperature producer...\n");
+
+    for i in 0..5 {
+        let temp = Temperature::new("server-room-001", 18.0 + (i as f32 * 0.2)); // Server room: 18-19°C (cooled)
+
+        log.info(&alloc::format!(
+            "🖥️  Server room sensor producing: {:.1}°C",
+            temp.celsius
+        ));
+
+        if let Err(e) = temperature.produce(temp).await {
+            log.error(&alloc::format!(
+                "❌ Failed to produce server room temp: {:?}",
+                e
+            ));
+        }
+
+        Timer::after(Duration::from_secs(2)).await;
+    }
+
+    log.info("✅ Server room producer finished");
+}
+
 // ============================================================================
 // MQTT CONFIGURATION
 // ============================================================================
-//
 
 /// MQTT broker IP address (modify for your network)
 const MQTT_BROKER_IP: &str = "192.168.1.3";
@@ -392,8 +305,6 @@ async fn main(spawner: Spawner) {
     // Create AimDB database with Embassy adapter
     let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
 
-    info!("🔧 Creating database with bidirectional MQTT connector...");
-
     // Build MQTT broker URL
     use alloc::format;
     let broker_url = format!("mqtt://{}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
@@ -402,58 +313,74 @@ async fn main(spawner: Spawner) {
         .runtime(runtime.clone())
         .with_connector(MqttConnectorBuilder::new(&broker_url).with_client_id("embassy-demo-001"));
 
-    // Configure Temperature record with custom buffer sizing (outbound: AimDB → MQTT)
-    //
-    // For SPMC (Single Producer, Multiple Consumer) ring buffer:
-    // - CAP=32: Ring buffer holds 32 temperature readings
-    // - CONSUMERS=4: Maximum 4 concurrent consumers (used as SUBS for SPMC ring)
-    //
-    // Note: The CONSUMERS parameter is used differently based on buffer type:
-    // - SPMC Ring: CONSUMERS becomes SUBS (independent ring buffer positions)
-    // - SingleLatest: CONSUMERS becomes WATCH_N (watchers of latest value)
-    // - Mailbox: CONSUMERS is ignored (single-slot)
-    builder.configure::<Temperature>("sensors.temperature", |reg| {
-        reg.buffer_sized::<32, 4>(EmbassyBufferType::SpmcRing)
-            .source(temperature_producer)
-            .tap(temperature_consumer)
-            // Publish to MQTT as JSON
-            .link_to("mqtt://sensors/temperature")
+    // ========================================================================
+    // TEMPERATURE SENSORS (outbound: AimDB → MQTT)
+    // Using shared temperature_logger monitor from common crate
+    // ========================================================================
+
+    builder.configure::<Temperature>("sensor.temp.indoor", |reg| {
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+            .source(indoor_temp_producer)
+            .tap(temperature_logger)
+            .link_to("mqtt://sensors/temp/indoor")
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
-            .finish()
-            // Publish to MQTT as CSV with QoS 1 and retain
-            .link_to("mqtt://sensors/raw")
-            .with_config("qos", "1")
-            .with_config("retain", "true")
-            .with_serializer(|temp: &Temperature| Ok(temp.to_csv()))
             .finish();
     });
 
-    // Configure TemperatureCommand record (inbound: MQTT → AimDB)
-    builder.configure::<TemperatureCommand>("commands.temperature", |reg| {
-        reg.buffer_sized::<10, 2>(EmbassyBufferType::SpmcRing)
+    builder.configure::<Temperature>("sensor.temp.outdoor", |reg| {
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+            .source(outdoor_temp_producer)
+            .tap(temperature_logger)
+            .link_to("mqtt://sensors/temp/outdoor")
+            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .finish();
+    });
+
+    builder.configure::<Temperature>("sensor.temp.server_room", |reg| {
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+            .source(server_room_temp_producer)
+            .tap(temperature_logger)
+            .link_to("mqtt://sensors/temp/server_room")
+            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .finish();
+    });
+
+    // ========================================================================
+    // COMMAND CONSUMERS (inbound: MQTT → AimDB)
+    // Using shared command_consumer monitor from common crate
+    // ========================================================================
+
+    builder.configure::<TemperatureCommand>("command.temp.indoor", |reg| {
+        reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
-            // Subscribe from MQTT commands topic
-            .link_from("mqtt://commands/temperature")
+            .link_from("mqtt://commands/temp/indoor")
             .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
-    info!("✅ Database configured with bidirectional MQTT:");
-    info!("   OUTBOUND (AimDB → MQTT):");
-    info!("     - mqtt://sensors/temperature (JSON format)");
-    info!("     - mqtt://sensors/raw (CSV format, QoS=1, retain=true)");
-    info!("   INBOUND (MQTT → AimDB):");
-    info!("     - mqtt://commands/temperature (JSON commands)");
-    info!("   Broker: {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
+    builder.configure::<TemperatureCommand>("command.temp.outdoor", |reg| {
+        reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
+            .tap(command_consumer)
+            .link_from("mqtt://commands/temp/outdoor")
+            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
+            .finish();
+    });
+
+    info!("✅ Database configured with multi-sensor MQTT:");
+    info!("   OUTBOUND: sensors/temp/indoor, outdoor, server_room");
+    info!("   INBOUND:  commands/temp/indoor, outdoor");
+    info!("   Broker:   {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
     info!("");
-    info!("💡 Try publishing a command:");
     info!(
-        "   mosquitto_pub -h {} -t 'commands/temperature' \\",
+        "Subscribe: mosquitto_sub -h {} -t 'sensors/#' -v",
         MQTT_BROKER_IP
     );
-    info!("     -m '{{\"action\":\"read\",\"sensor_id\":\"sensor-001\"}}'");
+    info!(
+        "Command:   mosquitto_pub -h {} -t 'commands/temp/indoor' \\",
+        MQTT_BROKER_IP
+    );
+    info!("             -m '{{\"action\":\"read\",\"sensor_id\":\"test\"}}'");
     info!("");
-    info!("   Press Reset button to restart.\n");
 
     static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
     let _db = DB_CELL.init(builder.build().await.expect("Failed to build database"));
@@ -461,7 +388,6 @@ async fn main(spawner: Spawner) {
     info!("✅ Database running with background services");
 
     // Main loop - blink LED to show system is alive
-    // All services (producer, consumer, MQTT) run in the background
     loop {
         led.set_high();
         Timer::after(Duration::from_millis(100)).await;
