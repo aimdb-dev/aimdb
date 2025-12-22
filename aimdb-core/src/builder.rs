@@ -201,45 +201,6 @@ impl AimDbInner {
         Ok(typed_record)
     }
 
-    /// Helper to get a typed record from the registry (legacy API)
-    ///
-    /// **Deprecated**: Use `get_typed_record_by_key()` instead.
-    ///
-    /// This method only works when exactly one record of type T exists.
-    /// Returns `AmbiguousType` error if multiple records of the same type exist.
-    pub fn get_typed_record<T, R>(&self) -> DbResult<&TypedRecord<T, R>>
-    where
-        T: Send + 'static + Debug + Clone,
-        R: aimdb_executor::Spawn + 'static,
-    {
-        let type_id = TypeId::of::<T>();
-        let ids = self.by_type.get(&type_id);
-
-        match ids.map(|v| v.as_slice()) {
-            None | Some([]) => {
-                #[cfg(feature = "std")]
-                return Err(DbError::RecordNotFound {
-                    record_name: core::any::type_name::<T>().to_string(),
-                });
-                #[cfg(not(feature = "std"))]
-                return Err(DbError::RecordNotFound { _record_name: () });
-            }
-            Some([single_id]) => self.get_typed_record_by_id::<T, R>(*single_id),
-            Some(multiple) => {
-                #[cfg(feature = "std")]
-                return Err(DbError::AmbiguousType {
-                    count: multiple.len() as u32,
-                    type_name: core::any::type_name::<T>().to_string(),
-                });
-                #[cfg(not(feature = "std"))]
-                return Err(DbError::AmbiguousType {
-                    count: multiple.len() as u32,
-                    _type_name: (),
-                });
-            }
-        }
-    }
-
     /// Collects metadata for all registered records (std only)
     ///
     /// Returns a vector of `RecordMetadata` for remote access introspection.
@@ -912,100 +873,8 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         Ok(())
     }
 
-    /// Produces a value for a record type
-    ///
-    /// Writes the value to the record's buffer and triggers all consumers.
-    pub async fn produce<T>(&self, value: T) -> DbResult<()>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        // Get the typed record using the helper
-        let typed_rec = self.inner.get_typed_record::<T, R>()?;
-
-        // Produce the value directly to the buffer
-        typed_rec.produce(value).await;
-        Ok(())
-    }
-
-    /// Subscribes to a record type's buffer
-    ///
-    /// Creates a subscription to the configured buffer for the given record type.
-    /// Returns a boxed reader for receiving values asynchronously.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let mut reader = db.subscribe::<Temperature>()?;
-    ///
-    /// loop {
-    ///     match reader.recv().await {
-    ///         Ok(temp) => println!("Temperature: {:.1}°C", temp.celsius),
-    ///         Err(_) => break,
-    ///     }
-    /// }
-    /// ```
-    pub fn subscribe<T>(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
-    where
-        T: Send + Sync + 'static + Debug + Clone,
-    {
-        // Get the typed record using the helper
-        let typed_rec = self.inner.get_typed_record::<T, R>()?;
-
-        // Subscribe to the buffer
-        typed_rec.subscribe()
-    }
-
-    /// Creates a type-safe producer for a specific record type
-    ///
-    /// Returns a `Producer<T, R>` that can only produce values of type `T`.
-    /// This is the recommended way to pass database access to producer services,
-    /// following the principle of least privilege.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let db = builder.build()?;
-    /// let temp_producer = db.producer::<Temperature>();
-    ///
-    /// // Pass to service - it can only produce Temperature values
-    /// runtime.spawn(temperature_service(ctx, temp_producer)).unwrap();
-    /// ```
-    pub fn producer<T>(&self) -> crate::typed_api::Producer<T, R>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        crate::typed_api::Producer::new(Arc::new(self.clone()))
-    }
-
-    /// Creates a type-safe consumer for a specific record type
-    ///
-    /// Returns a `Consumer<T, R>` that can only subscribe to values of type `T`.
-    /// This is the recommended way to pass database access to consumer services,
-    /// following the principle of least privilege.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let db = builder.build()?;
-    /// let temp_consumer = db.consumer::<Temperature>();
-    ///
-    /// // Pass to service - it can only consume Temperature values
-    /// runtime.spawn(temperature_monitor(ctx, temp_consumer)).unwrap();
-    /// ```
-    pub fn consumer<T>(&self) -> crate::typed_api::Consumer<T, R>
-    where
-        T: Send + Sync + 'static + Debug + Clone,
-    {
-        crate::typed_api::Consumer::new(Arc::new(self.clone()))
-    }
-
-    // ========================================================================
-    // Key-based API (recommended for multi-instance records)
-    // ========================================================================
-
     /// Produces a value to a specific record by key
     ///
-    /// This is the recommended method when multiple records of the same type exist.
     /// Uses O(1) key-based lookup to find the correct record.
     ///
     /// # Arguments
@@ -1015,11 +884,10 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// // With multiple Temperature records
-    /// db.produce_by_key::<Temperature>("sensors.indoor", indoor_temp).await?;
-    /// db.produce_by_key::<Temperature>("sensors.outdoor", outdoor_temp).await?;
+    /// db.produce::<Temperature>("sensors.indoor", indoor_temp).await?;
+    /// db.produce::<Temperature>("sensors.outdoor", outdoor_temp).await?;
     /// ```
-    pub async fn produce_by_key<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
+    pub async fn produce<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
     where
         T: Send + 'static + Debug + Clone,
     {
@@ -1030,7 +898,6 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
 
     /// Subscribes to a specific record by key
     ///
-    /// This is the recommended method when multiple records of the same type exist.
     /// Uses O(1) key-based lookup to find the correct record.
     ///
     /// # Arguments
@@ -1039,12 +906,12 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let mut reader = db.subscribe_by_key::<Temperature>("sensors.indoor")?;
+    /// let mut reader = db.subscribe::<Temperature>("sensors.indoor")?;
     /// while let Ok(temp) = reader.recv().await {
     ///     println!("Indoor: {:.1}°C", temp.celsius);
     /// }
     /// ```
-    pub fn subscribe_by_key<T>(
+    pub fn subscribe<T>(
         &self,
         key: impl AsRef<str>,
     ) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
@@ -1057,8 +924,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
 
     /// Creates a type-safe producer for a specific record by key
     ///
-    /// Returns a `ProducerByKey<T, R>` bound to a specific record key.
-    /// Use this when multiple records of the same type exist.
+    /// Returns a `Producer<T, R>` bound to a specific record key.
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
@@ -1066,28 +932,26 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let indoor_producer = db.producer_by_key::<Temperature>("sensors.indoor");
-    /// let outdoor_producer = db.producer_by_key::<Temperature>("sensors.outdoor");
+    /// let indoor_producer = db.producer::<Temperature>("sensors.indoor");
+    /// let outdoor_producer = db.producer::<Temperature>("sensors.outdoor");
     ///
     /// // Each producer writes to its own record
     /// indoor_producer.produce(indoor_temp).await?;
     /// outdoor_producer.produce(outdoor_temp).await?;
     /// ```
-    #[cfg(feature = "alloc")]
-    pub fn producer_by_key<T>(
+    pub fn producer<T>(
         &self,
         key: impl Into<alloc::string::String>,
-    ) -> crate::typed_api::ProducerByKey<T, R>
+    ) -> crate::typed_api::Producer<T, R>
     where
         T: Send + 'static + Debug + Clone,
     {
-        crate::typed_api::ProducerByKey::new(Arc::new(self.clone()), key.into())
+        crate::typed_api::Producer::new(Arc::new(self.clone()), key.into())
     }
 
     /// Creates a type-safe consumer for a specific record by key
     ///
-    /// Returns a `ConsumerByKey<T, R>` bound to a specific record key.
-    /// Use this when multiple records of the same type exist.
+    /// Returns a `Consumer<T, R>` bound to a specific record key.
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
@@ -1095,21 +959,20 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let indoor_consumer = db.consumer_by_key::<Temperature>("sensors.indoor");
-    /// let outdoor_consumer = db.consumer_by_key::<Temperature>("sensors.outdoor");
+    /// let indoor_consumer = db.consumer::<Temperature>("sensors.indoor");
+    /// let outdoor_consumer = db.consumer::<Temperature>("sensors.outdoor");
     ///
     /// // Each consumer reads from its own record
     /// let mut rx = indoor_consumer.subscribe()?;
     /// ```
-    #[cfg(feature = "alloc")]
-    pub fn consumer_by_key<T>(
+    pub fn consumer<T>(
         &self,
         key: impl Into<alloc::string::String>,
-    ) -> crate::typed_api::ConsumerByKey<T, R>
+    ) -> crate::typed_api::Consumer<T, R>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        crate::typed_api::ConsumerByKey::new(Arc::new(self.clone()), key.into())
+        crate::typed_api::Consumer::new(Arc::new(self.clone()), key.into())
     }
 
     /// Resolve a record key to its RecordId

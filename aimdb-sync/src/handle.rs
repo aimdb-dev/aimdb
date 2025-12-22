@@ -279,6 +279,10 @@ impl AimDbHandle {
 
     /// Create a synchronous producer for type `T`.
     ///
+    /// # Arguments
+    ///
+    /// - `key`: The record key identifying this record instance
+    ///
     /// # Type Parameters
     ///
     /// - `T`: The record type, must implement `TypedRecord`
@@ -296,19 +300,23 @@ impl AimDbHandle {
     /// # #[derive(Debug, Clone, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
     /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
-    /// let producer = handle.producer::<Temperature>()?;
+    /// let producer = handle.producer::<Temperature>("sensor::temp")?;
     /// producer.set(Temperature { celsius: 25.0 })?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn producer<T>(&self) -> DbResult<crate::SyncProducer<T>>
+    pub fn producer<T>(&self, key: impl AsRef<str>) -> DbResult<crate::SyncProducer<T>>
     where
         T: Send + 'static + Debug + Clone,
     {
-        self.producer_with_capacity(DEFAULT_SYNC_CHANNEL_CAPACITY)
+        self.producer_with_capacity(key, DEFAULT_SYNC_CHANNEL_CAPACITY)
     }
 
     /// Create a synchronous consumer for type `T`.
+    ///
+    /// # Arguments
+    ///
+    /// - `key`: The record key identifying this record instance
     ///
     /// # Type Parameters
     ///
@@ -327,16 +335,16 @@ impl AimDbHandle {
     /// # #[derive(Clone, Debug, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
     /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
-    /// let consumer = handle.consumer::<Temperature>()?;
+    /// let consumer = handle.consumer::<Temperature>("sensor::temp")?;
     /// let temp = consumer.get()?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn consumer<T>(&self) -> DbResult<crate::SyncConsumer<T>>
+    pub fn consumer<T>(&self, key: impl AsRef<str>) -> DbResult<crate::SyncConsumer<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        self.consumer_with_capacity(DEFAULT_SYNC_CHANNEL_CAPACITY)
+        self.consumer_with_capacity(key, DEFAULT_SYNC_CHANNEL_CAPACITY)
     }
 
     /// Create a synchronous producer with custom channel capacity.
@@ -346,6 +354,7 @@ impl AimDbHandle {
     ///
     /// # Arguments
     ///
+    /// - `key`: The record key identifying this record instance
     /// - `capacity`: Channel buffer size (number of items that can be buffered)
     ///
     /// # Type Parameters
@@ -366,12 +375,16 @@ impl AimDbHandle {
     /// # struct HighFrequencySensor { value: f32 }
     /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
     /// // High-frequency sensor needs larger buffer
-    /// let producer = handle.producer_with_capacity::<HighFrequencySensor>(1000)?;
+    /// let producer = handle.producer_with_capacity::<HighFrequencySensor>("sensor::high_freq", 1000)?;
     /// producer.set(HighFrequencySensor { value: 42.0 })?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn producer_with_capacity<T>(&self, capacity: usize) -> DbResult<crate::SyncProducer<T>>
+    pub fn producer_with_capacity<T>(
+        &self,
+        key: impl AsRef<str>,
+        capacity: usize,
+    ) -> DbResult<crate::SyncProducer<T>>
     where
         T: Send + 'static + Debug + Clone,
     {
@@ -382,10 +395,11 @@ impl AimDbHandle {
 
         // Spawn a task on the runtime to forward values to the database
         let db = self.db.clone();
+        let record_key = key.as_ref().to_string();
         self.runtime_handle.spawn(async move {
             while let Some((value, result_tx)) = rx.recv().await {
                 // Forward the value to the database's produce pipeline
-                let result = db.produce(value).await;
+                let result = db.produce(&record_key, value).await;
 
                 // Send the result back to the caller (may fail if caller dropped)
                 let _ = result_tx.send(result);
@@ -402,6 +416,7 @@ impl AimDbHandle {
     ///
     /// # Arguments
     ///
+    /// - `key`: The record key identifying this record instance
     /// - `capacity`: Channel buffer size (number of items that can be buffered)
     ///
     /// # Type Parameters
@@ -422,12 +437,16 @@ impl AimDbHandle {
     /// # struct RareEvent { id: u32 }
     /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
     /// // Rare events need smaller buffer
-    /// let consumer = handle.consumer_with_capacity::<RareEvent>(10)?;
+    /// let consumer = handle.consumer_with_capacity::<RareEvent>("events::rare", 10)?;
     /// let event = consumer.get()?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn consumer_with_capacity<T>(&self, capacity: usize) -> DbResult<crate::SyncConsumer<T>>
+    pub fn consumer_with_capacity<T>(
+        &self,
+        key: impl AsRef<str>,
+        capacity: usize,
+    ) -> DbResult<crate::SyncConsumer<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
@@ -439,9 +458,10 @@ impl AimDbHandle {
 
         // Spawn a task on the runtime to forward buffer data to the std channel
         let db = self.db.clone();
+        let record_key = key.as_ref().to_string();
         self.runtime_handle.spawn(async move {
             // Subscribe to the database buffer for type T
-            match db.subscribe::<T>() {
+            match db.subscribe::<T>(&record_key) {
                 Ok(mut reader) => {
                     // Signal that subscription succeeded
                     let _ = ready_tx.send(());

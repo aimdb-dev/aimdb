@@ -824,7 +824,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
-        #[cfg_attr(not(feature = "alloc"), allow(unused_variables))] record_key: &str,
+        record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn,
@@ -858,12 +858,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         // Spawn each consumer as a background task
         for consumer_fn in consumers {
             // Create a Consumer<T> handle bound to the specific record key
-            // This enables multiple records of the same type to coexist
-            #[cfg(feature = "alloc")]
-            let consumer =
-                crate::typed_api::Consumer::from_key_bound(db.clone(), record_key.to_string());
-            #[cfg(not(feature = "alloc"))]
-            let consumer = crate::typed_api::Consumer::new(db.clone());
+            let consumer = crate::typed_api::Consumer::new(db.clone(), record_key.to_string());
 
             // Get runtime context as Arc<dyn Any> by cloning the Arc
             let runtime_any: Arc<dyn Any + Send + Sync> = runtime.clone();
@@ -886,12 +881,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Spawns consumer tasks from a type-erased runtime
     ///
     /// Helper for automatic spawning system via database's spawn_task method.
-    /// Uses key-based producer to support multiple records of the same type.
     pub fn spawn_producer_service(
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
-        #[cfg_attr(not(feature = "alloc"), allow(unused_variables))] record_key: &str,
+        record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn,
@@ -919,12 +913,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             );
 
             // Create Producer<T> bound to the specific record key
-            // This enables multiple records of the same type to coexist
-            #[cfg(feature = "alloc")]
-            let producer =
-                crate::typed_api::Producer::from_key_bound(db.clone(), record_key.to_string());
-            #[cfg(not(feature = "alloc"))]
-            let producer = crate::typed_api::Producer::new(db.clone());
+            let producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
             let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
 
             // Call the service function to get the future
@@ -1028,6 +1017,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// # Arguments
     /// * `db` - Database reference for creating the typed producer
+    /// * `record_key` - The record key to bind the producer to
     ///
     /// # Returns
     /// Box<dyn ProducerTrait> that can be used for routing
@@ -1035,8 +1025,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     pub fn create_producer_trait(
         &self,
         db: Arc<crate::builder::AimDb<R>>,
+        record_key: String,
     ) -> Box<dyn crate::connector::ProducerTrait> {
-        Box::new(crate::typed_api::Producer::<T, R>::new(db))
+        Box::new(crate::typed_api::Producer::<T, R>::new(db, record_key))
     }
 }
 

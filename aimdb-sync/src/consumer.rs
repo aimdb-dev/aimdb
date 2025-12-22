@@ -91,7 +91,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>()?;
+    /// let consumer = handle.consumer::<MyData>("my_data")?;
     /// let data = consumer.get()?; // blocks until value available
     /// println!("Got: {:?}", data);
     /// # Ok(())
@@ -130,7 +130,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>()?;
+    /// let consumer = handle.consumer::<MyData>("my_data")?;
     /// match consumer.get_with_timeout(Duration::from_millis(100)) {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data available"),
@@ -170,7 +170,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>()?;
+    /// let consumer = handle.consumer::<MyData>("my_data")?;
     /// match consumer.try_get() {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data yet"),
@@ -217,7 +217,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>()?;
+    /// let consumer = handle.consumer::<MyData>("my_data")?;
     ///
     /// // Get the latest value, skipping any queued intermediate values
     /// let latest = consumer.get_latest()?;
@@ -269,7 +269,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>()?;
+    /// let consumer = handle.consumer::<MyData>("my_data")?;
     ///
     /// // Get the latest value within 100ms
     /// match consumer.get_latest_with_timeout(Duration::from_millis(100)) {

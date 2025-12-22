@@ -44,8 +44,10 @@ aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-featur
     "embassy-types",
 ] }
 
-# Core AimDB types - no_std for Embassy (for DbError integration)
-aimdb-core = { version = "0.3.0", path = "../aimdb-core", default-features = false }
+# Core AimDB types - no_std for Embassy (requires alloc for typed APIs)
+aimdb-core = { version = "0.3.0", path = "../aimdb-core", default-features = false, features = [
+    "alloc",
+] }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }

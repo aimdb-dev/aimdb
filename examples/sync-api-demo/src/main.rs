@@ -63,10 +63,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: Create consumers before producing
     println!("2. Creating consumers for Temperature...");
-    let consumer1 = handle.consumer::<Temperature>()?;
-    let consumer2 = handle.consumer::<Temperature>()?;
+    let consumer1 = handle.consumer::<Temperature>("sensor.temperature")?;
+    let consumer2 = handle.consumer::<Temperature>("sensor.temperature")?;
     // Alternative with custom capacity for high-frequency data:
-    // let consumer1 = handle.consumer_with_capacity::<Temperature>(1000)?;
+    // let consumer1 = handle.consumer_with_capacity::<Temperature>("sensor.temperature", 1000)?;
     println!("   ✓ Two consumers created\n");
 
     // Step 3: Spawn consumer threads
@@ -119,9 +119,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 4: Create a synchronous producer
     println!("4. Creating producer and producing values...");
-    let producer = handle.producer::<Temperature>()?;
+    let producer = handle.producer::<Temperature>("sensor.temperature")?;
     // Alternative with custom capacity:
-    // let producer = handle.producer_with_capacity::<Temperature>(500)?;
+    // let producer = handle.producer_with_capacity::<Temperature>("sensor.temperature", 500)?;
     println!("   ✓ Producer created\n");
 
     // Step 5: Produce values

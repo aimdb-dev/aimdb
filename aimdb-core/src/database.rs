@@ -69,31 +69,31 @@ impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
         &self.adapter
     }
 
-    /// Produces typed data to the record's producer pipeline
+    /// Produces typed data to a specific record by key
     ///
     /// # Example
     /// ```rust,ignore
     /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) -> aimdb_core::DbResult<()> {
-    /// db.produce(SensorData { temp: 23.5 }).await?;
+    /// db.produce("sensor.temp", SensorData { temp: 23.5 }).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn produce<T>(&self, data: T) -> DbResult<()>
+    pub async fn produce<T>(&self, key: impl AsRef<str>, data: T) -> DbResult<()>
     where
         T: Send + 'static + Clone + core::fmt::Debug,
     {
-        self.aimdb.produce(data).await
+        self.aimdb.produce(key, data).await
     }
 
-    /// Subscribes to a record type's buffer
+    /// Subscribes to a record by key
     ///
-    /// Creates a subscription to the configured buffer for the given record type.
+    /// Creates a subscription to the configured buffer for the given record key.
     /// Returns a boxed reader for receiving values asynchronously.
     ///
     /// # Example
     /// ```rust,ignore
     /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) -> aimdb_core::DbResult<()> {
-    /// let mut reader = db.subscribe::<SensorData>()?;
+    /// let mut reader = db.subscribe::<SensorData>("sensor.temp")?;
     ///
     /// loop {
     ///     match reader.recv().await {
@@ -107,31 +107,14 @@ impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn subscribe<T>(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
+    pub fn subscribe<T>(
+        &self,
+        key: impl AsRef<str>,
+    ) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        // Get the typed record using the helper
-        let typed_record = self.aimdb.inner().get_typed_record::<T, A>()?;
-
-        // Get the buffer
-        #[cfg(feature = "std")]
-        let buffer = typed_record.buffer().ok_or(DbError::InvalidOperation {
-            operation: "subscribe".to_string(),
-            reason: format!(
-                "No buffer configured for record type {}. Use RecordRegistrar::buffer() to configure a buffer.",
-                core::any::type_name::<T>()
-            ),
-        })?;
-
-        #[cfg(not(feature = "std"))]
-        let buffer = typed_record.buffer().ok_or(DbError::InvalidOperation {
-            _operation: (),
-            _reason: (),
-        })?;
-
-        // DynBuffer provides subscribe_boxed() - universal across all runtimes!
-        Ok(buffer.subscribe_boxed())
+        self.aimdb.subscribe(key)
     }
 
     /// Creates a RuntimeContext for this database
