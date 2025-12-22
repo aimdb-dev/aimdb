@@ -91,6 +91,9 @@ use crate::{AimDb, DbResult};
 pub struct Producer<T, R: aimdb_executor::Spawn + 'static> {
     /// Reference to the database
     db: Arc<AimDb<R>>,
+    /// Optional record key for key-based routing (enables multiple records of same type)
+    #[cfg(feature = "alloc")]
+    record_key: Option<String>,
     /// Phantom data to bind the type parameter T
     _phantom: PhantomData<T>,
 }
@@ -104,6 +107,21 @@ where
     pub(crate) fn new(db: Arc<AimDb<R>>) -> Self {
         Self {
             db,
+            #[cfg(feature = "alloc")]
+            record_key: None,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create a new producer bound to a specific record key
+    ///
+    /// This enables multiple records of the same type by routing
+    /// produce() calls to the specific record identified by the key.
+    #[cfg(feature = "alloc")]
+    pub(crate) fn from_key_bound(db: Arc<AimDb<R>>, key: String) -> Self {
+        Self {
+            db,
+            record_key: Some(key),
             _phantom: PhantomData,
         }
     }
@@ -114,7 +132,15 @@ where
     /// 1. All tap observers are notified
     /// 2. All link connectors are triggered
     /// 3. Buffers are updated (if configured)
+    ///
+    /// If this producer was created with a record key, the value is
+    /// routed to that specific record. Otherwise, uses type-based routing
+    /// (which fails if multiple records of the same type exist).
     pub async fn produce(&self, value: T) -> DbResult<()> {
+        #[cfg(feature = "alloc")]
+        if let Some(key) = &self.record_key {
+            return self.db.produce_by_key::<T>(key, value).await;
+        }
         self.db.produce(value).await
     }
 }
@@ -126,6 +152,8 @@ where
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
+            #[cfg(feature = "alloc")]
+            record_key: self.record_key.clone(),
             _phantom: PhantomData,
         }
     }
@@ -186,6 +214,9 @@ where
 pub struct Consumer<T, R: aimdb_executor::Spawn + 'static> {
     /// Reference to the database
     db: Arc<AimDb<R>>,
+    /// Optional record key for key-based routing (enables multiple records of same type)
+    #[cfg(feature = "alloc")]
+    record_key: Option<String>,
     /// Phantom data to bind the type parameter T
     _phantom: PhantomData<T>,
 }
@@ -199,6 +230,21 @@ where
     pub(crate) fn new(db: Arc<AimDb<R>>) -> Self {
         Self {
             db,
+            #[cfg(feature = "alloc")]
+            record_key: None,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create a new consumer bound to a specific record key
+    ///
+    /// This enables multiple records of the same type by routing
+    /// subscribe() calls to the specific record identified by the key.
+    #[cfg(feature = "alloc")]
+    pub(crate) fn from_key_bound(db: Arc<AimDb<R>>, key: String) -> Self {
+        Self {
+            db,
+            record_key: Some(key),
             _phantom: PhantomData,
         }
     }
@@ -206,7 +252,13 @@ where
     /// Subscribe to updates for this record type
     ///
     /// Returns a reader that yields values when they are produced.
+    /// If this consumer was created with a record key, subscribes to
+    /// that specific record. Otherwise, uses type-based routing.
     pub fn subscribe(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
+        #[cfg(feature = "alloc")]
+        if let Some(key) = &self.record_key {
+            return self.db.subscribe_by_key::<T>(key);
+        }
         self.db.subscribe::<T>()
     }
 }
@@ -297,6 +349,34 @@ where
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for ProducerByKey<T, R> {}
 #[cfg(feature = "alloc")]
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for ProducerByKey<T, R> {}
+
+// Implement ProducerTrait for type-erased routing (key-based)
+#[cfg(feature = "alloc")]
+impl<T, R> crate::connector::ProducerTrait for ProducerByKey<T, R>
+where
+    T: Send + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+{
+    fn produce_any<'a>(
+        &'a self,
+        value: Box<dyn core::any::Any + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            // Downcast the Box<dyn Any> to Box<T>
+            let value = value.downcast::<T>().map_err(|_| {
+                format!(
+                    "Failed to downcast value to type {}",
+                    core::any::type_name::<T>()
+                )
+            })?;
+
+            // Produce the value to the key-bound record
+            self.produce(*value)
+                .await
+                .map_err(|e| format!("Failed to produce value: {}", e))
+        })
+    }
+}
 
 // ============================================================================
 // ConsumerByKey - Key-bound consumer for multi-instance records
@@ -428,6 +508,28 @@ where
     }
 }
 
+/// Implement ConsumerTrait for key-based type-erased routing
+///
+/// This allows connectors to subscribe to specific records by key without knowing
+/// the concrete type T at compile time. Enables multiple records of the same type.
+#[cfg(feature = "alloc")]
+impl<T, R> crate::connector::ConsumerTrait for ConsumerByKey<T, R>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+    R: aimdb_executor::Spawn + 'static,
+{
+    fn subscribe_any<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn crate::connector::AnyReader>>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let reader = self.subscribe()?;
+            Ok(Box::new(TypedAnyReader::<T> { inner: reader })
+                as Box<dyn crate::connector::AnyReader>)
+        })
+    }
+}
+
 // ============================================================================
 // RecordRegistrar - Fluent registration API
 // ============================================================================
@@ -448,6 +550,9 @@ pub struct RecordRegistrar<
     pub(crate) rec: &'a mut TypedRecord<T, R>,
     /// Connector builders indexed by scheme
     pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder<R>>],
+    /// The record key for this record (enables key-based routing)
+    #[cfg(feature = "alloc")]
+    pub(crate) record_key: String,
 }
 
 impl<'a, T, R> RecordRegistrar<'a, T, R>
@@ -722,10 +827,12 @@ where
             );
         }
 
-        // Store consumer factory that captures type T
+        // Store consumer factory that captures type T and record key
         // This allows the connector to subscribe to values without knowing T at compile time
+        // Using key-based consumer enables multiple records of the same type
         #[cfg(feature = "alloc")]
         {
+            let record_key = self.registrar.record_key.clone();
             link.consumer_factory = Some(Arc::new(
                 move |db_any: Arc<dyn core::any::Any + Send + Sync>| {
                     // Downcast Arc<dyn Any> to AimDb<R>, then wrap in Arc
@@ -734,8 +841,10 @@ where
                         .expect("Invalid db type in consumer factory");
                     let db = Arc::new(db_ref.clone());
 
-                    // Create Consumer<T, R> with captured type T
-                    Box::new(Consumer::<T, R>::new(db)) as Box<dyn crate::connector::ConsumerTrait>
+                    // Create ConsumerByKey<T, R> with captured type T and record key
+                    // This enables proper routing when multiple records share the same type
+                    Box::new(ConsumerByKey::<T, R>::new(db, record_key.clone()))
+                        as Box<dyn crate::connector::ConsumerTrait>
                 },
             ));
         }
@@ -868,15 +977,20 @@ where
         let mut link = InboundConnectorLink::new(url, erased_deserializer);
         link.config = self.config;
 
-        // Add producer factory callback that captures type T (alloc feature)
+        // Add producer factory callback that captures type T and record key (alloc feature)
+        // Using key-based producer enables multiple records of the same type
         #[cfg(feature = "alloc")]
         {
-            link = link.with_producer_factory(|db_any| {
+            let record_key = self.registrar.record_key.clone();
+            link = link.with_producer_factory(move |db_any| {
                 // Downcast Arc<dyn Any> to Arc<AimDb<R>>
                 let db = db_any
                     .downcast::<crate::builder::AimDb<R>>()
                     .expect("Failed to downcast to AimDb");
-                Box::new(Producer::<T, R>::new(db)) as Box<dyn crate::connector::ProducerTrait>
+                // Create ProducerByKey<T, R> with captured type T and record key
+                // This enables proper routing when multiple records share the same type
+                Box::new(ProducerByKey::<T, R>::new(db, record_key.clone()))
+                    as Box<dyn crate::connector::ProducerTrait>
             });
         }
 

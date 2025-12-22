@@ -16,7 +16,7 @@ use hashbrown::HashMap;
 use alloc::{boxed::Box, sync::Arc};
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
-use alloc::string::String;
+use alloc::string::{String, ToString};
 
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc};
@@ -516,6 +516,8 @@ where
         let mut reg = RecordRegistrar {
             rec,
             connector_builders: &self.connector_builders,
+            #[cfg(feature = "alloc")]
+            record_key: record_key.as_str().to_string(),
         };
         f(&mut reg);
 
@@ -531,7 +533,18 @@ where
                 use crate::typed_record::RecordSpawner;
 
                 let typed_record = db.inner().get_typed_record_by_id::<T, R>(id)?;
-                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db)
+                // Get the record key from the database to enable key-based producer/consumer
+                #[cfg(feature = "alloc")]
+                let key = db
+                    .inner()
+                    .key_for(id)
+                    .map(|k| k.as_str().to_string())
+                    .unwrap_or_else(|| alloc::format!("__record_{}", id.index()));
+                #[cfg(not(feature = "alloc"))]
+                let key = "";
+                #[cfg(feature = "alloc")]
+                let key = key.as_str();
+                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db, key)
             });
 
             // Store the spawn function (type-erased in Box<dyn Any>)

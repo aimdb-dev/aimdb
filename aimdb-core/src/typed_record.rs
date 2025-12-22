@@ -20,6 +20,10 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
+// ToString is only needed when alloc is enabled (for record_key.to_string())
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+use alloc::string::ToString;
+
 #[cfg(feature = "std")]
 use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
@@ -419,10 +423,12 @@ where
     /// * `record` - The type-erased record to spawn tasks for
     /// * `runtime` - The runtime adapter for spawning tasks
     /// * `db` - The database instance
+    /// * `record_key` - The record's key for key-based producer/consumer creation
     pub fn spawn_all_tasks<R>(
         record: &dyn AnyRecord,
         runtime: &Arc<R>,
         db: &Arc<crate::builder::AimDb<R>>,
+        record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
@@ -444,14 +450,14 @@ where
                 }
             })?;
 
-        // Spawn producer service if present
+        // Spawn producer service if present (using key-based producer)
         if typed_record.has_producer_service() {
-            typed_record.spawn_producer_service(runtime, db)?;
+            typed_record.spawn_producer_service(runtime, db, record_key)?;
         }
 
-        // Spawn consumer tasks if present
+        // Spawn consumer tasks if present (using key-based consumer)
         if typed_record.consumer_count() > 0 {
-            typed_record.spawn_consumer_tasks(runtime, db)?;
+            typed_record.spawn_consumer_tasks(runtime, db, record_key)?;
         }
 
         Ok(())
@@ -818,6 +824,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
+        #[cfg_attr(not(feature = "alloc"), allow(unused_variables))] record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn,
@@ -850,7 +857,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
         // Spawn each consumer as a background task
         for consumer_fn in consumers {
-            // Create a Consumer<T> handle for this task
+            // Create a Consumer<T> handle bound to the specific record key
+            // This enables multiple records of the same type to coexist
+            #[cfg(feature = "alloc")]
+            let consumer =
+                crate::typed_api::Consumer::from_key_bound(db.clone(), record_key.to_string());
+            #[cfg(not(feature = "alloc"))]
             let consumer = crate::typed_api::Consumer::new(db.clone());
 
             // Get runtime context as Arc<dyn Any> by cloning the Arc
@@ -874,10 +886,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Spawns consumer tasks from a type-erased runtime
     ///
     /// Helper for automatic spawning system via database's spawn_task method.
+    /// Uses key-based producer to support multiple records of the same type.
     pub fn spawn_producer_service(
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
+        #[cfg_attr(not(feature = "alloc"), allow(unused_variables))] record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn,
@@ -904,7 +918,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
                 core::any::type_name::<T>()
             );
 
-            // Create Producer<T> and pass the type-erased runtime context
+            // Create Producer<T> bound to the specific record key
+            // This enables multiple records of the same type to coexist
+            #[cfg(feature = "alloc")]
+            let producer =
+                crate::typed_api::Producer::from_key_bound(db.clone(), record_key.to_string());
+            #[cfg(not(feature = "alloc"))]
             let producer = crate::typed_api::Producer::new(db.clone());
             let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
 
