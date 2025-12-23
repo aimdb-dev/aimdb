@@ -7,11 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **MQTT Connector Deadlock with >10 Topics (Issue #63)**: Fixed initialization deadlock when subscribing to more than 10 MQTT topics. The fix has two parts:
+  1. **Spawn-before-subscribe**: Event loop is now spawned before subscribing to topics, allowing continuous channel draining
+  2. **Dynamic channel capacity**: Channel capacity now scales with topic count (`topics + 10`) instead of hard-coded `10`
+  3. Added `tokio::task::yield_now().await` to ensure proper task scheduling before subscriptions
+
 ### Changed
 
 - **Dependency Update**: Upgraded `rumqttc` from 0.24 to 0.25
+
+## [0.3.0] - 2025-12-15
+
+### Changed
+
 - **Breaking: Record Registration**: Updated demo examples to use new key-based `configure<T>(key, |reg| ...)` API
-- Demo records now have explicit keys (e.g., `"sensor.temperature"`, `"command.temperature"`, `"sensors.temperature"`, `"commands.temperature"`)
+- Demo records now have explicit keys (e.g., `"sensor.temp.indoor"`, `"sensor.temp.outdoor"`, `"command.temp.indoor"`)
+- Demos refactored to use shared `mqtt-connector-demo-common` crate for cross-platform types and monitors
 
 ## [0.2.0] - 2025-11-20
 
@@ -65,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0

@@ -44,8 +44,8 @@ help:
 ## Core commands
 build:
 	@printf "$(GREEN)Building AimDB (all valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Building aimdb-core (no_std minimal)$(NC)\n"
-	cargo build --package aimdb-core --no-default-features
+	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc)$(NC)\n"
+	cargo build --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
 	cargo build --package aimdb-core --features "std,tracing,metrics"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
@@ -61,8 +61,8 @@ build:
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std minimal)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
 	cargo test --package aimdb-core --features "std,tracing"
 	@printf "$(YELLOW)  → Testing aimdb-core (std + metrics)$(NC)\n"
@@ -108,8 +108,8 @@ fmt-check:
 
 clippy:
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std)$(NC)\n"
-	cargo clippy --package aimdb-core --no-default-features --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
+	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
 	cargo clippy --package aimdb-core --features "std,tracing,metrics" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
@@ -130,6 +130,10 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --features "std,tokio-runtime" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (embassy)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + defmt)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on KNX connector (embassy + defmt)$(NC)\n"
+	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
@@ -146,7 +150,7 @@ doc:
 	cargo doc --package aimdb-mcp --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
-	cargo doc --package aimdb-core --no-default-features --no-deps
+	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps
 	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "embassy-runtime" --no-deps
@@ -172,8 +176,12 @@ test-embedded:
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-net-support"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt"
 
 ## Example projects
 examples:

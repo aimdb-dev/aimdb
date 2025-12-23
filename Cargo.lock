@@ -211,9 +211,9 @@ dependencies = [
 
 [[package]]
 name = "aligned"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "377e4c0ba83e4431b10df45c1d4666f178ea9c552cac93e60c3a88bf32785923"
+checksum = "ee4508988c62edf04abd8d92897fca0c2995d907ce1dfeaf369dac3716a40685"
 dependencies = [
  "as-slice",
 ]
@@ -782,9 +782,10 @@ dependencies = [
  "embedded-alloc",
  "embedded-hal 0.2.7",
  "embedded-hal-async",
- "embedded-io-async",
+ "embedded-io-async 0.6.1",
  "embedded-storage",
  "heapless 0.8.0",
+ "knx-connector-demo-common",
  "micromath",
  "panic-probe",
  "rand",
@@ -814,10 +815,11 @@ dependencies = [
  "embedded-alloc",
  "embedded-hal 0.2.7",
  "embedded-hal-async",
- "embedded-io-async",
+ "embedded-io-async 0.6.1",
  "embedded-storage",
  "heapless 0.8.0",
  "micromath",
+ "mqtt-connector-demo-common",
  "panic-probe",
  "rand",
  "static_cell",
@@ -833,7 +835,7 @@ dependencies = [
  "embassy-net-driver",
  "embassy-sync",
  "embassy-time",
- "embedded-io-async",
+ "embedded-io-async 0.7.0",
  "embedded-nal-async",
  "heapless 0.8.0",
  "managed",
@@ -856,6 +858,7 @@ dependencies = [
  "bitflags 2.10.0",
  "block-device-driver",
  "cfg-if",
+ "chrono",
  "cortex-m",
  "cortex-m-rt",
  "critical-section",
@@ -877,8 +880,8 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-hal-nb",
- "embedded-io",
- "embedded-io-async",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
  "embedded-storage",
  "embedded-storage-async",
  "futures-util",
@@ -904,7 +907,7 @@ dependencies = [
  "cfg-if",
  "critical-section",
  "defmt 1.0.1",
- "embedded-io-async",
+ "embedded-io-async 0.7.0",
  "futures-core",
  "futures-sink",
  "heapless 0.8.0",
@@ -945,7 +948,7 @@ name = "embassy-usb-driver"
 version = "0.2.0"
 dependencies = [
  "defmt 1.0.1",
- "embedded-io-async",
+ "embedded-io-async 0.6.1",
 ]
 
 [[package]]
@@ -1019,8 +1022,14 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 dependencies = [
- "defmt 0.3.100",
+ "defmt 1.0.1",
 ]
 
 [[package]]
@@ -1029,8 +1038,17 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
 dependencies = [
- "defmt 0.3.100",
- "embedded-io",
+ "embedded-io 0.6.1",
+]
+
+[[package]]
+name = "embedded-io-async"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
+dependencies = [
+ "defmt 1.0.1",
+ "embedded-io 0.7.1",
 ]
 
 [[package]]
@@ -1044,11 +1062,11 @@ dependencies = [
 
 [[package]]
 name = "embedded-nal-async"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76959917cd2b86f40a98c28dd5624eddd1fa69d746241c8257eac428d83cb211"
+checksum = "eb5a1bd585135d302f8f6d7de329310938093da6271b37a6c94b8798795c0c6d"
 dependencies = [
- "embedded-io-async",
+ "embedded-io-async 0.7.0",
  "embedded-nal",
 ]
 
@@ -1381,6 +1399,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "knx-connector-demo-common"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
+ "aimdb-knx-connector",
+ "defmt 1.0.1",
+ "serde",
+]
+
+[[package]]
 name = "knx-pico"
 version = "0.2.4"
 dependencies = [
@@ -1510,8 +1539,8 @@ version = "0.2.0"
 dependencies = [
  "defmt 0.3.100",
  "embedded-hal-async",
- "embedded-io",
- "embedded-io-async",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
  "heapless 0.8.0",
 ]
 
@@ -1524,6 +1553,17 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "mountain-mqtt",
+]
+
+[[package]]
+name = "mqtt-connector-demo-common"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
+ "defmt 1.0.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2167,7 +2207,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "18.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-f61ed017ef12ec84ff04c49e3147694bda3b29cb#1219dfcec33b25de6865ca532b755342226fbb6a"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-c0123f4251e21282c3f26114d2f6f9360c1191f1#23468aba09016442250764ab3f7ae06abc8c9b36"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -2352,6 +2392,7 @@ dependencies = [
  "aimdb-executor",
  "aimdb-knx-connector",
  "aimdb-tokio-adapter",
+ "knx-connector-demo-common",
  "serde",
  "serde_json",
  "tokio",
@@ -2378,6 +2419,7 @@ dependencies = [
  "aimdb-executor",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
+ "mqtt-connector-demo-common",
  "serde",
  "serde_json",
  "tokio",

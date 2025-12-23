@@ -20,6 +20,10 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
+// ToString is only needed when alloc is enabled (for record_key.to_string())
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+use alloc::string::ToString;
+
 #[cfg(feature = "std")]
 use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
@@ -419,10 +423,12 @@ where
     /// * `record` - The type-erased record to spawn tasks for
     /// * `runtime` - The runtime adapter for spawning tasks
     /// * `db` - The database instance
+    /// * `record_key` - The record's key for key-based producer/consumer creation
     pub fn spawn_all_tasks<R>(
         record: &dyn AnyRecord,
         runtime: &Arc<R>,
         db: &Arc<crate::builder::AimDb<R>>,
+        record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
@@ -444,14 +450,14 @@ where
                 }
             })?;
 
-        // Spawn producer service if present
+        // Spawn producer service if present (using key-based producer)
         if typed_record.has_producer_service() {
-            typed_record.spawn_producer_service(runtime, db)?;
+            typed_record.spawn_producer_service(runtime, db, record_key)?;
         }
 
-        // Spawn consumer tasks if present
+        // Spawn consumer tasks if present (using key-based consumer)
         if typed_record.consumer_count() > 0 {
-            typed_record.spawn_consumer_tasks(runtime, db)?;
+            typed_record.spawn_consumer_tasks(runtime, db, record_key)?;
         }
 
         Ok(())
@@ -818,6 +824,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
+        record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn,
@@ -850,8 +857,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
         // Spawn each consumer as a background task
         for consumer_fn in consumers {
-            // Create a Consumer<T> handle for this task
-            let consumer = crate::typed_api::Consumer::new(db.clone());
+            // Create a Consumer<T> handle bound to the specific record key
+            let consumer = crate::typed_api::Consumer::new(db.clone(), record_key.to_string());
 
             // Get runtime context as Arc<dyn Any> by cloning the Arc
             let runtime_any: Arc<dyn Any + Send + Sync> = runtime.clone();
@@ -878,6 +885,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
+        record_key: &str,
     ) -> crate::DbResult<()>
     where
         R: aimdb_executor::Spawn,
@@ -904,8 +912,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
                 core::any::type_name::<T>()
             );
 
-            // Create Producer<T> and pass the type-erased runtime context
-            let producer = crate::typed_api::Producer::new(db.clone());
+            // Create Producer<T> bound to the specific record key
+            let producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
             let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
 
             // Call the service function to get the future
@@ -1009,6 +1017,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// # Arguments
     /// * `db` - Database reference for creating the typed producer
+    /// * `record_key` - The record key to bind the producer to
     ///
     /// # Returns
     /// Box<dyn ProducerTrait> that can be used for routing
@@ -1016,8 +1025,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     pub fn create_producer_trait(
         &self,
         db: Arc<crate::builder::AimDb<R>>,
+        record_key: String,
     ) -> Box<dyn crate::connector::ProducerTrait> {
-        Box::new(crate::typed_api::Producer::<T, R>::new(db))
+        Box::new(crate::typed_api::Producer::<T, R>::new(db, record_key))
     }
 }
 

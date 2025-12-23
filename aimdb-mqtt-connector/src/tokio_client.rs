@@ -215,14 +215,46 @@ impl MqttConnectorImpl {
             mqtt_opts.set_credentials(username, password);
         }
 
-        // Create client and event loop
-        let (client, event_loop) = AsyncClient::new(mqtt_opts, 10);
-
+        // Wrap router early so we can count topics for capacity calculation
         let router_arc = Arc::new(router);
+        let topic_count = router_arc.resource_ids().len();
+
+        // Dynamic channel capacity: scales with topic count.
+        //
+        // With spawn-before-subscribe, the event loop drains continuously, so the
+        // client send buffer only needs a small fixed headroom to absorb short
+        // bursts of publishes and QoS handshake packets (PUBACK/PUBREC/PUBREL/PUBCOMP).
+        //
+        // A value of 10 has been chosen empirically as a conservative upper bound
+        // for typical burst sizes in this connector without over-allocating, while
+        // still keeping backpressure behavior predictable.
+        const CHANNEL_HEADROOM: usize = 10;
+        let channel_capacity = topic_count + CHANNEL_HEADROOM;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "MQTT channel capacity set to {} (for {} topics)",
+            channel_capacity,
+            topic_count
+        );
+
+        // Create client and event loop with dynamic capacity
+        let (client, event_loop) = AsyncClient::new(mqtt_opts, channel_capacity);
         let client_arc = Arc::new(client);
 
+        // CRITICAL: Spawn event loop BEFORE subscribing to topics
+        spawn_event_loop(event_loop, broker_key, router_arc.clone());
+
+        // Yield to ensure the event loop task is scheduled before we start subscribing
+        tokio::task::yield_now().await;
+
         // Subscribe to topics from the router
+        // Now safe for any number of topics since event loop is draining the channel
         let topics = router_arc.resource_ids();
+
+        #[cfg(feature = "tracing")]
+        tracing::info!("Subscribing to {} MQTT topics...", topics.len());
+
         for topic in &topics {
             #[cfg(feature = "tracing")]
             tracing::debug!("Subscribing to MQTT topic: {}", topic);
@@ -233,8 +265,8 @@ impl MqttConnectorImpl {
                 .map_err(|e| format!("Failed to subscribe to topic '{}': {}", topic, e))?;
         }
 
-        // Spawn event loop task with router
-        spawn_event_loop(event_loop, broker_key, router_arc.clone());
+        #[cfg(feature = "tracing")]
+        tracing::info!("MQTT subscriptions complete");
 
         Ok(Self {
             client: client_arc,

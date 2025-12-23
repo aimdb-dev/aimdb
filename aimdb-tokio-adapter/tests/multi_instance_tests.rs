@@ -41,11 +41,11 @@ async fn test_multi_instance_same_type() {
     let db = builder.build().await.unwrap();
 
     // Produce to each record separately
-    db.produce_by_key::<Temperature>("sensors.indoor", Temperature { celsius: 22.0 })
+    db.produce::<Temperature>("sensors.indoor", Temperature { celsius: 22.0 })
         .await
         .unwrap();
 
-    db.produce_by_key::<Temperature>("sensors.outdoor", Temperature { celsius: -5.0 })
+    db.produce::<Temperature>("sensors.outdoor", Temperature { celsius: -5.0 })
         .await
         .unwrap();
 
@@ -63,7 +63,7 @@ async fn test_multi_instance_same_type() {
 
 /// Test: Key-based producer works correctly
 #[tokio::test]
-async fn test_producer_by_key() {
+async fn test_producer() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
@@ -79,8 +79,8 @@ async fn test_producer_by_key() {
     let db = builder.build().await.unwrap();
 
     // Get key-bound producers
-    let producer_a = db.producer_by_key::<Temperature>("sensor.a");
-    let producer_b = db.producer_by_key::<Temperature>("sensor.b");
+    let producer_a = db.producer::<Temperature>("sensor.a");
+    let producer_b = db.producer::<Temperature>("sensor.b");
 
     // Verify keys are bound correctly
     assert_eq!(producer_a.key(), "sensor.a");
@@ -99,7 +99,7 @@ async fn test_producer_by_key() {
 
 /// Test: Key-based consumer works correctly
 #[tokio::test]
-async fn test_consumer_by_key() {
+async fn test_consumer() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
@@ -115,8 +115,8 @@ async fn test_consumer_by_key() {
     let db = builder.build().await.unwrap();
 
     // Get key-bound consumers
-    let consumer_north = db.consumer_by_key::<Temperature>("zone.north");
-    let consumer_south = db.consumer_by_key::<Temperature>("zone.south");
+    let consumer_north = db.consumer::<Temperature>("zone.north");
+    let consumer_south = db.consumer::<Temperature>("zone.south");
 
     // Verify keys are bound correctly
     assert_eq!(consumer_north.key(), "zone.north");
@@ -127,38 +127,9 @@ async fn test_consumer_by_key() {
     let _reader_south = consumer_south.subscribe().unwrap();
 }
 
-/// Test: Type-based lookup returns AmbiguousType error with multiple instances
+/// Test: Single instance key-based lookup works
 #[tokio::test]
-async fn test_ambiguous_type_error() {
-    let runtime = Arc::new(TokioAdapter::new().unwrap());
-
-    let mut builder = AimDbBuilder::new().runtime(runtime);
-
-    // Register two records of the same type
-    builder.configure::<Temperature>("temp.1", |reg| {
-        reg.buffer(BufferCfg::SingleLatest);
-    });
-
-    builder.configure::<Temperature>("temp.2", |reg| {
-        reg.buffer(BufferCfg::SingleLatest);
-    });
-
-    let db = builder.build().await.unwrap();
-
-    // Legacy type-based produce should fail with AmbiguousType
-    let result = db.produce(Temperature { celsius: 25.0 }).await;
-
-    match result {
-        Err(DbError::AmbiguousType { count, .. }) => {
-            assert_eq!(count, 2);
-        }
-        other => panic!("Expected AmbiguousType error, got: {:?}", other),
-    }
-}
-
-/// Test: Type-based lookup works when only one instance exists
-#[tokio::test]
-async fn test_single_instance_type_lookup() {
+async fn test_single_instance_key_lookup() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
@@ -170,11 +141,13 @@ async fn test_single_instance_type_lookup() {
 
     let db = builder.build().await.unwrap();
 
-    // Legacy type-based produce should work
-    db.produce(Temperature { celsius: 30.0 }).await.unwrap();
+    // Key-based produce should work
+    db.produce::<Temperature>("single.temp", Temperature { celsius: 30.0 })
+        .await
+        .unwrap();
 
-    // Legacy type-based subscribe should work
-    let _reader = db.subscribe::<Temperature>().unwrap();
+    // Key-based subscribe should work
+    let _reader = db.subscribe::<Temperature>("single.temp").unwrap();
 }
 
 /// Test: Key not found error
@@ -192,7 +165,7 @@ async fn test_key_not_found_error() {
 
     // Try to produce to non-existent key
     let result = db
-        .produce_by_key::<Temperature>("nonexistent.key", Temperature { celsius: 0.0 })
+        .produce::<Temperature>("nonexistent.key", Temperature { celsius: 0.0 })
         .await;
 
     match result {
@@ -219,7 +192,7 @@ async fn test_type_mismatch_error() {
 
     // Try to produce AppConfig to a Temperature record
     let result = db
-        .produce_by_key::<AppConfig>(
+        .produce::<AppConfig>(
             "sensor.temp",
             AppConfig {
                 debug: true,

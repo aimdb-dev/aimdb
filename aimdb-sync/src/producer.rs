@@ -127,7 +127,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let producer = handle.producer::<MyData>()?;
+    /// let producer = handle.producer::<MyData>("my_data")?;
     /// producer.set(MyData { value: 42 })?; // blocks until value is sent and produced
     /// # Ok(())
     /// # }
@@ -163,7 +163,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let producer = handle.producer::<MyData>()?;
+    /// let producer = handle.producer::<MyData>("my_data")?;
     /// producer.set_with_timeout(MyData { value: 42 }, Duration::from_millis(100))?;
     /// # Ok(())
     /// # }
@@ -200,7 +200,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let producer = handle.producer::<MyData>()?;
+    /// let producer = handle.producer::<MyData>("my_data")?;
     /// match producer.try_set(MyData { value: 42 }) {
     ///     Ok(()) => println!("Sent immediately"),
     ///     Err(_) => println!("Channel full or runtime shutdown"),

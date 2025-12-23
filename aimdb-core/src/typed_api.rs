@@ -91,6 +91,8 @@ use crate::{AimDb, DbResult};
 pub struct Producer<T, R: aimdb_executor::Spawn + 'static> {
     /// Reference to the database
     db: Arc<AimDb<R>>,
+    /// Record key for key-based routing (required - all records have keys)
+    record_key: String,
     /// Phantom data to bind the type parameter T
     _phantom: PhantomData<T>,
 }
@@ -100,10 +102,11 @@ where
     T: Send + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
 {
-    /// Create a new producer (internal use only)
-    pub(crate) fn new(db: Arc<AimDb<R>>) -> Self {
+    /// Create a new producer bound to a specific record key
+    pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
         Self {
             db,
+            record_key: key,
             _phantom: PhantomData,
         }
     }
@@ -115,7 +118,12 @@ where
     /// 2. All link connectors are triggered
     /// 3. Buffers are updated (if configured)
     pub async fn produce(&self, value: T) -> DbResult<()> {
-        self.db.produce(value).await
+        self.db.produce::<T>(&self.record_key, value).await
+    }
+
+    /// Returns the key this producer is bound to
+    pub fn key(&self) -> &str {
+        &self.record_key
     }
 }
 
@@ -126,6 +134,7 @@ where
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
+            record_key: self.record_key.clone(),
             _phantom: PhantomData,
         }
     }
@@ -186,6 +195,8 @@ where
 pub struct Consumer<T, R: aimdb_executor::Spawn + 'static> {
     /// Reference to the database
     db: Arc<AimDb<R>>,
+    /// Record key for key-based routing (required - all records have keys)
+    record_key: String,
     /// Phantom data to bind the type parameter T
     _phantom: PhantomData<T>,
 }
@@ -195,10 +206,11 @@ where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
 {
-    /// Create a new consumer
-    pub(crate) fn new(db: Arc<AimDb<R>>) -> Self {
+    /// Create a new consumer bound to a specific record key
+    pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
         Self {
             db,
+            record_key: key,
             _phantom: PhantomData,
         }
     }
@@ -207,181 +219,17 @@ where
     ///
     /// Returns a reader that yields values when they are produced.
     pub fn subscribe(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
-        self.db.subscribe::<T>()
+        self.db.subscribe::<T>(&self.record_key)
+    }
+
+    /// Returns the key this consumer is bound to
+    pub fn key(&self) -> &str {
+        &self.record_key
     }
 }
 
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Consumer<T, R> {}
 unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Consumer<T, R> {}
-
-// ============================================================================
-// ProducerByKey - Key-bound producer for multi-instance records
-// ============================================================================
-
-/// Type-safe producer bound to a specific record key
-///
-/// Unlike `Producer<T, R>` which uses type-based lookup, `ProducerByKey<T, R>`
-/// is bound to a specific record key. This is necessary when multiple records
-/// of the same type exist (e.g., "sensors.indoor" and "sensors.outdoor" both
-/// storing `Temperature`).
-///
-/// # Type Parameters
-/// * `T` - The record type this producer can emit
-/// * `R` - The runtime adapter type
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Get producers for different temperature sensors
-/// let indoor = db.producer_by_key::<Temperature>("sensors.indoor");
-/// let outdoor = db.producer_by_key::<Temperature>("sensors.outdoor");
-///
-/// // Each produces to its own record
-/// indoor.produce(Temperature { celsius: 22.0 }).await?;
-/// outdoor.produce(Temperature { celsius: -5.0 }).await?;
-/// ```
-#[cfg(feature = "alloc")]
-pub struct ProducerByKey<T, R: aimdb_executor::Spawn + 'static> {
-    /// Reference to the database
-    db: Arc<AimDb<R>>,
-    /// The record key this producer is bound to
-    key: String,
-    /// Phantom data to bind the type parameter T
-    _phantom: PhantomData<T>,
-}
-
-#[cfg(feature = "alloc")]
-impl<T, R> ProducerByKey<T, R>
-where
-    T: Send + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
-{
-    /// Create a new key-bound producer (internal use only)
-    pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
-        Self {
-            db,
-            key,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Produce a value to the bound record
-    ///
-    /// This writes the value to the specific record identified by the key
-    /// provided during construction.
-    pub async fn produce(&self, value: T) -> DbResult<()> {
-        self.db.produce_by_key::<T>(&self.key, value).await
-    }
-
-    /// Returns the key this producer is bound to
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl<T, R> Clone for ProducerByKey<T, R>
-where
-    R: aimdb_executor::Spawn + 'static,
-{
-    fn clone(&self) -> Self {
-        Self {
-            db: self.db.clone(),
-            key: self.key.clone(),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-#[cfg(feature = "alloc")]
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for ProducerByKey<T, R> {}
-#[cfg(feature = "alloc")]
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for ProducerByKey<T, R> {}
-
-// ============================================================================
-// ConsumerByKey - Key-bound consumer for multi-instance records
-// ============================================================================
-
-/// Type-safe consumer bound to a specific record key
-///
-/// Unlike `Consumer<T, R>` which uses type-based lookup, `ConsumerByKey<T, R>`
-/// is bound to a specific record key. This is necessary when multiple records
-/// of the same type exist.
-///
-/// # Type Parameters
-/// * `T` - The record type this consumer can subscribe to
-/// * `R` - The runtime adapter type
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Get consumers for different temperature sensors
-/// let indoor = db.consumer_by_key::<Temperature>("sensors.indoor");
-/// let outdoor = db.consumer_by_key::<Temperature>("sensors.outdoor");
-///
-/// // Each subscribes to its own record
-/// let mut rx = indoor.subscribe()?;
-/// while let Ok(temp) = rx.recv().await {
-///     println!("Indoor: {:.1}°C", temp.celsius);
-/// }
-/// ```
-#[cfg(feature = "alloc")]
-pub struct ConsumerByKey<T, R: aimdb_executor::Spawn + 'static> {
-    /// Reference to the database
-    db: Arc<AimDb<R>>,
-    /// The record key this consumer is bound to
-    key: String,
-    /// Phantom data to bind the type parameter T
-    _phantom: PhantomData<T>,
-}
-
-#[cfg(feature = "alloc")]
-impl<T, R> ConsumerByKey<T, R>
-where
-    T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
-{
-    /// Create a new key-bound consumer (internal use only)
-    pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
-        Self {
-            db,
-            key,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Subscribe to updates for the bound record
-    ///
-    /// Returns a reader that yields values when they are produced
-    /// to the specific record identified by the key.
-    pub fn subscribe(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
-        self.db.subscribe_by_key::<T>(&self.key)
-    }
-
-    /// Returns the key this consumer is bound to
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl<T, R> Clone for ConsumerByKey<T, R>
-where
-    R: aimdb_executor::Spawn + 'static,
-{
-    fn clone(&self) -> Self {
-        Self {
-            db: self.db.clone(),
-            key: self.key.clone(),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-#[cfg(feature = "alloc")]
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for ConsumerByKey<T, R> {}
-#[cfg(feature = "alloc")]
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for ConsumerByKey<T, R> {}
 
 // ============================================================================
 // Type-erased Consumer Trait Implementation
@@ -448,6 +296,8 @@ pub struct RecordRegistrar<
     pub(crate) rec: &'a mut TypedRecord<T, R>,
     /// Connector builders indexed by scheme
     pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder<R>>],
+    /// The record key for this record
+    pub(crate) record_key: String,
 }
 
 impl<'a, T, R> RecordRegistrar<'a, T, R>
@@ -722,10 +572,10 @@ where
             );
         }
 
-        // Store consumer factory that captures type T
+        // Store consumer factory that captures type T and record key
         // This allows the connector to subscribe to values without knowing T at compile time
-        #[cfg(feature = "alloc")]
         {
+            let record_key = self.registrar.record_key.clone();
             link.consumer_factory = Some(Arc::new(
                 move |db_any: Arc<dyn core::any::Any + Send + Sync>| {
                     // Downcast Arc<dyn Any> to AimDb<R>, then wrap in Arc
@@ -734,8 +584,9 @@ where
                         .expect("Invalid db type in consumer factory");
                     let db = Arc::new(db_ref.clone());
 
-                    // Create Consumer<T, R> with captured type T
-                    Box::new(Consumer::<T, R>::new(db)) as Box<dyn crate::connector::ConsumerTrait>
+                    // Create Consumer<T, R> with captured type T and record key
+                    Box::new(Consumer::<T, R>::new(db, record_key.clone()))
+                        as Box<dyn crate::connector::ConsumerTrait>
                 },
             ));
         }
@@ -868,15 +719,17 @@ where
         let mut link = InboundConnectorLink::new(url, erased_deserializer);
         link.config = self.config;
 
-        // Add producer factory callback that captures type T (alloc feature)
-        #[cfg(feature = "alloc")]
+        // Add producer factory callback that captures type T and record key
         {
-            link = link.with_producer_factory(|db_any| {
+            let record_key = self.registrar.record_key.clone();
+            link = link.with_producer_factory(move |db_any| {
                 // Downcast Arc<dyn Any> to Arc<AimDb<R>>
                 let db = db_any
                     .downcast::<crate::builder::AimDb<R>>()
                     .expect("Failed to downcast to AimDb");
-                Box::new(Producer::<T, R>::new(db)) as Box<dyn crate::connector::ProducerTrait>
+                // Create Producer<T, R> with captured type T and record key
+                Box::new(Producer::<T, R>::new(db, record_key.clone()))
+                    as Box<dyn crate::connector::ProducerTrait>
             });
         }
 

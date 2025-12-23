@@ -1,0 +1,27 @@
+[package]
+name = "mqtt-connector-demo-common"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Shared business logic for MQTT demos - runs on MCU, edge, and cloud"
+
+[features]
+default = []
+std = ["alloc", "aimdb-core/std", "aimdb-executor/std", "serde", "serde_json"]
+alloc = ["aimdb-core/alloc"]
+
+# Embassy-specific features (no_std)
+defmt = ["dep:defmt"]
+
+[dependencies]
+# Core AimDB - runtime agnostic
+aimdb-core = { path = "../../aimdb-core", default-features = false }
+aimdb-executor = { path = "../../aimdb-executor", default-features = false }
+
+# Serialization (std only)
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+
+# Optional defmt for embedded logging
+defmt = { workspace = true, optional = true }

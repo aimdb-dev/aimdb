@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.3.0] - 2025-12-15
+
 ### Changed
 
+- **Breaking: Producer/Consumer API**: All methods now require a record key parameter:
+  - `producer::<T>(key)` instead of `producer::<T>()`
+  - `consumer::<T>(key)` instead of `consumer::<T>()`
+  - `producer_with_capacity::<T>(key, capacity)` instead of `producer_with_capacity::<T>(capacity)`
+  - `consumer_with_capacity::<T>(key, capacity)` instead of `consumer_with_capacity::<T>(capacity)`
 - **Breaking: Record Registration API**: Updated all test code to use new key-based `configure<T>(key, |reg| ...)` API
 - All integration tests now specify explicit record keys (e.g., `"test.data"`) per new RecordId/RecordKey architecture
 
@@ -33,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0

@@ -24,6 +24,11 @@ aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = f
     "defmt",
 ] }
 
+# Shared demo types and monitors
+knx-connector-demo-common = { path = "../knx-connector-demo-common", default-features = false, features = [
+    "alloc",
+] }
+
 # Embassy ecosystem - STM32H563ZI with Ethernet
 embassy-stm32 = { workspace = true, features = [
     "defmt",

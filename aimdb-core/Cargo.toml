@@ -11,7 +11,7 @@ categories = ["database-implementations", "asynchronous", "embedded"]
 build = "build.rs"
 
 [features]
-default = ["std"]
+default = ["std", "alloc"]
 
 # Core capabilities
 std = [

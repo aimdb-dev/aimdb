@@ -33,10 +33,10 @@ fn test_basic_producer_consumer() {
 
     // Create producer and consumer
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
     let consumer = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
     // Produce a value
@@ -75,10 +75,10 @@ fn test_multi_threaded_producer_consumer() {
 
     // Create multiple consumers
     let consumer1 = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 1");
     let consumer2 = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 2");
 
     // Spawn consumer threads
@@ -107,7 +107,7 @@ fn test_multi_threaded_producer_consumer() {
 
     // Create multiple producers
     let producer1 = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer 1");
     let producer2 = producer1.clone();
 
@@ -160,10 +160,10 @@ fn test_timeout_operations() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
     let consumer = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
     // Test get_timeout on empty buffer (should timeout)
@@ -207,10 +207,10 @@ fn test_non_blocking_operations() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
     let consumer = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
     // Try get on empty buffer (should fail)
@@ -256,7 +256,7 @@ fn test_graceful_shutdown() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
 
     // Produce some values
@@ -309,10 +309,10 @@ fn test_runtime_shutdown_error() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
     let consumer = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
     // Shut down the runtime
@@ -350,13 +350,13 @@ fn test_spmc_ring_semantics() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
     let consumer1 = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 1");
     let consumer2 = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 2");
 
     // Produce multiple values
@@ -401,11 +401,11 @@ fn test_single_latest_semantics() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
 
     let consumer = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
     // Produce first value and wait for it to propagate
@@ -469,11 +469,11 @@ fn test_get_latest_with_timeout() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>()
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
 
     let consumer = handle
-        .consumer::<TestData>()
+        .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
     // Test timeout on empty buffer
@@ -505,19 +505,19 @@ fn test_get_latest_with_timeout() {
 #[test]
 fn test_error_propagation() {
     // Build a database WITHOUT registering TestData
-    // This will cause produce() to fail with RecordNotFound
+    // This will cause produce() to fail with RecordKeyNotFound
     let adapter = Arc::new(TokioAdapter);
     let builder = AimDbBuilder::new().runtime(adapter);
 
     let handle = builder.attach().expect("Failed to attach");
 
-    // Create a producer for an unregistered type
+    // Create a producer for an unregistered type/key
     // Note: producer creation succeeds, but set() should fail
     let producer = handle
-        .producer_with_capacity::<TestData>(10)
+        .producer_with_capacity::<TestData>("test.data", 10)
         .expect("Failed to create producer");
 
-    // Try to produce a value - this should fail because TestData is not registered
+    // Try to produce a value - this should fail because the key is not registered
     let test_value = TestData {
         id: 1,
         value: "test".to_string(),
@@ -528,22 +528,22 @@ fn test_error_propagation() {
     // Verify the error is propagated (not silently logged)
     assert!(
         result.is_err(),
-        "Expected produce to fail for unregistered type"
+        "Expected produce to fail for unregistered key"
     );
 
-    // Verify it's the correct error type
+    // Verify it's the correct error type (now RecordKeyNotFound with key-based API)
     match result {
-        Err(DbError::RecordNotFound { .. }) => {
+        Err(DbError::RecordKeyNotFound { .. }) => {
             // Expected error
         }
-        other => panic!("Expected RecordNotFound error, got: {:?}", other),
+        other => panic!("Expected RecordKeyNotFound error, got: {:?}", other),
     }
 
     // Test set_with_timeout also propagates errors
     let result = producer.set_with_timeout(test_value, Duration::from_millis(100));
     assert!(
         result.is_err(),
-        "Expected produce to fail for unregistered type (with timeout)"
+        "Expected produce to fail for unregistered key (with timeout)"
     );
 
     handle.detach().expect("Failed to detach");

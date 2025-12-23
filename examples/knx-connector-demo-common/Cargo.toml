@@ -1,0 +1,29 @@
+[package]
+name = "knx-connector-demo-common"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Shared business logic for KNX demos - runs on MCU, edge, and cloud"
+
+[features]
+default = []
+std = ["alloc", "aimdb-core/std", "aimdb-executor/std", "serde"]
+alloc = ["aimdb-core/alloc"]
+
+# Embassy-specific features (no_std)
+defmt = ["dep:defmt"]
+
+[dependencies]
+# Core AimDB - runtime agnostic
+aimdb-core = { path = "../../aimdb-core", default-features = false }
+aimdb-executor = { path = "../../aimdb-executor", default-features = false }
+
+# KNX DPT types (no runtime features needed for types only)
+aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = false }
+
+# Serialization (std only)
+serde = { workspace = true, features = ["derive"], optional = true }
+
+# Optional defmt for embedded logging
+defmt = { workspace = true, optional = true }
