@@ -219,10 +219,17 @@ impl MqttConnectorImpl {
         let router_arc = Arc::new(router);
         let topic_count = router_arc.resource_ids().len();
 
-        // Dynamic channel capacity: scales with topic count
-        // With spawn-before-subscribe, the event loop drains continuously, so we only
-        // need minimal headroom (+10) for publish bursts and QoS acks.
-        let channel_capacity = topic_count + 10;
+        // Dynamic channel capacity: scales with topic count.
+        //
+        // With spawn-before-subscribe, the event loop drains continuously, so the
+        // client send buffer only needs a small fixed headroom to absorb short
+        // bursts of publishes and QoS handshake packets (PUBACK/PUBREC/PUBREL/PUBCOMP).
+        //
+        // A value of 10 has been chosen empirically as a conservative upper bound
+        // for typical burst sizes in this connector without over-allocating, while
+        // still keeping backpressure behavior predictable.
+        const CHANNEL_HEADROOM: usize = 10;
+        let channel_capacity = topic_count + CHANNEL_HEADROOM;
 
         #[cfg(feature = "tracing")]
         tracing::debug!(
