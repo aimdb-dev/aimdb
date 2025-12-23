@@ -20,6 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **examples**: New `mqtt-connector-demo-common` and `knx-connector-demo-common` crates for shared cross-platform types and monitors
+- **docs**: Added design document `016-M6-record-key-trait.md` for RecordKey trait design
+
+### Fixed
+
+- **aimdb-mqtt-connector**: Fixed initialization deadlock when subscribing to >10 MQTT topics (Issue #63)
+  - Event loop now spawned before subscribing (spawn-before-subscribe pattern)
+  - Dynamic channel capacity scales with topic count (`topics + 10`)
+
+### Changed
+
+- **aimdb-mqtt-connector**: Upgraded `rumqttc` dependency from 0.24 to 0.25
+- **deny.toml**: Added `OpenSSL` license allowance (transitive via rumqttc/rustls)
+- **deny.toml**: Ignored `RUSTSEC-2025-0134` advisory (rustls-pemfile unmaintained but not vulnerable)
+
+## [0.3.0] - 2025-12-15
+
+### Added
+
 - **aimdb-core**: New `RecordId` type for stable O(1) record indexing (Issue #60)
 - **aimdb-core**: New `RecordKey` type for string-based record identification with zero-alloc static keys
 - **aimdb-core**: Key-based producer/consumer API: `produce_by_key()`, `subscribe_by_key()`, `producer_by_key()`, `consumer_by_key()`
@@ -48,9 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **aimdb-core**: Added `hashbrown` dependency for no_std-compatible HashMap
 - **deny.toml**: Added `Zlib` license allowance (used by `foldhash`, hashbrown's default hasher)
 - **aimdb-core**: `DynBuffer` trait no longer has a blanket implementation. Each adapter now provides its own explicit implementation. This enables adapters to provide `metrics_snapshot()` when the `metrics` feature is enabled.
-- **aimdb-mqtt-connector**: Upgraded `rumqttc` dependency from 0.24 to 0.25
-- **deny.toml**: Added `OpenSSL` license allowance (transitive via rumqttc/rustls)
-- **deny.toml**: Ignored `RUSTSEC-2025-0134` advisory (rustls-pemfile unmaintained but not vulnerable)
 
 ### Migration Guide
 
@@ -435,6 +451,7 @@ https://github.com/aimdb-dev/aimdb
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0
