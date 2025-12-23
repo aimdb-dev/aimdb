@@ -33,9 +33,16 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod types;
 pub mod monitors;
+pub mod types;
+
+#[cfg(feature = "derive")]
+pub mod keys;
 
 // Re-export main types
-pub use types::{TemperatureReading, LightState, LightControl};
-pub use monitors::{temperature_monitor, light_monitor};
+pub use monitors::{light_monitor, temperature_monitor};
+pub use types::{LightControl, LightState, TemperatureReading};
+
+// Re-export keys when derive feature is enabled
+#[cfg(feature = "derive")]
+pub use keys::{LightControlKey, LightKey, TemperatureKey};

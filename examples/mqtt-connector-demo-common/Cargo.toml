@@ -10,6 +10,7 @@ description = "Shared business logic for MQTT demos - runs on MCU, edge, and clo
 default = []
 std = ["alloc", "aimdb-core/std", "aimdb-executor/std", "serde", "serde_json"]
 alloc = ["aimdb-core/alloc"]
+derive = ["aimdb-core/derive"]
 
 # Embassy-specific features (no_std)
 defmt = ["dep:defmt"]

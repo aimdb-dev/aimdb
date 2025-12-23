@@ -10,6 +10,7 @@ description = "Shared business logic for KNX demos - runs on MCU, edge, and clou
 default = []
 std = ["alloc", "aimdb-core/std", "aimdb-executor/std", "serde"]
 alloc = ["aimdb-core/alloc"]
+derive = ["aimdb-core/derive"]
 
 # Embassy-specific features (no_std)
 defmt = ["dep:defmt"]

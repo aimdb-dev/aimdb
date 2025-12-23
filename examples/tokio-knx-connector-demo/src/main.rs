@@ -22,15 +22,16 @@
 //! Update the gateway URL and group addresses in `main()` to match your KNX setup.
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::{AimDbBuilder, DbResult, Producer, RuntimeContext};
+use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-// Import shared types and monitors from common crate
+// Import shared types, monitors, and keys from common crate
 use knx_connector_demo_common::{
-    light_monitor, temperature_monitor, LightControl, LightState, TemperatureReading,
+    light_monitor, temperature_monitor, LightControl, LightControlKey, LightKey, LightState,
+    TemperatureKey, TemperatureReading,
 };
 
 // ============================================================================
@@ -98,11 +99,11 @@ async fn main() -> DbResult<()> {
         aimdb_knx_connector::KnxConnector::new("knx://192.168.1.19:3671"),
     );
 
-    // Temperature sensors (inbound) - using shared types and monitors
-    builder.configure::<TemperatureReading>("temp.livingroom", |reg| {
+    // Temperature sensors (inbound) - using link_address() from key metadata
+    builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor)
-            .link_from("knx://9/1/0")
+            .link_from(TemperatureKey::LivingRoom.link_address().unwrap())
             .with_deserializer(|data: &[u8]| {
                 let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
                 Ok(TemperatureReading::new("Living Room", celsius))
@@ -110,10 +111,10 @@ async fn main() -> DbResult<()> {
             .finish();
     });
 
-    builder.configure::<TemperatureReading>("temp.bedroom", |reg| {
+    builder.configure::<TemperatureReading>(TemperatureKey::Bedroom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor)
-            .link_from("knx://9/0/1")
+            .link_from(TemperatureKey::Bedroom.link_address().unwrap())
             .with_deserializer(|data: &[u8]| {
                 let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
                 Ok(TemperatureReading::new("Bedroom", celsius))
@@ -121,10 +122,10 @@ async fn main() -> DbResult<()> {
             .finish();
     });
 
-    builder.configure::<TemperatureReading>("temp.kitchen", |reg| {
+    builder.configure::<TemperatureReading>(TemperatureKey::Kitchen, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor)
-            .link_from("knx://9/1/2")
+            .link_from(TemperatureKey::Kitchen.link_address().unwrap())
             .with_deserializer(|data: &[u8]| {
                 let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
                 Ok(TemperatureReading::new("Kitchen", celsius))
@@ -132,11 +133,11 @@ async fn main() -> DbResult<()> {
             .finish();
     });
 
-    // Light monitors (inbound) - using shared types and monitors
-    builder.configure::<LightState>("lights.main", |reg| {
+    // Light monitors (inbound) - using link_address() from key metadata
+    builder.configure::<LightState>(LightKey::Main, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(light_monitor)
-            .link_from("knx://1/0/7")
+            .link_from(LightKey::Main.link_address().unwrap())
             .with_deserializer(|data: &[u8]| {
                 let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
                 Ok(LightState::new("1/0/7", is_on))
@@ -144,10 +145,10 @@ async fn main() -> DbResult<()> {
             .finish();
     });
 
-    builder.configure::<LightState>("lights.hallway", |reg| {
+    builder.configure::<LightState>(LightKey::Hallway, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(light_monitor)
-            .link_from("knx://1/0/8")
+            .link_from(LightKey::Hallway.link_address().unwrap())
             .with_deserializer(|data: &[u8]| {
                 let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
                 Ok(LightState::new("1/0/8", is_on))
@@ -155,11 +156,11 @@ async fn main() -> DbResult<()> {
             .finish();
     });
 
-    // Light control (outbound) - using shared types
-    builder.configure::<LightControl>("lights.control", |reg| {
+    // Light control (outbound) - using link_address() from key metadata
+    builder.configure::<LightControl>(LightControlKey::Control, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(input_handler)
-            .link_to("knx://1/0/6")
+            .link_to(LightControlKey::Control.link_address().unwrap())
             .with_serializer(|state: &LightControl| {
                 let mut buf = [0u8; 1];
                 let len = Dpt1::Switch.encode(state.is_on, &mut buf).unwrap_or(0);

@@ -282,7 +282,7 @@ pub trait AnyRecord: Send + Sync {
     fn collect_metadata(
         &self,
         type_id: core::any::TypeId,
-        key: crate::record_id::RecordKey,
+        key: crate::record_id::StringKey,
         id: crate::record_id::RecordId,
     ) -> crate::remote::RecordMetadata;
 
@@ -1102,7 +1102,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
     fn collect_metadata(
         &self,
         type_id: core::any::TypeId,
-        key: crate::record_id::RecordKey,
+        key: crate::record_id::StringKey,
         id: crate::record_id::RecordId,
     ) -> crate::remote::RecordMetadata {
         let (buffer_type, buffer_capacity) = if let Some(cfg) = &self.buffer_cfg {

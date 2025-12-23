@@ -59,4 +59,8 @@ pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError
 pub use router::{Route, Router, RouterBuilder};
 
 // Record identification exports
-pub use record_id::{RecordId, RecordKey};
+pub use record_id::{RecordId, RecordKey, StringKey};
+
+// Re-export derive macro when feature is enabled
+#[cfg(feature = "derive")]
+pub use aimdb_derive::RecordKey as DeriveRecordKey;

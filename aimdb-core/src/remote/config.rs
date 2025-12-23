@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, path::PathBuf, string::String, vec::Vec};
 
-use crate::record_id::RecordKey;
+use crate::record_id::StringKey;
 
 /// Configuration for AimX remote access
 ///
@@ -184,13 +184,13 @@ impl SecurityPolicy {
         }
     }
 
-    /// Returns the list of writable record keys as RecordKeys
-    pub fn writable_record_keys(&self) -> Vec<RecordKey> {
+    /// Returns the list of writable record keys as StringKeys
+    pub fn writable_record_keys(&self) -> Vec<StringKey> {
         match self {
             Self::ReadOnly => Vec::new(),
             Self::ReadWrite { writable_records } => writable_records
                 .iter()
-                .map(|s| RecordKey::from_dynamic(s.as_str()))
+                .map(|s| StringKey::from_dynamic(s.as_str()))
                 .collect(),
         }
     }

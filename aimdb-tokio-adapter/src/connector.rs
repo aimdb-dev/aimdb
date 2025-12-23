@@ -3,6 +3,8 @@
 //! This module provides the infrastructure for spawning connector tasks
 //! that bridge AimDB records to external systems (MQTT, Kafka, HTTP, etc.).
 
+#[cfg(feature = "tracing")]
+use aimdb_core::RecordKey;
 use aimdb_core::{AimDb, DbResult};
 
 use crate::TokioAdapter;

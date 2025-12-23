@@ -7,6 +7,11 @@
 //! This demo uses `mqtt-connector-demo-common` for shared types and monitors,
 //! demonstrating AimDB's "write once, run anywhere" capability.
 //!
+//! ## Compile-Time Safe Keys
+//!
+//! This demo uses the `#[derive(RecordKey)]` macro to define type-safe
+//! record keys. Typos like `SensorKey::TempIndor` are caught at compile time!
+//!
 //! ## Running
 //!
 //! Start an MQTT broker:
@@ -30,13 +35,13 @@
 //! ```
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::{AimDbBuilder, DbResult, Producer, RuntimeContext};
+use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
 
-// Import shared types and monitors from the common crate
+// Import shared types, monitors, and compile-time safe keys from the common crate
 use mqtt_connector_demo_common::{
-    command_consumer, temperature_logger, Temperature, TemperatureCommand,
+    command_consumer, temperature_logger, CommandKey, SensorKey, Temperature, TemperatureCommand,
 };
 
 // ============================================================================
@@ -147,49 +152,47 @@ async fn main() -> DbResult<()> {
             .with_client_id("tokio-demo-multi-sensor"),
     );
 
-    // Temperature sensors (outbound to MQTT)
-    // Using shared temperature_logger monitor from common crate
-    builder.configure::<Temperature>("sensor.temp.indoor", |reg| {
+    // Temperature sensors (outbound to MQTT) - using link_address() from key metadata
+    builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(indoor_temp_producer)
             .tap(temperature_logger)
-            .link_to("mqtt://sensors/temp/indoor")
+            .link_to(SensorKey::TempIndoor.link_address().unwrap())
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
-    builder.configure::<Temperature>("sensor.temp.outdoor", |reg| {
+    builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(outdoor_temp_producer)
             .tap(temperature_logger)
-            .link_to("mqtt://sensors/temp/outdoor")
+            .link_to(SensorKey::TempOutdoor.link_address().unwrap())
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
-    builder.configure::<Temperature>("sensor.temp.server_room", |reg| {
+    builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(server_room_temp_producer)
             .tap(temperature_logger)
-            .link_to("mqtt://sensors/temp/server_room")
+            .link_to(SensorKey::TempServerRoom.link_address().unwrap())
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
-    // Command consumers (inbound from MQTT)
-    // Using shared command_consumer monitor from common crate
-    builder.configure::<TemperatureCommand>("command.temp.indoor", |reg| {
+    // Command consumers (inbound from MQTT) - using link_address() from key metadata
+    builder.configure::<TemperatureCommand>(CommandKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
-            .link_from("mqtt://commands/temp/indoor")
+            .link_from(CommandKey::TempIndoor.link_address().unwrap())
             .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
-    builder.configure::<TemperatureCommand>("command.temp.outdoor", |reg| {
+    builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
-            .link_from("mqtt://commands/temp/outdoor")
+            .link_from(CommandKey::TempOutdoor.link_address().unwrap())
             .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });

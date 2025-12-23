@@ -30,6 +30,7 @@ aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", default-features =
 # Shared demo logic
 mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features = [
     "alloc",
+    "derive",
 ] }
 
 # Embassy ecosystem - STM32H563ZI with Ethernet

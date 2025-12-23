@@ -12,7 +12,9 @@ embassy-runtime = []
 
 [dependencies]
 # AimDB dependencies
-aimdb-core = { path = "../../aimdb-core", default-features = false }
+aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
+    "derive",
+] }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
 ] }
@@ -27,6 +29,7 @@ aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = f
 # Shared demo types and monitors
 knx-connector-demo-common = { path = "../knx-connector-demo-common", default-features = false, features = [
     "alloc",
+    "derive",
 ] }
 
 # Embassy ecosystem - STM32H563ZI with Ethernet

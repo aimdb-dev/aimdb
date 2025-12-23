@@ -60,12 +60,12 @@ mod tests {
 
     #[test]
     fn test_json_formatting() {
-        use aimdb_core::record_id::{RecordId, RecordKey};
+        use aimdb_core::record_id::{RecordId, StringKey};
         use core::any::TypeId;
 
         let records = vec![RecordMetadata::new(
             RecordId::new(0),
-            RecordKey::new("sensor.temperature"),
+            StringKey::new("sensor.temperature"),
             TypeId::of::<i32>(),
             "Temperature".to_string(),
             "spmc_ring".to_string(),

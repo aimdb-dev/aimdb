@@ -61,6 +61,7 @@ dependencies = [
 name = "aimdb-core"
 version = "0.3.0"
 dependencies = [
+ "aimdb-derive",
  "aimdb-executor",
  "anyhow",
  "defmt 1.0.1",
@@ -77,6 +78,15 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "aimdb-derive"
+version = "0.3.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.108",
 ]
 
 [[package]]

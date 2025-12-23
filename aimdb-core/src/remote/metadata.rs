@@ -91,9 +91,9 @@ impl RecordMetadata {
     /// * `created_at` - Creation timestamp (ISO 8601)
     /// * `outbound_connector_count` - Number of outbound connectors
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new<K: RecordKey>(
         record_id: RecordId,
-        record_key: RecordKey,
+        record_key: K,
         type_id: TypeId,
         name: String,
         buffer_type: String,
@@ -160,13 +160,14 @@ impl RecordMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record_id::StringKey;
 
     #[test]
     fn test_record_metadata_creation() {
         let type_id = TypeId::of::<i32>();
         let metadata = RecordMetadata::new(
             RecordId::new(0),
-            RecordKey::new("test.record"),
+            StringKey::new("test.record"),
             type_id,
             "i32".to_string(),
             "spmc_ring".to_string(),
@@ -194,7 +195,7 @@ mod tests {
         let type_id = TypeId::of::<String>();
         let metadata = RecordMetadata::new(
             RecordId::new(1),
-            RecordKey::new("app.config"),
+            StringKey::new("app.config"),
             type_id,
             "String".to_string(),
             "single_latest".to_string(),
