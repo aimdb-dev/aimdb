@@ -109,7 +109,7 @@ impl MqttOperations for AimdbMqttAction {
         client: &mut C,
         _client_id: &'a str,
         _connection_id: ConnectionId,
-        _is_retry: bool,
+        is_retry: bool,
     ) -> Result<(), ClientError>
     where
         C: Client<'a>,
@@ -124,21 +124,24 @@ impl MqttOperations for AimdbMqttAction {
                 #[cfg(feature = "defmt")]
                 {
                     if is_retry {
-                        defmt::debug!("Retrying publish to {}", topic);
+                        defmt::debug!("Retrying publish to {}", topic.as_str());
                     } else {
                         defmt::debug!(
                             "Publishing {} bytes to {} (QoS={:?})",
                             payload.len(),
-                            topic,
+                            topic.as_str(),
                             qos
                         );
                     }
                 }
 
+                #[cfg(not(feature = "defmt"))]
+                let _ = is_retry;
+
                 client.publish(topic, payload, *qos, *retain).await?;
 
                 #[cfg(feature = "defmt")]
-                defmt::info!("Published {} bytes to {}", payload.len(), topic);
+                defmt::info!("Published {} bytes to {}", payload.len(), topic.as_str());
 
                 Ok(())
             }
@@ -146,16 +149,19 @@ impl MqttOperations for AimdbMqttAction {
                 #[cfg(feature = "defmt")]
                 {
                     if is_retry {
-                        defmt::debug!("Retrying subscribe to {} (QoS={:?})", topic, qos);
+                        defmt::debug!("Retrying subscribe to {} (QoS={:?})", topic.as_str(), qos);
                     } else {
-                        defmt::info!("Subscribing to {} (QoS={:?})", topic, qos);
+                        defmt::info!("Subscribing to {} (QoS={:?})", topic.as_str(), qos);
                     }
                 }
+
+                #[cfg(not(feature = "defmt"))]
+                let _ = is_retry;
 
                 client.subscribe(topic, *qos).await?;
 
                 #[cfg(feature = "defmt")]
-                defmt::info!("Subscribed to {}", topic);
+                defmt::info!("Subscribed to {}", topic.as_str());
 
                 Ok(())
             }
@@ -389,7 +395,7 @@ impl MqttConnectorImpl {
         let port = connector_url.port.unwrap_or(1883);
 
         #[cfg(feature = "defmt")]
-        defmt::info!("Creating MQTT connector for {}:{}", host, port);
+        defmt::info!("Creating MQTT connector for {}:{}", host.as_str(), port);
 
         // Parse broker IP address
         let broker_ip = Ipv4Addr::from_str(&host).map_err(|_| "Invalid broker IP address")?;
@@ -491,14 +497,14 @@ impl MqttConnectorImpl {
                         #[cfg(feature = "defmt")]
                         defmt::debug!(
                             "Routing MQTT message from topic '{}', {} bytes",
-                            topic,
+                            topic.as_str(),
                             payload.len()
                         );
 
                         // Route the message through the router to the appropriate producer
                         if let Err(_e) = router_for_task.route(&topic, &payload).await {
                             #[cfg(feature = "defmt")]
-                            defmt::warn!("Failed to route MQTT message from '{}': {:?}", topic, _e);
+                            defmt::warn!("Failed to route MQTT message from '{}'", topic.as_str());
                         }
                     }
                     _ => {
@@ -521,7 +527,7 @@ impl MqttConnectorImpl {
         // Subscribe to all topics from the router
         for topic in &topics {
             #[cfg(feature = "defmt")]
-            defmt::info!("Subscribing to MQTT topic: {}", topic);
+            defmt::info!("Subscribing to MQTT topic: {}", &**topic);
 
             let subscribe_action = AimdbMqttAction::Subscribe {
                 topic: topic.to_string(),
@@ -589,13 +595,19 @@ impl MqttConnectorImpl {
                     Ok(r) => r,
                     Err(_e) => {
                         #[cfg(feature = "defmt")]
-                        defmt::error!("Failed to subscribe for outbound topic '{}'", topic_clone);
+                        defmt::error!(
+                            "Failed to subscribe for outbound topic '{}'",
+                            topic_clone.as_str()
+                        );
                         return;
                     }
                 };
 
                 #[cfg(feature = "defmt")]
-                defmt::info!("MQTT outbound publisher started for topic: {}", topic_clone);
+                defmt::info!(
+                    "MQTT outbound publisher started for topic: {}",
+                    topic_clone.as_str()
+                );
 
                 while let Ok(value_any) = reader.recv_any().await {
                     // Serialize the type-erased value
@@ -604,9 +616,8 @@ impl MqttConnectorImpl {
                         Err(_e) => {
                             #[cfg(feature = "defmt")]
                             defmt::error!(
-                                "Failed to serialize for topic '{}': {:?}",
-                                topic_clone,
-                                _e
+                                "Failed to serialize for topic '{}'",
+                                topic_clone.as_str()
                             );
                             continue;
                         }
@@ -623,11 +634,14 @@ impl MqttConnectorImpl {
                     action_sender.send(action).await;
 
                     #[cfg(feature = "defmt")]
-                    defmt::debug!("Published to MQTT topic: {}", topic_clone);
+                    defmt::debug!("Published to MQTT topic: {}", topic_clone.as_str());
                 }
 
                 #[cfg(feature = "defmt")]
-                defmt::info!("MQTT outbound publisher stopped for topic: {}", topic_clone);
+                defmt::info!(
+                    "MQTT outbound publisher stopped for topic: {}",
+                    topic_clone.as_str()
+                );
             }))?;
         }
 
@@ -654,7 +668,7 @@ impl aimdb_core::transport::Connector for MqttConnectorImpl {
             #[cfg(feature = "defmt")]
             defmt::debug!(
                 "Publishing to MQTT topic '{}', {} bytes",
-                topic,
+                topic.as_str(),
                 payload_owned.len()
             );
 

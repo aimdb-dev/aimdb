@@ -130,6 +130,10 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --features "std,tokio-runtime" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (embassy)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + defmt)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on KNX connector (embassy + defmt)$(NC)\n"
+	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
@@ -172,8 +176,12 @@ test-embedded:
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-net-support"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt"
 
 ## Example projects
 examples:

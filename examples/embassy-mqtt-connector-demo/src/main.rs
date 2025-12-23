@@ -15,6 +15,17 @@
 //! - STM32H563ZI Nucleo board (or similar with Ethernet)
 //! - Ethernet connection to network with MQTT broker
 //!
+//! ## Task Pool Requirements
+//!
+//! This demo spawns multiple concurrent tasks:
+//! - 3 temperature producers (indoor, outdoor, server_room)
+//! - 3 temperature loggers (tap consumers)
+//! - 2 command consumers
+//! - 2 MQTT connector tasks (manager + event router)
+//! - 3 outbound publisher tasks
+//!
+//! Total: 13 tasks - requires `embassy-task-pool-16` feature in aimdb-embassy-adapter.
+//!
 //! ## Running
 //!
 //! 1. Start an MQTT broker on your network:
