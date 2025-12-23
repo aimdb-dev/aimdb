@@ -56,10 +56,18 @@ impl Temperature {
         #[cfg(not(feature = "std"))]
         {
             use alloc::format;
-            let celsius_int = (self.celsius * 10.0) as i32;
+            // Manual float formatting with 1 decimal place for no_std
+            // This produces identical JSON to the serde path for interop
+            let whole = self.celsius as i32;
+            let frac = ((self.celsius - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;
+            let sign = if self.celsius < 0.0 && whole == 0 {
+                "-"
+            } else {
+                ""
+            };
             format!(
-                r#"{{"sensor_id":"{}","celsius_x10":{}}}"#,
-                self.sensor_id, celsius_int
+                r#"{{"sensor_id":"{}","celsius":{}{}.{}}}"#,
+                self.sensor_id, sign, whole, frac
             )
             .into_bytes()
         }
