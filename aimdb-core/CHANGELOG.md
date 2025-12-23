@@ -15,11 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - O(1) key resolution via `HashMap<RecordKey, RecordId>`
   - Type introspection via `HashMap<TypeId, Vec<RecordId>>`
 - **Key-Based Producer/Consumer API**:
-  - `produce_by_key::<T>(key, value)`: Produce to specific record by key
-  - `subscribe_by_key::<T>(key)`: Subscribe to specific record by key  
-  - `producer_by_key::<T>(key)`: Get key-bound producer
-  - `consumer_by_key::<T>(key)`: Get key-bound consumer
-- **New Types**: `ProducerByKey<T, R>` and `ConsumerByKey<T, R>` for key-bound access with `.key()` accessor
+  - `produce::<T>(key, value)`: Produce to specific record by key
+  - `subscribe::<T>(key)`: Subscribe to specific record by key  
+  - `producer::<T>(key)`: Get key-bound producer
+  - `consumer::<T>(key)`: Get key-bound consumer
+- **New Types**: `Producer<T, R>` and `Consumer<T, R>` for key-bound access with `.key()` accessor
 - **Introspection Methods**:
   - `records_of_type::<T>()`: Returns `&[RecordId]` for all records of type T
   - `resolve_key(key)`: O(1) lookup returning `Option<RecordId>`
@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `occupancy`: Current buffer fill level as `(current, capacity)` tuple
 - **DynBuffer Metrics Method**: Added `metrics_snapshot()` method to `DynBuffer` trait (returns `Option<BufferMetricsSnapshot>`)
 
+### Removed
+
+- **Breaking: Legacy Type-Only Methods**: Removed methods that accessed records by type alone:
+  - `get_typed_record<T>()`: Use `get_typed_record_by_key::<T>(key)` instead
+  - `produce<T>(value)`: Use `produce::<T>(key, value)` instead
+  - `subscribe<T>()`: Use `subscribe::<T>(key)` instead
+  - `producer<T>()`: Use `producer::<T>(key)` instead
+  - `consumer<T>()`: Use `consumer::<T>(key)` instead
+  - This eliminates `AmbiguousType` errors - all record access now requires explicit keys
+
 ### Changed
 
 - **Breaking: `configure<T>()` Signature**: Now requires key parameter: `configure::<T>("key", |reg| ...)`
@@ -44,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Vec<Box<dyn AnyRecord>>` for O(1) hot-path access by RecordId
   - `HashMap<RecordKey, RecordId>` for O(1) name lookups
   - `HashMap<TypeId, Vec<RecordId>>` for type introspection
-- **Breaking: Type-Based Lookup**: `produce()`, `subscribe()`, `producer()`, `consumer()` now return `AmbiguousType` error when multiple records of the same type exist
+- **Breaking: Key-Based API Only**: All producer/consumer methods now require a record key parameter. This properly supports multi-instance records (e.g., multiple temperature sensors with the same type)
 - **SecurityPolicy**: `ReadWrite` variant now uses `HashSet<String>` for writable record keys
 - **Dependencies**: Added `hashbrown` for no_std-compatible HashMap with `default-hasher` feature
 - **Breaking: DynBuffer No Longer Has Blanket Impl**: The blanket `impl<T, B: Buffer<T>> DynBuffer<T> for B` has been removed. Each adapter now provides its own explicit `DynBuffer` implementation. This enables adapters to provide metrics support via `metrics_snapshot()`. Custom `Buffer<T>` implementations must now also implement `DynBuffer<T>` explicitly.
