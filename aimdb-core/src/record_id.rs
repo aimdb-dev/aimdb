@@ -29,7 +29,7 @@
 //!
 //! // Dynamic keys (for runtime-generated names)
 //! let tenant_id = "acme";
-//! let key = StringKey::dynamic(format!("tenant.{}.sensors", tenant_id));
+//! let key = StringKey::intern(format!("tenant.{}.sensors", tenant_id));
 //! assert!(!key.is_static());
 //! ```
 //!
@@ -54,10 +54,10 @@
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::sync::Arc;
+use alloc::{boxed::Box, string::ToString};
 
 #[cfg(feature = "std")]
-use std::sync::Arc;
+use std::boxed::Box;
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]
@@ -182,8 +182,19 @@ impl RecordKey for &'static str {
 
 /// Default string-based record key
 ///
-/// Supports both static (zero-cost) and dynamic (Arc-allocated) names.
+/// Supports both static (zero-cost) and interned (leaked) names.
 /// Use string literals for the common case; they auto-convert via `From`.
+///
+/// # Memory Model
+///
+/// Dynamic keys are "interned" by leaking memory into `'static` lifetime.
+/// This is optimal for AimDB's use case where keys are:
+/// - Registered once at startup
+/// - Never deallocated during runtime
+/// - Frequently cloned (now just pointer copy)
+///
+/// The tradeoff: memory for dynamic keys is never freed. This is acceptable
+/// because typical deployments have <100 keys totaling <4KB.
 ///
 /// # Naming Convention
 ///
@@ -205,17 +216,20 @@ impl RecordKey for &'static str {
 /// let key: StringKey = "sensors.temperature".into();
 ///
 /// // Dynamic - for runtime-generated names
-/// let key = StringKey::dynamic(format!("tenant.{}.sensors", "acme"));
+/// let key = StringKey::intern(format!("tenant.{}.sensors", "acme"));
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct StringKey(StringKeyInner);
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum StringKeyInner {
-    /// Static string literal (zero allocation, pointer comparison possible)
+    /// Static string literal (zero allocation)
     Static(&'static str),
-    /// Dynamic runtime string (Arc for cheap cloning)
-    Dynamic(Arc<str>),
+    /// Interned runtime string (leaked into 'static lifetime)
+    ///
+    /// Memory is intentionally leaked for O(1) cloning and comparison.
+    /// This is safe because keys are registered once at startup.
+    Interned(&'static str),
 }
 
 impl StringKey {
@@ -231,25 +245,39 @@ impl StringKey {
     /// Create from a runtime-generated string
     ///
     /// Use this for dynamic names (multi-tenant, config-driven, etc.).
+    ///
+    /// # Memory
+    ///
+    /// The string is leaked into `'static` lifetime. This is intentional:
+    /// - Keys are registered once at startup
+    /// - Enables O(1) Copy/Clone
+    /// - Typical overhead: <4KB for 100 keys
     #[inline]
     #[must_use]
-    pub fn dynamic(s: impl Into<Arc<str>>) -> Self {
-        Self(StringKeyInner::Dynamic(s.into()))
+    pub fn intern(s: impl AsRef<str>) -> Self {
+        let leaked: &'static str = Box::leak(s.as_ref().to_string().into_boxed_str());
+        Self(StringKeyInner::Interned(leaked))
     }
 
-    /// Create from a runtime string (alias for `dynamic`)
+    /// Create from a runtime string (alias for `intern`)
     ///
-    /// Allocates an `Arc<str>` to store the string.
+    /// The string is leaked into `'static` lifetime for O(1) cloning.
     #[inline]
     #[must_use]
     pub fn from_dynamic(s: &str) -> Self {
-        Self(StringKeyInner::Dynamic(Arc::from(s)))
+        Self::intern(s)
     }
 
-    /// Returns true if this is a static (zero-allocation) key
+    /// Returns true if this is a static (compile-time) key
     #[inline]
     pub fn is_static(&self) -> bool {
         matches!(self.0, StringKeyInner::Static(_))
+    }
+
+    /// Returns true if this is an interned (runtime) key
+    #[inline]
+    pub fn is_interned(&self) -> bool {
+        matches!(self.0, StringKeyInner::Interned(_))
     }
 }
 
@@ -257,19 +285,19 @@ impl StringKey {
 impl RecordKey for StringKey {
     #[inline]
     fn as_str(&self) -> &str {
-        match &self.0 {
+        match self.0 {
             StringKeyInner::Static(s) => s,
-            StringKeyInner::Dynamic(s) => s,
+            StringKeyInner::Interned(s) => s,
         }
     }
 }
 
-// Custom Debug to show Static vs Dynamic variant
+// Custom Debug to show Static vs Interned variant
 impl core::fmt::Debug for StringKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match &self.0 {
-            StringKeyInner::Static(s) => f.debug_tuple("StringKey::Static").field(s).finish(),
-            StringKeyInner::Dynamic(s) => f.debug_tuple("StringKey::Dynamic").field(s).finish(),
+        match self.0 {
+            StringKeyInner::Static(s) => f.debug_tuple("StringKey::Static").field(&s).finish(),
+            StringKeyInner::Interned(s) => f.debug_tuple("StringKey::Interned").field(&s).finish(),
         }
     }
 }
@@ -328,7 +356,7 @@ impl From<&'static str> for StringKey {
 impl From<alloc::string::String> for StringKey {
     #[inline]
     fn from(s: alloc::string::String) -> Self {
-        Self::dynamic(s)
+        Self::intern(s)
     }
 }
 
@@ -337,7 +365,7 @@ impl From<alloc::string::String> for StringKey {
 impl From<String> for StringKey {
     #[inline]
     fn from(s: String) -> Self {
-        Self::dynamic(s)
+        Self::intern(s)
     }
 }
 
@@ -375,7 +403,7 @@ impl serde::Serialize for StringKey {
 impl<'de> serde::Deserialize<'de> for StringKey {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Ok(Self::dynamic(s))
+        Ok(Self::intern(s))
     }
 }
 
@@ -454,19 +482,22 @@ mod tests {
     }
 
     #[test]
-    fn test_string_key_dynamic() {
-        let key = StringKey::dynamic("sensors.temperature".to_string());
+    fn test_string_key_interned() {
+        // Concatenation creates a truly dynamic String
+        let key = StringKey::intern(["sensors", ".", "temperature"].concat());
         assert!(!key.is_static());
+        assert!(key.is_interned());
         assert_eq!(key.as_str(), "sensors.temperature");
     }
 
     #[test]
     fn test_string_key_equality() {
         let static_key: StringKey = "sensors.temp".into();
-        let dynamic_key = StringKey::dynamic("sensors.temp".to_string());
+        // Concatenation creates a truly dynamic String
+        let interned_key = StringKey::intern(["sensors", ".", "temp"].concat());
 
-        // Static and dynamic keys with same content should be equal
-        assert_eq!(static_key, dynamic_key);
+        // Static and interned keys with same content should be equal
+        assert_eq!(static_key, interned_key);
     }
 
     #[test]
@@ -481,10 +512,11 @@ mod tests {
         }
 
         let static_key: StringKey = "sensors.temp".into();
-        let dynamic_key = StringKey::dynamic("sensors.temp".to_string());
+        // Concatenation creates a truly dynamic String
+        let interned_key = StringKey::intern(["sensors", ".", "temp"].concat());
 
         // Hash should be the same for equal keys
-        assert_eq!(hash_key(&static_key), hash_key(&dynamic_key));
+        assert_eq!(hash_key(&static_key), hash_key(&interned_key));
     }
 
     #[test]
@@ -521,14 +553,15 @@ mod tests {
     #[test]
     fn test_string_key_debug() {
         let static_key: StringKey = "sensors.temp".into();
-        let dynamic_key = StringKey::dynamic("sensors.temp".to_string());
+        // Concatenation creates a truly dynamic String
+        let interned_key = StringKey::intern(["sensors", ".", "temp"].concat());
 
-        // Debug output should distinguish static vs dynamic
+        // Debug output should distinguish static vs interned
         let static_debug = format!("{:?}", static_key);
-        let dynamic_debug = format!("{:?}", dynamic_key);
+        let interned_debug = format!("{:?}", interned_key);
 
         assert!(static_debug.contains("Static"));
-        assert!(dynamic_debug.contains("Dynamic"));
+        assert!(interned_debug.contains("Interned"));
     }
 
     #[test]

@@ -213,8 +213,8 @@ impl AimDbInner {
             .map(|(i, record)| {
                 let id = RecordId::new(i as u32);
                 let type_id = self.types[i];
-                let key = &self.keys[i];
-                record.collect_metadata(type_id, key.clone(), id)
+                let key = self.keys[i];
+                record.collect_metadata(type_id, key, id)
             })
             .collect()
     }
@@ -462,11 +462,8 @@ where
             }
             None => {
                 // Create new record
-                self.records.push((
-                    record_key.clone(),
-                    type_id,
-                    Box::new(TypedRecord::<T, R>::new()),
-                ));
+                self.records
+                    .push((record_key, type_id, Box::new(TypedRecord::<T, R>::new())));
                 let (_, _, record) = self.records.last_mut().unwrap();
                 (
                     record
@@ -487,7 +484,7 @@ where
 
         // Only store spawn function for new records to avoid duplicates
         if is_new_record {
-            let spawn_key = record_key.clone();
+            let spawn_key = record_key;
 
             #[allow(clippy::type_complexity)]
             let spawn_fn: Box<
@@ -679,7 +676,7 @@ where
 
             // Build index structures
             storages.push(record);
-            by_key.insert(key.clone(), id);
+            by_key.insert(key, id);
             by_type.entry(type_id).or_default().push(id);
             types.push(type_id);
             keys.push(key);
@@ -1148,7 +1145,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
 
         // Get metadata for logging
         let type_id = self.inner.types[id.index()];
-        let key = self.inner.keys[id.index()].clone();
+        let key = self.inner.keys[id.index()];
         let record_metadata = record.collect_metadata(type_id, key, id);
         let runtime = self.runtime.clone();
 
