@@ -40,7 +40,7 @@ test-utils = ["std"]
 
 [dependencies]
 # Derive macros (optional)
-aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
+aimdb-derive = { version = "0.1.0", path = "../aimdb-derive", optional = true }
 
 # Executor traits (always available)
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
