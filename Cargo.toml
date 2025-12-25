@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "aimdb-executor",
+    "aimdb-derive",
     "aimdb-core",
     "aimdb-client",
     "aimdb-embassy-adapter",

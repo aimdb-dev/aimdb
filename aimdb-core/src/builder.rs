@@ -21,7 +21,7 @@ use alloc::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc};
 
-use crate::record_id::{RecordId, RecordKey};
+use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 use crate::{DbError, DbResult};
@@ -62,7 +62,7 @@ pub struct AimDbInner {
     /// Name → RecordId lookup (control plane)
     ///
     /// Used by remote access, CLI, MCP for O(1) name resolution.
-    by_key: HashMap<RecordKey, RecordId>,
+    by_key: HashMap<StringKey, RecordId>,
 
     /// TypeId → RecordIds lookup (introspection)
     ///
@@ -74,16 +74,16 @@ pub struct AimDbInner {
     /// Used to validate downcasts at runtime.
     types: Vec<TypeId>,
 
-    /// RecordId → RecordKey lookup (reverse mapping)
+    /// RecordId → StringKey lookup (reverse mapping)
     ///
     /// Used to get the key for a given record ID.
-    keys: Vec<RecordKey>,
+    keys: Vec<StringKey>,
 }
 
 impl AimDbInner {
     /// Resolve RecordKey to RecordId (control plane - O(1) average)
     #[inline]
-    pub fn resolve(&self, key: &RecordKey) -> Option<RecordId> {
+    pub fn resolve<K: RecordKey>(&self, key: &K) -> Option<RecordId> {
         self.by_key.get(key.as_str()).copied()
     }
 
@@ -101,9 +101,9 @@ impl AimDbInner {
         self.storages.get(id.index()).map(|b| b.as_ref())
     }
 
-    /// Get the RecordKey for a given RecordId
+    /// Get the StringKey for a given RecordId
     #[inline]
-    pub fn key_for(&self, id: RecordId) -> Option<&RecordKey> {
+    pub fn key_for(&self, id: RecordId) -> Option<&StringKey> {
         self.keys.get(id.index())
     }
 
@@ -213,8 +213,8 @@ impl AimDbInner {
             .map(|(i, record)| {
                 let id = RecordId::new(i as u32);
                 let type_id = self.types[i];
-                let key = &self.keys[i];
-                record.collect_metadata(type_id, key.clone(), id)
+                let key = self.keys[i];
+                record.collect_metadata(type_id, key, id)
             })
             .collect()
     }
@@ -271,7 +271,7 @@ impl AimDbInner {
 /// Use `.runtime()` to set the runtime and transition to a typed builder.
 pub struct AimDbBuilder<R = NoRuntime> {
     /// Registered records with their keys (order matters for RecordId assignment)
-    records: Vec<(RecordKey, TypeId, Box<dyn AnyRecord>)>,
+    records: Vec<(StringKey, TypeId, Box<dyn AnyRecord>)>,
 
     /// Runtime adapter
     runtime: Option<Arc<R>>,
@@ -280,7 +280,7 @@ pub struct AimDbBuilder<R = NoRuntime> {
     connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder<R>>>,
 
     /// Spawn functions with their keys
-    spawn_fns: Vec<(RecordKey, Box<dyn core::any::Any + Send>)>,
+    spawn_fns: Vec<(StringKey, Box<dyn core::any::Any + Send>)>,
 
     /// Remote access configuration (std only)
     #[cfg(feature = "std")]
@@ -417,25 +417,28 @@ where
     /// "sensor.temperature.room2").
     ///
     /// # Arguments
-    /// * `key` - A unique string identifier for this record (e.g., "sensor.temperature.room1")
+    /// * `key` - A unique identifier for this record. Can be a string literal, `StringKey`,
+    ///   or any type implementing `RecordKey` (including user-defined enum keys).
     /// * `f` - Configuration closure
     ///
     /// # Example
     /// ```rust,ignore
-    /// builder.configure::<Temperature>("sensor.temp.room1", |reg| {
-    ///     reg.with_buffer(BufferCfg::SingleLatest)
-    ///        .with_serialization();
-    /// });
+    /// // Using string literal
+    /// builder.configure::<Temperature>("sensor.temp.room1", |reg| { ... });
+    ///
+    /// // Using compile-time safe enum key
+    /// builder.configure::<Temperature>(SensorKey::TempRoom1, |reg| { ... });
     /// ```
     pub fn configure<T>(
         &mut self,
-        key: impl Into<RecordKey>,
+        key: impl RecordKey,
         f: impl for<'a> FnOnce(&'a mut RecordRegistrar<'a, T, R>),
     ) -> &mut Self
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        let record_key: RecordKey = key.into();
+        // Convert any RecordKey to StringKey for internal storage
+        let record_key: StringKey = StringKey::from_dynamic(key.as_str());
         let type_id = TypeId::of::<T>();
 
         // Find existing record with this key, or create new one
@@ -447,7 +450,7 @@ where
                 let (_, existing_type, record) = &mut self.records[idx];
                 assert!(
                     *existing_type == type_id,
-                    "RecordKey '{}' already registered with different type",
+                    "StringKey '{}' already registered with different type",
                     record_key.as_str()
                 );
                 (
@@ -459,11 +462,8 @@ where
             }
             None => {
                 // Create new record
-                self.records.push((
-                    record_key.clone(),
-                    type_id,
-                    Box::new(TypedRecord::<T, R>::new()),
-                ));
+                self.records
+                    .push((record_key, type_id, Box::new(TypedRecord::<T, R>::new())));
                 let (_, _, record) = self.records.last_mut().unwrap();
                 (
                     record
@@ -484,7 +484,7 @@ where
 
         // Only store spawn function for new records to avoid duplicates
         if is_new_record {
-            let spawn_key = record_key.clone();
+            let spawn_key = record_key;
 
             #[allow(clippy::type_complexity)]
             let spawn_fn: Box<
@@ -525,18 +525,14 @@ where
         T: RecordT<R>,
     {
         // Default key is the full type name for backward compatibility
-        let key = RecordKey::new(core::any::type_name::<T>());
+        let key = StringKey::new(core::any::type_name::<T>());
         self.configure::<T>(key, |reg| T::register(reg, cfg))
     }
 
     /// Registers a self-registering record type with a custom key
     ///
     /// The record type must implement `RecordT<R>`.
-    pub fn register_record_with_key<T>(
-        &mut self,
-        key: impl Into<RecordKey>,
-        cfg: &T::Config,
-    ) -> &mut Self
+    pub fn register_record_with_key<T>(&mut self, key: impl RecordKey, cfg: &T::Config) -> &mut Self
     where
         T: RecordT<R>,
     {
@@ -660,10 +656,10 @@ where
         // Build the new index structures
         let record_count = self.records.len();
         let mut storages: Vec<Box<dyn AnyRecord>> = Vec::with_capacity(record_count);
-        let mut by_key: HashMap<RecordKey, RecordId> = HashMap::with_capacity(record_count);
+        let mut by_key: HashMap<StringKey, RecordId> = HashMap::with_capacity(record_count);
         let mut by_type: HashMap<TypeId, Vec<RecordId>> = HashMap::new();
         let mut types: Vec<TypeId> = Vec::with_capacity(record_count);
-        let mut keys: Vec<RecordKey> = Vec::with_capacity(record_count);
+        let mut keys: Vec<StringKey> = Vec::with_capacity(record_count);
 
         for (i, (key, type_id, record)) in self.records.into_iter().enumerate() {
             let id = RecordId::new(i as u32);
@@ -680,7 +676,7 @@ where
 
             // Build index structures
             storages.push(record);
-            by_key.insert(key.clone(), id);
+            by_key.insert(key, id);
             by_type.entry(type_id).or_default().push(id);
             types.push(type_id);
             keys.push(key);
@@ -1149,7 +1145,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
 
         // Get metadata for logging
         let type_id = self.inner.types[id.index()];
-        let key = self.inner.keys[id.index()].clone();
+        let key = self.inner.keys[id.index()];
         let record_metadata = record.collect_metadata(type_id, key, id);
         let runtime = self.runtime.clone();
 

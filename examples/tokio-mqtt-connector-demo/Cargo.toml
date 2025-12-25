@@ -23,6 +23,7 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
 # Shared demo logic
 mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features = [
     "std",
+    "derive",
 ] }
 
 # MQTT connector

@@ -13,7 +13,7 @@ tracing = ["dep:tracing", "dep:tracing-subscriber"]
 
 [dependencies]
 # Core AimDB dependencies
-aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-core = { path = "../../aimdb-core", features = ["std", "derive"] }
 aimdb-executor = { path = "../../aimdb-executor", features = ["std"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
@@ -23,6 +23,7 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
 # Shared demo types and monitors
 knx-connector-demo-common = { path = "../knx-connector-demo-common", features = [
     "std",
+    "derive",
 ] }
 
 # KNX connector

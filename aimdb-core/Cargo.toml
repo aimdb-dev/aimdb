@@ -11,7 +11,10 @@ categories = ["database-implementations", "asynchronous", "embedded"]
 build = "build.rs"
 
 [features]
-default = ["std", "alloc"]
+default = ["std", "alloc", "derive"]
+
+# Derive macros for RecordKey
+derive = ["aimdb-derive"]
 
 # Core capabilities
 std = [
@@ -36,6 +39,9 @@ metrics = ["dep:metrics", "std"] # Requires std for aggregation
 test-utils = ["std"]
 
 [dependencies]
+# Derive macros (optional)
+aimdb-derive = { version = "0.1.0", path = "../aimdb-derive", optional = true }
+
 # Executor traits (always available)
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
 

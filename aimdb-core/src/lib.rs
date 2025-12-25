@@ -59,4 +59,4 @@ pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError
 pub use router::{Route, Router, RouterBuilder};
 
 // Record identification exports
-pub use record_id::{RecordId, RecordKey};
+pub use record_id::{RecordId, RecordKey, StringKey};

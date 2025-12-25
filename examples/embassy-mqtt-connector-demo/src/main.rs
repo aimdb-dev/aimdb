@@ -52,7 +52,7 @@
 
 extern crate alloc;
 
-use aimdb_core::{AimDbBuilder, Producer, RuntimeContext};
+use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
 use aimdb_embassy_adapter::{
     EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
 };
@@ -70,9 +70,9 @@ use {defmt_rtt as _, panic_probe as _};
 
 use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 
-// Import shared types and monitors from the common crate
+// Import shared types, monitors, and compile-time safe keys from the common crate
 use mqtt_connector_demo_common::{
-    Temperature, TemperatureCommand, command_consumer, temperature_logger,
+    CommandKey, SensorKey, Temperature, TemperatureCommand, command_consumer, temperature_logger,
 };
 
 // Simple embedded allocator (required by some dependencies)
@@ -326,53 +326,53 @@ async fn main(spawner: Spawner) {
 
     // ========================================================================
     // TEMPERATURE SENSORS (outbound: AimDB → MQTT)
-    // Using shared temperature_logger monitor from common crate
+    // Using compile-time safe SensorKey enum - typos caught at compile time!
     // ========================================================================
 
-    builder.configure::<Temperature>("sensor.temp.indoor", |reg| {
+    builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
             .source(indoor_temp_producer)
             .tap(temperature_logger)
-            .link_to("mqtt://sensors/temp/indoor")
+            .link_to(SensorKey::TempIndoor.link_address().unwrap())
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
-    builder.configure::<Temperature>("sensor.temp.outdoor", |reg| {
+    builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
             .source(outdoor_temp_producer)
             .tap(temperature_logger)
-            .link_to("mqtt://sensors/temp/outdoor")
+            .link_to(SensorKey::TempOutdoor.link_address().unwrap())
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
-    builder.configure::<Temperature>("sensor.temp.server_room", |reg| {
+    builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
             .source(server_room_temp_producer)
             .tap(temperature_logger)
-            .link_to("mqtt://sensors/temp/server_room")
+            .link_to(SensorKey::TempServerRoom.link_address().unwrap())
             .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
     // ========================================================================
     // COMMAND CONSUMERS (inbound: MQTT → AimDB)
-    // Using shared command_consumer monitor from common crate
+    // Using compile-time safe CommandKey enum
     // ========================================================================
 
-    builder.configure::<TemperatureCommand>("command.temp.indoor", |reg| {
+    builder.configure::<TemperatureCommand>(CommandKey::TempIndoor, |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
-            .link_from("mqtt://commands/temp/indoor")
+            .link_from(CommandKey::TempIndoor.link_address().unwrap())
             .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
-    builder.configure::<TemperatureCommand>("command.temp.outdoor", |reg| {
+    builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
-            .link_from("mqtt://commands/temp/outdoor")
+            .link_from(CommandKey::TempOutdoor.link_address().unwrap())
             .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });

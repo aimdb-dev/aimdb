@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Note**: This is the global changelog for the AimDB project. For detailed changes to individual crates, see their respective CHANGELOG.md files:
 > - [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md)
+> - [aimdb-derive/CHANGELOG.md](aimdb-derive/CHANGELOG.md)
 > - [aimdb-executor/CHANGELOG.md](aimdb-executor/CHANGELOG.md)
 > - [aimdb-tokio-adapter/CHANGELOG.md](aimdb-tokio-adapter/CHANGELOG.md)
 > - [aimdb-embassy-adapter/CHANGELOG.md](aimdb-embassy-adapter/CHANGELOG.md)
 > - [aimdb-mqtt-connector/CHANGELOG.md](aimdb-mqtt-connector/CHANGELOG.md)
+> - [aimdb-knx-connector/CHANGELOG.md](aimdb-knx-connector/CHANGELOG.md)
 > - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
 > - [aimdb-client/CHANGELOG.md](aimdb-client/CHANGELOG.md)
 > - [tools/aimdb-cli/CHANGELOG.md](tools/aimdb-cli/CHANGELOG.md)
@@ -20,8 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **aimdb-derive**: New crate providing `#[derive(RecordKey)]` macro for compile-time checked record keys
+  - `#[key = "..."]` attribute for string representation
+  - `#[key_prefix = "..."]` attribute for namespace prefixing
+  - `#[link_address = "..."]` attribute for connector metadata (MQTT topics, KNX addresses)
+  - Auto-generates `Hash` implementation to satisfy `Borrow<str>` contract
+- **aimdb-core**: `RecordKey` is now a **trait** instead of a struct, enabling user-defined enum keys
+  - `RecordKey` trait with `as_str()` and optional `link_address()` methods
+  - `StringKey` type replaces old `RecordKey` struct (static/interned string keys)
+  - `derive` feature flag to enable `#[derive(RecordKey)]` macro
+  - Blanket implementation for `&'static str`
 - **examples**: New `mqtt-connector-demo-common` and `knx-connector-demo-common` crates for shared cross-platform types and monitors
-- **docs**: Added design document `016-M6-record-key-trait.md` for RecordKey trait design
+- **docs**: Added design documents:
+  - `016-M6-record-key-trait.md` - RecordKey trait design
+  - `017-M6-record-key-hash-impl.md` - Hash implementation for Borrow compliance
 
 ### Fixed
 

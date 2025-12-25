@@ -7,7 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **RecordKey Trait (Issue #65)**: `RecordKey` is now a trait instead of a struct
+  - Enables user-defined enum keys with `#[derive(RecordKey)]` for compile-time safety
+  - `as_str()` method for string representation
+  - `link_address()` method for connector metadata (MQTT topics, KNX addresses)
+  - `Borrow<str>` bound for O(1) HashMap lookups by string
+  - Blanket implementation for `&'static str`
+- **StringKey Type**: New struct replacing old `RecordKey` struct
+  - `Static(&'static str)` variant for zero-allocation keys
+  - `Interned(&'static str)` variant using `Box::leak` for O(1) Copy/Clone
+  - Implements `RecordKey` trait
+- **derive Feature**: New feature flag enabling `#[derive(RecordKey)]` macro via `aimdb-derive`
+
+### Changed
+
+- **Breaking: RecordKey struct → trait**: The `RecordKey` struct is now a trait. Use `StringKey` for string-based keys or define custom enum keys with `#[derive(RecordKey)]`
+- **StringKey Memory Model**: Dynamic keys now use `Box::leak` (interning) instead of `Arc<str>`. This optimizes for O(1) cloning at the cost of never freeing dynamic key memory (acceptable for startup-time registration pattern)
+
+### Migration Guide
+
+**RecordKey is now a trait (breaking change)**
+
+If you were using `RecordKey` directly, switch to `StringKey`:
+
+```rust
+// Before (this PR)
+use aimdb_core::RecordKey;
+let key: RecordKey = "sensors.temp".into();
+
+// After
+use aimdb_core::StringKey;
+let key: StringKey = "sensors.temp".into();
+```
+
+**For compile-time safe keys (recommended for embedded)**
+
+Use the new derive macro:
+
+```rust
+use aimdb_core::RecordKey;  // Now a trait, re-exported from aimdb-derive
+
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
+pub enum AppKey {
+    #[key = "temp.indoor"]
+    TempIndoor,
+    #[key = "temp.outdoor"]
+    TempOutdoor,
+}
+
+// Compile-time typo detection!
+let producer = db.producer::<Temperature>(AppKey::TempIndoor);
+```
+
+**Note on StringKey memory model**
+
+`StringKey::intern()` leaks memory intentionally for O(1) Copy/Clone. This is
+designed for startup-time registration (<1000 keys). In debug builds, a
+warning fires if you exceed 1000 interned keys.
 
 ## [0.3.0] - 2025-12-15
 
@@ -15,7 +73,7 @@ No changes yet.
 
 - **RecordId + RecordKey Architecture (Issue #60)**: Complete rewrite of internal storage for stable record identification
   - `RecordId`: u32 index wrapper for O(1) Vec-based hot-path access
-  - `RecordKey`: Hybrid `&'static str` / `Arc<str>` with `Borrow<str>` for zero-alloc static keys and flexible dynamic keys
+  - `StringKey`: Hybrid `&'static str` / interned with `Borrow<str>` for zero-alloc static keys and flexible dynamic keys
   - O(1) key resolution via `HashMap<RecordKey, RecordId>`
   - Type introspection via `HashMap<TypeId, Vec<RecordId>>`
 - **Key-Based Producer/Consumer API**:
