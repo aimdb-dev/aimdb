@@ -11,8 +11,8 @@ keywords = ["mqtt", "connector", "iot", "embedded", "pubsub"]
 categories = ["network-programming", "embedded", "asynchronous"]
 
 [features]
-default = []
-std = ["aimdb-core/std", "thiserror"]
+default = ["aimdb-core/alloc"]
+std = ["aimdb-core/std", "aimdb-core/alloc", "thiserror"]
 tokio-runtime = [
     "std",
     "tokio",
