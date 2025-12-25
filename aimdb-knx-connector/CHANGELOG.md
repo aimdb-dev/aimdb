@@ -15,6 +15,7 @@ No changes yet.
 
 - **Breaking: Record Registration**: Updated demo examples to use new key-based `configure<T>(key, |reg| ...)` API
 - All demo records now have explicit keys (e.g., `"lights.state"`, `"temp.livingroom"`, `"lights.control"`)
+- Demos refactored to use shared `knx-connector-demo-common` crate for cross-platform types, keys, and monitors
 
 ## [0.1.0] - 2025-11-20
 
