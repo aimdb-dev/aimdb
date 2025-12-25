@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-mqtt-connector"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -38,9 +38,9 @@ tracing = ["dep:tracing", "aimdb-core/tracing"]
 defmt = ["dep:defmt", "aimdb-core/defmt"]
 
 [dependencies]
-aimdb-core = { version = "0.3.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "0.4.0", path = "../aimdb-core", default-features = false }
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
-aimdb-embassy-adapter = { version = "0.3.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+aimdb-embassy-adapter = { version = "0.4.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }

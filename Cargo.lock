@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "anyhow",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-derive",
  "aimdb-executor",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-embassy-adapter"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mqtt-connector"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-tokio-adapter"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",

@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-mcp"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -26,8 +26,8 @@ path = "src/lib.rs"
 
 [dependencies]
 # AimDB dependencies
-aimdb-client = { version = "0.3.0", path = "../../aimdb-client" }
-aimdb-core = { version = "0.3.0", path = "../../aimdb-core", features = [
+aimdb-client = { version = "0.4.0", path = "../../aimdb-client" }
+aimdb-core = { version = "0.4.0", path = "../../aimdb-core", features = [
     "std",
 ] }
 

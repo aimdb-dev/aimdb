@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.4.0] - 2025-12-25
+
 ### Added
 
 - **RecordKey Trait (Issue #65)**: `RecordKey` is now a trait instead of a struct
@@ -194,7 +198,8 @@ warning fires if you exceed 1000 interned keys.
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0

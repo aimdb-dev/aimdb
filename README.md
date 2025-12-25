@@ -11,8 +11,8 @@
 [![Docs](https://docs.rs/aimdb-core/badge.svg)](https://docs.rs/aimdb-core)
 [![Website](https://img.shields.io/badge/website-aimdb.dev-blue.svg)](https://aimdb.dev)
 
-> **⚠️ PRE-RELEASE v0.3.0**  
-> AimDB v0.3.0 includes core functionality, multi-instance records, buffer metrics, MQTT/KNX connectors, and developer tools. The architecture is stable, but APIs may evolve based on community feedback. Production use is possible but proceed with caution and thorough testing.
+> **⚠️ PRE-RELEASE v0.4.0**  
+> AimDB v0.4.0 introduces compile-time safe record keys with `#[derive(RecordKey)]`, multi-instance records, buffer metrics, MQTT/KNX connectors, and developer tools. The architecture is stable, but APIs may evolve based on community feedback. Production use is possible but proceed with caution and thorough testing.
 
 > **One codebase. Any hardware. Always in sync.**
 
@@ -45,16 +45,19 @@ Modern IoT stacks are fragmented:
 
 ---
 
-## 🎉 What's New in v0.3.0
+## 🎉 What's New in v0.4.0
 
-**Latest Release** - December 6, 2025
+**Latest Release** - December 25, 2025
 
 Recent additions and improvements:
 
+- 🆕 **Compile-Time Safe Keys**: New `#[derive(RecordKey)]` macro for type-safe record keys
+- 🆕 **RecordKey Trait**: Enables user-defined enum keys with connector metadata
+- ✅ **MQTT Deadlock Fix**: Fixed initialization issue with >10 MQTT topics (Issue #63)
 - ✅ **Multi-Instance Records**: Register multiple records of the same type with unique keys
 - ✅ **RecordId/RecordKey Architecture**: O(1) stable indexing with zero-allocation static keys
 - ✅ **Buffer Metrics**: Comprehensive metrics for monitoring and debugging (feature-gated)
-- ✅ **Enhanced Introspection**: New APIs for runtime record exploration (NEW in v0.3.0)
+- ✅ **Enhanced Introspection**: New APIs for runtime record exploration
 - ✅ **Type-Safe Core**: `TypeId`-based record routing eliminates runtime string lookups
 - ✅ **Dual Runtime**: Works on both Tokio (std) and Embassy (no_std/embedded)
 - ✅ **Three Buffer Types**: SPMC Ring, SingleLatest, and Mailbox patterns

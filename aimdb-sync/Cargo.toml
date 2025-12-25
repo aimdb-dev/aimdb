@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-sync"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -11,8 +11,8 @@ categories = ["database", "api-bindings"]
 
 [dependencies]
 # Core dependencies
-aimdb-core = { path = "../aimdb-core", version = "0.3.0" }
-aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", version = "0.3.0" }
+aimdb-core = { path = "../aimdb-core", version = "0.4.0" }
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", version = "0.4.0" }
 
 # Tokio for channels and runtime
 tokio = { version = "1.40", features = ["sync", "rt", "time"] }
