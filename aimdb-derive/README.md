@@ -13,7 +13,7 @@ where typos in string keys would cause runtime failures.
 ```rust
 use aimdb_derive::RecordKey;
 
-#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AppKey {
     #[key = "temp.indoor"]
     TempIndoor,
@@ -38,7 +38,7 @@ Specifies the string key for a variant. This is the value returned by `as_str()`
 Prepends a prefix to all variant keys:
 
 ```rust
-#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
 #[key_prefix = "sensors."]
 pub enum SensorKey {
     #[key = "temp"]   // → "sensors.temp"

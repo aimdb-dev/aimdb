@@ -38,7 +38,7 @@
 //! ```rust,ignore
 //! use aimdb_derive::RecordKey;
 //!
-//! #[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash)]
+//! #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
 //! pub enum AppKey {
 //!     #[key = "temp.indoor"]
 //!     TempIndoor,
@@ -92,7 +92,7 @@ pub use aimdb_derive::RecordKey;
 /// The easiest way is to use the derive macro:
 ///
 /// ```rust,ignore
-/// #[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash)]
+/// #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
 /// pub enum AppKey {
 ///     #[key = "temp.indoor"]
 ///     TempIndoor,
@@ -104,7 +104,7 @@ pub use aimdb_derive::RecordKey;
 /// With connector metadata (MQTT topics, KNX addresses):
 ///
 /// ```rust,ignore
-/// #[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash)]
+/// #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
 /// pub enum SensorKey {
 ///     #[key = "temp.indoor"]
 ///     #[link_address = "mqtt://sensors/temp/indoor"]
@@ -144,9 +144,25 @@ pub use aimdb_derive::RecordKey;
 /// }
 /// ```
 ///
-/// **Important:** The `Hash` implementation must hash the same value as
-/// `as_str()` for HashMap lookups to work correctly. The derive macro
-/// handles this automatically.
+/// # Hash and Borrow Contract
+///
+/// The `RecordKey` trait requires `Hash` because keys are stored in HashMaps.
+/// Per Rust's `Borrow` trait contract, `hash(key) == hash(key.borrow())`—meaning
+/// your `Hash` implementation must hash the same value as `as_str()` returns.
+///
+/// **Using the derive macro:** `#[derive(RecordKey)]` automatically generates
+/// both `Hash` and `Borrow<str>` implementations that satisfy this contract.
+/// Do **not** also derive `Hash` manually—it would conflict.
+///
+/// **Manual implementation:** Implement `Hash` by hashing `self.as_str()`:
+///
+/// ```rust,ignore
+/// impl Hash for MyKey {
+///     fn hash<H: Hasher>(&self, state: &mut H) {
+///         self.as_str().hash(state);
+///     }
+/// }
+/// ```
 pub trait RecordKey:
     Clone + Eq + core::hash::Hash + core::borrow::Borrow<str> + Send + Sync + 'static
 {

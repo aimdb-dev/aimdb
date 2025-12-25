@@ -170,7 +170,7 @@ With the derive macro (recommended):
 ```rust
 use aimdb_core::RecordKey;
 
-#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AppKey {
     #[key = "temp.indoor"]
     TempIndoor,
@@ -431,7 +431,7 @@ aimdb-derive/
 For this input:
 
 ```rust
-#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AppKey {
     #[key = "temp.indoor"]
     TempIndoor,
@@ -472,7 +472,7 @@ impl core::borrow::Borrow<str> for AppKey {
 ### Example with Prefix
 
 ```rust
-#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
 #[key_prefix = "sensors."]
 pub enum SensorKey {
     #[key = "temp.indoor"]   // → "sensors.temp.indoor"
