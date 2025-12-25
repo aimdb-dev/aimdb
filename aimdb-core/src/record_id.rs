@@ -59,6 +59,18 @@ use alloc::{boxed::Box, string::ToString};
 #[cfg(feature = "std")]
 use std::boxed::Box;
 
+#[cfg(feature = "std")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// Counter for interned keys (debug builds only, std only)
+#[cfg(all(debug_assertions, feature = "std"))]
+static INTERNED_KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Maximum expected interned keys before warning.
+/// If exceeded, a debug assertion fires to catch potential misuse.
+#[cfg(all(debug_assertions, feature = "std"))]
+const MAX_EXPECTED_INTERNED_KEYS: usize = 1000;
+
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]
 pub use aimdb_derive::RecordKey;
@@ -252,9 +264,27 @@ impl StringKey {
     /// - Keys are registered once at startup
     /// - Enables O(1) Copy/Clone
     /// - Typical overhead: <4KB for 100 keys
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// In debug builds with `std` feature, panics if more than 1000 keys are
+    /// interned. This catches accidental misuse (e.g., creating keys in a loop).
+    /// Production builds have no limit.
     #[inline]
     #[must_use]
     pub fn intern(s: impl AsRef<str>) -> Self {
+        #[cfg(all(debug_assertions, feature = "std"))]
+        {
+            let count = INTERNED_KEY_COUNT.fetch_add(1, Ordering::Relaxed);
+            debug_assert!(
+                count < MAX_EXPECTED_INTERNED_KEYS,
+                "StringKey::intern() called {} times. This exceeds the expected limit of {}. \
+                 Interned keys leak memory and should only be created at startup. \
+                 Use static string literals or enum keys for better performance.",
+                count + 1,
+                MAX_EXPECTED_INTERNED_KEYS
+            );
+        }
         let leaked: &'static str = Box::leak(s.as_ref().to_string().into_boxed_str());
         Self(StringKeyInner::Interned(leaked))
     }
@@ -605,5 +635,50 @@ mod tests {
 
         let key: StringKey = "sensors.temp".into();
         assert_eq!(RecordKey::as_str(&key), "sensors.temp");
+    }
+
+    /// Test that hash(key) == hash(key.borrow()) per Rust's Borrow trait contract.
+    ///
+    /// This is critical for HashMap operations: if Borrow<str> is implemented,
+    /// the hash of the key must match the hash of its borrowed string form.
+    #[test]
+    fn test_string_key_hash_borrow_contract() {
+        use core::borrow::Borrow;
+        use core::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        fn hash_value<T: Hash>(t: &T) -> u64 {
+            let mut h = DefaultHasher::new();
+            t.hash(&mut h);
+            h.finish()
+        }
+
+        // Test static key
+        let static_key: StringKey = "sensors.temp".into();
+        let borrowed: &str = static_key.borrow();
+        assert_eq!(
+            hash_value(&static_key),
+            hash_value(&borrowed),
+            "Static StringKey hash must match its borrowed string hash"
+        );
+
+        // Test interned key
+        let interned_key = StringKey::intern(["sensors", ".", "temp"].concat());
+        let borrowed: &str = interned_key.borrow();
+        assert_eq!(
+            hash_value(&interned_key),
+            hash_value(&borrowed),
+            "Interned StringKey hash must match its borrowed string hash"
+        );
+
+        // Test that HashMap lookup by &str works (practical consequence)
+        use std::collections::HashMap;
+        let mut map: HashMap<StringKey, i32> = HashMap::new();
+        map.insert("key.one".into(), 1);
+        map.insert(StringKey::intern("key.two"), 2);
+
+        assert_eq!(map.get("key.one"), Some(&1));
+        assert_eq!(map.get("key.two"), Some(&2));
+        assert_eq!(map.get("key.nonexistent"), None);
     }
 }
