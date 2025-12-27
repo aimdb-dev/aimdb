@@ -39,7 +39,7 @@ Modern IoT stacks are fragmented:
 
 - **Language**: Rust 🦀 (async/await, `no_std` capable)
 - **Runtimes**: Embassy (embedded) or Tokio (std)
-- **Data Core**: Type-safe records with `TypeId` routing, three buffer types
+- **Data Core**: Type-safe records with `RecordKey` → `RecordId` routing (O(1) lookups), three buffer types
 - **Protocols**: MQTT ✅, KNX ✅, Kafka 🚧, DDS 🚧
 - **Platforms**: MCUs, Linux edge devices, cloud VMs/containers
 
@@ -52,13 +52,12 @@ Modern IoT stacks are fragmented:
 Recent additions and improvements:
 
 - 🆕 **Compile-Time Safe Keys**: New `#[derive(RecordKey)]` macro for type-safe record keys
-- 🆕 **RecordKey Trait**: Enables user-defined enum keys with connector metadata
+- 🆕 **RecordKey Trait**: Enables user-defined enum keys with connector metadata (MQTT topics, KNX addresses)
 - ✅ **MQTT Deadlock Fix**: Fixed initialization issue with >10 MQTT topics (Issue #63)
 - ✅ **Multi-Instance Records**: Register multiple records of the same type with unique keys
-- ✅ **RecordId/RecordKey Architecture**: O(1) stable indexing with zero-allocation static keys
+- ✅ **RecordKey/RecordId Architecture**: O(1) lookups via `RecordKey` → `RecordId` with zero-allocation static keys
 - ✅ **Buffer Metrics**: Comprehensive metrics for monitoring and debugging (feature-gated)
-- ✅ **Enhanced Introspection**: New APIs for runtime record exploration
-- ✅ **Type-Safe Core**: `TypeId`-based record routing eliminates runtime string lookups
+- ✅ **Enhanced Introspection**: `records_of_type::<T>()`, `resolve_key()`, and runtime exploration APIs
 - ✅ **Dual Runtime**: Works on both Tokio (std) and Embassy (no_std/embedded)
 - ✅ **Three Buffer Types**: SPMC Ring, SingleLatest, and Mailbox patterns
 - ✅ **MQTT Integration**: Connector works in both std and embedded environments
