@@ -468,6 +468,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             deserializer: None,
+            topic_resolver: None,
         }
     }
 }
@@ -661,6 +662,7 @@ pub struct InboundConnectorBuilder<
     url: String,
     config: Vec<(String, String)>,
     deserializer: Option<TypedDeserializerFn<T>>,
+    topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
 impl<'a, T, R> InboundConnectorBuilder<'a, T, R>
@@ -706,6 +708,38 @@ where
     pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
         self.config
             .push(("timeout_ms".to_string(), timeout_ms.to_string()));
+        self
+    }
+
+    /// Sets a dynamic topic resolver for late-binding scenarios
+    ///
+    /// The resolver is called once at connector startup to determine
+    /// the subscription topic. Return `None` to use the default
+    /// static topic from the URL.
+    ///
+    /// # Use Cases
+    ///
+    /// - Topics determined from smart contracts at runtime
+    /// - Service discovery integration
+    /// - Environment-specific topic configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// reg.link_from("mqtt://mesh/default/data")  // Fallback topic
+    ///    .with_topic_resolver(|| {
+    ///        // Read from smart contract, config service, etc.
+    ///        let node_id = smart_contract.get_producer_node_id()?;
+    ///        Some(format!("mesh/{}/data", node_id))
+    ///    })
+    ///    .with_deserializer(|bytes| parse_sensor_data(bytes))
+    ///    .finish();
+    /// ```
+    pub fn with_topic_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn() -> Option<String> + Send + Sync + 'static,
+    {
+        self.topic_resolver = Some(Arc::new(resolver));
         self
     }
 
@@ -764,6 +798,9 @@ where
         // Create inbound connector link
         let mut link = InboundConnectorLink::new(url, erased_deserializer);
         link.config = self.config;
+
+        // Wire through the topic resolver
+        link.topic_resolver = self.topic_resolver;
 
         // Add producer factory callback that captures type T and record key
         {

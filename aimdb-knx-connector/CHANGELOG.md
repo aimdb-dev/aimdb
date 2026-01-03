@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Dynamic Group Address Routing (Design 018)**: Full support for dynamic KNX group address resolution
+  - **Outbound**: Uses `TopicProvider` to dynamically determine group addresses based on data values. Configure via `.with_topic_provider()` on outbound connectors.
+  - **Inbound**: Uses `TopicResolverFn` for late-binding subscription addresses at connector startup. Configure via `.with_topic_resolver()` on inbound connectors.
+  - Addresses resolved at connector startup via `collect_inbound_routes()` and per-telegram via `TopicProviderFn` for outbound
 
 ## [0.2.0] - 2025-12-15
 

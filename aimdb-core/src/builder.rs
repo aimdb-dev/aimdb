@@ -1230,6 +1230,9 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     /// # Returns
     /// Vector of tuples: (topic, producer_trait, deserializer)
     ///
+    /// The topic is resolved dynamically if a `TopicResolverFn` is configured,
+    /// otherwise the static topic from the URL is used.
+    ///
     /// # Example
     /// ```rust,ignore
     /// // In MqttConnector after db.build()
@@ -1260,7 +1263,8 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
                     continue;
                 }
 
-                let topic = link.url.resource_id();
+                // Resolve topic: dynamic (from resolver) or static (from URL)
+                let topic = link.resolve_topic();
 
                 // Create producer using the stored factory
                 if let Some(producer) = link.create_producer(db_any.clone()) {

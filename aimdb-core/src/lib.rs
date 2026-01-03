@@ -55,6 +55,7 @@ pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // Connector Infrastructure exports
+pub use connector::TopicResolverFn;
 pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError};
 pub use connector::{TopicProvider, TopicProviderAny, TopicProviderFn, TopicProviderWrapper};
 

@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Dynamic Topic/Destination Routing (Design 018)**: Complete support for dynamic topic resolution
+  - **Outbound (`TopicProvider` trait)**: Dynamically determine MQTT topics or KNX group addresses based on data being published
+    - New `TopicProvider<T>` trait for type-safe topic determination
+    - New `TopicProviderAny` trait for type-erased storage
+    - New `TopicProviderWrapper<T, P>` struct for type erasure
+    - New `TopicProviderFn` type alias for stored providers
+    - New `topic_provider` field in `ConnectorLink` struct
+    - New `with_topic_provider()` method on `OutboundConnectorBuilder`
+    - `OutboundRoute` tuple now includes optional `TopicProviderFn`
+  - **Inbound (`TopicResolverFn`)**: Late-binding topic resolution at connector startup
+    - New `TopicResolverFn` type alias for closure-based topic resolution
+    - New `topic_resolver` field in `InboundConnectorLink` struct
+    - New `with_topic_resolver()` method on `InboundConnectorBuilder`
+    - New `resolve_topic()` method on `InboundConnectorLink`
+    - `collect_inbound_routes()` now resolves topics dynamically at route collection time
+  - Enables runtime topic determination from smart contracts, service discovery, or configuration
+  - Works in both `std` and `no_std + alloc` environments
+- **Unit Tests**: Added comprehensive tests for `TopicProvider` and `TopicResolverFn`
+
+### Changed
+
+- **Outbound Route Collection**: `collect_outbound_routes()` now returns `OutboundRoute` tuples with optional `TopicProviderFn`
+- **Inbound Topic Resolution**: `collect_inbound_routes()` now calls `link.resolve_topic()` instead of `link.url.resource_id()` directly, enabling dynamic topic resolution
 
 ## [0.4.0] - 2025-12-25
 
