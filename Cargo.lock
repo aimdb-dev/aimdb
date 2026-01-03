@@ -958,7 +958,7 @@ name = "embassy-usb-driver"
 version = "0.2.0"
 dependencies = [
  "defmt 1.0.1",
- "embedded-io-async 0.6.1",
+ "embedded-io-async 0.7.0",
 ]
 
 [[package]]
@@ -2217,7 +2217,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "18.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-24369dbbc177b111de7d6a14403123a46fbc4bfb#d7f8c227284ca1f901d156073b450bc6d5d41f86"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-96e15adc78a3f44583c25e6c86ae8d4f3e1f2b8c#e09e9cd53fea9d3ea3be9b9954056ac2b6e582fc"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

@@ -79,6 +79,8 @@ test:
 	cargo test --package aimdb-cli
 	@printf "$(YELLOW)  → Testing MCP server$(NC)\n"
 	cargo test --package aimdb-mcp
+	@printf "$(YELLOW)  → Testing MQTT connector$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
 	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
 
