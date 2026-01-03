@@ -29,16 +29,18 @@ use crate::{DbError, DbResult};
 /// Type alias for outbound route tuples returned by `collect_outbound_routes`
 ///
 /// Each tuple contains:
-/// - `String` - Topic/key from the URL path
-/// - `Box<dyn ConsumerTrait>` - Callback to create a consumer for this record
+/// - `String` - Default topic/destination from the URL path
+/// - `Box<dyn ConsumerTrait>` - Consumer for subscribing to record values
 /// - `SerializerFn` - User-provided serializer for the record type
 /// - `Vec<(String, String)>` - Configuration options from the URL query
+/// - `Option<TopicProviderFn>` - Optional dynamic topic provider
 #[cfg(feature = "alloc")]
-type OutboundRoute = (
+pub type OutboundRoute = (
     String,
     Box<dyn crate::connector::ConsumerTrait>,
     crate::connector::SerializerFn,
     Vec<(String, String)>,
+    Option<crate::connector::TopicProviderFn>,
 );
 
 /// Marker type for untyped builder (before runtime is set)
@@ -1333,7 +1335,13 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
 
                 // Create consumer using the stored factory
                 if let Some(consumer) = link.create_consumer(db_any.clone()) {
-                    routes.push((destination, consumer, serializer, link.config.clone()));
+                    routes.push((
+                        destination,
+                        consumer,
+                        serializer,
+                        link.config.clone(),
+                        link.topic_provider.clone(),
+                    ));
                 }
             }
         }

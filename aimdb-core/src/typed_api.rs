@@ -420,6 +420,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             serializer: None,
+            topic_provider: None,
         }
     }
 
@@ -443,6 +444,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             serializer: None,
+            topic_provider: None,
         }
     }
 
@@ -484,6 +486,7 @@ pub struct OutboundConnectorBuilder<
     url: String,
     config: Vec<(String, String)>,
     serializer: Option<TypedSerializerFn<T>>,
+    topic_provider: Option<crate::connector::TopicProviderFn>,
 }
 
 impl<'a, T, R> OutboundConnectorBuilder<'a, T, R>
@@ -525,6 +528,46 @@ where
         self
     }
 
+    /// Sets a dynamic topic provider
+    ///
+    /// The provider receives the value being published and returns
+    /// the topic/destination to publish to. Return `None` to use the default
+    /// static topic from the URL.
+    ///
+    /// # Type Safety
+    ///
+    /// The provider is type-checked at compile time against `T`.
+    /// Type erasure occurs internally for storage.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::connector::TopicProvider;
+    ///
+    /// struct SensorTopicProvider;
+    ///
+    /// impl TopicProvider<Temperature> for SensorTopicProvider {
+    ///     fn topic(&self, value: &Temperature) -> Option<String> {
+    ///         Some(format!("sensors/temp/{}", value.sensor_id))
+    ///     }
+    /// }
+    ///
+    /// reg.link_to("mqtt://sensors/default")
+    ///    .with_topic_provider(SensorTopicProvider)
+    ///    .with_serializer(...)
+    ///    .finish();
+    /// ```
+    pub fn with_topic_provider<P>(mut self, provider: P) -> Self
+    where
+        P: crate::connector::TopicProvider<T> + 'static,
+    {
+        // Type-erase the provider via TopicProviderWrapper
+        self.topic_provider = Some(Arc::new(crate::connector::TopicProviderWrapper::new(
+            provider,
+        )));
+        self
+    }
+
     /// Finalizes the connector registration
     pub fn finish(self) -> &'a mut RecordRegistrar<'a, T, R> {
         use crate::connector::{ConnectorLink, ConnectorUrl};
@@ -549,6 +592,9 @@ where
                 });
             link.serializer = Some(erased);
         }
+
+        // Wire through the topic provider
+        link.topic_provider = self.topic_provider;
 
         // Validation: Check that connector builder is registered
         let has_connector = self

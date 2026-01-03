@@ -105,6 +105,106 @@ impl std::error::Error for SerializeError {}
 pub type SerializerFn =
     Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, SerializeError> + Send + Sync>;
 
+// ============================================================================
+// TopicProvider - Dynamic topic/destination routing
+// ============================================================================
+
+/// Trait for dynamic topic providers (outbound only)
+///
+/// Implement this trait to dynamically determine MQTT topics (or KNX group addresses)
+/// based on the data being published. This enables reusable routing logic that
+/// can be shared across multiple record types.
+///
+/// # Type Safety
+///
+/// The trait is generic over `T`, providing compile-time type safety
+/// at the implementation site. Type erasure occurs only at storage time.
+///
+/// # no_std Compatibility
+///
+/// Works in both `std` and `no_std + alloc` environments.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use aimdb_core::connector::TopicProvider;
+///
+/// struct SensorTopicProvider;
+///
+/// impl TopicProvider<Temperature> for SensorTopicProvider {
+///     fn topic(&self, value: &Temperature) -> Option<String> {
+///         Some(format!("sensors/temp/{}", value.sensor_id))
+///     }
+/// }
+/// ```
+pub trait TopicProvider<T>: Send + Sync {
+    /// Determine the topic/destination for a given value
+    ///
+    /// Returns `Some(topic)` to use a dynamic topic, or `None` to fall back
+    /// to the static topic from the `link_to()` URL.
+    fn topic(&self, value: &T) -> Option<String>;
+}
+
+/// Type-erased topic provider trait (internal)
+///
+/// Allows storing providers for different types in a unified collection.
+/// The concrete type is recovered via `Any::downcast_ref()` at runtime.
+pub trait TopicProviderAny: Send + Sync {
+    /// Get the topic for a type-erased value
+    ///
+    /// Returns `None` if the value type doesn't match or if the provider
+    /// returns `None` for this value.
+    fn topic_any(&self, value: &dyn core::any::Any) -> Option<String>;
+}
+
+/// Wrapper struct for type-erasing a `TopicProvider<T>`
+///
+/// This wraps a concrete `TopicProvider<T>` implementation and provides
+/// the `TopicProviderAny` interface for type-erased storage.
+///
+/// Uses `PhantomData<fn(T) -> T>` instead of `PhantomData<T>` to avoid
+/// inheriting Send/Sync bounds from T (the data type isn't stored).
+pub struct TopicProviderWrapper<T, P>
+where
+    T: 'static,
+    P: TopicProvider<T>,
+{
+    provider: P,
+    // Use fn(T) -> T to avoid Send/Sync variance issues with T
+    _phantom: core::marker::PhantomData<fn(T) -> T>,
+}
+
+impl<T, P> TopicProviderWrapper<T, P>
+where
+    T: 'static,
+    P: TopicProvider<T>,
+{
+    /// Create a new wrapper for a topic provider
+    pub fn new(provider: P) -> Self {
+        Self {
+            provider,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<T, P> TopicProviderAny for TopicProviderWrapper<T, P>
+where
+    T: 'static,
+    P: TopicProvider<T> + Send + Sync,
+{
+    fn topic_any(&self, value: &dyn core::any::Any) -> Option<String> {
+        value
+            .downcast_ref::<T>()
+            .and_then(|v| self.provider.topic(v))
+    }
+}
+
+/// Type alias for stored topic provider (no_std compatible)
+///
+/// Uses `Arc<dyn TopicProviderAny>` for shared ownership across async tasks.
+pub type TopicProviderFn = Arc<dyn TopicProviderAny>;
+
 /// Parsed connector URL with protocol, host, port, and credentials
 ///
 /// Supports multiple protocol schemes:
@@ -353,6 +453,15 @@ pub struct ConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     #[cfg(feature = "alloc")]
     pub consumer_factory: Option<ConsumerFactoryFn>,
+
+    /// Optional dynamic topic provider
+    ///
+    /// When set, the provider is called with each value to determine the
+    /// topic/destination dynamically. If the provider returns `None`,
+    /// the static topic from the URL is used as fallback.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    pub topic_provider: Option<TopicProviderFn>,
 }
 
 impl Debug for ConnectorLink {
@@ -371,6 +480,10 @@ impl Debug for ConnectorLink {
                 #[cfg(not(feature = "alloc"))]
                 &None::<()>,
             )
+            .field(
+                "topic_provider",
+                &self.topic_provider.as_ref().map(|_| "<function>"),
+            )
             .finish()
     }
 }
@@ -384,6 +497,7 @@ impl ConnectorLink {
             serializer: None,
             #[cfg(feature = "alloc")]
             consumer_factory: None,
+            topic_provider: None,
         }
     }
 

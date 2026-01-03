@@ -46,6 +46,8 @@ pub use aimdb_executor::{
 pub use database::Database;
 
 // Producer-Consumer Pattern exports
+#[cfg(feature = "alloc")]
+pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
@@ -54,6 +56,7 @@ pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // Connector Infrastructure exports
 pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError};
+pub use connector::{TopicProvider, TopicProviderAny, TopicProviderFn, TopicProviderWrapper};
 
 // Router exports for connector implementations
 pub use router::{Route, Router, RouterBuilder};

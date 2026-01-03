@@ -298,24 +298,22 @@ impl MqttConnectorImpl {
     ///
     /// This method uses the ConsumerTrait + factory pattern to subscribe to
     /// typed records without knowing the concrete type T at compile time.
+    ///
+    /// If a topic provider is configured, it will be called for each value to
+    /// dynamically determine the MQTT topic. Otherwise, the static default topic is used.
     fn spawn_outbound_publishers<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
-        routes: Vec<(
-            String,
-            Box<dyn aimdb_core::connector::ConsumerTrait>,
-            aimdb_core::connector::SerializerFn,
-            Vec<(String, String)>,
-        )>,
+        routes: Vec<aimdb_core::OutboundRoute>,
     ) -> aimdb_core::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
 
-        for (topic, consumer, serializer, config) in routes {
+        for (default_topic, consumer, serializer, config, topic_provider) in routes {
             let client = self.client.clone();
-            let topic_clone = topic.clone();
+            let default_topic_clone = default_topic.clone();
 
             // Parse config options
             let mut qos = rumqttc::QoS::AtLeastOnce; // Default
@@ -350,7 +348,7 @@ impl MqttConnectorImpl {
                         #[cfg(feature = "tracing")]
                         tracing::error!(
                             "Failed to subscribe for outbound topic '{}': {:?}",
-                            topic_clone,
+                            default_topic_clone,
                             _e
                         );
                         return;
@@ -358,39 +356,43 @@ impl MqttConnectorImpl {
                 };
 
                 #[cfg(feature = "tracing")]
-                tracing::info!("MQTT outbound publisher started for topic: {}", topic_clone);
+                tracing::info!(
+                    "MQTT outbound publisher started for topic: {}",
+                    default_topic_clone
+                );
 
                 while let Ok(value_any) = reader.recv_any().await {
+                    // Determine topic: dynamic (from provider) or default (from URL)
+                    let topic = topic_provider
+                        .as_ref()
+                        .and_then(|provider| provider.topic_any(&*value_any))
+                        .unwrap_or_else(|| default_topic_clone.clone());
+
                     // Serialize the type-erased value
                     let bytes = match serializer(&*value_any) {
                         Ok(b) => b,
                         Err(_e) => {
                             #[cfg(feature = "tracing")]
-                            tracing::error!(
-                                "Failed to serialize for topic '{}': {:?}",
-                                topic_clone,
-                                _e
-                            );
+                            tracing::error!("Failed to serialize for topic '{}': {:?}", topic, _e);
                             continue;
                         }
                     };
 
                     // Publish to MQTT with protocol-specific config
-                    if let Err(_e) = client.publish(&topic_clone, qos, retain, bytes).await {
+                    if let Err(_e) = client.publish(&topic, qos, retain, bytes).await {
                         #[cfg(feature = "tracing")]
-                        tracing::error!(
-                            "Failed to publish to MQTT topic '{}': {:?}",
-                            topic_clone,
-                            _e
-                        );
+                        tracing::error!("Failed to publish to MQTT topic '{}': {:?}", topic, _e);
                     } else {
                         #[cfg(feature = "tracing")]
-                        tracing::debug!("Published to MQTT topic: {}", topic_clone);
+                        tracing::debug!("Published to MQTT topic: {}", topic);
                     }
                 }
 
                 #[cfg(feature = "tracing")]
-                tracing::info!("MQTT outbound publisher stopped for topic: {}", topic_clone);
+                tracing::info!(
+                    "MQTT outbound publisher stopped for topic: {}",
+                    default_topic_clone
+                );
             })?;
         }
 

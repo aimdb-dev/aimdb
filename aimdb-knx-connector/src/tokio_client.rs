@@ -34,15 +34,6 @@ enum KnxCommand {
     },
 }
 
-/// Type alias for outbound route configuration
-/// (resource_id, consumer, serializer, config_params)
-type OutboundRoute = (
-    String,
-    Box<dyn aimdb_core::connector::ConsumerTrait>,
-    aimdb_core::connector::SerializerFn,
-    Vec<(String, String)>,
-);
-
 /// KNX connector for a single gateway connection with router-based dispatch
 ///
 /// Each connector manages ONE KNX/IP gateway connection. The router determines
@@ -230,31 +221,39 @@ impl KnxConnectorImpl {
     /// Called automatically during build() to start publishing data from AimDB to KNX.
     /// Each route spawns an independent task that subscribes to the record
     /// and publishes to the KNX gateway via the command queue.
+    ///
+    /// If a topic provider is configured, it will be called for each value to
+    /// dynamically determine the KNX group address. Otherwise, the static default is used.
     fn spawn_outbound_publishers<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
-        routes: Vec<OutboundRoute>,
+        routes: Vec<aimdb_core::OutboundRoute>,
     ) -> aimdb_core::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
 
-        for (group_addr_str, consumer, serializer, _config) in routes {
+        for (default_group_addr_str, consumer, serializer, _config, topic_provider) in routes {
             let command_tx = self.command_tx.clone();
-            let group_addr_clone = group_addr_str.clone();
+            let default_group_addr_clone = default_group_addr_str.clone();
 
             runtime.spawn(async move {
-                // Parse group address using knx-pico's type-safe parser
-                let group_addr = match group_addr_clone.parse::<GroupAddress>() {
-                    Ok(addr) => addr,
+                // Parse default group address using knx-pico's type-safe parser
+                let default_group_addr = match default_group_addr_clone.parse::<GroupAddress>() {
+                    Ok(addr) => Some(addr),
                     Err(_e) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::error!(
-                            "Invalid group address for outbound: '{}'",
-                            group_addr_clone
-                        );
-                        return;
+                        // If no topic provider, this is an error
+                        if topic_provider.is_none() {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!(
+                                "Invalid group address for outbound: '{}'",
+                                default_group_addr_clone
+                            );
+                            return;
+                        }
+                        // With topic provider, the default can be invalid (will be overridden)
+                        None
                     }
                 };
 
@@ -263,15 +262,45 @@ impl KnxConnectorImpl {
                     Ok(r) => r,
                     Err(_e) => {
                         #[cfg(feature = "tracing")]
-                        tracing::error!("Failed to subscribe for outbound: '{}'", group_addr_clone);
+                        tracing::error!(
+                            "Failed to subscribe for outbound: '{}'",
+                            default_group_addr_clone
+                        );
                         return;
                     }
                 };
 
                 #[cfg(feature = "tracing")]
-                tracing::info!("KNX outbound publisher started for: {}", group_addr_clone);
+                tracing::info!(
+                    "KNX outbound publisher started for: {}",
+                    default_group_addr_clone
+                );
 
                 while let Ok(value_any) = reader.recv_any().await {
+                    // Determine group address: dynamic (from provider) or default (from URL)
+                    let group_addr_str = topic_provider
+                        .as_ref()
+                        .and_then(|provider| provider.topic_any(&*value_any))
+                        .unwrap_or_else(|| default_group_addr_clone.clone());
+
+                    // Parse group address (may be dynamic)
+                    let group_addr = match group_addr_str.parse::<GroupAddress>() {
+                        Ok(addr) => addr,
+                        Err(_e) => {
+                            // Try to use cached default if available
+                            if let Some(addr) = default_group_addr {
+                                addr
+                            } else {
+                                #[cfg(feature = "tracing")]
+                                tracing::error!(
+                                    "Invalid dynamic group address: '{}'",
+                                    group_addr_str
+                                );
+                                continue;
+                            }
+                        }
+                    };
+
                     // Serialize the type-erased value
                     let bytes = match serializer(&*value_any) {
                         Ok(b) => b,
@@ -279,7 +308,7 @@ impl KnxConnectorImpl {
                             #[cfg(feature = "tracing")]
                             tracing::error!(
                                 "Failed to serialize for group address '{}': {:?}",
-                                group_addr_clone,
+                                group_addr_str,
                                 _e
                             );
                             continue;
@@ -297,17 +326,20 @@ impl KnxConnectorImpl {
                         #[cfg(feature = "tracing")]
                         tracing::error!(
                             "Failed to send command for group address '{}': channel closed",
-                            group_addr_clone
+                            group_addr_str
                         );
                         break; // Connection task died, stop publishing
                     }
 
                     #[cfg(feature = "tracing")]
-                    tracing::debug!("Published to KNX: {}", group_addr_clone);
+                    tracing::debug!("Published to KNX: {}", group_addr_str);
                 }
 
                 #[cfg(feature = "tracing")]
-                tracing::info!("KNX outbound publisher stopped for: {}", group_addr_clone);
+                tracing::info!(
+                    "KNX outbound publisher stopped for: {}",
+                    default_group_addr_clone
+                );
             })?;
         }
 
