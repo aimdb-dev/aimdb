@@ -1,0 +1,99 @@
+[package]
+name = "weather-station-gamma"
+version = "0.1.0"
+edition = "2021"
+description = "Gamma weather station - MCU node (Embassy on STM32H563ZI)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = ["embassy-runtime"]
+embassy-runtime = []
+# Declare but don't enable these features to silence cfg warnings
+tokio-runtime = []
+std = []
+
+[dependencies]
+# AimDB dependencies
+weather-mesh-common = { path = "../weather-mesh-common", default-features = false }
+aimdb-core = { path = "../../../aimdb-core", default-features = false, features = [
+    "alloc",
+] }
+aimdb-embassy-adapter = { path = "../../../aimdb-embassy-adapter", default-features = false, features = [
+    "embassy-runtime",
+    "embassy-task-pool-8", # Need ~6 tasks: 2 producers + net + MQTT tasks
+] }
+aimdb-executor = { path = "../../../aimdb-executor", default-features = false, features = [
+    "embassy-types",
+] }
+aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false, features = [
+    "simulation",
+] }
+aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", default-features = false, features = [
+    "embassy-runtime",
+] }
+
+# Embassy ecosystem - STM32H563ZI with Ethernet (same as embassy-mqtt-connector-demo)
+embassy-stm32 = { workspace = true, features = [
+    "defmt",
+    "stm32h563zi",
+    "memory-x",
+    "time-driver-any",
+    "exti",
+    "unstable-pac",
+] }
+embassy-sync = { workspace = true, features = ["defmt"] }
+embassy-executor = { workspace = true, features = [
+    "arch-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-time = { workspace = true, features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+    "tick-hz-32_768",
+] }
+embassy-net = { workspace = true, features = [
+    "defmt",
+    "tcp",
+    "dhcpv4",
+    "medium-ethernet",
+    "proto-ipv6",
+] }
+embassy-futures = { workspace = true }
+
+# Embedded debugging and logging
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+
+# Cortex-M runtime
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+critical-section = { workspace = true }
+static_cell = { workspace = true }
+
+# Embedded HAL
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+embedded-io-async = { workspace = true }
+embedded-storage = { workspace = true }
+
+# Embedded utilities
+heapless = { workspace = true }
+micromath = { workspace = true }
+stm32-fmc = { workspace = true }
+embedded-alloc = { version = "0.6", features = ["llff"] }
+
+# Random number generation for simulation
+rand = { version = "0.8", default-features = false, features = ["small_rng"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+debug = true
+
+[package.metadata.embassy]
+build = [
+    { target = "thumbv8m.main-none-eabihf", artifact-dir = "out/examples/weather-station-gamma" },
+]

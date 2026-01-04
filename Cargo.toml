@@ -2,6 +2,7 @@
 members = [
     "aimdb-executor",
     "aimdb-derive",
+    "aimdb-data-contracts",
     "aimdb-core",
     "aimdb-client",
     "aimdb-embassy-adapter",
@@ -19,6 +20,11 @@ members = [
     "examples/embassy-knx-connector-demo",
     "examples/sync-api-demo",
     "examples/remote-access-demo",
+    "examples/weather-mesh-demo/weather-mesh-common",
+    "examples/weather-mesh-demo/weather-hub",
+    "examples/weather-mesh-demo/weather-station-alpha",
+    "examples/weather-mesh-demo/weather-station-beta",
+    "examples/weather-mesh-demo/weather-station-gamma",
 ]
 exclude = ["_external"]
 resolver = "2"
