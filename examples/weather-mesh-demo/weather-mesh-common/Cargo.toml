@@ -13,6 +13,7 @@ std = ["aimdb-data-contracts/std"]
 [dependencies]
 aimdb-core = { path = "../../../aimdb-core", default-features = false, features = [
     "derive",
+    "alloc",
 ] }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }

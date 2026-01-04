@@ -221,8 +221,8 @@ examples:
 	cargo build --package weather-station-alpha
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-beta (edge, synthetic)$(NC)\n"
 	cargo build --package weather-station-beta
-	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-gamma (MCU, embassy)$(NC)\n"
-	cargo build --package weather-station-gamma --target thumbv8m.main-none-eabihf
+	@printf "$(YELLOW)  → Building weather-station-gamma (embedded, embassy runtime)$(NC)\n"
+	cargo build --package weather-station-gamma --target thumbv7em-none-eabihf
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Security & Quality commands
