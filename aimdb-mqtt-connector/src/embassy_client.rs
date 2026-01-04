@@ -60,15 +60,6 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::once_lock::OnceLock;
 use static_cell::StaticCell;
 
-/// Type alias for outbound route configuration
-/// (resource_id, consumer, serializer, config_params)
-type OutboundRoute = (
-    String,
-    Box<dyn aimdb_core::connector::ConsumerTrait>,
-    aimdb_core::connector::SerializerFn,
-    Vec<(String, String)>,
-);
-
 use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
@@ -555,19 +546,22 @@ impl MqttConnectorImpl {
     ///
     /// This method uses the ConsumerTrait + factory pattern to subscribe to
     /// typed records without knowing the concrete type T at compile time.
+    ///
+    /// If a topic provider is configured, it will be called for each value to
+    /// dynamically determine the MQTT topic. Otherwise, the static default topic is used.
     fn spawn_outbound_publishers<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
-        routes: Vec<OutboundRoute>,
+        routes: Vec<aimdb_core::OutboundRoute>,
     ) -> aimdb_core::DbResult<()>
     where
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
 
-        for (topic, consumer, serializer, config) in routes {
+        for (default_topic, consumer, serializer, config, topic_provider) in routes {
             let action_sender = self.action_sender;
-            let topic_clone = topic.clone();
+            let default_topic_clone = default_topic.clone();
 
             // Parse config options
             let mut qos = QualityOfService::Qos1; // Default
@@ -597,7 +591,7 @@ impl MqttConnectorImpl {
                         #[cfg(feature = "defmt")]
                         defmt::error!(
                             "Failed to subscribe for outbound topic '{}'",
-                            topic_clone.as_str()
+                            default_topic_clone.as_str()
                         );
                         return;
                     }
@@ -606,26 +600,29 @@ impl MqttConnectorImpl {
                 #[cfg(feature = "defmt")]
                 defmt::info!(
                     "MQTT outbound publisher started for topic: {}",
-                    topic_clone.as_str()
+                    default_topic_clone.as_str()
                 );
 
                 while let Ok(value_any) = reader.recv_any().await {
+                    // Determine topic: dynamic (from provider) or default (from URL)
+                    let topic = topic_provider
+                        .as_ref()
+                        .and_then(|provider| provider.topic_any(&*value_any))
+                        .unwrap_or_else(|| default_topic_clone.clone());
+
                     // Serialize the type-erased value
                     let bytes = match serializer(&*value_any) {
                         Ok(b) => b,
                         Err(_e) => {
                             #[cfg(feature = "defmt")]
-                            defmt::error!(
-                                "Failed to serialize for topic '{}'",
-                                topic_clone.as_str()
-                            );
+                            defmt::error!("Failed to serialize for topic '{}'", topic.as_str());
                             continue;
                         }
                     };
 
                     // Publish to MQTT via action channel
                     let action = AimdbMqttAction::Publish {
-                        topic: topic_clone.clone(),
+                        topic: topic.clone(),
                         payload: bytes,
                         qos,
                         retain,
@@ -634,13 +631,13 @@ impl MqttConnectorImpl {
                     action_sender.send(action).await;
 
                     #[cfg(feature = "defmt")]
-                    defmt::debug!("Published to MQTT topic: {}", topic_clone.as_str());
+                    defmt::debug!("Published to MQTT topic: {}", topic.as_str());
                 }
 
                 #[cfg(feature = "defmt")]
                 defmt::info!(
                     "MQTT outbound publisher stopped for topic: {}",
-                    topic_clone.as_str()
+                    default_topic_clone.as_str()
                 );
             }))?;
         }

@@ -420,6 +420,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             serializer: None,
+            topic_provider: None,
         }
     }
 
@@ -443,6 +444,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             serializer: None,
+            topic_provider: None,
         }
     }
 
@@ -466,6 +468,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             deserializer: None,
+            topic_resolver: None,
         }
     }
 }
@@ -484,6 +487,7 @@ pub struct OutboundConnectorBuilder<
     url: String,
     config: Vec<(String, String)>,
     serializer: Option<TypedSerializerFn<T>>,
+    topic_provider: Option<crate::connector::TopicProviderFn>,
 }
 
 impl<'a, T, R> OutboundConnectorBuilder<'a, T, R>
@@ -525,6 +529,46 @@ where
         self
     }
 
+    /// Sets a dynamic topic provider
+    ///
+    /// The provider receives the value being published and returns
+    /// the topic/destination to publish to. Return `None` to use the default
+    /// static topic from the URL.
+    ///
+    /// # Type Safety
+    ///
+    /// The provider is type-checked at compile time against `T`.
+    /// Type erasure occurs internally for storage.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_core::connector::TopicProvider;
+    ///
+    /// struct SensorTopicProvider;
+    ///
+    /// impl TopicProvider<Temperature> for SensorTopicProvider {
+    ///     fn topic(&self, value: &Temperature) -> Option<String> {
+    ///         Some(format!("sensors/temp/{}", value.sensor_id))
+    ///     }
+    /// }
+    ///
+    /// reg.link_to("mqtt://sensors/default")
+    ///    .with_topic_provider(SensorTopicProvider)
+    ///    .with_serializer(...)
+    ///    .finish();
+    /// ```
+    pub fn with_topic_provider<P>(mut self, provider: P) -> Self
+    where
+        P: crate::connector::TopicProvider<T> + 'static,
+    {
+        // Type-erase the provider via TopicProviderWrapper
+        self.topic_provider = Some(Arc::new(crate::connector::TopicProviderWrapper::new(
+            provider,
+        )));
+        self
+    }
+
     /// Finalizes the connector registration
     pub fn finish(self) -> &'a mut RecordRegistrar<'a, T, R> {
         use crate::connector::{ConnectorLink, ConnectorUrl};
@@ -549,6 +593,9 @@ where
                 });
             link.serializer = Some(erased);
         }
+
+        // Wire through the topic provider
+        link.topic_provider = self.topic_provider;
 
         // Validation: Check that connector builder is registered
         let has_connector = self
@@ -615,6 +662,7 @@ pub struct InboundConnectorBuilder<
     url: String,
     config: Vec<(String, String)>,
     deserializer: Option<TypedDeserializerFn<T>>,
+    topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
 impl<'a, T, R> InboundConnectorBuilder<'a, T, R>
@@ -660,6 +708,38 @@ where
     pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
         self.config
             .push(("timeout_ms".to_string(), timeout_ms.to_string()));
+        self
+    }
+
+    /// Sets a dynamic topic resolver for late-binding scenarios
+    ///
+    /// The resolver is called once at connector startup to determine
+    /// the subscription topic. Return `None` to use the default
+    /// static topic from the URL.
+    ///
+    /// # Use Cases
+    ///
+    /// - Topics determined from smart contracts at runtime
+    /// - Service discovery integration
+    /// - Environment-specific topic configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// reg.link_from("mqtt://mesh/default/data")  // Fallback topic
+    ///    .with_topic_resolver(|| {
+    ///        // Read from smart contract, config service, etc.
+    ///        let node_id = smart_contract.get_producer_node_id()?;
+    ///        Some(format!("mesh/{}/data", node_id))
+    ///    })
+    ///    .with_deserializer(|bytes| parse_sensor_data(bytes))
+    ///    .finish();
+    /// ```
+    pub fn with_topic_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn() -> Option<String> + Send + Sync + 'static,
+    {
+        self.topic_resolver = Some(Arc::new(resolver));
         self
     }
 
@@ -718,6 +798,9 @@ where
         // Create inbound connector link
         let mut link = InboundConnectorLink::new(url, erased_deserializer);
         link.config = self.config;
+
+        // Wire through the topic resolver
+        link.topic_resolver = self.topic_resolver;
 
         // Add producer factory callback that captures type T and record key
         {

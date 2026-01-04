@@ -105,6 +105,106 @@ impl std::error::Error for SerializeError {}
 pub type SerializerFn =
     Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, SerializeError> + Send + Sync>;
 
+// ============================================================================
+// TopicProvider - Dynamic topic/destination routing
+// ============================================================================
+
+/// Trait for dynamic topic providers (outbound only)
+///
+/// Implement this trait to dynamically determine MQTT topics (or KNX group addresses)
+/// based on the data being published. This enables reusable routing logic that
+/// can be shared across multiple record types.
+///
+/// # Type Safety
+///
+/// The trait is generic over `T`, providing compile-time type safety
+/// at the implementation site. Type erasure occurs only at storage time.
+///
+/// # no_std Compatibility
+///
+/// Works in both `std` and `no_std + alloc` environments.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use aimdb_core::connector::TopicProvider;
+///
+/// struct SensorTopicProvider;
+///
+/// impl TopicProvider<Temperature> for SensorTopicProvider {
+///     fn topic(&self, value: &Temperature) -> Option<String> {
+///         Some(format!("sensors/temp/{}", value.sensor_id))
+///     }
+/// }
+/// ```
+pub trait TopicProvider<T>: Send + Sync {
+    /// Determine the topic/destination for a given value
+    ///
+    /// Returns `Some(topic)` to use a dynamic topic, or `None` to fall back
+    /// to the static topic from the `link_to()` URL.
+    fn topic(&self, value: &T) -> Option<String>;
+}
+
+/// Type-erased topic provider trait (internal)
+///
+/// Allows storing providers for different types in a unified collection.
+/// The concrete type is recovered via `Any::downcast_ref()` at runtime.
+pub trait TopicProviderAny: Send + Sync {
+    /// Get the topic for a type-erased value
+    ///
+    /// Returns `None` if the value type doesn't match or if the provider
+    /// returns `None` for this value.
+    fn topic_any(&self, value: &dyn core::any::Any) -> Option<String>;
+}
+
+/// Wrapper struct for type-erasing a `TopicProvider<T>`
+///
+/// This wraps a concrete `TopicProvider<T>` implementation and provides
+/// the `TopicProviderAny` interface for type-erased storage.
+///
+/// Uses `PhantomData<fn(T) -> T>` instead of `PhantomData<T>` to avoid
+/// inheriting Send/Sync bounds from T (the data type isn't stored).
+pub struct TopicProviderWrapper<T, P>
+where
+    T: 'static,
+    P: TopicProvider<T>,
+{
+    provider: P,
+    // Use fn(T) -> T to avoid Send/Sync variance issues with T
+    _phantom: core::marker::PhantomData<fn(T) -> T>,
+}
+
+impl<T, P> TopicProviderWrapper<T, P>
+where
+    T: 'static,
+    P: TopicProvider<T>,
+{
+    /// Create a new wrapper for a topic provider
+    pub fn new(provider: P) -> Self {
+        Self {
+            provider,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<T, P> TopicProviderAny for TopicProviderWrapper<T, P>
+where
+    T: 'static,
+    P: TopicProvider<T> + Send + Sync,
+{
+    fn topic_any(&self, value: &dyn core::any::Any) -> Option<String> {
+        value
+            .downcast_ref::<T>()
+            .and_then(|v| self.provider.topic(v))
+    }
+}
+
+/// Type alias for stored topic provider (no_std compatible)
+///
+/// Uses `Arc<dyn TopicProviderAny>` for shared ownership across async tasks.
+pub type TopicProviderFn = Arc<dyn TopicProviderAny>;
+
 /// Parsed connector URL with protocol, host, port, and credentials
 ///
 /// Supports multiple protocol schemes:
@@ -353,6 +453,15 @@ pub struct ConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     #[cfg(feature = "alloc")]
     pub consumer_factory: Option<ConsumerFactoryFn>,
+
+    /// Optional dynamic topic provider
+    ///
+    /// When set, the provider is called with each value to determine the
+    /// topic/destination dynamically. If the provider returns `None`,
+    /// the static topic from the URL is used as fallback.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    pub topic_provider: Option<TopicProviderFn>,
 }
 
 impl Debug for ConnectorLink {
@@ -371,6 +480,10 @@ impl Debug for ConnectorLink {
                 #[cfg(not(feature = "alloc"))]
                 &None::<()>,
             )
+            .field(
+                "topic_provider",
+                &self.topic_provider.as_ref().map(|_| "<function>"),
+            )
             .finish()
     }
 }
@@ -384,6 +497,7 @@ impl ConnectorLink {
             serializer: None,
             #[cfg(feature = "alloc")]
             consumer_factory: None,
+            topic_provider: None,
         }
     }
 
@@ -427,6 +541,24 @@ pub type DeserializerFn =
 #[cfg(feature = "alloc")]
 pub type ProducerFactoryFn =
     Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait> + Send + Sync>;
+
+/// Topic resolver function for inbound connections (late-binding)
+///
+/// Called once at connector startup to resolve the subscription topic.
+/// Returns `Some(topic)` to use a dynamic topic, or `None` to fall back
+/// to the static topic from the `link_from()` URL.
+///
+/// # Use Cases
+///
+/// - Topics determined from smart contracts at runtime
+/// - Service discovery integration
+/// - Environment-specific topic configuration
+/// - Topics read from configuration files or databases
+///
+/// # no_std Compatibility
+///
+/// Works in both `std` and `no_std + alloc` environments.
+pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// Type-erased producer trait for MQTT router
 ///
@@ -529,6 +661,14 @@ pub struct InboundConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     #[cfg(feature = "alloc")]
     pub producer_factory: Option<ProducerFactoryFn>,
+
+    /// Optional dynamic topic resolver (late-binding)
+    ///
+    /// Called once at connector startup to determine the subscription topic.
+    /// If the resolver returns `None`, the static topic from the URL is used.
+    ///
+    /// Available in both `std` and `no_std + alloc` environments.
+    pub topic_resolver: Option<TopicResolverFn>,
 }
 
 impl Clone for InboundConnectorLink {
@@ -539,6 +679,7 @@ impl Clone for InboundConnectorLink {
             deserializer: self.deserializer.clone(),
             #[cfg(feature = "alloc")]
             producer_factory: self.producer_factory.clone(),
+            topic_resolver: self.topic_resolver.clone(),
         }
     }
 }
@@ -549,6 +690,10 @@ impl Debug for InboundConnectorLink {
             .field("url", &self.url)
             .field("config", &self.config)
             .field("deserializer", &"<function>")
+            .field(
+                "topic_resolver",
+                &self.topic_resolver.as_ref().map(|_| "<function>"),
+            )
             .finish()
     }
 }
@@ -562,6 +707,7 @@ impl InboundConnectorLink {
             deserializer,
             #[cfg(feature = "alloc")]
             producer_factory: None,
+            topic_resolver: None,
         }
     }
 
@@ -589,6 +735,19 @@ impl InboundConnectorLink {
         db_any: Arc<dyn core::any::Any + Send + Sync>,
     ) -> Option<Box<dyn ProducerTrait>> {
         self.producer_factory.as_ref().map(|f| f(db_any))
+    }
+
+    /// Resolves the subscription topic for this link
+    ///
+    /// If a topic resolver is configured, calls it to determine the topic.
+    /// Otherwise, returns the static topic from the URL.
+    ///
+    /// This is called once at connector startup.
+    pub fn resolve_topic(&self) -> String {
+        self.topic_resolver
+            .as_ref()
+            .and_then(|resolver| resolver())
+            .unwrap_or_else(|| self.url.resource_id())
     }
 }
 
@@ -868,5 +1027,172 @@ mod tests {
     fn test_parse_missing_scheme() {
         let result = ConnectorUrl::parse("broker.example.com:1883");
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // TopicProvider Tests
+    // ========================================================================
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone)]
+    struct TestTemperature {
+        sensor_id: String,
+        celsius: f32,
+    }
+
+    struct TestTopicProvider;
+
+    impl super::TopicProvider<TestTemperature> for TestTopicProvider {
+        fn topic(&self, value: &TestTemperature) -> Option<String> {
+            Some(format!("sensors/temp/{}", value.sensor_id))
+        }
+    }
+
+    #[test]
+    fn test_topic_provider_type_erasure() {
+        use super::{TopicProviderAny, TopicProviderWrapper};
+
+        let provider: Arc<dyn TopicProviderAny> =
+            Arc::new(TopicProviderWrapper::new(TestTopicProvider));
+        let temp = TestTemperature {
+            sensor_id: "kitchen-001".into(),
+            celsius: 22.5,
+        };
+
+        assert_eq!(
+            provider.topic_any(&temp),
+            Some("sensors/temp/kitchen-001".into())
+        );
+    }
+
+    #[test]
+    fn test_topic_provider_type_mismatch() {
+        use super::{TopicProviderAny, TopicProviderWrapper};
+
+        let provider: Arc<dyn TopicProviderAny> =
+            Arc::new(TopicProviderWrapper::new(TestTopicProvider));
+        let wrong_type = "not a temperature";
+
+        // Type mismatch returns None (falls back to default topic)
+        assert_eq!(provider.topic_any(&wrong_type), None);
+    }
+
+    #[test]
+    fn test_topic_provider_returns_none() {
+        struct OptionalTopicProvider;
+
+        impl super::TopicProvider<TestTemperature> for OptionalTopicProvider {
+            fn topic(&self, temp: &TestTemperature) -> Option<String> {
+                if temp.sensor_id.is_empty() {
+                    None // Fall back to default topic
+                } else {
+                    Some(format!("sensors/{}", temp.sensor_id))
+                }
+            }
+        }
+
+        use super::{TopicProviderAny, TopicProviderWrapper};
+
+        let provider: Arc<dyn TopicProviderAny> =
+            Arc::new(TopicProviderWrapper::new(OptionalTopicProvider));
+
+        // Non-empty sensor_id returns dynamic topic
+        let temp_with_id = TestTemperature {
+            sensor_id: "abc".into(),
+            celsius: 20.0,
+        };
+        assert_eq!(
+            provider.topic_any(&temp_with_id),
+            Some("sensors/abc".into())
+        );
+
+        // Empty sensor_id returns None (fallback)
+        let temp_without_id = TestTemperature {
+            sensor_id: String::new(),
+            celsius: 20.0,
+        };
+        assert_eq!(provider.topic_any(&temp_without_id), None);
+    }
+
+    // ========================================================================
+    // TopicResolverFn Tests
+    // ========================================================================
+
+    #[test]
+    fn test_topic_resolver_returns_some() {
+        let resolver: super::TopicResolverFn = Arc::new(|| Some("resolved/topic".into()));
+
+        assert_eq!(resolver(), Some("resolved/topic".into()));
+    }
+
+    #[test]
+    fn test_topic_resolver_returns_none() {
+        let resolver: super::TopicResolverFn = Arc::new(|| None);
+
+        // Returns None, should fall back to default topic
+        assert_eq!(resolver(), None);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_topic_resolver_with_captured_state() {
+        use std::sync::Mutex;
+
+        let config = Arc::new(Mutex::new(Some("dynamic/topic".to_string())));
+        let config_clone = config.clone();
+
+        let resolver: super::TopicResolverFn =
+            Arc::new(move || config_clone.lock().unwrap().clone());
+
+        assert_eq!(resolver(), Some("dynamic/topic".into()));
+
+        // Clear config
+        *config.lock().unwrap() = None;
+        assert_eq!(resolver(), None);
+    }
+
+    #[test]
+    fn test_inbound_connector_link_resolve_topic_default() {
+        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+
+        let url = ConnectorUrl::parse("mqtt://sensors/temperature").unwrap();
+        let deserializer: DeserializerFn =
+            Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
+        let link = InboundConnectorLink::new(url, deserializer);
+
+        // No resolver configured, should return static topic from URL
+        assert_eq!(link.resolve_topic(), "sensors/temperature");
+    }
+
+    #[test]
+    fn test_inbound_connector_link_resolve_topic_dynamic() {
+        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+
+        let url = ConnectorUrl::parse("mqtt://sensors/default").unwrap();
+        let deserializer: DeserializerFn =
+            Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
+        let mut link = InboundConnectorLink::new(url, deserializer);
+
+        // Configure dynamic resolver
+        link.topic_resolver = Some(Arc::new(|| Some("sensors/dynamic/kitchen".into())));
+
+        // Should return resolved topic, not URL topic
+        assert_eq!(link.resolve_topic(), "sensors/dynamic/kitchen");
+    }
+
+    #[test]
+    fn test_inbound_connector_link_resolve_topic_fallback() {
+        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+
+        let url = ConnectorUrl::parse("mqtt://sensors/fallback").unwrap();
+        let deserializer: DeserializerFn =
+            Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
+        let mut link = InboundConnectorLink::new(url, deserializer);
+
+        // Configure resolver that returns None
+        link.topic_resolver = Some(Arc::new(|| None));
+
+        // Should fall back to static topic from URL
+        assert_eq!(link.resolve_topic(), "sensors/fallback");
     }
 }
