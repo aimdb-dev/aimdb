@@ -2,44 +2,164 @@
   <style>
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes slideUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
-    @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-    @keyframes movePacket1 { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(60px); } }
-    @keyframes movePacket2 { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-60px); } }
-    @keyframes sliderMove { 0%, 15% { transform: translateX(120px); } 50%, 100% { transform: translateX(0); } }
-    @keyframes taglineFade { 0%, 60% { opacity: 0; } 70%, 100% { opacity: 1; } }
     @keyframes lineDraw { from { stroke-dashoffset: 50; } to { stroke-dashoffset: 0; } }
     
+    @keyframes deployToCloud {
+      0%, 33% { opacity: 1; }
+      34%, 100% { opacity: 0; }
+    }
+    @keyframes deployToEdge {
+      0%, 33% { opacity: 0; }
+      34%, 66% { opacity: 1; }
+      67%, 100% { opacity: 0; }
+    }
+    @keyframes deployToMcu {
+      0%, 66% { opacity: 0; }
+      67%, 100% { opacity: 1; }
+    }
+    
+    @keyframes pulseGlow {
+      0%, 100% { filter: drop-shadow(0 0 3px #10b981); }
+      50% { filter: drop-shadow(0 0 8px #10b981); }
+    }
+    
+    @keyframes packetMcuEdgeLeft { 
+      0% { transform: translateX(0); opacity: 1; }
+      3% { transform: translateX(-50px); opacity: 1; }
+      6% { transform: translateX(0); opacity: 1; }
+      11% { transform: translateX(-50px); opacity: 1; }
+      14% { transform: translateX(0); opacity: 1; }
+      22% { transform: translateX(-50px); opacity: 1; }
+      25% { transform: translateX(0); opacity: 1; }
+      33% { transform: translateX(0); opacity: 1; }
+      34% { transform: translateX(0); opacity: 1; }
+      37% { transform: translateX(-50px); opacity: 1; }
+      40% { transform: translateX(0); opacity: 1; }
+      48% { transform: translateX(-50px); opacity: 1; }
+      51% { transform: translateX(0); opacity: 1; }
+      59% { transform: translateX(-50px); opacity: 1; }
+      62% { transform: translateX(0); opacity: 1; }
+      66% { transform: translateX(0); opacity: 1; }
+      67%, 100% { transform: translateX(0); opacity: 0; }
+    }
+    
+    @keyframes packetMcuEdgeRight { 
+      0% { transform: translateX(0); }
+      3% { transform: translateX(50px); }
+      6% { transform: translateX(0); }
+      11% { transform: translateX(50px); }
+      14% { transform: translateX(0); }
+      22% { transform: translateX(50px); }
+      25% { transform: translateX(0); }
+      33% { transform: translateX(0); }
+      34% { transform: translateX(0); }
+      37% { transform: translateX(50px); }
+      40% { transform: translateX(0); }
+      48% { transform: translateX(50px); }
+      51% { transform: translateX(0); }
+      59% { transform: translateX(50px); }
+      62% { transform: translateX(0); }
+      66% { transform: translateX(0); }
+      67% { transform: translateX(0); }
+      70% { transform: translateX(50px); }
+      73% { transform: translateX(0); }
+      81% { transform: translateX(50px); }
+      84% { transform: translateX(0); }
+      92% { transform: translateX(50px); }
+      95% { transform: translateX(0); }
+      100% { transform: translateX(0); }
+    }
+    
+    @keyframes packetEdgeCloudLeft { 
+      0% { transform: translateX(0); opacity: 1; }
+      3% { transform: translateX(-50px); opacity: 1; }
+      6% { transform: translateX(0); opacity: 1; }
+      11% { transform: translateX(-50px); opacity: 1; }
+      14% { transform: translateX(0); opacity: 1; }
+      22% { transform: translateX(-50px); opacity: 1; }
+      25% { transform: translateX(0); opacity: 1; }
+      33% { transform: translateX(0); opacity: 1; }
+      34%, 100% { transform: translateX(0); opacity: 0; }
+    }
+    
+    @keyframes packetEdgeCloudRight { 
+      0% { transform: translateX(0); }
+      3% { transform: translateX(50px); }
+      6% { transform: translateX(0); }
+      11% { transform: translateX(50px); }
+      14% { transform: translateX(0); }
+      22% { transform: translateX(50px); }
+      25% { transform: translateX(0); }
+      33% { transform: translateX(0); }
+      34% { transform: translateX(0); }
+      37% { transform: translateX(50px); }
+      40% { transform: translateX(0); }
+      48% { transform: translateX(50px); }
+      51% { transform: translateX(0); }
+      59% { transform: translateX(50px); }
+      62% { transform: translateX(0); }
+      66% { transform: translateX(0); }
+      67% { transform: translateX(0); }
+      70% { transform: translateX(50px); }
+      73% { transform: translateX(0); }
+      81% { transform: translateX(50px); }
+      84% { transform: translateX(0); }
+      92% { transform: translateX(50px); }
+      95% { transform: translateX(0); }
+      100% { transform: translateX(0); }
+    }
+    
+    @keyframes highlightCloud { 
+      0%, 33% { stroke: #10b981; stroke-width: 3; fill: #ecfdf5; }
+      34%, 100% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
+    }
+    @keyframes highlightEdge { 
+      0%, 33% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
+      34%, 66% { stroke: #10b981; stroke-width: 3; fill: #ecfdf5; }
+      67%, 100% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
+    }
+    @keyframes highlightMcu { 
+      0%, 66% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
+      67%, 100% { stroke: #10b981; stroke-width: 3; fill: #ecfdf5; }
+    }
+    
     .bg { fill: #ffffff; }
-    .box { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; rx: 8; }
-    .schema-box { fill: #eff6ff; stroke: #2563eb; stroke-width: 2; rx: 8; }
-    .text { fill: #1e293b; font-family: 'Segoe UI', system-ui, sans-serif; }
-    .text-small { fill: #64748b; font-family: 'Consolas', monospace; font-size: 11px; }
-    .text-label { fill: #2563eb; font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 600; }
-    .text-title { fill: #1e293b; font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 700; font-size: 14px; }
-    .connector { stroke: #2563eb; stroke-width: 2; stroke-dasharray: 5,5; fill: none; }
+    .box { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; }
+    .box-mcu { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; animation: highlightMcu 9s ease-in-out 2s infinite; }
+    .box-edge { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; animation: highlightEdge 9s ease-in-out 2s infinite; }
+    .box-cloud { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; animation: highlightCloud 9s ease-in-out 2s infinite; }
+    .schema-box { fill: #eff6ff; stroke: #2563eb; stroke-width: 2; }
+    .text { fill: #1e293b; font-family: system-ui, sans-serif; }
+    .text-small { fill: #64748b; font-family: monospace; font-size: 11px; }
+    .text-label { fill: #2563eb; font-family: system-ui, sans-serif; font-weight: 600; }
+    .text-title { fill: #1e293b; font-family: system-ui, sans-serif; font-weight: 700; font-size: 14px; }
+    .connector { stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 5,5; fill: none; }
+    .connector-active { stroke: #10b981; stroke-width: 2; fill: none; }
     .packet { fill: #06b6d4; }
-    .slider-track { fill: #e2e8f0; rx: 4; }
-    .slider-fill { rx: 4; }
-    .tagline { fill: #1e293b; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 16px; font-weight: 600; text-anchor: middle; }
+    .tagline { fill: #1e293b; font-family: system-ui, sans-serif; font-size: 16px; font-weight: 600; text-anchor: middle; }
+    .deploy-dot { fill: #10b981; animation: pulseGlow 1s ease-in-out infinite; }
     
     .schema-group { animation: fadeIn 0.8s ease-out forwards; }
     .mcu-group { animation: slideUp 0.6s ease-out 1s forwards; opacity: 0; }
     .edge-group { animation: slideUp 0.6s ease-out 1.2s forwards; opacity: 0; }
     .cloud-group { animation: slideUp 0.6s ease-out 1.4s forwards; opacity: 0; }
-    .connector-line { animation: lineDraw 0.5s ease-out 1.6s forwards; stroke-dasharray: 50; stroke-dashoffset: 50; }
-    .packet-right { animation: movePacket1 1.5s ease-in-out 2.5s infinite; }
-    .packet-left { animation: movePacket2 1.5s ease-in-out 2.5s infinite; }
-    .slider-indicator { animation: sliderMove 6s ease-in-out infinite; }
-    .tagline-group { animation: taglineFade 6s ease-out infinite; }
+    .connector-group { animation: fadeIn 0.4s ease-out 1.6s forwards; opacity: 0; }
+    
+    .deploy-cloud { animation: deployToCloud 9s ease-in-out 2s infinite; }
+    .deploy-edge { animation: deployToEdge 9s ease-in-out 2s infinite; }
+    .deploy-mcu { animation: deployToMcu 9s ease-in-out 2s infinite; }
+    
+    .packet-mcu-edge-right { animation: packetMcuEdgeRight 9s ease-in-out 2s infinite; }
+    .packet-mcu-edge-left { animation: packetMcuEdgeLeft 9s ease-in-out 2s infinite; }
+    .packet-edge-cloud-right { animation: packetEdgeCloudRight 9s ease-in-out 2s infinite; }
+    .packet-edge-cloud-left { animation: packetEdgeCloudLeft 9s ease-in-out 2s infinite; }
   </style>
   
-  <!-- Background -->
   <rect class="bg" width="800" height="450"/>
   
-  <!-- Data Contract Box (top center) -->
   <g class="schema-group">
-    <rect class="schema-box" x="275" y="30" width="250" height="120"/>
-    <text class="text-title" x="320" y="55">📝 Data Contract</text>
+    <rect class="schema-box" x="275" y="30" width="250" height="120" rx="8"/>
+    <text class="text-title" x="320" y="55">Data Contract</text>
     <text class="text-small" x="295" y="78">Temperature {</text>
     <text class="text-small" x="310" y="93">  celsius: f32</text>
     <text class="text-small" x="310" y="108">  sensor_id: String</text>
@@ -47,54 +167,58 @@
     <text class="text-small" x="295" y="140">+ serialize() + transform()</text>
   </g>
   
-  <!-- Connector lines from schema to boxes -->
-  <line class="connector connector-line" x1="340" y1="150" x2="150" y2="200"/>
-  <line class="connector connector-line" x1="400" y1="150" x2="400" y2="200"/>
-  <line class="connector connector-line" x1="460" y1="150" x2="650" y2="200"/>
+  <g class="connector-group">
+    <line class="connector" x1="340" y1="150" x2="150" y2="200"/>
+    <line class="connector" x1="400" y1="150" x2="400" y2="200"/>
+    <line class="connector" x1="460" y1="150" x2="650" y2="200"/>
+    
+    <g class="deploy-cloud">
+      <line class="connector-active" x1="460" y1="150" x2="650" y2="200"/>
+    </g>
+    <g class="deploy-edge">
+      <line class="connector-active" x1="400" y1="150" x2="400" y2="200"/>
+    </g>
+    <g class="deploy-mcu">
+      <line class="connector-active" x1="340" y1="150" x2="150" y2="200"/>
+    </g>
+  </g>
   
-  <!-- MCU Box -->
   <g class="mcu-group">
-    <rect class="box" x="70" y="200" width="160" height="90"/>
-    <text class="text-label" x="115" y="225">🔌 MCU</text>
+    <rect class="box-mcu" x="70" y="200" width="160" height="90" rx="8"/>
+    <text class="text-label" x="115" y="225">MCU</text>
     <text class="text" x="110" y="248" font-size="13">Embassy</text>
     <text class="text-small" x="120" y="268">no_std / 64KB</text>
   </g>
   
-  <!-- Edge Box -->
   <g class="edge-group">
-    <rect class="box" x="320" y="200" width="160" height="90"/>
-    <text class="text-label" x="365" y="225">🖥️ Edge</text>
+    <rect class="box-edge" x="320" y="200" width="160" height="90" rx="8"/>
+    <text class="text-label" x="365" y="225">Edge</text>
     <text class="text" x="370" y="248" font-size="13">Tokio</text>
     <text class="text-small" x="365" y="268">Linux / RPi</text>
   </g>
   
-  <!-- Cloud Box -->
   <g class="cloud-group">
-    <rect class="box" x="570" y="200" width="160" height="90"/>
-    <text class="text-label" x="615" y="225">☁️ Cloud</text>
+    <rect class="box-cloud" x="570" y="200" width="160" height="90" rx="8"/>
+    <text class="text-label" x="615" y="225">Cloud</text>
     <text class="text" x="620" y="248" font-size="13">Tokio</text>
     <text class="text-small" x="605" y="268">Kubernetes</text>
   </g>
   
-  <!-- Connection lines between boxes -->
   <g class="edge-group">
     <line stroke="#4a9eff" stroke-width="2" x1="230" y1="245" x2="320" y2="245"/>
     <text class="text-small" x="255" y="238">MQTT</text>
-    <!-- Packets MCU <-> Edge -->
-    <circle class="packet packet-right" cx="250" cy="245" r="4"/>
-    <circle class="packet packet-left" cx="300" cy="245" r="4"/>
+    <circle class="packet packet-mcu-edge-right" cx="250" cy="245" r="4"/>
+    <circle class="packet packet-mcu-edge-left" cx="300" cy="245" r="4"/>
   </g>
   
   <g class="cloud-group">
     <line stroke="#4a9eff" stroke-width="2" x1="480" y1="245" x2="570" y2="245"/>
     <text class="text-small" x="505" y="238">Kafka</text>
-    <!-- Packets Edge <-> Cloud -->
-    <circle class="packet packet-right" cx="500" cy="245" r="4"/>
-    <circle class="packet packet-left" cx="550" cy="245" r="4"/>
+    <circle class="packet packet-edge-cloud-right" cx="500" cy="245" r="4"/>
+    <circle class="packet packet-edge-cloud-left" cx="550" cy="245" r="4"/>
   </g>
   
-  <!-- Tagline -->
-  <g class="tagline-group">
+  <g>
     <text class="tagline" x="400" y="340">Same code. Your deployment. Your costs.</text>
   </g>
 </svg>
