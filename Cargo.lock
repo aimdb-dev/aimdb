@@ -762,7 +762,7 @@ version = "0.1.2"
 
 [[package]]
 name = "embassy-hal-internal"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-net"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-stm32"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aligned",
  "bit_field",
@@ -2216,8 +2216,9 @@ dependencies = [
 
 [[package]]
 name = "stm32-metapac"
-version = "18.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-96e15adc78a3f44583c25e6c86ae8d4f3e1f2b8c#e09e9cd53fea9d3ea3be9b9954056ac2b6e582fc"
+version = "19.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a411079520dbccc613af73172f944b7cf97ba84e3bd7381a0352b6ec7bfef03b"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
