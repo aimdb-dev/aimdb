@@ -15,7 +15,7 @@ weather-mesh-common = { path = "../weather-mesh-common" }
 aimdb-core = { path = "../../../aimdb-core" }
 aimdb-tokio-adapter = { path = "../../../aimdb-tokio-adapter" }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", features = [
-    "simulation",
+    "simulatable",
     "linkable",
 ] }
 aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", features = [

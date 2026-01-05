@@ -27,7 +27,7 @@ aimdb-executor = { path = "../../../aimdb-executor", default-features = false, f
     "embassy-types",
 ] }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false, features = [
-    "simulation",
+    "simulatable",
 ] }
 aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", default-features = false, features = [
     "embassy-runtime",
