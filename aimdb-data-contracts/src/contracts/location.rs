@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "linkable")]
 use crate::Linkable;
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 use crate::{Simulatable, SimulationConfig};
 
 /// GPS location reading
@@ -35,12 +35,37 @@ impl Observable for GpsLocation {
     /// Ordering is lexicographic (lat first, then lon).
     type Signal = (f64, f64);
 
+    const ICON: &'static str = "📍";
+    const UNIT: &'static str = "°";
+
     fn signal(&self) -> Self::Signal {
         (self.latitude, self.longitude)
     }
+
+    fn format_log(&self, node_id: &str) -> alloc::string::String {
+        let alt_str = match self.altitude {
+            Some(alt) => alloc::format!(" alt={:.1}m", alt),
+            None => alloc::string::String::new(),
+        };
+        let acc_str = match self.accuracy {
+            Some(acc) => alloc::format!(" acc=±{:.1}m", acc),
+            None => alloc::string::String::new(),
+        };
+        alloc::format!(
+            "{} [{}] GpsLocation: {:.6}{}, {:.6}{}{}{}",
+            Self::ICON,
+            node_id,
+            self.latitude,
+            Self::UNIT,
+            self.longitude,
+            Self::UNIT,
+            alt_str,
+            acc_str
+        )
+    }
 }
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 impl Simulatable for GpsLocation {
     /// Simulate GPS readings with random walk behavior around a base location.
     ///
@@ -143,7 +168,7 @@ mod tests {
         assert_eq!(GpsLocation::NAME, "gps_location");
     }
 
-    #[cfg(feature = "simulation")]
+    #[cfg(feature = "simulatable")]
     #[test]
     fn test_simulation() {
         use crate::simulatable::SimulationParams;
@@ -187,5 +212,27 @@ mod tests {
         let loc_north = GpsLocation::set((49.0, 16.0, None, None), 1000);
         let loc_south = GpsLocation::set((47.0, 17.0, None, None), 1000);
         assert!(loc_north.signal() > loc_south.signal()); // 49 > 47
+
+        // Test icon and unit
+        assert_eq!(GpsLocation::ICON, "📍");
+        assert_eq!(GpsLocation::UNIT, "°");
+
+        // Test format_log with all fields
+        let loc_full = GpsLocation::set((48.2082, 16.3738, Some(350.0), Some(5.5)), 1000);
+        let log = loc_full.format_log("alpha");
+        assert!(log.contains("📍"));
+        assert!(log.contains("[alpha]"));
+        assert!(log.contains("48.208200°"));
+        assert!(log.contains("16.373800°"));
+        assert!(log.contains("alt=350.0m"));
+        assert!(log.contains("acc=±5.5m"));
+
+        // Test format_log without optional fields
+        let loc_minimal = GpsLocation::set((48.2082, 16.3738, None, None), 2000);
+        let log_min = loc_minimal.format_log("beta");
+        assert!(log_min.contains("📍"));
+        assert!(log_min.contains("[beta]"));
+        assert!(!log_min.contains("alt="));
+        assert!(!log_min.contains("acc="));
     }
 }

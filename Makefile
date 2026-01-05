@@ -45,7 +45,7 @@ help:
 build:
 	@printf "$(GREEN)Building AimDB (all valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (std)$(NC)\n"
-	cargo build --package aimdb-data-contracts --features "std,simulation,migration"
+	cargo build --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std)$(NC)\n"
 	cargo build --package aimdb-data-contracts --no-default-features
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc)$(NC)\n"
@@ -66,7 +66,7 @@ build:
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (std)$(NC)\n"
-	cargo test --package aimdb-data-contracts --features "std,simulation,migration"
+	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
@@ -119,7 +119,7 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on aimdb-derive$(NC)\n"
 	cargo clippy --package aimdb-derive --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (std)$(NC)\n"
-	cargo clippy --package aimdb-data-contracts --features "std,simulation,migration" --all-targets -- -D warnings
+	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std)$(NC)\n"
 	cargo clippy --package aimdb-data-contracts --no-default-features -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
@@ -155,7 +155,7 @@ doc:
 	@mkdir -p target/doc-final/cloud
 	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
-	cargo doc --package aimdb-data-contracts --features "std,simulation,migration" --no-deps
+	cargo doc --package aimdb-data-contracts --features "std,simulateable,migratable,observable" --no-deps
 	cargo doc --package aimdb-core --features "std,tracing,metrics" --no-deps
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
 	cargo doc --package aimdb-sync --no-deps

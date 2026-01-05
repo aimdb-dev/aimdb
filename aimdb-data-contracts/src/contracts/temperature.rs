@@ -1,12 +1,14 @@
 //! Temperature sensor schema
 
+extern crate alloc;
+
 use crate::{Observable, SchemaType, Settable};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "linkable")]
 use crate::Linkable;
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 use crate::{Simulatable, SimulationConfig};
 
 /// Temperature sensor reading in Celsius
@@ -24,13 +26,26 @@ impl SchemaType for Temperature {
 
 impl Observable for Temperature {
     type Signal = f32;
+    const ICON: &'static str = "🌡️";
+    const UNIT: &'static str = "°C";
 
     fn signal(&self) -> f32 {
         self.celsius
     }
+
+    fn format_log(&self, node_id: &str) -> alloc::string::String {
+        alloc::format!(
+            "{} [{}] Temperature: {:.1}{} at {}",
+            Self::ICON,
+            node_id,
+            self.celsius,
+            Self::UNIT,
+            self.timestamp
+        )
+    }
 }
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 impl Simulatable for Temperature {
     /// Simulate temperature readings with random walk behavior.
     ///
@@ -104,7 +119,7 @@ mod tests {
         assert_eq!(Temperature::NAME, "temperature");
     }
 
-    #[cfg(feature = "simulation")]
+    #[cfg(feature = "simulatable")]
     #[test]
     fn test_simulation() {
         use crate::simulatable::SimulationParams;
@@ -134,7 +149,7 @@ mod tests {
         assert!(diff < 1.0, "Random walk step too large: {}", diff);
     }
 
-    #[cfg(feature = "simulation")]
+    #[cfg(feature = "simulatable")]
     #[test]
     fn test_simulation_with_trend() {
         use crate::simulatable::SimulationParams;

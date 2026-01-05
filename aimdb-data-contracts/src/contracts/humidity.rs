@@ -1,12 +1,14 @@
 //! Humidity sensor schema
 
+extern crate alloc;
+
 use crate::{Observable, SchemaType, Settable};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "linkable")]
 use crate::Linkable;
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 use crate::{Simulatable, SimulationConfig};
 
 /// Humidity sensor reading
@@ -24,13 +26,26 @@ impl SchemaType for Humidity {
 
 impl Observable for Humidity {
     type Signal = f32;
+    const ICON: &'static str = "💧";
+    const UNIT: &'static str = "%";
 
     fn signal(&self) -> f32 {
         self.percent
     }
+
+    fn format_log(&self, node_id: &str) -> alloc::string::String {
+        alloc::format!(
+            "{} [{}] Humidity: {:.1}{} at {}",
+            Self::ICON,
+            node_id,
+            self.percent,
+            Self::UNIT,
+            self.timestamp
+        )
+    }
 }
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 impl Simulatable for Humidity {
     /// Simulate humidity readings with random walk behavior.
     ///
@@ -112,7 +127,7 @@ mod tests {
         assert_eq!(humidity.signal(), 65.0);
     }
 
-    #[cfg(feature = "simulation")]
+    #[cfg(feature = "simulatable")]
     #[test]
     fn test_simulation() {
         use crate::simulatable::SimulationParams;

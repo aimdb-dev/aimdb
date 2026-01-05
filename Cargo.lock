@@ -84,6 +84,8 @@ dependencies = [
 name = "aimdb-data-contracts"
 version = "0.3.0"
 dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
  "rand",
  "serde",
  "serde_json",

@@ -32,24 +32,29 @@
 #[cfg(feature = "std")]
 extern crate std;
 
+extern crate alloc;
+
 pub mod contracts;
 
 #[cfg(feature = "linkable")]
 mod linkable;
 
-#[cfg(test)]
+#[cfg(feature = "observable")]
 mod observable;
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "observable")]
+pub use observable::log_tap;
+
+#[cfg(feature = "simulatable")]
 mod simulatable;
 
-#[cfg(feature = "migration")]
+#[cfg(feature = "migratable")]
 mod migratable;
 
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 pub use simulatable::{SimulationConfig, SimulationParams};
 
-#[cfg(feature = "migration")]
+#[cfg(feature = "migratable")]
 pub use migratable::{Migratable, MigrationError};
 
 // ═══════════════════════════════════════════════════════════════════
@@ -94,38 +99,14 @@ pub trait SchemaType: Sized {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// OBSERVABLE SUPPORT
-// ═══════════════════════════════════════════════════════════════════
-
-/// Extract a signal value for observation.
-///
-/// Implement this trait to enable threshold checking, alerting,
-/// and other signal-based operations on your schema type.
-///
-/// The extracted signal can be used by node implementations to:
-/// - Check against configured thresholds
-/// - Trigger alerts when bounds are exceeded
-/// - Compute aggregations (mean, min, max)
-/// - Feed into monitoring systems
-pub trait Observable: SchemaType {
-    /// The numeric type of the signal (e.g., `f32`, `f64`, `i32`).
-    ///
-    /// Must be comparable and copyable for threshold checks.
-    type Signal: PartialOrd + Copy;
-
-    /// Extract the signal value from this instance.
-    fn signal(&self) -> Self::Signal;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// SIMULATION SUPPORT (feature = "simulation")
+// SIMULATABLE SUPPORT (feature = "simulatable")
 // ═══════════════════════════════════════════════════════════════════
 
 /// Generate realistic test/simulation data.
 ///
 /// This is an intrinsic capability of the schema type itself,
 /// not a policy decision. If a type can be simulated, implement this.
-#[cfg(feature = "simulation")]
+#[cfg(feature = "simulatable")]
 pub trait Simulatable: SchemaType {
     /// Generate a new sample with optional reference to previous value.
     ///
@@ -155,6 +136,58 @@ pub trait Settable: SchemaType {
     /// - `value`: The primary data value
     /// - `timestamp`: Unix timestamp in milliseconds
     fn set(value: Self::Value, timestamp: u64) -> Self;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OBSERVABLE SUPPORT
+// ═══════════════════════════════════════════════════════════════════
+
+/// Extract a signal value for observation.
+///
+/// Implement this trait to enable threshold checking, alerting,
+/// and other signal-based operations on your schema type.
+///
+/// The extracted signal can be used by node implementations to:
+/// - Check against configured thresholds
+/// - Trigger alerts when bounds are exceeded
+/// - Compute aggregations (mean, min, max)
+/// - Feed into monitoring systems
+/// - Format log output with `format_log()`
+pub trait Observable: SchemaType {
+    /// The numeric type of the signal (e.g., `f32`, `f64`, `i32`).
+    ///
+    /// Must be comparable and copyable for threshold checks.
+    type Signal: PartialOrd + Copy;
+
+    /// Icon/emoji for log output (e.g., "🌡️", "💧", "📊")
+    ///
+    /// Override this to provide a visual indicator for your data type.
+    const ICON: &'static str = "📊";
+
+    /// Unit label for the signal (e.g., "°C", "%", "hPa")
+    ///
+    /// Override this to display the appropriate unit in log output.
+    const UNIT: &'static str = "";
+
+    /// Extract the signal value from this instance.
+    fn signal(&self) -> Self::Signal;
+
+    /// Format a log entry for this observation.
+    ///
+    /// The default implementation uses `Debug` formatting. Override this
+    /// for prettier, human-readable output.
+    ///
+    /// # Example output
+    /// ```text
+    /// 🌡️ [alpha] Temperature: 22.5°C at 1704326400000
+    /// 💧 [beta] Humidity: 65.3% at 1704326400000
+    /// ```
+    fn format_log(&self, node_id: &str) -> alloc::string::String
+    where
+        Self: core::fmt::Debug,
+    {
+        alloc::format!("{} [{}] {:?}", Self::ICON, node_id, self)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
