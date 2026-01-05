@@ -11,7 +11,7 @@ use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use rand::SeedableRng;
 use std::sync::Arc;
 use tracing::info;
-use weather_mesh_common::{Humidity, NodeKey, Temperature};
+use weather_mesh_common::{Humidity, HumidityKey, TempKey, Temperature};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,10 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_connector(MqttConnector::new(&mqtt_url).with_client_id("weather-station-beta"));
 
     // Configure temperature record
-    let temp_topic = format!("{}temperature", NodeKey::Beta.link_address().unwrap());
-    builder.configure::<Temperature>(NodeKey::Beta, |reg| {
+    let temp_topic = TempKey::Beta.link_address().unwrap();
+    builder.configure::<Temperature>(TempKey::Beta, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .link_to(&temp_topic)
+            .link_to(temp_topic)
             .with_serializer(|t: &Temperature| {
                 t.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
@@ -52,10 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Configure humidity record
-    let humidity_topic = format!("{}humidity", NodeKey::Beta.link_address().unwrap());
-    builder.configure::<Humidity>(NodeKey::Beta, |reg| {
+    let humidity_topic = HumidityKey::Beta.link_address().unwrap();
+    builder.configure::<Humidity>(HumidityKey::Beta, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .link_to(&humidity_topic)
+            .link_to(humidity_topic)
             .with_serializer(|h: &Humidity| {
                 h.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
@@ -70,8 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   - Humidity: {} (synthetic)", humidity_topic);
 
     // Get producers
-    let temp_producer = db.producer::<Temperature>(NodeKey::Beta.as_str());
-    let humidity_producer = db.producer::<Humidity>(NodeKey::Beta.as_str());
+    let temp_producer = db.producer::<Temperature>(TempKey::Beta.as_str());
+    let humidity_producer = db.producer::<Humidity>(HumidityKey::Beta.as_str());
 
     // Spawn synthetic data producer
     info!("🎲 Starting synthetic data producer...");

@@ -41,7 +41,7 @@ use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config};
 use embassy_time::{Duration, Timer};
 use rand::SeedableRng;
 use static_cell::StaticCell;
-use weather_mesh_common::{Humidity, NodeKey, Temperature};
+use weather_mesh_common::{Humidity, HumidityKey, Temperature, TempKey};
 use {defmt_rtt as _, panic_probe as _};
 
 // Simple embedded allocator
@@ -267,12 +267,11 @@ async fn main(spawner: Spawner) {
     );
 
     // Configure temperature record
-    let temp_topic = NodeKey::Gamma.link_address().unwrap();
-    let temp_full = format!("{}temperature", temp_topic);
-    builder.configure::<Temperature>(NodeKey::Gamma, |reg| {
+    let temp_topic = TempKey::Gamma.link_address().unwrap();
+    builder.configure::<Temperature>(TempKey::Gamma, |reg| {
         reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
             .source(temperature_producer)
-            .link_to(&temp_full)
+            .link_to(temp_topic)
             .with_serializer(|t: &Temperature| {
                 // Manual JSON serialization for no_std
                 let whole = t.celsius as i32;
@@ -290,11 +289,11 @@ async fn main(spawner: Spawner) {
     });
 
     // Configure humidity record
-    let humidity_full = format!("{}humidity", temp_topic);
-    builder.configure::<Humidity>(NodeKey::Gamma, |reg| {
+    let humidity_topic = HumidityKey::Gamma.link_address().unwrap();
+    builder.configure::<Humidity>(HumidityKey::Gamma, |reg| {
         reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
             .source(humidity_producer)
-            .link_to(&humidity_full)
+            .link_to(humidity_topic)
             .with_serializer(|h: &Humidity| {
                 // Manual JSON serialization for no_std
                 let whole = h.percent as i32;
@@ -312,8 +311,8 @@ async fn main(spawner: Spawner) {
     });
 
     info!("✅ Database configured with synthetic sensors:");
-    info!("   Temperature: {}", temp_full.as_str());
-    info!("   Humidity: {}", humidity_full.as_str());
+    info!("   Temperature: {}", temp_topic);
+    info!("   Humidity: {}", humidity_topic);
     info!("   Broker: {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
     info!("");
 

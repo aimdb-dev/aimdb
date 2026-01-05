@@ -12,7 +12,7 @@ use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
-use weather_mesh_common::{Humidity, NodeKey, Temperature};
+use weather_mesh_common::{Humidity, HumidityKey, TempKey, Temperature};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,10 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_connector(MqttConnector::new(&mqtt_url).with_client_id("weather-station-alpha"));
 
     // Configure temperature record
-    let temp_topic = format!("{}temperature", NodeKey::Alpha.link_address().unwrap());
-    builder.configure::<Temperature>(NodeKey::Alpha, |reg| {
+    let temp_topic = TempKey::Alpha.link_address().unwrap();
+    builder.configure::<Temperature>(TempKey::Alpha, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .link_to(&temp_topic)
+            .link_to(temp_topic)
             .with_serializer(|t: &Temperature| {
                 t.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
@@ -62,10 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Configure humidity record
-    let humidity_topic = format!("{}humidity", NodeKey::Alpha.link_address().unwrap());
-    builder.configure::<Humidity>(NodeKey::Alpha, |reg| {
+    let humidity_topic = HumidityKey::Alpha.link_address().unwrap();
+    builder.configure::<Humidity>(HumidityKey::Alpha, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .link_to(&humidity_topic)
+            .link_to(humidity_topic)
             .with_serializer(|h: &Humidity| {
                 h.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
@@ -80,8 +80,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   - Humidity: {}", humidity_topic);
 
     // Get producers
-    let temp_producer = db.producer::<Temperature>(NodeKey::Alpha.as_str());
-    let humidity_producer = db.producer::<Humidity>(NodeKey::Alpha.as_str());
+    let temp_producer = db.producer::<Temperature>(TempKey::Alpha.as_str());
+    let humidity_producer = db.producer::<Humidity>(HumidityKey::Alpha.as_str());
 
     // Spawn weather data producer
     info!("🌤️  Starting weather data producer...");

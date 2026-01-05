@@ -13,22 +13,40 @@ pub use aimdb_data_contracts::{SchemaType, Settable};
 // Re-export RecordKey for convenience
 pub use aimdb_core::RecordKey;
 
-/// Node identifiers for the weather mesh network.
+/// Temperature record keys for each weather station node.
 ///
-/// Each variant represents a sensor station with its base MQTT topic.
-/// The data type suffix (temperature, humidity) is added during buffer configuration.
+/// Each variant represents a temperature sensor with its MQTT topic.
 #[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
-#[key_prefix = "node."]
-pub enum NodeKey {
+#[key_prefix = "temp."]
+pub enum TempKey {
     #[key = "alpha"]
-    #[link_address = "mqtt://sensors/alpha/"]
+    #[link_address = "mqtt://sensors/alpha/temperature"]
     Alpha,
 
     #[key = "beta"]
-    #[link_address = "mqtt://sensors/beta/"]
+    #[link_address = "mqtt://sensors/beta/temperature"]
     Beta,
 
     #[key = "gamma"]
-    #[link_address = "mqtt://sensors/gamma/"]
+    #[link_address = "mqtt://sensors/gamma/temperature"]
+    Gamma,
+}
+
+/// Humidity record keys for each weather station node.
+///
+/// Each variant represents a humidity sensor with its MQTT topic.
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
+#[key_prefix = "humidity."]
+pub enum HumidityKey {
+    #[key = "alpha"]
+    #[link_address = "mqtt://sensors/alpha/humidity"]
+    Alpha,
+
+    #[key = "beta"]
+    #[link_address = "mqtt://sensors/beta/humidity"]
+    Beta,
+
+    #[key = "gamma"]
+    #[link_address = "mqtt://sensors/gamma/humidity"]
     Gamma,
 }
