@@ -1,0 +1,56 @@
+# Multi-stage build for AimDB Weather Stations
+FROM rust:1.92-bookworm AS builder
+
+# Build argument for node name (alpha or beta)
+ARG NODE_NAME
+ENV NODE_NAME=${NODE_NAME}
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /build
+
+# Copy entire workspace
+COPY . .
+
+# Build specified weather station in release mode
+RUN cargo build --release --bin weather-station-${NODE_NAME} --manifest-path examples/weather-mesh-demo/weather-station-${NODE_NAME}/Cargo.toml
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# Build argument for node name (needed in runtime stage)
+ARG NODE_NAME
+ENV NODE_NAME=${NODE_NAME}
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd -m -u 1000 aimdb
+
+# Create app directory
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/weather-station-${NODE_NAME} /app/weather-station
+
+# Change ownership
+RUN chown -R aimdb:aimdb /app
+
+# Switch to app user
+USER aimdb
+
+# Health check (checks if process is running)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD pgrep -x weather-station || exit 1
+
+# Run weather station
+CMD ["/app/weather-station"]

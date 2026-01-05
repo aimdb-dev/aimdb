@@ -1,0 +1,48 @@
+# Multi-stage build for AimDB Weather Hub
+FROM rust:1.92-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /build
+
+# Copy entire workspace
+COPY . .
+
+# Build weather-hub in release mode
+RUN cargo build --release --bin weather-hub --manifest-path examples/weather-mesh-demo/weather-hub/Cargo.toml
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd -m -u 1000 aimdb
+
+# Create app directory
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/weather-hub /app/weather-hub
+
+# Change ownership
+RUN chown -R aimdb:aimdb /app
+
+# Switch to app user
+USER aimdb
+
+# Health check (check if process is running)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD pgrep -x weather-hub || exit 1
+
+# Run weather-hub
+CMD ["/app/weather-hub"]
