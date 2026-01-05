@@ -174,7 +174,7 @@ fn derive_record_key_impl(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let expanded = quote! {
         impl aimdb_core::RecordKey for #name {
             #[inline]
-            fn as_str(&self) -> &str {
+            fn as_str(&self) -> &'static str {
                 match self {
                     #(#as_str_arms),*
                 }
