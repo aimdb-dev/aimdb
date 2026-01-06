@@ -1,0 +1,29 @@
+[package]
+name = "weather-station-beta"
+version = "0.1.0"
+edition = "2021"
+description = "Beta weather station - indoor edge node"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "weather-station-beta"
+path = "src/main.rs"
+
+[dependencies]
+weather-mesh-common = { path = "../weather-mesh-common" }
+aimdb-core = { path = "../../../aimdb-core" }
+aimdb-tokio-adapter = { path = "../../../aimdb-tokio-adapter" }
+aimdb-data-contracts = { path = "../../../aimdb-data-contracts", features = [
+    "simulatable",
+    "linkable",
+] }
+aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", features = [
+    "tokio-runtime",
+] }
+
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+chrono = "0.4"

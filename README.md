@@ -38,49 +38,20 @@ AimDB solves this with **portable data contracts**: define your schemas, seriali
 
 ### Getting Started
 
-- [Quick Start Guide](docs/aimdb-usage-guide.md) — Get running in 5 minutes
+**Try it now** — run a full MCU → edge → cloud mesh in Docker:
+
+```bash
+cd examples/weather-mesh-demo
+docker compose up
+```
+
+Then ask VS Code Copilot: *"What's the current temperature from station alpha?"* ([MCP setup required](examples/weather-mesh-demo/))
+
+**Learn more:**
+- [Quick Start Guide](docs/aimdb-usage-guide.md) — Dependency setup and API basics
+- [Weather Mesh Demo](examples/weather-mesh-demo/) — Full distributed demo with Copilot integration
 - [Examples](examples/) — MQTT, KNX and remote access demos
 - [API Documentation](https://docs.rs/aimdb-core) — Full Rust API reference
-
-**Linux / Cloud (Tokio)**
-```toml
-[dependencies]
-aimdb-core = { version = "0.4", features = ["std"] }
-aimdb-tokio-adapter = { version = "0.4", features = ["tokio-runtime"] }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-```
-
-**Embedded MCUs (Embassy)**
-```toml
-[dependencies]
-aimdb-core = { version = "0.4", default-features = false }
-aimdb-embassy-adapter = { version = "0.4", default-features = false, features = [
-    "embassy-runtime",
-    "embassy-task-pool-8",  # 8, 16 or 32 based on task count
-] }
-serde = { version = "1", default-features = false, features = ["derive"] }
-```
-
-```rust
-use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
-use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-
-#[derive(Clone)]
-struct Temperature { celsius: f32 }
-
-#[tokio::main]
-async fn main() -> aimdb_core::DbResult<()> {
-    let runtime = std::sync::Arc::new(TokioAdapter::new()?);
-    let mut builder = AimDbBuilder::new().runtime(runtime);
-    
-    builder.configure::<Temperature>("sensor.temp", |reg| {
-        reg.buffer(BufferCfg::SingleLatest);  // Only keep latest
-    });
-    
-    builder.run().await
-}
-```
 
 ---
 
@@ -105,7 +76,6 @@ async fn main() -> aimdb_core::DbResult<()> {
 | **HTTP/REST** | 🔨 Building | Web APIs, webhooks |
 | **Kafka** | 📋 Planned | Event streaming |
 | **Modbus** | 📋 Planned | Industrial automation |
-| **OPC-UA** | 📋 Planned | Manufacturing systems |
 
 ---
 
@@ -114,6 +84,7 @@ async fn main() -> aimdb_core::DbResult<()> {
 | Target | Runtime | Status |
 |--------|---------|--------|
 | **MCUs** (ARM Cortex-M) | Embassy | ✅ `no_std` ready |
+| **MCUs** (ARM Cortex-M) | FreeRTOS | 📋 Planned |
 | **Edge** (Linux/RPi) | Tokio | ✅ Full featured |
 | **Cloud** (Containers) | Tokio | ✅ Full featured |
 

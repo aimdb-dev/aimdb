@@ -1,0 +1,67 @@
+services:
+  # MQTT Broker - message bus for all nodes
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      # HOST_PROJECT_ROOT is required for Docker-in-Docker (see .env.example)
+      - ${HOST_PROJECT_ROOT:-.}/examples/weather-mesh-demo/docker/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Central aggregation hub (uses AimDB with MQTT connector)
+  weather-hub:
+    build:
+      context: ../..
+      dockerfile: examples/weather-mesh-demo/docker/Dockerfile.server
+    environment:
+      - RUST_LOG=${RUST_LOG:-info,aimdb_core=debug}
+      - MQTT_BROKER=mqtt
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Weather station alpha - real weather data from Open-Meteo API
+  weather-station-alpha:
+    build:
+      context: ../..
+      dockerfile: examples/weather-mesh-demo/docker/Dockerfile.node
+      args:
+        NODE_NAME: alpha
+    environment:
+      - RUST_LOG=info,aimdb_core=debug
+      - MQTT_BROKER=mqtt
+      - WEATHER_LAT=48.2082
+      - WEATHER_LON=16.3738
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Weather station beta - synthetic sensor data
+  weather-station-beta:
+    build:
+      context: ../..
+      dockerfile: examples/weather-mesh-demo/docker/Dockerfile.node
+      args:
+        NODE_NAME: beta
+    environment:
+      - RUST_LOG=info,aimdb_core=debug
+      - MQTT_BROKER=mqtt
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:

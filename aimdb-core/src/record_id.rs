@@ -129,7 +129,7 @@ pub use aimdb_derive::RecordKey;
 /// }
 ///
 /// impl RecordKey for MyKey {
-///     fn as_str(&self) -> &str {
+///     fn as_str(&self) -> &'static str {
 ///         match self {
 ///             Self::Temperature => "sensor.temp",
 ///             Self::Humidity => "sensor.humid",
@@ -167,7 +167,7 @@ pub trait RecordKey:
     Clone + Eq + core::hash::Hash + core::borrow::Borrow<str> + Send + Sync + 'static
 {
     /// String representation for connectors, logging, serialization, remote access
-    fn as_str(&self) -> &str;
+    fn as_str(&self) -> &'static str;
 
     /// Connector address for this key
     ///
@@ -199,7 +199,7 @@ pub trait RecordKey:
 // Blanket implementation for &'static str
 impl RecordKey for &'static str {
     #[inline]
-    fn as_str(&self) -> &str {
+    fn as_str(&self) -> &'static str {
         self
     }
 }
@@ -330,7 +330,7 @@ impl StringKey {
 // Implement RecordKey trait for StringKey
 impl RecordKey for StringKey {
     #[inline]
-    fn as_str(&self) -> &str {
+    fn as_str(&self) -> &'static str {
         match self.0 {
             StringKeyInner::Static(s) => s,
             StringKeyInner::Interned(s) => s,

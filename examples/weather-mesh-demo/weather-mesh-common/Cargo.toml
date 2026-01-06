@@ -1,0 +1,19 @@
+[package]
+name = "weather-mesh-common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared contracts and configuration for the weather mesh demo"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = ["std"]
+std = ["aimdb-data-contracts/std"]
+
+[dependencies]
+aimdb-core = { path = "../../../aimdb-core", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
+aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"] }

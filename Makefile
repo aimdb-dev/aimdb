@@ -44,6 +44,10 @@ help:
 ## Core commands
 build:
 	@printf "$(GREEN)Building AimDB (all valid combinations)...$(NC)\n"
+	@printf "$(YELLOW)  → Building aimdb-data-contracts (std)$(NC)\n"
+	cargo build --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
+	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std)$(NC)\n"
+	cargo build --package aimdb-data-contracts --no-default-features
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
@@ -61,6 +65,8 @@ build:
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
+	@printf "$(YELLOW)  → Testing aimdb-data-contracts (std)$(NC)\n"
+	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
@@ -86,7 +92,7 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-derive aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo; do \
+	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -95,7 +101,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-derive aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo; do \
+	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -112,6 +118,10 @@ clippy:
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Clippy on aimdb-derive$(NC)\n"
 	cargo clippy --package aimdb-derive --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (std)$(NC)\n"
+	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std)$(NC)\n"
+	cargo clippy --package aimdb-data-contracts --no-default-features -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
@@ -145,6 +155,7 @@ doc:
 	@mkdir -p target/doc-final/cloud
 	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
+	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --no-deps
 	cargo doc --package aimdb-core --features "std,tracing,metrics" --no-deps
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
 	cargo doc --package aimdb-sync --no-deps
@@ -170,6 +181,8 @@ clean:
 ## Testing commands
 test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
+	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --no-default-features
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
@@ -200,6 +213,16 @@ examples:
 	cargo build --package tokio-knx-connector-demo
 	@printf "$(YELLOW)  → Building embassy-knx-connector-demo (embedded, embassy runtime)$(NC)\n"
 	cargo build --package embassy-knx-connector-demo --target thumbv7em-none-eabihf
+	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-mesh-common$(NC)\n"
+	cargo build --package weather-mesh-common
+	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-hub (cloud aggregator)$(NC)\n"
+	cargo build --package weather-hub
+	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-alpha (edge, real API)$(NC)\n"
+	cargo build --package weather-station-alpha
+	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-beta (edge, synthetic)$(NC)\n"
+	cargo build --package weather-station-beta
+	@printf "$(YELLOW)  → Building weather-station-gamma (embedded, embassy runtime)$(NC)\n"
+	cargo build --package weather-station-gamma --target thumbv7em-none-eabihf
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Security & Quality commands
