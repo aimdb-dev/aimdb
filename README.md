@@ -76,7 +76,6 @@ Then ask VS Code Copilot: *"What's the current temperature from station alpha?"*
 | **HTTP/REST** | 🔨 Building | Web APIs, webhooks |
 | **Kafka** | 📋 Planned | Event streaming |
 | **Modbus** | 📋 Planned | Industrial automation |
-| **OPC-UA** | 📋 Planned | Manufacturing systems |
 
 ---
 
@@ -85,6 +84,7 @@ Then ask VS Code Copilot: *"What's the current temperature from station alpha?"*
 | Target | Runtime | Status |
 |--------|---------|--------|
 | **MCUs** (ARM Cortex-M) | Embassy | ✅ `no_std` ready |
+| **MCUs** (ARM Cortex-M) | FreeRTOS | 📋 Planned |
 | **Edge** (Linux/RPi) | Tokio | ✅ Full featured |
 | **Cloud** (Containers) | Tokio | ✅ Full featured |
 
