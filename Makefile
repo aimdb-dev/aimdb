@@ -155,7 +155,7 @@ doc:
 	@mkdir -p target/doc-final/cloud
 	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
-	cargo doc --package aimdb-data-contracts --features "std,simulateable,migratable,observable" --no-deps
+	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --no-deps
 	cargo doc --package aimdb-core --features "std,tracing,metrics" --no-deps
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
 	cargo doc --package aimdb-sync --no-deps
