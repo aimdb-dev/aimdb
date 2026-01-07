@@ -19,8 +19,8 @@
     }
     
     @keyframes pulseGlow {
-      0%, 100% { filter: drop-shadow(0 0 3px #10b981); }
-      50% { filter: drop-shadow(0 0 8px #10b981); }
+      0%, 100% { filter: drop-shadow(0 0 3px #19e5d4); }
+      50% { filter: drop-shadow(0 0 8px #19e5d4); }
     }
     
     @keyframes packetMcuEdgeLeft { 
@@ -110,34 +110,34 @@
     }
     
     @keyframes highlightCloud { 
-      0%, 33% { stroke: #10b981; stroke-width: 3; fill: #ecfdf5; }
-      34%, 100% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
+      0%, 33% { stroke: #19e5d4; stroke-width: 3; fill: #e6faf8; }
+      34%, 100% { stroke: #19e5d4; stroke-width: 2; fill: #f8f9fa; }
     }
     @keyframes highlightEdge { 
-      0%, 33% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
-      34%, 66% { stroke: #10b981; stroke-width: 3; fill: #ecfdf5; }
-      67%, 100% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
+      0%, 33% { stroke: #19e5d4; stroke-width: 2; fill: #f8f9fa; }
+      34%, 66% { stroke: #19e5d4; stroke-width: 3; fill: #e6faf8; }
+      67%, 100% { stroke: #19e5d4; stroke-width: 2; fill: #f8f9fa; }
     }
     @keyframes highlightMcu { 
-      0%, 66% { stroke: #2563eb; stroke-width: 2; fill: #f8f9fa; }
-      67%, 100% { stroke: #10b981; stroke-width: 3; fill: #ecfdf5; }
+      0%, 66% { stroke: #19e5d4; stroke-width: 2; fill: #f8f9fa; }
+      67%, 100% { stroke: #19e5d4; stroke-width: 3; fill: #e6faf8; }
     }
     
     .bg { fill: #ffffff; }
-    .box { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; }
-    .box-mcu { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; animation: highlightMcu 9s ease-in-out 2s infinite; }
-    .box-edge { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; animation: highlightEdge 9s ease-in-out 2s infinite; }
-    .box-cloud { fill: #f8f9fa; stroke: #2563eb; stroke-width: 2; animation: highlightCloud 9s ease-in-out 2s infinite; }
-    .schema-box { fill: #eff6ff; stroke: #2563eb; stroke-width: 2; }
+    .box { fill: #f8f9fa; stroke: #19e5d4; stroke-width: 2; }
+    .box-mcu { fill: #f8f9fa; stroke: #19e5d4; stroke-width: 2; animation: highlightMcu 9s ease-in-out 2s infinite; }
+    .box-edge { fill: #f8f9fa; stroke: #19e5d4; stroke-width: 2; animation: highlightEdge 9s ease-in-out 2s infinite; }
+    .box-cloud { fill: #f8f9fa; stroke: #19e5d4; stroke-width: 2; animation: highlightCloud 9s ease-in-out 2s infinite; }
+    .schema-box { fill: #e6faf8; stroke: #19e5d4; stroke-width: 2; }
     .text { fill: #1e293b; font-family: system-ui, sans-serif; }
     .text-small { fill: #64748b; font-family: monospace; font-size: 11px; }
-    .text-label { fill: #2563eb; font-family: system-ui, sans-serif; font-weight: 600; }
+    .text-label { fill: #19e5d4; font-family: system-ui, sans-serif; font-weight: 600; }
     .text-title { fill: #1e293b; font-family: system-ui, sans-serif; font-weight: 700; font-size: 14px; }
     .connector { stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 5,5; fill: none; }
-    .connector-active { stroke: #10b981; stroke-width: 2; fill: none; }
-    .packet { fill: #06b6d4; }
+    .connector-active { stroke: #19e5d4; stroke-width: 2; fill: none; }
+    .packet { fill: #19e5d4; }
     .tagline { fill: #1e293b; font-family: system-ui, sans-serif; font-size: 16px; font-weight: 600; text-anchor: middle; }
-    .deploy-dot { fill: #10b981; animation: pulseGlow 1s ease-in-out infinite; }
+    .deploy-dot { fill: #19e5d4; animation: pulseGlow 1s ease-in-out infinite; }
     
     .schema-group { animation: fadeIn 0.8s ease-out forwards; }
     .mcu-group { animation: slideUp 0.6s ease-out 1s forwards; opacity: 0; }
@@ -205,14 +205,14 @@
   </g>
   
   <g class="edge-group">
-    <line stroke="#4a9eff" stroke-width="2" x1="230" y1="245" x2="320" y2="245"/>
+    <line stroke="#19e5d4" stroke-width="2" x1="230" y1="245" x2="320" y2="245"/>
     <text class="text-small" x="255" y="238">MQTT</text>
     <circle class="packet packet-mcu-edge-right" cx="250" cy="245" r="4"/>
     <circle class="packet packet-mcu-edge-left" cx="300" cy="245" r="4"/>
   </g>
   
   <g class="cloud-group">
-    <line stroke="#4a9eff" stroke-width="2" x1="480" y1="245" x2="570" y2="245"/>
+    <line stroke="#19e5d4" stroke-width="2" x1="480" y1="245" x2="570" y2="245"/>
     <text class="text-small" x="505" y="238">Kafka</text>
     <circle class="packet packet-edge-cloud-right" cx="500" cy="245" r="4"/>
     <circle class="packet packet-edge-cloud-left" cx="550" cy="245" r="4"/>

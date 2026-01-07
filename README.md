@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/logo.png">
-    <img src="assets/logo.png" alt="AimDB" width="450" style="background-color: white; padding: 20px; border-radius: 12px;">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/aimdb-logo.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/aimdb-logo.svg">
+    <img src="assets/aimdb-logo.svg" alt="AimDB" width="450" style="background-color: white; padding: 20px; border-radius: 12px;">
   </picture>
 </p>
 <p align="center">
