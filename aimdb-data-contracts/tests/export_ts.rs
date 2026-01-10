@@ -26,7 +26,9 @@ impl SchemaMeta {
     fn from_type<T: SchemaType + Observable + TS>(source_file: &str, struct_name: &str) -> Self {
         let contracts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/contracts");
         let rust_schema = extract_struct_definition(&contracts_dir.join(source_file), struct_name)
-            .unwrap_or_else(|| format!("// Could not extract {} from {}", struct_name, source_file));
+            .unwrap_or_else(|| {
+                format!("// Could not extract {} from {}", struct_name, source_file)
+            });
 
         SchemaMeta {
             name: T::NAME,
@@ -77,7 +79,9 @@ fn extract_struct_definition(file_path: &Path, struct_name: &str) -> Option<Stri
 
     // Find the closing brace of the struct
     let after_struct = &content[struct_start..];
-    let struct_end = after_struct.find("\n}\n").or_else(|| after_struct.find("\n}"))?;
+    let struct_end = after_struct
+        .find("\n}\n")
+        .or_else(|| after_struct.find("\n}"))?;
 
     let full_definition = &content[doc_start..struct_start + struct_end + 2];
 
