@@ -42,7 +42,9 @@ pub struct Temperature {
     pub timestamp: u64,
 }
 
-fn default_v2_version() -> u32 { 2 }
+fn default_v2_version() -> u32 {
+    2
+}
 
 impl Temperature {
     /// Create a new Temperature reading (current schema version)
@@ -57,7 +59,7 @@ impl Temperature {
 
 impl SchemaType for Temperature {
     const NAME: &'static str = "temperature";
-    const VERSION: u32 = 2;  // v2: celsius + timestamp (v1 had temp + timestamp + unit)
+    const VERSION: u32 = 2; // v2: celsius + timestamp (v1 had temp + timestamp + unit)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -83,7 +85,9 @@ pub struct TemperatureV1 {
     pub unit: alloc::string::String,
 }
 
-fn default_v1_version() -> u32 { 1 }
+fn default_v1_version() -> u32 {
+    1
+}
 
 impl TemperatureV1 {
     /// Create a new v1 temperature reading
@@ -101,7 +105,7 @@ impl TemperatureV1 {
         let celsius = match self.unit.as_str() {
             "F" => (self.temp - 32.0) * 5.0 / 9.0,
             "K" => self.temp - 273.15,
-            _ => self.temp,  // "C" or unknown defaults to Celsius
+            _ => self.temp, // "C" or unknown defaults to Celsius
         };
         Temperature {
             schema_version: 2,
@@ -150,7 +154,7 @@ impl Migratable for Temperature {
             *raw = serde_json::to_value(v2)
                 .map_err(|_| MigrationError::Custom("failed to serialize migrated value"))?;
         }
-        
+
         Ok(())
     }
 }
@@ -226,7 +230,7 @@ impl Settable for Temperature {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// VERSIONED DESERIALIZATION 
+// VERSIONED DESERIALIZATION
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "linkable")]
@@ -246,14 +250,16 @@ impl Temperature {
     #[cfg(feature = "migratable")]
     pub fn from_bytes_versioned(data: &[u8]) -> Result<Self, alloc::string::String> {
         use crate::Migratable;
-        
-        let mut value: serde_json::Value = serde_json::from_slice(data)
-            .map_err(|e| alloc::format!("JSON parse error: {}", e))?;
-        
-        let version = value.get("schema_version")
+
+        let mut value: serde_json::Value =
+            serde_json::from_slice(data).map_err(|e| alloc::format!("JSON parse error: {}", e))?;
+
+        let version = value
+            .get("schema_version")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| alloc::string::String::from("Missing schema_version field"))? as u32;
-        
+            .ok_or_else(|| alloc::string::String::from("Missing schema_version field"))?
+            as u32;
+
         Self::deserialize_versioned(&mut value, version)
             .map_err(|e| alloc::format!("Migration error: {:?}", e))
     }
@@ -311,7 +317,11 @@ mod tests {
         // 68°F = 20°C
         let v1 = TemperatureV1::new(68.0, 1704326400000, "F");
         let v2 = v1.to_v2();
-        assert!((v2.celsius - 20.0).abs() < 0.01, "Expected ~20°C, got {}", v2.celsius);
+        assert!(
+            (v2.celsius - 20.0).abs() < 0.01,
+            "Expected ~20°C, got {}",
+            v2.celsius
+        );
     }
 
     #[test]
@@ -319,7 +329,11 @@ mod tests {
         // 293.15K = 20°C
         let v1 = TemperatureV1::new(293.15, 1704326400000, "K");
         let v2 = v1.to_v2();
-        assert!((v2.celsius - 20.0).abs() < 0.01, "Expected ~20°C, got {}", v2.celsius);
+        assert!(
+            (v2.celsius - 20.0).abs() < 0.01,
+            "Expected ~20°C, got {}",
+            v2.celsius
+        );
     }
 
     #[test]
@@ -333,15 +347,15 @@ mod tests {
     #[test]
     fn test_migratable_trait_celsius() {
         use crate::Migratable;
-        
+
         let mut raw = serde_json::json!({
             "temp": 22.5,
             "timestamp": 1704326400000_u64,
             "unit": "C"
         });
-        
+
         Temperature::migrate(&mut raw, 1).unwrap();
-        
+
         assert_eq!(raw["celsius"], 22.5);
         assert!(raw.get("temp").is_none(), "temp field should be removed");
         assert!(raw.get("unit").is_none(), "unit field should be removed");
@@ -351,47 +365,55 @@ mod tests {
     #[test]
     fn test_migratable_trait_fahrenheit() {
         use crate::Migratable;
-        
+
         let mut raw = serde_json::json!({
             "temp": 68.0,
             "timestamp": 1704326400000_u64,
             "unit": "F"
         });
-        
+
         Temperature::migrate(&mut raw, 1).unwrap();
-        
+
         let celsius = raw["celsius"].as_f64().unwrap();
-        assert!((celsius - 20.0).abs() < 0.01, "Expected ~20°C, got {}", celsius);
+        assert!(
+            (celsius - 20.0).abs() < 0.01,
+            "Expected ~20°C, got {}",
+            celsius
+        );
     }
 
     #[cfg(feature = "migratable")]
     #[test]
     fn test_migratable_trait_kelvin() {
         use crate::Migratable;
-        
+
         let mut raw = serde_json::json!({
             "temp": 293.15,
             "timestamp": 1704326400000_u64,
             "unit": "K"
         });
-        
+
         Temperature::migrate(&mut raw, 1).unwrap();
-        
+
         let celsius = raw["celsius"].as_f64().unwrap();
-        assert!((celsius - 20.0).abs() < 0.01, "Expected ~20°C, got {}", celsius);
+        assert!(
+            (celsius - 20.0).abs() < 0.01,
+            "Expected ~20°C, got {}",
+            celsius
+        );
     }
 
     #[cfg(feature = "migratable")]
     #[test]
     fn test_deserialize_versioned_v1() {
         use crate::Migratable;
-        
+
         let mut raw = serde_json::json!({
             "temp": 22.5,
             "timestamp": 1704326400000_u64,
             "unit": "C"
         });
-        
+
         let temp: Temperature = Temperature::deserialize_versioned(&mut raw, 1).unwrap();
         assert_eq!(temp.celsius, 22.5);
         assert_eq!(temp.timestamp, 1704326400000);
@@ -401,12 +423,12 @@ mod tests {
     #[test]
     fn test_deserialize_versioned_v2_no_migration() {
         use crate::Migratable;
-        
+
         let mut raw = serde_json::json!({
             "celsius": 22.5,
             "timestamp": 1704326400000_u64
         });
-        
+
         let temp: Temperature = Temperature::deserialize_versioned(&mut raw, 2).unwrap();
         assert_eq!(temp.celsius, 22.5);
     }
@@ -420,7 +442,10 @@ mod tests {
     fn test_from_bytes_v1_with_version_marker() {
         let json = r#"{"schema_version":1,"temp":68.0,"timestamp":1704326400000,"unit":"F"}"#;
         let temp = Temperature::from_bytes_versioned(json.as_bytes()).unwrap();
-        assert!((temp.celsius - 20.0).abs() < 0.01, "Expected ~20°C from 68°F");
+        assert!(
+            (temp.celsius - 20.0).abs() < 0.01,
+            "Expected ~20°C from 68°F"
+        );
         assert_eq!(temp.timestamp, 1704326400000);
     }
 
@@ -445,12 +470,12 @@ mod tests {
     #[test]
     fn test_from_bytes_via_linkable_trait() {
         use crate::Linkable;
-        
+
         // v1 payload should auto-migrate
         let v1_json = r#"{"schema_version":1,"temp":68.0,"timestamp":1704326400000,"unit":"F"}"#;
         let temp = Temperature::from_bytes(v1_json.as_bytes()).unwrap();
         assert!((temp.celsius - 20.0).abs() < 0.01);
-        
+
         // v2 payload should parse directly
         let v2_json = r#"{"schema_version":2,"celsius":22.5,"timestamp":1704326400000}"#;
         let temp = Temperature::from_bytes(v2_json.as_bytes()).unwrap();
@@ -471,11 +496,11 @@ mod tests {
     #[test]
     fn test_v1_serialization_includes_schema_version() {
         use crate::Linkable;
-        
+
         let v1 = TemperatureV1::new(22.5, 1704326400000, "C");
         let bytes = v1.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        
+
         assert_eq!(json["schema_version"], 1);
         assert_eq!(json["temp"], 22.5);
         assert_eq!(json["unit"], "C");
