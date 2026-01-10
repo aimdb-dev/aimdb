@@ -120,8 +120,8 @@ clippy:
 	cargo clippy --package aimdb-derive --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (std)$(NC)\n"
 	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std)$(NC)\n"
-	cargo clippy --package aimdb-data-contracts --no-default-features -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc)$(NC)\n"
+	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
@@ -181,8 +181,8 @@ clean:
 ## Testing commands
 test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
-	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --no-default-features
+	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
