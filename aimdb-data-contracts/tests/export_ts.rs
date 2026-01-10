@@ -19,11 +19,26 @@ struct SchemaMeta {
     icon: &'static str,
     unit: &'static str,
     rust_schema: String,
+    attributes: SchemaAttributes,
+}
+
+/// Trait implementations for a schema
+#[derive(Clone)]
+struct SchemaAttributes {
+    observable: bool,
+    simulatable: bool,
+    linkable: bool,
+    settable: bool,
+    no_std: bool,
 }
 
 impl SchemaMeta {
     /// Create metadata from any type implementing Observable + TS
-    fn from_type<T: SchemaType + Observable + TS>(source_file: &str, struct_name: &str) -> Self {
+    fn from_type<T: SchemaType + Observable + TS>(
+        source_file: &str,
+        struct_name: &str,
+        attributes: SchemaAttributes,
+    ) -> Self {
         let contracts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/contracts");
         let rust_schema = extract_struct_definition(&contracts_dir.join(source_file), struct_name)
             .unwrap_or_else(|| {
@@ -35,6 +50,7 @@ impl SchemaMeta {
             icon: T::ICON,
             unit: T::UNIT,
             rust_schema,
+            attributes,
         }
     }
 
@@ -119,10 +135,19 @@ fn export_typescript() {
     println!("✅ TypeScript bindings exported to bindings/");
 
     // Generate schema registry with metadata - all derived from traits + source
+    // Attributes reflect actual trait implementations in Rust source
+    let all_traits = SchemaAttributes {
+        observable: true,
+        simulatable: true,
+        linkable: true,
+        settable: true,
+        no_std: true,
+    };
+
     let schemas = vec![
-        SchemaMeta::from_type::<Temperature>("temperature.rs", "Temperature"),
-        SchemaMeta::from_type::<Humidity>("humidity.rs", "Humidity"),
-        SchemaMeta::from_type::<GpsLocation>("location.rs", "GpsLocation"),
+        SchemaMeta::from_type::<Temperature>("temperature.rs", "Temperature", all_traits.clone()),
+        SchemaMeta::from_type::<Humidity>("humidity.rs", "Humidity", all_traits.clone()),
+        SchemaMeta::from_type::<GpsLocation>("location.rs", "GpsLocation", all_traits),
     ];
 
     generate_schema_registry(&schemas);
@@ -133,12 +158,21 @@ fn generate_schema_registry(schemas: &[SchemaMeta]) {
         r#"// AUTO-GENERATED from aimdb-data-contracts - DO NOT EDIT
 // Run: cargo test -p aimdb-data-contracts --features ts,observable export_typescript -- --ignored
 
+export interface SchemaAttributes {
+  observable: boolean;
+  simulatable: boolean;
+  linkable: boolean;
+  settable: boolean;
+  noStd: boolean;
+}
+
 export interface SchemaMeta {
   name: string;
   label: string;
   icon: string;
   unit: string;
   rustSchema: string;
+  attributes: SchemaAttributes;
 }
 
 /**
@@ -157,6 +191,13 @@ export const SCHEMA_REGISTRY: Record<string, SchemaMeta> = {
     icon: "{}",
     unit: "{}",
     rustSchema: `{}`,
+    attributes: {{
+      observable: {},
+      simulatable: {},
+      linkable: {},
+      settable: {},
+      noStd: {},
+    }},
   }},
 "#,
             schema.name,
@@ -164,7 +205,12 @@ export const SCHEMA_REGISTRY: Record<string, SchemaMeta> = {
             schema.label(),
             schema.icon,
             schema.unit,
-            schema.rust_schema
+            schema.rust_schema,
+            schema.attributes.observable,
+            schema.attributes.simulatable,
+            schema.attributes.linkable,
+            schema.attributes.settable,
+            schema.attributes.no_std,
         ));
     }
 
