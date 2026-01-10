@@ -47,7 +47,7 @@ build:
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (std)$(NC)\n"
 	cargo build --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std)$(NC)\n"
-	cargo build --package aimdb-data-contracts --no-default-features
+	cargo build --package aimdb-data-contracts --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
