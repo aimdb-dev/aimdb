@@ -29,6 +29,7 @@ struct SchemaAttributes {
     simulatable: bool,
     linkable: bool,
     settable: bool,
+    migratable: bool,
     no_std: bool,
 }
 
@@ -136,18 +137,25 @@ fn export_typescript() {
 
     // Generate schema registry with metadata - all derived from traits + source
     // Attributes reflect actual trait implementations in Rust source
-    let all_traits = SchemaAttributes {
+    let base_traits = SchemaAttributes {
         observable: true,
         simulatable: true,
         linkable: true,
         settable: true,
+        migratable: false,
         no_std: true,
     };
 
+    // Temperature has Migratable trait (v1 → v2 migration)
+    let temp_traits = SchemaAttributes {
+        migratable: true,
+        ..base_traits.clone()
+    };
+
     let schemas = vec![
-        SchemaMeta::from_type::<Temperature>("temperature.rs", "Temperature", all_traits.clone()),
-        SchemaMeta::from_type::<Humidity>("humidity.rs", "Humidity", all_traits.clone()),
-        SchemaMeta::from_type::<GpsLocation>("location.rs", "GpsLocation", all_traits),
+        SchemaMeta::from_type::<Temperature>("temperature.rs", "Temperature", temp_traits),
+        SchemaMeta::from_type::<Humidity>("humidity.rs", "Humidity", base_traits.clone()),
+        SchemaMeta::from_type::<GpsLocation>("location.rs", "GpsLocation", base_traits),
     ];
 
     generate_schema_registry(&schemas);
@@ -163,6 +171,7 @@ export interface SchemaAttributes {
   simulatable: boolean;
   linkable: boolean;
   settable: boolean;
+  migratable: boolean;
   noStd: boolean;
 }
 
@@ -196,6 +205,7 @@ export const SCHEMA_REGISTRY: Record<string, SchemaMeta> = {
       simulatable: {},
       linkable: {},
       settable: {},
+      migratable: {},
       noStd: {},
     }},
   }},
@@ -210,6 +220,7 @@ export const SCHEMA_REGISTRY: Record<string, SchemaMeta> = {
             schema.attributes.simulatable,
             schema.attributes.linkable,
             schema.attributes.settable,
+            schema.attributes.migratable,
             schema.attributes.no_std,
         ));
     }

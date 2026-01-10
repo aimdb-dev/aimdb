@@ -11,6 +11,7 @@ mod tests {
     #[test]
     fn test_temperature_roundtrip() {
         let temp = Temperature {
+            schema_version: 2,
             celsius: 22.5,
             timestamp: 1704326400000,
         };
@@ -23,7 +24,7 @@ mod tests {
 
     #[test]
     fn test_temperature_from_json_string() {
-        let json = br#"{"celsius": 25.0, "timestamp": 1704326400000}"#;
+        let json = br#"{"schema_version": 2, "celsius": 25.0, "timestamp": 1704326400000}"#;
         let temp = Temperature::from_bytes(json).expect("should parse valid JSON");
 
         assert_eq!(temp.celsius, 25.0);
