@@ -9,8 +9,13 @@ use crate::Linkable;
 #[cfg(feature = "simulatable")]
 use crate::{Simulatable, SimulationConfig};
 
+#[cfg(feature = "ts")]
+use ts_rs::TS;
+
 /// GPS location reading
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct GpsLocation {
     /// Latitude in decimal degrees (-90 to 90)
     pub latitude: f64,

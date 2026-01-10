@@ -11,8 +11,13 @@ use crate::Linkable;
 #[cfg(feature = "simulatable")]
 use crate::{Simulatable, SimulationConfig};
 
+#[cfg(feature = "ts")]
+use ts_rs::TS;
+
 /// Temperature sensor reading in Celsius
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct Temperature {
     /// Temperature in degrees Celsius
     pub celsius: f32,

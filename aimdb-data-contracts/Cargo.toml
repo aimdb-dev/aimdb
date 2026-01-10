@@ -18,6 +18,7 @@ linkable = ["alloc", "serde_json"]
 simulatable = ["rand"]
 migratable = ["std", "serde_json"]
 observable = ["alloc", "aimdb-core", "aimdb-executor"]
+ts = ["std", "ts-rs"]
 
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -35,6 +36,10 @@ version = "0.8"
 optional = true
 default-features = false
 features = ["std_rng"]
+
+[dependencies.ts-rs]
+version = "10"
+optional = true
 
 [dev-dependencies]
 serde_json = "1.0"

@@ -11,8 +11,13 @@ use crate::Linkable;
 #[cfg(feature = "simulatable")]
 use crate::{Simulatable, SimulationConfig};
 
+#[cfg(feature = "ts")]
+use ts_rs::TS;
+
 /// Humidity sensor reading
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct Humidity {
     /// Relative humidity as a percentage (0-100)
     pub percent: f32,

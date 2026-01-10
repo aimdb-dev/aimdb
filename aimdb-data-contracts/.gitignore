@@ -3,3 +3,6 @@ Cargo.lock
 **/*.rs.bk
 *.pdb
 .DS_Store
+
+# Generated TypeScript bindings (run ./scripts/gen-ts-bindings.sh)
+/bindings/
