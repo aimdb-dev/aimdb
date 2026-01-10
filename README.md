@@ -38,7 +38,15 @@ AimDB solves this with **portable data contracts**: define your schemas, seriali
 
 ### Getting Started
 
-**Try it now** — run a full MCU → edge → cloud mesh in Docker:
+**See it live** — explore a running sensor mesh at [aimdb.dev](https://aimdb.dev)
+
+<p align="center">
+  <a href="https://aimdb.dev">
+    <img src="assets/demo.gif" alt="AimDB Live Demo" width="600">
+  </a>
+</p>
+
+**Run locally** — full MCU → edge → cloud mesh in Docker:
 
 ```bash
 cd examples/weather-mesh-demo
