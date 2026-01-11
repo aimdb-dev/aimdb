@@ -53,7 +53,7 @@ cd examples/weather-mesh-demo
 docker compose up
 ```
 
-Then ask VS Code Copilot: *"What's the current temperature from station alpha?"* ([MCP setup required](examples/weather-mesh-demo/))
+Then ask VS Code Copilot: *"What's the current temperature from station ...?"* ([MCP setup required](examples/weather-mesh-demo/))
 
 <p align="center">
   <img src="assets/copilot-communication.gif" alt="AimDB MCP Live Demo" width="600">
@@ -75,7 +75,6 @@ Then ask VS Code Copilot: *"What's the current temperature from station alpha?"*
 | **Edge-only is inflexible** | Run anywhere: MCU, gateway or cloud |
 | **Vendor lock-in** | Open source, protocol-agnostic |
 | **Fragmented tooling** | One codebase, portable schemas |
-| **Latency** | <50ms reactivity when running local |
 
 ---
 
@@ -104,7 +103,9 @@ Then ask VS Code Copilot: *"What's the current temperature from station alpha?"*
 
 ### Contributing
 
-Found a bug or want a feature? Open a [GitHub issue](https://github.com/aimdb-dev/aimdb/issues). 
+Found a bug or want a feature? Open a [GitHub issue](https://github.com/aimdb-dev/aimdb/issues).
+
+Have questions or ideas? Join the discussion on [GitHub Discussions](https://github.com/aimdb-dev/aimdb/discussions).
 
 Want to contribute? See the [contributing guide](CONTRIBUTING.md). We have [good first issues](https://github.com/aimdb-dev/aimdb/labels/good-first-issue) to get started.
 
