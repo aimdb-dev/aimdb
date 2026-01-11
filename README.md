@@ -55,8 +55,9 @@ docker compose up
 
 Then ask VS Code Copilot: *"What's the current temperature from station alpha?"* ([MCP setup required](examples/weather-mesh-demo/))
 
-<img src="assets/copilot-communication.gif" alt="AimDB MCP Live Demo" width="600">
-
+<p align="center">
+  <img src="assets/copilot-communication.gif" alt="AimDB MCP Live Demo" width="600">
+</p>
 
 **Learn more:**
 - [Quick Start Guide](docs/aimdb-usage-guide.md) — Dependency setup and API basics
