@@ -6,7 +6,8 @@
   </picture>
 </p>
 <p align="center">
-    <em>Move compute to your data. Not data to your cloud.</em>
+    <strong>In-memory dataflow engine for distributed systems.</strong><br>
+    <strong>MCU to Cloud. Same API.</strong>
 </p>
 <p align="center">
 <a href="https://github.com/aimdb-dev/aimdb/stargazers/" target="_blank">
