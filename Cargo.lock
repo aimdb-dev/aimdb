@@ -2659,8 +2659,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "19.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a411079520dbccc613af73172f944b7cf97ba84e3bd7381a0352b6ec7bfef03b"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-82bd86bd321ba1a682f5b39463a93dcb014e0d94#2dd4e5f21572146cf1c7fed8a4ccf647a5ed3549"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

@@ -93,10 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(data) => {
                     let now = chrono::Utc::now().timestamp_millis() as u64;
 
-                    let temp = Temperature {
-                        celsius: data.temperature as f32,
-                        timestamp: now,
-                    };
+                    let temp = Temperature::new(data.temperature as f32, now);
 
                     let humidity = Humidity {
                         percent: data.humidity as f32,

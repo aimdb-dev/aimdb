@@ -16,6 +16,7 @@ aimdb-core = { path = "../../../aimdb-core" }
 aimdb-tokio-adapter = { path = "../../../aimdb-tokio-adapter" }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", features = [
     "linkable",
+    "migratable",
 ] }
 aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", features = [
     "tokio-runtime",
