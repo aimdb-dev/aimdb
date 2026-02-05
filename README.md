@@ -6,7 +6,7 @@
   </picture>
 </p>
 <p align="center">
-    <strong>In-memory dataflow engine for distributed systems.</strong><br>
+    <strong>Dataflow engine for distributed systems.</strong><br>
     <strong>MCU to Cloud. Same API.</strong>
 </p>
 <p align="center">
@@ -27,9 +27,7 @@
 </a>
 </p>
 
-Cloud costs are exploding. Compute and storage bills grow with every byte shipped upstream. But refactoring to run at the edge means rewriting everything.
-
-AimDB solves this with **portable data contracts**: define your schemas, serialization and transforms once — deploy them anywhere. The same code runs on MCUs, edge gateways and Kubernetes. Move processing closer to the source when costs spike or keep it in the cloud when you need scale. Your choice.
+Write your data pipeline once. Run it on microcontrollers, edge gateways or Kubernetes — no code changes. AimDB's portable data contracts handle serialization, transforms and schema evolution across all runtimes.
 
 <p align="center">
   <img src="assets/architecture.svg" alt="AimDB Architecture" width="700">
@@ -61,44 +59,46 @@ Then ask VS Code Copilot: *"What's the current temperature from station ...?"* (
 </p>
 
 **Learn more:**
-- [Quick Start Guide](docs/aimdb-usage-guide.md) — Dependency setup and API basics
-- [Weather Mesh Demo](examples/weather-mesh-demo/) — Full distributed demo with Copilot integration
-- [Examples](examples/) — MQTT, KNX and remote access demos
-- [API Documentation](https://docs.rs/aimdb-core) — Full Rust API reference
+- [Quick Start Guide](https://aimdb.dev/docs/getting-started) — Dependency setup and API basics
+- [Data Contracts](https://aimdb.dev/docs/data-contracts) — Type-safe schemas
+- [Connectors](https://aimdb.dev/docs/connectors) — MQTT, KNX and more
+- [Deployment](https://aimdb.dev/docs/deployment) — Running on MCU, edge and cloud
+- [API Reference](https://docs.rs/aimdb-core) — Full Rust API documentation
 
 ---
 
 ### Why AimDB?
 
+A real-time data runtime that adapts to your infrastructure, not the other way around.
+
 | Problem | AimDB Solution |
 |---------|----------------|
-| **Cloud costs spiking** | Move processing to edge — same code, no rewrite |
-| **Edge-only is inflexible** | Run anywhere: MCU, gateway or cloud |
-| **Vendor lock-in** | Open source, protocol-agnostic |
-| **Fragmented tooling** | One codebase, portable schemas |
+| **Runs Where Data Starts** | From $2 MCUs to Kubernetes clusters. Deploy the same code anywhere, process data at the source. |
+| **Same API Everywhere** | Tokio + Embassy compatible, embedded-friendly, `no_std`-ready. One interface across all your runtimes. |
+| **Built for Continuous Change** | Unified data layer with schema evolution built in. Your data pipelines adapt as fast as your business. |
 
 ---
 
 ### Connectors
 
-| Protocol | Status | Use Case |
-|----------|--------|----------|
-| **MQTT** | ✅ Ready | IoT messaging, telemetry |
-| **KNX** | ✅ Ready | Building automation |
-| **HTTP/REST** | 🔨 Building | Web APIs, webhooks |
-| **Kafka** | 📋 Planned | Event streaming |
-| **Modbus** | 📋 Planned | Industrial automation |
+| Protocol | Crate | Status | Runtimes |
+|----------|-------|--------|----------|
+| **MQTT** | `aimdb-mqtt-connector` | ✅ Ready | std, no_std |
+| **KNX** | `aimdb-knx-connector` | ✅ Ready | std, no_std |
+| **HTTP/REST** | — | 🔨 Building | std |
+| **Kafka** | — | 📋 Planned | std |
+| **Modbus** | — | 📋 Planned | std, no_std |
 
 ---
 
 ### Platform Support
 
-| Target | Runtime | Status |
-|--------|---------|--------|
-| **MCUs** (ARM Cortex-M) | Embassy | ✅ `no_std` ready |
-| **MCUs** (ARM Cortex-M) | FreeRTOS | 📋 Planned |
-| **Edge** (Linux/RPi) | Tokio | ✅ Full featured |
-| **Cloud** (Containers) | Tokio | ✅ Full featured |
+| Target | Runtime | Features | Footprint |
+|--------|---------|----------|-----------|
+| **ARM Cortex-M** (STM32H5, STM32F4) | Embassy | no_std, async | ~50KB+ |
+| **ARM Cortex-M** (STM32H5, STM32F4) | FreeRTOS | 📋 Planned | — |
+| **Linux Edge Devices** | Tokio | Full std | ~10MB+ |
+| **Containers/K8s** | Tokio | Full std | ~10MB+ |
 
 ---
 
