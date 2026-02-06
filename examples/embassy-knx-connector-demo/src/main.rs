@@ -93,7 +93,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 async fn button_handler(
     ctx: RuntimeContext<EmbassyAdapter>,
     producer: aimdb_core::Producer<LightControl, EmbassyAdapter>,
-    mut button: ExtiInput<'static>,
+    mut button: ExtiInput<'static, embassy_stm32::mode::Async>,
 ) {
     let log = ctx.log();
     let time = ctx.time();
