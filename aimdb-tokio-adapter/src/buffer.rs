@@ -393,6 +393,69 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
             }
         })
     }
+
+    fn try_recv(&mut self) -> Result<T, DbError> {
+        match self {
+            TokioBufferReader::Broadcast {
+                rx,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => match rx.try_recv() {
+                Ok(value) => {
+                    #[cfg(feature = "metrics")]
+                    metrics.increment_consumed();
+                    Ok(value)
+                }
+                Err(broadcast::error::TryRecvError::Empty) => Err(DbError::BufferEmpty),
+                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                    #[cfg(feature = "metrics")]
+                    metrics.add_dropped(n);
+                    Err(DbError::BufferLagged {
+                        lag_count: n,
+                        buffer_name: "broadcast".to_string(),
+                    })
+                }
+                Err(broadcast::error::TryRecvError::Closed) => Err(DbError::BufferClosed {
+                    buffer_name: "broadcast".to_string(),
+                }),
+            },
+            TokioBufferReader::Watch {
+                rx,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => {
+                if rx.has_changed().unwrap_or(false) {
+                    let val = rx.borrow_and_update().clone();
+                    match val {
+                        Some(v) => {
+                            #[cfg(feature = "metrics")]
+                            metrics.increment_consumed();
+                            Ok(v)
+                        }
+                        None => Err(DbError::BufferEmpty),
+                    }
+                } else {
+                    Err(DbError::BufferEmpty)
+                }
+            }
+            TokioBufferReader::Notify {
+                slot,
+                notify: _,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => {
+                let mut guard = slot.lock().unwrap();
+                match guard.take() {
+                    Some(val) => {
+                        #[cfg(feature = "metrics")]
+                        metrics.increment_consumed();
+                        Ok(val)
+                    }
+                    None => Err(DbError::BufferEmpty),
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -822,6 +885,151 @@ mod tests {
             "Mailbox should overwrite, not queue all values"
         );
         assert!(!values.is_empty(), "Should receive some values");
+    }
+
+    // ========================================================================
+    // try_recv Tests — Non-blocking receive
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_try_recv_broadcast_empty() {
+        let cfg = BufferCfg::SpmcRing { capacity: 16 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        // No values written — try_recv returns Empty
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_broadcast_single_value() {
+        let cfg = BufferCfg::SpmcRing { capacity: 16 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        buffer.push(42);
+        assert_eq!(reader.try_recv().unwrap(), 42);
+
+        // Buffer is empty again
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_broadcast_drains_all_pending() {
+        let cfg = BufferCfg::SpmcRing { capacity: 16 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        // Write 5 values
+        for i in 0..5 {
+            buffer.push(i);
+        }
+
+        // Drain all via try_recv
+        let mut values = Vec::new();
+        loop {
+            match reader.try_recv() {
+                Ok(val) => values.push(val),
+                Err(DbError::BufferEmpty) => break,
+                Err(e) => panic!("unexpected error: {:?}", e),
+            }
+        }
+
+        assert_eq!(values, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_broadcast_handles_lag() {
+        let cfg = BufferCfg::SpmcRing { capacity: 4 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        // Write 10 values into capacity-4 ring — reader falls behind
+        for i in 0..10 {
+            buffer.push(i);
+        }
+
+        // First try_recv should return Lagged error
+        let first = reader.try_recv();
+        assert!(
+            matches!(first, Err(DbError::BufferLagged { .. })),
+            "Expected BufferLagged, got {:?}",
+            first
+        );
+
+        // Subsequent calls return the values still in the ring
+        let mut values = Vec::new();
+        loop {
+            match reader.try_recv() {
+                Ok(val) => values.push(val),
+                Err(DbError::BufferEmpty) => break,
+                Err(DbError::BufferLagged { .. }) => continue,
+                Err(e) => panic!("unexpected error: {:?}", e),
+            }
+        }
+
+        // Only the last few values survive in the ring
+        assert!(!values.is_empty());
+        assert!(values.len() <= 4);
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_watch_empty() {
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        // No values written — try_recv returns Empty
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_watch_returns_latest() {
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        buffer.push(1);
+        buffer.push(2);
+        buffer.push(3);
+
+        // Should return latest value
+        let val = reader.try_recv().unwrap();
+        assert_eq!(val, 3);
+
+        // No new changes — empty
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+
+        // Push a new value
+        buffer.push(4);
+        assert_eq!(reader.try_recv().unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_mailbox_empty() {
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        // No values written — try_recv returns Empty
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_mailbox_takes_value() {
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        buffer.push(1);
+        buffer.push(2); // overwrites
+
+        // Takes the latest value
+        let val = reader.try_recv().unwrap();
+        assert_eq!(val, 2);
+
+        // Slot is now empty
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
     }
 
     // ========================================================================

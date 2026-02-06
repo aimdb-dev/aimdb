@@ -397,15 +397,15 @@ where
     /// ```rust,ignore
     /// builder.configure::<Temperature>(|reg| {
     ///     reg.buffer(BufferCfg::SingleLatest)
-    ///        .with_serialization();  // Enable remote queries
+    ///        .with_remote_access();  // Enable remote queries
     /// });
     /// ```
     #[cfg(feature = "std")]
-    pub fn with_serialization(&'a mut self) -> &'a mut Self
+    pub fn with_remote_access(&'a mut self) -> &'a mut Self
     where
         T: serde::Serialize + serde::de::DeserializeOwned,
     {
-        self.rec.with_serialization();
+        self.rec.with_remote_access();
         self
     }
 

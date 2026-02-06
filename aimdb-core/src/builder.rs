@@ -602,7 +602,7 @@ where
     ///     .configure::<Temp>("temp", |reg| {
     ///         reg.link_from("mqtt://commands/temp")
     ///            .with_buffer(BufferCfg::SingleLatest)
-    ///            .with_serialization();
+    ///            .with_remote_access();
     ///     });
     ///
     /// // Create MQTT connector with router
@@ -1096,7 +1096,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     ///
     /// `Err` if:
     /// - Record not found for the given key
-    /// - Record not configured with `.with_serialization()`
+    /// - Record not configured with `.with_remote_access()`
     /// - Failed to subscribe to buffer
     ///
     /// # Example (internal use)
@@ -1138,7 +1138,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
             .ok_or_else(|| DbError::InvalidRecordId { id: id.raw() })?;
 
         // Subscribe to the record's buffer as JSON stream
-        // This will fail if record not configured with .with_serialization()
+        // This will fail if record not configured with .with_remote_access()
         let mut json_reader = record.subscribe_json()?;
 
         // Create channels for the subscription

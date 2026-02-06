@@ -33,6 +33,18 @@ struct SetRecordParams {
     value: Value,
 }
 
+/// Parameters for drain_record tool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DrainRecordParams {
+    /// Unix socket path to the AimDB instance
+    socket_path: String,
+    /// Name of the record to drain
+    record_name: String,
+    /// Maximum number of values to drain (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<u32>,
+}
+
 /// Record information (MCP format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RecordInfo {
@@ -208,6 +220,64 @@ pub async fn set_record(args: Option<Value>) -> McpResult<Value> {
     debug!("✅ Updated record '{}'", params.record_name);
 
     Ok(result)
+}
+
+/// Drain all pending values from a record since the last drain call.
+///
+/// Returns values in chronological order. This is a destructive read —
+/// drained values won't be returned again. Use this for batch analysis
+/// of accumulated data.
+///
+/// # Parameters
+/// - `socket_path` (required): Unix socket path to the AimDB instance
+/// - `record_name` (required): Name of the record to drain
+/// - `limit` (optional): Maximum number of values to drain
+///
+/// # Returns
+/// - Record name, values array, and count
+pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
+    debug!("🔄 drain_record called with args: {:?}", args.as_ref());
+
+    // Parse parameters
+    let params: DrainRecordParams = serde_json::from_value(args.unwrap_or(Value::Null))
+        .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
+
+    debug!(
+        "🔌 Connecting to {} to drain record '{}'",
+        params.socket_path, params.record_name
+    );
+
+    // Get or create connection from pool (if available)
+    let mut client = if let Some(pool) = super::connection_pool() {
+        pool.get_connection(&params.socket_path)
+            .await
+            .map_err(McpError::Client)?
+    } else {
+        // Fallback to direct connection if pool not initialized
+        AimxClient::connect(&params.socket_path)
+            .await
+            .map_err(McpError::Client)?
+    };
+
+    // Drain record values
+    let response = match params.limit {
+        Some(limit) => client
+            .drain_record_with_limit(&params.record_name, limit)
+            .await
+            .map_err(McpError::Client)?,
+        None => client
+            .drain_record(&params.record_name)
+            .await
+            .map_err(McpError::Client)?,
+    };
+
+    debug!(
+        "✅ Drained {} values from record '{}'",
+        response.count, params.record_name
+    );
+
+    serde_json::to_value(response)
+        .map_err(|e| McpError::Internal(format!("JSON serialization failed: {}", e)))
 }
 
 #[cfg(test)]

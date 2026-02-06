@@ -334,6 +334,35 @@ impl McpServer {
                     "additionalProperties": false
                 }),
             },
+            Tool {
+                name: "drain_record".to_string(),
+                description: "Drain all pending values from a record since the last drain call. \
+                    Returns values in chronological order. This is a destructive read — \
+                    drained values won't be returned again. Use this for batch analysis \
+                    of accumulated data (e.g., time-series analysis, trend detection). \
+                    The first drain call creates a reader and returns empty (cold start). \
+                    Subsequent calls return all values accumulated since the previous drain.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        },
+                        "record_name": {
+                            "type": "string",
+                            "description": "Name of the record to drain (e.g., temp.berlin)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of values to drain. Optional, defaults to all pending.",
+                            "minimum": 1
+                        }
+                    },
+                    "required": ["socket_path", "record_name"],
+                    "additionalProperties": false
+                }),
+            },
         ];
 
         Ok(ToolsListResult { tools })
@@ -362,6 +391,7 @@ impl McpServer {
                 tools::get_notification_directory(params.arguments).await?
             }
             "query_schema" => tools::query_schema(params.arguments).await?,
+            "drain_record" => tools::drain_record(params.arguments).await?,
             _ => {
                 return Err(McpError::MethodNotFound(format!(
                     "Unknown tool: {}",

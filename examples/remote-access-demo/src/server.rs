@@ -97,24 +97,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Configure records
     builder.configure::<Temperature>("server::Temperature", |reg| {
-        reg.buffer(BufferCfg::SingleLatest).with_serialization();
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
     builder.configure::<SystemStatus>("server::SystemStatus", |reg| {
-        reg.buffer(BufferCfg::SingleLatest).with_serialization();
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
     builder.configure::<UserEvent>("server::UserEvent", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
-            .with_serialization();
+            .with_remote_access();
     });
 
     builder.configure::<Config>("server::Config", |reg| {
-        reg.buffer(BufferCfg::SingleLatest).with_serialization();
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
     builder.configure::<AppSettings>("server::AppSettings", |reg| {
-        reg.buffer(BufferCfg::SingleLatest).with_serialization();
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
     let db = builder.build().await?;

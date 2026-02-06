@@ -103,6 +103,16 @@ pub trait BufferReader<T: Clone + Send>: Send {
     /// - **SingleLatest**: Waits for value change, returns most recent
     /// - **Mailbox**: Waits for slot value, takes and clears it
     fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>>;
+
+    /// Non-blocking receive — returns immediately.
+    ///
+    /// Returns `Err(DbError::BufferEmpty)` if no pending values.
+    ///
+    /// # Behavior by Buffer Type
+    /// - **SPMC Ring**: Returns next buffered value, or `BufferEmpty` if caught up
+    /// - **SingleLatest**: Returns value if changed since last read, or `BufferEmpty`
+    /// - **Mailbox**: Takes and returns slot value, or `BufferEmpty` if empty
+    fn try_recv(&mut self) -> Result<T, DbError>;
 }
 
 /// Reader trait for consuming JSON-serialized values from a buffer (std only)
@@ -114,7 +124,7 @@ pub trait BufferReader<T: Clone + Send>: Send {
 /// at compile time, by serializing values to JSON on each `recv_json()` call.
 ///
 /// # Requirements
-/// - Record must be configured with `.with_serialization()`
+/// - Record must be configured with `.with_remote_access()`
 /// - Only available with `std` feature (requires serde_json)
 ///
 /// # Example
@@ -139,6 +149,11 @@ pub trait JsonBufferReader: Send {
     fn recv_json(
         &mut self,
     ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, DbError>> + Send + '_>>;
+
+    /// Non-blocking receive as JSON — returns immediately.
+    ///
+    /// Returns `Err(DbError::BufferEmpty)` if no pending values.
+    fn try_recv_json(&mut self) -> Result<serde_json::Value, DbError>;
 }
 
 /// Snapshot of buffer metrics at a point in time
@@ -268,6 +283,10 @@ mod tests {
                     _buffer_name: (),
                 })
             })
+        }
+
+        fn try_recv(&mut self) -> Result<T, DbError> {
+            Err(DbError::BufferEmpty)
         }
     }
 

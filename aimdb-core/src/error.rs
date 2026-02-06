@@ -82,6 +82,10 @@ pub enum DbError {
         _buffer_name: (),
     },
 
+    /// Non-blocking receive found no pending values
+    #[cfg_attr(feature = "std", error("Buffer empty: no pending values"))]
+    BufferEmpty,
+
     // ===== Database Errors (0x7003-0x7009) =====
     /// Record type not found in database (legacy, by type name)
     #[cfg_attr(feature = "std", error("Record type not found: {record_name}"))]
@@ -289,6 +293,7 @@ impl core::fmt::Display for DbError {
             DbError::BufferFull { .. } => (0x2002, "Buffer full"),
             DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
             DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
+            DbError::BufferEmpty => (0xA003, "Buffer empty"),
             DbError::RecordNotFound { .. } => (0x7003, "Record not found"),
             DbError::RecordKeyNotFound { .. } => (0x7006, "Record key not found"),
             DbError::InvalidRecordId { .. } => (0x7007, "Invalid record ID"),
@@ -403,6 +408,7 @@ impl DbError {
             // Buffer operation errors: 0xA000-0xAFFF
             DbError::BufferLagged { .. } => 0xA001,
             DbError::BufferClosed { .. } => 0xA002,
+            DbError::BufferEmpty => 0xA003,
 
             // Sync API errors: 0xB000-0xBFFF (std only)
             #[cfg(feature = "std")]
@@ -463,6 +469,7 @@ impl DbError {
                 Self::prepend_context(&mut buffer_name, context);
                 DbError::BufferClosed { buffer_name }
             }
+            DbError::BufferEmpty => DbError::BufferEmpty,
             DbError::RecordNotFound { mut record_name } => {
                 Self::prepend_context(&mut record_name, context);
                 DbError::RecordNotFound { record_name }

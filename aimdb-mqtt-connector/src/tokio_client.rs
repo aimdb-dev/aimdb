@@ -33,7 +33,7 @@ use std::time::Duration;
 ///         reg.link_from("mqtt://commands/temp")
 ///            .with_deserializer(deserialize_temp)
 ///            .with_buffer(BufferCfg::SingleLatest)
-///            .with_serialization();
+///            .with_remote_access();
 ///     })
 ///     .build().await?;
 /// ```

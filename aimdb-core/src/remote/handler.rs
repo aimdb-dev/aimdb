@@ -63,6 +63,10 @@ struct ConnectionState {
     /// Event funnel: all subscription tasks send events here
     /// This channel feeds the single writer task
     event_tx: mpsc::UnboundedSender<Event>,
+
+    /// Per-record drain readers, created lazily on first record.drain call.
+    /// One drain reader per record, per connection.
+    drain_readers: HashMap<String, Box<dyn crate::buffer::JsonBufferReader + Send>>,
 }
 
 #[cfg(feature = "std")]
@@ -73,6 +77,7 @@ impl ConnectionState {
             subscriptions: HashMap::new(),
             next_subscription_id: 1,
             event_tx,
+            drain_readers: HashMap::new(),
         }
     }
 
@@ -569,6 +574,7 @@ where
         "record.unsubscribe" => {
             handle_record_unsubscribe(conn_state, request.id, request.params).await
         }
+        "record.drain" => handle_record_drain(db, conn_state, request.id, request.params).await,
         _ => {
             #[cfg(feature = "tracing")]
             tracing::warn!("Unknown method: {}", request.method);
@@ -629,7 +635,7 @@ where
 /// Success response with record value as JSON, or error if:
 /// - Missing/invalid "record" parameter
 /// - Record not found
-/// - Record not configured with `.with_serialization()`
+/// - Record not configured with `.with_remote_access()`
 /// - No value available in atomic snapshot
 #[cfg(feature = "std")]
 async fn handle_record_get<R>(
@@ -1128,4 +1134,154 @@ async fn handle_record_unsubscribe(
             )
         }
     }
+}
+
+/// Handles record.drain method
+///
+/// Drains all pending values from a record's drain reader. On the first call for
+/// a given record, creates a dedicated drain reader (returns empty). Subsequent
+/// calls return all values accumulated since the previous drain.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `conn_state` - Connection state (for drain reader management)
+/// * `request_id` - Request ID for the response
+/// * `params` - Request parameters (must contain "name" field, optional "limit")
+///
+/// # Returns
+/// Success response with `record_name`, `values` array, and `count`, or error if:
+/// - Missing/invalid parameters
+/// - Record not found
+/// - Record not configured with `.with_remote_access()`
+#[cfg(feature = "std")]
+async fn handle_record_drain<R>(
+    db: &Arc<AimDb<R>>,
+    conn_state: &mut ConnectionState,
+    request_id: u64,
+    params: Option<serde_json::Value>,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    // Extract record name from params
+    let record_name = match params {
+        Some(serde_json::Value::Object(ref map)) => match map.get("name") {
+            Some(serde_json::Value::String(name)) => name.clone(),
+            _ => {
+                return Response::error(
+                    request_id,
+                    "invalid_params",
+                    "Missing or invalid 'name' parameter (expected string)".to_string(),
+                );
+            }
+        },
+        _ => {
+            return Response::error(
+                request_id,
+                "invalid_params",
+                "Missing params object".to_string(),
+            );
+        }
+    };
+
+    // Optional: limit parameter
+    let limit = params
+        .as_ref()
+        .and_then(|p| p.as_object())
+        .and_then(|map| map.get("limit"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(usize::MAX);
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Draining record: {} (limit: {})",
+        record_name,
+        if limit == usize::MAX {
+            "all".to_string()
+        } else {
+            limit.to_string()
+        }
+    );
+
+    // Lazily create drain reader on first call for this record
+    if !conn_state.drain_readers.contains_key(&record_name) {
+        // Resolve record key → RecordId → AnyRecord → subscribe_json()
+        let id = match db.inner().resolve_str(&record_name) {
+            Some(id) => id,
+            None => {
+                return Response::error(
+                    request_id,
+                    "not_found",
+                    format!("Record '{}' not found", record_name),
+                );
+            }
+        };
+
+        let record = match db.inner().storage(id) {
+            Some(r) => r,
+            None => {
+                return Response::error(
+                    request_id,
+                    "not_found",
+                    format!("Record '{}' storage not found", record_name),
+                );
+            }
+        };
+
+        let reader = match record.subscribe_json() {
+            Ok(r) => r,
+            Err(e) => {
+                return Response::error(
+                    request_id,
+                    "remote_access_not_enabled",
+                    format!(
+                        "Record '{}' not configured with .with_remote_access(): {}",
+                        record_name, e
+                    ),
+                );
+            }
+        };
+
+        conn_state.drain_readers.insert(record_name.clone(), reader);
+    }
+
+    // Drain all pending values from the reader
+    let reader = conn_state.drain_readers.get_mut(&record_name).unwrap();
+    let mut values = Vec::new();
+
+    loop {
+        if values.len() >= limit {
+            break;
+        }
+        match reader.try_recv_json() {
+            Ok(val) => values.push(val),
+            Err(DbError::BufferEmpty) => break,
+            Err(DbError::BufferLagged { .. }) => {
+                // Ring overflowed since last drain — cursor resets.
+                // Log warning, keep draining.
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    "Drain reader lagged for record '{}' — some values were lost",
+                    record_name
+                );
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+
+    let count = values.len();
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Drained {} values from record '{}'", count, record_name);
+
+    Response::success(
+        request_id,
+        json!({
+            "record_name": record_name,
+            "values": values,
+            "count": count,
+        }),
+    )
 }

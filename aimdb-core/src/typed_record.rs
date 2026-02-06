@@ -6,7 +6,7 @@
 //!
 //! **Both std and no_std**: Core API (`TypedRecord`, `latest()`, `RecordValue`, producer/consumer)
 //!
-//! **std only**: JSON serialization (`.with_serialization()`, `.as_json()`), remote access, metadata
+//! **std only**: JSON serialization (`.with_remote_access()`, `.as_json()`), remote access, metadata
 //!
 //! **no_std**: Use `record.latest()` for value access and `Deref` for fields. JSON requires std;
 //! implement custom serialization for embedded protocols (CBOR, MessagePack, etc.).
@@ -72,7 +72,7 @@ impl<T> RecordValue<T> {
 
     /// Serialize the value to JSON (std only)
     ///
-    /// Returns `Some(JsonValue)` if record was configured with `.with_serialization()`,
+    /// Returns `Some(JsonValue)` if record was configured with `.with_remote_access()`,
     /// otherwise `None`. Requires `serde_json` (std only). For no_std, use `.get()`,
     /// `.into_inner()`, or `Deref` for direct access.
     #[cfg(feature = "std")]
@@ -110,7 +110,7 @@ impl<T> core::ops::Deref for RecordValue<T> {
 struct JsonReaderAdapter<T: Clone + Send + 'static> {
     /// The underlying typed buffer reader
     inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
-    /// JSON serializer function (from .with_serialization())
+    /// JSON serializer function (from .with_remote_access())
     serializer: JsonSerializer<T>,
 }
 
@@ -142,6 +142,16 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
                     crate::DbError::RuntimeError { _message: () }
                 }
             })
+        })
+    }
+
+    fn try_recv_json(&mut self) -> Result<serde_json::Value, crate::DbError> {
+        // Non-blocking receive from underlying typed buffer
+        let value = self.inner.try_recv()?;
+
+        // Serialize to JSON using the configured serializer
+        (self.serializer)(&value).ok_or_else(|| crate::DbError::RuntimeError {
+            message: "Failed to serialize value to JSON".to_string(),
         })
     }
 }
@@ -307,7 +317,7 @@ pub trait AnyRecord: Send + Sync {
     ///
     /// # Errors
     /// Returns error if:
-    /// - Record not configured with `.with_serialization()`
+    /// - Record not configured with `.with_remote_access()`
     /// - Buffer subscription fails (shouldn't happen in practice)
     ///
     /// # Example (internal use)
@@ -346,7 +356,7 @@ pub trait AnyRecord: Send + Sync {
     /// - Record has active producers (`producer_count > 0`) - **safety check**
     /// - JSON deserialization fails (schema mismatch)
     /// - Record not configured with buffer
-    /// - Record not configured with `.with_serialization()`
+    /// - Record not configured with `.with_remote_access()`
     ///
     /// # Example (internal use)
     /// ```rust,ignore
@@ -509,13 +519,13 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     metadata: RecordMetadataTracker,
 
     /// JSON serializer function (std only - for remote access)
-    /// When set via .with_serialization(), automatically serializes values for record.get queries
+    /// When set via .with_remote_access(), automatically serializes values for record.get queries
     /// Stores the serialization logic where T: Serialize is known at call site
     #[cfg(feature = "std")]
     json_serializer: Option<JsonSerializer<T>>,
 
     /// JSON deserializer function (std only - for remote access)
-    /// When set via .with_serialization(), automatically deserializes JSON for record.set operations
+    /// When set via .with_remote_access(), automatically deserializes JSON for record.set operations
     /// Stores the deserialization logic where T: Deserialize is known at call site
     #[cfg(feature = "std")]
     json_deserializer: Option<JsonDeserializer<T>>,
@@ -534,7 +544,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> TypedRecord<T, R> {
     /// Creates a new empty typed record
     ///
-    /// Call `.with_serialization()` to enable JSON (std only).
+    /// Call `.with_remote_access()` to enable JSON (std only).
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "std")]
@@ -716,7 +726,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// For no_std, use `record.latest()` for value access or custom serialization.
     #[cfg(feature = "std")]
-    pub fn with_serialization(&mut self) -> &mut Self
+    pub fn with_remote_access(&mut self) -> &mut Self
     where
         T: serde::Serialize + serde::de::DeserializeOwned,
     {
@@ -732,7 +742,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
         #[cfg(feature = "tracing")]
         tracing::info!(
-            "with_serialization() called for record type: {}",
+            "with_remote_access() called for record type: {}",
             core::any::type_name::<T>()
         );
 
@@ -742,7 +752,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Enables JSON serialization (backward compatible, read-only)
     ///
     /// This version only adds serialization support (for `record.get` and `record.subscribe`).
-    /// For write support via `record.set`, use `.with_serialization()` which requires
+    /// For write support via `record.set`, use `.with_remote_access()` which requires
     /// both `Serialize` and `DeserializeOwned` bounds.
     ///
     /// This method exists for backward compatibility with records that don't implement
@@ -982,7 +992,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// **Both std and no_std**: Direct access via `Deref`, `.get()`, `.into_inner()`
     ///
-    /// **std only**: `.as_json()` (if `.with_serialization()` configured)
+    /// **std only**: `.as_json()` (if `.with_remote_access()` configured)
     ///
     /// # Examples
     /// ```rust,ignore
@@ -1192,7 +1202,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
-                    "Record '{}' not configured with .with_serialization(). \
+                    "Record '{}' not configured with .with_remote_access(). \
                      Cannot subscribe to JSON stream.",
                     core::any::type_name::<T>()
                 ),
@@ -1251,7 +1261,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
-                    "Record '{}' not configured with .with_serialization(). \
+                    "Record '{}' not configured with .with_remote_access(). \
                      Cannot deserialize from JSON.",
                     core::any::type_name::<T>()
                 ),

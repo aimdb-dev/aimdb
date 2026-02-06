@@ -196,6 +196,7 @@ impl<
         EmbassyBufferReader {
             buffer: Arc::clone(&self.inner),
             watch_receiver: None, // Will be initialized on first recv() for Watch buffers
+            spmc_subscriber: None, // Will be initialized on first recv() for SpmcRing buffers
         }
     }
 }
@@ -303,6 +304,7 @@ impl<
 ///
 /// Holds persistent subscription state for each buffer type.
 /// For Watch buffers, stores a persistent Receiver to track which value has been seen.
+/// For SpmcRing buffers, stores a persistent Subscriber for cursor continuity.
 pub struct EmbassyBufferReader<
     T: Clone + Send + 'static,
     const CAP: usize,
@@ -314,6 +316,11 @@ pub struct EmbassyBufferReader<
     /// Persistent Watch receiver. The 'static lifetime is safe because the Arc keeps the Watch alive.
     watch_receiver:
         Option<embassy_sync::watch::Receiver<'static, CriticalSectionRawMutex, T, WATCH_N>>,
+    /// Persistent SpmcRing subscriber (same pattern as watch_receiver).
+    /// The 'static lifetime is safe because the Arc keeps the PubSubChannel alive.
+    spmc_subscriber: Option<
+        embassy_sync::pubsub::Subscriber<'static, CriticalSectionRawMutex, T, CAP, SUBS, PUBS>,
+    >,
 }
 
 impl<
@@ -330,16 +337,33 @@ impl<
     {
         Box::pin(async move {
             match &*self.buffer {
-                EmbassyBufferInner::SpmcRing(channel) => match channel.subscriber() {
-                    Ok(mut sub) => match sub.next_message().await {
+                EmbassyBufferInner::SpmcRing(channel) => {
+                    // Lazily create persistent subscriber (same pattern as watch_receiver)
+                    if self.spmc_subscriber.is_none() {
+                        // SAFETY: The Arc in self.buffer keeps the PubSubChannel alive for this reader's lifetime.
+                        // We extend the lifetime to 'static to store the subscriber, which is safe because
+                        // the subscriber is dropped with the reader.
+                        let channel_static: &'static embassy_sync::pubsub::PubSubChannel<
+                            CriticalSectionRawMutex,
+                            T,
+                            CAP,
+                            SUBS,
+                            PUBS,
+                        > = unsafe { &*(channel as *const _) };
+                        self.spmc_subscriber = Some(
+                            channel_static
+                                .subscriber()
+                                .map_err(|_| DbError::BufferClosed { _buffer_name: () })?,
+                        );
+                    }
+                    match self.spmc_subscriber.as_mut().unwrap().next_message().await {
                         WaitResult::Message(value) => Ok(value),
                         WaitResult::Lagged(n) => Err(DbError::BufferLagged {
                             lag_count: n,
                             _buffer_name: (),
                         }),
-                    },
-                    Err(_) => Err(DbError::BufferClosed { _buffer_name: () }),
-                },
+                    }
+                }
                 EmbassyBufferInner::Watch(watch) => {
                     // Watch requires a persistent receiver to track seen values.
                     // Creating a new receiver each time causes infinite loops (always returns current value).
@@ -372,6 +396,51 @@ impl<
                 }
             }
         })
+    }
+
+    fn try_recv(&mut self) -> Result<T, DbError> {
+        match &*self.buffer {
+            EmbassyBufferInner::SpmcRing(channel) => {
+                // Lazily create persistent subscriber (same as recv())
+                if self.spmc_subscriber.is_none() {
+                    let channel_static: &'static embassy_sync::pubsub::PubSubChannel<
+                        CriticalSectionRawMutex,
+                        T,
+                        CAP,
+                        SUBS,
+                        PUBS,
+                    > = unsafe { &*(channel as *const _) };
+                    self.spmc_subscriber = Some(
+                        channel_static
+                            .subscriber()
+                            .map_err(|_| DbError::BufferClosed { _buffer_name: () })?,
+                    );
+                }
+                match self
+                    .spmc_subscriber
+                    .as_mut()
+                    .unwrap()
+                    .try_next_message_pure()
+                {
+                    Some(value) => Ok(value),
+                    None => Err(DbError::BufferEmpty),
+                }
+            }
+            EmbassyBufferInner::Watch(_) => {
+                if let Some(ref mut rx) = self.watch_receiver {
+                    match rx.try_changed() {
+                        Some(value) => Ok(value),
+                        None => Err(DbError::BufferEmpty),
+                    }
+                } else {
+                    Err(DbError::BufferEmpty)
+                }
+            }
+            EmbassyBufferInner::Mailbox(channel) => match channel.try_receive() {
+                Ok(val) => Ok(val),
+                Err(_) => Err(DbError::BufferEmpty),
+            },
+        }
     }
 }
 
