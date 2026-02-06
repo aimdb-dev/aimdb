@@ -1307,7 +1307,10 @@ mod tests {
 
             let metrics = buffer.metrics();
             assert_eq!(metrics.produced_count, 3);
-            assert_eq!(metrics.consumed_count, 2, "try_recv should increment consumed_count");
+            assert_eq!(
+                metrics.consumed_count, 2,
+                "try_recv should increment consumed_count"
+            );
         }
 
         #[tokio::test]

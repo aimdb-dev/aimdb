@@ -141,7 +141,10 @@ async fn test_drain_cold_start_returns_empty() {
 
     // First drain creates the reader — returns empty (cold start)
     let response = client.drain_record("test::Temperature").await.unwrap();
-    assert_eq!(response.count, 0, "First drain should be empty (cold start)");
+    assert_eq!(
+        response.count, 0,
+        "First drain should be empty (cold start)"
+    );
     assert!(response.values.is_empty());
     assert_eq!(response.record_name, "test::Temperature");
 
@@ -644,9 +647,7 @@ async fn test_drain_independent_of_other_consumers() {
 
     // Also subscribe via the in-process API (not the AimX client) to
     // prove the drain reader is independent of other consumers
-    let mut in_process_reader = db
-        .subscribe::<Temperature>("test::Temperature")
-        .unwrap();
+    let mut in_process_reader = db.subscribe::<Temperature>("test::Temperature").unwrap();
 
     // Write values
     for i in 0..3 {
