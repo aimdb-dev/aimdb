@@ -223,9 +223,12 @@ dependencies = [
 name = "aimdb-tokio-adapter"
 version = "0.4.0"
 dependencies = [
+ "aimdb-client",
  "aimdb-core",
  "aimdb-executor",
  "futures",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-test",
  "tracing",

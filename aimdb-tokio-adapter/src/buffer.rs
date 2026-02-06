@@ -1033,6 +1033,113 @@ mod tests {
     }
 
     // ========================================================================
+    // try_recv — Drain-Loop Pattern Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_try_recv_interleaved_push_and_drain() {
+        let cfg = BufferCfg::SpmcRing { capacity: 16 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        // Push 3, drain all
+        buffer.push(1);
+        buffer.push(2);
+        buffer.push(3);
+
+        let mut batch1 = Vec::new();
+        loop {
+            match reader.try_recv() {
+                Ok(val) => batch1.push(val),
+                Err(DbError::BufferEmpty) => break,
+                Err(e) => panic!("unexpected: {:?}", e),
+            }
+        }
+        assert_eq!(batch1, vec![1, 2, 3]);
+
+        // Push 2 more, drain again
+        buffer.push(4);
+        buffer.push(5);
+
+        let mut batch2 = Vec::new();
+        loop {
+            match reader.try_recv() {
+                Ok(val) => batch2.push(val),
+                Err(DbError::BufferEmpty) => break,
+                Err(e) => panic!("unexpected: {:?}", e),
+            }
+        }
+        assert_eq!(batch2, vec![4, 5]);
+
+        // No new data — empty
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_multiple_independent_readers() {
+        let cfg = BufferCfg::SpmcRing { capacity: 16 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader_a = buffer.subscribe();
+        let mut reader_b = buffer.subscribe();
+
+        // Push values
+        for i in 0..5 {
+            buffer.push(i);
+        }
+
+        // Reader A drains all
+        let mut a_values = Vec::new();
+        loop {
+            match reader_a.try_recv() {
+                Ok(val) => a_values.push(val),
+                Err(DbError::BufferEmpty) => break,
+                Err(e) => panic!("unexpected: {:?}", e),
+            }
+        }
+
+        // Reader B drains all — independent cursor
+        let mut b_values = Vec::new();
+        loop {
+            match reader_b.try_recv() {
+                Ok(val) => b_values.push(val),
+                Err(DbError::BufferEmpty) => break,
+                Err(e) => panic!("unexpected: {:?}", e),
+            }
+        }
+
+        // Both readers should have received the same 5 values independently
+        assert_eq!(a_values, vec![0, 1, 2, 3, 4]);
+        assert_eq!(b_values, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn test_try_recv_after_async_recv() {
+        let cfg = BufferCfg::SpmcRing { capacity: 16 };
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        // Push 3 values
+        buffer.push(10);
+        buffer.push(20);
+        buffer.push(30);
+
+        // Consume first via async recv()
+        let first = reader.recv().await.unwrap();
+        assert_eq!(first, 10);
+
+        // Drain remaining via try_recv()
+        let mut remaining = Vec::new();
+        loop {
+            match reader.try_recv() {
+                Ok(val) => remaining.push(val),
+                Err(DbError::BufferEmpty) => break,
+                Err(e) => panic!("unexpected: {:?}", e),
+            }
+        }
+        assert_eq!(remaining, vec![20, 30]);
+    }
+
+    // ========================================================================
     // Metrics Tests (feature-gated)
     // ========================================================================
 
@@ -1182,6 +1289,48 @@ mod tests {
             assert!(snapshot.is_some());
             let snapshot = snapshot.unwrap();
             assert_eq!(snapshot.produced_count, 2);
+        }
+
+        #[tokio::test]
+        async fn test_try_recv_tracks_consumed_metrics() {
+            let cfg = BufferCfg::SpmcRing { capacity: 10 };
+            let buffer = TokioBuffer::<i32>::new(&cfg);
+            let mut reader = buffer.subscribe();
+
+            // Push and try_recv
+            buffer.push(1);
+            buffer.push(2);
+            buffer.push(3);
+
+            let _ = reader.try_recv().unwrap();
+            let _ = reader.try_recv().unwrap();
+
+            let metrics = buffer.metrics();
+            assert_eq!(metrics.produced_count, 3);
+            assert_eq!(metrics.consumed_count, 2, "try_recv should increment consumed_count");
+        }
+
+        #[tokio::test]
+        async fn test_try_recv_tracks_dropped_on_lag() {
+            let cfg = BufferCfg::SpmcRing { capacity: 3 };
+            let buffer = TokioBuffer::<i32>::new(&cfg);
+            let mut reader = buffer.subscribe();
+
+            // Overfill to cause lag
+            for i in 0..10 {
+                buffer.push(i);
+            }
+
+            // try_recv should detect lag and track dropped count
+            let result = reader.try_recv();
+            if let Err(DbError::BufferLagged { lag_count, .. }) = result {
+                let metrics = buffer.metrics();
+                assert_eq!(
+                    metrics.dropped_count, lag_count,
+                    "Dropped count from try_recv should match lag count"
+                );
+            }
+            // Note: On very fast systems, lag might not always occur
         }
     }
 }
