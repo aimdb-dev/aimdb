@@ -9,7 +9,7 @@ use serde_json::Value;
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Supported MCP protocol versions
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-06-18"];
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-06-18", "2025-11-25"];
 
 /// Initialize request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]

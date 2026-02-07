@@ -59,7 +59,7 @@ use alloc::{boxed::Box, string::ToString};
 #[cfg(feature = "std")]
 use std::boxed::Box;
 
-#[cfg(feature = "std")]
+#[cfg(all(debug_assertions, feature = "std"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Counter for interned keys (debug builds only, std only)

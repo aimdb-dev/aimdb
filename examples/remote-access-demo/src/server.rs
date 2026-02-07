@@ -96,12 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_remote_access(remote_config);
 
     // Configure records
+    // Use SpmcRing for Temperature and SystemStatus to support record.drain history
     builder.configure::<Temperature>("server::Temperature", |reg| {
-        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+        reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
+            .with_remote_access();
     });
 
     builder.configure::<SystemStatus>("server::SystemStatus", |reg| {
-        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+        reg.buffer(BufferCfg::SpmcRing { capacity: 50 })
+            .with_remote_access();
     });
 
     builder.configure::<UserEvent>("server::UserEvent", |reg| {
@@ -120,16 +123,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = builder.build().await?;
 
     info!("✅ Database initialized with 5 record types");
-    info!("   - Temperature (has producer, NOT writable)");
-    info!("   - SystemStatus (has producer, NOT writable)");
-    info!("   - UserEvent (buffer only, no data)");
-    info!("   - Config (has producer, NOT writable)");
-    info!("   - AppSettings (NO producer, remotely writable ✍️)");
+    info!("   - Temperature (SpmcRing×100, has producer — drainable 🔄)");
+    info!("   - SystemStatus (SpmcRing×50, has producer — drainable 🔄)");
+    info!("   - UserEvent (SpmcRing×100, no data)");
+    info!("   - Config (SingleLatest, has producer, NOT writable)");
+    info!("   - AppSettings (SingleLatest, NO producer, remotely writable ✍️)");
 
     info!("📝 Populating initial record data...");
 
     // Produce some initial data
-    let temp_producer = db.producer::<Temperature>();
+    let temp_producer = db.producer::<Temperature>("server::Temperature");
     let initial_duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap();
@@ -144,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    let status_producer = db.producer::<SystemStatus>();
+    let status_producer = db.producer::<SystemStatus>("server::SystemStatus");
     status_producer
         .produce(SystemStatus {
             uptime_seconds: 3600,
@@ -153,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    let config_producer = db.producer::<Config>();
+    let config_producer = db.producer::<Config>("server::Config");
     config_producer
         .produce(Config {
             app_name: "AimDB Demo".to_string(),

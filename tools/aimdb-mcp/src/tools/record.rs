@@ -247,28 +247,39 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
         params.socket_path, params.record_name
     );
 
-    // Get or create connection from pool (if available)
-    let mut client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&params.socket_path)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&params.socket_path)
-            .await
-            .map_err(McpError::Client)?
-    };
+    // Use persistent drain client so the server-side drain reader persists
+    // across calls, allowing values to accumulate between drains.
+    let pool = super::connection_pool()
+        .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
+
+    let client_arc = pool
+        .get_drain_client(&params.socket_path)
+        .await
+        .map_err(McpError::Client)?;
+
+    let mut client = client_arc.lock().await;
 
     // Drain record values
     let response = match params.limit {
         Some(limit) => client
             .drain_record_with_limit(&params.record_name, limit)
             .await
-            .map_err(McpError::Client)?,
+            .map_err(|e| {
+                // On connection error, invalidate so next call reconnects
+                let socket = params.socket_path.clone();
+                let pool = pool.clone();
+                tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
+                McpError::Client(e)
+            })?,
         None => client
             .drain_record(&params.record_name)
             .await
-            .map_err(McpError::Client)?,
+            .map_err(|e| {
+                let socket = params.socket_path.clone();
+                let pool = pool.clone();
+                tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
+                McpError::Client(e)
+            })?,
     };
 
     debug!(
