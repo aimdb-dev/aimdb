@@ -676,30 +676,34 @@ impl DependencyGraph {
     /// `all_keys` is the set of all registered record keys.
     ///
     /// Returns `Err(DbError::CyclicDependency)` if the transform edges form a cycle.
-    #[cfg(feature = "std")]
     pub fn validate_dag(
         transform_inputs: &[(String, Vec<String>)],
-        all_keys: &std::collections::HashSet<String>,
+        all_keys: &hashbrown::HashSet<String>,
     ) -> crate::DbResult<Vec<String>> {
         use alloc::collections::VecDeque;
 
         // First: check all input keys exist
+        #[allow(unused_variables)] // output_key, input_key used only in std error messages
         for (output_key, input_keys) in transform_inputs {
             for input_key in input_keys {
                 if !all_keys.contains(input_key) {
+                    #[cfg(feature = "std")]
                     return Err(crate::DbError::TransformInputNotFound {
                         output_key: output_key.clone(),
                         input_key: input_key.clone(),
+                    });
+                    #[cfg(not(feature = "std"))]
+                    return Err(crate::DbError::TransformInputNotFound {
+                        _output_key: (),
+                        _input_key: (),
                     });
                 }
             }
         }
 
         // Build adjacency list and in-degree map for Kahn's algorithm
-        let mut in_degree: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
-        let mut adjacency: std::collections::HashMap<&str, Vec<&str>> =
-            std::collections::HashMap::new();
+        let mut in_degree: hashbrown::HashMap<&str, usize> = hashbrown::HashMap::new();
+        let mut adjacency: hashbrown::HashMap<&str, Vec<&str>> = hashbrown::HashMap::new();
 
         // Initialize all keys with in-degree 0
         for key in all_keys {
@@ -741,16 +745,21 @@ impl DependencyGraph {
         }
 
         if topo_order.len() != all_keys.len() {
-            // Find the cycle participants for a helpful error message
-            let cycle_records: Vec<String> = in_degree
-                .iter()
-                .filter(|(_, &deg)| deg > 0)
-                .map(|(&k, _)| k.to_string())
-                .collect();
+            #[cfg(feature = "std")]
+            {
+                // Find the cycle participants for a helpful error message
+                let cycle_records: Vec<String> = in_degree
+                    .iter()
+                    .filter(|(_, &deg)| deg > 0)
+                    .map(|(&k, _)| k.to_string())
+                    .collect();
 
-            return Err(crate::DbError::CyclicDependency {
-                records: cycle_records,
-            });
+                return Err(crate::DbError::CyclicDependency {
+                    records: cycle_records,
+                });
+            }
+            #[cfg(not(feature = "std"))]
+            return Err(crate::DbError::CyclicDependency { _records: () });
         }
 
         Ok(topo_order)

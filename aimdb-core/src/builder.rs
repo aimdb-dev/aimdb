@@ -10,7 +10,7 @@ use core::marker::PhantomData;
 extern crate alloc;
 
 use alloc::vec::Vec;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc};
@@ -22,6 +22,7 @@ use alloc::string::{String, ToString};
 use std::{boxed::Box, sync::Arc};
 
 use crate::record_id::{RecordId, RecordKey, StringKey};
+use crate::transform::DependencyGraph;
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 use crate::{DbError, DbResult};
@@ -704,34 +705,28 @@ where
         );
 
         // Validate transform dependency graph before spawning
-        #[cfg(feature = "std")]
-        {
-            use crate::transform::DependencyGraph;
+        // Collect all registered keys
+        let all_keys: HashSet<String> = inner.keys.iter().map(|k| k.as_str().to_string()).collect();
 
-            // Collect all registered keys
-            let all_keys: std::collections::HashSet<String> =
-                inner.keys.iter().map(|k| k.as_str().to_string()).collect();
-
-            // Collect transform input mappings: (output_key, input_keys)
-            let mut transform_inputs: Vec<(String, Vec<String>)> = Vec::new();
-            for (idx, record) in inner.storages.iter().enumerate() {
-                if let Some(input_keys) = record.transform_input_keys() {
-                    let output_key = inner.keys[idx].as_str().to_string();
-                    transform_inputs.push((output_key, input_keys));
-                }
+        // Collect transform input mappings: (output_key, input_keys)
+        let mut transform_inputs: Vec<(String, Vec<String>)> = Vec::new();
+        for (idx, record) in inner.storages.iter().enumerate() {
+            if let Some(input_keys) = record.transform_input_keys() {
+                let output_key = inner.keys[idx].as_str().to_string();
+                transform_inputs.push((output_key, input_keys));
             }
+        }
 
-            if !transform_inputs.is_empty() {
-                // Validate: checks for missing inputs and cycles
-                let _topo_order = DependencyGraph::validate_dag(&transform_inputs, &all_keys)?;
+        if !transform_inputs.is_empty() {
+            // Validate: checks for missing inputs and cycles
+            let _topo_order = DependencyGraph::validate_dag(&transform_inputs, &all_keys)?;
 
-                #[cfg(feature = "tracing")]
-                tracing::debug!(
-                    "Transform dependency graph validated successfully ({} transforms, order: {:?})",
-                    transform_inputs.len(),
-                    _topo_order
-                );
-            }
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                "Transform dependency graph validated successfully ({} transforms, order: {:?})",
+                transform_inputs.len(),
+                _topo_order
+            );
         }
 
         // Execute spawn functions for each record
