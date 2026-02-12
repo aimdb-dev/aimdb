@@ -211,7 +211,8 @@ impl RecordMetadataTracker {
 }
 
 // Type alias for boxed futures
-type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
+pub(crate) type BoxFuture<'a, T> =
+    core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
 
 /// Type alias for consumer service closure stored in TypedRecord
 /// Each consumer receives a Consumer<T, R> handle for subscribing to the buffer
@@ -281,6 +282,17 @@ pub trait AnyRecord: Send + Sync {
 
     /// Returns whether a producer service is registered
     fn has_producer_service(&self) -> bool;
+
+    /// Returns whether a transform is registered for this record
+    fn has_transform(&self) -> bool;
+
+    /// Returns the transform input keys (if a transform is registered)
+    #[cfg(feature = "std")]
+    fn transform_input_keys(&self) -> Option<Vec<String>>;
+
+    /// Returns the transform input keys (if a transform is registered)
+    #[cfg(not(feature = "std"))]
+    fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>>;
 
     /// Sets the writable flag for this record (type-erased)
     ///
@@ -461,8 +473,14 @@ where
             })?;
 
         // Spawn producer service if present (using key-based producer)
+        // Note: source and transform are mutually exclusive — only one will be present
         if typed_record.has_producer_service() {
             typed_record.spawn_producer_service(runtime, db, record_key)?;
+        }
+
+        // Spawn transform task if present (mutually exclusive with source)
+        if typed_record.has_transform() {
+            typed_record.spawn_transform_task(runtime, db, record_key)?;
         }
 
         // Spawn consumer tasks if present (using key-based consumer)
@@ -496,6 +514,14 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
 
     #[cfg(not(feature = "std"))]
     consumers: spin::Mutex<alloc::vec::Vec<ConsumerServiceFn<T, R>>>,
+
+    /// Transform descriptor — mutually exclusive with producer_service.
+    /// If set, this record is a reactive derivation from one or more input records.
+    /// Uses the same Mutex pattern for take()-during-spawn.
+    #[cfg(feature = "std")]
+    transform: std::sync::Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
+    #[cfg(not(feature = "std"))]
+    transform: spin::Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
@@ -555,6 +581,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             consumers: std::sync::Mutex::new(Vec::new()),
             #[cfg(not(feature = "std"))]
             consumers: spin::Mutex::new(alloc::vec::Vec::new()),
+            #[cfg(feature = "std")]
+            transform: std::sync::Mutex::new(None),
+            #[cfg(not(feature = "std"))]
+            transform: spin::Mutex::new(None),
             buffer: None,
             #[cfg(feature = "std")]
             buffer_cfg: None,
@@ -584,6 +614,16 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         F: FnOnce(crate::Producer<T, R>, Arc<dyn Any + Send + Sync>) -> Fut + Send + Sync + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
+        // Check for existing transform (mutual exclusion)
+        #[cfg(feature = "std")]
+        let has_transform = self.transform.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_transform = self.transform.lock().is_some();
+
+        if has_transform {
+            panic!("Record already has a .transform(); cannot also have a .source().");
+        }
+
         // Check if already set
         #[cfg(feature = "std")]
         let already_set = self.producer_service.lock().unwrap().is_some();
@@ -652,6 +692,130 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         {
             self.consumers.lock().push(boxed);
         }
+    }
+
+    /// Sets the transform descriptor for this record.
+    ///
+    /// A transform is mutually exclusive with a `.source()` — a record cannot
+    /// have both. Panics if a source or transform is already registered.
+    pub(crate) fn set_transform(
+        &mut self,
+        descriptor: crate::transform::TransformDescriptor<T, R>,
+    ) {
+        // Enforce mutual exclusion with .source()
+        #[cfg(feature = "std")]
+        let has_source = self.producer_service.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_source = self.producer_service.lock().is_some();
+
+        if has_source {
+            panic!("Record already has a .source(); cannot also have a .transform().");
+        }
+
+        #[cfg(feature = "std")]
+        let mut slot = self.transform.lock().unwrap();
+        #[cfg(not(feature = "std"))]
+        let mut slot = self.transform.lock();
+
+        if slot.is_some() {
+            panic!("Record already has a .transform(); only one is allowed.");
+        }
+        *slot = Some(descriptor);
+    }
+
+    /// Returns whether a transform is registered for this record.
+    pub fn has_transform(&self) -> bool {
+        #[cfg(feature = "std")]
+        {
+            self.transform.lock().unwrap().is_some()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.transform.lock().is_some()
+        }
+    }
+
+    /// Returns the input keys for the registered transform (if any).
+    ///
+    /// Used during build-time validation to check that all input records exist.
+    #[cfg(feature = "std")]
+    pub fn transform_input_keys(&self) -> Option<Vec<String>> {
+        #[cfg(feature = "std")]
+        let guard = self.transform.lock().unwrap();
+        #[cfg(not(feature = "std"))]
+        let guard = self.transform.lock();
+
+        guard.as_ref().map(|t| t.input_keys.clone())
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>> {
+        #[cfg(feature = "std")]
+        {
+            self.transform
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|d| d.input_keys.clone())
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.transform.lock().as_ref().map(|d| d.input_keys.clone())
+        }
+    }
+
+    /// Spawns the transform task for this record.
+    ///
+    /// Takes the transform descriptor (can only spawn once) and spawns the
+    /// reactive task that subscribes to input records and produces to this record.
+    pub fn spawn_transform_task(
+        &self,
+        runtime: &Arc<R>,
+        db: &Arc<crate::AimDb<R>>,
+        record_key: &str,
+    ) -> crate::DbResult<()>
+    where
+        R: aimdb_executor::Spawn,
+        T: Sync,
+    {
+        use crate::DbError;
+
+        // Take the transform descriptor (can only spawn once)
+        let descriptor = {
+            #[cfg(feature = "std")]
+            {
+                self.transform.lock().unwrap().take()
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                self.transform.lock().take()
+            }
+        };
+
+        if let Some(desc) = descriptor {
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "🔄 Spawning transform task for '{}' (inputs: {:?})",
+                record_key,
+                desc.input_keys
+            );
+
+            // Create Producer<T> bound to the specific record key
+            let producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
+            let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
+
+            // Call the spawn function (mirrors spawn_producer_service exactly)
+            let task_future = (desc.spawn_fn)(producer, db.clone(), ctx);
+            runtime.spawn(task_future).map_err(DbError::from)?;
+
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "✅ Successfully spawned transform task for record '{}'",
+                record_key
+            );
+        }
+
+        Ok(())
     }
 
     /// Sets the buffer for this record
@@ -1097,6 +1261,20 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
         TypedRecord::has_producer_service(self)
     }
 
+    fn has_transform(&self) -> bool {
+        TypedRecord::has_transform(self)
+    }
+
+    #[cfg(feature = "std")]
+    fn transform_input_keys(&self) -> Option<Vec<String>> {
+        TypedRecord::transform_input_keys(self)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>> {
+        TypedRecord::transform_input_keys(self)
+    }
+
     fn set_writable_erased(&self, writable: bool) {
         #[cfg(feature = "std")]
         {
@@ -1238,16 +1416,16 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
         );
 
         // SAFETY CHECK 1: Enforce "No Producer Override" rule
-        if self.has_producer_service() {
+        if self.has_producer_service() || self.has_transform() {
             #[cfg(feature = "tracing")]
             tracing::warn!(
-                "Rejected set_from_json for '{}': has active producer (producer_count=1)",
+                "Rejected set_from_json for '{}': has active producer or transform",
                 core::any::type_name::<T>()
             );
 
             return Err(DbError::PermissionDenied {
                 operation: format!(
-                    "Cannot set record '{}' - has active producer. \
+                    "Cannot set record '{}' - has active producer or transform. \
                      Use internal application logic instead. \
                      Remote access can only set configuration records without producers.",
                     core::any::type_name::<T>()

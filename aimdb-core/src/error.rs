@@ -248,6 +248,35 @@ pub enum DbError {
     #[error("Runtime thread has shut down")]
     RuntimeShutdown,
 
+    // ===== Transform / Dependency Graph Errors =====
+    /// Transform dependency graph contains a cycle
+    #[cfg_attr(
+        feature = "std",
+        error("Cyclic dependency detected among records: {records:?}")
+    )]
+    CyclicDependency {
+        #[cfg(feature = "std")]
+        records: Vec<String>,
+        #[cfg(not(feature = "std"))]
+        _records: (),
+    },
+
+    /// Transform input key references a record that was not registered
+    #[cfg_attr(
+        feature = "std",
+        error("Transform on '{output_key}' references unregistered input '{input_key}'")
+    )]
+    TransformInputNotFound {
+        #[cfg(feature = "std")]
+        output_key: String,
+        #[cfg(feature = "std")]
+        input_key: String,
+        #[cfg(not(feature = "std"))]
+        _output_key: (),
+        #[cfg(not(feature = "std"))]
+        _input_key: (),
+    },
+
     // ===== Standard Library Integrations (std only) =====
     /// I/O operation error
     #[cfg(feature = "std")]
@@ -307,6 +336,8 @@ impl core::fmt::Display for DbError {
             DbError::ResourceUnavailable { .. } => (0x5002, "Resource unavailable"),
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
+            DbError::CyclicDependency { .. } => (0xC001, "Cyclic dependency in transforms"),
+            DbError::TransformInputNotFound { .. } => (0xC002, "Transform input not found"),
         };
         write!(f, "Error 0x{:04X}: {}", code, message)
     }
@@ -392,6 +423,10 @@ impl DbError {
             DbError::TypeMismatch { .. } => 0x7008,
             DbError::AmbiguousType { .. } => 0x7009,
             DbError::DuplicateRecordKey { .. } => 0x700A,
+
+            // Transform / Dependency Graph errors: 0xC000-0xCFFF
+            DbError::CyclicDependency { .. } => 0xC001,
+            DbError::TransformInputNotFound { .. } => 0xC002,
 
             // I/O errors: 0x8000-0x8FFF (std only)
             #[cfg(feature = "std")]
@@ -566,6 +601,9 @@ impl DbError {
             DbError::GetTimeout => DbError::GetTimeout,
             #[cfg(feature = "std")]
             DbError::RuntimeShutdown => DbError::RuntimeShutdown,
+            // Transform errors — return as-is (no mutable context field to prepend)
+            DbError::CyclicDependency { .. } => self,
+            DbError::TransformInputNotFound { .. } => self,
             // Convert simple I/O and JSON errors to context variants (std only)
             #[cfg(feature = "std")]
             DbError::Io { source } => DbError::IoWithContext {

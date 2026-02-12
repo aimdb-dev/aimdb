@@ -28,6 +28,7 @@ pub mod record_id;
 pub mod remote;
 pub mod router;
 pub mod time;
+pub mod transform;
 pub mod transport;
 pub mod typed_api;
 pub mod typed_record;
@@ -64,3 +65,11 @@ pub use router::{Route, Router, RouterBuilder};
 
 // Record identification exports
 pub use record_id::{RecordId, RecordKey, StringKey};
+
+// Transform API exports
+pub use transform::{
+    DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordOrigin, TransformBuilder,
+    TransformPipeline,
+};
+#[cfg(feature = "std")]
+pub use transform::{JoinBuilder, JoinPipeline, JoinTrigger};
