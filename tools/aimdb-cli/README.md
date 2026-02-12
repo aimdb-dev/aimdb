@@ -190,6 +190,96 @@ Options:
 
 Press Ctrl+C to stop watching and unsubscribe cleanly.
 
+### Graph Commands
+
+Commands for exploring the dependency graph of records in an AimDB instance.
+
+#### `graph nodes`
+List all nodes in the dependency graph, showing record origins, buffer types, and connection counts.
+
+```bash
+aimdb graph nodes [OPTIONS]
+```
+
+Options:
+- `-s, --socket <PATH>`: Socket path (uses auto-discovery if not specified)
+- `-f, --format <FORMAT>`: Output format (table, json, json-compact, yaml)
+
+Example output:
+```
+┌──────────────────────┬───────────┬───────────────┬──────────┬──────┬──────────┐
+│ Key                  │ Origin    │ Buffer Type   │ Capacity │ Taps │ Outbound │
+├──────────────────────┼───────────┼───────────────┼──────────┼──────┼──────────┤
+│ temp.vienna          │ link      │ single_latest │ 1        │ 1    │ -        │
+│ temp.berlin          │ link      │ single_latest │ 1        │ 1    │ -        │
+│ weather.aggregate    │ transform │ single_latest │ 1        │ 0    │ yes      │
+└──────────────────────┴───────────┴───────────────┴──────────┴──────┴──────────┘
+```
+
+#### `graph edges`
+List all edges in the dependency graph, showing how data flows between records.
+
+```bash
+aimdb graph edges [OPTIONS]
+```
+
+Options:
+- `-s, --socket <PATH>`: Socket path
+- `-f, --format <FORMAT>`: Output format
+
+Example output:
+```
+┌────────────────┬───────────────────┬─────────────────┐
+│ From           │ To                │ Edge Type       │
+├────────────────┼───────────────────┼─────────────────┤
+│ temp.vienna    │ weather.aggregate │ transform_input │
+│ temp.berlin    │ weather.aggregate │ transform_input │
+└────────────────┴───────────────────┴─────────────────┘
+```
+
+#### `graph order`
+Show the topological ordering of records (spawn/initialization order).
+
+```bash
+aimdb graph order [OPTIONS]
+```
+
+Options:
+- `-s, --socket <PATH>`: Socket path
+- `-f, --format <FORMAT>`: Output format
+
+Example output:
+```
+┌───┬───────────────────┐
+│ # │ Record Key        │
+├───┼───────────────────┤
+│ 1 │ temp.vienna       │
+│ 2 │ temp.berlin       │
+│ 3 │ weather.aggregate │
+└───┴───────────────────┘
+```
+
+#### `graph dot`
+Export the dependency graph in DOT format for visualization with Graphviz.
+
+```bash
+aimdb graph dot [OPTIONS]
+```
+
+Options:
+- `-s, --socket <PATH>`: Socket path
+- `-n, --name <NAME>`: Graph name (default: "aimdb")
+
+Example:
+```bash
+# Generate DOT file and render as PNG
+aimdb graph dot > graph.dot
+dot -Tpng graph.dot -o graph.png
+
+# Or pipe directly to dot
+aimdb graph dot | dot -Tsvg > graph.svg
+```
+
 ## Output Formats
 
 The CLI supports multiple output formats:
@@ -274,6 +364,27 @@ fi
 
 # Continuous monitoring
 watch -n 1 'aimdb record get server::Temperature | jq ".celsius"'
+```
+
+### Graph Analysis Workflow
+
+```bash
+# View all nodes and their origins
+aimdb graph nodes
+
+# See data flow edges
+aimdb graph edges
+
+# Check spawn order
+aimdb graph order
+
+# Generate visual graph
+aimdb graph dot > aimdb-graph.dot
+dot -Tpng aimdb-graph.dot -o aimdb-graph.png
+open aimdb-graph.png
+
+# Export as JSON for further analysis
+aimdb graph nodes --format json | jq '.[] | select(.origin == "transform")'
 ```
 
 ## Protocol
