@@ -258,6 +258,51 @@ impl McpServer {
                     "additionalProperties": false
                 }),
             },
+            Tool {
+                name: "graph_nodes".to_string(),
+                description: "Get all nodes in the dependency graph. Returns metadata for all records as graph nodes, including origin (source/link/transform/passive), buffer configuration, and connection counts. Useful for understanding database topology and data flow.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        }
+                    },
+                    "required": ["socket_path"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "graph_edges".to_string(),
+                description: "Get all edges in the dependency graph. Returns directed edges representing data flow between records. Shows how data flows from sources through transforms to consumers.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        }
+                    },
+                    "required": ["socket_path"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "graph_topo_order".to_string(),
+                description: "Get the topological ordering of records in the dependency graph. Returns record keys ordered so all dependencies appear before their dependents. Reflects the spawn/initialization order used by AimDB.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        }
+                    },
+                    "required": ["socket_path"],
+                    "additionalProperties": false
+                }),
+            },
         ];
 
         Ok(ToolsListResult { tools })
@@ -281,6 +326,9 @@ impl McpServer {
             "get_instance_info" => tools::get_instance_info(params.arguments).await?,
             "query_schema" => tools::query_schema(params.arguments).await?,
             "drain_record" => tools::drain_record(params.arguments).await?,
+            "graph_nodes" => tools::graph_nodes(params.arguments).await?,
+            "graph_edges" => tools::graph_edges(params.arguments).await?,
+            "graph_topo_order" => tools::graph_topo_order(params.arguments).await?,
             _ => {
                 return Err(McpError::MethodNotFound(format!(
                     "Unknown tool: {}",

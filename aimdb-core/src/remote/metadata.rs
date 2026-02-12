@@ -4,6 +4,7 @@ use core::any::TypeId;
 use serde::{Deserialize, Serialize};
 use std::string::String;
 
+use crate::graph::RecordOrigin;
 use crate::record_id::{RecordId, RecordKey};
 
 /// Metadata about a registered record type
@@ -26,6 +27,9 @@ pub struct RecordMetadata {
 
     /// TypeId as hexadecimal string
     pub type_id: String,
+
+    /// How the record gets its values (Source, Link, Transform, Passive)
+    pub origin: RecordOrigin,
 
     /// Buffer type: "spmc_ring", "single_latest", "mailbox", or "none"
     pub buffer_type: String,
@@ -83,6 +87,7 @@ impl RecordMetadata {
     /// * `record_key` - The unique record key
     /// * `type_id` - The TypeId of the record
     /// * `name` - The Rust type name
+    /// * `origin` - How the record gets its values (Source, Link, Transform, Passive)
     /// * `buffer_type` - Buffer type string
     /// * `buffer_capacity` - Optional buffer capacity
     /// * `producer_count` - Number of producers
@@ -96,6 +101,7 @@ impl RecordMetadata {
         record_key: K,
         type_id: TypeId,
         name: String,
+        origin: RecordOrigin,
         buffer_type: String,
         buffer_capacity: Option<usize>,
         producer_count: usize,
@@ -109,6 +115,7 @@ impl RecordMetadata {
             record_key: record_key.as_str().to_string(),
             name,
             type_id: format!("{:?}", type_id),
+            origin,
             buffer_type,
             buffer_capacity,
             producer_count,
@@ -170,6 +177,7 @@ mod tests {
             StringKey::new("test.record"),
             type_id,
             "i32".to_string(),
+            RecordOrigin::Source,
             "spmc_ring".to_string(),
             Some(100),
             1,
@@ -182,6 +190,7 @@ mod tests {
         assert_eq!(metadata.record_id, 0);
         assert_eq!(metadata.record_key, "test.record");
         assert_eq!(metadata.name, "i32");
+        assert!(matches!(metadata.origin, RecordOrigin::Source));
         assert_eq!(metadata.buffer_type, "spmc_ring");
         assert_eq!(metadata.buffer_capacity, Some(100));
         assert_eq!(metadata.producer_count, 1);
@@ -198,6 +207,7 @@ mod tests {
             StringKey::new("app.config"),
             type_id,
             "String".to_string(),
+            RecordOrigin::Passive,
             "single_latest".to_string(),
             None,
             1,
@@ -212,6 +222,7 @@ mod tests {
         assert!(json.contains("\"record_id\":1"));
         assert!(json.contains("\"record_key\":\"app.config\""));
         assert!(json.contains("\"name\":\"String\""));
+        assert!(json.contains("\"origin\":\"passive\""));
         assert!(json.contains("\"buffer_type\":\"single_latest\""));
         assert!(json.contains("\"writable\":true"));
         assert!(json.contains("\"outbound_connector_count\":2"));

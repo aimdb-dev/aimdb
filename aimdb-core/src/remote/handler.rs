@@ -575,6 +575,9 @@ where
             handle_record_unsubscribe(conn_state, request.id, request.params).await
         }
         "record.drain" => handle_record_drain(db, conn_state, request.id, request.params).await,
+        "graph.nodes" => handle_graph_nodes(db, request.id).await,
+        "graph.edges" => handle_graph_edges(db, request.id).await,
+        "graph.topo_order" => handle_graph_topo_order(db, request.id).await,
         _ => {
             #[cfg(feature = "tracing")]
             tracing::warn!("Unknown method: {}", request.method);
@@ -1284,4 +1287,107 @@ where
             "count": count,
         }),
     )
+}
+// ============================================================================
+// Graph Introspection Methods
+// ============================================================================
+
+/// Handles graph.nodes method
+///
+/// Returns all nodes in the dependency graph with their metadata.
+/// Each node represents a record with its origin, buffer type, and connections.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `request_id` - Request ID for the response
+///
+/// # Returns
+/// Success response with array of GraphNode objects:
+/// - `key`: Record key (e.g., "temp.vienna")
+/// - `origin`: How the record gets its values (source, link, transform, passive)
+/// - `buffer_type`: Buffer type ("spmc_ring", "single_latest", "mailbox", "none")
+/// - `buffer_capacity`: Optional buffer capacity
+/// - `tap_count`: Number of taps attached
+/// - `has_outbound_link`: Whether an outbound connector is configured
+#[cfg(feature = "std")]
+async fn handle_graph_nodes<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Getting dependency graph nodes");
+
+    let graph = db.inner().dependency_graph();
+    let nodes = &graph.nodes;
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Returning {} graph nodes", nodes.len());
+
+    Response::success(request_id, json!(nodes))
+}
+
+/// Handles graph.edges method
+///
+/// Returns all edges in the dependency graph representing data flow between records.
+/// Edges are directed from source to target and include the edge type.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `request_id` - Request ID for the response
+///
+/// # Returns
+/// Success response with array of GraphEdge objects:
+/// - `from`: Source record key
+/// - `to`: Target record key
+/// - `edge_type`: Type of connection (TransformInput, TransformJoinInput, etc.)
+#[cfg(feature = "std")]
+async fn handle_graph_edges<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Getting dependency graph edges");
+
+    let graph = db.inner().dependency_graph();
+    let edges = &graph.edges;
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Returning {} graph edges", edges.len());
+
+    Response::success(request_id, json!(edges))
+}
+
+/// Handles graph.topo_order method
+///
+/// Returns the topological ordering of records in the dependency graph.
+/// This ordering ensures that all dependencies are processed before dependents.
+/// Used for spawn ordering and understanding data flow.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `request_id` - Request ID for the response
+///
+/// # Returns
+/// Success response with array of record keys in topological order:
+/// - Sources and passive records first
+/// - Transform outputs after their inputs
+/// - Respects the DAG structure for proper initialization order
+#[cfg(feature = "std")]
+async fn handle_graph_topo_order<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Getting topological order");
+
+    let graph = db.inner().dependency_graph();
+    let topo_order = graph.topo_order();
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Returning topological order with {} records",
+        topo_order.len()
+    );
+
+    Response::success(request_id, json!(topo_order))
 }

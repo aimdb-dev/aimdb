@@ -205,6 +205,41 @@ impl AimxClient {
         Ok(response)
     }
 
+    // ========================================================================
+    // Graph Introspection Methods
+    // ========================================================================
+
+    /// Get all nodes in the dependency graph.
+    ///
+    /// Returns a list of GraphNode objects representing all records
+    /// and their connections in the database.
+    pub async fn graph_nodes(&mut self) -> ClientResult<Vec<serde_json::Value>> {
+        let result = self.send_request("graph.nodes", None).await?;
+        let nodes: Vec<serde_json::Value> = serde_json::from_value(result)?;
+        Ok(nodes)
+    }
+
+    /// Get all edges in the dependency graph.
+    ///
+    /// Returns a list of GraphEdge objects representing data flow
+    /// connections between records.
+    pub async fn graph_edges(&mut self) -> ClientResult<Vec<serde_json::Value>> {
+        let result = self.send_request("graph.edges", None).await?;
+        let edges: Vec<serde_json::Value> = serde_json::from_value(result)?;
+        Ok(edges)
+    }
+
+    /// Get the topological ordering of records.
+    ///
+    /// Returns the record keys in topological order, ensuring all
+    /// dependencies are listed before dependents. Useful for understanding
+    /// data flow and initialization order.
+    pub async fn graph_topo_order(&mut self) -> ClientResult<Vec<String>> {
+        let result = self.send_request("graph.topo_order", None).await?;
+        let order: Vec<String> = serde_json::from_value(result)?;
+        Ok(order)
+    }
+
     /// Write a message to the stream
     async fn write_message<T: serde::Serialize>(&mut self, msg: &T) -> ClientResult<()> {
         let data = serialize_message(msg)?;

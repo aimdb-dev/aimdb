@@ -5,6 +5,7 @@
 use crate::connection::ConnectionPool;
 use once_cell::sync::OnceCell;
 
+pub mod graph;
 pub mod instance;
 pub mod record;
 pub mod schema;
@@ -23,6 +24,7 @@ pub(crate) fn connection_pool() -> Option<&'static ConnectionPool> {
 }
 
 // Re-export tool functions
+pub use graph::{graph_edges, graph_nodes, graph_topo_order};
 pub use instance::{discover_instances, get_instance_info};
 pub use record::{drain_record, get_record, list_records, set_record};
 pub use schema::query_schema;

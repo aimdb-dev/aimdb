@@ -115,6 +115,7 @@ mod tests {
 
     #[test]
     fn test_format_records_table() {
+        use aimdb_core::graph::RecordOrigin;
         use aimdb_core::record_id::{RecordId, StringKey};
         use core::any::TypeId;
 
@@ -124,6 +125,7 @@ mod tests {
                 StringKey::new("sensor.temperature"),
                 TypeId::of::<i32>(),
                 "Temperature".to_string(),
+                RecordOrigin::Source,
                 "spmc_ring".to_string(),
                 Some(100),
                 1,
@@ -137,6 +139,7 @@ mod tests {
                 StringKey::new("app.config"),
                 TypeId::of::<String>(),
                 "Config".to_string(),
+                RecordOrigin::Passive,
                 "mailbox".to_string(),
                 Some(1),
                 0,

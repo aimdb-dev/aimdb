@@ -286,6 +286,21 @@ pub trait AnyRecord: Send + Sync {
     /// Returns whether a transform is registered for this record
     fn has_transform(&self) -> bool;
 
+    /// Returns how this record gets its values (for dependency graph construction)
+    fn record_origin(&self) -> crate::graph::RecordOrigin;
+
+    /// Returns the buffer type name and capacity (for dependency graph)
+    ///
+    /// Returns (buffer_type_name, optional_capacity).
+    #[cfg(feature = "std")]
+    fn buffer_info(&self) -> (String, Option<usize>);
+
+    /// Returns the buffer type name and capacity (for dependency graph)
+    ///
+    /// Returns (buffer_type_name, optional_capacity).
+    #[cfg(not(feature = "std"))]
+    fn buffer_info(&self) -> (alloc::string::String, Option<usize>);
+
     /// Returns the transform input keys (if a transform is registered)
     #[cfg(feature = "std")]
     fn transform_input_keys(&self) -> Option<Vec<String>>;
@@ -735,6 +750,57 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         }
     }
 
+    /// Returns how this record gets its values.
+    ///
+    /// Used for constructing the dependency graph. Determines the record's origin:
+    /// - `Source` if a producer service is registered
+    /// - `Link` if inbound connectors are registered
+    /// - `Transform` or `TransformJoin` if a transform is registered
+    /// - `Passive` otherwise
+    pub fn record_origin(&self) -> crate::graph::RecordOrigin {
+        // Check for transform first (most specific)
+        #[cfg(feature = "std")]
+        let transform_keys = self
+            .transform
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.input_keys.clone());
+        #[cfg(not(feature = "std"))]
+        let transform_keys = self.transform.lock().as_ref().map(|t| t.input_keys.clone());
+
+        if let Some(input_keys) = transform_keys {
+            if input_keys.len() == 1 {
+                return crate::graph::RecordOrigin::Transform {
+                    input: input_keys.into_iter().next().unwrap(),
+                };
+            } else {
+                return crate::graph::RecordOrigin::TransformJoin { inputs: input_keys };
+            }
+        }
+
+        // Check for inbound connector (link)
+        if let Some(first_link) = self.inbound_connectors.first() {
+            return crate::graph::RecordOrigin::Link {
+                protocol: first_link.url.scheme.clone(),
+                address: first_link.url.to_string(),
+            };
+        }
+
+        // Check for producer service (source)
+        #[cfg(feature = "std")]
+        let has_producer = self.producer_service.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_producer = self.producer_service.lock().is_some();
+
+        if has_producer {
+            return crate::graph::RecordOrigin::Source;
+        }
+
+        // No producer — passive record
+        crate::graph::RecordOrigin::Passive
+    }
+
     /// Returns the input keys for the registered transform (if any).
     ///
     /// Used during build-time validation to check that all input records exist.
@@ -836,6 +902,31 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     #[cfg(feature = "std")]
     pub fn set_buffer_cfg(&mut self, cfg: crate::buffer::BufferCfg) {
         self.buffer_cfg = Some(cfg);
+    }
+
+    /// Returns buffer type name and capacity (for dependency graph)
+    #[cfg(feature = "std")]
+    pub fn buffer_info(&self) -> (String, Option<usize>) {
+        if let Some(cfg) = &self.buffer_cfg {
+            let cap = match cfg {
+                crate::buffer::BufferCfg::SpmcRing { capacity } => Some(*capacity),
+                _ => None,
+            };
+            (cfg.name().to_string(), cap)
+        } else {
+            ("none".to_string(), None)
+        }
+    }
+
+    /// Returns buffer type name and capacity (for dependency graph)
+    #[cfg(not(feature = "std"))]
+    pub fn buffer_info(&self) -> (alloc::string::String, Option<usize>) {
+        // No buffer_cfg in no_std, so we just report based on buffer presence
+        if self.buffer.is_some() {
+            ("unknown".into(), None)
+        } else {
+            ("none".into(), None)
+        }
     }
 
     /// Returns whether a buffer is configured
@@ -1265,6 +1356,20 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
         TypedRecord::has_transform(self)
     }
 
+    fn record_origin(&self) -> crate::graph::RecordOrigin {
+        TypedRecord::record_origin(self)
+    }
+
+    #[cfg(feature = "std")]
+    fn buffer_info(&self) -> (String, Option<usize>) {
+        TypedRecord::buffer_info(self)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn buffer_info(&self) -> (alloc::string::String, Option<usize>) {
+        TypedRecord::buffer_info(self)
+    }
+
     #[cfg(feature = "std")]
     fn transform_input_keys(&self) -> Option<Vec<String>> {
         TypedRecord::transform_input_keys(self)
@@ -1316,6 +1421,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             key,
             type_id,
             self.metadata.name.clone(),
+            self.record_origin(),
             buffer_type,
             buffer_capacity,
             if self.has_producer_service() { 1 } else { 0 },
