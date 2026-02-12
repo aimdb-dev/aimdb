@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Record Drain API**: New methods for batch history access
+  - `drain_record(name)`: Drain all pending values since last drain call
+  - `drain_record_with_limit(name, limit)`: Drain with maximum count limit
+  - `DrainResponse` struct with `record_name`, `values` (JSON array), and `count`
+  - Cold-start semantics: first drain creates reader and returns empty
+- **Graph Introspection API**: New methods for dependency graph exploration
+  - `graph_nodes()`: Get all nodes with origin, buffer type, tap count, outbound status
+  - `graph_edges()`: Get all directed edges showing data flow
+  - `graph_topo_order()`: Get record keys in topological (spawn) order
+
+### Changed
+
+- **Re-export**: `DrainResponse` now re-exported from crate root for convenience
 
 ## [0.4.0] - 2025-12-25
 

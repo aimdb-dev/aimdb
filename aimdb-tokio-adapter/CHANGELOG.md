@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **`try_recv()` for TokioBufferReader**: Non-blocking receive for all buffer types
+  - Returns `Ok(T)` if value available, `Err(BufferEmpty)` if none, `Err(BufferLagged)` on ring overflow
+  - Supports `SpmcRing` (drains all pending), `SingleLatest` (changed value only), `Mailbox` (takes slot)
+  - Enables drain-loop pattern for batch processing accumulated values
+  - Full metrics tracking for consumed and dropped counts
+- **Comprehensive try_recv Tests**: 15+ tests covering all buffer types, edge cases, and metrics
+- **Drain Integration Tests**: `drain_integration_tests.rs` with full AimX protocol drain testing
+  - Tests cold start, accumulation, sequential drains, limits, overflow recovery
+  - Tests multi-record independence, SingleLatest behavior, error cases
+  - Tests `with_remote_access()` requirement and response structure
 
 ## [0.4.0] - 2025-12-25
 

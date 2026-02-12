@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Graph Introspection Tools**: Three new MCP tools for dependency graph exploration
+  - `graph_nodes`: Get all graph nodes with origin, buffer type, tap count, outbound status
+  - `graph_edges`: Get all directed edges showing data flow between records
+  - `graph_topo_order`: Get record keys in topological (spawn/initialization) order
+- **Record Drain Tool**: `drain_record` tool for batch history access
+  - Drains accumulated values since last call (destructive read)
+  - Supports optional `limit` parameter
+  - Cold-start semantics: first drain creates reader and returns empty
+  - Uses persistent drain client for value accumulation between calls
+
+### Removed
+
+- **Subscription System**: Removed complex real-time subscription infrastructure in favor of simpler drain-based polling
+  - Removed `subscribe_record`, `unsubscribe_record`, `list_subscriptions`, `get_notification_directory` tools
+  - Removed `SubscriptionManager` and `NotificationFileWriter` modules
+  - Removed subscription-related prompts
+  - Simplified architecture: LLMs use `drain_record` for batch analysis instead of streaming subscriptions
+
+### Changed
+
+- **Simplified Architecture**: MCP server now focused on introspection and batch analysis
+- **Connection Pool**: Added persistent drain client management for proper cold-start semantics
 
 ## [0.4.0] - 2025-12-25
 

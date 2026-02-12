@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Graph Commands**: New `aimdb graph` command group for dependency graph exploration
+  - `graph nodes`: List all nodes with origin, buffer type, capacity, tap count, outbound status
+  - `graph edges`: List all directed edges showing data flow between records
+  - `graph order`: Show topological ordering of records (spawn/initialization order)
+  - `graph dot`: Export dependency graph in DOT format for Graphviz visualization
+- **Graph Output Formatting**: Table and JSON formatters for graph data
+  - Color-coded origin types (source=cyan, link=green, transform=yellow)
+  - Color-coded edge types (transform_input=blue, tap=gray)
+- **README Documentation**: Comprehensive documentation for all graph commands with examples
 
 ## [0.4.0] - 2025-12-25
 
