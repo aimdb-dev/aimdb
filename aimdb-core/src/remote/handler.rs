@@ -63,6 +63,10 @@ struct ConnectionState {
     /// Event funnel: all subscription tasks send events here
     /// This channel feeds the single writer task
     event_tx: mpsc::UnboundedSender<Event>,
+
+    /// Per-record drain readers, created lazily on first record.drain call.
+    /// One drain reader per record, per connection.
+    drain_readers: HashMap<String, Box<dyn crate::buffer::JsonBufferReader + Send>>,
 }
 
 #[cfg(feature = "std")]
@@ -73,6 +77,7 @@ impl ConnectionState {
             subscriptions: HashMap::new(),
             next_subscription_id: 1,
             event_tx,
+            drain_readers: HashMap::new(),
         }
     }
 
@@ -569,6 +574,10 @@ where
         "record.unsubscribe" => {
             handle_record_unsubscribe(conn_state, request.id, request.params).await
         }
+        "record.drain" => handle_record_drain(db, conn_state, request.id, request.params).await,
+        "graph.nodes" => handle_graph_nodes(db, request.id).await,
+        "graph.edges" => handle_graph_edges(db, request.id).await,
+        "graph.topo_order" => handle_graph_topo_order(db, request.id).await,
         _ => {
             #[cfg(feature = "tracing")]
             tracing::warn!("Unknown method: {}", request.method);
@@ -629,7 +638,7 @@ where
 /// Success response with record value as JSON, or error if:
 /// - Missing/invalid "record" parameter
 /// - Record not found
-/// - Record not configured with `.with_serialization()`
+/// - Record not configured with `.with_remote_access()`
 /// - No value available in atomic snapshot
 #[cfg(feature = "std")]
 async fn handle_record_get<R>(
@@ -1128,4 +1137,259 @@ async fn handle_record_unsubscribe(
             )
         }
     }
+}
+
+/// Handles record.drain method
+///
+/// Drains all pending values from a record's drain reader. On the first call for
+/// a given record, creates a dedicated drain reader (returns empty). Subsequent
+/// calls return all values accumulated since the previous drain.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `conn_state` - Connection state (for drain reader management)
+/// * `request_id` - Request ID for the response
+/// * `params` - Request parameters (must contain "name" field, optional "limit")
+///
+/// # Returns
+/// Success response with `record_name`, `values` array, and `count`, or error if:
+/// - Missing/invalid parameters
+/// - Record not found
+/// - Record not configured with `.with_remote_access()`
+#[cfg(feature = "std")]
+async fn handle_record_drain<R>(
+    db: &Arc<AimDb<R>>,
+    conn_state: &mut ConnectionState,
+    request_id: u64,
+    params: Option<serde_json::Value>,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    // Extract record name from params
+    let record_name = match params {
+        Some(serde_json::Value::Object(ref map)) => match map.get("name") {
+            Some(serde_json::Value::String(name)) => name.clone(),
+            _ => {
+                return Response::error(
+                    request_id,
+                    "invalid_params",
+                    "Missing or invalid 'name' parameter (expected string)".to_string(),
+                );
+            }
+        },
+        _ => {
+            return Response::error(
+                request_id,
+                "invalid_params",
+                "Missing params object".to_string(),
+            );
+        }
+    };
+
+    // Optional: limit parameter
+    // Use try_from instead of `as` to avoid silent truncation on 32-bit targets
+    // (values that don't fit in usize are treated as "no limit").
+    let limit = params
+        .as_ref()
+        .and_then(|p| p.as_object())
+        .and_then(|map| map.get("limit"))
+        .and_then(|v| v.as_u64())
+        .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+        .unwrap_or(usize::MAX);
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Draining record: {} (limit: {})",
+        record_name,
+        if limit == usize::MAX {
+            "all".to_string()
+        } else {
+            limit.to_string()
+        }
+    );
+
+    // Lazily create drain reader on first call for this record
+    if !conn_state.drain_readers.contains_key(&record_name) {
+        // Resolve record key → RecordId → AnyRecord → subscribe_json()
+        let id = match db.inner().resolve_str(&record_name) {
+            Some(id) => id,
+            None => {
+                return Response::error(
+                    request_id,
+                    "not_found",
+                    format!("Record '{}' not found", record_name),
+                );
+            }
+        };
+
+        let record = match db.inner().storage(id) {
+            Some(r) => r,
+            None => {
+                return Response::error(
+                    request_id,
+                    "not_found",
+                    format!("Record '{}' storage not found", record_name),
+                );
+            }
+        };
+
+        let reader = match record.subscribe_json() {
+            Ok(r) => r,
+            Err(e) => {
+                return Response::error(
+                    request_id,
+                    "remote_access_not_enabled",
+                    format!(
+                        "Record '{}' not configured with .with_remote_access(): {}",
+                        record_name, e
+                    ),
+                );
+            }
+        };
+
+        conn_state.drain_readers.insert(record_name.clone(), reader);
+    }
+
+    // Drain all pending values from the reader
+    let reader = conn_state.drain_readers.get_mut(&record_name).unwrap();
+    let mut values = Vec::new();
+
+    loop {
+        if values.len() >= limit {
+            break;
+        }
+        match reader.try_recv_json() {
+            Ok(val) => values.push(val),
+            Err(DbError::BufferEmpty) => break,
+            Err(DbError::BufferLagged { .. }) => {
+                // Ring overflowed since last drain — cursor resets.
+                // Log warning, keep draining.
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    "Drain reader lagged for record '{}' — some values were lost",
+                    record_name
+                );
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+
+    let count = values.len();
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Drained {} values from record '{}'", count, record_name);
+
+    Response::success(
+        request_id,
+        json!({
+            "record_name": record_name,
+            "values": values,
+            "count": count,
+        }),
+    )
+}
+// ============================================================================
+// Graph Introspection Methods
+// ============================================================================
+
+/// Handles graph.nodes method
+///
+/// Returns all nodes in the dependency graph with their metadata.
+/// Each node represents a record with its origin, buffer type, and connections.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `request_id` - Request ID for the response
+///
+/// # Returns
+/// Success response with array of GraphNode objects:
+/// - `key`: Record key (e.g., "temp.vienna")
+/// - `origin`: How the record gets its values (source, link, transform, passive)
+/// - `buffer_type`: Buffer type ("spmc_ring", "single_latest", "mailbox", "none")
+/// - `buffer_capacity`: Optional buffer capacity
+/// - `tap_count`: Number of taps attached
+/// - `has_outbound_link`: Whether an outbound connector is configured
+#[cfg(feature = "std")]
+async fn handle_graph_nodes<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Getting dependency graph nodes");
+
+    let graph = db.inner().dependency_graph();
+    let nodes = &graph.nodes;
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Returning {} graph nodes", nodes.len());
+
+    Response::success(request_id, json!(nodes))
+}
+
+/// Handles graph.edges method
+///
+/// Returns all edges in the dependency graph representing data flow between records.
+/// Edges are directed from source to target and include the edge type.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `request_id` - Request ID for the response
+///
+/// # Returns
+/// Success response with array of GraphEdge objects:
+/// - `from`: Source record key
+/// - `to`: Target record key
+/// - `edge_type`: Type of connection (TransformInput, TransformJoinInput, etc.)
+#[cfg(feature = "std")]
+async fn handle_graph_edges<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Getting dependency graph edges");
+
+    let graph = db.inner().dependency_graph();
+    let edges = &graph.edges;
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Returning {} graph edges", edges.len());
+
+    Response::success(request_id, json!(edges))
+}
+
+/// Handles graph.topo_order method
+///
+/// Returns the topological ordering of records in the dependency graph.
+/// This ordering ensures that all dependencies are processed before dependents.
+/// Used for spawn ordering and understanding data flow.
+///
+/// # Arguments
+/// * `db` - Database instance
+/// * `request_id` - Request ID for the response
+///
+/// # Returns
+/// Success response with array of record keys in topological order:
+/// - Sources and passive records first
+/// - Transform outputs after their inputs
+/// - Respects the DAG structure for proper initialization order
+#[cfg(feature = "std")]
+async fn handle_graph_topo_order<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Getting topological order");
+
+    let graph = db.inner().dependency_graph();
+    let topo_order = graph.topo_order();
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Returning topological order with {} records",
+        topo_order.len()
+    );
+
+    Response::success(request_id, json!(topo_order))
 }

@@ -5,19 +5,17 @@
 use crate::connection::ConnectionPool;
 use crate::error::{McpError, McpResult};
 use crate::protocol::{
-    InitializeParams, InitializeResult, Notification, PromptsCapability, PromptsGetParams,
-    PromptsGetResult, PromptsListResult, ResourceReadParams, ResourceReadResult,
-    ResourcesCapability, ResourcesListResult, ServerCapabilities, ServerInfo, Tool, ToolCallParams,
-    ToolCallResult, ToolContent, ToolsCapability, ToolsListResult, MCP_PROTOCOL_VERSION,
+    InitializeParams, InitializeResult, PromptsCapability, PromptsGetParams, PromptsGetResult,
+    PromptsListResult, ResourceReadParams, ResourceReadResult, ResourcesCapability,
+    ResourcesListResult, ServerCapabilities, ServerInfo, Tool, ToolCallParams, ToolCallResult,
+    ToolContent, ToolsCapability, ToolsListResult, MCP_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
 };
-use crate::subscription_manager::SubscriptionManager;
 use crate::{prompts, resources, tools};
 use serde_json::json;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info};
+use tokio::sync::Mutex;
+use tracing::debug;
 
 /// MCP server state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,37 +32,20 @@ pub enum ServerState {
 pub struct McpServer {
     state: Arc<Mutex<ServerState>>,
     connection_pool: ConnectionPool,
-    subscription_manager: Arc<SubscriptionManager>,
-    notification_dir: Arc<PathBuf>,
-    #[allow(dead_code)] // TODO: Phase 3 - Wire up notification forwarding to stdio
-    notification_tx: mpsc::UnboundedSender<Notification>,
 }
 
 impl McpServer {
     /// Create a new MCP server
-    pub fn new(notification_dir: PathBuf) -> (Self, mpsc::UnboundedReceiver<Notification>) {
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
-        let subscription_manager = Arc::new(SubscriptionManager::new(notification_tx.clone()));
-
-        let server = Self {
+    pub fn new() -> Self {
+        Self {
             state: Arc::new(Mutex::new(ServerState::Uninitialized)),
             connection_pool: ConnectionPool::new(),
-            subscription_manager,
-            notification_dir: Arc::new(notification_dir),
-            notification_tx,
-        };
-
-        (server, notification_rx)
+        }
     }
 
     /// Get the connection pool
     pub fn connection_pool(&self) -> &ConnectionPool {
         &self.connection_pool
-    }
-
-    /// Get the subscription manager
-    pub fn subscription_manager(&self) -> &Arc<SubscriptionManager> {
-        &self.subscription_manager
     }
 
     /// Get current server state
@@ -99,19 +80,13 @@ impl McpServer {
         // Initialize connection pool for tools (if not already done)
         tools::init_connection_pool(self.connection_pool.clone());
 
-        // Initialize subscription manager for tools (if not already done)
-        tools::init_subscription_manager(self.subscription_manager.clone());
-
-        // Initialize notification directory for tools (if not already done)
-        tools::init_notification_dir((*self.notification_dir).clone());
-
         // Build server capabilities
         let capabilities = ServerCapabilities {
             tools: Some(ToolsCapability {
                 list_changed: Some(false), // Tool list is static for now
             }),
             resources: Some(ResourcesCapability {
-                subscribe: Some(true), // Phase 3: Resource subscriptions via subscribe_record tool
+                subscribe: Some(false),
             }),
             prompts: Some(PromptsCapability {
                 list_changed: Some(false), // Prompt list is static
@@ -123,9 +98,7 @@ impl McpServer {
             name: "aimdb-mcp".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             metadata: Some(json!({
-                "notification_directory": self.notification_dir.display().to_string(),
-                "prompts_available": ["notification-directory", "subscription-help", "troubleshooting"],
-                "tip": "📁 Subscription notifications are automatically saved to files. Use the 'notification-directory' prompt to learn more."
+                "prompts_available": ["schema-help", "troubleshooting"],
             })),
         };
 
@@ -228,84 +201,6 @@ impl McpServer {
                 }),
             },
             Tool {
-                name: "subscribe_record".to_string(),
-                description: "Subscribe to live updates for a specific record.\n\n\
-                    ⚠️  IMPORTANT: You MUST ask the user how many samples to collect before subscribing.\n\
-                    Unlimited subscriptions can fill disk space.\n\n\
-                    Behavior:\n\
-                    - If max_samples is set (e.g., 50): Auto-unsubscribe after N samples\n\
-                    - If max_samples is null: Runs indefinitely (requires explicit user confirmation)\n\n\
-                    Always suggest appropriate sample limits:\n\
-                    - Quick check: 10-30 samples (~20-60 seconds)\n\
-                    - Short monitoring: 50-100 samples (~2-3 minutes)\n\
-                    - Extended analysis: 200-500 samples (~7-17 minutes)\n\
-                    - Continuous: null (only if user explicitly confirms)\n\n\
-                    📁 NOTIFICATIONS: Subscription data is automatically saved to JSONL files.\n\
-                    The response includes 'notification_file' path. You can also use:\n\
-                    - 'get_notification_directory' tool to find where files are stored\n\
-                    - 'notification-directory' prompt for detailed file format info\n\
-                    - 'subscription-help' prompt for complete subscription guide".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "socket_path": {
-                            "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
-                        },
-                        "record_name": {
-                            "type": "string",
-                            "description": "Name of the record to subscribe to (e.g., server::Temperature)"
-                        },
-                        "max_samples": {
-                            "type": ["integer", "null"],
-                            "description": "Maximum samples before auto-unsubscribe. \
-                                Set to null for unlimited (requires explicit user confirmation). \
-                                Examples: 50 for quick check, 200 for analysis, null for continuous.",
-                            "minimum": 1
-                        }
-                    },
-                    "required": ["socket_path", "record_name", "max_samples"],
-                    "additionalProperties": false
-                }),
-            },
-            Tool {
-                name: "unsubscribe_record".to_string(),
-                description: "Unsubscribe from record updates and stop receiving notifications.".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "subscription_id": {
-                            "type": "string",
-                            "description": "Subscription ID to cancel (returned from subscribe_record)"
-                        }
-                    },
-                    "required": ["subscription_id"],
-                    "additionalProperties": false
-                }),
-            },
-            Tool {
-                name: "list_subscriptions".to_string(),
-                description: "List all active subscriptions with their metadata. \
-                    Each subscription includes the 'notification_file' path where data is saved. \
-                    Use 'subscription-help' prompt for tips on analyzing subscription data.".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-            Tool {
-                name: "get_notification_directory".to_string(),
-                description: "Get the path where subscription notifications are saved. \
-                    Notifications are automatically saved as JSONL files when you subscribe to records. \
-                    Use this tool to find where the data is stored.".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-            Tool {
                 name: "query_schema".to_string(),
                 description: "Get JSON schema and type information for a record.\n\n\
                     Returns the data structure, field types, and metadata.\n\
@@ -334,6 +229,80 @@ impl McpServer {
                     "additionalProperties": false
                 }),
             },
+            Tool {
+                name: "drain_record".to_string(),
+                description: "Drain all pending values from a record since the last drain call. \
+                    Returns values in chronological order. This is a destructive read — \
+                    drained values won't be returned again. Use this for batch analysis \
+                    of accumulated data (e.g., time-series analysis, trend detection). \
+                    The first drain call creates a reader and returns empty (cold start). \
+                    Subsequent calls return all values accumulated since the previous drain.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        },
+                        "record_name": {
+                            "type": "string",
+                            "description": "Name of the record to drain (e.g., temp.berlin)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of values to drain. Optional, defaults to all pending.",
+                            "minimum": 1
+                        }
+                    },
+                    "required": ["socket_path", "record_name"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "graph_nodes".to_string(),
+                description: "Get all nodes in the dependency graph. Returns metadata for all records as graph nodes, including origin (source/link/transform/passive), buffer configuration, and connection counts. Useful for understanding database topology and data flow.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        }
+                    },
+                    "required": ["socket_path"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "graph_edges".to_string(),
+                description: "Get all edges in the dependency graph. Returns directed edges representing data flow between records. Shows how data flows from sources through transforms to consumers.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        }
+                    },
+                    "required": ["socket_path"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "graph_topo_order".to_string(),
+                description: "Get the topological ordering of records in the dependency graph. Returns record keys ordered so all dependencies appear before their dependents. Reflects the spawn/initialization order used by AimDB.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                        }
+                    },
+                    "required": ["socket_path"],
+                    "additionalProperties": false
+                }),
+            },
         ];
 
         Ok(ToolsListResult { tools })
@@ -355,13 +324,11 @@ impl McpServer {
             "get_record" => tools::get_record(params.arguments).await?,
             "set_record" => tools::set_record(params.arguments).await?,
             "get_instance_info" => tools::get_instance_info(params.arguments).await?,
-            "subscribe_record" => tools::subscribe_record(params.arguments).await?,
-            "unsubscribe_record" => tools::unsubscribe_record(params.arguments).await?,
-            "list_subscriptions" => tools::list_subscriptions(params.arguments).await?,
-            "get_notification_directory" => {
-                tools::get_notification_directory(params.arguments).await?
-            }
             "query_schema" => tools::query_schema(params.arguments).await?,
+            "drain_record" => tools::drain_record(params.arguments).await?,
+            "graph_nodes" => tools::graph_nodes(params.arguments).await?,
+            "graph_edges" => tools::graph_edges(params.arguments).await?,
+            "graph_topo_order" => tools::graph_topo_order(params.arguments).await?,
             _ => {
                 return Err(McpError::MethodNotFound(format!(
                     "Unknown tool: {}",
@@ -408,84 +375,6 @@ impl McpServer {
         resources::read_resource(&params.uri).await
     }
 
-    /// Handle resources/subscribe request
-    ///
-    /// Subscribes to a resource URI. For record URIs, this creates a subscription
-    /// to the underlying record and returns notifications when it changes.
-    ///
-    /// Supported URIs:
-    /// - `aimdb://<socket>/records/<record_name>` - Subscribe to specific record
-    pub async fn handle_resources_subscribe(&self, uri: String) -> McpResult<String> {
-        if !self.is_ready().await {
-            return Err(McpError::NotInitialized);
-        }
-
-        debug!("🔔 Handling resources/subscribe: {}", uri);
-
-        // Parse URI to extract socket path and record name
-        // Format: aimdb://<socket>/records/<record_name>
-        if !uri.starts_with("aimdb://") {
-            return Err(McpError::InvalidParams(format!(
-                "Invalid resource URI: {}. Must start with aimdb://",
-                uri
-            )));
-        }
-
-        let path_part = &uri[8..]; // Skip "aimdb://"
-        let parts: Vec<&str> = path_part.split("/records/").collect();
-
-        if parts.len() != 2 {
-            return Err(McpError::InvalidParams(format!(
-                "Invalid resource URI: {}. Expected format: aimdb://<socket>/records/<record_name>",
-                uri
-            )));
-        }
-
-        let socket_path = parts[0];
-        let record_name = parts[1];
-
-        debug!(
-            "Subscribing to record {} at socket {}",
-            record_name, socket_path
-        );
-
-        // Use subscription manager to create subscription
-        let manager = self.subscription_manager();
-        let subscription_id = manager
-            .subscribe(
-                std::path::PathBuf::from(socket_path),
-                record_name.to_string(),
-                10,   // queue_size
-                None, // max_samples (unlimited for resource subscriptions)
-            )
-            .await?;
-
-        info!(
-            "✅ Resource subscription created: {} -> {}",
-            uri, subscription_id
-        );
-
-        Ok(subscription_id)
-    }
-
-    /// Handle resources/unsubscribe request
-    ///
-    /// Unsubscribes from a resource by subscription ID.
-    pub async fn handle_resources_unsubscribe(&self, subscription_id: String) -> McpResult<()> {
-        if !self.is_ready().await {
-            return Err(McpError::NotInitialized);
-        }
-
-        debug!("🔕 Handling resources/unsubscribe: {}", subscription_id);
-
-        let manager = self.subscription_manager();
-        manager.unsubscribe(&subscription_id).await?;
-
-        info!("✅ Resource unsubscribed: {}", subscription_id);
-
-        Ok(())
-    }
-
     /// Handle prompts/list request
     ///
     /// Returns the list of available prompts.
@@ -514,7 +403,7 @@ impl McpServer {
 
         debug!("📝 Getting prompt: {}", params.name);
 
-        let messages = prompts::get_prompt(&params.name, &self.notification_dir)
+        let messages = prompts::get_prompt(&params.name)
             .ok_or_else(|| McpError::InvalidParams(format!("Unknown prompt: {}", params.name)))?;
 
         Ok(PromptsGetResult {
@@ -526,6 +415,6 @@ impl McpServer {
 
 impl Default for McpServer {
     fn default() -> Self {
-        Self::new(PathBuf::from("/tmp")).0
+        Self::new()
     }
 }

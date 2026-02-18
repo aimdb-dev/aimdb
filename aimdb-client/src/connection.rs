@@ -7,6 +7,7 @@ use crate::protocol::{
     cli_hello, parse_message, serialize_message, Event, EventMessage, RecordMetadata, Request,
     RequestExt, Response, ResponseExt, WelcomeMessage,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -174,6 +175,71 @@ impl AimxClient {
         Ok(event_msg.event)
     }
 
+    /// Drain all pending values from a record's drain reader.
+    ///
+    /// Returns all values accumulated since the last drain call,
+    /// in chronological order. This is a destructive read — drained
+    /// values will not be returned again.
+    ///
+    /// The first call for a given record creates the drain reader and
+    /// returns empty (cold start). Subsequent calls return accumulated values.
+    pub async fn drain_record(&mut self, name: &str) -> ClientResult<DrainResponse> {
+        let params = json!({ "name": name });
+        let result = self.send_request("record.drain", Some(params)).await?;
+        let response: DrainResponse = serde_json::from_value(result)?;
+        Ok(response)
+    }
+
+    /// Drain with a limit on the number of values returned.
+    pub async fn drain_record_with_limit(
+        &mut self,
+        name: &str,
+        limit: u32,
+    ) -> ClientResult<DrainResponse> {
+        let params = json!({
+            "name": name,
+            "limit": limit,
+        });
+        let result = self.send_request("record.drain", Some(params)).await?;
+        let response: DrainResponse = serde_json::from_value(result)?;
+        Ok(response)
+    }
+
+    // ========================================================================
+    // Graph Introspection Methods
+    // ========================================================================
+
+    /// Get all nodes in the dependency graph.
+    ///
+    /// Returns a list of GraphNode objects representing all records
+    /// and their connections in the database.
+    pub async fn graph_nodes(&mut self) -> ClientResult<Vec<serde_json::Value>> {
+        let result = self.send_request("graph.nodes", None).await?;
+        let nodes: Vec<serde_json::Value> = serde_json::from_value(result)?;
+        Ok(nodes)
+    }
+
+    /// Get all edges in the dependency graph.
+    ///
+    /// Returns a list of GraphEdge objects representing data flow
+    /// connections between records.
+    pub async fn graph_edges(&mut self) -> ClientResult<Vec<serde_json::Value>> {
+        let result = self.send_request("graph.edges", None).await?;
+        let edges: Vec<serde_json::Value> = serde_json::from_value(result)?;
+        Ok(edges)
+    }
+
+    /// Get the topological ordering of records.
+    ///
+    /// Returns the record keys in topological order, ensuring all
+    /// dependencies are listed before dependents. Useful for understanding
+    /// data flow and initialization order.
+    pub async fn graph_topo_order(&mut self) -> ClientResult<Vec<String>> {
+        let result = self.send_request("graph.topo_order", None).await?;
+        let order: Vec<String> = serde_json::from_value(result)?;
+        Ok(order)
+    }
+
     /// Write a message to the stream
     async fn write_message<T: serde::Serialize>(&mut self, msg: &T) -> ClientResult<()> {
         let data = serialize_message(msg)?;
@@ -196,4 +262,15 @@ impl AimxClient {
 
         parse_message(&line).map_err(|e| e.into())
     }
+}
+
+/// Response from a record.drain call
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrainResponse {
+    /// Echo of the queried record name
+    pub record_name: String,
+    /// Chronologically ordered values (raw JSON, as written by the producer)
+    pub values: Vec<serde_json::Value>,
+    /// Number of values returned
+    pub count: usize,
 }

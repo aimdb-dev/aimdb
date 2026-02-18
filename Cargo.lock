@@ -167,11 +167,9 @@ dependencies = [
  "aimdb-core",
  "anyhow",
  "chrono",
- "dirs",
  "once_cell",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
@@ -223,9 +221,12 @@ dependencies = [
 name = "aimdb-tokio-adapter"
 version = "0.4.0"
 dependencies = [
+ "aimdb-client",
  "aimdb-core",
  "aimdb-executor",
  "futures",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-test",
  "tracing",
@@ -702,27 +703,6 @@ checksum = "93d5a25c99d89c40f5676bec8cefe0614f17f0f40e916f98e345dae941807f9e"
 dependencies = [
  "critical-section",
  "defmt 1.0.1",
-]
-
-[[package]]
-name = "dirs"
-version = "5.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
-dependencies = [
- "dirs-sys",
-]
-
-[[package]]
-name = "dirs-sys"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
-dependencies = [
- "libc",
- "option-ext",
- "redox_users",
- "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -1709,16 +1689,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
-name = "libredox"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "416f7e718bdb06000964960ffa43b4335ad4012ae8b99060261aa4a8088d5ccb"
-dependencies = [
- "bitflags 2.10.0",
- "libc",
-]
-
-[[package]]
 name = "linked_list_allocator"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1964,12 +1934,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "option-ext"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
 name = "panic-probe"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2150,17 +2114,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.10.0",
-]
-
-[[package]]
-name = "redox_users"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
-dependencies = [
- "getrandom 0.2.16",
- "libredox",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2657,7 +2610,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "19.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-2846f7ae645cef28b8b9728927e3482fcfd74f6e#0c284a3084be274c180ad0dc467c984d935023f6"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-1cd248899f8c956357e94eaa637e24dd9ba1de56#e271c6ff89adf89a7a34f20e840326b47ee1993c"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

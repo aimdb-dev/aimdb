@@ -23,11 +23,13 @@ pub mod context;
 pub mod database;
 mod error;
 pub mod ext_macros;
+pub mod graph;
 pub mod record_id;
 #[cfg(feature = "std")]
 pub mod remote;
 pub mod router;
 pub mod time;
+pub mod transform;
 pub mod transport;
 pub mod typed_api;
 pub mod typed_record;
@@ -64,3 +66,11 @@ pub use router::{Route, Router, RouterBuilder};
 
 // Record identification exports
 pub use record_id::{RecordId, RecordKey, StringKey};
+
+// Graph exports (dependency graph for record topology)
+pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo, RecordOrigin};
+
+// Transform API exports
+#[cfg(feature = "std")]
+pub use transform::{JoinBuilder, JoinPipeline, JoinTrigger};
+pub use transform::{TransformBuilder, TransformPipeline};

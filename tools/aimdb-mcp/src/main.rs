@@ -8,9 +8,8 @@ use aimdb_mcp::protocol::{
     InitializeParams, JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, PromptsGetParams, ResourceReadParams, ToolCallParams,
 };
-use aimdb_mcp::{McpServer, NotificationFileWriter, StdioTransport};
-use serde_json::{json, Value};
-use std::path::PathBuf;
+use aimdb_mcp::{McpServer, StdioTransport};
+use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
 #[tokio::main]
@@ -28,112 +27,31 @@ async fn main() {
     info!("📡 Protocol: MCP 2025-06-18 over JSON-RPC 2.0");
     info!("🔌 Transport: stdio (NDJSON)");
 
-    // Configuration from environment
-    let notification_files_enabled = std::env::var("AIMDB_MCP_NOTIFICATION_FILES")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
-
-    let notification_dir = std::env::var("AIMDB_MCP_NOTIFICATION_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join(".aimdb-mcp")
-                .join("notifications")
-        });
-
-    info!(
-        "📁 Notification files: {} (dir: {})",
-        if notification_files_enabled {
-            "enabled"
-        } else {
-            "disabled"
-        },
-        notification_dir.display()
-    );
-
-    info!(
-        "📁 Notification files: {} (dir: {})",
-        if notification_files_enabled {
-            "enabled"
-        } else {
-            "disabled"
-        },
-        notification_dir.display()
-    );
-
-    // Create notification file writer
-    let notification_writer =
-        match NotificationFileWriter::new(notification_dir.clone(), notification_files_enabled)
-            .await
-        {
-            Ok(writer) => writer,
-            Err(e) => {
-                error!("❌ Failed to initialize notification writer: {}", e);
-                error!("   Continuing without notification file support");
-                NotificationFileWriter::new(PathBuf::from("/tmp"), false)
-                    .await
-                    .unwrap()
-            }
-        };
-
     // Create server and transport
-    let (server, mut notification_rx) = McpServer::new(notification_dir);
+    let server = McpServer::new();
     let mut transport = StdioTransport::new();
 
     info!("✅ Server ready, waiting for initialize request...");
 
-    // Main event loop - use select! to handle both requests and notifications
+    // Main event loop
     loop {
-        tokio::select! {
-            // Handle incoming requests from stdin
-            read_result = transport.read_line() => {
-                let line = match read_result {
-                    Ok(Some(line)) => line,
-                    Ok(None) => {
-                        info!("📪 EOF received, shutting down gracefully");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("❌ Error reading from stdin: {}", e);
-                        break;
-                    }
-                };
-
-                // Process the request (moved request handling code here)
-                if let Err(e) = process_request(&server, &mut transport, line).await {
-                    error!("❌ Error processing request: {}", e);
-                    break;
-                }
+        let line = match transport.read_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => {
+                info!("📪 EOF received, shutting down gracefully");
+                break;
             }
-
-            // Handle outgoing notifications
-            Some(notification) = notification_rx.recv() => {
-                debug!("📢 Forwarding notification: {:?}", notification);
-
-                // Write notification to file (if enabled)
-                if let Err(e) = notification_writer.write(&notification).await {
-                    error!("⚠️  Failed to write notification to file: {}", e);
-                    // Continue processing - don't break on file write errors
-                }
-
-                // Forward notification to client
-                if let Ok(notification_line) = serde_json::to_string(&notification) {
-                    if let Err(e) = transport.write_line(&notification_line).await {
-                        error!("❌ Failed to forward notification: {}", e);
-                        break;
-                    }
-                } else {
-                    error!("❌ Failed to serialize notification");
-                }
+            Err(e) => {
+                error!("❌ Error reading from stdin: {}", e);
+                break;
             }
+        };
+
+        // Process the request
+        if let Err(e) = process_request(&server, &mut transport, line).await {
+            error!("❌ Error processing request: {}", e);
+            break;
         }
-    }
-
-    // Flush all notification files before shutdown
-    if let Err(e) = notification_writer.flush_all().await {
-        error!("⚠️  Failed to flush notification files: {}", e);
     }
 
     info!("👋 AimDB MCP Server stopped");
@@ -339,125 +257,34 @@ async fn process_request(
             }
         }
         "resources/subscribe" => {
-            debug!("🔔 Handling resources/subscribe request");
-            match request.params {
-                Some(Value::Object(params)) => {
-                    if let Some(Value::String(uri)) = params.get("uri") {
-                        match server.handle_resources_subscribe(uri.clone()).await {
-                            Ok(subscription_id) => {
-                                match serde_json::to_value(
-                                    json!({"subscription_id": subscription_id}),
-                                ) {
-                                    Ok(v) => Some(v),
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to serialize resources/subscribe result: {}",
-                                            e
-                                        );
-                                        None
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("resources/subscribe failed: {}", e);
-                                let error_response = JsonRpcErrorResponse::new(
-                                    request_id.clone(),
-                                    JsonRpcError::new(e.error_code(), e.message(), None),
-                                );
-                                if let Ok(response_line) = serde_json::to_string(&error_response) {
-                                    let _ = transport.write_line(&response_line).await;
-                                }
-                                return Ok(());
-                            }
-                        }
-                    } else {
-                        error!("Invalid resources/subscribe params: missing uri");
-                        let error_response = JsonRpcErrorResponse::new(
-                            request_id.clone(),
-                            JsonRpcError::new(
-                                -32602,
-                                "Invalid params: missing uri".to_string(),
-                                None,
-                            ),
-                        );
-                        if let Ok(response_line) = serde_json::to_string(&error_response) {
-                            let _ = transport.write_line(&response_line).await;
-                        }
-                        return Ok(());
-                    }
-                }
-                _ => {
-                    error!("Invalid resources/subscribe params");
-                    let error_response = JsonRpcErrorResponse::new(
-                        request_id.clone(),
-                        JsonRpcError::new(-32602, "Invalid params".to_string(), None),
-                    );
-                    if let Ok(response_line) = serde_json::to_string(&error_response) {
-                        let _ = transport.write_line(&response_line).await;
-                    }
-                    return Ok(());
-                }
+            debug!("🔔 resources/subscribe not supported (use drain_record tool instead)");
+            let error_response = JsonRpcErrorResponse::new(
+                request_id.clone(),
+                JsonRpcError::new(
+                    -32601,
+                    "Resource subscriptions are not supported. Use the drain_record tool for batch data access.".to_string(),
+                    None,
+                ),
+            );
+            if let Ok(response_line) = serde_json::to_string(&error_response) {
+                let _ = transport.write_line(&response_line).await;
             }
+            return Ok(());
         }
         "resources/unsubscribe" => {
-            debug!("🔕 Handling resources/unsubscribe request");
-            match request.params {
-                Some(Value::Object(params)) => {
-                    if let Some(Value::String(subscription_id)) = params.get("subscription_id") {
-                        match server
-                            .handle_resources_unsubscribe(subscription_id.clone())
-                            .await
-                        {
-                            Ok(()) => match serde_json::to_value(json!({"success": true})) {
-                                Ok(v) => Some(v),
-                                Err(e) => {
-                                    error!(
-                                        "Failed to serialize resources/unsubscribe result: {}",
-                                        e
-                                    );
-                                    None
-                                }
-                            },
-                            Err(e) => {
-                                warn!("resources/unsubscribe failed: {}", e);
-                                let error_response = JsonRpcErrorResponse::new(
-                                    request_id.clone(),
-                                    JsonRpcError::new(e.error_code(), e.message(), None),
-                                );
-                                if let Ok(response_line) = serde_json::to_string(&error_response) {
-                                    let _ = transport.write_line(&response_line).await;
-                                }
-                                return Ok(());
-                            }
-                        }
-                    } else {
-                        error!("Invalid resources/unsubscribe params: missing subscription_id");
-                        let error_response = JsonRpcErrorResponse::new(
-                            request_id.clone(),
-                            JsonRpcError::new(
-                                -32602,
-                                "Invalid params: missing subscription_id".to_string(),
-                                None,
-                            ),
-                        );
-                        if let Ok(response_line) = serde_json::to_string(&error_response) {
-                            let _ = transport.write_line(&response_line).await;
-                        }
-                        return Ok(());
-                    }
-                }
-                _ => {
-                    error!("Invalid resources/unsubscribe params");
-                    let error_response = JsonRpcErrorResponse::new(
-                        request_id.clone(),
-                        JsonRpcError::new(-32602, "Invalid params".to_string(), None),
-                    );
-                    if let Ok(response_line) = serde_json::to_string(&error_response) {
-                        let _ = transport.write_line(&response_line).await;
-                    }
-                    return Ok(());
-                }
+            debug!("🔕 resources/unsubscribe not supported (use drain_record tool instead)");
+            let error_response = JsonRpcErrorResponse::new(
+                request_id.clone(),
+                JsonRpcError::new(
+                    -32601,
+                    "Resource subscriptions are not supported. Use the drain_record tool for batch data access.".to_string(),
+                    None,
+                ),
+            );
+            if let Ok(response_line) = serde_json::to_string(&error_response) {
+                let _ = transport.write_line(&response_line).await;
             }
+            return Ok(());
         }
         "prompts/list" => {
             debug!("📋 Handling prompts/list request");

@@ -21,6 +21,7 @@ use alloc::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc};
 
+use crate::graph::DependencyGraph;
 use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
@@ -55,6 +56,7 @@ pub struct NoRuntime;
 /// - **`by_key`**: HashMap for O(1) lookup by stable RecordKey
 /// - **`by_type`**: HashMap for introspection (find all records of type T)
 /// - **`types`**: Vec for runtime type validation during downcasts
+/// - **`dependency_graph`**: DAG of record relationships (immutable after build)
 pub struct AimDbInner {
     /// Record storage (hot path - indexed by RecordId)
     ///
@@ -80,6 +82,12 @@ pub struct AimDbInner {
     ///
     /// Used to get the key for a given record ID.
     keys: Vec<StringKey>,
+
+    /// Dependency graph (immutable after build)
+    ///
+    /// Contains all record nodes, edges, and topological order.
+    /// Used for introspection, spawn ordering, and graph queries.
+    dependency_graph: crate::graph::DependencyGraph,
 }
 
 impl AimDbInner {
@@ -121,6 +129,15 @@ impl AimDbInner {
     #[inline]
     pub fn record_count(&self) -> usize {
         self.storages.len()
+    }
+
+    /// Get the dependency graph (immutable reference)
+    ///
+    /// The graph is constructed once during `build()` and never changes.
+    /// Contains all record nodes, edges, and topological ordering.
+    #[inline]
+    pub fn dependency_graph(&self) -> &crate::graph::DependencyGraph {
+        &self.dependency_graph
     }
 
     /// Helper to get a typed record by RecordKey
@@ -602,7 +619,7 @@ where
     ///     .configure::<Temp>("temp", |reg| {
     ///         reg.link_from("mqtt://commands/temp")
     ///            .with_buffer(BufferCfg::SingleLatest)
-    ///            .with_serialization();
+    ///            .with_remote_access();
     ///     });
     ///
     /// // Create MQTT connector with router
@@ -684,12 +701,47 @@ where
             keys.push(key);
         }
 
+        // Build dependency graph from record information
+        // Collect RecordGraphInfo for each record
+        let record_infos: Vec<crate::graph::RecordGraphInfo> = storages
+            .iter()
+            .enumerate()
+            .map(|(idx, record)| {
+                let key = keys[idx].as_str().to_string();
+                let origin = record.record_origin();
+
+                // Get buffer type and capacity from the record
+                let (buffer_type, buffer_capacity) = record.buffer_info();
+
+                crate::graph::RecordGraphInfo {
+                    key,
+                    origin,
+                    buffer_type,
+                    buffer_capacity,
+                    tap_count: record.consumer_count(),
+                    has_outbound_link: record.outbound_connector_count() > 0,
+                }
+            })
+            .collect();
+
+        // Build and validate the dependency graph
+        let dependency_graph = DependencyGraph::build_and_validate(&record_infos)?;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "Dependency graph built successfully ({} nodes, {} edges, topo order: {:?})",
+            dependency_graph.nodes.len(),
+            dependency_graph.edges.len(),
+            dependency_graph.topo_order
+        );
+
         let inner = Arc::new(AimDbInner {
             storages,
             by_key,
             by_type,
             types,
             keys,
+            dependency_graph,
         });
 
         let db = Arc::new(AimDb {
@@ -703,8 +755,25 @@ where
             self.spawn_fns.len()
         );
 
-        // Execute spawn functions for each record
-        for (key, spawn_fn_any) in self.spawn_fns {
+        // Build a lookup map from spawn_fns for topological ordering
+        let mut spawn_fn_map: HashMap<StringKey, Box<dyn core::any::Any + Send>> =
+            self.spawn_fns.into_iter().collect();
+
+        // Execute spawn functions in topological order
+        // This ensures transforms are spawned after their input records
+        for key_str in inner.dependency_graph.topo_order() {
+            // Find the StringKey that matches this key string
+            let key = match inner.by_key.keys().find(|k| k.as_str() == key_str) {
+                Some(k) => *k,
+                None => continue, // Key not in spawn_fns, skip
+            };
+
+            // Take the spawn function (if any) for this key
+            let spawn_fn_any = match spawn_fn_map.remove(&key) {
+                Some(f) => f,
+                None => continue, // No spawn function for this key
+            };
+
             // Resolve key to RecordId
             let id = inner.resolve(&key).ok_or({
                 #[cfg(feature = "std")]
@@ -1096,7 +1165,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     ///
     /// `Err` if:
     /// - Record not found for the given key
-    /// - Record not configured with `.with_serialization()`
+    /// - Record not configured with `.with_remote_access()`
     /// - Failed to subscribe to buffer
     ///
     /// # Example (internal use)
@@ -1138,7 +1207,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
             .ok_or_else(|| DbError::InvalidRecordId { id: id.raw() })?;
 
         // Subscribe to the record's buffer as JSON stream
-        // This will fail if record not configured with .with_serialization()
+        // This will fail if record not configured with .with_remote_access()
         let mut json_reader = record.subscribe_json()?;
 
         // Create channels for the subscription

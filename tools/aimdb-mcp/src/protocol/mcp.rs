@@ -3,13 +3,13 @@
 //! Model Context Protocol version 2025-06-18
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// MCP protocol version (preferred)
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Supported MCP protocol versions
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-06-18"];
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-06-18", "2025-11-25"];
 
 /// Initialize request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,73 +320,8 @@ impl Notification {
     pub fn initialized() -> Self {
         Self::new("notifications/initialized", None)
     }
-
-    /// Create a notification for record value change
-    pub fn record_changed(
-        subscription_id: &str,
-        record_name: &str,
-        value: Value,
-        sequence: u64,
-    ) -> Self {
-        Self::new(
-            "notifications/resources/updated",
-            Some(json!({
-                "subscription_id": subscription_id,
-                "record_name": record_name,
-                "value": value,
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-                "sequence": sequence
-            })),
-        )
-    }
-
-    /// Create a notification for subscription error
-    pub fn subscription_error(subscription_id: &str, error: &str) -> Self {
-        Self::new(
-            "notifications/subscription/error",
-            Some(json!({
-                "subscription_id": subscription_id,
-                "error": error
-            })),
-        )
-    }
-
-    /// Create a notification for subscription completion
-    pub fn subscription_completed(subscription_id: &str, samples_collected: usize) -> Self {
-        Self::new(
-            "notifications/subscription/completed",
-            Some(json!({
-                "subscription_id": subscription_id,
-                "reason": "max_samples_reached",
-                "samples_collected": samples_collected
-            })),
-        )
-    }
 }
 
 // ============================================================================
-// Subscription Support
+// Resource Read Support
 // ============================================================================
-
-/// Subscribe to a resource
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceSubscribeParams {
-    /// Resource URI to subscribe to
-    pub uri: String,
-}
-
-/// Subscription result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscriptionResult {
-    /// Subscription ID
-    pub subscription_id: String,
-}
-
-/// Unsubscribe from a resource
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnsubscribeParams {
-    /// Subscription ID to cancel
-    pub subscription_id: String,
-}

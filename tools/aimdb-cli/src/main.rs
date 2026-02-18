@@ -4,7 +4,9 @@
 //! AimDB instances via the AimX v1 remote access protocol.
 
 use clap::{Parser, Subcommand};
-use commands::{instance::InstanceCommand, record::RecordCommand, watch::WatchCommand};
+use commands::{
+    graph::GraphCommand, instance::InstanceCommand, record::RecordCommand, watch::WatchCommand,
+};
 
 mod commands;
 mod error;
@@ -33,6 +35,10 @@ enum Command {
     #[command(name = "record")]
     Record(RecordCommand),
 
+    /// Graph introspection commands
+    #[command(name = "graph")]
+    Graph(GraphCommand),
+
     /// Watch a record in real-time
     #[command(name = "watch")]
     Watch(WatchCommand),
@@ -45,6 +51,7 @@ async fn main() {
     let result = match cli.command {
         Command::Instance(cmd) => cmd.execute().await,
         Command::Record(cmd) => cmd.execute().await,
+        Command::Graph(cmd) => cmd.execute().await,
         Command::Watch(cmd) => cmd.execute().await,
     };
 

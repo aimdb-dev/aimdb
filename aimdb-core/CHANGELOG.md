@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Transform API (Design 020)**: Reactive data transformations between records
+  - **Single-Input Transforms**: `transform_raw()` method on `RecordRegistrar` for creating reactive derivations
+  - **Multi-Input Joins**: `transform_join_raw()` for combining multiple input records with stateful handlers
+  - **`TransformBuilder`**: Fluent API with `.with_state()` and `.map()` for transform configuration
+  - **`JoinBuilder`**: Multi-input builder with `.input::<T>(key)` and `.with_state().on_trigger()` pattern
+  - **`TransformDescriptor`**: Type-erased descriptor for storing transform configuration
+  - **`JoinTrigger`**: Event type for multi-input join handlers with index and type-erased value
+  - Transforms are spawned as tasks during `AimDb::build()` and subscribe to input buffers
+  - Mutual exclusion enforced: a record cannot have both `.source()` and `.transform()`
+  - Full tracing integration for transform lifecycle events
+- **Graph Introspection API (Design 021)**: Dependency graph visualization and introspection
+  - **`RecordOrigin` enum**: Classifies record data sources (`Source`, `Link`, `Transform`, `TransformJoin`, `Passive`)
+  - **`GraphNode` struct**: Node metadata including origin, buffer config, tap count, outbound status
+  - **`GraphEdge` struct**: Directed edge with `from`, `to`, and edge type classification
+  - **`DependencyGraph` struct**: Full graph with nodes, edges, and topological ordering
+  - New `AnyRecord` trait methods: `has_transform()`, `record_origin()`, `buffer_info()`, `transform_input_keys()`
+  - `RecordId::new()` now accepts `RecordOrigin` parameter for accurate metadata
+  - Graph methods in `AimDbInner`: `build_dependency_graph()`, `graph_nodes()`, `graph_edges()`, `graph_topo_order()`
+- **Record Drain API (Design 019)**: Non-blocking batch history access
+  - **`try_recv()` on BufferReader**: Non-blocking receive returning `Ok(T)`, `Err(BufferEmpty)`, or `Err(BufferLagged)`
+  - **`try_recv_json()` on JsonBufferReader**: JSON-serialized non-blocking receive for remote access
+  - **`record.drain` AimX protocol method**: Drain accumulated values since last call with optional limit
+  - Cold-start semantics: first drain creates reader and returns empty
+  - Supports `SpmcRing` (full history), `SingleLatest` (at most 1), `Mailbox` (at most 1)
+  - Handler maintains per-connection drain readers via `ConnectionState`
+- **Extension Macro**: `impl_record_registrar_ext!` macro in `ext_macros.rs` for generating runtime adapter extension traits
+
+### Changed
+
+- **Renamed `.with_serialization()` to `.with_remote_access()`**: Clearer naming for JSON serialization configuration
+- **`RecordId` constructor**: Now requires `RecordOrigin` parameter for dependency graph support
+- **`set_from_json` protection**: Now also rejects writes on records with active transforms (in addition to sources)
+
 - **Dynamic Topic/Destination Routing (Design 018)**: Complete support for dynamic topic resolution
   - **Outbound (`TopicProvider` trait)**: Dynamically determine MQTT topics or KNX group addresses based on data being published
     - New `TopicProvider<T>` trait for type-safe topic determination

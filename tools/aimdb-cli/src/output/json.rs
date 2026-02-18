@@ -54,12 +54,25 @@ pub fn format_records_json(
     }
 }
 
+/// Generic JSON formatting for any serializable type
+pub fn format_json<T: Serialize + ?Sized>(
+    data: &T,
+    pretty: bool,
+) -> Result<String, serde_json::Error> {
+    if pretty {
+        format_json_pretty(data)
+    } else {
+        format_json_compact(data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_json_formatting() {
+        use aimdb_core::graph::RecordOrigin;
         use aimdb_core::record_id::{RecordId, StringKey};
         use core::any::TypeId;
 
@@ -68,6 +81,7 @@ mod tests {
             StringKey::new("sensor.temperature"),
             TypeId::of::<i32>(),
             "Temperature".to_string(),
+            RecordOrigin::Source,
             "spmc_ring".to_string(),
             Some(100),
             1,

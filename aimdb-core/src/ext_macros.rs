@@ -87,6 +87,35 @@ macro_rules! impl_record_registrar_ext {
                     + Send
                     + 'static,
                 Fut: core::future::Future<Output = ()> + Send + 'static;
+
+            /// Single-input reactive transform.
+            ///
+            /// Derives this record from an input record. Panics if a `.source()` or
+            /// another `.transform()` is already registered.
+            fn transform<I, F>(
+                &'a mut self,
+                input_key: impl $crate::RecordKey,
+                build_fn: F,
+            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            where
+                I: Send + Sync + Clone + core::fmt::Debug + 'static,
+                F: FnOnce(
+                    $crate::transform::TransformBuilder<I, T, $runtime>,
+                ) -> $crate::transform::TransformPipeline<I, T, $runtime>;
+
+            /// Multi-input reactive transform (join).
+            ///
+            /// Derives this record from multiple input records. Panics if a `.source()` or
+            /// another `.transform()` is already registered.
+            #[cfg(feature = "std")]
+            fn transform_join<F>(
+                &'a mut self,
+                build_fn: F,
+            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            where
+                F: FnOnce(
+                    $crate::transform::JoinBuilder<T, $runtime>,
+                ) -> $crate::transform::JoinPipeline<T, $runtime>;
         }
 
         #[cfg(feature = $feature)]
@@ -146,6 +175,33 @@ macro_rules! impl_record_registrar_ext {
                     f(ctx, consumer)
                 })
             }
+
+            fn transform<I, F>(
+                &'a mut self,
+                input_key: impl $crate::RecordKey,
+                build_fn: F,
+            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            where
+                I: Send + Sync + Clone + core::fmt::Debug + 'static,
+                F: FnOnce(
+                    $crate::transform::TransformBuilder<I, T, $runtime>,
+                ) -> $crate::transform::TransformPipeline<I, T, $runtime>,
+            {
+                self.transform_raw::<I, F>(input_key, build_fn)
+            }
+
+            #[cfg(feature = "std")]
+            fn transform_join<F>(
+                &'a mut self,
+                build_fn: F,
+            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            where
+                F: FnOnce(
+                    $crate::transform::JoinBuilder<T, $runtime>,
+                ) -> $crate::transform::JoinPipeline<T, $runtime>,
+            {
+                self.transform_join_raw(build_fn)
+            }
         }
     };
 
@@ -193,6 +249,18 @@ macro_rules! impl_record_registrar_ext {
                     + Send
                     + 'static,
                 Fut: core::future::Future<Output = ()> + Send + 'static;
+
+            /// Single-input reactive transform.
+            fn transform<I, F>(
+                &'a mut self,
+                input_key: impl $crate::RecordKey,
+                build_fn: F,
+            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            where
+                I: Send + Sync + Clone + core::fmt::Debug + 'static,
+                F: FnOnce(
+                    $crate::transform::TransformBuilder<I, T, $runtime>,
+                ) -> $crate::transform::TransformPipeline<I, T, $runtime>;
         }
 
         #[cfg(all($(feature = $feature),+))]
@@ -251,6 +319,20 @@ macro_rules! impl_record_registrar_ext {
                     let ctx = $crate::RuntimeContext::extract_from_any(ctx_any);
                     f(ctx, consumer)
                 })
+            }
+
+            fn transform<I, F>(
+                &'a mut self,
+                input_key: impl $crate::RecordKey,
+                build_fn: F,
+            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            where
+                I: Send + Sync + Clone + core::fmt::Debug + 'static,
+                F: FnOnce(
+                    $crate::transform::TransformBuilder<I, T, $runtime>,
+                ) -> $crate::transform::TransformPipeline<I, T, $runtime>,
+            {
+                self.transform_raw::<I, F>(input_key, build_fn)
             }
         }
     };

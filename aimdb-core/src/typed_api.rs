@@ -397,15 +397,68 @@ where
     /// ```rust,ignore
     /// builder.configure::<Temperature>(|reg| {
     ///     reg.buffer(BufferCfg::SingleLatest)
-    ///        .with_serialization();  // Enable remote queries
+    ///        .with_remote_access();  // Enable remote queries
     /// });
     /// ```
     #[cfg(feature = "std")]
-    pub fn with_serialization(&'a mut self) -> &'a mut Self
+    pub fn with_remote_access(&'a mut self) -> &'a mut Self
     where
         T: serde::Serialize + serde::de::DeserializeOwned,
     {
-        self.rec.with_serialization();
+        self.rec.with_remote_access();
+        self
+    }
+
+    /// Register a single-input reactive transform (low-level API).
+    ///
+    /// **Note:** This is the foundational API. Most users should use the higher-level
+    /// `transform()` method provided by runtime adapter extension traits.
+    ///
+    /// Panics if a `.source()` or another `.transform()` is already registered.
+    ///
+    /// # Type Parameters
+    /// * `I` - The input record type to subscribe to
+    ///
+    /// # Arguments
+    /// * `input_key` - The record key to subscribe to as input
+    /// * `build_fn` - Closure that configures the transform pipeline via `TransformBuilder`
+    pub fn transform_raw<I, F>(
+        &'a mut self,
+        input_key: impl crate::RecordKey,
+        build_fn: F,
+    ) -> &'a mut Self
+    where
+        I: Send + Sync + Clone + Debug + 'static,
+        F: FnOnce(
+            crate::transform::TransformBuilder<I, T, R>,
+        ) -> crate::transform::TransformPipeline<I, T, R>,
+    {
+        let input_key_str = input_key.as_str().to_string();
+        let builder = crate::transform::TransformBuilder::<I, T, R>::new(input_key_str);
+        let pipeline = build_fn(builder);
+        let descriptor = pipeline.into_descriptor();
+        self.rec.set_transform(descriptor);
+        self
+    }
+
+    /// Register a multi-input join transform (low-level API).
+    ///
+    /// **Note:** This is the foundational API. Most users should use the higher-level
+    /// `transform_join()` method provided by runtime adapter extension traits.
+    ///
+    /// Panics if a `.source()` or another `.transform()` is already registered.
+    ///
+    /// # Arguments
+    /// * `build_fn` - Closure that configures the join via `JoinBuilder`
+    #[cfg(feature = "std")]
+    pub fn transform_join_raw<F>(&'a mut self, build_fn: F) -> &'a mut Self
+    where
+        F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
+    {
+        let builder = crate::transform::JoinBuilder::<T, R>::new();
+        let pipeline = build_fn(builder);
+        let descriptor = pipeline.into_descriptor();
+        self.rec.set_transform(descriptor);
         self
     }
 

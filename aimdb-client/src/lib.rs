@@ -39,7 +39,7 @@ pub mod error;
 pub mod protocol;
 
 // Re-export main types for convenience
-pub use connection::AimxClient;
+pub use connection::{AimxClient, DrainResponse};
 pub use discovery::{discover_instances, find_instance, InstanceInfo};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{

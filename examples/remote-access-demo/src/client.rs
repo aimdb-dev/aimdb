@@ -400,6 +400,155 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("🧪 Testing Record History (record.drain)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    // Drain #1: Cold start — creates the drain reader, returns empty
+    println!("📤 Drain #1: Creating drain reader for Temperature (cold start)...");
+    let drain1_request = Request {
+        id: 9,
+        method: "record.drain".to_string(),
+        params: Some(json!({"name": "server::Temperature"})),
+    };
+
+    writeln!(stream, "{}", serde_json::to_string(&drain1_request)?)?;
+    stream.flush()?;
+
+    let mut drain1_line = String::new();
+    reader.read_line(&mut drain1_line)?;
+    let drain1_response: Response = serde_json::from_str(&drain1_line)?;
+
+    match &drain1_response {
+        Response::Success { id, result } => {
+            let count = result["count"].as_u64().unwrap_or(0);
+            println!("✅ Drain #1 response (request_id: {})", id);
+            println!("   Values returned: {} (expected 0 on cold start)", count);
+            println!();
+        }
+        Response::Error { id, error } => {
+            println!("❌ Drain #1 failed! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+        }
+    }
+
+    // Wait for values to accumulate (server produces every 2s)
+    println!("⏳ Waiting 7 seconds for temperature readings to accumulate...");
+    std::thread::sleep(std::time::Duration::from_secs(7));
+
+    // Drain #2: Should return accumulated values (~3 readings at 2s interval)
+    println!("📤 Drain #2: Fetching accumulated Temperature history...");
+    let drain2_request = Request {
+        id: 10,
+        method: "record.drain".to_string(),
+        params: Some(json!({"name": "server::Temperature"})),
+    };
+
+    writeln!(stream, "{}", serde_json::to_string(&drain2_request)?)?;
+    stream.flush()?;
+
+    let mut drain2_line = String::new();
+    reader.read_line(&mut drain2_line)?;
+    let drain2_response: Response = serde_json::from_str(&drain2_line)?;
+
+    match &drain2_response {
+        Response::Success { id, result } => {
+            let count = result["count"].as_u64().unwrap_or(0);
+            let values = result["values"].as_array();
+            println!("✅ Drain #2 response (request_id: {})", id);
+            println!("   Values returned: {} (expected ~3)", count);
+            if let Some(vals) = values {
+                for (i, val) in vals.iter().enumerate() {
+                    let celsius = val["celsius"].as_f64().unwrap_or(0.0);
+                    let sensor = val["sensor_id"].as_str().unwrap_or("?");
+                    println!("   📊 [{}] {:.1} °C from {}", i, celsius, sensor);
+                }
+            }
+            println!();
+        }
+        Response::Error { id, error } => {
+            println!("❌ Drain #2 failed! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+        }
+    }
+
+    // Drain #3: Immediately after — should be empty (nothing new since last drain)
+    println!("📤 Drain #3: Immediate re-drain (should be empty)...");
+    let drain3_request = Request {
+        id: 11,
+        method: "record.drain".to_string(),
+        params: Some(json!({"name": "server::Temperature"})),
+    };
+
+    writeln!(stream, "{}", serde_json::to_string(&drain3_request)?)?;
+    stream.flush()?;
+
+    let mut drain3_line = String::new();
+    reader.read_line(&mut drain3_line)?;
+    let drain3_response: Response = serde_json::from_str(&drain3_line)?;
+
+    match &drain3_response {
+        Response::Success { id, result } => {
+            let count = result["count"].as_u64().unwrap_or(0);
+            println!("✅ Drain #3 response (request_id: {})", id);
+            println!(
+                "   Values returned: {} (expected 0 — nothing new since last drain)",
+                count
+            );
+            println!();
+        }
+        Response::Error { id, error } => {
+            println!("❌ Drain #3 failed! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+        }
+    }
+
+    // Drain #4: Test with limit parameter
+    println!("⏳ Waiting 5 seconds, then draining with limit=2...");
+    std::thread::sleep(std::time::Duration::from_secs(5));
+
+    let drain4_request = Request {
+        id: 12,
+        method: "record.drain".to_string(),
+        params: Some(json!({
+            "name": "server::Temperature",
+            "limit": 2
+        })),
+    };
+
+    writeln!(stream, "{}", serde_json::to_string(&drain4_request)?)?;
+    stream.flush()?;
+
+    let mut drain4_line = String::new();
+    reader.read_line(&mut drain4_line)?;
+    let drain4_response: Response = serde_json::from_str(&drain4_line)?;
+
+    match &drain4_response {
+        Response::Success { id, result } => {
+            let count = result["count"].as_u64().unwrap_or(0);
+            let values = result["values"].as_array();
+            println!("✅ Drain #4 response (request_id: {})", id);
+            println!("   Values returned: {} (limit was 2)", count);
+            if let Some(vals) = values {
+                for (i, val) in vals.iter().enumerate() {
+                    let celsius = val["celsius"].as_f64().unwrap_or(0.0);
+                    let sensor = val["sensor_id"].as_str().unwrap_or("?");
+                    println!("   📊 [{}] {:.1} °C from {}", i, celsius, sensor);
+                }
+            }
+            println!();
+        }
+        Response::Error { id, error } => {
+            println!("❌ Drain #4 failed! (request_id: {})", id);
+            println!("   Code: {}", error.code);
+            println!("   Message: {}", error.message);
+        }
+    }
+
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("📡 Testing Subscriptions");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
@@ -407,7 +556,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to Temperature updates
     println!("📤 Subscribing to Temperature updates...");
     let subscribe_request = Request {
-        id: 9,
+        id: 13,
         method: "record.subscribe".to_string(),
         params: Some(json!({
             "name": "server::Temperature",
@@ -472,7 +621,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Unsubscribe
     println!("📤 Unsubscribing from Temperature...");
     let unsubscribe_request = Request {
-        id: 10,
+        id: 14,
         method: "record.unsubscribe".to_string(),
         params: Some(json!({
             "subscription_id": subscription_id

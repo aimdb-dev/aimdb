@@ -82,6 +82,10 @@ pub enum DbError {
         _buffer_name: (),
     },
 
+    /// Non-blocking receive found no pending values
+    #[cfg_attr(feature = "std", error("Buffer empty: no pending values"))]
+    BufferEmpty,
+
     // ===== Database Errors (0x7003-0x7009) =====
     /// Record type not found in database (legacy, by type name)
     #[cfg_attr(feature = "std", error("Record type not found: {record_name}"))]
@@ -244,6 +248,35 @@ pub enum DbError {
     #[error("Runtime thread has shut down")]
     RuntimeShutdown,
 
+    // ===== Transform / Dependency Graph Errors =====
+    /// Transform dependency graph contains a cycle
+    #[cfg_attr(
+        feature = "std",
+        error("Cyclic dependency detected among records: {records:?}")
+    )]
+    CyclicDependency {
+        #[cfg(feature = "std")]
+        records: Vec<String>,
+        #[cfg(not(feature = "std"))]
+        _records: (),
+    },
+
+    /// Transform input key references a record that was not registered
+    #[cfg_attr(
+        feature = "std",
+        error("Transform on '{output_key}' references unregistered input '{input_key}'")
+    )]
+    TransformInputNotFound {
+        #[cfg(feature = "std")]
+        output_key: String,
+        #[cfg(feature = "std")]
+        input_key: String,
+        #[cfg(not(feature = "std"))]
+        _output_key: (),
+        #[cfg(not(feature = "std"))]
+        _input_key: (),
+    },
+
     // ===== Standard Library Integrations (std only) =====
     /// I/O operation error
     #[cfg(feature = "std")]
@@ -289,6 +322,7 @@ impl core::fmt::Display for DbError {
             DbError::BufferFull { .. } => (0x2002, "Buffer full"),
             DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
             DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
+            DbError::BufferEmpty => (0xA003, "Buffer empty"),
             DbError::RecordNotFound { .. } => (0x7003, "Record not found"),
             DbError::RecordKeyNotFound { .. } => (0x7006, "Record key not found"),
             DbError::InvalidRecordId { .. } => (0x7007, "Invalid record ID"),
@@ -302,6 +336,8 @@ impl core::fmt::Display for DbError {
             DbError::ResourceUnavailable { .. } => (0x5002, "Resource unavailable"),
             DbError::HardwareError { .. } => (0x6001, "Hardware error"),
             DbError::Internal { .. } => (0x7001, "Internal error"),
+            DbError::CyclicDependency { .. } => (0xC001, "Cyclic dependency in transforms"),
+            DbError::TransformInputNotFound { .. } => (0xC002, "Transform input not found"),
         };
         write!(f, "Error 0x{:04X}: {}", code, message)
     }
@@ -388,6 +424,10 @@ impl DbError {
             DbError::AmbiguousType { .. } => 0x7009,
             DbError::DuplicateRecordKey { .. } => 0x700A,
 
+            // Transform / Dependency Graph errors: 0xC000-0xCFFF
+            DbError::CyclicDependency { .. } => 0xC001,
+            DbError::TransformInputNotFound { .. } => 0xC002,
+
             // I/O errors: 0x8000-0x8FFF (std only)
             #[cfg(feature = "std")]
             DbError::Io { .. } => 0x8001,
@@ -403,6 +443,7 @@ impl DbError {
             // Buffer operation errors: 0xA000-0xAFFF
             DbError::BufferLagged { .. } => 0xA001,
             DbError::BufferClosed { .. } => 0xA002,
+            DbError::BufferEmpty => 0xA003,
 
             // Sync API errors: 0xB000-0xBFFF (std only)
             #[cfg(feature = "std")]
@@ -463,6 +504,7 @@ impl DbError {
                 Self::prepend_context(&mut buffer_name, context);
                 DbError::BufferClosed { buffer_name }
             }
+            DbError::BufferEmpty => DbError::BufferEmpty,
             DbError::RecordNotFound { mut record_name } => {
                 Self::prepend_context(&mut record_name, context);
                 DbError::RecordNotFound { record_name }
@@ -559,6 +601,9 @@ impl DbError {
             DbError::GetTimeout => DbError::GetTimeout,
             #[cfg(feature = "std")]
             DbError::RuntimeShutdown => DbError::RuntimeShutdown,
+            // Transform errors — return as-is (no mutable context field to prepend)
+            DbError::CyclicDependency { .. } => self,
+            DbError::TransformInputNotFound { .. } => self,
             // Convert simple I/O and JSON errors to context variants (std only)
             #[cfg(feature = "std")]
             DbError::Io { source } => DbError::IoWithContext {

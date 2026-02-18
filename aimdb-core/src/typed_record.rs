@@ -6,7 +6,7 @@
 //!
 //! **Both std and no_std**: Core API (`TypedRecord`, `latest()`, `RecordValue`, producer/consumer)
 //!
-//! **std only**: JSON serialization (`.with_serialization()`, `.as_json()`), remote access, metadata
+//! **std only**: JSON serialization (`.with_remote_access()`, `.as_json()`), remote access, metadata
 //!
 //! **no_std**: Use `record.latest()` for value access and `Deref` for fields. JSON requires std;
 //! implement custom serialization for embedded protocols (CBOR, MessagePack, etc.).
@@ -72,7 +72,7 @@ impl<T> RecordValue<T> {
 
     /// Serialize the value to JSON (std only)
     ///
-    /// Returns `Some(JsonValue)` if record was configured with `.with_serialization()`,
+    /// Returns `Some(JsonValue)` if record was configured with `.with_remote_access()`,
     /// otherwise `None`. Requires `serde_json` (std only). For no_std, use `.get()`,
     /// `.into_inner()`, or `Deref` for direct access.
     #[cfg(feature = "std")]
@@ -110,7 +110,7 @@ impl<T> core::ops::Deref for RecordValue<T> {
 struct JsonReaderAdapter<T: Clone + Send + 'static> {
     /// The underlying typed buffer reader
     inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
-    /// JSON serializer function (from .with_serialization())
+    /// JSON serializer function (from .with_remote_access())
     serializer: JsonSerializer<T>,
 }
 
@@ -142,6 +142,16 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
                     crate::DbError::RuntimeError { _message: () }
                 }
             })
+        })
+    }
+
+    fn try_recv_json(&mut self) -> Result<serde_json::Value, crate::DbError> {
+        // Non-blocking receive from underlying typed buffer
+        let value = self.inner.try_recv()?;
+
+        // Serialize to JSON using the configured serializer
+        (self.serializer)(&value).ok_or_else(|| crate::DbError::RuntimeError {
+            message: "Failed to serialize value to JSON".to_string(),
         })
     }
 }
@@ -201,7 +211,8 @@ impl RecordMetadataTracker {
 }
 
 // Type alias for boxed futures
-type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
+pub(crate) type BoxFuture<'a, T> =
+    core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
 
 /// Type alias for consumer service closure stored in TypedRecord
 /// Each consumer receives a Consumer<T, R> handle for subscribing to the buffer
@@ -272,6 +283,32 @@ pub trait AnyRecord: Send + Sync {
     /// Returns whether a producer service is registered
     fn has_producer_service(&self) -> bool;
 
+    /// Returns whether a transform is registered for this record
+    fn has_transform(&self) -> bool;
+
+    /// Returns how this record gets its values (for dependency graph construction)
+    fn record_origin(&self) -> crate::graph::RecordOrigin;
+
+    /// Returns the buffer type name and capacity (for dependency graph)
+    ///
+    /// Returns (buffer_type_name, optional_capacity).
+    #[cfg(feature = "std")]
+    fn buffer_info(&self) -> (String, Option<usize>);
+
+    /// Returns the buffer type name and capacity (for dependency graph)
+    ///
+    /// Returns (buffer_type_name, optional_capacity).
+    #[cfg(not(feature = "std"))]
+    fn buffer_info(&self) -> (alloc::string::String, Option<usize>);
+
+    /// Returns the transform input keys (if a transform is registered)
+    #[cfg(feature = "std")]
+    fn transform_input_keys(&self) -> Option<Vec<String>>;
+
+    /// Returns the transform input keys (if a transform is registered)
+    #[cfg(not(feature = "std"))]
+    fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>>;
+
     /// Sets the writable flag for this record (type-erased)
     ///
     /// Used internally by the builder to apply security policy to records.
@@ -307,7 +344,7 @@ pub trait AnyRecord: Send + Sync {
     ///
     /// # Errors
     /// Returns error if:
-    /// - Record not configured with `.with_serialization()`
+    /// - Record not configured with `.with_remote_access()`
     /// - Buffer subscription fails (shouldn't happen in practice)
     ///
     /// # Example (internal use)
@@ -346,7 +383,7 @@ pub trait AnyRecord: Send + Sync {
     /// - Record has active producers (`producer_count > 0`) - **safety check**
     /// - JSON deserialization fails (schema mismatch)
     /// - Record not configured with buffer
-    /// - Record not configured with `.with_serialization()`
+    /// - Record not configured with `.with_remote_access()`
     ///
     /// # Example (internal use)
     /// ```rust,ignore
@@ -451,8 +488,14 @@ where
             })?;
 
         // Spawn producer service if present (using key-based producer)
+        // Note: source and transform are mutually exclusive — only one will be present
         if typed_record.has_producer_service() {
             typed_record.spawn_producer_service(runtime, db, record_key)?;
+        }
+
+        // Spawn transform task if present (mutually exclusive with source)
+        if typed_record.has_transform() {
+            typed_record.spawn_transform_task(runtime, db, record_key)?;
         }
 
         // Spawn consumer tasks if present (using key-based consumer)
@@ -487,6 +530,14 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     #[cfg(not(feature = "std"))]
     consumers: spin::Mutex<alloc::vec::Vec<ConsumerServiceFn<T, R>>>,
 
+    /// Transform descriptor — mutually exclusive with producer_service.
+    /// If set, this record is a reactive derivation from one or more input records.
+    /// Uses the same Mutex pattern for take()-during-spawn.
+    #[cfg(feature = "std")]
+    transform: std::sync::Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
+    #[cfg(not(feature = "std"))]
+    transform: spin::Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
+
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
     buffer: Option<Box<dyn DynBuffer<T>>>,
@@ -509,13 +560,13 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     metadata: RecordMetadataTracker,
 
     /// JSON serializer function (std only - for remote access)
-    /// When set via .with_serialization(), automatically serializes values for record.get queries
+    /// When set via .with_remote_access(), automatically serializes values for record.get queries
     /// Stores the serialization logic where T: Serialize is known at call site
     #[cfg(feature = "std")]
     json_serializer: Option<JsonSerializer<T>>,
 
     /// JSON deserializer function (std only - for remote access)
-    /// When set via .with_serialization(), automatically deserializes JSON for record.set operations
+    /// When set via .with_remote_access(), automatically deserializes JSON for record.set operations
     /// Stores the deserialization logic where T: Deserialize is known at call site
     #[cfg(feature = "std")]
     json_deserializer: Option<JsonDeserializer<T>>,
@@ -534,7 +585,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> TypedRecord<T, R> {
     /// Creates a new empty typed record
     ///
-    /// Call `.with_serialization()` to enable JSON (std only).
+    /// Call `.with_remote_access()` to enable JSON (std only).
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "std")]
@@ -545,6 +596,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             consumers: std::sync::Mutex::new(Vec::new()),
             #[cfg(not(feature = "std"))]
             consumers: spin::Mutex::new(alloc::vec::Vec::new()),
+            #[cfg(feature = "std")]
+            transform: std::sync::Mutex::new(None),
+            #[cfg(not(feature = "std"))]
+            transform: spin::Mutex::new(None),
             buffer: None,
             #[cfg(feature = "std")]
             buffer_cfg: None,
@@ -574,6 +629,16 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         F: FnOnce(crate::Producer<T, R>, Arc<dyn Any + Send + Sync>) -> Fut + Send + Sync + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
+        // Check for existing transform (mutual exclusion)
+        #[cfg(feature = "std")]
+        let has_transform = self.transform.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_transform = self.transform.lock().is_some();
+
+        if has_transform {
+            panic!("Record already has a .transform(); cannot also have a .source().");
+        }
+
         // Check if already set
         #[cfg(feature = "std")]
         let already_set = self.producer_service.lock().unwrap().is_some();
@@ -644,6 +709,181 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         }
     }
 
+    /// Sets the transform descriptor for this record.
+    ///
+    /// A transform is mutually exclusive with a `.source()` — a record cannot
+    /// have both. Panics if a source or transform is already registered.
+    pub(crate) fn set_transform(
+        &mut self,
+        descriptor: crate::transform::TransformDescriptor<T, R>,
+    ) {
+        // Enforce mutual exclusion with .source()
+        #[cfg(feature = "std")]
+        let has_source = self.producer_service.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_source = self.producer_service.lock().is_some();
+
+        if has_source {
+            panic!("Record already has a .source(); cannot also have a .transform().");
+        }
+
+        #[cfg(feature = "std")]
+        let mut slot = self.transform.lock().unwrap();
+        #[cfg(not(feature = "std"))]
+        let mut slot = self.transform.lock();
+
+        if slot.is_some() {
+            panic!("Record already has a .transform(); only one is allowed.");
+        }
+        *slot = Some(descriptor);
+    }
+
+    /// Returns whether a transform is registered for this record.
+    pub fn has_transform(&self) -> bool {
+        #[cfg(feature = "std")]
+        {
+            self.transform.lock().unwrap().is_some()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.transform.lock().is_some()
+        }
+    }
+
+    /// Returns how this record gets its values.
+    ///
+    /// Used for constructing the dependency graph. Determines the record's origin:
+    /// - `Source` if a producer service is registered
+    /// - `Link` if inbound connectors are registered
+    /// - `Transform` or `TransformJoin` if a transform is registered
+    /// - `Passive` otherwise
+    pub fn record_origin(&self) -> crate::graph::RecordOrigin {
+        // Check for transform first (most specific)
+        #[cfg(feature = "std")]
+        let transform_keys = self
+            .transform
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.input_keys.clone());
+        #[cfg(not(feature = "std"))]
+        let transform_keys = self.transform.lock().as_ref().map(|t| t.input_keys.clone());
+
+        if let Some(input_keys) = transform_keys {
+            if input_keys.len() == 1 {
+                return crate::graph::RecordOrigin::Transform {
+                    input: input_keys.into_iter().next().unwrap(),
+                };
+            } else {
+                return crate::graph::RecordOrigin::TransformJoin { inputs: input_keys };
+            }
+        }
+
+        // Check for inbound connector (link)
+        if let Some(first_link) = self.inbound_connectors.first() {
+            return crate::graph::RecordOrigin::Link {
+                protocol: first_link.url.scheme.clone(),
+                address: first_link.url.to_string(),
+            };
+        }
+
+        // Check for producer service (source)
+        #[cfg(feature = "std")]
+        let has_producer = self.producer_service.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_producer = self.producer_service.lock().is_some();
+
+        if has_producer {
+            return crate::graph::RecordOrigin::Source;
+        }
+
+        // No producer — passive record
+        crate::graph::RecordOrigin::Passive
+    }
+
+    /// Returns the input keys for the registered transform (if any).
+    ///
+    /// Used during build-time validation to check that all input records exist.
+    #[cfg(feature = "std")]
+    pub fn transform_input_keys(&self) -> Option<Vec<String>> {
+        #[cfg(feature = "std")]
+        let guard = self.transform.lock().unwrap();
+        #[cfg(not(feature = "std"))]
+        let guard = self.transform.lock();
+
+        guard.as_ref().map(|t| t.input_keys.clone())
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>> {
+        #[cfg(feature = "std")]
+        {
+            self.transform
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|d| d.input_keys.clone())
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.transform.lock().as_ref().map(|d| d.input_keys.clone())
+        }
+    }
+
+    /// Spawns the transform task for this record.
+    ///
+    /// Takes the transform descriptor (can only spawn once) and spawns the
+    /// reactive task that subscribes to input records and produces to this record.
+    pub fn spawn_transform_task(
+        &self,
+        runtime: &Arc<R>,
+        db: &Arc<crate::AimDb<R>>,
+        record_key: &str,
+    ) -> crate::DbResult<()>
+    where
+        R: aimdb_executor::Spawn,
+        T: Sync,
+    {
+        use crate::DbError;
+
+        // Take the transform descriptor (can only spawn once)
+        let descriptor = {
+            #[cfg(feature = "std")]
+            {
+                self.transform.lock().unwrap().take()
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                self.transform.lock().take()
+            }
+        };
+
+        if let Some(desc) = descriptor {
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "🔄 Spawning transform task for '{}' (inputs: {:?})",
+                record_key,
+                desc.input_keys
+            );
+
+            // Create Producer<T> bound to the specific record key
+            let producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
+            let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
+
+            // Call the spawn function (mirrors spawn_producer_service exactly)
+            let task_future = (desc.spawn_fn)(producer, db.clone(), ctx);
+            runtime.spawn(task_future).map_err(DbError::from)?;
+
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                "✅ Successfully spawned transform task for record '{}'",
+                record_key
+            );
+        }
+
+        Ok(())
+    }
+
     /// Sets the buffer for this record
     ///
     /// When set, `produce()` enqueues values for async dispatch to consumers.
@@ -662,6 +902,31 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     #[cfg(feature = "std")]
     pub fn set_buffer_cfg(&mut self, cfg: crate::buffer::BufferCfg) {
         self.buffer_cfg = Some(cfg);
+    }
+
+    /// Returns buffer type name and capacity (for dependency graph)
+    #[cfg(feature = "std")]
+    pub fn buffer_info(&self) -> (String, Option<usize>) {
+        if let Some(cfg) = &self.buffer_cfg {
+            let cap = match cfg {
+                crate::buffer::BufferCfg::SpmcRing { capacity } => Some(*capacity),
+                _ => None,
+            };
+            (cfg.name().to_string(), cap)
+        } else {
+            ("none".to_string(), None)
+        }
+    }
+
+    /// Returns buffer type name and capacity (for dependency graph)
+    #[cfg(not(feature = "std"))]
+    pub fn buffer_info(&self) -> (alloc::string::String, Option<usize>) {
+        // No buffer_cfg in no_std, so we just report based on buffer presence
+        if self.buffer.is_some() {
+            ("unknown".into(), None)
+        } else {
+            ("none".into(), None)
+        }
     }
 
     /// Returns whether a buffer is configured
@@ -716,7 +981,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// For no_std, use `record.latest()` for value access or custom serialization.
     #[cfg(feature = "std")]
-    pub fn with_serialization(&mut self) -> &mut Self
+    pub fn with_remote_access(&mut self) -> &mut Self
     where
         T: serde::Serialize + serde::de::DeserializeOwned,
     {
@@ -732,7 +997,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
         #[cfg(feature = "tracing")]
         tracing::info!(
-            "with_serialization() called for record type: {}",
+            "with_remote_access() called for record type: {}",
             core::any::type_name::<T>()
         );
 
@@ -742,7 +1007,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Enables JSON serialization (backward compatible, read-only)
     ///
     /// This version only adds serialization support (for `record.get` and `record.subscribe`).
-    /// For write support via `record.set`, use `.with_serialization()` which requires
+    /// For write support via `record.set`, use `.with_remote_access()` which requires
     /// both `Serialize` and `DeserializeOwned` bounds.
     ///
     /// This method exists for backward compatibility with records that don't implement
@@ -982,7 +1247,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// **Both std and no_std**: Direct access via `Deref`, `.get()`, `.into_inner()`
     ///
-    /// **std only**: `.as_json()` (if `.with_serialization()` configured)
+    /// **std only**: `.as_json()` (if `.with_remote_access()` configured)
     ///
     /// # Examples
     /// ```rust,ignore
@@ -1087,6 +1352,34 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
         TypedRecord::has_producer_service(self)
     }
 
+    fn has_transform(&self) -> bool {
+        TypedRecord::has_transform(self)
+    }
+
+    fn record_origin(&self) -> crate::graph::RecordOrigin {
+        TypedRecord::record_origin(self)
+    }
+
+    #[cfg(feature = "std")]
+    fn buffer_info(&self) -> (String, Option<usize>) {
+        TypedRecord::buffer_info(self)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn buffer_info(&self) -> (alloc::string::String, Option<usize>) {
+        TypedRecord::buffer_info(self)
+    }
+
+    #[cfg(feature = "std")]
+    fn transform_input_keys(&self) -> Option<Vec<String>> {
+        TypedRecord::transform_input_keys(self)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>> {
+        TypedRecord::transform_input_keys(self)
+    }
+
     fn set_writable_erased(&self, writable: bool) {
         #[cfg(feature = "std")]
         {
@@ -1128,6 +1421,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             key,
             type_id,
             self.metadata.name.clone(),
+            self.record_origin(),
             buffer_type,
             buffer_capacity,
             if self.has_producer_service() { 1 } else { 0 },
@@ -1192,7 +1486,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
-                    "Record '{}' not configured with .with_serialization(). \
+                    "Record '{}' not configured with .with_remote_access(). \
                      Cannot subscribe to JSON stream.",
                     core::any::type_name::<T>()
                 ),
@@ -1228,16 +1522,16 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
         );
 
         // SAFETY CHECK 1: Enforce "No Producer Override" rule
-        if self.has_producer_service() {
+        if self.has_producer_service() || self.has_transform() {
             #[cfg(feature = "tracing")]
             tracing::warn!(
-                "Rejected set_from_json for '{}': has active producer (producer_count=1)",
+                "Rejected set_from_json for '{}': has active producer or transform",
                 core::any::type_name::<T>()
             );
 
             return Err(DbError::PermissionDenied {
                 operation: format!(
-                    "Cannot set record '{}' - has active producer. \
+                    "Cannot set record '{}' - has active producer or transform. \
                      Use internal application logic instead. \
                      Remote access can only set configuration records without producers.",
                     core::any::type_name::<T>()
@@ -1251,7 +1545,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
-                    "Record '{}' not configured with .with_serialization(). \
+                    "Record '{}' not configured with .with_remote_access(). \
                      Cannot deserialize from JSON.",
                     core::any::type_name::<T>()
                 ),
