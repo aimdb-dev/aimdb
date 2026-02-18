@@ -423,8 +423,12 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                 rx,
                 #[cfg(feature = "metrics")]
                 metrics,
-            } => {
-                if rx.has_changed().unwrap_or(false) {
+            } => match rx.has_changed() {
+                Err(_) => Err(DbError::BufferClosed {
+                    buffer_name: "watch".to_string(),
+                }),
+                Ok(false) => Err(DbError::BufferEmpty),
+                Ok(true) => {
                     let val = rx.borrow_and_update().clone();
                     match val {
                         Some(v) => {
@@ -432,12 +436,12 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                             metrics.increment_consumed();
                             Ok(v)
                         }
-                        None => Err(DbError::BufferEmpty),
+                        None => Err(DbError::BufferClosed {
+                            buffer_name: "watch".to_string(),
+                        }),
                     }
-                } else {
-                    Err(DbError::BufferEmpty)
                 }
-            }
+            },
             TokioBufferReader::Notify {
                 slot,
                 notify: _,

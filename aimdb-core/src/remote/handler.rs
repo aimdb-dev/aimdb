@@ -1188,12 +1188,14 @@ where
     };
 
     // Optional: limit parameter
+    // Use try_from instead of `as` to avoid silent truncation on 32-bit targets
+    // (values that don't fit in usize are treated as "no limit").
     let limit = params
         .as_ref()
         .and_then(|p| p.as_object())
         .and_then(|map| map.get("limit"))
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
         .unwrap_or(usize::MAX);
 
     #[cfg(feature = "tracing")]

@@ -32,10 +32,6 @@ use alloc::{
     vec::Vec,
 };
 
-#[cfg(feature = "std")]
-use alloc::sync::Arc;
-
-#[cfg(not(feature = "std"))]
 use alloc::sync::Arc;
 
 use crate::typed_record::BoxFuture;
