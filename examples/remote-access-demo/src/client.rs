@@ -400,7 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("� Testing Record History (record.drain)");
+    println!("🧪 Testing Record History (record.drain)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
