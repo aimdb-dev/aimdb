@@ -1,8 +1,8 @@
 # Persistence Backend
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Status:** 📋 Proposed  
-**Last Updated:** February 17, 2026  
+**Last Updated:** February 19, 2026  
 **Milestone:** M10 — Persistence & Long-Term History  
 **Depends On:** [019-M8-record-history-api](019-M8-record-history-api.md)
 
@@ -104,16 +104,16 @@ use aimdb_persistence::{AimDbBuilderPersistExt, RecordRegistrarPersistExt};
 let backend = Arc::new(SqliteBackend::new("./data/validations.db")?);
 
 // Builder level: configure the persistence backend once.
-// with_persistence() calls backend.initialize(), registers the retention cleanup task,
-// and stores the backend as Arc<dyn Any> on the builder so RecordRegistrar can
-// thread it through — same pattern as the runtime context in tap_raw.
+// with_persistence() registers the cleanup task via on_start() and stores
+// the backend in the builder's Extensions TypeMap — no block_on needed,
+// because SqliteBackend::new() initializes the schema synchronously.
 let mut builder = AimDbBuilder::new()
     .runtime(TokioAdapter::new())
     .with_persistence(backend.clone(), Duration::from_secs(7 * 24 * 3600));
 
 // Record level: opt-in to persistence alongside other buffer config.
-// No backend argument — .persist() retrieves it from the registrar's context,
-// which the builder populated via the stored Arc<dyn Any> slot.
+// No backend argument — .persist() retrieves the backend from the
+// builder's Extensions TypeMap via extensions().get::<PersistenceState>().
 // T: Serialize is required; .with_remote_access() is NOT required.
 builder.configure::<ForecastValidation>(accuracy_key, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 500 })
@@ -172,16 +172,75 @@ aimdb/
        ├── lib.rs
        ├── backend.rs             # PersistenceBackend trait
        ├── builder_ext.rs         # AimDbBuilderPersistExt trait (adds .with_persistence())
-       └── ext.rs                 # RecordRegistrarPersistExt trait (adds .persist())
- aimdb-persistence-sqlite/      # SQLite implementation
+       ├── ext.rs                 # RecordRegistrarPersistExt trait (adds .persist())
+       └── query_ext.rs           # AimDbQueryExt trait (adds .query_latest() / .query_range())
+ aimdb-persistence-sqlite/      # SQLite implementation (requires Tokio runtime)
    └── src/lib.rs
 ```
+
+> **Runtime requirement:** `aimdb-persistence-sqlite` requires a Tokio runtime.
+> It uses `tokio::sync::oneshot` to bridge the blocking SQLite writer thread and
+> the async caller. This is the crate's only Tokio coupling — the rest of the
+> persistence stack (`aimdb-persistence`, the `PersistenceBackend` trait, the
+> `.persist()` subscriber) is runtime-agnostic. Future backends such as
+> `aimdb-persistence-postgres` (via `sqlx` or `tokio-postgres`) will share this
+> same pattern, making the Tokio dependency consistent across all concrete
+> backends. Do **not** use `SqliteBackend` with the Embassy adapter — it will
+> not compile without a Tokio executor.
 
 **Key design decision:** `aimdb-persistence` does **not** live inside `aimdb-core`.
 It extends both `RecordRegistrar` (via `RecordRegistrarPersistExt`) and `AimDbBuilder`
 (via `AimDbBuilderPersistExt`) from outside, exactly like `TokioRecordRegistrarExt`
 adds `.tap()` and `.transform()` without touching the core. This keeps `aimdb-core`
 free of persistence concerns entirely.
+
+### Extensions TypeMap (in `aimdb-core`)
+
+`aimdb-core` exposes a generic extension slot on both `AimDbBuilder<R>` and `AimDb<R>`.
+This replaces the two ad-hoc `set_persistence_backend_any` / `set_persistence_backend`
+hooks with a single, reusable mechanism any external crate can use — persistence,
+metrics, custom middleware, etc.:
+
+```rust
+// aimdb-core/src/extensions.rs
+use std::any::{Any, TypeId};
+use hashbrown::HashMap; // already a dependency of aimdb-core
+
+/// Generic extension storage for `AimDbBuilder` and `AimDb`.
+/// External crates store typed state here during builder configuration
+/// and retrieve it during record setup or at query time.
+pub struct Extensions {
+    map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+}
+
+impl Extensions {
+    pub fn insert<T: Send + Sync + 'static>(&mut self, val: T) {
+        self.map.insert(TypeId::of::<T>(), Box::new(val));
+    }
+
+    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.map.get(&TypeId::of::<T>())
+            .and_then(|b| b.downcast_ref())
+    }
+}
+```
+
+Both `AimDbBuilder<R>` and `AimDb<R>` expose:
+
+```rust
+impl<R> AimDbBuilder<R> {
+    pub fn extensions(&self) -> &Extensions { &self.extensions }
+    pub fn extensions_mut(&mut self) -> &mut Extensions { &mut self.extensions }
+}
+
+// AimDb<R> exposes a read-only view (extensions are frozen after build())
+impl<R> AimDb<R> {
+    pub fn extensions(&self) -> &Extensions { &self.extensions }
+}
+```
+
+The builder moves its `Extensions` into `AimDb<R>` during `build()` — same
+lifetime as the runtime adapter.
 
 ### Backend Trait
 
@@ -207,9 +266,13 @@ pub trait PersistenceBackend: Send + Sync {
         params: QueryParams,
     ) -> BoxFuture<'a, Result<Vec<StoredValue>, PersistenceError>>;
 
-    /// Initialize storage (create tables, indexes). Called automatically by
-    /// `with_persistence()` — users do not call this directly.
-    fn initialize(&self) -> BoxFuture<'_, Result<(), PersistenceError>>;
+    /// Initialize storage (create tables, indexes).
+    /// Default implementation is a no-op — backends that perform setup
+    /// eagerly in `::new()` (like `SqliteBackend`) do not need to override
+    /// this. Future backends (e.g. Postgres) can override it for async setup.
+    fn initialize(&self) -> BoxFuture<'_, Result<(), PersistenceError>> {
+        Box::pin(async { Ok(()) })
+    }
 
     /// Delete all rows older than `older_than` (Unix ms). Called automatically
     /// by the retention cleanup task registered during `with_persistence()`.
@@ -234,17 +297,19 @@ pub struct QueryParams {
 
 ### AimDb Query Methods
 
-Type safety at the query boundary is enforced by convention: the record name is
-the type tag. `accuracy::vienna` will only ever contain `ForecastValidation`
-because that is what `.persist()` was called with on that record. There is no
-compile-time enforcement across restarts, so deserialization failures are handled
-by **skipping the bad row and logging**, rather than failing the entire query.
-This ensures one corrupt or schema-migrated row never breaks the AccuracyPanel.
+Query methods live in `aimdb-persistence/src/query_ext.rs` as an extension trait,
+keeping `aimdb-core` free of `serde_json`, `DeserializeOwned`, and `PersistenceError`.
+Error type is `PersistenceError` (not `DbError`), so the core error enum gains no
+persistence-specific variants. Users import `use aimdb_persistence::AimDbQueryExt;`.
+Type safety is enforced by convention: the record name is the type tag.
+`accuracy::vienna` will only ever contain `ForecastValidation` because that is what
+`.persist()` was called with. Deserialization failures are handled by **skipping the
+bad row and logging**, so one corrupt or migrated row never breaks the AccuracyPanel.
 
 ```rust
-// aimdb-core/src/db.rs (with persistence feature)
+// aimdb-persistence/src/query_ext.rs
 
-impl<R: RuntimeAdapter> AimDb<R> {
+pub trait AimDbQueryExt {
     /// Query latest N values per matching record.
     ///
     /// Pattern support: "accuracy::*" returns latest N from each matching record.
@@ -252,61 +317,82 @@ impl<R: RuntimeAdapter> AimDb<R> {
     ///
     /// Rows that fail to deserialize as `T` are skipped with a tracing warning
     /// rather than failing the entire query.
-    pub async fn query_latest<T: DeserializeOwned>(
+    fn query_latest<T: DeserializeOwned>(
         &self,
         record_pattern: &str,
         limit_per_record: usize,
-    ) -> Result<Vec<T>, DbError> {
-        let backend = self.persistence_backend()
-            .ok_or(DbError::PersistenceNotConfigured)?;
-
-        let stored = backend.query(record_pattern, QueryParams {
-            limit_per_record: Some(limit_per_record),
-            ..Default::default()
-        }).await?;
-
-        Ok(stored.into_iter()
-            .filter_map(|sv| {
-                serde_json::from_value(sv.value).map_err(|e| {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!(
-                        "Skipping persisted row for '{}': deserialization failed: {}",
-                        sv.record_name, e
-                    );
-                }).ok()
-            })
-            .collect())
-    }
+    ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>>;
 
     /// Query values within a time range for a single record or pattern.
     ///
     /// Rows that fail to deserialize as `T` are skipped with a tracing warning.
-    pub async fn query_range<T: DeserializeOwned>(
+    fn query_range<T: DeserializeOwned>(
         &self,
         record_name: &str,
         start_ts: u64,
         end_ts: u64,
-    ) -> Result<Vec<T>, DbError> {
-        let backend = self.persistence_backend()
-            .ok_or(DbError::PersistenceNotConfigured)?;
+    ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>>;
+}
 
-        let stored = backend.query(record_name, QueryParams {
-            start_time: Some(start_ts),
-            end_time: Some(end_ts),
-            ..Default::default()
-        }).await?;
+impl<R: RuntimeAdapter> AimDbQueryExt for AimDb<R> {
+    fn query_latest<T: DeserializeOwned>(
+        &self,
+        record_pattern: &str,
+        limit_per_record: usize,
+    ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>> {
+        Box::pin(async move {
+            let backend = self.extensions().get::<PersistenceState>()
+                .map(|s| s.backend.clone())
+                .ok_or(PersistenceError::NotConfigured)?;
 
-        Ok(stored.into_iter()
-            .filter_map(|sv| {
-                serde_json::from_value(sv.value).map_err(|e| {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!(
-                        "Skipping persisted row for '{}': deserialization failed: {}",
-                        sv.record_name, e
-                    );
-                }).ok()
-            })
-            .collect())
+            let stored = backend.query(record_pattern, QueryParams {
+                limit_per_record: Some(limit_per_record),
+                ..Default::default()
+            }).await?;
+
+            Ok(stored.into_iter()
+                .filter_map(|sv| {
+                    serde_json::from_value(sv.value).map_err(|e| {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(
+                            "Skipping persisted row for '{}': deserialization failed: {}",
+                            sv.record_name, e
+                        );
+                    }).ok()
+                })
+                .collect())
+        })
+    }
+
+    fn query_range<T: DeserializeOwned>(
+        &self,
+        record_name: &str,
+        start_ts: u64,
+        end_ts: u64,
+    ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>> {
+        Box::pin(async move {
+            let backend = self.extensions().get::<PersistenceState>()
+                .map(|s| s.backend.clone())
+                .ok_or(PersistenceError::NotConfigured)?;
+
+            let stored = backend.query(record_name, QueryParams {
+                start_time: Some(start_ts),
+                end_time: Some(end_ts),
+                ..Default::default()
+            }).await?;
+
+            Ok(stored.into_iter()
+                .filter_map(|sv| {
+                    serde_json::from_value(sv.value).map_err(|e| {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(
+                            "Skipping persisted row for '{}': deserialization failed: {}",
+                            sv.record_name, e
+                        );
+                    }).ok()
+                })
+                .collect())
+        })
     }
 }
 ```
@@ -321,9 +407,6 @@ Async callers communicate via channels and await a `oneshot` reply. The
 // aimdb-persistence-sqlite/src/lib.rs
 
 enum DbCommand {
-    Initialize {
-        reply: oneshot::Sender<Result<(), PersistenceError>>,
-    },
     Store {
         record_name: String,
         json: String,
@@ -357,7 +440,24 @@ impl SqliteBackend {
         // std::sync::mpsc::sync_channel so the writer thread can call recv()
         // without a Tokio runtime. Bound of 64 provides backpressure.
         let (tx, rx) = std::sync::mpsc::sync_channel::<DbCommand>(64);
-        let conn = Connection::open(path)?;;
+        let conn = Connection::open(path)?;
+
+        // Enable WAL mode: readers and the single writer proceed concurrently
+        // without blocking each other. Free performance win, best practice.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+
+        // Initialize schema right here, before spawning the thread.
+        // The connection isn't shared yet — no concurrency concerns, no block_on.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS record_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_name TEXT    NOT NULL,
+                value_json  TEXT    NOT NULL,
+                stored_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_record_time
+                ON record_history(record_name, stored_at DESC);"
+        )?;
 
         std::thread::Builder::new()
             .name("aimdb-sqlite".to_string())
@@ -373,20 +473,6 @@ impl SqliteBackend {
 fn run_db_thread(conn: Connection, rx: std::sync::mpsc::Receiver<DbCommand>) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            DbCommand::Initialize { reply } => {
-                let result = conn.execute_batch(
-                    "CREATE TABLE IF NOT EXISTS record_history (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        record_name TEXT    NOT NULL,
-                        value_json  TEXT    NOT NULL,
-                        stored_at   INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_record_time
-                        ON record_history(record_name, stored_at DESC);"
-                ).map_err(PersistenceError::from);
-                let _ = reply.send(result);
-            }
-
             DbCommand::Store { record_name, json, timestamp, reply } => {
                 let result = conn.execute(
                     "INSERT INTO record_history (record_name, value_json, stored_at)
@@ -412,20 +498,31 @@ fn run_db_thread(conn: Connection, rx: std::sync::mpsc::Receiver<DbCommand>) {
     }
 }
 
+/// Escape SQL LIKE special characters, then replace `*` with `%`.
+/// Record names are documented to match `[a-zA-Z0-9_.:-]`, so `%` and `_`
+/// should never appear in practice — but we escape defensively.
+fn sanitize_pattern(pattern: &str) -> String {
+    pattern
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+        .replace('*', "%")
+}
+
 fn query_sync(
     conn: &Connection,
     pattern: &str,
     params: QueryParams,
 ) -> Result<Vec<StoredValue>, PersistenceError> {
     let limit = params.limit_per_record.unwrap_or(100) as i64;
-    let sql_pattern = pattern.replace('*', "%");
+    let sql_pattern = sanitize_pattern(pattern);
 
     let mut stmt = conn.prepare(
         "WITH ranked AS (
             SELECT record_name, value_json, stored_at,
-                   ROW_NUMBER() OVER (PARTITION BY record_name ORDER BY stored_at DESC) AS rn
+                   ROW_NUMBER() OVER (PARTITION BY record_name ORDER BY stored_at DESC, id DESC) AS rn
             FROM record_history
-            WHERE record_name LIKE ?1
+            WHERE record_name LIKE ?1 ESCAPE '\\'
               AND (?2 IS NULL OR stored_at >= ?2)
               AND (?3 IS NULL OR stored_at <= ?3)
         )
@@ -465,11 +562,7 @@ macro_rules! send_cmd {
 }
 
 impl PersistenceBackend for SqliteBackend {
-    fn initialize(&self) -> BoxFuture<'_, Result<(), PersistenceError>> {
-        Box::pin(async move {
-            send_cmd!(self.tx, |reply| DbCommand::Initialize { reply })
-        })
-    }
+    // initialize() uses the trait default (no-op) — schema was created in ::new().
 
     fn store<'a>(
         &'a self,
@@ -513,8 +606,11 @@ impl PersistenceBackend for SqliteBackend {
 
 **Key properties of this design:**
 - `Connection` is owned by `run_db_thread` — no `Mutex`, no `Arc`, no `spawn_blocking`.
+- Schema and WAL mode are configured in `::new()` before the thread is spawned — no `block_on` needed anywhere.
 - The async executor is never blocked; it only `.await`s the `oneshot` reply channel.
+- WAL mode allows concurrent readers and the single writer without blocking.
 - Time-range filtering is pushed into SQL (the `?2`/`?3` params) rather than done in Rust.
+- SQL wildcards are escaped via `sanitize_pattern()` — `%` and `_` in names cannot corrupt queries.
 - `SqliteBackend` is `Clone` (it just clones the `mpsc::Sender`) — safe to share across per-city `.persist()` calls.
 - Graceful shutdown: when all `SyncSender` handles are dropped, `rx.recv()` returns `Err` and the thread exits cleanly.
 
@@ -554,15 +650,13 @@ where
         &'a mut self,
         record_name: String,
     ) -> &'a mut RecordRegistrar<'a, T, R> {
-        // Retrieve the backend stored by with_persistence() as Arc<dyn Any + Send + Sync>.
-        // Same pattern as RuntimeContext::extract_from_any() in tap/transform.
-        // The Any slot stores Arc<dyn PersistenceBackend> (type-erased); we recover it
-        // by downcasting to the concrete backend type stored at with_persistence() time.
-        // Because Arc<dyn PersistenceBackend> is not itself Any, the caller must downcast
-        // to the concrete type (e.g. SqliteBackend) and re-wrap, or use a helper that
-        // stores the typed Arc alongside the erased one (which set_persistence_backend does).
+        // Retrieve the backend from the builder's Extensions TypeMap.
+        // with_persistence() stored PersistenceState there; .persist() retrieves it here.
+        // No Any downcast dance needed — TypeId lookup returns the typed value directly.
         let backend: Arc<dyn PersistenceBackend> = self
-            .persistence_backend()
+            .extensions()
+            .get::<PersistenceState>()
+            .map(|s| s.backend.clone())
             .expect(".persist() called but no backend configured via with_persistence()");
 
         self.tap_raw(move |consumer, _ctx| async move {
@@ -596,20 +690,27 @@ where
 ### Retention Cleanup Task
 
 `with_persistence()` is defined in `aimdb-persistence` as an extension trait on
-`AimDbBuilder<R>` — `aimdb-core` never sees it:
+`AimDbBuilder<R>` — `aimdb-core` never sees it. It uses two hooks exposed by
+`aimdb-core`: `on_start()` for the cleanup loop, and `extensions_mut()` for
+backend storage. A `PersistenceState` newtype gives it a unique `TypeId`:
 
 ```rust
 // aimdb-persistence/src/builder_ext.rs
 
+/// Wrapper stored in the Extensions TypeMap. Unique TypeId prevents collisions
+/// with any other crate that uses the same map.
+pub struct PersistenceState {
+    pub backend: Arc<dyn PersistenceBackend>,
+    pub retention: Duration,
+}
+
 pub trait AimDbBuilderPersistExt<R: Spawn + TimeOps> {
     /// Configure a persistence backend with a retention window.
-    /// Calls `backend.initialize()` immediately (blocking on the current
-    /// thread via `futures::executor::block_on` before the builder proceeds),
-    /// stores the backend as `Arc<dyn Any>` on the builder (via
-    /// `set_persistence_backend_any()`) so that `RecordRegistrar` can
-    /// retrieve it in `.persist()` without `aimdb-core` importing
-    /// `PersistenceBackend` directly, and registers a startup task that runs
-    /// an initial cleanup sweep and repeats every 24 hours.
+    ///
+    /// Stores the backend in the builder's Extensions TypeMap (accessible to
+    /// `.persist()` and `AimDbQueryExt` methods) and registers an `on_start()`
+    /// task that runs an initial cleanup sweep then repeats every 24 hours.
+    /// No `block_on` is needed — `SqliteBackend::new()` initializes the schema.
     fn with_persistence(
         self,
         backend: Arc<dyn PersistenceBackend>,
@@ -623,50 +724,56 @@ impl<R: Spawn + TimeOps + 'static> AimDbBuilderPersistExt<R> for AimDbBuilder<R>
         backend: Arc<dyn PersistenceBackend>,
         retention: Duration,
     ) -> Self {
-        // Initialize storage schema synchronously before any record tasks run.
-        futures::executor::block_on(backend.initialize())
-            .expect("aimdb-persistence: backend initialization failed");
-
-        let backend_task = backend.clone();
-        self.add_startup_task(move |runtime| {
-            runtime.spawn(async move {
-                loop {
-                    let cutoff = now_ms().saturating_sub(retention.as_millis() as u64);
-                    let _ = backend_task.cleanup(cutoff).await;
-                    runtime.sleep(Duration::from_secs(24 * 3600)).await;
-                }
-            })
+        // Store backend + retention as a typed entry in the Extensions TypeMap.
+        // Both .persist() (on RecordRegistrar) and AimDbQueryExt (on AimDb<R>)
+        // retrieve it via extensions().get::<PersistenceState>().
+        self.extensions_mut().insert(PersistenceState {
+            backend: backend.clone(),
+            retention,
         });
-        // Store as Arc<dyn Any + Send + Sync> — aimdb-core stays blind to PersistenceBackend.
-        // The typed Arc is stored separately for query_latest() / query_range() on AimDb<R>.
-        self.set_persistence_backend_any(backend.clone() as Arc<dyn Any + Send + Sync>);
-        self.set_persistence_backend(backend);
+
+        // Register a startup task for periodic retention cleanup.
+        // on_start() is a general-purpose lifecycle hook — any external crate can
+        // use it for health checks, metrics reporting, warm-up, etc.
+        let backend_task = backend.clone();
+        self.on_start(move |runtime| async move {
+            loop {
+                let cutoff = now_ms().saturating_sub(retention.as_millis() as u64);
+                let _ = backend_task.cleanup(cutoff).await;
+                runtime.sleep(Duration::from_secs(24 * 3600)).await;
+            }
+        });
         self
     }
 }
 ```
 
 **Notes:**
-- `add_startup_task`, `set_persistence_backend_any`, and `set_persistence_backend`
-  are the three hooks `aimdb-core` exposes on `AimDbBuilder` to allow external
-  crates to register tasks and backend state without importing `PersistenceBackend`.
-- The `Arc<dyn Any + Send + Sync>` slot is the same erasure trick used for the
-  runtime context in `tap_raw` — `aimdb-core` stores it opaquely. However,
-  because `Arc<dyn Trait>` cannot be downcast from `dyn Any`, the typed
-  `Arc<dyn PersistenceBackend>` is stored separately via `set_persistence_backend`
-  and retrieved directly via `persistence_backend()` in `.persist()` and in the
-  `query_*` methods. The `Arc<dyn Any>` slot exists solely as a forward-compat
-  hook for future opaque extension points.
-- `backend.initialize()` is called via `futures::executor::block_on` inside
-  `with_persistence()`, before any startup tasks are registered, so the schema
-  is ready before any record tasks run. `block_on` is safe here because
-  `with_persistence()` is called during builder construction, not inside an
-  async context.
+- `on_start()` and `extensions_mut()` are the only two hooks `aimdb-core` exposes.
+  Both are general-purpose — any external crate can use them, not just persistence.
+- `on_start()` signature: `fn on_start<F, Fut>(&mut self, f: F) -> &mut Self`
+  where `F: FnOnce(Arc<R>) -> Fut + Send + 'static, Fut: Future<Output = ()> + Send + 'static`.
+  Tasks execute in registration order after `build()` completes.
+- **`on_start` trait bound:** `on_start` itself is defined on `AimDbBuilder<R>`
+  and bounds only `R: Spawn` — the minimum needed to spawn a task. The cleanup
+  loop's `runtime.sleep()` call requires `R: TimeOps`, which `AimDbBuilderPersistExt`
+  already declares at its own trait level. This layering is correct: the core
+  hook stays narrow and callers add the extra bounds they need.
+- No `block_on`: schema initialization moved into `SqliteBackend::new()`, so
+  `with_persistence()` is safe to call from inside any async context.
 - `runtime.sleep()` comes from the `TimeOps` trait — no Tokio import needed.
 - The initial cleanup loop iteration on startup prunes rows that exceeded
   retention during any period when the process was not running.
 - The cleanup interval (24 h) is an internal detail. At ≤1 value/hour/record it
   is more than sufficient.
+- **Shutdown ordering:** Persistence subscriber tasks (spawned via `tap_raw`)
+  stop naturally when the buffer closes — the `recv()` loop breaks on `Err` and
+  the task exits cleanly. The retention cleanup task (spawned via `on_start`)
+  runs an infinite loop with 24 h sleeps; it has no explicit cancellation signal
+  and relies on the runtime cancelling it when `AimDb` drops. For Tokio this is
+  the standard behaviour and is acceptable for the MVP. If a future runtime
+  adapter requires a graceful shutdown signal, `on_start` can be extended to
+  provide a `CancellationToken`-style handle — that is a post-MVP concern.
 
 ---
 
@@ -715,8 +822,8 @@ For remote clients, AimX exposes \`record.query\`:
 ```rust
 // weather-hub-streaming/src/main.rs
 
-// SqliteBackend::new() opens the file; with_persistence() calls initialize() and
-// registers the 7-day retention cleanup task — no explicit setup calls needed.
+// SqliteBackend::new() opens the file and initializes the schema synchronously.
+// with_persistence() stores the backend and registers the 7-day retention cleanup.
 let backend = Arc::new(SqliteBackend::new("./data/validations.db")?);
 
 let mut builder = AimDbBuilder::new()
@@ -803,9 +910,19 @@ Negligible for SQLite.
 |-------|-------|------|
 | 1 | Create \`aimdb-persistence\` crate with trait + subscriber | 3 days |
 | 2 | Create \`aimdb-persistence-sqlite\` with SQLite backend | 2 days |
-| 3 | Add query methods to \`AimDb\`, wire into builder | 2 days |
+| 3 | Add `Extensions` TypeMap + `on_start()` to builder; `AimDbQueryExt` extension trait | 2 days |
 | 4 | Add \`record.query\` to AimX handler | 1 day |
 | 5 | Integrate into weather-hub-streaming | 1 day |
+
+**Phase 3 implementation note — `RecordRegistrar` must carry `Extensions` access.**
+The `.persist()` impl calls `self.extensions().get::<PersistenceState>()` on
+`RecordRegistrar<'a, T, R>`. `RecordRegistrar` is the closure parameter inside
+`builder.configure(|reg| { ... })`, so it must hold a `&'a Extensions` reference
+threaded through from the builder during `configure()`. This is the one
+core-internal plumbing detail that is not yet reflected in any existing
+`RecordRegistrar` field — it must be added as part of Phase 3, before Phase 4
+work begins. Suggested approach: add a `extensions: &'a Extensions` field to
+`RecordRegistrar` and populate it in `AimDbBuilder::configure()`.
 
 ---
 
