@@ -8,6 +8,8 @@ members = [
     "aimdb-embassy-adapter",
     "aimdb-tokio-adapter",
     "aimdb-sync",
+    "aimdb-persistence",
+    "aimdb-persistence-sqlite",
     "aimdb-mqtt-connector",
     "aimdb-knx-connector",
     "tools/aimdb-cli",

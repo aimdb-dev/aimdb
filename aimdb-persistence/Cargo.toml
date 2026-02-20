@@ -1,0 +1,29 @@
+[package]
+name = "aimdb-persistence"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Persistence backend trait and extension traits for AimDB"
+keywords = ["database", "persistence", "async"]
+categories = ["database-implementations"]
+
+[features]
+default = ["std"]
+std = ["aimdb-core/std", "serde_json/std"]
+tracing = ["dep:tracing"]
+
+[dependencies]
+aimdb-core = { version = "0.4.0", path = "../aimdb-core", default-features = false, features = [
+    "std",
+] }
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false, features = [
+    "std",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

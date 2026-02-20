@@ -23,6 +23,7 @@ pub mod context;
 pub mod database;
 mod error;
 pub mod ext_macros;
+pub mod extensions;
 pub mod graph;
 pub mod record_id;
 #[cfg(feature = "std")]
@@ -37,6 +38,7 @@ pub mod typed_record;
 // Public API exports
 pub use context::RuntimeContext;
 pub use error::{DbError, DbResult};
+pub use extensions::Extensions;
 
 // Runtime trait re-exports from aimdb-executor
 // These traits define the platform-specific execution, timing, and logging capabilities

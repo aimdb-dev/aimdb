@@ -40,6 +40,7 @@ mod protocol;
 
 pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
+pub use handler::{QueryHandlerFn, QueryHandlerParams};
 pub use metadata::RecordMetadata;
 pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage};
 
