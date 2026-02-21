@@ -37,6 +37,14 @@ type StartFnType<R> = Box<
             -> core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>
         + Send,
 >;
+#[cfg(not(feature = "std"))]
+type NoStdStartFnType<R> = Box<
+    dyn FnOnce(
+            Arc<R>,
+        )
+            -> core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>
+        + Send,
+>;
 use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
@@ -447,13 +455,7 @@ where
         #[cfg(feature = "std")]
         let boxed: StartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
         #[cfg(not(feature = "std"))]
-        let boxed: Box<
-            dyn FnOnce(
-                    Arc<R>,
-                ) -> core::pin::Pin<
-                    Box<dyn core::future::Future<Output = ()> + Send + 'static>,
-                > + Send,
-        > = Box::new(move |runtime| Box::pin(f(runtime)));
+        let boxed: NoStdStartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
         self.start_fns.push(Box::new(boxed));
         self
     }
@@ -965,13 +967,6 @@ where
 
             #[cfg(not(feature = "std"))]
             for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
-                type NoStdStartFnType<R> = Box<
-                    dyn FnOnce(
-                            Arc<R>,
-                        ) -> core::pin::Pin<
-                            Box<dyn core::future::Future<Output = ()> + Send + 'static>,
-                        > + Send,
-                >;
                 let start_fn = start_fn_any
                     .downcast::<NoStdStartFnType<R>>()
                     .unwrap_or_else(|_| {

@@ -50,7 +50,7 @@ where
         backend: Arc<dyn PersistenceBackend>,
         retention: core::time::Duration,
     ) -> Self {
-        let retention_ms = retention.as_millis() as u64;
+        let retention_ms = u64::try_from(retention.as_millis()).unwrap_or(u64::MAX);
 
         // Store backend + retention as a typed entry in the Extensions TypeMap.
         self.extensions_mut().insert(PersistenceState {
@@ -99,10 +99,13 @@ where
         self.on_start(move |runtime: Arc<R>| async move {
             loop {
                 // Calculate the cutoff: now minus retention window.
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
+                let now = u64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis(),
+                )
+                .unwrap_or(u64::MAX);
                 let cutoff = now.saturating_sub(retention_ms);
 
                 match backend_task.cleanup(cutoff).await {
