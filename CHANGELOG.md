@@ -91,7 +91,6 @@ No changes yet.
 | `aimdb-mcp` | 0.4.0 | **0.5.0** |
 | `aimdb-persistence` | — | **0.1.0** (new) |
 | `aimdb-persistence-sqlite` | — | **0.1.0** (new) |
-| `aimdb-data-contracts` | — | **0.5.0** (new) |
 | `aimdb-derive` | 0.1.0 | unchanged |
 | `aimdb-executor` | 0.1.0 | unchanged |
 
