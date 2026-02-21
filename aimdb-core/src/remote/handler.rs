@@ -575,6 +575,7 @@ where
             handle_record_unsubscribe(conn_state, request.id, request.params).await
         }
         "record.drain" => handle_record_drain(db, conn_state, request.id, request.params).await,
+        "record.query" => handle_record_query(db, request.id, request.params).await,
         "graph.nodes" => handle_graph_nodes(db, request.id).await,
         "graph.edges" => handle_graph_edges(db, request.id).await,
         "graph.topo_order" => handle_graph_topo_order(db, request.id).await,
@@ -1290,6 +1291,98 @@ where
         }),
     )
 }
+
+// ============================================================================
+// Persistence Query (record.query)
+// ============================================================================
+
+/// Type-erased query handler registered by `aimdb-persistence` via Extensions.
+///
+/// This keeps `aimdb-core` free of persistence-specific imports. The handler is
+/// a boxed async function that accepts query parameters (record pattern, limit,
+/// start/end timestamps) and returns a JSON value with the results.
+///
+/// Registered by `aimdb_persistence` via the `with_persistence()` builder extension.
+pub type QueryHandlerFn = Box<
+    dyn Fn(
+            QueryHandlerParams,
+        ) -> core::pin::Pin<
+            Box<dyn core::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+/// Parameters for the type-erased query handler.
+#[derive(Debug, Clone)]
+pub struct QueryHandlerParams {
+    /// Record pattern (supports `*` wildcard).
+    pub name: String,
+    /// Maximum results per matching record.
+    pub limit: Option<usize>,
+    /// Optional start timestamp (Unix ms).
+    pub start: Option<u64>,
+    /// Optional end timestamp (Unix ms).
+    pub end: Option<u64>,
+}
+
+/// Handles `record.query` method.
+///
+/// Delegates to a [`QueryHandlerFn`] stored in the database's `Extensions`
+/// TypeMap. If no handler is registered (i.e. persistence is not configured),
+/// returns an error.
+#[cfg(feature = "std")]
+async fn handle_record_query<R>(
+    db: &Arc<AimDb<R>>,
+    request_id: u64,
+    params: Option<serde_json::Value>,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    // Extract the query handler from Extensions.
+    let handler = match db.extensions().get::<QueryHandlerFn>() {
+        Some(h) => h,
+        None => {
+            return Response::error(
+                request_id,
+                "not_configured",
+                "Persistence not configured. Call .with_persistence() on the builder.".to_string(),
+            );
+        }
+    };
+
+    // Parse parameters
+    let (name, limit, start, end) = match &params {
+        Some(serde_json::Value::Object(map)) => {
+            let name = map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("*")
+                .to_string();
+            let limit = map
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| usize::try_from(v).ok());
+            let start = map.get("start").and_then(|v| v.as_u64());
+            let end = map.get("end").and_then(|v| v.as_u64());
+            (name, limit, start, end)
+        }
+        _ => ("*".to_string(), None, None, None),
+    };
+
+    let query_params = QueryHandlerParams {
+        name,
+        limit,
+        start,
+        end,
+    };
+
+    match handler(query_params).await {
+        Ok(result) => Response::success(request_id, result),
+        Err(msg) => Response::error(request_id, "query_error", msg),
+    }
+}
+
 // ============================================================================
 // Graph Introspection Methods
 // ============================================================================

@@ -60,6 +60,10 @@ build:
 	cargo build --package aimdb-cli
 	@printf "$(YELLOW)  → Building MCP server$(NC)\n"
 	cargo build --package aimdb-mcp
+	@printf "$(YELLOW)  → Building persistence backend$(NC)\n"
+	cargo build --package aimdb-persistence
+	@printf "$(YELLOW)  → Building persistence SQLite backend$(NC)\n"
+	cargo build --package aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Building KNX connector$(NC)\n"
 	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
 
@@ -85,6 +89,10 @@ test:
 	cargo test --package aimdb-cli
 	@printf "$(YELLOW)  → Testing MCP server$(NC)\n"
 	cargo test --package aimdb-mcp
+	@printf "$(YELLOW)  → Testing persistence backend$(NC)\n"
+	cargo test --package aimdb-persistence
+	@printf "$(YELLOW)  → Testing persistence SQLite backend$(NC)\n"
+	cargo test --package aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Testing MQTT connector$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
@@ -92,7 +100,7 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -101,7 +109,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -140,6 +148,10 @@ clippy:
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MCP server$(NC)\n"
 	cargo clippy --package aimdb-mcp --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on persistence backend$(NC)\n"
+	cargo clippy --package aimdb-persistence --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on persistence SQLite backend$(NC)\n"
+	cargo clippy --package aimdb-persistence-sqlite --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (std)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --features "std,tokio-runtime" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (embassy)$(NC)\n"
@@ -163,6 +175,8 @@ doc:
 	cargo doc --package aimdb-knx-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-cli --no-deps
 	cargo doc --package aimdb-mcp --no-deps
+	cargo doc --package aimdb-persistence --no-deps
+	cargo doc --package aimdb-persistence-sqlite --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
 	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps

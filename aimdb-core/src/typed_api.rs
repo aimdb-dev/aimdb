@@ -298,6 +298,9 @@ pub struct RecordRegistrar<
     pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder<R>>],
     /// The record key for this record
     pub(crate) record_key: String,
+    /// Extension storage from the builder — allows external crates (e.g.
+    /// `aimdb-persistence`) to retrieve typed state inside `.persist()`.
+    pub(crate) extensions: &'a crate::extensions::Extensions,
 }
 
 impl<'a, T, R> RecordRegistrar<'a, T, R>
@@ -305,6 +308,15 @@ where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::Spawn + 'static,
 {
+    /// Returns a reference to the builder's extension storage.
+    ///
+    /// External crates call this inside their `.persist()` (or similar) extension
+    /// methods to retrieve typed state that was stored via
+    /// `builder.extensions_mut().insert(...)` before `configure()` was called.
+    pub fn extensions(&self) -> &crate::extensions::Extensions {
+        self.extensions
+    }
+
     /// Registers a producer service for this record type (low-level API)
     ///
     /// **Note:** This is the foundational API used by runtime adapter implementations.

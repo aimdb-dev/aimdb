@@ -21,7 +21,30 @@ use alloc::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::{boxed::Box, sync::Arc};
 
+use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
+
+/// Type-erased on_start function stored in `AimDbBuilder::start_fns`.
+///
+/// Defined once here so `on_start()` (which stores) and `build()` (which
+/// downcasts) share the *exact same* type and a silent type mismatch cannot
+/// cause a runtime panic.
+#[cfg(feature = "std")]
+type StartFnType<R> = Box<
+    dyn FnOnce(
+            Arc<R>,
+        )
+            -> core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>
+        + Send,
+>;
+#[cfg(not(feature = "std"))]
+type NoStdStartFnType<R> = Box<
+    dyn FnOnce(
+            Arc<R>,
+        )
+            -> core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>
+        + Send,
+>;
 use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
@@ -88,6 +111,13 @@ pub struct AimDbInner {
     /// Contains all record nodes, edges, and topological order.
     /// Used for introspection, spawn ordering, and graph queries.
     dependency_graph: crate::graph::DependencyGraph,
+
+    /// Generic extension storage (frozen after build)
+    ///
+    /// External crates (e.g. `aimdb-persistence`) store typed state here
+    /// during builder configuration and retrieve it at query time via
+    /// `AimDb::extensions()`.
+    pub(crate) extensions: Extensions,
 }
 
 impl AimDbInner {
@@ -301,6 +331,15 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Spawn functions with their keys
     spawn_fns: Vec<(StringKey, Box<dyn core::any::Any + Send>)>,
 
+    /// Startup tasks registered via on_start() — spawned after build() completes.
+    /// Stored type-erased (Box<Box<dyn FnOnce(Arc<R>) -> BoxFuture<…>>>) to allow
+    /// the field to exist on the unparameterised NoRuntime builder too.
+    start_fns: Vec<Box<dyn core::any::Any + Send>>,
+
+    /// Generic extension storage for external crates (e.g., persistence, metrics).
+    /// Moved into AimDbInner during build() so it can be read on the live AimDb handle.
+    extensions: Extensions,
+
     /// Remote access configuration (std only)
     #[cfg(feature = "std")]
     remote_config: Option<crate::remote::AimxConfig>,
@@ -319,6 +358,8 @@ impl AimDbBuilder<NoRuntime> {
             runtime: None,
             connector_builders: Vec::new(),
             spawn_fns: Vec::new(),
+            start_fns: Vec::new(),
+            extensions: Extensions::new(),
             #[cfg(feature = "std")]
             remote_config: None,
             _phantom: PhantomData,
@@ -359,6 +400,8 @@ impl AimDbBuilder<NoRuntime> {
             runtime: Some(rt),
             connector_builders: Vec::new(),
             spawn_fns: Vec::new(),
+            start_fns: self.start_fns,
+            extensions: self.extensions,
             #[cfg(feature = "std")]
             remote_config: self.remote_config,
             _phantom: PhantomData,
@@ -370,6 +413,53 @@ impl<R> AimDbBuilder<R>
 where
     R: aimdb_executor::Spawn + 'static,
 {
+    /// Returns a shared reference to the extension storage.
+    ///
+    /// External crates use this to retrieve state stored via `extensions_mut()`.
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
+    /// Returns a mutable reference to the extension storage.
+    ///
+    /// Use this inside `AimDbBuilderPersistExt` (or similar) to store typed state
+    /// that `.persist()` and `AimDbQueryExt` will later retrieve.
+    pub fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+
+    /// Registers a task to be spawned after `build()` completes.
+    ///
+    /// The closure receives an `Arc<R>` (the runtime adapter) and must return a
+    /// future that runs for as long as needed (e.g. an infinite cleanup loop).
+    /// Tasks are spawned in registration order, after all record tasks and
+    /// connectors have been started.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// builder.on_start(|runtime| async move {
+    ///     loop {
+    ///         do_cleanup().await;
+    ///         runtime.sleep(Duration::from_secs(3600)).await;
+    ///     }
+    /// });
+    /// ```
+    pub fn on_start<F, Fut>(&mut self, f: F) -> &mut Self
+    where
+        F: FnOnce(Arc<R>) -> Fut + Send + 'static,
+        Fut: core::future::Future<Output = ()> + Send + 'static,
+    {
+        // Type-erase so the field can be shared with the `NoRuntime` builder struct.
+        // Uses the module-level `StartFnType<R>` alias — must stay in sync with
+        // the downcast in `build()`.
+        #[cfg(feature = "std")]
+        let boxed: StartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
+        #[cfg(not(feature = "std"))]
+        let boxed: NoStdStartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
+        self.start_fns.push(Box::new(boxed));
+        self
+    }
+
     /// Registers a connector builder that will be invoked during `build()`
     ///
     /// The connector builder will be called after the database is constructed,
@@ -498,6 +588,7 @@ where
             connector_builders: &self.connector_builders,
             #[cfg(feature = "alloc")]
             record_key: record_key.as_str().to_string(),
+            extensions: &self.extensions,
         };
         f(&mut reg);
 
@@ -742,6 +833,7 @@ where
             types,
             keys,
             dependency_graph,
+            extensions: self.extensions,
         });
 
         let db = Arc::new(AimDb {
@@ -857,6 +949,34 @@ where
             tracing::info!("Connector built and spawned successfully: {}", scheme);
         }
 
+        // Spawn on_start tasks (registered by external crates like aimdb-persistence)
+        if !self.start_fns.is_empty() {
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Spawning {} on_start task(s)", self.start_fns.len());
+
+            #[cfg(feature = "std")]
+            for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
+                let start_fn = start_fn_any
+                    .downcast::<StartFnType<R>>()
+                    .unwrap_or_else(|_| {
+                        panic!("on_start fn[{idx}] type mismatch — this is a bug in aimdb-core")
+                    });
+                let future = (*start_fn)(runtime.clone());
+                runtime.spawn(future).map_err(DbError::from)?;
+            }
+
+            #[cfg(not(feature = "std"))]
+            for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
+                let start_fn = start_fn_any
+                    .downcast::<NoStdStartFnType<R>>()
+                    .unwrap_or_else(|_| {
+                        panic!("on_start fn[{idx}] type mismatch — this is a bug in aimdb-core")
+                    });
+                let future = (*start_fn)(runtime.clone());
+                runtime.spawn(future).map_err(DbError::from)?;
+            }
+        }
+
         // Unwrap the Arc to return the owned AimDb
         // This is safe because we just created it and hold the only reference
         let db_owned = Arc::try_unwrap(db).unwrap_or_else(|arc| (*arc).clone());
@@ -914,6 +1034,20 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     #[doc(hidden)]
     pub fn inner(&self) -> &Arc<AimDbInner> {
         &self.inner
+    }
+
+    /// Returns the extension storage frozen at `build()` time.
+    ///
+    /// External crates (e.g. `aimdb-persistence`) retrieve their typed state here
+    /// to service query calls. The extensions are read-only on the live handle.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use aimdb_persistence::PersistenceState;
+    /// let state = db.extensions().get::<PersistenceState>().unwrap();
+    /// ```
+    pub fn extensions(&self) -> &Extensions {
+        &self.inner.extensions
     }
 
     /// Builds a database with a closure-based builder pattern
