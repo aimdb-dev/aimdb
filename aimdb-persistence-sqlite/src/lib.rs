@@ -184,7 +184,14 @@ fn query_sync(
     params: QueryParams,
 ) -> Result<Vec<StoredValue>, PersistenceError> {
     // `None` means "no limit" — the SQL uses `(?4 IS NULL OR rn <= ?4)`.
-    let limit: Option<i64> = params.limit_per_record.map(|l| l as i64);
+    let limit: Option<i64> = params
+        .limit_per_record
+        .map(|l| {
+            i64::try_from(l).map_err(|_| {
+                PersistenceError::Backend("limit_per_record overflows i64".to_string())
+            })
+        })
+        .transpose()?;
     let sql_pattern = sanitize_pattern(pattern);
 
     // Checked conversion: timestamps must fit in SQLite's signed i64.
