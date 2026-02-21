@@ -211,6 +211,7 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",
+ "aimdb-tokio-adapter",
  "serde",
  "serde_json",
  "tokio",
