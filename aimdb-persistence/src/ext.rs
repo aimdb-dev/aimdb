@@ -33,13 +33,22 @@ where
 {
     fn persist(&'a mut self, record_name: impl Into<String>) -> &'a mut RecordRegistrar<'a, T, R> {
         let record_name: String = record_name.into();
-        // Retrieve the backend from the builder's Extensions TypeMap.
-        let backend: Arc<dyn PersistenceBackend> = self
+        // Retrieve the backend from the builder's Extensions TypeMap, if configured.
+        let backend: Option<Arc<dyn PersistenceBackend>> = self
             .extensions()
             .get::<PersistenceState>()
-            .map(|s| s.backend.clone())
-            .expect(".persist() called but no backend configured via with_persistence()");
+            .map(|s| s.backend.clone());
 
+        // If no backend is configured, treat `.persist()` as a no-op so that
+        // persistence remains optional and does not cause runtime panics.
+        let Some(backend) = backend else {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(
+                "Record '{}' marked for persistence, but no backend is configured via with_persistence(); .persist() will be a no-op",
+                record_name
+            );
+            return self;
+        };
         // Subscribe to the typed buffer as a tap (side-effect observer).
         // The second closure argument is the runtime context (Arc<dyn Any>),
         // which we don't need — persistence is runtime-agnostic.
