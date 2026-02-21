@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-cli"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -16,10 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 # AimDB client library
-aimdb-client = { version = "0.4.0", path = "../../aimdb-client" }
+aimdb-client = { version = "0.5.0", path = "../../aimdb-client" }
 
 # Core dependencies - reuse protocol types from aimdb-core
-aimdb-core = { version = "0.4.0", path = "../../aimdb-core", features = [
+aimdb-core = { version = "0.5.0", path = "../../aimdb-core", features = [
     "std",
 ] }
 serde = { version = "1", features = ["derive"] }

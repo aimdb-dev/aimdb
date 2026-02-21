@@ -15,7 +15,7 @@ std = ["aimdb-core/std", "serde_json/std"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-aimdb-core = { version = "0.4.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "0.5.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false, features = [

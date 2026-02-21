@@ -15,12 +15,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [aimdb-knx-connector/CHANGELOG.md](aimdb-knx-connector/CHANGELOG.md)
 > - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
 > - [aimdb-client/CHANGELOG.md](aimdb-client/CHANGELOG.md)
+> - [aimdb-persistence/CHANGELOG.md](aimdb-persistence/CHANGELOG.md)
+> - [aimdb-persistence-sqlite/CHANGELOG.md](aimdb-persistence-sqlite/CHANGELOG.md)
 > - [tools/aimdb-cli/CHANGELOG.md](tools/aimdb-cli/CHANGELOG.md)
 > - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
 
 ## [Unreleased]
 
 No changes yet.
+
+## [0.5.0] - 2026-02-21
+
+### Added
+
+- **aimdb-persistence**: New crate providing a pluggable persistence layer for long-term record history
+  - `PersistenceBackend` trait with `store`, `query`, `cleanup`, and `initialize` hooks
+  - `AimDbBuilderPersistExt` trait adding `.with_persistence(backend, retention)` to `AimDbBuilder<R>`
+  - `RecordRegistrarPersistExt` trait adding `.persist(record_name)` to `RecordRegistrar<T, R>`
+  - `AimDbQueryExt` trait with `query_latest`, `query_range`, and `query_raw` methods
+  - Automatic 24-hour retention cleanup task registration
+- **aimdb-persistence-sqlite**: New crate providing a SQLite backend for `aimdb-persistence`
+  - `SqliteBackend` with WAL journal mode, actor-model command dispatch, and window-function queries
+  - Pattern-based queries with `*` wildcard support and optional time/row-count limits
+  - Dedicated OS writer thread; `Clone` = `O(1)` handle copy
+- **aimdb-data-contracts**: New crate for portable, versioned AimDB data schemas
+  - Optional features: `observable`, `simulatable`, `migratable`, `ts` (TypeScript bindings via `ts-rs`)
+  - Schema versioning and migration support
+- **Transform API (Design 020)** in `aimdb-core`: Reactive data transformations between records
+  - `transform_raw()` for single-input derivations and `transform_join_raw()` for multi-input joins
+  - `TransformBuilder` and `JoinBuilder` fluent APIs with optional stateful handlers
+  - Transforms spawned as tasks during `AimDb::build()`; mutual exclusion with `.source()` enforced
+- **Graph Introspection API (Design 021)** in `aimdb-core` and `aimdb-client`:
+  - `RecordOrigin` enum classifying record sources (`Source`, `Link`, `Transform`, `TransformJoin`, `Passive`)
+  - `GraphNode`, `GraphEdge`, `DependencyGraph` types for full graph representation
+  - `graph_nodes()`, `graph_edges()`, `graph_topo_order()` methods on `AimDb` and `AimDbClient`
+- **Record Drain API (Design 019)** in `aimdb-core`, `aimdb-tokio-adapter`, and `aimdb-client`:
+  - `try_recv()` on `BufferReader` for non-blocking batch pulls
+  - `record.drain` AimX protocol method with cold-start semantics and optional limit
+  - `DrainResponse` type in `aimdb-client`
+- **Dynamic Topic/Address Routing (Design 018)** in `aimdb-core`, `aimdb-mqtt-connector`, `aimdb-knx-connector`:
+  - `TopicProvider<T>` trait for per-message outbound topic/address determination
+  - `TopicResolverFn` for late-binding inbound topic resolution at connector startup
+  - `with_topic_provider()` and `with_topic_resolver()` builder methods on connector links
+- **Graph Tools** in `tools/aimdb-mcp`:
+  - `graph_nodes`, `graph_edges`, `graph_topo_order` MCP tools for LLM-powered graph exploration
+  - `drain_record` MCP tool for batch history access with persistent cold-start reader
+- **Graph Commands** in `tools/aimdb-cli`:
+  - `aimdb graph nodes`, `graph edges`, `graph order`, `graph dot` subcommands
+  - Color-coded output and DOT format export for Graphviz visualization
+- **Extension Macro** in `aimdb-core`: `impl_record_registrar_ext!` for generating runtime adapter extension traits
+
+### Changed
+
+- **aimdb-core**: Renamed `.with_serialization()` to `.with_remote_access()` for clearer semantics (breaking)
+- **aimdb-core**: `RecordId::new()` now requires a `RecordOrigin` parameter for dependency graph support (breaking)
+- **aimdb-core**: `set_from_json` now also rejects writes on records with active transforms
+- **aimdb-core**: `collect_outbound_routes()` returns `OutboundRoute` tuples with optional `TopicProviderFn`
+- **aimdb-core**: `collect_inbound_routes()` calls `link.resolve_topic()` for dynamic topic resolution
+- **tools/aimdb-mcp**: Replaced real-time subscription system with simpler drain-based polling
+  - Removed `subscribe_record`, `unsubscribe_record`, `list_subscriptions`, `get_notification_directory` tools
+  - Simplified architecture reduces infrastructure complexity for LLM clients
+
+### Published Crates
+
+| Crate | Previous | New |
+|-------|----------|-----|
+| `aimdb-core` | 0.4.0 | **0.5.0** |
+| `aimdb-tokio-adapter` | 0.4.0 | **0.5.0** |
+| `aimdb-embassy-adapter` | 0.4.0 | **0.5.0** |
+| `aimdb-client` | 0.4.0 | **0.5.0** |
+| `aimdb-sync` | 0.4.0 | **0.5.0** |
+| `aimdb-mqtt-connector` | 0.4.0 | **0.5.0** |
+| `aimdb-knx-connector` | 0.2.0 | **0.3.0** |
+| `aimdb-cli` | 0.4.0 | **0.5.0** |
+| `aimdb-mcp` | 0.4.0 | **0.5.0** |
+| `aimdb-persistence` | — | **0.1.0** (new) |
+| `aimdb-persistence-sqlite` | — | **0.1.0** (new) |
+| `aimdb-data-contracts` | — | **0.5.0** (new) |
+| `aimdb-derive` | 0.1.0 | unchanged |
+| `aimdb-executor` | 0.1.0 | unchanged |
 
 ## [0.4.0] - 2025-12-25
 
@@ -469,7 +542,8 @@ https://github.com/aimdb-dev/aimdb
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
