@@ -34,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `query_raw` to `AimDb<R>`:
   - `query_latest<T>(&self, pattern, limit) -> Vec<T>` — typed, limit per
     record
-  - `query_range<T>(&self, pattern, start_ms, end_ms) -> Vec<T>` — typed,
-    full time range (no implicit row cap)
+  - `query_range<T>(&self, pattern, start_ms, end_ms, limit_per_record) -> Vec<T>` — typed,
+    time range with optional per-record limit (`None` = all rows)
   - `query_raw(&self, pattern, params) -> Vec<StoredValue>` — untyped escape
     hatch used by the AimX `record.query` protocol handler
 - **`PersistenceError`** — `NotConfigured`, `Backend(String)`,

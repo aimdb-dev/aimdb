@@ -235,7 +235,7 @@ fn query_sync(
                         let _ = e;
                         Value::Null
                     }),
-                    stored_at: row.get::<_, i64>(2)? as u64,
+                    stored_at: row.get::<_, i64>(2).map(|v| v.max(0) as u64)?,
                 })
             },
         )

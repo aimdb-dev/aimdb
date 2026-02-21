@@ -73,7 +73,7 @@ The in-memory \`record.drain\` API (doc-019) can't solve this because:
   │                                                                  │   │
   │  db.query_latest::<T>("accuracy::*", 1)     // latest per record │   │
   │  db.query_latest::<T>("accuracy::vienna", 10)                   │   │
-  │  db.query_range::<T>("accuracy::vienna", start, end)            │   │
+  │  db.query_range::<T>("accuracy::vienna", start, end, None)      │   │
   └─────────────────────────────────────────────────────────────────┘   │
 
 ```
@@ -148,11 +148,12 @@ let history: Vec<ForecastValidation> = db.query_latest(
     10,
 ).await?;
 
-// Time range query
+// Time range query (None = no per-record limit)
 let range: Vec<ForecastValidation> = db.query_range(
     "accuracy::vienna",
     start_ts,
     end_ts,
+    None,
 ).await?;
 ```
 
@@ -331,6 +332,7 @@ pub trait AimDbQueryExt {
         record_name: &str,
         start_ts: u64,
         end_ts: u64,
+        limit_per_record: Option<usize>,
     ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>>;
 }
 
@@ -369,6 +371,7 @@ impl<R: RuntimeAdapter> AimDbQueryExt for AimDb<R> {
         record_name: &str,
         start_ts: u64,
         end_ts: u64,
+        limit_per_record: Option<usize>,
     ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>> {
         Box::pin(async move {
             let backend = self.extensions().get::<PersistenceState>()
@@ -378,7 +381,7 @@ impl<R: RuntimeAdapter> AimDbQueryExt for AimDb<R> {
             let stored = backend.query(record_name, QueryParams {
                 start_time: Some(start_ts),
                 end_time: Some(end_ts),
-                ..Default::default()
+                limit_per_record,
             }).await?;
 
             Ok(stored.into_iter()

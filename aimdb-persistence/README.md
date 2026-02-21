@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let since = 1_700_000_000_000_u64; // Unix ms
     let until = 1_800_000_000_000_u64;
-    let range: Vec<Accuracy> = db.query_range("accuracy::vienna", since, until).await?;
+    let range: Vec<Accuracy> = db.query_range("accuracy::vienna", since, until, None).await?;
     println!("Vienna in range: {} rows", range.len());
 
     Ok(())
@@ -152,9 +152,14 @@ use aimdb_persistence::AimDbQueryExt;
 // Latest N values per matching record (pattern supports `*` wildcard).
 let latest: Vec<MyRecord> = db.query_latest("my_record::*", 5).await?;
 
-// All values in a time range (Unix milliseconds).
+// All values in a time range (Unix milliseconds), no row limit.
 let range: Vec<MyRecord> = db
-    .query_range("my_record::vienna", start_ms, end_ms)
+    .query_range("my_record::vienna", start_ms, end_ms, None)
+    .await?;
+
+// Time range with at most 100 rows per matching record.
+let capped: Vec<MyRecord> = db
+    .query_range("my_record::*", start_ms, end_ms, Some(100))
     .await?;
 
 // Untyped query (returns raw JSON — used by the AimX protocol handler).
@@ -166,8 +171,8 @@ let raw = db.query_raw("my_record::*", QueryParams {
 ```
 
 `query_latest` applies `limit_per_record` rows per matching record.
-`query_range` returns **all** matching rows in the time window (no implicit
-truncation).
+`query_range` accepts an optional `limit_per_record` — pass `None` for all
+matching rows, or `Some(n)` to cap results per record name.
 
 ## Error Handling
 

@@ -31,6 +31,9 @@ pub trait AimDbQueryExt {
 
     /// Query values within a time range for a single record or pattern.
     ///
+    /// Pass `None` for `limit_per_record` to return all matching rows, or
+    /// `Some(n)` to cap results per matching record name.
+    ///
     /// Rows that fail to deserialize as `T` are **skipped** with a tracing
     /// warning.
     fn query_range<T: DeserializeOwned>(
@@ -38,6 +41,7 @@ pub trait AimDbQueryExt {
         record_pattern: &str,
         start_ts: u64,
         end_ts: u64,
+        limit_per_record: Option<usize>,
     ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>>;
 
     /// Query raw stored values (untyped, returns JSON).
@@ -105,6 +109,7 @@ impl<R: Spawn + 'static> AimDbQueryExt for AimDb<R> {
         record_pattern: &str,
         start_ts: u64,
         end_ts: u64,
+        limit_per_record: Option<usize>,
     ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>> {
         let pattern = record_pattern.to_string();
         Box::pin(async move {
@@ -116,7 +121,7 @@ impl<R: Spawn + 'static> AimDbQueryExt for AimDb<R> {
                     QueryParams {
                         start_time: Some(start_ts),
                         end_time: Some(end_ts),
-                        ..Default::default()
+                        limit_per_record,
                     },
                 )
                 .await?;
