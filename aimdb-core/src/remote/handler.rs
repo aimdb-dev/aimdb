@@ -1302,7 +1302,7 @@ where
 /// a boxed async function that accepts query parameters (record pattern, limit,
 /// start/end timestamps) and returns a JSON value with the results.
 ///
-/// Registered by `aimdb_persistence::builder_ext::register_query_handler()`.
+/// Registered by `aimdb_persistence` via the `with_persistence()` builder extension.
 pub type QueryHandlerFn = Box<
     dyn Fn(
             QueryHandlerParams,
