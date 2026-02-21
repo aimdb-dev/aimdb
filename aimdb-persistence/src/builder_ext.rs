@@ -106,19 +106,19 @@ where
                 let cutoff = now.saturating_sub(retention_ms);
 
                 match backend_task.cleanup(cutoff).await {
-                    Ok(deleted) => {
+                    Ok(_deleted) => {
                         #[cfg(feature = "tracing")]
                         tracing::debug!(
                             "Persistence cleanup: deleted {} rows older than {}ms",
-                            deleted,
+                            _deleted,
                             cutoff
                         );
-                        let _ = deleted;
                     }
                     Err(e) => {
                         #[cfg(feature = "tracing")]
                         tracing::warn!("Persistence cleanup failed: {}", e);
-                        let _ = e;
+                        #[cfg(not(feature = "tracing"))]
+                        eprintln!("[aimdb-persistence] retention cleanup failed: {e}");
                     }
                 }
 

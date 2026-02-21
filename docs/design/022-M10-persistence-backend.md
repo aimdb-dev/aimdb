@@ -701,7 +701,9 @@ backend storage. A `PersistenceState` newtype gives it a unique `TypeId`:
 /// with any other crate that uses the same map.
 pub struct PersistenceState {
     pub backend: Arc<dyn PersistenceBackend>,
-    pub retention: Duration,
+    /// Retention window in milliseconds (Unix ms). Stored as `u64` so it can
+    /// be compared directly with `stored_at` timestamps.
+    pub retention_ms: u64,
 }
 
 pub trait AimDbBuilderPersistExt<R: Spawn + TimeOps> {
@@ -724,12 +726,13 @@ impl<R: Spawn + TimeOps + 'static> AimDbBuilderPersistExt<R> for AimDbBuilder<R>
         backend: Arc<dyn PersistenceBackend>,
         retention: Duration,
     ) -> Self {
-        // Store backend + retention as a typed entry in the Extensions TypeMap.
+        let retention_ms = retention.as_millis() as u64;
+        // Store backend + retention_ms as a typed entry in the Extensions TypeMap.
         // Both .persist() (on RecordRegistrar) and AimDbQueryExt (on AimDb<R>)
         // retrieve it via extensions().get::<PersistenceState>().
         self.extensions_mut().insert(PersistenceState {
             backend: backend.clone(),
-            retention,
+            retention_ms,
         });
 
         // Register a startup task for periodic retention cleanup.

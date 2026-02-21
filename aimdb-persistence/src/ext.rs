@@ -23,7 +23,7 @@ where
     /// Spawns a background subscriber (via `tap_raw`) that serializes each
     /// value to JSON and writes it to the configured backend. Retention is
     /// managed by the cleanup task registered during `with_persistence()`.
-    fn persist(&'a mut self, record_name: String) -> &'a mut RecordRegistrar<'a, T, R>;
+    fn persist(&'a mut self, record_name: impl Into<String>) -> &'a mut RecordRegistrar<'a, T, R>;
 }
 
 impl<'a, T, R> RecordRegistrarPersistExt<'a, T, R> for RecordRegistrar<'a, T, R>
@@ -31,7 +31,8 @@ where
     T: serde::Serialize + Send + Sync + Clone + core::fmt::Debug + 'static,
     R: Spawn + 'static,
 {
-    fn persist(&'a mut self, record_name: String) -> &'a mut RecordRegistrar<'a, T, R> {
+    fn persist(&'a mut self, record_name: impl Into<String>) -> &'a mut RecordRegistrar<'a, T, R> {
+        let record_name: String = record_name.into();
         // Retrieve the backend from the builder's Extensions TypeMap.
         let backend: Arc<dyn PersistenceBackend> = self
             .extensions()

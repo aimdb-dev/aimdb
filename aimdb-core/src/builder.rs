@@ -23,6 +23,20 @@ use std::{boxed::Box, sync::Arc};
 
 use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
+
+/// Type-erased on_start function stored in `AimDbBuilder::start_fns`.
+///
+/// Defined once here so `on_start()` (which stores) and `build()` (which
+/// downcasts) share the *exact same* type and a silent type mismatch cannot
+/// cause a runtime panic.
+#[cfg(feature = "std")]
+type StartFnType<R> = Box<
+    dyn FnOnce(
+            Arc<R>,
+        ) -> core::pin::Pin<
+            Box<dyn core::future::Future<Output = ()> + Send + 'static>,
+        > + Send,
+>;
 use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
@@ -95,7 +109,7 @@ pub struct AimDbInner {
     /// External crates (e.g. `aimdb-persistence`) store typed state here
     /// during builder configuration and retrieve it at query time via
     /// `AimDb::extensions()`.
-    pub extensions: Extensions,
+    pub(crate) extensions: Extensions,
 }
 
 impl AimDbInner {
@@ -428,14 +442,18 @@ where
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Type-erase so the field can be shared with the `NoRuntime` builder struct.
-        type StartFnType<R> = Box<
+        // Uses the module-level `StartFnType<R>` alias — must stay in sync with
+        // the downcast in `build()`.
+        #[cfg(feature = "std")]
+        let boxed: StartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
+        #[cfg(not(feature = "std"))]
+        let boxed: Box<
             dyn FnOnce(
                     Arc<R>,
                 ) -> core::pin::Pin<
                     Box<dyn core::future::Future<Output = ()> + Send + 'static>,
                 > + Send,
-        >;
-        let boxed: StartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
+        > = Box::new(move |runtime| Box::pin(f(runtime)));
         self.start_fns.push(Box::new(boxed));
         self
     }
@@ -934,18 +952,31 @@ where
             #[cfg(feature = "tracing")]
             tracing::debug!("Spawning {} on_start task(s)", self.start_fns.len());
 
-            type StartFnType<R> = Box<
-                dyn FnOnce(
-                        Arc<R>,
-                    ) -> core::pin::Pin<
-                        Box<dyn core::future::Future<Output = ()> + Send + 'static>,
-                    > + Send,
-            >;
-
-            for start_fn_any in self.start_fns {
+            #[cfg(feature = "std")]
+            for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
                 let start_fn = start_fn_any
                     .downcast::<StartFnType<R>>()
-                    .expect("on_start fn type mismatch — this is a bug in aimdb-core");
+                    .unwrap_or_else(|_| panic!(
+                        "on_start fn[{idx}] type mismatch — this is a bug in aimdb-core"
+                    ));
+                let future = (*start_fn)(runtime.clone());
+                runtime.spawn(future).map_err(DbError::from)?;
+            }
+
+            #[cfg(not(feature = "std"))]
+            for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
+                type NoStdStartFnType<R> = Box<
+                    dyn FnOnce(
+                            Arc<R>,
+                        ) -> core::pin::Pin<
+                            Box<dyn core::future::Future<Output = ()> + Send + 'static>,
+                        > + Send,
+                >;
+                let start_fn = start_fn_any
+                    .downcast::<NoStdStartFnType<R>>()
+                    .unwrap_or_else(|_| panic!(
+                        "on_start fn[{idx}] type mismatch — this is a bug in aimdb-core"
+                    ));
                 let future = (*start_fn)(runtime.clone());
                 runtime.spawn(future).map_err(DbError::from)?;
             }

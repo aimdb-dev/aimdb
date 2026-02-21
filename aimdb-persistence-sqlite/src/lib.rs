@@ -21,7 +21,6 @@
 //! ```
 
 use std::path::Path;
-use std::sync::Arc;
 
 use aimdb_persistence::backend::{BoxFuture, PersistenceBackend, QueryParams, StoredValue};
 use aimdb_persistence::error::PersistenceError;
@@ -57,11 +56,12 @@ enum DbCommand {
 /// SQLite persistence backend.
 ///
 /// `Clone` is cheap — it only clones the `mpsc::SyncSender` handle.
+///
+/// The writer thread shuts down automatically when all `SyncSender` handles
+/// (i.e. all `SqliteBackend` clones) are dropped.
 #[derive(Clone)]
 pub struct SqliteBackend {
     tx: std::sync::mpsc::SyncSender<DbCommand>,
-    // Keep a handle so the writer thread is not orphaned on accidental drops.
-    _thread: Arc<()>,
 }
 
 impl SqliteBackend {
@@ -97,10 +97,7 @@ impl SqliteBackend {
             .spawn(move || run_db_thread(conn, rx))
             .map_err(|e| PersistenceError::Backend(e.to_string()))?;
 
-        Ok(Self {
-            tx,
-            _thread: Arc::new(()),
-        })
+        Ok(Self { tx })
     }
 }
 
@@ -117,12 +114,21 @@ fn run_db_thread(conn: Connection, rx: std::sync::mpsc::Receiver<DbCommand>) {
                 timestamp,
                 reply,
             } => {
+                let ts = match i64::try_from(timestamp) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let _ = reply.send(Err(PersistenceError::Backend(format!(
+                            "timestamp {timestamp} overflows i64"
+                        ))));
+                        continue;
+                    }
+                };
                 let result = conn
-                    .execute(
+                    .prepare_cached(
                         "INSERT INTO record_history (record_name, value_json, stored_at)
                          VALUES (?1, ?2, ?3)",
-                        params![record_name, json, timestamp as i64],
                     )
+                    .and_then(|mut stmt| stmt.execute(params![record_name, json, ts]))
                     .map(|_| ())
                     .map_err(|e| PersistenceError::Backend(e.to_string()));
                 let _ = reply.send(result);
@@ -138,11 +144,18 @@ fn run_db_thread(conn: Connection, rx: std::sync::mpsc::Receiver<DbCommand>) {
             }
 
             DbCommand::Cleanup { older_than, reply } => {
+                let cutoff = match i64::try_from(older_than) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let _ = reply.send(Err(PersistenceError::Backend(format!(
+                            "cleanup cutoff {older_than} overflows i64"
+                        ))));
+                        continue;
+                    }
+                };
                 let result = conn
-                    .execute(
-                        "DELETE FROM record_history WHERE stored_at < ?1",
-                        params![older_than as i64],
-                    )
+                    .prepare_cached("DELETE FROM record_history WHERE stored_at < ?1")
+                    .and_then(|mut stmt| stmt.execute(params![cutoff]))
                     .map(|n| n as u64)
                     .map_err(|e| PersistenceError::Backend(e.to_string()));
                 let _ = reply.send(result);
@@ -170,11 +183,24 @@ fn query_sync(
     pattern: &str,
     params: QueryParams,
 ) -> Result<Vec<StoredValue>, PersistenceError> {
-    let limit = params.limit_per_record.unwrap_or(100) as i64;
+    // `None` means "no limit" — the SQL uses `(?4 IS NULL OR rn <= ?4)`.
+    let limit: Option<i64> = params.limit_per_record.map(|l| l as i64);
     let sql_pattern = sanitize_pattern(pattern);
 
+    // Checked conversion: timestamps must fit in SQLite's signed i64.
+    let start_time: Option<i64> = params
+        .start_time
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| PersistenceError::Backend("start_time overflows i64".to_string()))?;
+    let end_time: Option<i64> = params
+        .end_time
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| PersistenceError::Backend("end_time overflows i64".to_string()))?;
+
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "WITH ranked AS (
                 SELECT record_name, value_json, stored_at,
                        ROW_NUMBER() OVER (
@@ -187,23 +213,28 @@ fn query_sync(
                   AND (?3 IS NULL OR stored_at <= ?3)
             )
             SELECT record_name, value_json, stored_at
-            FROM ranked WHERE rn <= ?4
+            FROM ranked WHERE (?4 IS NULL OR rn <= ?4)
             ORDER BY record_name, stored_at DESC",
         )
         .map_err(|e| PersistenceError::Backend(e.to_string()))?;
 
     let rows = stmt
         .query_map(
-            rusqlite::params![
-                sql_pattern,
-                params.start_time.map(|t| t as i64),
-                params.end_time.map(|t| t as i64),
-                limit,
-            ],
+            rusqlite::params![sql_pattern, start_time, end_time, limit],
             |row| {
+                let value_str: String = row.get(1)?;
                 Ok(StoredValue {
                     record_name: row.get(0)?,
-                    value: serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or(Value::Null),
+                    value: serde_json::from_str(&value_str).unwrap_or_else(|e| {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(
+                            "SQLite: corrupted JSON in record_history row, \
+                             substituting null: {e}"
+                        );
+                        #[cfg(not(feature = "tracing"))]
+                        let _ = e;
+                        Value::Null
+                    }),
                     stored_at: row.get::<_, i64>(2)? as u64,
                 })
             },

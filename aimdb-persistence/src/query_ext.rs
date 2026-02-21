@@ -84,15 +84,15 @@ impl<R: Spawn + 'static> AimDbQueryExt for AimDb<R> {
             Ok(stored
                 .into_iter()
                 .filter_map(|sv| {
-                    serde_json::from_value(sv.value.clone())
-                        .map_err(|e| {
+                    let crate::backend::StoredValue { record_name: _record_name, value, .. } = sv;
+                    serde_json::from_value(value)
+                        .map_err(|_e| {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(
                                 "Skipping persisted row for '{}': deserialization failed: {}",
-                                sv.record_name,
-                                e
+                                _record_name,
+                                _e
                             );
-                            let _ = e;
                         })
                         .ok()
                 })
@@ -124,15 +124,15 @@ impl<R: Spawn + 'static> AimDbQueryExt for AimDb<R> {
             Ok(stored
                 .into_iter()
                 .filter_map(|sv| {
-                    serde_json::from_value(sv.value.clone())
-                        .map_err(|e| {
+                    let crate::backend::StoredValue { record_name: _record_name, value, .. } = sv;
+                    serde_json::from_value(value)
+                        .map_err(|_e| {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(
                                 "Skipping persisted row for '{}': deserialization failed: {}",
-                                sv.record_name,
-                                e
+                                _record_name,
+                                _e
                             );
-                            let _ = e;
                         })
                         .ok()
                 })
