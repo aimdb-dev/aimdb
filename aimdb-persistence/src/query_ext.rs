@@ -88,7 +88,11 @@ impl<R: Spawn + 'static> AimDbQueryExt for AimDb<R> {
             Ok(stored
                 .into_iter()
                 .filter_map(|sv| {
-                    let crate::backend::StoredValue { record_name: _record_name, value, .. } = sv;
+                    let crate::backend::StoredValue {
+                        record_name: _record_name,
+                        value,
+                        ..
+                    } = sv;
                     serde_json::from_value(value)
                         .map_err(|_e| {
                             #[cfg(feature = "tracing")]
@@ -129,7 +133,11 @@ impl<R: Spawn + 'static> AimDbQueryExt for AimDb<R> {
             Ok(stored
                 .into_iter()
                 .filter_map(|sv| {
-                    let crate::backend::StoredValue { record_name: _record_name, value, .. } = sv;
+                    let crate::backend::StoredValue {
+                        record_name: _record_name,
+                        value,
+                        ..
+                    } = sv;
                     serde_json::from_value(value)
                         .map_err(|_e| {
                             #[cfg(feature = "tracing")]

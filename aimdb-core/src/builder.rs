@@ -33,9 +33,9 @@ use crate::graph::DependencyGraph;
 type StartFnType<R> = Box<
     dyn FnOnce(
             Arc<R>,
-        ) -> core::pin::Pin<
-            Box<dyn core::future::Future<Output = ()> + Send + 'static>,
-        > + Send,
+        )
+            -> core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>
+        + Send,
 >;
 use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
@@ -956,9 +956,9 @@ where
             for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
                 let start_fn = start_fn_any
                     .downcast::<StartFnType<R>>()
-                    .unwrap_or_else(|_| panic!(
-                        "on_start fn[{idx}] type mismatch — this is a bug in aimdb-core"
-                    ));
+                    .unwrap_or_else(|_| {
+                        panic!("on_start fn[{idx}] type mismatch — this is a bug in aimdb-core")
+                    });
                 let future = (*start_fn)(runtime.clone());
                 runtime.spawn(future).map_err(DbError::from)?;
             }
@@ -974,9 +974,9 @@ where
                 >;
                 let start_fn = start_fn_any
                     .downcast::<NoStdStartFnType<R>>()
-                    .unwrap_or_else(|_| panic!(
-                        "on_start fn[{idx}] type mismatch — this is a bug in aimdb-core"
-                    ));
+                    .unwrap_or_else(|_| {
+                        panic!("on_start fn[{idx}] type mismatch — this is a bug in aimdb-core")
+                    });
                 let future = (*start_fn)(runtime.clone());
                 runtime.spawn(future).map_err(DbError::from)?;
             }
