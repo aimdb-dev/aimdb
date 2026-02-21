@@ -1362,7 +1362,7 @@ where
             let limit = map
                 .get("limit")
                 .and_then(|v| v.as_u64())
-                .map(|v| v as usize);
+                .and_then(|v| usize::try_from(v).ok());
             let start = map.get("start").and_then(|v| v.as_u64());
             let end = map.get("end").and_then(|v| v.as_u64());
             (name, limit, start, end)
