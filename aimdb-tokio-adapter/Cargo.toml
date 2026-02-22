@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-tokio-adapter"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -35,7 +35,7 @@ aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-featur
 ] }
 
 # Core AimDB types - std version for Tokio (for DbError integration)
-aimdb-core = { version = "0.4.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "0.5.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
 
@@ -55,6 +55,6 @@ tokio-test = { workspace = true }
 futures = { workspace = true }
 
 # For drain integration tests
-aimdb-client = { version = "0.4.0", path = "../aimdb-client" }
+aimdb-client = { version = "0.5.0", path = "../aimdb-client" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

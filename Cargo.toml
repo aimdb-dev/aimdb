@@ -34,7 +34,7 @@ resolver = "2"
 default-members = ["aimdb-core"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["AimDB Team <team@aimdb.dev>"]
 license = "Apache-2.0"

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.5.0] - 2026-02-21
+
 ### Added
 
 - **Transform API (Design 020)**: Reactive data transformations between records
@@ -35,13 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Supports `SpmcRing` (full history), `SingleLatest` (at most 1), `Mailbox` (at most 1)
   - Handler maintains per-connection drain readers via `ConnectionState`
 - **Extension Macro**: `impl_record_registrar_ext!` macro in `ext_macros.rs` for generating runtime adapter extension traits
-
-### Changed
-
-- **Renamed `.with_serialization()` to `.with_remote_access()`**: Clearer naming for JSON serialization configuration
-- **`RecordId` constructor**: Now requires `RecordOrigin` parameter for dependency graph support
-- **`set_from_json` protection**: Now also rejects writes on records with active transforms (in addition to sources)
-
 - **Dynamic Topic/Destination Routing (Design 018)**: Complete support for dynamic topic resolution
   - **Outbound (`TopicProvider` trait)**: Dynamically determine MQTT topics or KNX group addresses based on data being published
     - New `TopicProvider<T>` trait for type-safe topic determination
@@ -63,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Renamed `.with_serialization()` to `.with_remote_access()`**: Clearer naming for JSON serialization configuration
+- **`RecordId` constructor**: Now requires `RecordOrigin` parameter for dependency graph support
+- **`set_from_json` protection**: Now also rejects writes on records with active transforms (in addition to sources)
 - **Outbound Route Collection**: `collect_outbound_routes()` now returns `OutboundRoute` tuples with optional `TopicProviderFn`
 - **Inbound Topic Resolution**: `collect_inbound_routes()` now calls `link.resolve_topic()` instead of `link.url.resource_id()` directly, enabling dynamic topic resolution
 
@@ -255,7 +255,8 @@ warning fires if you exceed 1000 interned keys.
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
