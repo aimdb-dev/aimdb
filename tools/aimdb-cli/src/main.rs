@@ -5,7 +5,8 @@
 
 use clap::{Parser, Subcommand};
 use commands::{
-    graph::GraphCommand, instance::InstanceCommand, record::RecordCommand, watch::WatchCommand,
+    generate::GenerateCommand, graph::GraphCommand, instance::InstanceCommand,
+    record::RecordCommand, watch::WatchCommand,
 };
 
 mod commands;
@@ -42,6 +43,10 @@ enum Command {
     /// Watch a record in real-time
     #[command(name = "watch")]
     Watch(WatchCommand),
+
+    /// Generate architecture artefacts from state.toml
+    #[command(name = "generate")]
+    Generate(GenerateCommand),
 }
 
 #[tokio::main]
@@ -53,6 +58,7 @@ async fn main() {
         Command::Record(cmd) => cmd.execute().await,
         Command::Graph(cmd) => cmd.execute().await,
         Command::Watch(cmd) => cmd.execute().await,
+        Command::Generate(cmd) => cmd.execute().await,
     };
 
     if let Err(e) = result {

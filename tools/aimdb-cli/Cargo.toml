@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 # AimDB client library
 aimdb-client = { version = "0.5.0", path = "../../aimdb-client" }
+aimdb-codegen = { version = "0.5.0", path = "../../aimdb-codegen" }
 
 # Core dependencies - reuse protocol types from aimdb-core
 aimdb-core = { version = "0.5.0", path = "../../aimdb-core", features = [
