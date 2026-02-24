@@ -494,7 +494,6 @@ mod tests {
         assert_eq!(prompts[3].name, "troubleshooting");
     }
 
-
     #[test]
     fn test_get_troubleshooting_prompt() {
         let messages = get_prompt("troubleshooting");
