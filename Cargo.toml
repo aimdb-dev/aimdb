@@ -5,6 +5,7 @@ members = [
     "aimdb-data-contracts",
     "aimdb-core",
     "aimdb-client",
+    "aimdb-codegen",
     "aimdb-embassy-adapter",
     "aimdb-tokio-adapter",
     "aimdb-sync",
