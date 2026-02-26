@@ -286,6 +286,7 @@ pub fn ensure_state_initialised(path: &Path) -> anyhow::Result<ArchitectureState
         return Ok(existing);
     }
     let state = ArchitectureState {
+        project: None,
         meta: aimdb_codegen::Meta {
             aimdb_version: "0.5.0".to_string(),
             created_at: Utc::now().to_rfc3339(),

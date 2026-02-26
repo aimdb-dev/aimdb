@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 /// The full contents of `.aimdb/state.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchitectureState {
+    /// Optional project metadata for common crate generation.
+    #[serde(default)]
+    pub project: Option<ProjectDef>,
     pub meta: Meta,
     #[serde(default)]
     pub records: Vec<RecordDef>,
@@ -38,6 +41,46 @@ pub struct Meta {
     pub last_modified: String,
 }
 
+// ── Project metadata ─────────────────────────────────────────────────────────
+
+/// `[project]` block — drives common crate naming and Rust edition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectDef {
+    /// Project name, used for crate naming: `{name}-common`.
+    pub name: String,
+    /// Rust edition for the generated crate (default `"2024"` at codegen time).
+    #[serde(default)]
+    pub edition: Option<String>,
+}
+
+// ── Serialization type ───────────────────────────────────────────────────────
+
+/// Serialization format for `Linkable` trait generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SerializationType {
+    /// JSON via `serde_json` (std-only, `no_std` fallback returns error).
+    #[default]
+    Json,
+    /// Binary via `postcard` (works in both std and `no_std`).
+    Postcard,
+    /// No generated `Linkable` impl — user provides their own.
+    Custom,
+}
+
+// ── Observable metadata ─────────────────────────────────────────────────────
+
+/// `[records.observable]` block — metadata for `Observable` trait generation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservableDef {
+    /// Field name to use as `Observable::signal()` return value.
+    pub signal_field: String,
+    /// Icon/emoji for log output (e.g. `"🌡️"`).
+    pub icon: String,
+    /// Unit label for the signal (e.g. `"°C"`).
+    pub unit: String,
+}
+
 // ── Record definition ────────────────────────────────────────────────────────
 
 /// One `[[records]]` entry.
@@ -62,6 +105,17 @@ pub struct RecordDef {
     /// Names of tasks that consume values from this record.
     #[serde(default)]
     pub consumers: Vec<String>,
+
+    /// Schema version for `SchemaType::VERSION` (default 1).
+    #[serde(default)]
+    pub schema_version: Option<u32>,
+    /// Serialization format for `Linkable` generation (default `"json"`).
+    #[serde(default)]
+    pub serialization: Option<SerializationType>,
+    /// Observable trait metadata (omit to skip `Observable` impl).
+    #[serde(default)]
+    pub observable: Option<ObservableDef>,
+
     /// Value struct fields (agent-derived from datasheets / specs / conversation).
     #[serde(default)]
     pub fields: Vec<FieldDef>,
@@ -130,6 +184,9 @@ pub struct FieldDef {
     pub field_type: String,
     #[serde(default)]
     pub description: String,
+    /// Include this field in `Settable::Value` tuple (default `false`).
+    #[serde(default)]
+    pub settable: bool,
 }
 
 // ── Connector definition ─────────────────────────────────────────────────────
@@ -292,6 +349,97 @@ timestamp = "2026-02-22T14:20:00Z"
     #[test]
     fn buffer_rust_expr_mailbox() {
         assert_eq!(BufferType::Mailbox.rust_expr(None), "BufferCfg::Mailbox");
+    }
+
+    const EXTENDED_TOML: &str = r#"
+[project]
+name = "weather-sentinel"
+
+[meta]
+aimdb_version = "0.5.0"
+created_at = "2026-02-24T21:39:15Z"
+last_modified = "2026-02-25T10:00:00Z"
+
+[[records]]
+name = "WeatherObservation"
+buffer = "SpmcRing"
+capacity = 256
+key_prefix = "weather.observation."
+key_variants = ["Vienna", "Munich"]
+schema_version = 2
+serialization = "json"
+
+[records.observable]
+signal_field = "temperature_celsius"
+icon = "🌡️"
+unit = "°C"
+
+[[records.fields]]
+name = "timestamp"
+type = "u64"
+description = "Unix timestamp in milliseconds"
+
+[[records.fields]]
+name = "temperature_celsius"
+type = "f32"
+description = "Air temperature"
+settable = true
+
+[[records.fields]]
+name = "humidity_percent"
+type = "f32"
+description = "Relative humidity"
+settable = true
+"#;
+
+    #[test]
+    fn parses_project_block() {
+        let state = ArchitectureState::from_toml(EXTENDED_TOML).unwrap();
+        let project = state.project.as_ref().unwrap();
+        assert_eq!(project.name, "weather-sentinel");
+        assert!(project.edition.is_none());
+    }
+
+    #[test]
+    fn parses_schema_version_and_serialization() {
+        let state = ArchitectureState::from_toml(EXTENDED_TOML).unwrap();
+        let r = &state.records[0];
+        assert_eq!(r.schema_version, Some(2));
+        assert_eq!(r.serialization, Some(SerializationType::Json));
+    }
+
+    #[test]
+    fn parses_observable_block() {
+        let state = ArchitectureState::from_toml(EXTENDED_TOML).unwrap();
+        let obs = state.records[0].observable.as_ref().unwrap();
+        assert_eq!(obs.signal_field, "temperature_celsius");
+        assert_eq!(obs.icon, "🌡️");
+        assert_eq!(obs.unit, "°C");
+    }
+
+    #[test]
+    fn parses_settable_field() {
+        let state = ArchitectureState::from_toml(EXTENDED_TOML).unwrap();
+        let fields = &state.records[0].fields;
+        assert!(!fields[0].settable); // timestamp
+        assert!(fields[1].settable); // temperature_celsius
+        assert!(fields[2].settable); // humidity_percent
+    }
+
+    #[test]
+    fn project_block_is_optional() {
+        let state = ArchitectureState::from_toml(SAMPLE_TOML).unwrap();
+        assert!(state.project.is_none());
+    }
+
+    #[test]
+    fn new_fields_default_when_absent() {
+        let state = ArchitectureState::from_toml(SAMPLE_TOML).unwrap();
+        let r = &state.records[0];
+        assert!(r.schema_version.is_none());
+        assert!(r.serialization.is_none());
+        assert!(r.observable.is_none());
+        assert!(!r.fields[0].settable);
     }
 
     #[test]

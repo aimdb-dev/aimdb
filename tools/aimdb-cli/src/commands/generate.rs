@@ -2,12 +2,14 @@
 //!
 //! Reads `.aimdb/state.toml` and emits:
 //! - `.aimdb/architecture.mermaid` — Mermaid diagram
-//! - `src/generated_schema.rs` — compilable Rust schema
+//! - `src/generated_schema.rs` — compilable Rust schema (flat mode)
+//! - `{project.name}-common/` — compilable common crate (`--common-crate` mode)
 //!
 //! # Usage
 //!
 //! ```text
-//! aimdb generate                          # generate both artefacts
+//! aimdb generate                          # generate flat file + diagram
+//! aimdb generate --common-crate           # generate common crate directory
 //! aimdb generate --check                  # validate only (CI)
 //! aimdb generate --dry-run                # print to stdout, don't write
 //! aimdb generate --state path/state.toml  # custom state path
@@ -19,7 +21,10 @@
 //! ```
 
 use crate::error::CliResult;
-use aimdb_codegen::{generate_mermaid, generate_rust, validate, ArchitectureState, Severity};
+use aimdb_codegen::{
+    generate_cargo_toml, generate_lib_rs, generate_mermaid, generate_rust, generate_schema_rs,
+    validate, ArchitectureState, Severity,
+};
 use anyhow::Context;
 use clap::Args;
 use colored::Colorize;
@@ -36,9 +41,14 @@ pub struct GenerateCommand {
     #[arg(long, default_value = ".aimdb/architecture.mermaid")]
     pub mermaid: PathBuf,
 
-    /// Output path for generated Rust source
+    /// Output path for generated Rust source (flat mode only)
     #[arg(long, default_value = "src/generated_schema.rs")]
     pub rust: PathBuf,
+
+    /// Generate a complete common crate directory instead of a flat file.
+    /// Requires `[project]` block in state.toml. Outputs to `{project.name}-common/`.
+    #[arg(long)]
+    pub common_crate: bool,
 
     /// Validate state.toml without writing files (exit 1 if errors found)
     #[arg(long)]
@@ -88,9 +98,17 @@ impl GenerateCommand {
             return Ok(());
         }
 
-        // ── Generate ───────────────────────────────────────────────────────
-        let mermaid_src = generate_mermaid(&state);
-        let rust_src = generate_rust(&state);
+        if self.common_crate {
+            self.execute_common_crate(&state).await
+        } else {
+            self.execute_flat(&state).await
+        }
+    }
+
+    /// Flat mode: generate `src/generated_schema.rs` and `.aimdb/architecture.mermaid`.
+    async fn execute_flat(&self, state: &ArchitectureState) -> CliResult<()> {
+        let mermaid_src = generate_mermaid(state);
+        let rust_src = generate_rust(state);
 
         if self.dry_run {
             println!("{}  {}", "── Mermaid".dimmed(), self.mermaid.display());
@@ -100,13 +118,61 @@ impl GenerateCommand {
             return Ok(());
         }
 
-        // ── Write files ────────────────────────────────────────────────────
         write_if_changed(&self.mermaid, &mermaid_src, "Mermaid")?;
         write_if_changed(&self.rust, &rust_src, "Rust")?;
 
         println!(
             "{} {} record(s) processed",
             "✓".green(),
+            state.records.len()
+        );
+
+        Ok(())
+    }
+
+    /// Common crate mode: generate `{project.name}-common/` directory.
+    async fn execute_common_crate(&self, state: &ArchitectureState) -> CliResult<()> {
+        let project = state.project.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--common-crate requires a [project] block in state.toml.\n\
+                 Add:\n  [project]\n  name = \"your-project\""
+            )
+        })?;
+
+        let crate_dir = PathBuf::from(format!("{}-common", project.name));
+        let src_dir = crate_dir.join("src");
+
+        let cargo_toml = generate_cargo_toml(state);
+        let lib_rs = generate_lib_rs();
+        let schema_rs = generate_schema_rs(state);
+
+        if self.dry_run {
+            let cargo_path = crate_dir.join("Cargo.toml");
+            let lib_path = src_dir.join("lib.rs");
+            let schema_path = src_dir.join("schema.rs");
+
+            println!("{}  {}", "── Cargo.toml".dimmed(), cargo_path.display());
+            println!("{cargo_toml}");
+            println!("{}  {}", "── lib.rs".dimmed(), lib_path.display());
+            println!("{lib_rs}");
+            println!("{}  {}", "── schema.rs".dimmed(), schema_path.display());
+            println!("{schema_rs}");
+            return Ok(());
+        }
+
+        // Also generate the Mermaid diagram
+        let mermaid_src = generate_mermaid(state);
+        write_if_changed(&self.mermaid, &mermaid_src, "Mermaid")?;
+
+        // Write common crate files
+        write_if_changed(&crate_dir.join("Cargo.toml"), &cargo_toml, "Cargo.toml")?;
+        write_if_changed(&src_dir.join("lib.rs"), &lib_rs, "lib.rs")?;
+        write_if_changed(&src_dir.join("schema.rs"), &schema_rs, "schema.rs")?;
+
+        println!(
+            "{} common crate {} generated ({} record(s))",
+            "✓".green(),
+            crate_dir.display(),
             state.records.len()
         );
 

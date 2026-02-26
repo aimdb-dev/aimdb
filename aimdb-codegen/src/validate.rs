@@ -185,6 +185,40 @@ fn validate_records(state: &ArchitectureState, errors: &mut Vec<ValidationError>
             });
         }
 
+        // schema_version must be >= 1 if specified
+        if rec.schema_version == Some(0) {
+            errors.push(ValidationError {
+                message: format!(
+                    "record '{}' has schema_version = 0; versions must be >= 1",
+                    rec.name
+                ),
+                location: format!("{loc}.schema_version"),
+                severity: Severity::Warning,
+            });
+        }
+
+        // Warn if settable fields exist but no timestamp field is present
+        let has_settable = rec.fields.iter().any(|f| f.settable);
+        if has_settable {
+            let timestamp_names = ["timestamp", "computed_at", "fetched_at"];
+            let has_timestamp = rec
+                .fields
+                .iter()
+                .any(|f| f.field_type == "u64" && timestamp_names.contains(&f.name.as_str()));
+            if !has_timestamp {
+                errors.push(ValidationError {
+                    message: format!(
+                        "record '{}' has settable fields but no timestamp field \
+                         (u64 named timestamp, computed_at, or fetched_at) — \
+                         Settable::set() will use Default::default() for the timestamp slot",
+                        rec.name
+                    ),
+                    location: format!("{loc}.fields"),
+                    severity: Severity::Warning,
+                });
+            }
+        }
+
         // Validate field types
         for (fidx, field) in rec.fields.iter().enumerate() {
             if field.name.is_empty() {
@@ -222,6 +256,42 @@ fn validate_records(state: &ArchitectureState, errors: &mut Vec<ValidationError>
                     location: format!("{loc}.connectors[{cidx}].protocol"),
                     severity: Severity::Error,
                 });
+            }
+        }
+
+        // Validate observable block
+        if let Some(obs) = &rec.observable {
+            let field_exists = rec.fields.iter().any(|f| f.name == obs.signal_field);
+            if !field_exists {
+                errors.push(ValidationError {
+                    message: format!(
+                        "observable signal_field '{}' does not match any field in record '{}'",
+                        obs.signal_field, rec.name
+                    ),
+                    location: format!("{loc}.observable.signal_field"),
+                    severity: Severity::Error,
+                });
+            } else {
+                // Check signal_field type is numeric (Observable::Signal: PartialOrd + Copy)
+                let field = rec
+                    .fields
+                    .iter()
+                    .find(|f| f.name == obs.signal_field)
+                    .unwrap();
+                let numeric_types = [
+                    "f32", "f64", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+                ];
+                if !numeric_types.contains(&field.field_type.as_str()) {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "observable signal_field '{}' has type '{}' which is not numeric — \
+                             Observable::Signal must implement PartialOrd + Copy",
+                            obs.signal_field, field.field_type
+                        ),
+                        location: format!("{loc}.observable.signal_field"),
+                        severity: Severity::Warning,
+                    });
+                }
             }
         }
     }
@@ -404,6 +474,176 @@ description = "Value"
         assert!(
             s.contains("records[0].name"),
             "Display should show location:\n{s}"
+        );
+    }
+
+    #[test]
+    fn detects_observable_missing_signal_field() {
+        let toml = r#"
+[meta]
+aimdb_version = "0.5.0"
+created_at = "2026-02-22T14:00:00Z"
+last_modified = "2026-02-22T14:33:00Z"
+
+[[records]]
+name = "TemperatureReading"
+buffer = "SpmcRing"
+capacity = 256
+key_prefix = "sensors.temp."
+key_variants = ["indoor"]
+
+[records.observable]
+signal_field = "nonexistent"
+icon = "🌡️"
+unit = "°C"
+
+[[records.fields]]
+name = "celsius"
+type = "f64"
+description = "Temperature"
+"#;
+        let state = ArchitectureState::from_toml(toml).unwrap();
+        let errs = validate(&state);
+        let has_err = errs.iter().any(|e| {
+            e.severity == Severity::Error && e.message.contains("does not match any field")
+        });
+        assert!(
+            has_err,
+            "Should detect missing observable signal_field:\n{errs:?}"
+        );
+    }
+
+    #[test]
+    fn warns_schema_version_zero() {
+        let toml = r#"
+[meta]
+aimdb_version = "0.5.0"
+created_at = "2026-02-22T14:00:00Z"
+last_modified = "2026-02-22T14:33:00Z"
+
+[[records]]
+name = "TemperatureReading"
+buffer = "SpmcRing"
+capacity = 256
+key_prefix = "sensors.temp."
+key_variants = ["indoor"]
+schema_version = 0
+
+[[records.fields]]
+name = "celsius"
+type = "f64"
+description = "Temperature"
+"#;
+        let state = ArchitectureState::from_toml(toml).unwrap();
+        let errs = validate(&state);
+        let has_warn = errs
+            .iter()
+            .any(|e| e.severity == Severity::Warning && e.message.contains("schema_version = 0"));
+        assert!(has_warn, "Should warn about schema_version = 0:\n{errs:?}");
+    }
+
+    #[test]
+    fn warns_settable_fields_without_timestamp() {
+        let toml = r#"
+[meta]
+aimdb_version = "0.5.0"
+created_at = "2026-02-22T14:00:00Z"
+last_modified = "2026-02-22T14:33:00Z"
+
+[[records]]
+name = "TemperatureReading"
+buffer = "SpmcRing"
+capacity = 256
+key_prefix = "sensors.temp."
+key_variants = ["indoor"]
+
+[[records.fields]]
+name = "celsius"
+type = "f64"
+description = "Temperature"
+settable = true
+"#;
+        let state = ArchitectureState::from_toml(toml).unwrap();
+        let errs = validate(&state);
+        let has_warn = errs
+            .iter()
+            .any(|e| e.severity == Severity::Warning && e.message.contains("no timestamp field"));
+        assert!(
+            has_warn,
+            "Should warn about settable fields with no timestamp:\n{errs:?}"
+        );
+    }
+
+    #[test]
+    fn no_warn_settable_fields_with_timestamp() {
+        let toml = r#"
+[meta]
+aimdb_version = "0.5.0"
+created_at = "2026-02-22T14:00:00Z"
+last_modified = "2026-02-22T14:33:00Z"
+
+[[records]]
+name = "TemperatureReading"
+buffer = "SpmcRing"
+capacity = 256
+key_prefix = "sensors.temp."
+key_variants = ["indoor"]
+
+[[records.fields]]
+name = "timestamp"
+type = "u64"
+description = "Unix ms"
+
+[[records.fields]]
+name = "celsius"
+type = "f64"
+description = "Temperature"
+settable = true
+"#;
+        let state = ArchitectureState::from_toml(toml).unwrap();
+        let errs = validate(&state);
+        let has_warn = errs
+            .iter()
+            .any(|e| e.severity == Severity::Warning && e.message.contains("no timestamp field"));
+        assert!(
+            !has_warn,
+            "Should not warn when timestamp field is present:\n{errs:?}"
+        );
+    }
+
+    #[test]
+    fn warns_observable_non_numeric_signal_field() {
+        let toml = r#"
+[meta]
+aimdb_version = "0.5.0"
+created_at = "2026-02-22T14:00:00Z"
+last_modified = "2026-02-22T14:33:00Z"
+
+[[records]]
+name = "TemperatureReading"
+buffer = "SpmcRing"
+capacity = 256
+key_prefix = "sensors.temp."
+key_variants = ["indoor"]
+
+[records.observable]
+signal_field = "label"
+icon = "📊"
+unit = ""
+
+[[records.fields]]
+name = "label"
+type = "String"
+description = "A label"
+"#;
+        let state = ArchitectureState::from_toml(toml).unwrap();
+        let errs = validate(&state);
+        let has_warn = errs
+            .iter()
+            .any(|e| e.severity == Severity::Warning && e.message.contains("not numeric"));
+        assert!(
+            has_warn,
+            "Should warn about non-numeric signal_field:\n{errs:?}"
         );
     }
 }
