@@ -16,6 +16,10 @@ pub struct ArchitectureState {
     #[serde(default)]
     pub records: Vec<RecordDef>,
     #[serde(default)]
+    pub tasks: Vec<TaskDef>,
+    #[serde(default)]
+    pub binaries: Vec<BinaryDef>,
+    #[serde(default)]
     pub decisions: Vec<DecisionEntry>,
 }
 
@@ -202,12 +206,96 @@ pub struct ConnectorDef {
     pub url: String,
 }
 
+impl ConnectorDef {
+    /// Human-readable direction label for doc comments.
+    pub fn direction_label(&self) -> &'static str {
+        match self.direction {
+            ConnectorDirection::Outbound => "outbound",
+            ConnectorDirection::Inbound => "inbound",
+        }
+    }
+}
+
 /// Connector data flow direction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectorDirection {
     Outbound,
     Inbound,
+}
+
+// ── Task definition ──────────────────────────────────────────────────────────
+
+/// The functional role of a task — drives stub body generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskType {
+    /// Reads one or more records, transforms them, writes to output records.
+    #[default]
+    Transform,
+    /// LLM-driven reasoning loop, flags anomalies, cross-correlates data.
+    Agent,
+    /// Fetches external data and produces values into a record.
+    Producer,
+    /// Forwards, stores, or logs values — no output records in the DB.
+    Sink,
+}
+
+/// One `[[tasks.inputs]]` or `[[tasks.outputs]]` entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskIo {
+    /// PascalCase record name, e.g. `"HourlyForecastPoint"`.
+    pub record: String,
+    /// Specific variants; empty (`[]`) means all variants of that record.
+    #[serde(default)]
+    pub variants: Vec<String>,
+}
+
+/// One `[[tasks]]` entry — describes an async task function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDef {
+    /// snake_case function name, e.g. `"hub_validation_task"`.
+    pub name: String,
+    /// Functional classification — drives stub body.
+    #[serde(default)]
+    pub task_type: TaskType,
+    /// Human-readable description, used in doc comments and todo! msgs.
+    #[serde(default)]
+    pub description: String,
+    /// Records this task reads from.
+    #[serde(default)]
+    pub inputs: Vec<TaskIo>,
+    /// Records this task writes to.
+    #[serde(default)]
+    pub outputs: Vec<TaskIo>,
+}
+
+// ── Binary definition ────────────────────────────────────────────────────────
+
+/// One `[[binaries.external_connectors]]` entry — a runtime broker connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalConnectorDef {
+    /// Protocol identifier, e.g. `"mqtt"`.
+    pub protocol: String,
+    /// Environment variable that provides the broker URL at runtime.
+    pub env_var: String,
+    /// Default URL when the env var is not set.
+    #[serde(default)]
+    pub default: String,
+}
+
+/// One `[[binaries]]` entry — a deployable binary crate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryDef {
+    /// Directory name of the binary crate, e.g. `"weather-sentinel-hub"`.
+    /// The codegen derives the crate path as `../{name}/`.
+    pub name: String,
+    /// Task names belonging to this binary (must match `[[tasks]]` entries).
+    #[serde(default)]
+    pub tasks: Vec<String>,
+    /// Runtime broker connections needed by this binary.
+    #[serde(default)]
+    pub external_connectors: Vec<ExternalConnectorDef>,
 }
 
 // ── Decision log entry ───────────────────────────────────────────────────────

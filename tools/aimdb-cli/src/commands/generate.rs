@@ -10,6 +10,7 @@
 //! ```text
 //! aimdb generate                          # generate flat file + diagram
 //! aimdb generate --common-crate           # generate common crate directory
+//! aimdb generate --hub                    # generate hub binary crate scaffold
 //! aimdb generate --check                  # validate only (CI)
 //! aimdb generate --dry-run                # print to stdout, don't write
 //! aimdb generate --state path/state.toml  # custom state path
@@ -22,8 +23,9 @@
 
 use crate::error::CliResult;
 use aimdb_codegen::{
-    generate_cargo_toml, generate_lib_rs, generate_mermaid, generate_rust, generate_schema_rs,
-    validate, ArchitectureState, Severity,
+    generate_cargo_toml, generate_hub_cargo_toml, generate_hub_main_rs, generate_hub_tasks_rs,
+    generate_lib_rs, generate_mermaid, generate_rust, generate_schema_rs, validate,
+    ArchitectureState, Severity,
 };
 use anyhow::Context;
 use clap::Args;
@@ -49,6 +51,12 @@ pub struct GenerateCommand {
     /// Requires `[project]` block in state.toml. Outputs to `{project.name}-common/`.
     #[arg(long)]
     pub common_crate: bool,
+
+    /// Generate a complete hub binary crate directory.
+    /// Requires `[project]` block in state.toml. Outputs to `{project.name}-hub/`.
+    /// `src/tasks.rs` is only written if it does not already exist.
+    #[arg(long)]
+    pub hub: bool,
 
     /// Validate state.toml without writing files (exit 1 if errors found)
     #[arg(long)]
@@ -98,7 +106,9 @@ impl GenerateCommand {
             return Ok(());
         }
 
-        if self.common_crate {
+        if self.hub {
+            self.execute_hub_crate(&state).await
+        } else if self.common_crate {
             self.execute_common_crate(&state).await
         } else {
             self.execute_flat(&state).await
@@ -124,6 +134,73 @@ impl GenerateCommand {
         println!(
             "{} {} record(s) processed",
             "✓".green(),
+            state.records.len()
+        );
+
+        Ok(())
+    }
+
+    /// Hub crate mode: generate `{project.name}-hub/` binary crate.
+    async fn execute_hub_crate(&self, state: &ArchitectureState) -> CliResult<()> {
+        let project = state.project.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--hub requires a [project] block in state.toml.\n\
+                 Add:\n  [project]\n  name = \"your-project\""
+            )
+        })?;
+
+        let hub_dir = PathBuf::from(format!("{}-hub", project.name));
+        let src_dir = hub_dir.join("src");
+
+        let cargo_toml = generate_hub_cargo_toml(state);
+        let main_rs = generate_hub_main_rs(state);
+        let tasks_rs = generate_hub_tasks_rs(state);
+
+        if self.dry_run {
+            println!(
+                "{}  {}",
+                "── Cargo.toml".dimmed(),
+                hub_dir.join("Cargo.toml").display()
+            );
+            println!("{cargo_toml}");
+            println!(
+                "{}  {}",
+                "── main.rs".dimmed(),
+                src_dir.join("main.rs").display()
+            );
+            println!("{main_rs}");
+            println!(
+                "{}  {}",
+                "── tasks.rs".dimmed(),
+                src_dir.join("tasks.rs").display()
+            );
+            println!("{tasks_rs}");
+            return Ok(());
+        }
+
+        // Also regenerate the Mermaid diagram
+        let mermaid_src = generate_mermaid(state);
+        write_if_changed(&self.mermaid, &mermaid_src, "Mermaid")?;
+
+        write_if_changed(&hub_dir.join("Cargo.toml"), &cargo_toml, "Cargo.toml")?;
+        write_if_changed(&src_dir.join("main.rs"), &main_rs, "main.rs")?;
+
+        // tasks.rs is scaffolded once — never overwritten
+        let tasks_path = src_dir.join("tasks.rs");
+        if !tasks_path.exists() {
+            write_if_changed(&tasks_path, &tasks_rs, "tasks.rs")?;
+        } else {
+            println!(
+                "  {} {} (user-owned, skipped)",
+                "·".dimmed(),
+                tasks_path.display()
+            );
+        }
+
+        println!(
+            "{} hub crate {} generated ({} record(s))",
+            "✓".green(),
+            hub_dir.display(),
             state.records.len()
         );
 

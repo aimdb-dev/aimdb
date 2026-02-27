@@ -37,21 +37,41 @@ pub fn session_store() -> Option<Arc<Mutex<SessionStore>>> {
 }
 
 // ── Default paths ─────────────────────────────────────────────────────────────
+//
+// All paths are anchored to `AIMDB_WORKSPACE` when that variable is set.
+// Without it the server falls back to the process CWD, which is unreliable
+// when the binary is installed globally (e.g. `~/.cargo/bin/aimdb-mcp`).
+//
+// `AIMDB_WORKSPACE` must point to the root of the *user's* project — the
+// directory that contains (or will contain) the `.aimdb/` folder and `src/`.
+// It has nothing to do with the AimDB library installation.
+//
+// Set it in the project's `.vscode/mcp.json`:
+//
+//   "env": { "AIMDB_WORKSPACE": "${workspaceFolder}" }
+//
+// `${workspaceFolder}` is expanded by VS Code before the process is started.
+
+fn project_root() -> PathBuf {
+    std::env::var("AIMDB_WORKSPACE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
 
 pub fn default_state_path() -> PathBuf {
-    PathBuf::from(".aimdb/state.toml")
+    project_root().join(".aimdb/state.toml")
 }
 
 pub fn default_mermaid_path() -> PathBuf {
-    PathBuf::from(".aimdb/architecture.mermaid")
+    project_root().join(".aimdb/architecture.mermaid")
 }
 
 pub fn default_rust_path() -> PathBuf {
-    PathBuf::from("src/generated_schema.rs")
+    project_root().join("src/generated_schema.rs")
 }
 
 pub fn default_memory_path() -> PathBuf {
-    PathBuf::from(".aimdb/memory.md")
+    project_root().join(".aimdb/memory.md")
 }
 
 // ── State I/O ─────────────────────────────────────────────────────────────────
@@ -293,6 +313,8 @@ pub fn ensure_state_initialised(path: &Path) -> anyhow::Result<ArchitectureState
             last_modified: Utc::now().to_rfc3339(),
         },
         records: Vec::new(),
+        tasks: Vec::new(),
+        binaries: Vec::new(),
         decisions: Vec::new(),
     };
     write_state(path, &state)?;

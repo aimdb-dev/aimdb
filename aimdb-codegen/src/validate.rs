@@ -49,6 +49,7 @@ pub fn validate(state: &ArchitectureState) -> Vec<ValidationError> {
 
     validate_meta(state, &mut errors);
     validate_records(state, &mut errors);
+    validate_tasks_and_binaries(state, &mut errors);
 
     errors
 }
@@ -292,6 +293,110 @@ fn validate_records(state: &ArchitectureState, errors: &mut Vec<ValidationError>
                         severity: Severity::Warning,
                     });
                 }
+            }
+        }
+    }
+}
+
+// ── Tasks and binaries validation ─────────────────────────────────────────────
+
+fn validate_tasks_and_binaries(state: &ArchitectureState, errors: &mut Vec<ValidationError>) {
+    let record_names: Vec<&str> = state.records.iter().map(|r| r.name.as_str()).collect();
+    let task_names: Vec<&str> = state.tasks.iter().map(|t| t.name.as_str()).collect();
+
+    // Rule 1: task name in producers/consumers has no [[tasks]] entry → Warning
+    for (ridx, rec) in state.records.iter().enumerate() {
+        for producer in &rec.producers {
+            if !task_names.contains(&producer.as_str()) {
+                errors.push(ValidationError {
+                    message: format!(
+                        "producer '{producer}' in record '{}' has no [[tasks]] entry",
+                        rec.name
+                    ),
+                    location: format!("records[{ridx}].producers"),
+                    severity: Severity::Warning,
+                });
+            }
+        }
+        for consumer in &rec.consumers {
+            if !task_names.contains(&consumer.as_str()) {
+                errors.push(ValidationError {
+                    message: format!(
+                        "consumer '{consumer}' in record '{}' has no [[tasks]] entry",
+                        rec.name
+                    ),
+                    location: format!("records[{ridx}].consumers"),
+                    severity: Severity::Warning,
+                });
+            }
+        }
+    }
+
+    // Rules 2, 3, 5: task I/O references
+    for (tidx, task) in state.tasks.iter().enumerate() {
+        let tloc = format!("tasks[{tidx}]");
+
+        for (iidx, input) in task.inputs.iter().enumerate() {
+            // Rule 2: inputs reference a record not in [[records]]
+            if !record_names.contains(&input.record.as_str()) {
+                errors.push(ValidationError {
+                    message: format!(
+                        "task '{}' input references unknown record '{}'",
+                        task.name, input.record
+                    ),
+                    location: format!("{tloc}.inputs[{iidx}].record"),
+                    severity: Severity::Error,
+                });
+            }
+        }
+
+        for (oidx, output) in task.outputs.iter().enumerate() {
+            // Rule 3: outputs reference a record not in [[records]]
+            if !record_names.contains(&output.record.as_str()) {
+                errors.push(ValidationError {
+                    message: format!(
+                        "task '{}' output references unknown record '{}'",
+                        task.name, output.record
+                    ),
+                    location: format!("{tloc}.outputs[{oidx}].record"),
+                    severity: Severity::Error,
+                });
+                continue;
+            }
+
+            // Rule 5: output variant not in that record's key_variants (only when variants is non-empty)
+            if !output.variants.is_empty() {
+                let rec = state.records.iter().find(|r| r.name == output.record);
+                if let Some(rec) = rec {
+                    for variant in &output.variants {
+                        if !rec.key_variants.contains(variant) {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "task '{}' output variant '{variant}' not found in record '{}' key_variants",
+                                    task.name, output.record
+                                ),
+                                location: format!("{tloc}.outputs[{oidx}].variants"),
+                                severity: Severity::Error,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Rule 4: binary task name not found in [[tasks]]
+    for (bidx, bin) in state.binaries.iter().enumerate() {
+        for task_name in &bin.tasks {
+            if !task_names.contains(&task_name.as_str()) {
+                errors.push(ValidationError {
+                    message: format!(
+                        "binary '{}' references task '{task_name}' which has no [[tasks]] entry",
+                        bin.name
+                    ),
+                    location: format!("binaries[{bidx}].tasks"),
+                    severity: Severity::Error,
+                });
             }
         }
     }

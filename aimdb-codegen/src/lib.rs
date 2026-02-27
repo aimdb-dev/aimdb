@@ -54,10 +54,15 @@ pub mod validate;
 // ── Convenience re-exports ────────────────────────────────────────────────────
 
 pub use mermaid::generate_mermaid;
-pub use rust::{generate_cargo_toml, generate_lib_rs, generate_rust, generate_schema_rs};
+pub use rust::{
+    generate_binary_cargo_toml, generate_cargo_toml, generate_hub_cargo_toml, generate_hub_main_rs,
+    generate_hub_schema_rs, generate_hub_tasks_rs, generate_lib_rs, generate_main_rs,
+    generate_rust, generate_schema_rs, generate_tasks_rs,
+};
 pub use rust::{to_pascal_case, to_snake_case};
 pub use state::{
-    ArchitectureState, BufferType, ConnectorDef, ConnectorDirection, DecisionEntry, FieldDef, Meta,
-    ObservableDef, ProjectDef, RecordDef, SerializationType,
+    ArchitectureState, BinaryDef, BufferType, ConnectorDef, ConnectorDirection, DecisionEntry,
+    ExternalConnectorDef, FieldDef, Meta, ObservableDef, ProjectDef, RecordDef, SerializationType,
+    TaskDef, TaskIo, TaskType,
 };
 pub use validate::{is_valid, validate, Severity, ValidationError};
