@@ -1,8 +1,8 @@
 # Design: AimDB WASM Adapter
 
-**Status:** 📋 Proposed  
+**Status:** ✅ Implemented  
 **Milestone:** M12 — Browser Runtime  
-**Revision:** 1 (2026-02-27)  
+**Revision:** 2 (2025-07-18)  
 **Crate:** `aimdb-wasm-adapter` (open source, `aimdb` workspace)
 
 ---
