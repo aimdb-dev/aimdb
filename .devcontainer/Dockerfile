@@ -63,7 +63,8 @@ ENV PATH="/home/$USERNAME/.cargo/bin:${PATH}"
 # Add embedded targets for AimDB MCU support
 RUN rustup target add thumbv7em-none-eabihf \
     && rustup target add thumbv6m-none-eabi \
-    && rustup target add thumbv7m-none-eabi
+    && rustup target add thumbv7m-none-eabi \
+    && rustup target add wasm32-unknown-unknown
 
 # Install core AimDB development tools
 RUN cargo install cargo-audit cargo-watch cargo-expand

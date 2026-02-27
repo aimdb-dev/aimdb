@@ -14,6 +14,7 @@ members = [
     "aimdb-mqtt-connector",
     "aimdb-knx-connector",
     "aimdb-websocket-connector",
+    "aimdb-wasm-adapter",
     "tools/aimdb-cli",
     "tools/aimdb-mcp",
     "examples/knx-connector-demo-common",

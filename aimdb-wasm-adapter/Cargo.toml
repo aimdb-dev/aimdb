@@ -1,0 +1,57 @@
+[package]
+name = "aimdb-wasm-adapter"
+version = "0.5.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "WebAssembly runtime adapter for AimDB - browser-native async runtime support"
+keywords = ["wasm", "webassembly", "browser", "async", "database"]
+categories = ["wasm", "asynchronous", "database-implementations"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["wasm-runtime"]
+
+# Runtime features
+wasm-runtime = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
+
+[dependencies]
+# Executor traits (no_std compatible)
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
+
+# Core AimDB types (alloc only — no std, no tokio)
+aimdb-core = { version = "0.5.0", path = "../aimdb-core", default-features = false, features = [
+    "alloc",
+] }
+
+# WASM bindings
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "console",
+    "Performance",
+    "Window",
+] }
+
+# Serialization (no_std + alloc)
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+
+# Async utilities (minimal, no_std compatible)
+futures-util = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("std"))',
+] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

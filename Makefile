@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded examples deny audit security publish publish-check
+.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check
 .DEFAULT_GOAL := help
 
 # Colors for output
@@ -28,6 +28,7 @@ help:
 	@printf "  $(YELLOW)Testing Commands:$(NC)\n"
 	@printf "    check                Comprehensive development check (fmt + clippy + all tests)\n"
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
+	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
 	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
@@ -37,6 +38,10 @@ help:
 	@printf "  $(YELLOW)Release Management:$(NC)\n"
 	@printf "    publish-check        Test crates.io publish (dry-run, no git commit required)\n"
 	@printf "    publish              Publish all crates to crates.io (requires clean git state)\n"
+	@printf "\n"
+	@printf "  $(YELLOW)WASM Commands:$(NC)\n"
+	@printf "    wasm                 Build WASM adapter with wasm-pack\n"
+	@printf "    wasm-test            Run WASM tests in headless browser\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Convenience:$(NC)\n"
 	@printf "    all           Build everything\n"
@@ -70,6 +75,8 @@ build:
 	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Building WebSocket connector$(NC)\n"
 	cargo build --package aimdb-websocket-connector --features "tokio-runtime"
+	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
+	cargo build --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
@@ -108,7 +115,7 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -117,7 +124,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -172,6 +179,8 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
 	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
+	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
@@ -198,6 +207,8 @@ doc:
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "embassy-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
+	@printf "$(YELLOW)  → Building WASM/browser documentation$(NC)\n"
+	cargo doc --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" --no-deps
 	@printf "$(YELLOW)  → Creating main index page$(NC)\n"
 	@cp docs/index.html target/doc-final/index.html
 	@printf "$(BLUE)Documentation generated at: file://$(PWD)/target/doc-final/index.html$(NC)\n"
@@ -207,6 +218,12 @@ clean:
 	cargo clean
 
 ## Testing commands
+test-wasm:
+	@printf "$(BLUE)Testing WASM cross-compilation compatibility...$(NC)\n"
+	@printf "$(YELLOW)  → Checking aimdb-wasm-adapter on wasm32-unknown-unknown target$(NC)\n"
+	cargo check --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
+	@printf "$(GREEN)✓ WASM target compatibility verified!$(NC)\n"
+
 test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc) on thumbv7em-none-eabihf target$(NC)\n"
@@ -370,13 +387,33 @@ publish:
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
 
 ## Convenience commands
-check: fmt-check clippy test test-embedded deny
+check: fmt-check clippy test test-embedded test-wasm deny
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
 	@printf "$(BLUE)✓ All valid feature combinations tested$(NC)\n"
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
+	@printf "$(BLUE)✓ WASM target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ Dependencies verified (deny)$(NC)\n"
 	
+## WASM commands
+wasm:
+	@printf "$(GREEN)Building WASM adapter with wasm-pack...$(NC)\n"
+	@if ! command -v wasm-pack >/dev/null 2>&1; then \
+		printf "$(YELLOW)  ⚠ wasm-pack not found, installing...$(NC)\n"; \
+		cargo install wasm-pack --locked; \
+	fi
+	cd aimdb-wasm-adapter && wasm-pack build --target web --out-dir pkg
+	@printf "$(GREEN)✓ WASM build complete! Output in aimdb-wasm-adapter/pkg/$(NC)\n"
+
+wasm-test:
+	@printf "$(GREEN)Running WASM tests in headless browser...$(NC)\n"
+	@if ! command -v wasm-pack >/dev/null 2>&1; then \
+		printf "$(YELLOW)  ⚠ wasm-pack not found, installing...$(NC)\n"; \
+		cargo install wasm-pack --locked; \
+	fi
+	cd aimdb-wasm-adapter && wasm-pack test --headless --chrome
+	@printf "$(GREEN)✓ WASM tests passed!$(NC)\n"
+
 all: build test examples
 	@printf "$(GREEN)Build and test completed!$(NC)\n"
