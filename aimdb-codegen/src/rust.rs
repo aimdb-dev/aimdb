@@ -234,6 +234,7 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
         .filter_map(|c| match c.protocol.as_str() {
             "mqtt" => Some(quote! { use aimdb_mqtt_connector::MqttConnector; }),
             "knx" => Some(quote! { use aimdb_knx_connector::KnxConnector; }),
+            "ws" => Some(quote! { use aimdb_websocket_connector::WebSocketConnector; }),
             _ => None,
         })
         .collect();
@@ -249,6 +250,12 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
             let ctor: TokenStream = match c.protocol.as_str() {
                 "mqtt" => quote! { MqttConnector::new(&#var_ident) },
                 "knx" => quote! { KnxConnector::new(&#var_ident) },
+                "ws" => quote! {
+                    WebSocketConnector::new()
+                        .bind(#var_ident.parse::<std::net::SocketAddr>()
+                            .expect("invalid WebSocket bind address"))
+                        .path("/ws")
+                },
                 _ => {
                     let msg = format!("build connector for protocol '{}'", c.protocol);
                     quote! { todo!(#msg) }
@@ -449,6 +456,7 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
 
     let has_mqtt = bin.external_connectors.iter().any(|c| c.protocol == "mqtt");
     let has_knx = bin.external_connectors.iter().any(|c| c.protocol == "knx");
+    let has_ws = bin.external_connectors.iter().any(|c| c.protocol == "ws");
 
     let mut optional_connector_deps = String::new();
     if has_mqtt {
@@ -459,6 +467,11 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
     if has_knx {
         optional_connector_deps.push_str(
             "aimdb-knx-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+        );
+    }
+    if has_ws {
+        optional_connector_deps.push_str(
+            "aimdb-websocket-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
         );
     }
 
@@ -1268,10 +1281,10 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
         .records
         .iter()
         .any(|r| r.connectors.iter().any(|c| c.protocol == "knx"));
-    let has_websocket = state
+    let has_ws = state
         .records
         .iter()
-        .any(|r| r.connectors.iter().any(|c| c.protocol == "websocket"));
+        .any(|r| r.connectors.iter().any(|c| c.protocol == "ws"));
 
     let mut connector_deps = String::new();
     if has_mqtt {
@@ -1284,8 +1297,10 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
             "aimdb-knx-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
         );
     }
-    if has_websocket {
-        connector_deps.push_str("# aimdb-websocket-connector is in aimdb-pro — add path dep here\n# aimdb-websocket-connector = { path = \"../../aimdb-pro/aimdb-websocket-connector\" }\n");
+    if has_ws {
+        connector_deps.push_str(
+            "aimdb-websocket-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+        );
     }
 
     format!(
@@ -1335,6 +1350,10 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
         .records
         .iter()
         .any(|r| r.connectors.iter().any(|c| c.protocol == "knx"));
+    let has_ws = state
+        .records
+        .iter()
+        .any(|r| r.connectors.iter().any(|c| c.protocol == "ws"));
 
     // ── Connector use statements ──────────────────────────────────────────
     let connector_use_stmts: Vec<TokenStream> = {
@@ -1344,6 +1363,9 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
         }
         if has_knx {
             v.push(quote! { use aimdb_knx_connector::KnxConnector; });
+        }
+        if has_ws {
+            v.push(quote! { use aimdb_websocket_connector::WebSocketConnector; });
         }
         v
     };
@@ -1364,6 +1386,14 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
                     .unwrap_or_else(|_| "224.0.23.12:3671".to_string());
             });
         }
+        if has_ws {
+            ts.extend(quote! {
+                let ws_bind: std::net::SocketAddr = std::env::var("WS_BIND")
+                    .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
+                    .parse()
+                    .expect("invalid WS_BIND address");
+            });
+        }
         ts
     };
 
@@ -1375,6 +1405,9 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
         }
         if has_knx {
             v.push(quote! { .with_connector(KnxConnector::new(&knx_gateway)) });
+        }
+        if has_ws {
+            v.push(quote! { .with_connector(WebSocketConnector::new().bind(ws_bind).path("/ws")) });
         }
         v
     };
@@ -1474,11 +1507,11 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
     let key_type = format_ident!("{}Key", rec.name);
     let buffer_tokens = rec.buffer.to_tokens(rec.capacity);
 
-    // Only emit connector chain for mqtt/knx outbound (websocket is a pro feature)
-    let has_outbound = rec.connectors.iter().any(|c| {
-        matches!(c.direction, ConnectorDirection::Outbound)
-            && matches!(c.protocol.as_str(), "mqtt" | "knx")
-    });
+    // Only emit connector chain for outbound connectors
+    let has_outbound = rec
+        .connectors
+        .iter()
+        .any(|c| matches!(c.direction, ConnectorDirection::Outbound));
     let outbound_chain = if has_outbound {
         quote! {
             .link_to(addr)
