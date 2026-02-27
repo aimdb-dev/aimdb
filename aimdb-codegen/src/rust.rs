@@ -231,12 +231,10 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
     let connector_use_stmts: Vec<TokenStream> = bin
         .external_connectors
         .iter()
-        .filter_map(|c| {
-            match c.protocol.as_str() {
-                "mqtt" => Some(quote! { use aimdb_mqtt_connector::MqttConnector; }),
-                "knx" => Some(quote! { use aimdb_knx_connector::KnxConnector; }),
-                _ => None,
-            }
+        .filter_map(|c| match c.protocol.as_str() {
+            "mqtt" => Some(quote! { use aimdb_mqtt_connector::MqttConnector; }),
+            "knx" => Some(quote! { use aimdb_knx_connector::KnxConnector; }),
+            _ => None,
         })
         .collect();
 
@@ -378,9 +376,7 @@ pub fn generate_tasks_rs(state: &ArchitectureState, binary_name: &str) -> Option
             let fn_name = format_ident!("{}", task.name);
 
             // Build parameter list
-            let mut params: Vec<TokenStream> = vec![
-                quote! { ctx: RuntimeContext<TokioAdapter> },
-            ];
+            let mut params: Vec<TokenStream> = vec![quote! { ctx: RuntimeContext<TokioAdapter> }];
             for input in &task.inputs {
                 let arg_name = format_ident!("{}", to_snake_case(&input.record));
                 let value_type = format_ident!("{}Value", input.record);
@@ -677,7 +673,9 @@ fn emit_connector_address_fns(rec: &RecordDef) -> TokenStream {
             let fn_name = format_ident!("{}_{}_address", record_snake, conn.protocol);
             let doc = format!(
                 "Link address for `{}` — {} connector (`{}`).",
-                rec.name, conn.protocol, conn.direction_label(),
+                rec.name,
+                conn.protocol,
+                conn.direction_label(),
             );
 
             let arms: Vec<TokenStream> = rec
@@ -794,7 +792,8 @@ fn emit_record_configure_block(rec: &RecordDef) -> TokenStream {
     // everything must be a single fluent chain starting from `reg.buffer(...)`.
     // We build two branches: one with connectors wired (when all addresses
     // resolve), one plain buffer fallback.
-    let linked_chain = emit_connector_chain(&rec.connectors, &value_type, &buffer_tokens, is_custom);
+    let linked_chain =
+        emit_connector_chain(&rec.connectors, &value_type, &buffer_tokens, is_custom);
     let addr_conditions: Vec<TokenStream> = (0..rec.connectors.len())
         .map(|i| {
             let addr_var = format_ident!("addr_{}", i);
@@ -1691,7 +1690,6 @@ pub async fn {task_name}() {{\n\
 }}\n\n"
         ));
     }
-
 
     format!(
         "// Implement task bodies; signatures are derived from state.toml [[tasks]].\n\

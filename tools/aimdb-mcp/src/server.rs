@@ -515,6 +515,121 @@ impl McpServer {
                 }),
             },
             Tool {
+                name: "propose_add_task".to_string(),
+                description: "Propose adding a new task definition. Tasks are async functions that produce, transform, or consume record data. Present the proposal to the user before calling resolve_proposal.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "snake_case task function name, e.g. \"sensor_polling_task\""
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Human-readable description of the proposal shown to the user"
+                        },
+                        "task_type": {
+                            "type": "string",
+                            "enum": ["transform", "agent", "source", "tap"],
+                            "description": "Functional role: source (autonomous producer writing to a record), transform (reactive derivation from input records to output record), tap (read-only observer, no output records), agent (LLM reasoning loop). Default: transform"
+                        },
+                        "inputs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "record": { "type": "string", "description": "PascalCase record name to read from" },
+                                    "variants": { "type": "array", "items": { "type": "string" }, "description": "Specific variants to consume (empty = all)" }
+                                },
+                                "required": ["record"]
+                            },
+                            "description": "Records this task reads from"
+                        },
+                        "outputs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "record": { "type": "string", "description": "PascalCase record name to write to" },
+                                    "variants": { "type": "array", "items": { "type": "string" }, "description": "Specific variants to produce (empty = all)" }
+                                },
+                                "required": ["record"]
+                            },
+                            "description": "Records this task writes to"
+                        }
+                    },
+                    "required": ["name", "description"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "propose_add_binary".to_string(),
+                description: "Propose adding a new binary definition. Binaries are deployable crates that group tasks together and optionally declare external broker connections. Present the proposal to the user before calling resolve_proposal.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Crate directory name, e.g. \"weather-sentinel-hub\""
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Human-readable description of the proposal shown to the user"
+                        },
+                        "tasks": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Task names belonging to this binary (must match [[tasks]] entries)"
+                        },
+                        "external_connectors": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "protocol": { "type": "string", "description": "Protocol identifier, e.g. \"mqtt\"" },
+                                    "env_var": { "type": "string", "description": "Environment variable for the broker URL" },
+                                    "default": { "type": "string", "description": "Default URL when env var is not set" }
+                                },
+                                "required": ["protocol", "env_var"]
+                            },
+                            "description": "Runtime broker connections needed by this binary"
+                        }
+                    },
+                    "required": ["name", "description"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "remove_task".to_string(),
+                description: "Propose removal of an existing task. Creates a pending proposal — call resolve_proposal to confirm. Note: removing a task affects binaries that reference it.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_name": {
+                            "type": "string",
+                            "description": "snake_case name of the task to remove"
+                        }
+                    },
+                    "required": ["task_name"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "remove_binary".to_string(),
+                description: "Propose removal of an existing binary. Creates a pending proposal — call resolve_proposal to confirm. Task definitions are preserved; only the binary grouping is removed.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "binary_name": {
+                            "type": "string",
+                            "description": "Name of the binary crate to remove"
+                        }
+                    },
+                    "required": ["binary_name"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
                 name: "resolve_proposal".to_string(),
                 description: "Resolve a pending proposal. On confirm: applies the change, writes state.toml, generates Mermaid and Rust artefacts. On reject: discards without changes. On revise: discards with a redirect message.".to_string(),
                 input_schema: json!({
@@ -522,7 +637,7 @@ impl McpServer {
                     "properties": {
                         "proposal_id": {
                             "type": "string",
-                            "description": "The proposal ID returned by propose_add_record, propose_modify_buffer, propose_add_connector, propose_modify_fields, propose_modify_key_variants, remove_record, or rename_record"
+                            "description": "The proposal ID returned by any propose_* tool, remove_record, rename_record, remove_task, or remove_binary"
                         },
                         "resolution": {
                             "type": "string",
@@ -685,9 +800,13 @@ impl McpServer {
             "propose_modify_key_variants" => {
                 tools::propose_modify_key_variants(params.arguments).await?
             }
+            "propose_add_task" => tools::propose_add_task(params.arguments).await?,
+            "propose_add_binary" => tools::propose_add_binary(params.arguments).await?,
             "resolve_proposal" => tools::resolve_proposal(params.arguments).await?,
             "remove_record" => tools::remove_record(params.arguments).await?,
             "rename_record" => tools::rename_record(params.arguments).await?,
+            "remove_task" => tools::remove_task(params.arguments).await?,
+            "remove_binary" => tools::remove_binary(params.arguments).await?,
             "validate_against_instance" => {
                 tools::validate_against_instance(params.arguments).await?
             }

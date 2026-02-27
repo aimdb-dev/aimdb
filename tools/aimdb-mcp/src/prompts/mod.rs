@@ -280,6 +280,36 @@ If the user says "one per device" without listing them:
 The agent may derive device lists from fleet manifests, config files, or API
 responses the user provides.
 
+## Tasks and Binaries
+
+After records are defined, help the user define **tasks** — the async functions
+that source, transform, or tap data — and **binaries** — the deployable
+crates that group tasks together.
+
+### Task Types
+- **Source**: Autonomous producer that generates data and writes to a record (sensor polling, simulation, periodic computation). Mutually exclusive with Transform on the same record.
+- **Transform**: Reactive derivation that reads one or more input records, computes, and writes to an output record (map, accumulate, join). Mutually exclusive with Source on the same record.
+- **Tap**: Read-only observer that subscribes to a record and reacts to values without writing output records (logging, metrics, triggering side-effects).
+- **Agent**: LLM-driven reasoning loop that reads records, reasons over them, and writes conclusions or actions to output records (anomaly detection, cross-correlation, adaptive control).
+
+Note: External data flow (MQTT, KNX, WebSocket) is handled by **connectors** via
+`link_from` (inbound) and `link_to` (outbound) — not by tasks.
+
+### Task I/O
+Each task declares its inputs (records it reads) and outputs (records it writes).
+Optionally filter by variant: `{ record = "Temperature", variants = ["Indoor"] }`.
+
+### Binaries
+A binary groups tasks into a deployable crate. Each binary can also declare
+`external_connectors` for runtime broker connections (MQTT, KNX) with env vars.
+
+### Ideation Flow for Tasks
+1. Once records are settled, ask: "What processes operate on this data?"
+2. For each process, resolve: task type, which records it reads/writes
+3. Propose with `propose_add_task`
+4. After tasks are defined, ask about deployment grouping
+5. Propose binaries with `propose_add_binary`
+
 ## Mermaid Conventions
 
 Read `aimdb://architecture/conventions` for the full specification. Summary:
@@ -428,6 +458,11 @@ you have enough to make the first record proposal.
 ### 5. Platform target
 > "Are you running on embedded hardware, edge servers, cloud, or a mix?"
 > This affects connector and buffer choices.
+
+### 6. Processing and deployment
+> "What processing happens between data sources and consumers?
+> (transformation, aggregation, anomaly detection, forwarding...)"
+> This maps to task definitions and binary grouping.
 
 ## Transition to Proposals
 

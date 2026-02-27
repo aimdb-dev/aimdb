@@ -9,7 +9,9 @@
 pub mod conflicts;
 pub mod session;
 
-use aimdb_codegen::{generate_mermaid, generate_rust, ArchitectureState, RecordDef};
+use aimdb_codegen::{
+    generate_mermaid, generate_rust, ArchitectureState, BinaryDef, RecordDef, TaskDef,
+};
 use chrono::Utc;
 use fs2::FileExt;
 use once_cell::sync::OnceCell;
@@ -196,6 +198,14 @@ pub enum ProposedChange {
         key_variants: Vec<String>,
         key_prefix: Option<String>,
     },
+    /// Add a new task definition to state.toml
+    AddTask { task: TaskDef },
+    /// Remove an existing task by name
+    RemoveTask { task_name: String },
+    /// Add a new binary definition to state.toml
+    AddBinary { binary: BinaryDef },
+    /// Remove an existing binary by name
+    RemoveBinary { binary_name: String },
 }
 
 /// Resolution for a proposal.
@@ -293,6 +303,30 @@ pub fn apply_change(state: &mut ArchitectureState, change: &ProposedChange) -> a
             if let Some(prefix) = key_prefix {
                 rec.key_prefix = prefix.clone();
             }
+        }
+
+        ProposedChange::AddTask { task } => {
+            if let Some(pos) = state.tasks.iter().position(|t| t.name == task.name) {
+                state.tasks[pos] = task.clone();
+            } else {
+                state.tasks.push(task.clone());
+            }
+        }
+
+        ProposedChange::RemoveTask { task_name } => {
+            state.tasks.retain(|t| &t.name != task_name);
+        }
+
+        ProposedChange::AddBinary { binary } => {
+            if let Some(pos) = state.binaries.iter().position(|b| b.name == binary.name) {
+                state.binaries[pos] = binary.clone();
+            } else {
+                state.binaries.push(binary.clone());
+            }
+        }
+
+        ProposedChange::RemoveBinary { binary_name } => {
+            state.binaries.retain(|b| &b.name != binary_name);
         }
     }
 

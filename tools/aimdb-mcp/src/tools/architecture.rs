@@ -3,7 +3,8 @@
 //! Provides typed proposal tools for the architecture agent ideation loop:
 //! `get_architecture`, `propose_add_record`, `propose_modify_buffer`,
 //! `propose_add_connector`, `propose_modify_fields`, `propose_modify_key_variants`,
-//! `resolve_proposal`, `remove_record`, `rename_record`,
+//! `propose_add_task`, `propose_add_binary`,
+//! `resolve_proposal`, `remove_record`, `rename_record`, `remove_task`, `remove_binary`,
 //! `validate_against_instance`, `get_buffer_metrics`, `reset_session`.
 //!
 //! All proposal-related tools are routed through the session state machine,
@@ -321,6 +322,154 @@ pub async fn propose_modify_key_variants(args: Option<Value>) -> McpResult<Value
     Ok(serde_json::json!({
         "proposal_id": proposal_id,
         "message": "Proposal created. Present it to the user and call resolve_proposal with their decision.",
+    }))
+}
+
+// ── propose_add_task ─────────────────────────────────────────────────────────
+
+/// Add a new task definition. Tasks are async functions that source, transform,
+/// or tap data in records.
+pub async fn propose_add_task(args: Option<Value>) -> McpResult<Value> {
+    debug!("propose_add_task called");
+
+    const SCHEMA_HINT: &str = concat!(
+        "Expected fields:\n",
+        "  name        : string  — snake_case task function name (required)\n",
+        "  description : string  — human-readable description (required)\n",
+        "  task_type   : string  — \"source\" | \"transform\" | \"tap\" | \"agent\" (default: \"transform\")\n",
+        "  inputs      : [{record, variants?}][] — records this task reads from (optional)\n",
+        "  outputs     : [{record, variants?}][] — records this task writes to (optional)"
+    );
+
+    #[derive(Debug, Deserialize)]
+    struct Params {
+        description: String,
+        #[serde(flatten)]
+        task: aimdb_codegen::TaskDef,
+    }
+
+    let p: Params = serde_json::from_value(args.unwrap_or(Value::Null))
+        .map_err(|e| McpError::InvalidParams(format!("propose_add_task: {e}\n\n{SCHEMA_HINT}")))?;
+
+    let proposal_id = submit_proposal(Proposal {
+        id: next_proposal_id(),
+        change_type: "add_task".to_string(),
+        description: p.description,
+        change: ProposedChange::AddTask { task: p.task },
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })?;
+
+    Ok(serde_json::json!({
+        "proposal_id": proposal_id,
+        "message": "Proposal created. Present it to the user and call resolve_proposal with their decision.",
+    }))
+}
+
+// ── propose_add_binary ──────────────────────────────────────────────────────
+
+/// Add a new binary definition. Binaries are deployable crates that group
+/// tasks and optionally declare external broker connections.
+pub async fn propose_add_binary(args: Option<Value>) -> McpResult<Value> {
+    debug!("propose_add_binary called");
+
+    const SCHEMA_HINT: &str = concat!(
+        "Expected fields:\n",
+        "  name                : string  — crate directory name (required)\n",
+        "  description         : string  — human-readable description (required)\n",
+        "  tasks               : string[] — task names belonging to this binary (optional)\n",
+        "  external_connectors : [{protocol, env_var, default}][] — broker connections (optional)"
+    );
+
+    #[derive(Debug, Deserialize)]
+    struct Params {
+        description: String,
+        #[serde(flatten)]
+        binary: aimdb_codegen::BinaryDef,
+    }
+
+    let p: Params = serde_json::from_value(args.unwrap_or(Value::Null)).map_err(|e| {
+        McpError::InvalidParams(format!("propose_add_binary: {e}\n\n{SCHEMA_HINT}"))
+    })?;
+
+    let proposal_id = submit_proposal(Proposal {
+        id: next_proposal_id(),
+        change_type: "add_binary".to_string(),
+        description: p.description,
+        change: ProposedChange::AddBinary { binary: p.binary },
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })?;
+
+    Ok(serde_json::json!({
+        "proposal_id": proposal_id,
+        "message": "Proposal created. Present it to the user and call resolve_proposal with their decision.",
+    }))
+}
+
+// ── remove_task ─────────────────────────────────────────────────────────────
+
+/// Propose removal of an existing task (creates a pending proposal).
+///
+/// Enforces session phase: must be in `Gathering` phase.
+pub async fn remove_task(args: Option<Value>) -> McpResult<Value> {
+    debug!("remove_task called");
+
+    #[derive(Debug, Deserialize)]
+    struct Params {
+        task_name: String,
+    }
+
+    let params: Params = serde_json::from_value(args.unwrap_or(Value::Null))
+        .map_err(|e| McpError::InvalidParams(format!("remove_task: {e}")))?;
+
+    let proposal_id = submit_proposal(Proposal {
+        id: next_proposal_id(),
+        change_type: "remove_task".to_string(),
+        description: format!("Remove task '{}'", params.task_name),
+        change: ProposedChange::RemoveTask {
+            task_name: params.task_name.clone(),
+        },
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })?;
+
+    Ok(serde_json::json!({
+        "proposal_id": proposal_id,
+        "task_name": params.task_name,
+        "warning": "Removing this task will affect any binaries that reference it and any records listing it as a producer/consumer.",
+        "message": "Removal proposal created. Present to the user, then call resolve_proposal.",
+    }))
+}
+
+// ── remove_binary ───────────────────────────────────────────────────────────
+
+/// Propose removal of an existing binary (creates a pending proposal).
+///
+/// Enforces session phase: must be in `Gathering` phase.
+pub async fn remove_binary(args: Option<Value>) -> McpResult<Value> {
+    debug!("remove_binary called");
+
+    #[derive(Debug, Deserialize)]
+    struct Params {
+        binary_name: String,
+    }
+
+    let params: Params = serde_json::from_value(args.unwrap_or(Value::Null))
+        .map_err(|e| McpError::InvalidParams(format!("remove_binary: {e}")))?;
+
+    let proposal_id = submit_proposal(Proposal {
+        id: next_proposal_id(),
+        change_type: "remove_binary".to_string(),
+        description: format!("Remove binary '{}'", params.binary_name),
+        change: ProposedChange::RemoveBinary {
+            binary_name: params.binary_name.clone(),
+        },
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })?;
+
+    Ok(serde_json::json!({
+        "proposal_id": proposal_id,
+        "binary_name": params.binary_name,
+        "warning": "Removing this binary will delete the generated crate scaffold. The task definitions themselves are preserved.",
+        "message": "Removal proposal created. Present to the user, then call resolve_proposal.",
     }))
 }
 

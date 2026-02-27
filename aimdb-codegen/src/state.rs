@@ -235,10 +235,10 @@ pub enum TaskType {
     Transform,
     /// LLM-driven reasoning loop, flags anomalies, cross-correlates data.
     Agent,
-    /// Fetches external data and produces values into a record.
-    Producer,
+    /// Fetches external data and writes values into a record.
+    Source,
     /// Forwards, stores, or logs values — no output records in the DB.
-    Sink,
+    Tap,
 }
 
 /// One `[[tasks.inputs]]` or `[[tasks.outputs]]` entry.

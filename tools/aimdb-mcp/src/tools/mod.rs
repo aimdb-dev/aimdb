@@ -26,9 +26,10 @@ pub(crate) fn connection_pool() -> Option<&'static ConnectionPool> {
 
 // Re-export tool functions
 pub use architecture::{
-    get_architecture, get_buffer_metrics, propose_add_connector, propose_add_record,
-    propose_modify_buffer, propose_modify_fields, propose_modify_key_variants, remove_record,
-    rename_record, reset_session, resolve_proposal, save_memory, validate_against_instance,
+    get_architecture, get_buffer_metrics, propose_add_binary, propose_add_connector,
+    propose_add_record, propose_add_task, propose_modify_buffer, propose_modify_fields,
+    propose_modify_key_variants, remove_binary, remove_record, remove_task, rename_record,
+    reset_session, resolve_proposal, save_memory, validate_against_instance,
 };
 pub use graph::{graph_edges, graph_nodes, graph_topo_order};
 pub use instance::{discover_instances, get_instance_info};
