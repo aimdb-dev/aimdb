@@ -17,7 +17,13 @@ crate-type = ["cdylib", "rlib"]
 default = ["wasm-runtime"]
 
 # Runtime features
-wasm-runtime = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
+wasm-runtime = [
+    "wasm-bindgen",
+    "wasm-bindgen-futures",
+    "js-sys",
+    "web-sys",
+    "serde-wasm-bindgen",
+]
 
 [dependencies]
 # Executor traits (no_std compatible)
@@ -28,13 +34,20 @@ aimdb-core = { version = "0.5.0", path = "../aimdb-core", default-features = fal
     "alloc",
 ] }
 
+# Data contracts (alloc only — no std)
+aimdb-data-contracts = { version = "0.5.0", path = "../aimdb-data-contracts", default-features = false, features = [
+    "alloc",
+] }
+
 # WASM bindings
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "console",
+    "MessageEvent",
     "Performance",
+    "WebSocket",
     "Window",
 ] }
 

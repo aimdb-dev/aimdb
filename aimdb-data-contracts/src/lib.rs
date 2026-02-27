@@ -36,6 +36,9 @@ extern crate alloc;
 
 pub mod contracts;
 
+mod streamable;
+pub use streamable::{is_streamable, Streamable};
+
 #[cfg(feature = "linkable")]
 mod linkable;
 

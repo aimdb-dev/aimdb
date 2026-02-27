@@ -39,6 +39,12 @@ pub mod logger;
 pub mod runtime;
 pub mod time;
 
+#[cfg(feature = "wasm-runtime")]
+pub mod bindings;
+
+#[cfg(feature = "wasm-runtime")]
+pub mod ws_bridge;
+
 // Re-export the adapter type at crate root
 pub use runtime::WasmAdapter;
 

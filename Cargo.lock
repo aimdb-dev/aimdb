@@ -277,6 +277,7 @@ name = "aimdb-wasm-adapter"
 version = "0.5.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-executor",
  "futures-util",
  "js-sys",
