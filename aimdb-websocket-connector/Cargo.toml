@@ -1,0 +1,52 @@
+[package]
+name = "aimdb-websocket-connector"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "WebSocket connector for AimDB — real-time bidirectional streaming"
+
+[features]
+default = ["tokio-runtime"]
+tokio-runtime = [
+    "aimdb-core/std",
+    "aimdb-executor/std",
+    "dep:tokio",
+    "dep:axum",
+    "dep:tower-http",
+]
+tracing = ["dep:tracing"]
+
+[dependencies]
+aimdb-core = { path = "../aimdb-core", default-features = false }
+aimdb-executor = { path = "../aimdb-executor", default-features = false }
+
+# Async runtime
+tokio = { version = "1", features = [
+    "rt",
+    "sync",
+    "macros",
+    "net",
+    "time",
+], optional = true }
+
+# WebSocket server
+axum = { version = "0.8", features = ["ws"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+dashmap = "6"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = [
+    "sink",
+] }
+
+# Observability
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-tungstenite = "0.26"

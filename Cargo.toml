@@ -13,6 +13,7 @@ members = [
     "aimdb-persistence-sqlite",
     "aimdb-mqtt-connector",
     "aimdb-knx-connector",
+    "aimdb-websocket-connector",
     "tools/aimdb-cli",
     "tools/aimdb-mcp",
     "examples/knx-connector-demo-common",

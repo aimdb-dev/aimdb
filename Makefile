@@ -68,6 +68,8 @@ build:
 	cargo build --package aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Building KNX connector$(NC)\n"
 	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
+	@printf "$(YELLOW)  → Building WebSocket connector$(NC)\n"
+	cargo build --package aimdb-websocket-connector --features "tokio-runtime"
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
@@ -101,10 +103,12 @@ test:
 	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
 	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
+	@printf "$(YELLOW)  → Testing WebSocket connector$(NC)\n"
+	cargo test --package aimdb-websocket-connector --features "tokio-runtime"
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -113,7 +117,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -166,6 +170,8 @@ clippy:
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (embassy + defmt)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
+	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime" --all-targets -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
@@ -184,6 +190,7 @@ doc:
 	cargo doc --package aimdb-mcp --no-deps
 	cargo doc --package aimdb-persistence --no-deps
 	cargo doc --package aimdb-persistence-sqlite --no-deps
+	cargo doc --package aimdb-websocket-connector --features "tokio-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
 	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps
@@ -301,59 +308,63 @@ publish:
 	else \
 		printf "$(BLUE)Running in CI mode - skipping confirmation$(NC)\n"; \
 	fi
-	@printf "$(YELLOW)  → Publishing aimdb-executor (1/13)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-executor (1/15)$(NC)\n"
 	@cargo publish -p aimdb-executor
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-derive (2/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-derive (2/15)$(NC)\n"
 	@cargo publish -p aimdb-derive
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-codegen (3/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-codegen (3/15)$(NC)\n"
 	@cargo publish -p aimdb-codegen
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-core (4/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-core (4/15)$(NC)\n"
 	@cargo publish -p aimdb-core
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (5/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (5/15)$(NC)\n"
 	@cargo publish -p aimdb-tokio-adapter
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (6/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (6/15)$(NC)\n"
 	@cargo publish -p aimdb-embassy-adapter --no-verify
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-client (7/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-client (7/15)$(NC)\n"
 	@cargo publish -p aimdb-client
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-sync (8/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-sync (8/15)$(NC)\n"
 	@cargo publish -p aimdb-sync
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence (9/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-persistence (9/15)$(NC)\n"
 	@cargo publish -p aimdb-persistence
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence-sqlite (10/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-persistence-sqlite (10/15)$(NC)\n"
 	@cargo publish -p aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (11/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (11/15)$(NC)\n"
 	@cargo publish -p aimdb-mqtt-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-knx-connector (12/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-knx-connector (12/15)$(NC)\n"
 	@cargo publish -p aimdb-knx-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-cli (13/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-websocket-connector (13/15)$(NC)\n"
+	@cargo publish -p aimdb-websocket-connector
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-cli (14/15)$(NC)\n"
 	@cargo publish -p aimdb-cli
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mcp (14/14)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-mcp (15/15)$(NC)\n"
 	@cargo publish -p aimdb-mcp
 	@printf "$(GREEN)✓ All crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
