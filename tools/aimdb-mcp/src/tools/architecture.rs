@@ -434,7 +434,7 @@ pub async fn remove_task(args: Option<Value>) -> McpResult<Value> {
     Ok(serde_json::json!({
         "proposal_id": proposal_id,
         "task_name": params.task_name,
-        "warning": "Removing this task will affect any binaries that reference it and any records listing it as a producer/consumer.",
+        "warning": "Removing this task will affect any binaries that reference it and any records listing it as a source/consumer.",
         "message": "Removal proposal created. Present to the user, then call resolve_proposal.",
     }))
 }

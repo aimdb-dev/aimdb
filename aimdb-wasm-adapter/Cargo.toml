@@ -34,6 +34,9 @@ aimdb-core = { version = "0.5.0", path = "../aimdb-core", default-features = fal
     "alloc",
 ] }
 
+# Shared WebSocket wire protocol (no_std + alloc)
+aimdb-ws-protocol = { version = "0.1.0", path = "../aimdb-ws-protocol", default-features = false }
+
 # Data contracts (alloc only — no std)
 aimdb-data-contracts = { version = "0.5.0", path = "../aimdb-data-contracts", default-features = false, features = [
     "alloc",

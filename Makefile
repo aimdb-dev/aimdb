@@ -73,6 +73,8 @@ build:
 	cargo build --package aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Building KNX connector$(NC)\n"
 	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
+	@printf "$(YELLOW)  → Building WS protocol$(NC)\n"
+	cargo build --package aimdb-ws-protocol
 	@printf "$(YELLOW)  → Building WebSocket connector$(NC)\n"
 	cargo build --package aimdb-websocket-connector --features "tokio-runtime"
 	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
@@ -110,12 +112,14 @@ test:
 	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
 	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
+	@printf "$(YELLOW)  → Testing WS protocol$(NC)\n"
+	cargo test --package aimdb-ws-protocol
 	@printf "$(YELLOW)  → Testing WebSocket connector$(NC)\n"
 	cargo test --package aimdb-websocket-connector --features "tokio-runtime"
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -124,7 +128,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
+	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -177,6 +181,8 @@ clippy:
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (embassy + defmt)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on WS protocol$(NC)\n"
+	cargo clippy --package aimdb-ws-protocol --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
 	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
@@ -199,6 +205,7 @@ doc:
 	cargo doc --package aimdb-mcp --no-deps
 	cargo doc --package aimdb-persistence --no-deps
 	cargo doc --package aimdb-persistence-sqlite --no-deps
+	cargo doc --package aimdb-ws-protocol --no-deps
 	cargo doc --package aimdb-websocket-connector --features "tokio-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
@@ -373,15 +380,19 @@ publish:
 	@cargo publish -p aimdb-knx-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-websocket-connector (13/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-ws-protocol (13/16)$(NC)\n"
+	@cargo publish -p aimdb-ws-protocol
+	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
+	@sleep 10
+	@printf "$(YELLOW)  → Publishing aimdb-websocket-connector (14/16)$(NC)\n"
 	@cargo publish -p aimdb-websocket-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-cli (14/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-cli (15/16)$(NC)\n"
 	@cargo publish -p aimdb-cli
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mcp (15/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-mcp (16/16)$(NC)\n"
 	@cargo publish -p aimdb-mcp
 	@printf "$(GREEN)✓ All crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"

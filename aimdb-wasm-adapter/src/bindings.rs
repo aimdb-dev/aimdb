@@ -15,11 +15,11 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::Cell;
 use core::fmt::Debug;
 
 use serde::de::DeserializeOwned;
@@ -32,6 +32,7 @@ use aimdb_core::record_id::StringKey;
 
 use aimdb_data_contracts::dispatch_streamable;
 
+use crate::ws_bridge::WsBridge;
 use crate::WasmAdapter;
 
 // ─── Option parsing ───────────────────────────────────────────────────────
@@ -233,6 +234,33 @@ impl WasmDb {
     pub fn is_built(&self) -> bool {
         self.db.is_some()
     }
+
+    /// Connect a WebSocket bridge to this database for server synchronization.
+    ///
+    /// The database remains usable for local `get()` / `set()` / `subscribe()`
+    /// after the bridge is opened — the bridge gets a cheap clone of the
+    /// internal `AimDb` handle (two `Arc` pointer copies).
+    ///
+    /// # Example (TypeScript)
+    /// ```ts
+    /// const bridge = db.connectBridge('wss://api.example.com/ws', {
+    ///   subscribeTopics: ['sensors/#'],
+    ///   autoReconnect: true,
+    /// });
+    /// bridge.onStatusChange((status) => console.log(status));
+    /// ```
+    #[wasm_bindgen(js_name = "connectBridge")]
+    pub fn connect_bridge(&self, url: &str, options: JsValue) -> Result<WsBridge, JsError> {
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| JsError::new("Database not built. Call build() first."))?
+            .clone(); // cheap: two Arc pointer copies
+
+        let schema_map = self.schema_map.clone();
+
+        WsBridge::new_internal(db, schema_map, url, options)
+    }
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────
@@ -316,6 +344,10 @@ where
 
 /// Subscribe to a record's buffer and invoke `callback` on each new value.
 /// Returns a JS function that cancels the subscription when called.
+///
+/// Uses `futures_util::future::select` to race `recv()` against a cancel
+/// future so the unsubscribe closure can break the loop immediately — even
+/// when `recv()` is blocked waiting for the next push.
 fn subscribe_typed<T>(
     db: &AimDb<WasmAdapter>,
     key: &str,
@@ -329,28 +361,46 @@ where
         .map_err(|e| JsError::new(&format!("{e:?}")))?;
 
     let callback = callback.clone();
-    let cancelled = alloc::rc::Rc::new(Cell::new(false));
-    let cancelled_inner = cancelled.clone();
+    let (cancel_token, cancel_handle) = crate::buffer::cancel_pair();
 
     wasm_bindgen_futures::spawn_local(async move {
-        while !cancelled_inner.get() {
-            match reader.recv().await {
-                Ok(val) => {
+        use core::task::Poll;
+        use futures_util::future::{select, Either};
+
+        loop {
+            // Future that resolves when cancel() is called.
+            let cancel_fut = core::future::poll_fn(|cx| {
+                if cancel_token.is_cancelled() {
+                    Poll::Ready(())
+                } else {
+                    cancel_token.register_waker(cx.waker());
+                    Poll::Pending
+                }
+            });
+
+            let recv_fut = reader.recv();
+
+            futures_util::pin_mut!(cancel_fut);
+            futures_util::pin_mut!(recv_fut);
+
+            match select(recv_fut, cancel_fut).await {
+                Either::Left((Ok(val), _)) => {
                     if let Ok(js) = serde_wasm_bindgen::to_value(&val) {
-                        // Invoke the JS callback: callback(value)
                         let _ = callback.call1(&JsValue::NULL, &js);
                     }
                 }
-                Err(_) => break,
+                Either::Left((Err(_), _)) => break, // buffer error
+                Either::Right(((), _)) => break,    // cancelled
             }
         }
     });
 
-    // Return an unsubscribe function
-    let unsub = Closure::once_into_js(move || {
-        cancelled.set(true);
-    });
-    Ok(unsub)
+    // Closure::wrap (not once_into_js) so it can be called multiple times
+    // (React StrictMode calls cleanup twice).
+    let unsub = Closure::wrap(Box::new(move || {
+        cancel_handle.cancel();
+    }) as Box<dyn FnMut()>);
+    Ok(unsub.into_js_value())
 }
 
 // ─── Sync future polling ──────────────────────────────────────────────────
@@ -364,7 +414,7 @@ where
 ///
 /// Panics if the future returns `Pending`. This should never happen for
 /// operations on `WasmBuffer` (which are single-threaded, non-blocking).
-fn poll_sync<F: core::future::Future>(f: F) -> F::Output {
+pub(crate) fn poll_sync<F: core::future::Future>(f: F) -> F::Output {
     use core::pin::Pin;
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 

@@ -35,6 +35,7 @@
 
 import {
     createContext,
+    useCallback,
     useContext,
     useEffect,
     useRef,
@@ -103,10 +104,10 @@ interface AimDbProviderProps {
 /**
  * Initializes the WASM AimDB instance and makes it available to descendants.
  *
- * - Loads the WASM module (async).
+ * - Loads and initializes the WASM module (async).
  * - Calls `configureRecord()` for each entry in `config.records`.
  * - Calls `await db.build()`.
- * - Optionally opens a `WsBridge` if `config.bridge` is provided.
+ * - Optionally opens a `WsBridge` via `db.connectBridge()`.
  * - Renders `children` once the database is ready.
  */
 export function AimDbProvider({
@@ -120,6 +121,11 @@ export function AimDbProvider({
         ready: false,
     });
 
+    // Refs so the cleanup closure always sees the latest handles
+    // (avoids the stale-closure bug where cleanup captures initial null state).
+    const dbRef = useRef<WasmDb | null>(null);
+    const bridgeRef = useRef<WsBridge | null>(null);
+
     useEffect(() => {
         let cancelled = false;
 
@@ -127,6 +133,10 @@ export function AimDbProvider({
             // Dynamic import so the WASM module is only loaded when the provider
             // mounts. Tree-shaking removes this path entirely if unused.
             const wasm = await import("../pkg/aimdb_wasm_adapter");
+
+            // Initialize the WASM binary (required by wasm-pack --target web
+            // before any constructors can be used). Idempotent on re-mount.
+            await wasm.default();
             if (cancelled) return;
 
             const db = new wasm.WasmDb();
@@ -143,14 +153,17 @@ export function AimDbProvider({
             await db.build();
             if (cancelled) return;
 
-            // Optionally connect WsBridge
+            dbRef.current = db;
+
+            // Optionally connect WsBridge (db.connectBridge borrows — db stays valid)
             let bridge: WsBridge | null = null;
             if (config.bridge) {
-                bridge = wasm.WsBridge.connect(db, config.bridge.url, {
+                bridge = db.connectBridge(config.bridge.url, {
                     subscribeTopics: config.bridge.subscribeTopics ?? [],
                     autoReconnect: config.bridge.autoReconnect ?? true,
                     lateJoin: config.bridge.lateJoin ?? true,
                 });
+                bridgeRef.current = bridge;
             }
 
             setCtx({ db, bridge, ready: true });
@@ -158,8 +171,15 @@ export function AimDbProvider({
 
         return () => {
             cancelled = true;
-            if (ctx.bridge) ctx.bridge.disconnect();
-            if (ctx.db) ctx.db.free();
+            // Cleanup uses refs — always sees the latest handles
+            if (bridgeRef.current) {
+                bridgeRef.current.disconnect();
+                bridgeRef.current = null;
+            }
+            if (dbRef.current) {
+                dbRef.current.free();
+                dbRef.current = null;
+            }
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -236,12 +256,17 @@ export function useRecord<T>(recordKey: string): T | null {
 export function useSetRecord<T>(recordKey: string): (value: T) => void {
     const { db, ready } = useContext(AimDbContext);
 
-    return (value: T) => {
-        if (!ready || !db) {
-            throw new Error("AimDB not ready. Wrap your app in <AimDbProvider>.");
-        }
-        db.set(recordKey, value);
-    };
+    return useCallback(
+        (value: T) => {
+            if (!ready || !db) {
+                throw new Error(
+                    "AimDB not ready. Wrap your app in <AimDbProvider>.",
+                );
+            }
+            db.set(recordKey, value);
+        },
+        [db, ready, recordKey],
+    );
 }
 
 /**
