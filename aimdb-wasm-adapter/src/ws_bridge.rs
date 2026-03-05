@@ -15,6 +15,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
@@ -23,7 +24,7 @@ use core::cell::RefCell;
 use core::fmt::Debug;
 
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use aimdb_core::builder::AimDb;
@@ -110,6 +111,8 @@ struct BridgeState {
     backoff_index: usize,
     /// Active keepalive interval ID (cleared on close/disconnect).
     keepalive_id: Option<i32>,
+    /// Keepalive ping closure (prevent GC while interval is active).
+    _ping_closure: Option<Closure<dyn FnMut()>>,
     /// Closures retained to prevent GC.
     _on_open: Option<Closure<dyn FnMut()>>,
     _on_message: Option<Closure<dyn FnMut(web_sys::MessageEvent)>>,
@@ -132,6 +135,10 @@ struct SharedCtx {
     backoff: Vec<u32>,
     url: String,
     ws_cell: Rc<RefCell<web_sys::WebSocket>>,
+    /// Pending query requests: correlation ID → (resolve, reject) JS functions.
+    pending_queries: Rc<RefCell<BTreeMap<String, (js_sys::Function, js_sys::Function)>>>,
+    /// Simple counter for generating unique query IDs.
+    query_id_counter: Rc<RefCell<u32>>,
 }
 
 // ─── WsBridge ─────────────────────────────────────────────────────────────
@@ -195,8 +202,15 @@ impl WsBridge {
             let mut state = self.ctx.state.borrow_mut();
             if state.pending_writes.len() < self.ctx.config.max_offline_queue {
                 state.pending_writes.push_back(msg);
+            } else {
+                web_sys::console::warn_1(
+                    &format!(
+                        "[WsBridge] Offline queue full ({} messages), dropping write for topic '{}'",
+                        self.ctx.config.max_offline_queue, topic
+                    )
+                    .into(),
+                );
             }
-            // else: drop (overflow policy)
         }
         Ok(())
     }
@@ -212,6 +226,7 @@ impl WsBridge {
             }
         }
         // Drop closures to break Rc cycles
+        state._ping_closure = None;
         state._on_open = None;
         state._on_message = None;
         state._on_close = None;
@@ -225,6 +240,79 @@ impl WsBridge {
     /// Current connection status as a string.
     pub fn status(&self) -> String {
         self.ctx.state.borrow().status.as_str().to_string()
+    }
+
+    /// Query historical / persisted records over the WebSocket connection.
+    ///
+    /// Returns a `Promise<Array>` that resolves with `QueryRecord[]`.
+    ///
+    /// ```ts
+    /// const records = await bridge.query('*', { from: 1700000000, to: 1700003600, limit: 500 });
+    /// ```
+    pub fn query(&self, pattern: &str, options: JsValue) -> js_sys::Promise {
+        let ctx = self.ctx.clone();
+        let pattern = pattern.to_string();
+
+        // Parse options
+        #[derive(Deserialize, Default)]
+        struct QueryOpts {
+            from: Option<u64>,
+            to: Option<u64>,
+            limit: Option<usize>,
+        }
+        let opts: QueryOpts = if options.is_undefined() || options.is_null() {
+            QueryOpts::default()
+        } else {
+            serde_wasm_bindgen::from_value(options).unwrap_or_default()
+        };
+
+        // Generate unique ID
+        let id = {
+            let mut counter = ctx.query_id_counter.borrow_mut();
+            *counter += 1;
+            format!("q{}", *counter)
+        };
+
+        // Create promise
+        let id_for_promise = id.clone();
+        js_sys::Promise::new(&mut move |resolve, reject| {
+            // Register pending query
+            ctx.pending_queries
+                .borrow_mut()
+                .insert(id_for_promise.clone(), (resolve, reject.clone()));
+
+            // Build and send query message
+            let msg = aimdb_ws_protocol::ClientMessage::Query {
+                id: id_for_promise.clone(),
+                pattern: pattern.clone(),
+                from: opts.from,
+                to: opts.to,
+                limit: opts.limit,
+            };
+
+            let state = ctx.state.borrow();
+            if state.status != ConnectionStatus::Connected {
+                drop(state);
+                ctx.pending_queries.borrow_mut().remove(&id_for_promise);
+                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("Not connected"));
+                return;
+            }
+            drop(state);
+
+            if let Err(e) = send_json(&ctx.ws_cell.borrow(), &msg) {
+                ctx.pending_queries.borrow_mut().remove(&id_for_promise);
+                let _ = reject.call1(
+                    &JsValue::NULL,
+                    &JsValue::from_str(&format!("Send failed: {e:?}")),
+                );
+            }
+        })
+    }
+}
+
+impl Drop for WsBridge {
+    fn drop(&mut self) {
+        self.disconnect();
     }
 }
 
@@ -254,6 +342,7 @@ impl WsBridge {
             pending_writes: alloc::collections::VecDeque::new(),
             backoff_index: 0,
             keepalive_id: None,
+            _ping_closure: None,
             _on_open: None,
             _on_message: None,
             _on_close: None,
@@ -271,6 +360,8 @@ impl WsBridge {
             backoff,
             url: url.to_string(),
             ws_cell,
+            pending_queries: Rc::new(RefCell::new(BTreeMap::new())),
+            query_id_counter: Rc::new(RefCell::new(0)),
         });
 
         install_ws_callbacks(&ctx);
@@ -332,10 +423,11 @@ fn install_ws_callbacks(ctx: &Rc<SharedCtx>) {
                         ping_closure.as_ref().unchecked_ref(),
                         ctx.config.keepalive_ms as i32,
                     ) {
-                        ctx.state.borrow_mut().keepalive_id = Some(id);
+                        let mut s = ctx.state.borrow_mut();
+                        s.keepalive_id = Some(id);
+                        s._ping_closure = Some(ping_closure);
                     }
                 }
-                ping_closure.forget();
             }
 
             emit_status(&ctx.on_status, ConnectionStatus::Connected);
@@ -349,7 +441,7 @@ fn install_ws_callbacks(ctx: &Rc<SharedCtx>) {
         Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
             if let Some(text) = event.data().as_string() {
                 if let Ok(msg) = serde_json::from_str::<ServerMessage>(&text) {
-                    handle_server_message(&ctx.db, &ctx.schema_map, msg);
+                    handle_server_message(&ctx, msg);
                 }
             }
         }) as Box<dyn FnMut(web_sys::MessageEvent)>)
@@ -365,11 +457,15 @@ fn install_ws_callbacks(ctx: &Rc<SharedCtx>) {
                 return; // user-initiated disconnect — don't reconnect
             }
 
-            // Clear keepalive timer
-            if let Some(id) = ctx.state.borrow_mut().keepalive_id.take() {
-                if let Some(window) = web_sys::window() {
-                    window.clear_interval_with_handle(id);
+            // Clear keepalive timer and closure
+            {
+                let mut s = ctx.state.borrow_mut();
+                if let Some(id) = s.keepalive_id.take() {
+                    if let Some(window) = web_sys::window() {
+                        window.clear_interval_with_handle(id);
+                    }
                 }
+                s._ping_closure = None;
             }
 
             if ctx.config.auto_reconnect {
@@ -465,23 +561,39 @@ fn schedule_reconnect(ctx: Rc<SharedCtx>, delay_ms: u32) {
 ///
 /// Uses direct `serde_json::from_value::<T>()` → buffer push, bypassing the
 /// `JsValue` intermediary that the old code path used.
-fn handle_server_message(
-    db: &AimDb<WasmAdapter>,
-    schema_map: &[(String, String)],
-    msg: ServerMessage,
-) {
+fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
     match msg {
         ServerMessage::Data { topic, payload, .. } | ServerMessage::Snapshot { topic, payload } => {
             if let Some(payload) = payload {
-                let schema = schema_map
+                let schema = ctx
+                    .schema_map
                     .iter()
                     .find(|(k, _)| k == &topic)
                     .map(|(_, v)| v.as_str());
 
-                if let Some(schema) = schema {
-                    dispatch_streamable!(schema, |T| {
-                        produce_from_json::<T>(db, &topic, payload.clone());
-                    });
+                match schema {
+                    Some(schema) => {
+                        let dispatched = dispatch_streamable!(schema, |T| {
+                            produce_from_json::<T>(&ctx.db, &topic, payload.clone());
+                        });
+                        if dispatched.is_none() {
+                            web_sys::console::warn_1(
+                                &format!(
+                                    "[WsBridge] dispatch_streamable returned None for schema='{}' topic='{}'",
+                                    schema, topic
+                                ).into(),
+                            );
+                        }
+                    }
+                    None => {
+                        web_sys::console::warn_1(
+                            &format!(
+                                "[WsBridge] No schema mapping for topic='{}' (schema_map has {} entries)",
+                                topic,
+                                ctx.schema_map.len()
+                            ).into(),
+                        );
+                    }
                 }
             }
         }
@@ -498,6 +610,30 @@ fn handle_server_message(
         ServerMessage::Pong => {
             // Keepalive ACK — reset timer if needed.
         }
+        ServerMessage::QueryResult { id, records, total } => {
+            // Resolve the pending promise for this query
+            if let Some((resolve, _reject)) = ctx.pending_queries.borrow_mut().remove(&id) {
+                // Convert records to JS array.
+                // Use json_compatible() so serde_json::Value::Object
+                // becomes a plain JS object (not a JS Map).
+                let serializer = serde_wasm_bindgen::Serializer::json_compatible();
+                let arr = js_sys::Array::new();
+                for rec in &records {
+                    if let Ok(js_val) = rec.serialize(&serializer) {
+                        arr.push(&js_val);
+                    }
+                }
+                // Attach metadata as properties on the array
+                let result_obj = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(&result_obj, &"records".into(), &arr);
+                let _ = js_sys::Reflect::set(
+                    &result_obj,
+                    &"total".into(),
+                    &JsValue::from_f64(total as f64),
+                );
+                let _ = resolve.call1(&JsValue::NULL, &result_obj);
+            }
+        }
     }
 }
 
@@ -508,10 +644,32 @@ fn produce_from_json<T>(db: &AimDb<WasmAdapter>, key: &str, json: serde_json::Va
 where
     T: Send + Sync + 'static + Debug + Clone + DeserializeOwned,
 {
-    if let Ok(val) = serde_json::from_value::<T>(json) {
-        let inner = db.inner();
-        if let Ok(typed) = inner.get_typed_record_by_key::<T, WasmAdapter>(key) {
-            crate::bindings::poll_sync(typed.produce(val));
+    match serde_json::from_value::<T>(json) {
+        Ok(val) => {
+            let inner = db.inner();
+            match inner.get_typed_record_by_key::<T, WasmAdapter>(key) {
+                Ok(typed) => {
+                    crate::bindings::poll_sync(typed.produce(val));
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(
+                        &format!(
+                            "[WsBridge] get_typed_record_by_key failed for key='{}': {:?}",
+                            key, e
+                        )
+                        .into(),
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            web_sys::console::warn_1(
+                &format!(
+                    "[WsBridge] JSON deserialize failed for key='{}': {}",
+                    key, e
+                )
+                .into(),
+            );
         }
     }
 }

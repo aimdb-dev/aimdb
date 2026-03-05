@@ -416,21 +416,14 @@ where
 /// operations on `WasmBuffer` (which are single-threaded, non-blocking).
 pub(crate) fn poll_sync<F: core::future::Future>(f: F) -> F::Output {
     use core::pin::Pin;
-    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    use core::task::{Context, Poll, Waker};
 
     // SAFETY: the future is stack-local and will not be moved after pinning.
     let mut f = f;
     let f = unsafe { Pin::new_unchecked(&mut f) };
 
-    // No-op waker — produce() does not need to be woken.
-    fn noop(_: *const ()) {}
-    fn clone_noop(p: *const ()) -> RawWaker {
-        RawWaker::new(p, &VTABLE)
-    }
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(clone_noop, noop, noop, noop);
-
-    let waker = unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) };
-    let mut cx = Context::from_waker(&waker);
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
 
     match f.poll(&mut cx) {
         Poll::Ready(val) => val,

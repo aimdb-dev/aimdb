@@ -2,6 +2,9 @@
 //!
 //! Uses `Performance.now()` for high-resolution relative timestamps and
 //! `setTimeout` (via a JS Promise) for async sleep.
+//!
+//! Works in both Window (browser) and Worker/ServiceWorker contexts by
+//! accessing `globalThis` via `js_sys::global()` instead of `web_sys::window()`.
 
 use crate::runtime::WasmAdapter;
 use aimdb_executor::TimeOps;
@@ -46,6 +49,44 @@ unsafe impl Sync for WasmInstant {}
 unsafe impl Send for WasmDuration {}
 unsafe impl Sync for WasmDuration {}
 
+// ─── globalThis helpers (Window + Worker compatible) ──────────────────────
+
+/// Get `performance.now()` from `globalThis`.
+///
+/// Works in Window, Worker, and ServiceWorker contexts.
+#[cfg(feature = "wasm-runtime")]
+fn global_performance_now() -> f64 {
+    use wasm_bindgen::JsCast;
+
+    let global = js_sys::global();
+    let perf = js_sys::Reflect::get(&global, &"performance".into())
+        .expect("globalThis.performance not available");
+    let now = js_sys::Reflect::get(&perf, &"now".into())
+        .expect("globalThis.performance.now not available");
+    let now_fn: js_sys::Function = now.unchecked_into();
+    now_fn
+        .call0(&perf)
+        .expect("performance.now() call failed")
+        .as_f64()
+        .expect("performance.now() did not return a number")
+}
+
+/// Call `globalThis.setTimeout(callback, delay)`.
+///
+/// Works in Window, Worker, and ServiceWorker contexts.
+#[cfg(feature = "wasm-runtime")]
+fn global_set_timeout(callback: &js_sys::Function, delay_ms: i32) {
+    use wasm_bindgen::JsCast;
+
+    let global = js_sys::global();
+    let set_timeout: js_sys::Function = js_sys::Reflect::get(&global, &"setTimeout".into())
+        .expect("globalThis.setTimeout not available")
+        .unchecked_into();
+    let _ = set_timeout.call2(&global, callback, &delay_ms.into());
+}
+
+// ─── TimeOps ──────────────────────────────────────────────────────────────
+
 impl TimeOps for WasmAdapter {
     type Instant = WasmInstant;
     type Duration = WasmDuration;
@@ -53,11 +94,7 @@ impl TimeOps for WasmAdapter {
     fn now(&self) -> WasmInstant {
         #[cfg(feature = "wasm-runtime")]
         {
-            let perf = web_sys::window()
-                .expect("no global `window` — not running in a browser?")
-                .performance()
-                .expect("no `Performance` API available");
-            WasmInstant(perf.now())
+            WasmInstant(global_performance_now())
         }
 
         #[cfg(not(feature = "wasm-runtime"))]
@@ -97,13 +134,7 @@ impl TimeOps for WasmAdapter {
             // setTimeout never rejects, so the Ok/Err result is safe to discard.
             let fut = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
                 &mut |resolve, _reject| {
-                    web_sys::window()
-                        .unwrap()
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(
-                            &resolve,
-                            duration.0 as i32,
-                        )
-                        .unwrap();
+                    global_set_timeout(&resolve, duration.0 as i32);
                 },
             ))
             .map(|_result| ());

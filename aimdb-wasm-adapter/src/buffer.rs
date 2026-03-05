@@ -301,9 +301,11 @@ impl<T: Clone + Send + 'static> Future for WasmRecvFuture<'_, T> {
                     WasmBufferInner::SingleLatest { wakers, .. } => wakers,
                     WasmBufferInner::Mailbox { wakers, .. } => wakers,
                 };
-                // Replace existing waker for this reader if present, or add new one.
-                // For simplicity, we always push. Wakers are drained on each push().
-                wakers.push(cx.waker().clone());
+                // Deduplicate: only add if no existing waker will wake the same task.
+                // Prevents unbounded growth when a single reader is polled repeatedly.
+                if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                    wakers.push(cx.waker().clone());
+                }
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
