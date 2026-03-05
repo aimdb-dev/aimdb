@@ -247,7 +247,7 @@ impl WsBridge {
     /// Returns a `Promise<Array>` that resolves with `QueryRecord[]`.
     ///
     /// ```ts
-    /// const records = await bridge.query('*', { from: 1700000000, to: 1700003600, limit: 500 });
+    /// const records = await bridge.query('*', { from: 1700000000000, to: 1700003600000, limit: 500 });
     /// ```
     pub fn query(&self, pattern: &str, options: JsValue) -> js_sys::Promise {
         let ctx = self.ctx.clone();

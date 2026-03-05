@@ -36,7 +36,7 @@ tracing = ["dep:tracing"]
 [dependencies]
 aimdb-core = { path = "../aimdb-core", default-features = false }
 aimdb-executor = { path = "../aimdb-executor", default-features = false }
-aimdb-ws-protocol = { path = "../aimdb-ws-protocol", features = ["std"] }
+aimdb-ws-protocol = { path = "../aimdb-ws-protocol" }
 
 # Async runtime
 tokio = { version = "1", features = [

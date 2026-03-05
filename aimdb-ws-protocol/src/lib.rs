@@ -2,11 +2,10 @@
 //!
 //! Shared wire protocol types for the AimDB WebSocket connector ecosystem.
 //!
-//! This crate is `no_std + alloc` compatible so it can be used from:
+//! Used by:
 //!
 //! - **`aimdb-websocket-connector`** — the server side (Axum/Tokio)
 //! - **`aimdb-wasm-adapter`** — the browser client (`WsBridge`)
-//! - **Future native WS client** — Tokio/Embassy client connector
 //!
 //! # Wire Protocol
 //!
@@ -19,6 +18,7 @@
 //! - `subscribed` — subscription acknowledgement
 //! - `error` — per-operation error
 //! - `pong` — response to client ping
+//! - `query_result` — response to a client query request
 //!
 //! ## Client → Server ([`ClientMessage`])
 //!
@@ -26,18 +26,12 @@
 //! - `unsubscribe` — cancel subscriptions
 //! - `write` — inbound value for a `link_from("ws://…")` record
 //! - `ping` — keepalive ping
+//! - `query` — query historical / persisted records
 //!
 //! # Topic Matching
 //!
 //! [`topic_matches`] implements MQTT-style wildcard matching (`#` for
 //! multi-level, `*` for single-level).
-
-#![no_std]
-
-extern crate alloc;
-
-use alloc::string::String;
-use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +40,7 @@ use serde::{Deserialize, Serialize};
 // ════════════════════════════════════════════════════════════════════
 
 /// A message sent from the server to a connected WebSocket client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     /// Live data push from an outbound route.
@@ -78,10 +72,33 @@ pub enum ServerMessage {
 
     /// Response to a client `ping` message.
     Pong,
+
+    /// Response to a client `query` request.
+    ///
+    /// Contains the matching historical records and metadata.
+    QueryResult {
+        /// Correlation ID echoed from the client request.
+        id: String,
+        /// Matching records, ordered by timestamp ascending.
+        records: Vec<QueryRecord>,
+        /// Total number of records matched (before any limit).
+        total: usize,
+    },
+}
+
+/// A single record returned in a [`ServerMessage::QueryResult`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryRecord {
+    /// Topic / record name (e.g. `"temp.vienna"`).
+    pub topic: String,
+    /// Deserialized record value.
+    pub payload: serde_json::Value,
+    /// Storage timestamp (milliseconds since Unix epoch).
+    pub ts: u64,
 }
 
 /// Machine-readable error codes sent in `ServerMessage::Error`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     Unauthorized,
@@ -97,7 +114,7 @@ pub enum ErrorCode {
 // ════════════════════════════════════════════════════════════════════
 
 /// A message received from a WebSocket client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// Subscribe to one or more topics (wildcards supported).
@@ -114,6 +131,26 @@ pub enum ClientMessage {
 
     /// Keepalive ping.
     Ping,
+
+    /// Query historical / persisted records.
+    ///
+    /// The server responds with [`ServerMessage::QueryResult`] carrying the
+    /// same `id` for correlation.
+    Query {
+        /// Client-generated correlation ID (echoed in the response).
+        id: String,
+        /// Topic pattern to match (MQTT wildcards supported, `"*"` for all).
+        pattern: String,
+        /// Start of time range (milliseconds since Unix epoch), inclusive. Defaults to 1 h ago.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from: Option<u64>,
+        /// End of time range (milliseconds since Unix epoch), inclusive. Defaults to now.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        to: Option<u64>,
+        /// Maximum number of records to return per matching topic.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -168,11 +205,7 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
 }
 
 /// Returns the current milliseconds since the Unix epoch (for `ts` fields).
-///
-/// Requires the `std` feature.
-#[cfg(feature = "std")]
 pub fn now_ms() -> u64 {
-    extern crate std;
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -187,7 +220,6 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
 
     #[test]
     fn exact_match() {
@@ -257,13 +289,13 @@ mod tests {
     #[test]
     fn serde_client_message_roundtrip() {
         let msg = ClientMessage::Subscribe {
-            topics: alloc::vec!["sensors/#".into()],
+            topics: vec!["sensors/#".into()],
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
         match parsed {
             ClientMessage::Subscribe { topics } => {
-                assert_eq!(topics, alloc::vec!["sensors/#".to_string()]);
+                assert_eq!(topics, vec!["sensors/#".to_string()]);
             }
             _ => panic!("Expected Subscribe variant"),
         }

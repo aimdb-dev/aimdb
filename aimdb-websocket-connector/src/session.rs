@@ -67,7 +67,7 @@ pub trait QueryHandler: Send + Sync + 'static {
     /// Execute a history query and return `(records, total_count)`.
     ///
     /// - `pattern` — topic pattern (MQTT wildcards, `"*"` for all)
-    /// - `from` / `to` — time range in Unix **seconds** (inclusive)
+    /// - `from` / `to` — time range in **milliseconds** since Unix epoch (inclusive)
     /// - `limit` — max records per matching topic
     fn handle_query<'a>(
         &'a self,
