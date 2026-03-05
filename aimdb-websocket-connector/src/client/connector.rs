@@ -32,9 +32,6 @@ pub(crate) struct WsClientConfig {
     pub keepalive_interval: Option<Duration>,
     pub max_offline_queue: usize,
     pub subscribe_topics: Vec<String>,
-    /// Reserved for future use (requesting snapshots on connect).
-    #[allow(dead_code)]
-    pub late_join: bool,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -59,6 +56,10 @@ struct SharedState {
     status: ConnectionStatus,
     pending_writes: VecDeque<String>,
     max_offline_queue: usize,
+    /// The current write channel sender. Swapped atomically on reconnect so
+    /// that all producers (outbound publishers, publish(), keepalive) always
+    /// send through the live connection.
+    write_tx: mpsc::UnboundedSender<String>,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -75,9 +76,7 @@ struct SharedState {
 /// - Keepalive pings
 /// - Automatic reconnection
 pub struct WsClientConnectorImpl {
-    /// Channel to send outbound text frames to the write loop.
-    write_tx: mpsc::UnboundedSender<String>,
-    /// Shared state for status and offline queue.
+    /// Shared state for status, offline queue, and the current write channel.
     state: Arc<Mutex<SharedState>>,
     /// Router for inbound data (server → local buffers).
     #[allow(dead_code)]
@@ -94,12 +93,6 @@ impl WsClientConnectorImpl {
     where
         R: aimdb_executor::Spawn + 'static,
     {
-        let state = Arc::new(Mutex::new(SharedState {
-            status: ConnectionStatus::Connecting,
-            pending_writes: VecDeque::new(),
-            max_offline_queue: config.max_offline_queue,
-        }));
-
         // Connect to the remote server
         let (ws_stream, _response) = tokio_tungstenite::connect_async(&config.url)
             .await
@@ -113,11 +106,12 @@ impl WsClientConnectorImpl {
         // Channel for sending text frames from any task to the write loop
         let (write_tx, write_rx) = mpsc::unbounded_channel::<String>();
 
-        // Mark connected
-        {
-            let mut s = state.lock().await;
-            s.status = ConnectionStatus::Connected;
-        }
+        let state = Arc::new(Mutex::new(SharedState {
+            status: ConnectionStatus::Connected,
+            pending_writes: VecDeque::new(),
+            max_offline_queue: config.max_offline_queue,
+            write_tx,
+        }));
 
         // ── Send subscribe message ──────────────────────────────────
         if !config.subscribe_topics.is_empty() {
@@ -125,21 +119,11 @@ impl WsClientConnectorImpl {
                 topics: config.subscribe_topics.clone(),
             };
             if let Ok(json) = serde_json::to_string(&sub_msg) {
-                let _ = write_tx.send(json);
-            }
-        }
-
-        // ── Flush any pending offline writes ────────────────────────
-        {
-            let mut s = state.lock().await;
-            while let Some(msg) = s.pending_writes.pop_front() {
-                let _ = write_tx.send(msg);
+                let _ = state.lock().await.write_tx.send(json);
             }
         }
 
         // ── Spawn write loop ────────────────────────────────────────
-        let write_state = state.clone();
-        let write_tx_for_reconnect = write_tx.clone();
         let reconnect_url = config.url.clone();
         let reconnect_topics = config.subscribe_topics.clone();
         let auto_reconnect = config.auto_reconnect;
@@ -176,10 +160,10 @@ impl WsClientConnectorImpl {
 
         // ── Spawn keepalive ─────────────────────────────────────────
         if let Some(interval) = config.keepalive_interval {
-            let write_tx_ka = write_tx.clone();
+            let ka_state = state.clone();
             db.runtime()
                 .spawn(async move {
-                    Self::run_keepalive(write_tx_ka, interval).await;
+                    Self::run_keepalive(ka_state, interval).await;
                 })
                 .map_err(|e| format!("Failed to spawn keepalive: {e:?}"))?;
         }
@@ -188,11 +172,10 @@ impl WsClientConnectorImpl {
         if auto_reconnect {
             db.runtime()
                 .spawn({
-                    let state = write_state.clone();
+                    let state = state.clone();
                     async move {
                         Self::run_reconnect_watcher(
                             state,
-                            write_tx_for_reconnect,
                             reconnect_url,
                             reconnect_topics,
                             router_for_reconnect,
@@ -204,11 +187,7 @@ impl WsClientConnectorImpl {
                 .map_err(|e| format!("Failed to spawn reconnect watcher: {e:?}"))?;
         }
 
-        Ok(Self {
-            write_tx,
-            state,
-            router,
-        })
+        Ok(Self { state, router })
     }
 
     /// Spawn one Tokio task per outbound route.
@@ -226,7 +205,6 @@ impl WsClientConnectorImpl {
         let runtime = db.runtime();
 
         for (default_topic, consumer, serializer, _config, topic_provider) in outbound_routes {
-            let write_tx = self.write_tx.clone();
             let state = self.state.clone();
             let default_topic_clone = default_topic.clone();
 
@@ -289,12 +267,11 @@ impl WsClientConnectorImpl {
                         };
 
                         if let Ok(json) = serde_json::to_string(&msg) {
-                            let s = state.lock().await;
+                            let mut s = state.lock().await;
                             if s.status == ConnectionStatus::Connected {
-                                let _ = write_tx.send(json);
+                                let _ = s.write_tx.send(json);
                             } else if s.pending_writes.len() < s.max_offline_queue {
-                                drop(s);
-                                state.lock().await.pending_writes.push_back(json);
+                                s.pending_writes.push_back(json);
                             }
                             // else: drop (overflow policy)
                         }
@@ -410,12 +387,16 @@ impl WsClientConnectorImpl {
                 ServerMessage::Pong => {
                     // Keepalive ACK — nothing to do.
                 }
+                ServerMessage::QueryResult { .. } => {
+                    // Query results are handled by the WASM bridge; the native
+                    // client connector does not issue queries (yet).
+                }
             }
         }
     }
 
-    /// Keepalive loop: sends periodic Ping messages.
-    async fn run_keepalive(write_tx: mpsc::UnboundedSender<String>, interval: Duration) {
+    /// Keepalive loop: sends periodic Ping messages via the shared state sender.
+    async fn run_keepalive(state: Arc<Mutex<SharedState>>, interval: Duration) {
         let mut ticker = tokio::time::interval(interval);
         ticker.tick().await; // skip first immediate tick
 
@@ -423,7 +404,11 @@ impl WsClientConnectorImpl {
             ticker.tick().await;
             let ping = ClientMessage::Ping;
             if let Ok(json) = serde_json::to_string(&ping) {
-                if write_tx.send(json).is_err() {
+                let s = state.lock().await;
+                if s.status != ConnectionStatus::Connected {
+                    continue;
+                }
+                if s.write_tx.send(json).is_err() {
                     break; // channel closed, connection gone
                 }
             }
@@ -435,7 +420,6 @@ impl WsClientConnectorImpl {
     /// Uses exponential backoff: 500ms, 1s, 2s, 4s, 8s (capped).
     async fn run_reconnect_watcher(
         state: Arc<Mutex<SharedState>>,
-        _write_tx: mpsc::UnboundedSender<String>,
         url: String,
         subscribe_topics: Vec<String>,
         router: Arc<Router>,
@@ -489,7 +473,7 @@ impl WsClientConnectorImpl {
 
                     let (ws_write, ws_read) = ws_stream.split();
 
-                    // Spawn new write loop
+                    // Create new channel and swap the sender atomically
                     let (new_write_tx, new_write_rx) = mpsc::unbounded_channel::<String>();
 
                     tokio::spawn(Self::run_write_loop(ws_write, new_write_rx));
@@ -510,21 +494,17 @@ impl WsClientConnectorImpl {
                         }
                     }
 
-                    // Flush pending writes
+                    // Swap write_tx and flush pending writes in one critical section.
+                    // All producers (outbound publishers, publish(), keepalive) will
+                    // pick up the new sender on their next lock acquisition.
                     {
                         let mut s = state.lock().await;
+                        s.write_tx = new_write_tx;
                         while let Some(msg) = s.pending_writes.pop_front() {
-                            let _ = new_write_tx.send(msg);
+                            let _ = s.write_tx.send(msg);
                         }
                         s.status = ConnectionStatus::Connected;
                     }
-
-                    // Note: The original write_tx is now stale. New outbound
-                    // publishers would need to be re-wired. For the initial
-                    // implementation, outbound publishers detect send failures
-                    // and queue to the offline buffer via the shared state.
-                    // A production-grade implementation would swap the write_tx
-                    // atomically.
 
                     attempt = 0;
                 }
@@ -567,14 +547,13 @@ impl aimdb_core::transport::Connector for WsClientConnectorImpl {
 
             let json = serde_json::to_string(&msg).map_err(|_| PublishError::MessageTooLarge)?;
 
-            let s = self.state.lock().await;
+            let mut s = self.state.lock().await;
             if s.status == ConnectionStatus::Connected {
-                self.write_tx
+                s.write_tx
                     .send(json)
                     .map_err(|_| PublishError::ConnectionFailed)?;
             } else if s.pending_writes.len() < s.max_offline_queue {
-                drop(s);
-                self.state.lock().await.pending_writes.push_back(json);
+                s.pending_writes.push_back(json);
             } else {
                 return Err(PublishError::BufferFull);
             }

@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use async_trait::async_trait;
+use core::future::Future;
+use core::pin::Pin;
+
 use axum::http::HeaderMap;
 
 // ════════════════════════════════════════════════════════════════════
@@ -114,43 +116,57 @@ impl AuthError {
 ///
 /// struct BearerAuth { valid_token: String }
 ///
-/// #[async_trait::async_trait]
 /// impl AuthHandler for BearerAuth {
-///     async fn authenticate(&self, req: &AuthRequest) -> Result<Permissions, AuthError> {
-///         let token = req.headers
-///             .get("Authorization")
-///             .and_then(|v| v.to_str().ok())
-///             .and_then(|v| v.strip_prefix("Bearer "))
-///             .ok_or_else(|| AuthError::new("missing token"))?;
+///     fn authenticate<'a>(
+///         &'a self,
+///         req: &'a AuthRequest,
+///     ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>> {
+///         Box::pin(async move {
+///             let token = req.headers
+///                 .get("Authorization")
+///                 .and_then(|v| v.to_str().ok())
+///                 .and_then(|v| v.strip_prefix("Bearer "))
+///                 .ok_or_else(|| AuthError::new("missing token"))?;
 ///
-///         if token == self.valid_token {
-///             Ok(Permissions::allow_all())
-///         } else {
-///             Err(AuthError::new("invalid token"))
-///         }
+///             if token == self.valid_token {
+///                 Ok(Permissions::allow_all())
+///             } else {
+///                 Err(AuthError::new("invalid token"))
+///             }
+///         })
 ///     }
 /// }
 /// ```
-#[async_trait]
 pub trait AuthHandler: Send + Sync + 'static {
     /// Called during WebSocket upgrade to authenticate the client.
     ///
     /// Return [`Ok(Permissions)`] to accept the connection with the assigned
     /// permissions, or [`Err(AuthError)`] to reject it (HTTP 401).
-    async fn authenticate(&self, request: &AuthRequest) -> Result<Permissions, AuthError>;
+    fn authenticate<'a>(
+        &'a self,
+        request: &'a AuthRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>>;
 
     /// Called before allowing a topic subscription.
     ///
     /// The default implementation delegates to [`Permissions::can_subscribe`].
-    async fn authorize_subscribe(&self, client: &ClientInfo, topic: &str) -> bool {
-        client.permissions.can_subscribe(topic)
+    fn authorize_subscribe<'a>(
+        &'a self,
+        client: &'a ClientInfo,
+        topic: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move { client.permissions.can_subscribe(topic) })
     }
 
     /// Called before routing an inbound write to a producer.
     ///
     /// The default implementation delegates to [`Permissions::can_write`].
-    async fn authorize_write(&self, client: &ClientInfo, topic: &str) -> bool {
-        client.permissions.can_write(topic)
+    fn authorize_write<'a>(
+        &'a self,
+        client: &'a ClientInfo,
+        topic: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move { client.permissions.can_write(topic) })
     }
 }
 
@@ -161,10 +177,12 @@ pub trait AuthHandler: Send + Sync + 'static {
 /// Default `AuthHandler` that allows all connections and operations.
 pub struct NoAuth;
 
-#[async_trait]
 impl AuthHandler for NoAuth {
-    async fn authenticate(&self, _request: &AuthRequest) -> Result<Permissions, AuthError> {
-        Ok(Permissions::allow_all())
+    fn authenticate<'a>(
+        &'a self,
+        _request: &'a AuthRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>> {
+        Box::pin(async move { Ok(Permissions::allow_all()) })
     }
 }
 

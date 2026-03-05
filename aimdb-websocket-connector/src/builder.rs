@@ -19,7 +19,6 @@ use std::{
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use aimdb_core::{router::RouterBuilder, ConnectorBuilder};
@@ -30,7 +29,7 @@ use crate::{
     client_manager::ClientManager,
     connector::WebSocketConnectorImpl,
     server::start_server,
-    session::{NoSnapshot, SessionContext, SnapshotProvider},
+    session::{NoQuery, NoSnapshot, QueryHandler, SessionContext, SnapshotProvider},
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -58,12 +57,6 @@ pub struct WebSocketConnectorBuilder {
     max_clients: usize,
     channel_capacity: usize,
     additional_routes: Option<AxumRouter>,
-    /// Heartbeat interval (reserved for future use).
-    #[allow(dead_code)]
-    heartbeat_interval: Duration,
-    /// Client timeout (reserved for future use).
-    #[allow(dead_code)]
-    client_timeout: Duration,
     /// Topics to subscribe every new client to automatically on connect.
     ///
     /// When non-empty, clients receive data on these topics immediately after
@@ -76,6 +69,8 @@ pub struct WebSocketConnectorBuilder {
     /// Combine with a serializer that produces a complete flat JSON object
     /// (including `"type"` and `"node_id"`) to speak a custom protocol.
     raw_payload: bool,
+    /// Handler for client `query` messages (history retrieval).
+    query_handler: Arc<dyn QueryHandler>,
 }
 
 impl Default for WebSocketConnectorBuilder {
@@ -88,10 +83,9 @@ impl Default for WebSocketConnectorBuilder {
             max_clients: 1024,
             channel_capacity: 256,
             additional_routes: None,
-            heartbeat_interval: Duration::from_secs(30),
-            client_timeout: Duration::from_secs(60),
             auto_subscribe_topics: Vec::new(),
             raw_payload: false,
+            query_handler: Arc::new(NoQuery),
         }
     }
 }
@@ -119,9 +113,11 @@ impl WebSocketConnectorBuilder {
     /// .bind(([127, 0, 0, 1], 8765))
     /// ```
     pub fn bind(mut self, addr: impl ToSocketAddrs) -> Self {
-        if let Some(a) = addr.to_socket_addrs().ok().and_then(|mut i| i.next()) {
-            self.bind_addr = a;
-        }
+        self.bind_addr = addr
+            .to_socket_addrs()
+            .expect("invalid bind address")
+            .next()
+            .expect("bind address resolved to no addresses");
         self
     }
 
@@ -188,18 +184,6 @@ impl WebSocketConnectorBuilder {
         self
     }
 
-    /// Set the WebSocket heartbeat interval (default: 30 s).
-    pub fn with_heartbeat_interval(mut self, interval: Duration) -> Self {
-        self.heartbeat_interval = interval;
-        self
-    }
-
-    /// Set the client inactivity timeout (default: 60 s).
-    pub fn with_client_timeout(mut self, timeout: Duration) -> Self {
-        self.client_timeout = timeout;
-        self
-    }
-
     /// Subscribe every new client to these topic patterns immediately on connect.
     ///
     /// Clients will begin receiving data on matching topics right after the
@@ -227,6 +211,17 @@ impl WebSocketConnectorBuilder {
     /// expected by the client (e.g. `{"type":"temperature","node_id":…}`).
     pub fn with_raw_payload(mut self, enabled: bool) -> Self {
         self.raw_payload = enabled;
+        self
+    }
+
+    /// Plug in a handler for client `query` messages (history retrieval).
+    ///
+    /// When set, clients can send `{"type":"query", "id":"…", "pattern":"*"}`
+    /// and receive a `{"type":"query_result", …}` response with persisted records.
+    ///
+    /// Without this, query messages receive a `server_error` response.
+    pub fn with_query_handler(mut self, handler: impl QueryHandler + 'static) -> Self {
+        self.query_handler = Arc::new(handler);
         self
     }
 }
@@ -299,6 +294,7 @@ where
                 late_join: self.late_join,
                 snapshot_provider,
                 auto_subscribe_topics: self.auto_subscribe_topics.clone(),
+                query_handler: self.query_handler.clone(),
             };
 
             // ── Build connector & spawn outbound publishers ───────────────

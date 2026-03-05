@@ -60,7 +60,6 @@ tokio-tungstenite = { version = "0.26", optional = true }
 
 # Utilities
 dashmap = { version = "6", optional = true }
-async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = [
     "sink",
 ] }

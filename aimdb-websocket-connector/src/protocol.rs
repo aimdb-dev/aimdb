@@ -21,7 +21,7 @@
 //! - `ping` — keepalive ping
 
 // Re-export everything from the shared protocol crate
-pub use aimdb_ws_protocol::{topic_matches, ClientMessage, ErrorCode, ServerMessage};
+pub use aimdb_ws_protocol::{topic_matches, ClientMessage, ErrorCode, QueryRecord, ServerMessage};
 
 /// Returns the current milliseconds since the Unix epoch (for `ts` fields).
 pub fn now_ms() -> u64 {

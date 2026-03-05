@@ -120,4 +120,7 @@ pub use client_manager::ClientManager;
 #[cfg(feature = "client")]
 pub type WsClientConnector = client::WsClientConnectorBuilder;
 
-pub use protocol::{ClientMessage, ErrorCode, ServerMessage};
+pub use protocol::{ClientMessage, ErrorCode, QueryRecord, ServerMessage};
+
+#[cfg(feature = "server")]
+pub use session::{NoQuery, QueryHandler};

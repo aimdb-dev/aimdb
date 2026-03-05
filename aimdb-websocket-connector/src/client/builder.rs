@@ -55,8 +55,6 @@ pub struct WsClientConnectorBuilder {
     /// Topics to subscribe to on the remote server immediately after connect.
     /// Wildcards supported (e.g., `["sensors/#"]`).
     subscribe_topics: Vec<String>,
-    /// Request late-join snapshots on (re)connect (default: true).
-    late_join: bool,
 }
 
 impl WsClientConnectorBuilder {
@@ -76,7 +74,6 @@ impl WsClientConnectorBuilder {
             keepalive_ms: 30_000,
             max_offline_queue: 256,
             subscribe_topics: Vec::new(),
-            late_join: true,
         }
     }
 
@@ -125,12 +122,6 @@ impl WsClientConnectorBuilder {
         topics: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.subscribe_topics = topics.into_iter().map(Into::into).collect();
-        self
-    }
-
-    /// Enable or disable late-join snapshot requests on connect (default: `true`).
-    pub fn with_late_join(mut self, enabled: bool) -> Self {
-        self.late_join = enabled;
         self
     }
 }
@@ -201,21 +192,20 @@ where
                 },
                 max_offline_queue: self.max_offline_queue,
                 subscribe_topics: topics,
-                late_join: self.late_join,
             };
 
             // ── Build the connector ─────────────────────────────────
             let connector = WsClientConnectorImpl::connect(config, router, db)
                 .await
                 .map_err(|e| aimdb_core::DbError::RuntimeError {
-                    message: format!("WS client connect failed: {}", e).into(),
+                    message: format!("WS client connect failed: {}", e),
                 })?;
 
             // ── Spawn outbound publishers ────────────────────────────
             connector
                 .spawn_outbound_publishers(db, outbound_routes)
                 .map_err(|e| aimdb_core::DbError::RuntimeError {
-                    message: format!("WS client outbound setup failed: {}", e).into(),
+                    message: format!("WS client outbound setup failed: {}", e),
                 })?;
 
             Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)

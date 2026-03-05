@@ -5,7 +5,7 @@
 //! 1. **Send loop** — drains the per-client `mpsc` channel and writes frames to
 //!    the WebSocket.
 //! 2. **Recv loop** — reads frames from the WebSocket and dispatches
-//!    `subscribe`, `unsubscribe`, `write`, and `ping` messages.
+//!    `subscribe`, `unsubscribe`, `write`, `ping`, and `query` messages.
 //! 3. A **cleanup** fence — unregisters the client from the [`ClientManager`]
 //!    when either loop finishes.
 //!
@@ -14,6 +14,9 @@
 
 use std::sync::Arc;
 
+use core::future::Future;
+use core::pin::Pin;
+
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -21,11 +24,77 @@ use tokio::sync::mpsc;
 use crate::{
     auth::{AuthHandler, ClientId, ClientInfo},
     client_manager::ClientManager,
-    protocol::{ClientMessage, ErrorCode},
+    protocol::{ClientMessage, ErrorCode, QueryRecord},
 };
 
 // Re-export so server.rs can use it easily.
 pub use aimdb_core::router::Router;
+
+// ════════════════════════════════════════════════════════════════════
+// Query handler
+// ════════════════════════════════════════════════════════════════════
+
+/// Boxed future returned by [`QueryHandler::handle_query`].
+pub type QueryFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(Vec<QueryRecord>, usize), String>> + Send + 'a>>;
+
+/// Trait for handling `Query` messages from WebSocket clients.
+///
+/// Implementations typically query a persistence backend and return matching
+/// records. The trait is async to support database I/O.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// struct MyQueryHandler { db: Arc<MyDb> }
+///
+/// impl QueryHandler for MyQueryHandler {
+///     fn handle_query<'a>(
+///         &'a self,
+///         pattern: &'a str,
+///         from: Option<u64>,
+///         to: Option<u64>,
+///         limit: Option<usize>,
+///     ) -> QueryFuture<'a> {
+///         Box::pin(async move {
+///             // query your persistence layer …
+///             Ok((records, total))
+///         })
+///     }
+/// }
+/// ```
+pub trait QueryHandler: Send + Sync + 'static {
+    /// Execute a history query and return `(records, total_count)`.
+    ///
+    /// - `pattern` — topic pattern (MQTT wildcards, `"*"` for all)
+    /// - `from` / `to` — time range in Unix **seconds** (inclusive)
+    /// - `limit` — max records per matching topic
+    fn handle_query<'a>(
+        &'a self,
+        pattern: &'a str,
+        from: Option<u64>,
+        to: Option<u64>,
+        limit: Option<usize>,
+    ) -> QueryFuture<'a>;
+}
+
+/// A query handler that always returns an error (used when no persistence
+/// backend is configured).
+pub struct NoQuery;
+
+impl QueryHandler for NoQuery {
+    fn handle_query<'a>(
+        &'a self,
+        _pattern: &'a str,
+        _from: Option<u64>,
+        _to: Option<u64>,
+        _limit: Option<usize>,
+    ) -> QueryFuture<'a> {
+        Box::pin(
+            async move { Err("Query not supported — no persistence backend configured".into()) },
+        )
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════
 // Session context
@@ -51,6 +120,8 @@ pub(crate) struct SessionContext {
     /// Use `["#"]` to push all data to all clients without requiring an
     /// explicit `{"type":"subscribe"}` message from the client.
     pub auto_subscribe_topics: Vec<String>,
+    /// Handler for `Query` messages (historical record retrieval).
+    pub query_handler: Arc<dyn QueryHandler>,
 }
 
 /// Provides the current serialized value of a record for late-join snapshots.
@@ -206,6 +277,15 @@ async fn handle_text(id: ClientId, text: &str, ctx: &SessionContext) {
         ClientMessage::Ping => {
             ctx.client_mgr.send_pong(id).await;
         }
+        ClientMessage::Query {
+            id: query_id,
+            pattern,
+            from,
+            to,
+            limit,
+        } => {
+            handle_query(id, query_id, pattern, from, to, limit, ctx).await;
+        }
     }
 }
 
@@ -306,5 +386,37 @@ async fn handle_write(
                 "No inbound route for this topic",
             )
             .await;
+    }
+}
+
+async fn handle_query(
+    id: ClientId,
+    query_id: String,
+    pattern: String,
+    from: Option<u64>,
+    to: Option<u64>,
+    limit: Option<usize>,
+    ctx: &SessionContext,
+) {
+    use crate::protocol::ServerMessage;
+
+    match ctx
+        .query_handler
+        .handle_query(&pattern, from, to, limit)
+        .await
+    {
+        Ok((records, total)) => {
+            let result = ServerMessage::QueryResult {
+                id: query_id,
+                records,
+                total,
+            };
+            ctx.client_mgr.send_to_client(id, &result).await;
+        }
+        Err(msg) => {
+            ctx.client_mgr
+                .send_error(id, ErrorCode::ServerError, None, &msg)
+                .await;
+        }
     }
 }

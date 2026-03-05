@@ -104,16 +104,15 @@ impl ClientManager {
 
     /// Add subscription patterns for the given client.
     ///
-    /// Returns the list of newly-added patterns (already-subscribed patterns
-    /// are silently included without duplication).
+    /// Returns only the patterns that were actually new (duplicates are skipped).
     pub fn subscribe(&self, id: ClientId, patterns: &[String]) -> Vec<String> {
         let mut added = Vec::new();
         if let Some(mut entry) = self.clients.get_mut(&id.0) {
             for pat in patterns {
                 if !entry.subscriptions.contains(pat) {
                     entry.subscriptions.push(pat.clone());
+                    added.push(pat.clone());
                 }
-                added.push(pat.clone());
             }
         }
         added
@@ -259,6 +258,13 @@ impl ClientManager {
     /// Send a `pong` to a single client.
     pub async fn send_pong(&self, id: ClientId) {
         self.send_to(id, &ServerMessage::Pong).await;
+    }
+
+    /// Send an arbitrary [`ServerMessage`] to a single client.
+    ///
+    /// Used by the query handler to deliver `QueryResult` responses.
+    pub async fn send_to_client(&self, id: ClientId, msg: &ServerMessage) {
+        self.send_to(id, msg).await;
     }
 
     // ────────────────────────────────────────────────────────────────
