@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use crate::{
     auth::{AuthHandler, ClientId, ClientInfo},
     client_manager::ClientManager,
-    protocol::{ClientMessage, ErrorCode, QueryRecord},
+    protocol::{ClientMessage, ErrorCode, QueryRecord, TopicInfo},
 };
 
 // Re-export so server.rs can use it easily.
@@ -122,6 +122,8 @@ pub(crate) struct SessionContext {
     pub auto_subscribe_topics: Vec<String>,
     /// Handler for `Query` messages (historical record retrieval).
     pub query_handler: Arc<dyn QueryHandler>,
+    /// All outbound topics served by this endpoint, returned on `list_topics`.
+    pub known_topics: Vec<TopicInfo>,
 }
 
 /// Provides the current serialized value of a record for late-join snapshots.
@@ -286,6 +288,9 @@ async fn handle_text(id: ClientId, text: &str, ctx: &SessionContext) {
         } => {
             handle_query(id, query_id, pattern, from, to, limit, ctx).await;
         }
+        ClientMessage::ListTopics { id: req_id } => {
+            handle_list_topics(id, req_id, ctx).await;
+        }
     }
 }
 
@@ -387,6 +392,16 @@ async fn handle_write(
             )
             .await;
     }
+}
+
+async fn handle_list_topics(id: ClientId, req_id: String, ctx: &SessionContext) {
+    use crate::protocol::ServerMessage;
+
+    let result = ServerMessage::TopicList {
+        id: req_id,
+        topics: ctx.known_topics.clone(),
+    };
+    ctx.client_mgr.send_to_client(id, &result).await;
 }
 
 async fn handle_query(

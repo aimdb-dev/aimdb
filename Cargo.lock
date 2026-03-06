@@ -296,6 +296,7 @@ name = "aimdb-websocket-connector"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-executor",
  "aimdb-ws-protocol",
  "axum",

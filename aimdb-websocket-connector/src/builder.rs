@@ -15,11 +15,14 @@
 //! ```
 
 use std::{
+    any::TypeId,
     collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
     sync::{Arc, Mutex},
 };
+
+use aimdb_data_contracts::for_each_streamable;
 
 use aimdb_core::{router::RouterBuilder, ConnectorBuilder};
 use axum::Router as AxumRouter;
@@ -31,6 +34,7 @@ use crate::{
     server::start_server,
     session::{NoQuery, NoSnapshot, QueryHandler, SessionContext, SnapshotProvider},
 };
+use aimdb_ws_protocol::TopicInfo;
 
 // ════════════════════════════════════════════════════════════════════
 // Builder
@@ -285,6 +289,32 @@ where
                 Arc::new(NoSnapshot)
             };
 
+            // ── Known topics (for list_topics responses) ──────────
+            // Build a TypeId → schema name map from all registered Streamable types.
+            struct TypeIdMap(HashMap<TypeId, &'static str>);
+            impl aimdb_data_contracts::StreamableVisitor for TypeIdMap {
+                fn visit<T: aimdb_data_contracts::Streamable>(&mut self) {
+                    self.0.insert(
+                        TypeId::of::<T>(),
+                        <T as aimdb_data_contracts::SchemaType>::NAME,
+                    );
+                }
+            }
+            let mut type_id_map = TypeIdMap(HashMap::new());
+            for_each_streamable(&mut type_id_map);
+
+            let topic_type_ids = db.collect_outbound_topic_type_ids("ws");
+            let known_topics: Vec<TopicInfo> = topic_type_ids
+                .into_iter()
+                .map(|(topic, type_id)| {
+                    let schema_type = type_id_map.0.get(&type_id).map(|s| s.to_string());
+                    TopicInfo {
+                        name: topic,
+                        schema_type,
+                    }
+                })
+                .collect();
+
             // ── Session context ───────────────────────────────────
             let session_ctx = SessionContext {
                 client_mgr: client_mgr.clone(),
@@ -295,6 +325,7 @@ where
                 snapshot_provider,
                 auto_subscribe_topics: self.auto_subscribe_topics.clone(),
                 query_handler: self.query_handler.clone(),
+                known_topics,
             };
 
             // ── Build connector & spawn outbound publishers ───────────────

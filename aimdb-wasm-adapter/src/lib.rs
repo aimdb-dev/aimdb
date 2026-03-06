@@ -43,6 +43,9 @@ pub mod time;
 pub mod bindings;
 
 #[cfg(feature = "wasm-runtime")]
+pub(crate) mod schema_registry;
+
+#[cfg(feature = "wasm-runtime")]
 pub mod ws_bridge;
 
 // Re-export the adapter type at crate root

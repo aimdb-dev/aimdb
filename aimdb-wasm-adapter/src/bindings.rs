@@ -30,8 +30,7 @@ use aimdb_core::buffer::BufferCfg;
 use aimdb_core::builder::{AimDb, AimDbBuilder};
 use aimdb_core::record_id::StringKey;
 
-use aimdb_data_contracts::dispatch_streamable;
-
+use crate::schema_registry::{SchemaOps, SchemaRegistry};
 use crate::ws_bridge::WsBridge;
 use crate::WasmAdapter;
 
@@ -75,8 +74,8 @@ fn parse_buffer_cfg(opt: &BufferOption) -> Result<BufferCfg, JsError> {
     }
 }
 
-fn is_known_schema(name: &str) -> bool {
-    aimdb_data_contracts::is_streamable(name)
+fn is_known_schema(registry: &SchemaRegistry, name: &str) -> bool {
+    registry.is_known(name)
 }
 
 // ─── Collected config (pre-build) ─────────────────────────────────────────
@@ -110,6 +109,8 @@ pub struct WasmDb {
     db: Option<AimDb<WasmAdapter>>,
     /// Maps record key → schema type name (always populated).
     schema_map: Vec<(String, String)>,
+    /// Type-erased dispatch registry built from the visitor pattern.
+    registry: SchemaRegistry,
 }
 
 impl Default for WasmDb {
@@ -127,6 +128,7 @@ impl WasmDb {
             configs: Some(Vec::new()),
             db: None,
             schema_map: Vec::new(),
+            registry: SchemaRegistry::build(),
         }
     }
 
@@ -149,7 +151,7 @@ impl WasmDb {
         let opts: RecordOptions = serde_wasm_bindgen::from_value(options)
             .map_err(|e| JsError::new(&format!("Invalid options: {e}")))?;
 
-        if !is_known_schema(&opts.schema_type) {
+        if !is_known_schema(&self.registry, &opts.schema_type) {
             return Err(JsError::new(&format!(
                 "Unknown schema type: {}",
                 opts.schema_type
@@ -184,7 +186,7 @@ impl WasmDb {
         let mut builder = AimDbBuilder::new().runtime(rt);
 
         for config in &configs {
-            apply_record_config(&mut builder, config)?;
+            apply_record_config(&self.registry, &mut builder, config)?;
         }
 
         let db = builder
@@ -201,9 +203,8 @@ impl WasmDb {
     /// The value is the latest snapshot — it does not wait for a new push.
     /// Returns `undefined` if no value has been produced yet.
     pub fn get(&self, record_key: &str) -> Result<JsValue, JsError> {
-        let (db, schema) = self.resolve(record_key)?;
-        dispatch_streamable!(schema, |T| get_typed::<T>(db, record_key))
-            .ok_or_else(|| JsError::new(&format!("Unknown schema type: {schema}")))?
+        let (db, ops) = self.resolve(record_key)?;
+        (ops.get)(db, record_key)
     }
 
     /// Set a record value (validates via Rust serde deserialization).
@@ -211,9 +212,8 @@ impl WasmDb {
     /// Throws `JsError` if the payload fails contract validation (e.g. missing
     /// required fields) or the record key is unknown.
     pub fn set(&mut self, record_key: &str, value: JsValue) -> Result<(), JsError> {
-        let (db, schema) = self.resolve(record_key)?;
-        dispatch_streamable!(schema, |T| set_typed::<T>(db, record_key, value))
-            .ok_or_else(|| JsError::new(&format!("Unknown schema type: {schema}")))?
+        let (db, ops) = self.resolve(record_key)?;
+        (ops.set)(db, record_key, value)
     }
 
     /// Subscribe to record updates. Returns an unsubscribe function.
@@ -224,9 +224,8 @@ impl WasmDb {
         record_key: &str,
         callback: &js_sys::Function,
     ) -> Result<JsValue, JsError> {
-        let (db, schema) = self.resolve(record_key)?;
-        dispatch_streamable!(schema, |T| subscribe_typed::<T>(db, record_key, callback))
-            .ok_or_else(|| JsError::new(&format!("Unknown schema type: {schema}")))?
+        let (db, ops) = self.resolve(record_key)?;
+        (ops.subscribe)(db, record_key, callback)
     }
 
     /// Returns `true` if the database has been built.
@@ -258,16 +257,17 @@ impl WasmDb {
             .clone(); // cheap: two Arc pointer copies
 
         let schema_map = self.schema_map.clone();
+        let registry = SchemaRegistry::build();
 
-        WsBridge::new_internal(db, schema_map, url, options)
+        WsBridge::new_internal(db, schema_map, registry, url, options)
     }
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────
 
 impl WasmDb {
-    /// Resolve a record key to the live DB handle and its schema type name.
-    fn resolve(&self, record_key: &str) -> Result<(&AimDb<WasmAdapter>, &str), JsError> {
+    /// Resolve a record key to the live DB handle and its type-erased ops.
+    fn resolve(&self, record_key: &str) -> Result<(&AimDb<WasmAdapter>, &SchemaOps), JsError> {
         let db = self
             .db
             .as_ref()
@@ -280,7 +280,12 @@ impl WasmDb {
             .map(|(_, v)| v.as_str())
             .ok_or_else(|| JsError::new(&format!("Unknown record key: {record_key}")))?;
 
-        Ok((db, schema))
+        let ops = self
+            .registry
+            .get(schema)
+            .ok_or_else(|| JsError::new(&format!("Unknown schema type: {schema}")))?;
+
+        Ok((db, ops))
     }
 }
 
@@ -288,25 +293,23 @@ impl WasmDb {
 
 /// Apply a single `RecordConfig` to the builder, dispatching on schema type.
 fn apply_record_config(
+    registry: &SchemaRegistry,
     builder: &mut AimDbBuilder<WasmAdapter>,
     config: &RecordConfig,
 ) -> Result<(), JsError> {
-    use crate::WasmRecordRegistrarExt;
-
     let key = StringKey::intern(config.key.clone());
     let cfg = config.buffer_cfg.clone();
 
-    dispatch_streamable!(config.schema_type.as_str(), |T| {
-        builder.configure::<T>(key, |reg| {
-            reg.buffer(cfg);
-        });
-    })
-    .ok_or_else(|| JsError::new(&format!("Unknown schema type: {}", config.schema_type)))?;
+    let ops = registry
+        .get(&config.schema_type)
+        .ok_or_else(|| JsError::new(&format!("Unknown schema type: {}", config.schema_type)))?;
+
+    (ops.configure)(builder, key, cfg);
     Ok(())
 }
 
 /// Read the latest snapshot for record `key` and convert to `JsValue`.
-fn get_typed<T>(db: &AimDb<WasmAdapter>, key: &str) -> Result<JsValue, JsError>
+pub(crate) fn get_typed<T>(db: &AimDb<WasmAdapter>, key: &str) -> Result<JsValue, JsError>
 where
     T: Send + Sync + 'static + Debug + Clone + Serialize,
 {
@@ -323,7 +326,11 @@ where
 }
 
 /// Deserialize `JsValue` → `T` (contract enforcement), then push to buffer.
-fn set_typed<T>(db: &AimDb<WasmAdapter>, key: &str, value: JsValue) -> Result<(), JsError>
+pub(crate) fn set_typed<T>(
+    db: &AimDb<WasmAdapter>,
+    key: &str,
+    value: JsValue,
+) -> Result<(), JsError>
 where
     T: Send + Sync + 'static + Debug + Clone + DeserializeOwned,
 {
@@ -348,7 +355,7 @@ where
 /// Uses `futures_util::future::select` to race `recv()` against a cancel
 /// future so the unsubscribe closure can break the loop immediately — even
 /// when `recv()` is blocked waiting for the next push.
-fn subscribe_typed<T>(
+pub(crate) fn subscribe_typed<T>(
     db: &AimDb<WasmAdapter>,
     key: &str,
     callback: &js_sys::Function,

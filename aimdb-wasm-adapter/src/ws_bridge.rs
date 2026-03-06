@@ -27,8 +27,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
+use crate::schema_registry::SchemaRegistry;
 use aimdb_core::builder::AimDb;
-use aimdb_data_contracts::dispatch_streamable;
 
 use crate::WasmAdapter;
 
@@ -129,6 +129,7 @@ struct BridgeState {
 struct SharedCtx {
     db: AimDb<WasmAdapter>,
     schema_map: Vec<(String, String)>,
+    registry: SchemaRegistry,
     state: Rc<RefCell<BridgeState>>,
     on_status: Rc<RefCell<Option<js_sys::Function>>>,
     config: BridgeOptions,
@@ -139,6 +140,10 @@ struct SharedCtx {
     pending_queries: Rc<RefCell<BTreeMap<String, (js_sys::Function, js_sys::Function)>>>,
     /// Simple counter for generating unique query IDs.
     query_id_counter: Rc<RefCell<u32>>,
+    /// Pending list_topics requests: correlation ID → (resolve, reject) JS functions.
+    pending_list_topics: Rc<RefCell<BTreeMap<String, (js_sys::Function, js_sys::Function)>>>,
+    /// Counter for generating unique list_topics IDs.
+    list_topics_id_counter: Rc<RefCell<u32>>,
 }
 
 // ─── WsBridge ─────────────────────────────────────────────────────────────
@@ -308,6 +313,53 @@ impl WsBridge {
             }
         })
     }
+    /// List all topics served by the WebSocket endpoint.
+    ///
+    /// Returns a `Promise<Array>` that resolves with `TopicInfo[]`.
+    /// Each entry has `name: string` and optionally `schema_type: string`.
+    ///
+    /// ```ts
+    /// const topics = await bridge.listTopics();
+    /// // [{ name: "temp.vienna", schema_type: "temperature" }, …]
+    /// ```
+    #[wasm_bindgen(js_name = "listTopics")]
+    pub fn list_topics(&self) -> js_sys::Promise {
+        let ctx = self.ctx.clone();
+
+        let id = {
+            let mut counter = ctx.list_topics_id_counter.borrow_mut();
+            *counter += 1;
+            format!("lt{}", *counter)
+        };
+
+        let id_for_promise = id.clone();
+        js_sys::Promise::new(&mut move |resolve, reject| {
+            ctx.pending_list_topics
+                .borrow_mut()
+                .insert(id_for_promise.clone(), (resolve, reject.clone()));
+
+            let msg = ClientMessage::ListTopics {
+                id: id_for_promise.clone(),
+            };
+
+            let state = ctx.state.borrow();
+            if state.status != ConnectionStatus::Connected {
+                drop(state);
+                ctx.pending_list_topics.borrow_mut().remove(&id_for_promise);
+                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("Not connected"));
+                return;
+            }
+            drop(state);
+
+            if let Err(e) = send_json(&ctx.ws_cell.borrow(), &msg) {
+                ctx.pending_list_topics.borrow_mut().remove(&id_for_promise);
+                let _ = reject.call1(
+                    &JsValue::NULL,
+                    &JsValue::from_str(&format!("Send failed: {e:?}")),
+                );
+            }
+        })
+    }
 }
 
 impl Drop for WsBridge {
@@ -323,6 +375,7 @@ impl WsBridge {
     pub(crate) fn new_internal(
         db: AimDb<WasmAdapter>,
         schema_map: Vec<(String, String)>,
+        registry: SchemaRegistry,
         url: &str,
         options: JsValue,
     ) -> Result<WsBridge, JsError> {
@@ -354,6 +407,7 @@ impl WsBridge {
         let ctx = Rc::new(SharedCtx {
             db,
             schema_map,
+            registry,
             state,
             on_status,
             config,
@@ -362,6 +416,8 @@ impl WsBridge {
             ws_cell,
             pending_queries: Rc::new(RefCell::new(BTreeMap::new())),
             query_id_counter: Rc::new(RefCell::new(0)),
+            pending_list_topics: Rc::new(RefCell::new(BTreeMap::new())),
+            list_topics_id_counter: Rc::new(RefCell::new(0)),
         });
 
         install_ws_callbacks(&ctx);
@@ -573,15 +629,15 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
 
                 match schema {
                     Some(schema) => {
-                        let dispatched = dispatch_streamable!(schema, |T| {
-                            produce_from_json::<T>(&ctx.db, &topic, payload.clone());
-                        });
-                        if dispatched.is_none() {
+                        if let Some(ops) = ctx.registry.get(schema) {
+                            (ops.produce_from_json)(&ctx.db, &topic, payload.clone());
+                        } else {
                             web_sys::console::warn_1(
                                 &format!(
-                                    "[WsBridge] dispatch_streamable returned None for schema='{}' topic='{}'",
+                                    "[WsBridge] unknown schema='{}' topic='{}'",
                                     schema, topic
-                                ).into(),
+                                )
+                                .into(),
                             );
                         }
                     }
@@ -634,13 +690,25 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
                 let _ = resolve.call1(&JsValue::NULL, &result_obj);
             }
         }
+        ServerMessage::TopicList { id, topics } => {
+            if let Some((resolve, _reject)) = ctx.pending_list_topics.borrow_mut().remove(&id) {
+                let serializer = serde_wasm_bindgen::Serializer::json_compatible();
+                let arr = js_sys::Array::new();
+                for topic in &topics {
+                    if let Ok(js_val) = topic.serialize(&serializer) {
+                        arr.push(&js_val);
+                    }
+                }
+                let _ = resolve.call1(&JsValue::NULL, &arr);
+            }
+        }
     }
 }
 
 /// Deserialize `serde_json::Value` → `T` and push to the record buffer.
 ///
 /// This is the fast path for incoming server data — no `JsValue` hop.
-fn produce_from_json<T>(db: &AimDb<WasmAdapter>, key: &str, json: serde_json::Value)
+pub(crate) fn produce_from_json<T>(db: &AimDb<WasmAdapter>, key: &str, json: serde_json::Value)
 where
     T: Send + Sync + 'static + Debug + Clone + DeserializeOwned,
 {

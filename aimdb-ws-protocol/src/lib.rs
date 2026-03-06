@@ -84,6 +84,14 @@ pub enum ServerMessage {
         /// Total number of records matched (before any limit).
         total: usize,
     },
+
+    /// Response to a client `list_topics` request.
+    TopicList {
+        /// Correlation ID echoed from the client request.
+        id: String,
+        /// All outbound topics served by this endpoint.
+        topics: Vec<TopicInfo>,
+    },
 }
 
 /// A single record returned in a [`ServerMessage::QueryResult`].
@@ -95,6 +103,16 @@ pub struct QueryRecord {
     pub payload: serde_json::Value,
     /// Storage timestamp (milliseconds since Unix epoch).
     pub ts: u64,
+}
+
+/// Metadata for a single outbound topic served by a WebSocket endpoint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TopicInfo {
+    /// Record key / topic name (e.g. `"temp.vienna"`).
+    pub name: String,
+    /// Schema type name (e.g. `"temperature"`), if known by the server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_type: Option<String>,
 }
 
 /// Machine-readable error codes sent in `ServerMessage::Error`.
@@ -150,6 +168,15 @@ pub enum ClientMessage {
         /// Maximum number of records to return per matching topic.
         #[serde(skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
+    },
+
+    /// Request the list of topics served by this WebSocket endpoint.
+    ///
+    /// The server responds with [`ServerMessage::TopicList`] carrying the
+    /// same `id` for correlation.
+    ListTopics {
+        /// Client-generated correlation ID (echoed in the response).
+        id: String,
     },
 }
 

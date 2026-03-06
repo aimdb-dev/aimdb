@@ -1513,6 +1513,32 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     ///     connector.spawn_publisher(topic, consumer, serializer, config)?;
     /// }
     /// ```
+    /// Collect `(topic, TypeId)` pairs for all outbound routes matching `scheme`.
+    ///
+    /// Complements [`collect_outbound_routes`](Self::collect_outbound_routes) when
+    /// callers need to know the concrete record type behind each outbound topic
+    /// (e.g. to resolve a schema name for discovery responses).
+    ///
+    /// The returned TypeId is the `TypeId::of::<T>()` for the record type `T`
+    /// that was used in the corresponding `configure::<T>()` call.
+    #[cfg(feature = "alloc")]
+    pub fn collect_outbound_topic_type_ids(&self, scheme: &str) -> Vec<(String, TypeId)> {
+        let mut result = Vec::new();
+
+        for (idx, record) in self.inner.storages.iter().enumerate() {
+            let type_id = self.inner.types[idx];
+
+            for link in record.outbound_connectors() {
+                if link.url.scheme() != scheme {
+                    continue;
+                }
+                result.push((link.url.resource_id(), type_id));
+            }
+        }
+
+        result
+    }
+
     #[cfg(feature = "alloc")]
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
         let mut routes = Vec::new();

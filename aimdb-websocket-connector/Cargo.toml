@@ -35,6 +35,7 @@ tracing = ["dep:tracing"]
 
 [dependencies]
 aimdb-core = { path = "../aimdb-core", default-features = false }
+aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false }
 aimdb-executor = { path = "../aimdb-executor", default-features = false }
 aimdb-ws-protocol = { path = "../aimdb-ws-protocol" }
 

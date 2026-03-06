@@ -6,5 +6,5 @@
 
 // Re-export everything from the shared protocol crate
 pub use aimdb_ws_protocol::{
-    now_ms, topic_matches, ClientMessage, ErrorCode, QueryRecord, ServerMessage,
+    now_ms, topic_matches, ClientMessage, ErrorCode, QueryRecord, ServerMessage, TopicInfo,
 };
