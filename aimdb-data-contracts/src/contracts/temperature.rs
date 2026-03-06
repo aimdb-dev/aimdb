@@ -8,8 +8,8 @@
 //! - **v1** (legacy): `{ "schema_version": 1, "temp": f32, "timestamp": u64, "unit": "C"|"F"|"K" }`
 //! - **v2** (current): `{ "schema_version": 2, "celsius": f32, "timestamp": u64 }`
 //!
-//! The `from_bytes_versioned()` function reads the `schema_version` from the payload
-//! and migrates automatically, allowing nodes and hubs to be updated independently.
+//! The `MigrationChain` impl (via `migration_chain!`) reads the `schema_version`
+//! from the payload and migrates automatically, allowing nodes and hubs to be updated independently.
 
 extern crate alloc;
 
@@ -23,7 +23,7 @@ use crate::Linkable;
 use crate::{Simulatable, SimulationConfig};
 
 #[cfg(feature = "migratable")]
-use crate::{Migratable, MigrationError};
+use crate::{MigrationError, MigrationStep};
 
 #[cfg(feature = "ts")]
 use ts_rs::TS;
@@ -132,30 +132,40 @@ impl Linkable for TemperatureV1 {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// MIGRATABLE IMPLEMENTATION
+// TYPE-SAFE MIGRATION (v1 → v2)
 // ═══════════════════════════════════════════════════════════════════
 
+/// Migration step: Temperature v1 (temp + unit) → v2 (celsius only)
 #[cfg(feature = "migratable")]
-impl Migratable for Temperature {
-    /// Migrate raw JSON from v1 to v2 format.
-    ///
-    /// # v1 → v2 Migration
-    /// - Rename: `temp` → `celsius`
-    /// - Convert: Apply unit conversion if unit is "F" or "K"
-    /// - Remove: Drop the `unit` field
-    ///
-    /// Delegates to `TemperatureV1::to_v2()` to keep conversion logic DRY.
-    fn migrate(raw: &mut serde_json::Value, from_version: u32) -> Result<(), MigrationError> {
-        if from_version < 2 {
-            // Parse as v1, convert via to_v2(), then serialize back
-            let v1: TemperatureV1 = serde_json::from_value(raw.clone())
-                .map_err(|_| MigrationError::MissingField("temp or unit"))?;
-            let v2 = v1.to_v2();
-            *raw = serde_json::to_value(v2)
-                .map_err(|_| MigrationError::Custom("failed to serialize migrated value"))?;
-        }
+pub struct TemperatureV1ToV2;
 
-        Ok(())
+#[cfg(feature = "migratable")]
+impl MigrationStep for TemperatureV1ToV2 {
+    type Older = TemperatureV1;
+    type Newer = Temperature;
+    const FROM_VERSION: u32 = 1;
+    const TO_VERSION: u32 = 2;
+
+    fn up(v1: TemperatureV1) -> Result<Temperature, MigrationError> {
+        Ok(v1.to_v2())
+    }
+
+    fn down(v2: Temperature) -> Result<TemperatureV1, MigrationError> {
+        Ok(TemperatureV1 {
+            schema_version: 1,
+            temp: v2.celsius,
+            timestamp: v2.timestamp,
+            unit: alloc::string::String::from("C"),
+        })
+    }
+}
+
+#[cfg(feature = "migratable")]
+crate::migration_chain! {
+    type Current = Temperature;
+    version_field = "schema_version";
+    steps {
+        TemperatureV1ToV2: TemperatureV1 => Temperature,
     }
 }
 
@@ -230,46 +240,14 @@ impl Settable for Temperature {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// VERSIONED DESERIALIZATION
+// LINKABLE WITH MIGRATION SUPPORT
 // ═══════════════════════════════════════════════════════════════════
-
-#[cfg(feature = "linkable")]
-impl Temperature {
-    /// Deserialize from bytes with automatic migration based on `schema_version` field.
-    ///
-    /// This function enables **decoupled deployment**: nodes and hubs can be
-    /// updated independently because the hub reads the schema version from the payload.
-    ///
-    /// Delegates to `Migratable::deserialize_versioned` for the actual migration.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let v1 = r#"{"schema_version":1,"temp":68.0,"timestamp":123,"unit":"F"}"#;
-    /// let v2 = r#"{"schema_version":2,"celsius":20.0,"timestamp":123}"#;
-    /// ```
-    #[cfg(feature = "migratable")]
-    pub fn from_bytes_versioned(data: &[u8]) -> Result<Self, alloc::string::String> {
-        use crate::Migratable;
-
-        let mut value: serde_json::Value =
-            serde_json::from_slice(data).map_err(|e| alloc::format!("JSON parse error: {}", e))?;
-
-        let version = value
-            .get("schema_version")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| alloc::string::String::from("Missing schema_version field"))?
-            as u32;
-
-        Self::deserialize_versioned(&mut value, version)
-            .map_err(|e| alloc::format!("Migration error: {:?}", e))
-    }
-}
 
 #[cfg(all(feature = "linkable", feature = "migratable"))]
 impl Linkable for Temperature {
     fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String> {
-        // Use versioned deserializer for automatic migration
-        Self::from_bytes_versioned(data)
+        use crate::MigrationChain;
+        Self::migrate_from_bytes(data).map_err(|e| alloc::format!("Migration error: {}", e))
     }
 
     fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
@@ -343,105 +321,192 @@ mod tests {
         assert_eq!(v2.celsius, 22.5);
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // TYPE-SAFE MIGRATION STEP TESTS
+    // ═══════════════════════════════════════════════════════════════════
+
     #[cfg(feature = "migratable")]
     #[test]
-    fn test_migratable_trait_celsius() {
-        use crate::Migratable;
+    fn test_migration_step_up_celsius() {
+        use crate::MigrationStep;
 
-        let mut raw = serde_json::json!({
-            "temp": 22.5,
-            "timestamp": 1704326400000_u64,
-            "unit": "C"
-        });
-
-        Temperature::migrate(&mut raw, 1).unwrap();
-
-        assert_eq!(raw["celsius"], 22.5);
-        assert!(raw.get("temp").is_none(), "temp field should be removed");
-        assert!(raw.get("unit").is_none(), "unit field should be removed");
+        let v1 = TemperatureV1::new(22.5, 1704326400000, "C");
+        let v2 = TemperatureV1ToV2::up(v1).unwrap();
+        assert_eq!(v2.celsius, 22.5);
+        assert_eq!(v2.timestamp, 1704326400000);
     }
 
     #[cfg(feature = "migratable")]
     #[test]
-    fn test_migratable_trait_fahrenheit() {
-        use crate::Migratable;
+    fn test_migration_step_up_fahrenheit() {
+        use crate::MigrationStep;
 
-        let mut raw = serde_json::json!({
-            "temp": 68.0,
-            "timestamp": 1704326400000_u64,
-            "unit": "F"
-        });
-
-        Temperature::migrate(&mut raw, 1).unwrap();
-
-        let celsius = raw["celsius"].as_f64().unwrap();
+        let v1 = TemperatureV1::new(68.0, 1704326400000, "F");
+        let v2 = TemperatureV1ToV2::up(v1).unwrap();
         assert!(
-            (celsius - 20.0).abs() < 0.01,
+            (v2.celsius - 20.0).abs() < 0.01,
             "Expected ~20°C, got {}",
-            celsius
+            v2.celsius
         );
     }
 
     #[cfg(feature = "migratable")]
     #[test]
-    fn test_migratable_trait_kelvin() {
-        use crate::Migratable;
+    fn test_migration_step_up_kelvin() {
+        use crate::MigrationStep;
 
-        let mut raw = serde_json::json!({
-            "temp": 293.15,
-            "timestamp": 1704326400000_u64,
-            "unit": "K"
-        });
-
-        Temperature::migrate(&mut raw, 1).unwrap();
-
-        let celsius = raw["celsius"].as_f64().unwrap();
+        let v1 = TemperatureV1::new(293.15, 1704326400000, "K");
+        let v2 = TemperatureV1ToV2::up(v1).unwrap();
         assert!(
-            (celsius - 20.0).abs() < 0.01,
+            (v2.celsius - 20.0).abs() < 0.01,
             "Expected ~20°C, got {}",
-            celsius
+            v2.celsius
         );
     }
 
     #[cfg(feature = "migratable")]
     #[test]
-    fn test_deserialize_versioned_v1() {
-        use crate::Migratable;
+    fn test_migration_step_down() {
+        use crate::MigrationStep;
 
-        let mut raw = serde_json::json!({
-            "temp": 22.5,
-            "timestamp": 1704326400000_u64,
-            "unit": "C"
-        });
+        let v2 = Temperature::new(22.5, 1704326400000);
+        let v1 = TemperatureV1ToV2::down(v2).unwrap();
+        assert_eq!(v1.temp, 22.5);
+        assert_eq!(v1.timestamp, 1704326400000);
+        assert_eq!(v1.unit, "C");
+        assert_eq!(v1.schema_version, 1);
+    }
 
-        let temp: Temperature = Temperature::deserialize_versioned(&mut raw, 1).unwrap();
+    // ═══════════════════════════════════════════════════════════════════
+    // MIGRATION CHAIN TESTS (upgrade from bytes)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[cfg(feature = "migratable")]
+    #[test]
+    fn test_migrate_from_bytes_v1() {
+        use crate::MigrationChain;
+
+        let json = r#"{"schema_version":1,"temp":22.5,"timestamp":1704326400000,"unit":"C"}"#;
+        let temp = Temperature::migrate_from_bytes(json.as_bytes()).unwrap();
         assert_eq!(temp.celsius, 22.5);
         assert_eq!(temp.timestamp, 1704326400000);
     }
 
     #[cfg(feature = "migratable")]
     #[test]
-    fn test_deserialize_versioned_v2_no_migration() {
-        use crate::Migratable;
+    fn test_migrate_from_bytes_v2_no_migration() {
+        use crate::MigrationChain;
 
-        let mut raw = serde_json::json!({
-            "celsius": 22.5,
-            "timestamp": 1704326400000_u64
-        });
-
-        let temp: Temperature = Temperature::deserialize_versioned(&mut raw, 2).unwrap();
+        let json = r#"{"schema_version":2,"celsius":22.5,"timestamp":1704326400000}"#;
+        let temp = Temperature::migrate_from_bytes(json.as_bytes()).unwrap();
         assert_eq!(temp.celsius, 22.5);
     }
 
+    #[cfg(feature = "migratable")]
+    #[test]
+    fn test_migrate_from_bytes_version_too_new() {
+        use crate::MigrationChain;
+
+        let json = r#"{"schema_version":99,"celsius":22.5,"timestamp":100}"#;
+        let err = Temperature::migrate_from_bytes(json.as_bytes()).unwrap_err();
+        assert_eq!(
+            err,
+            crate::MigrationError::VersionTooNew {
+                source: 99,
+                current: 2
+            }
+        );
+    }
+
+    #[cfg(feature = "migratable")]
+    #[test]
+    fn test_migrate_from_bytes_missing_version() {
+        use crate::MigrationChain;
+
+        let json = r#"{"celsius":22.5,"timestamp":100}"#;
+        let err = Temperature::migrate_from_bytes(json.as_bytes()).unwrap_err();
+        assert_eq!(err, crate::MigrationError::MissingVersion);
+    }
+
     // ═══════════════════════════════════════════════════════════════════
-    // VERSIONED DESERIALIZATION TESTS (auto-detect version)
+    // DOWNGRADE TESTS
     // ═══════════════════════════════════════════════════════════════════
 
-    #[cfg(feature = "linkable")]
+    #[cfg(feature = "migratable")]
+    #[test]
+    fn test_downgrade_to_v1() {
+        use crate::MigrationChain;
+
+        let temp = Temperature::new(22.5, 1704326400000);
+        let v1_bytes = temp.migrate_to_version(1).unwrap();
+        let v1: serde_json::Value = serde_json::from_slice(&v1_bytes).unwrap();
+
+        assert_eq!(v1["temp"], 22.5);
+        assert_eq!(v1["unit"], "C");
+        assert_eq!(v1["schema_version"], 1);
+    }
+
+    #[cfg(feature = "migratable")]
+    #[test]
+    fn test_downgrade_to_current_version() {
+        use crate::MigrationChain;
+
+        let temp = Temperature::new(22.5, 1704326400000);
+        let v2_bytes = temp.migrate_to_version(2).unwrap();
+        let v2: Temperature = serde_json::from_slice(&v2_bytes).unwrap();
+        assert_eq!(v2.celsius, 22.5);
+    }
+
+    #[cfg(feature = "migratable")]
+    #[test]
+    fn test_downgrade_version_too_old() {
+        use crate::MigrationChain;
+
+        let temp = Temperature::new(22.5, 100);
+        let err = temp.migrate_to_version(0).unwrap_err();
+        assert_eq!(
+            err,
+            crate::MigrationError::VersionTooOld {
+                target: 0,
+                minimum: 1
+            }
+        );
+    }
+
+    #[cfg(feature = "migratable")]
+    #[test]
+    fn test_roundtrip_v1_upgrade_downgrade() {
+        use crate::MigrationChain;
+
+        // Start with v1 JSON
+        let v1_json = r#"{"schema_version":1,"temp":22.5,"timestamp":1704326400000,"unit":"C"}"#;
+
+        // Upgrade to v2
+        let v2 = Temperature::migrate_from_bytes(v1_json.as_bytes()).unwrap();
+        assert_eq!(v2.celsius, 22.5);
+
+        // Downgrade back to v1
+        let v1_bytes = v2.migrate_to_version(1).unwrap();
+        let v1: TemperatureV1 = serde_json::from_slice(&v1_bytes).unwrap();
+        assert_eq!(v1.temp, 22.5);
+        assert_eq!(v1.unit, "C");
+
+        // Upgrade again — should round-trip
+        let v2_again = Temperature::migrate_from_bytes(&v1_bytes).unwrap();
+        assert_eq!(v2_again.celsius, 22.5);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // LINKABLE TRAIT TESTS (with auto-migration)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[cfg(all(feature = "linkable", feature = "migratable"))]
     #[test]
     fn test_from_bytes_v1_with_version_marker() {
+        use crate::Linkable;
+
         let json = r#"{"schema_version":1,"temp":68.0,"timestamp":1704326400000,"unit":"F"}"#;
-        let temp = Temperature::from_bytes_versioned(json.as_bytes()).unwrap();
+        let temp = Temperature::from_bytes(json.as_bytes()).unwrap();
         assert!(
             (temp.celsius - 20.0).abs() < 0.01,
             "Expected ~20°C from 68°F"
@@ -449,24 +514,28 @@ mod tests {
         assert_eq!(temp.timestamp, 1704326400000);
     }
 
-    #[cfg(feature = "linkable")]
+    #[cfg(all(feature = "linkable", feature = "migratable"))]
     #[test]
     fn test_from_bytes_v2_with_version_marker() {
+        use crate::Linkable;
+
         let json = r#"{"schema_version":2,"celsius":22.5,"timestamp":1704326400000}"#;
-        let temp = Temperature::from_bytes_versioned(json.as_bytes()).unwrap();
+        let temp = Temperature::from_bytes(json.as_bytes()).unwrap();
         assert_eq!(temp.celsius, 22.5);
         assert_eq!(temp.timestamp, 1704326400000);
     }
 
-    #[cfg(feature = "linkable")]
+    #[cfg(all(feature = "linkable", feature = "migratable"))]
     #[test]
     fn test_from_bytes_v1_celsius_unit() {
+        use crate::Linkable;
+
         let json = r#"{"schema_version":1,"temp":22.5,"timestamp":1704326400000,"unit":"C"}"#;
-        let temp = Temperature::from_bytes_versioned(json.as_bytes()).unwrap();
+        let temp = Temperature::from_bytes(json.as_bytes()).unwrap();
         assert_eq!(temp.celsius, 22.5);
     }
 
-    #[cfg(feature = "linkable")]
+    #[cfg(all(feature = "linkable", feature = "migratable"))]
     #[test]
     fn test_from_bytes_via_linkable_trait() {
         use crate::Linkable;
@@ -482,14 +551,14 @@ mod tests {
         assert_eq!(temp.celsius, 22.5);
     }
 
-    #[cfg(feature = "linkable")]
+    #[cfg(all(feature = "linkable", feature = "migratable"))]
     #[test]
     fn test_from_bytes_missing_version_fails() {
-        // Payloads without schema_version should fail
+        use crate::Linkable;
+
         let json = r#"{"celsius":22.5,"timestamp":1704326400000}"#;
-        let result = Temperature::from_bytes_versioned(json.as_bytes());
+        let result = Temperature::from_bytes(json.as_bytes());
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("schema_version"));
     }
 
     #[cfg(feature = "linkable")]

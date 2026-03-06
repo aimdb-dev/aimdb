@@ -58,7 +58,7 @@ mod migratable;
 pub use simulatable::{SimulationConfig, SimulationParams};
 
 #[cfg(feature = "migratable")]
-pub use migratable::{Migratable, MigrationError};
+pub use migratable::{MigrationChain, MigrationError, MigrationStep};
 
 // ═══════════════════════════════════════════════════════════════════
 // SCHEMA TRAITS (Implementation-defined)
@@ -85,11 +85,11 @@ pub use migratable::{Migratable, MigrationError};
 /// | Add optional field | ✅ Yes | `#[serde(default)]` new field |
 /// | Add field with default | ✅ Yes | New field deserializes to default |
 /// | Remove unused field | ✅ Yes | Old data with field still parses |
-/// | Rename field | ⚠️ Migration | Use `Migratable` trait |
-/// | Change field type | ⚠️ Migration | Use `Migratable` trait |
-/// | Add required field | ⚠️ Migration | Use `Migratable` trait |
+/// | Rename field | ⚠️ Migration | Use `MigrationStep` + `migration_chain!` |
+/// | Change field type | ⚠️ Migration | Use `MigrationStep` + `migration_chain!` |
+/// | Add required field | ⚠️ Migration | Use `MigrationStep` + `migration_chain!` |
 ///
-/// For breaking changes, implement the `Migratable` trait (requires `migration` feature)
+/// For breaking changes, implement `MigrationStep` and use `migration_chain!` (requires `migratable` feature)
 /// to provide runtime transformation of older data formats.
 pub trait SchemaType: Sized {
     /// Unique identifier for this schema (e.g., "temperature", "humidity")
