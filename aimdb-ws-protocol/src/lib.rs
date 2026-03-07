@@ -113,6 +113,11 @@ pub struct TopicInfo {
     /// Schema type name (e.g. `"temperature"`), if known by the server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_type: Option<String>,
+    /// Entity / node identifier (e.g. `"vienna"`), extracted server-side from the
+    /// topic name. The server is the authority on naming conventions — clients
+    /// should use this field directly rather than parsing the topic name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
 }
 
 /// Machine-readable error codes sent in `ServerMessage::Error`.

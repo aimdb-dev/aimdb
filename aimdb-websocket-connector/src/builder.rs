@@ -308,9 +308,14 @@ where
                 .into_iter()
                 .map(|(topic, type_id)| {
                     let schema_type = type_id_map.0.get(&type_id).map(|s| s.to_string());
+                    // Extract entity from topic name: "temp.vienna" → "vienna".
+                    // The server owns the naming convention — clients receive
+                    // the entity as a first-class field and never parse topics.
+                    let entity = topic.rsplit('.').next().map(|s| s.to_string());
                     TopicInfo {
                         name: topic,
                         schema_type,
+                        entity,
                     }
                 })
                 .collect();
