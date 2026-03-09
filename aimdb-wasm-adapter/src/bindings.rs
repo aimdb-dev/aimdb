@@ -487,8 +487,12 @@ where
         .map_err(|e| JsError::new(&format!("{e:?}")))?;
 
     match typed.latest() {
-        Some(val) => serde_wasm_bindgen::to_value(val.get())
-            .map_err(|e| JsError::new(&format!("Serialization failed: {e}"))),
+        Some(val) => {
+            let serializer = serde_wasm_bindgen::Serializer::json_compatible();
+            val.get()
+                .serialize(&serializer)
+                .map_err(|e| JsError::new(&format!("Serialization failed: {e}")))
+        }
         None => Ok(JsValue::UNDEFINED),
     }
 }
@@ -560,7 +564,8 @@ where
 
             match select(recv_fut, cancel_fut).await {
                 Either::Left((Ok(val), _)) => {
-                    if let Ok(js) = serde_wasm_bindgen::to_value(&val) {
+                    let serializer = serde_wasm_bindgen::Serializer::json_compatible();
+                    if let Ok(js) = val.serialize(&serializer) {
                         let _ = callback.call1(&JsValue::NULL, &js);
                     }
                 }
