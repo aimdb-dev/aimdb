@@ -79,6 +79,10 @@ pub struct BridgeOptions {
     /// Keepalive interval in milliseconds (default: 30 000).
     #[serde(default = "default_keepalive_ms")]
     pub keepalive_ms: u32,
+    /// Timeout for query / listTopics requests in milliseconds (default: 30 000).
+    /// Set to 0 to disable timeouts.
+    #[serde(default = "default_query_timeout_ms")]
+    pub query_timeout_ms: u32,
 }
 
 fn default_true() -> bool {
@@ -90,6 +94,9 @@ fn default_queue_size() -> usize {
 fn default_keepalive_ms() -> u32 {
     30_000
 }
+fn default_query_timeout_ms() -> u32 {
+    30_000
+}
 
 impl Default for BridgeOptions {
     fn default() -> Self {
@@ -99,6 +106,7 @@ impl Default for BridgeOptions {
             late_join: true,
             max_offline_queue: 256,
             keepalive_ms: 30_000,
+            query_timeout_ms: 30_000,
         }
     }
 }
@@ -122,13 +130,28 @@ struct BridgeState {
 
 // ─── Shared reconnect context ─────────────────────────────────────────────
 
+/// Tag for routing server responses to the correct pending promise.
+#[derive(Debug, Clone, Copy)]
+enum RequestKind {
+    Query,
+    ListTopics,
+}
+
+/// A pending request waiting for a server response.
+struct PendingRequest {
+    /// Reserved for future use when response routing depends on request type.
+    _kind: RequestKind,
+    resolve: js_sys::Function,
+    reject: js_sys::Function,
+}
+
 /// Shared state needed by both the initial connect and reconnect paths.
 ///
 /// Wrapped in `Rc` so closures can cheaply reference it without cloning
 /// every field individually (reduces parameter explosion).
 struct SharedCtx {
     db: AimDb<WasmAdapter>,
-    schema_map: Vec<(String, String)>,
+    schema_map: BTreeMap<String, String>,
     registry: SchemaRegistry,
     state: Rc<RefCell<BridgeState>>,
     on_status: Rc<RefCell<Option<js_sys::Function>>>,
@@ -136,14 +159,10 @@ struct SharedCtx {
     backoff: Vec<u32>,
     url: String,
     ws_cell: Rc<RefCell<web_sys::WebSocket>>,
-    /// Pending query requests: correlation ID → (resolve, reject) JS functions.
-    pending_queries: Rc<RefCell<BTreeMap<String, (js_sys::Function, js_sys::Function)>>>,
-    /// Simple counter for generating unique query IDs.
-    query_id_counter: Rc<RefCell<u32>>,
-    /// Pending list_topics requests: correlation ID → (resolve, reject) JS functions.
-    pending_list_topics: Rc<RefCell<BTreeMap<String, (js_sys::Function, js_sys::Function)>>>,
-    /// Counter for generating unique list_topics IDs.
-    list_topics_id_counter: Rc<RefCell<u32>>,
+    /// Pending request-response pairs: correlation ID → pending request.
+    pending_requests: Rc<RefCell<BTreeMap<String, PendingRequest>>>,
+    /// Counter for generating unique request IDs.
+    request_id_counter: Rc<RefCell<u32>>,
 }
 
 // ─── WsBridge ─────────────────────────────────────────────────────────────
@@ -182,6 +201,11 @@ impl WsBridge {
     /// ```
     #[wasm_bindgen(js_name = "onStatusChange")]
     pub fn on_status_change(&self, callback: js_sys::Function) {
+        // Immediately replay current status so late registrations don't
+        // miss the "connected" transition that may have already fired.
+        let current = self.ctx.state.borrow().status;
+        let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(current.as_str()));
+        // Store for subsequent status changes
         *self.ctx.on_status.borrow_mut() = Some(callback);
     }
 
@@ -239,6 +263,7 @@ impl WsBridge {
         drop(state);
 
         let _ = self.ctx.ws_cell.borrow().close();
+        reject_all_pending(&self.ctx.pending_requests, "Disconnected");
         emit_status(&self.ctx.on_status, ConnectionStatus::Disconnected);
     }
 
@@ -249,16 +274,12 @@ impl WsBridge {
 
     /// Query historical / persisted records over the WebSocket connection.
     ///
-    /// Returns a `Promise<Array>` that resolves with `QueryRecord[]`.
+    /// Returns a `Promise<Object>` that resolves with `{ records, total }`.
     ///
     /// ```ts
-    /// const records = await bridge.query('*', { from: 1700000000000, to: 1700003600000, limit: 500 });
+    /// const result = await bridge.query('*', { from: 1700000000000, to: 1700003600000, limit: 500 });
     /// ```
     pub fn query(&self, pattern: &str, options: JsValue) -> js_sys::Promise {
-        let ctx = self.ctx.clone();
-        let pattern = pattern.to_string();
-
-        // Parse options
         #[derive(Deserialize, Default)]
         struct QueryOpts {
             from: Option<u64>,
@@ -271,93 +292,29 @@ impl WsBridge {
             serde_wasm_bindgen::from_value(options).unwrap_or_default()
         };
 
-        // Generate unique ID
-        let id = {
-            let mut counter = ctx.query_id_counter.borrow_mut();
-            *counter += 1;
-            format!("q{}", *counter)
-        };
-
-        // Create promise
-        let id_for_promise = id.clone();
-        js_sys::Promise::new(&mut move |resolve, reject| {
-            // Register pending query
-            ctx.pending_queries
-                .borrow_mut()
-                .insert(id_for_promise.clone(), (resolve, reject.clone()));
-
-            // Build and send query message
-            let msg = aimdb_ws_protocol::ClientMessage::Query {
-                id: id_for_promise.clone(),
-                pattern: pattern.clone(),
+        let pattern = pattern.to_string();
+        send_request(&self.ctx, RequestKind::Query, move |id| {
+            ClientMessage::Query {
+                id,
+                pattern,
                 from: opts.from,
                 to: opts.to,
                 limit: opts.limit,
-            };
-
-            let state = ctx.state.borrow();
-            if state.status != ConnectionStatus::Connected {
-                drop(state);
-                ctx.pending_queries.borrow_mut().remove(&id_for_promise);
-                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("Not connected"));
-                return;
-            }
-            drop(state);
-
-            if let Err(e) = send_json(&ctx.ws_cell.borrow(), &msg) {
-                ctx.pending_queries.borrow_mut().remove(&id_for_promise);
-                let _ = reject.call1(
-                    &JsValue::NULL,
-                    &JsValue::from_str(&format!("Send failed: {e:?}")),
-                );
             }
         })
     }
+
     /// List all topics served by the WebSocket endpoint.
     ///
     /// Returns a `Promise<Array>` that resolves with `TopicInfo[]`.
-    /// Each entry has `name: string` and optionally `schema_type: string`.
     ///
     /// ```ts
     /// const topics = await bridge.listTopics();
-    /// // [{ name: "temp.vienna", schema_type: "temperature" }, …]
     /// ```
     #[wasm_bindgen(js_name = "listTopics")]
     pub fn list_topics(&self) -> js_sys::Promise {
-        let ctx = self.ctx.clone();
-
-        let id = {
-            let mut counter = ctx.list_topics_id_counter.borrow_mut();
-            *counter += 1;
-            format!("lt{}", *counter)
-        };
-
-        let id_for_promise = id.clone();
-        js_sys::Promise::new(&mut move |resolve, reject| {
-            ctx.pending_list_topics
-                .borrow_mut()
-                .insert(id_for_promise.clone(), (resolve, reject.clone()));
-
-            let msg = ClientMessage::ListTopics {
-                id: id_for_promise.clone(),
-            };
-
-            let state = ctx.state.borrow();
-            if state.status != ConnectionStatus::Connected {
-                drop(state);
-                ctx.pending_list_topics.borrow_mut().remove(&id_for_promise);
-                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("Not connected"));
-                return;
-            }
-            drop(state);
-
-            if let Err(e) = send_json(&ctx.ws_cell.borrow(), &msg) {
-                ctx.pending_list_topics.borrow_mut().remove(&id_for_promise);
-                let _ = reject.call1(
-                    &JsValue::NULL,
-                    &JsValue::from_str(&format!("Send failed: {e:?}")),
-                );
-            }
+        send_request(&self.ctx, RequestKind::ListTopics, |id| {
+            ClientMessage::ListTopics { id }
         })
     }
 }
@@ -374,7 +331,7 @@ impl WsBridge {
     /// Create a new bridge (called from `WasmDb::connect_bridge`).
     pub(crate) fn new_internal(
         db: AimDb<WasmAdapter>,
-        schema_map: Vec<(String, String)>,
+        schema_map: BTreeMap<String, String>,
         registry: SchemaRegistry,
         url: &str,
         options: JsValue,
@@ -414,15 +371,101 @@ impl WsBridge {
             backoff,
             url: url.to_string(),
             ws_cell,
-            pending_queries: Rc::new(RefCell::new(BTreeMap::new())),
-            query_id_counter: Rc::new(RefCell::new(0)),
-            pending_list_topics: Rc::new(RefCell::new(BTreeMap::new())),
-            list_topics_id_counter: Rc::new(RefCell::new(0)),
+            pending_requests: Rc::new(RefCell::new(BTreeMap::new())),
+            request_id_counter: Rc::new(RefCell::new(0)),
         });
 
         install_ws_callbacks(&ctx);
 
         Ok(WsBridge { ctx })
+    }
+}
+
+// ─── Unified request helper ────────────────────────────────────────────────
+
+/// Send a request-response message and return a JS Promise.
+///
+/// Generates a unique ID, registers a pending request, sends the message,
+/// and optionally schedules a timeout that rejects the promise if the
+/// server doesn't respond in time.
+fn send_request(
+    ctx: &Rc<SharedCtx>,
+    kind: RequestKind,
+    build_msg: impl FnOnce(String) -> ClientMessage,
+) -> js_sys::Promise {
+    let ctx = ctx.clone();
+
+    let id = {
+        let mut counter = ctx.request_id_counter.borrow_mut();
+        *counter += 1;
+        format!("r{}", *counter)
+    };
+
+    let id_for_promise = id.clone();
+    let mut build_msg = Some(build_msg);
+    js_sys::Promise::new(&mut move |resolve, reject| {
+        let build_msg = build_msg.take().expect("Promise executor called twice");
+        ctx.pending_requests.borrow_mut().insert(
+            id_for_promise.clone(),
+            PendingRequest {
+                _kind: kind,
+                resolve,
+                reject: reject.clone(),
+            },
+        );
+
+        let msg = build_msg(id_for_promise.clone());
+
+        let state = ctx.state.borrow();
+        if state.status != ConnectionStatus::Connected {
+            drop(state);
+            ctx.pending_requests.borrow_mut().remove(&id_for_promise);
+            let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("Not connected"));
+            return;
+        }
+        drop(state);
+
+        if let Err(e) = send_json(&ctx.ws_cell.borrow(), &msg) {
+            ctx.pending_requests.borrow_mut().remove(&id_for_promise);
+            let _ = reject.call1(
+                &JsValue::NULL,
+                &JsValue::from_str(&format!("Send failed: {e:?}")),
+            );
+            return;
+        }
+
+        // Schedule timeout if configured
+        if ctx.config.query_timeout_ms > 0 {
+            let pending = ctx.pending_requests.clone();
+            let timeout_id = id_for_promise.clone();
+            let timeout_closure = Closure::once(move || {
+                if let Some(req) = pending.borrow_mut().remove(&timeout_id) {
+                    let _ = req
+                        .reject
+                        .call1(&JsValue::NULL, &JsValue::from_str("Request timed out"));
+                }
+            });
+            if let Some(window) = web_sys::window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    timeout_closure.as_ref().unchecked_ref(),
+                    ctx.config.query_timeout_ms as i32,
+                );
+            }
+            timeout_closure.forget();
+        }
+    })
+}
+
+/// Reject all pending requests with the given reason.
+///
+/// Called on disconnect and on_close to prevent hung promises.
+fn reject_all_pending(pending: &Rc<RefCell<BTreeMap<String, PendingRequest>>>, reason: &str) {
+    let mut map = pending.borrow_mut();
+    let drained: Vec<PendingRequest> = core::mem::take(&mut *map).into_values().collect();
+    for req in drained {
+        let _ = req
+            .reject
+            .call1(&JsValue::NULL, &JsValue::from_str(reason));
     }
 }
 
@@ -486,6 +529,10 @@ fn install_ws_callbacks(ctx: &Rc<SharedCtx>) {
                 }
             }
 
+            let has_cb = ctx.on_status.borrow().is_some();
+            web_sys::console::log_1(
+                &format!("[WsBridge] on_open: status=connected, callback={has_cb}").into(),
+            );
             emit_status(&ctx.on_status, ConnectionStatus::Connected);
         }) as Box<dyn FnMut()>)
     };
@@ -523,6 +570,10 @@ fn install_ws_callbacks(ctx: &Rc<SharedCtx>) {
                 }
                 s._ping_closure = None;
             }
+
+            // Reject pending requests — correlation IDs are per-socket and
+            // won't match on a reconnected connection.
+            reject_all_pending(&ctx.pending_requests, "Connection lost");
 
             if ctx.config.auto_reconnect {
                 let delay = {
@@ -621,11 +672,7 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
     match msg {
         ServerMessage::Data { topic, payload, .. } | ServerMessage::Snapshot { topic, payload } => {
             if let Some(payload) = payload {
-                let schema = ctx
-                    .schema_map
-                    .iter()
-                    .find(|(k, _)| k == &topic)
-                    .map(|(_, v)| v.as_str());
+                let schema = ctx.schema_map.get(&topic).map(|v| v.as_str());
 
                 match schema {
                     Some(schema) => {
@@ -667,11 +714,7 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
             // Keepalive ACK — reset timer if needed.
         }
         ServerMessage::QueryResult { id, records, total } => {
-            // Resolve the pending promise for this query
-            if let Some((resolve, _reject)) = ctx.pending_queries.borrow_mut().remove(&id) {
-                // Convert records to JS array.
-                // Use json_compatible() so serde_json::Value::Object
-                // becomes a plain JS object (not a JS Map).
+            if let Some(req) = ctx.pending_requests.borrow_mut().remove(&id) {
                 let serializer = serde_wasm_bindgen::Serializer::json_compatible();
                 let arr = js_sys::Array::new();
                 for rec in &records {
@@ -679,7 +722,6 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
                         arr.push(&js_val);
                     }
                 }
-                // Attach metadata as properties on the array
                 let result_obj = js_sys::Object::new();
                 let _ = js_sys::Reflect::set(&result_obj, &"records".into(), &arr);
                 let _ = js_sys::Reflect::set(
@@ -687,11 +729,11 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
                     &"total".into(),
                     &JsValue::from_f64(total as f64),
                 );
-                let _ = resolve.call1(&JsValue::NULL, &result_obj);
+                let _ = req.resolve.call1(&JsValue::NULL, &result_obj);
             }
         }
         ServerMessage::TopicList { id, topics } => {
-            if let Some((resolve, _reject)) = ctx.pending_list_topics.borrow_mut().remove(&id) {
+            if let Some(req) = ctx.pending_requests.borrow_mut().remove(&id) {
                 let serializer = serde_wasm_bindgen::Serializer::json_compatible();
                 let arr = js_sys::Array::new();
                 for topic in &topics {
@@ -699,7 +741,7 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
                         arr.push(&js_val);
                     }
                 }
-                let _ = resolve.call1(&JsValue::NULL, &arr);
+                let _ = req.resolve.call1(&JsValue::NULL, &arr);
             }
         }
     }
@@ -753,9 +795,46 @@ fn send_json(ws: &web_sys::WebSocket, msg: &ClientMessage) -> Result<(), JsError
     Ok(())
 }
 
-/// Emit status to the registered callback.
+/// Emit status change to the registered JS callback **and** via DOM
+/// `CustomEvent` on `window` (secondary channel for non-React consumers).
+///
+/// The callback is deferred to a microtask via `spawn_local` so that it
+/// executes outside the re-entrant WASM↔JS call stack created by
+/// WebSocket event handlers (on_open, on_close, on_message). Direct
+/// `cb.call1()` from inside those handlers silently fails — the call
+/// returns `Ok` but the JS function body never runs.  Yielding once via
+/// `Promise.resolve().await` puts us in a clean microtask context (same
+/// as `subscribe_typed`), where React state updates flush correctly.
 fn emit_status(on_status: &Rc<RefCell<Option<js_sys::Function>>>, status: ConnectionStatus) {
-    if let Some(cb) = on_status.borrow().as_ref() {
-        let _ = cb.call1(&JsValue::NULL, &JsValue::from_str(status.as_str()));
+    // Primary: deferred callback via microtask
+    let cb = on_status.borrow().as_ref().cloned();
+    if let Some(cb) = cb {
+        let status_str = JsValue::from_str(status.as_str());
+        wasm_bindgen_futures::spawn_local(async move {
+            // Yield once to escape the current WASM call stack
+            let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
+                .await;
+            if let Err(e) = cb.call1(&JsValue::NULL, &status_str) {
+                web_sys::console::error_1(
+                    &format!("[WsBridge] emit_status callback threw: {:?}", e).into(),
+                );
+            }
+        });
+    }
+    // Secondary: DOM CustomEvent for non-React listeners
+    dispatch_status_event(status);
+}
+
+/// Dispatch a `CustomEvent("aimdb:status")` on `window` with the status
+/// string as `event.detail`.
+fn dispatch_status_event(status: ConnectionStatus) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let init = web_sys::CustomEventInit::new();
+    init.set_detail(&JsValue::from_str(status.as_str()));
+    init.set_bubbles(false);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("aimdb:status", &init) {
+        let _ = web_sys::EventTarget::from(window).dispatch_event(&event);
     }
 }

@@ -48,6 +48,9 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "console",
+    "CustomEvent",
+    "CustomEventInit",
+    "EventTarget",
     "MessageEvent",
     "Performance",
     "WebSocket",

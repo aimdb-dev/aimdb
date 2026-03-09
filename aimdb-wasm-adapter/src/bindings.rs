@@ -16,10 +16,13 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::fmt::Debug;
 
 use serde::de::DeserializeOwned;
@@ -29,6 +32,8 @@ use wasm_bindgen::prelude::*;
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::builder::{AimDb, AimDbBuilder};
 use aimdb_core::record_id::StringKey;
+
+use aimdb_ws_protocol::{ClientMessage, ServerMessage};
 
 use crate::schema_registry::{SchemaOps, SchemaRegistry};
 use crate::ws_bridge::WsBridge;
@@ -108,7 +113,7 @@ pub struct WasmDb {
     /// Live database handle. `None` before `build()`.
     db: Option<AimDb<WasmAdapter>>,
     /// Maps record key → schema type name (always populated).
-    schema_map: Vec<(String, String)>,
+    schema_map: BTreeMap<String, String>,
     /// Type-erased dispatch registry built from the visitor pattern.
     registry: SchemaRegistry,
 }
@@ -127,7 +132,7 @@ impl WasmDb {
         WasmDb {
             configs: Some(Vec::new()),
             db: None,
-            schema_map: Vec::new(),
+            schema_map: BTreeMap::new(),
             registry: SchemaRegistry::build(),
         }
     }
@@ -161,7 +166,7 @@ impl WasmDb {
         let buffer_cfg = parse_buffer_cfg(&opts.buffer)?;
 
         self.schema_map
-            .push((record_key.to_string(), opts.schema_type.clone()));
+            .insert(record_key.to_string(), opts.schema_type.clone());
 
         configs.push(RecordConfig {
             key: record_key.to_string(),
@@ -234,6 +239,35 @@ impl WasmDb {
         self.db.is_some()
     }
 
+    /// Discover topics served at `url` without building a full database.
+    ///
+    /// Opens a one-shot WebSocket, sends `ListTopics`, and resolves with
+    /// `TopicInfo[]` once the server responds. Rejects after 30 s if no
+    /// response arrives, or immediately on connection error.
+    ///
+    /// # Example (TypeScript)
+    /// ```ts
+    /// const wasm = await import("aimdb-wasm-adapter");
+    /// await wasm.default();
+    /// const topics = await wasm.WasmDb.discover("wss://api.example.com/ws");
+    /// topics.forEach(t => db.configureRecord(t.entity, { schemaType: t.schemaType, buffer: "SingleLatest" }));
+    /// ```
+    pub async fn discover(url: &str) -> Result<JsValue, JsError> {
+        wasm_bindgen_futures::JsFuture::from(discover_impl(url.to_string()))
+            .await
+            .map_err(|e| JsError::new(&format!("discover: {e:?}")))
+    }
+
+    /// Returns the list of schema type names known to this WASM adapter.
+    ///
+    /// Use this to filter discovered topics before calling `configureRecord` —
+    /// topics whose `schemaType` is not in this list cannot be handled by the
+    /// WASM runtime and should be skipped.
+    #[wasm_bindgen(js_name = "knownSchemas")]
+    pub fn known_schemas(&self) -> Vec<String> {
+        self.registry.known_names().iter().map(|s| s.to_string()).collect()
+    }
+
     /// Connect a WebSocket bridge to this database for server synchronization.
     ///
     /// The database remains usable for local `get()` / `set()` / `subscribe()`
@@ -263,6 +297,143 @@ impl WasmDb {
     }
 }
 
+// ─── discover_impl ────────────────────────────────────────────────────────
+
+/// Build a one-shot WebSocket promise that resolves with `TopicInfo[]`.
+///
+/// Each callback pair (resolve, reject) is stored in an `Rc<RefCell<Option>>`
+/// so that whichever event fires first wins and subsequent events are no-ops.
+fn discover_impl(url: String) -> js_sys::Promise {
+    js_sys::Promise::new(&mut move |resolve, reject| {
+        let ws = match web_sys::WebSocket::new(&url) {
+            Ok(ws) => ws,
+            Err(e) => {
+                let _ = reject.call1(
+                    &JsValue::NULL,
+                    &JsValue::from_str(&format!("WebSocket open failed: {e:?}")),
+                );
+                return;
+            }
+        };
+        let ws = Rc::new(ws);
+        let resolve_rc: Rc<RefCell<Option<js_sys::Function>>> =
+            Rc::new(RefCell::new(Some(resolve)));
+        let reject_rc: Rc<RefCell<Option<js_sys::Function>>> =
+            Rc::new(RefCell::new(Some(reject)));
+
+        // on_open: send ListTopics
+        {
+            let ws_clone = ws.clone();
+            let on_open = Closure::wrap(Box::new(move || {
+                let msg = ClientMessage::ListTopics {
+                    id: "discover".to_string(),
+                };
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    let _ = ws_clone.send_with_str(&json);
+                }
+            }) as Box<dyn FnMut()>);
+            ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+            on_open.forget();
+        }
+
+        // on_message: parse TopicList, resolve, close socket
+        {
+            let ws_clone = ws.clone();
+            let resolve_clone = resolve_rc.clone();
+            let reject_clone = reject_rc.clone();
+            let on_message =
+                Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
+                    let _ = ws_clone.close();
+                    let Some(text) = event.data().as_string() else {
+                        if let Some(rej) = reject_clone.borrow_mut().take() {
+                            let _ = rej.call1(
+                                &JsValue::NULL,
+                                &JsValue::from_str("Non-text frame from server"),
+                            );
+                        }
+                        return;
+                    };
+                    match serde_json::from_str::<ServerMessage>(&text) {
+                        Ok(ServerMessage::TopicList { topics, .. }) => {
+                            let serializer =
+                                serde_wasm_bindgen::Serializer::json_compatible();
+                            let arr = js_sys::Array::new();
+                            for topic in &topics {
+                                if let Ok(js_val) = topic.serialize(&serializer) {
+                                    arr.push(&js_val);
+                                }
+                            }
+                            if let Some(res) = resolve_clone.borrow_mut().take() {
+                                let _ = res.call1(&JsValue::NULL, &arr);
+                            }
+                        }
+                        _ => {
+                            if let Some(rej) = reject_clone.borrow_mut().take() {
+                                let _ = rej.call1(
+                                    &JsValue::NULL,
+                                    &JsValue::from_str("Unexpected server message"),
+                                );
+                            }
+                        }
+                    }
+                }) as Box<dyn FnMut(web_sys::MessageEvent)>);
+            ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+            on_message.forget();
+        }
+
+        // on_error: reject
+        {
+            let reject_clone = reject_rc.clone();
+            let on_error = Closure::wrap(Box::new(move || {
+                if let Some(rej) = reject_clone.borrow_mut().take() {
+                    let _ = rej.call1(
+                        &JsValue::NULL,
+                        &JsValue::from_str("WebSocket error during discover"),
+                    );
+                }
+            }) as Box<dyn FnMut()>);
+            ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+            on_error.forget();
+        }
+
+        // on_close: reject if server closed before we got TopicList
+        // (no-op if on_message already resolved)
+        {
+            let reject_clone = reject_rc.clone();
+            let on_close = Closure::wrap(Box::new(move || {
+                if let Some(rej) = reject_clone.borrow_mut().take() {
+                    let _ = rej.call1(
+                        &JsValue::NULL,
+                        &JsValue::from_str("Connection closed before TopicList received"),
+                    );
+                }
+            }) as Box<dyn FnMut()>);
+            ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+            on_close.forget();
+        }
+
+        // Timeout: reject after 30 s
+        {
+            let reject_clone = reject_rc.clone();
+            let timeout_cb = Closure::once(move || {
+                if let Some(rej) = reject_clone.borrow_mut().take() {
+                    let _ = rej.call1(
+                        &JsValue::NULL,
+                        &JsValue::from_str("discover timed out"),
+                    );
+                }
+            });
+            if let Some(window) = web_sys::window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    timeout_cb.as_ref().unchecked_ref(),
+                    30_000,
+                );
+            }
+            timeout_cb.forget();
+        }
+    })
+}
+
 // ─── Private helpers ──────────────────────────────────────────────────────
 
 impl WasmDb {
@@ -275,9 +446,8 @@ impl WasmDb {
 
         let schema = self
             .schema_map
-            .iter()
-            .find(|(k, _)| k == record_key)
-            .map(|(_, v)| v.as_str())
+            .get(record_key)
+            .map(|v| v.as_str())
             .ok_or_else(|| JsError::new(&format!("Unknown record key: {record_key}")))?;
 
         let ops = self

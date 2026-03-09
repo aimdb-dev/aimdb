@@ -70,6 +70,11 @@ impl SchemaRegistry {
     pub fn is_known(&self, schema_name: &str) -> bool {
         self.entries.contains_key(schema_name)
     }
+
+    /// Returns all registered schema names.
+    pub fn known_names(&self) -> alloc::vec::Vec<&'static str> {
+        self.entries.keys().copied().collect()
+    }
 }
 
 // ─── Visitor that builds the registry ─────────────────────────────────────
