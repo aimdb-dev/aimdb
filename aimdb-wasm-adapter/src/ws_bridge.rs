@@ -463,9 +463,7 @@ fn reject_all_pending(pending: &Rc<RefCell<BTreeMap<String, PendingRequest>>>, r
     let mut map = pending.borrow_mut();
     let drained: Vec<PendingRequest> = core::mem::take(&mut *map).into_values().collect();
     for req in drained {
-        let _ = req
-            .reject
-            .call1(&JsValue::NULL, &JsValue::from_str(reason));
+        let _ = req.reject.call1(&JsValue::NULL, &JsValue::from_str(reason));
     }
 }
 
