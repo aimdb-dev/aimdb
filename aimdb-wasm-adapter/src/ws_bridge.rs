@@ -197,7 +197,7 @@ impl WsBridge {
     /// Register a callback for connection status changes.
     ///
     /// ```ts
-    /// bridge.onStatusChange((status: string) => { /* … */ });
+    /// bridge.onStatusChange((status) => { console.log(status); });
     /// ```
     #[wasm_bindgen(js_name = "onStatusChange")]
     pub fn on_status_change(&self, callback: js_sys::Function) {
