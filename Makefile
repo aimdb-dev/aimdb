@@ -332,51 +332,51 @@ publish:
 	else \
 		printf "$(BLUE)Running in CI mode - skipping confirmation$(NC)\n"; \
 	fi
-	@printf "$(YELLOW)  → Publishing aimdb-executor (1/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-executor (1/16)$(NC)\n"
 	@cargo publish -p aimdb-executor
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-derive (2/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-derive (2/16)$(NC)\n"
 	@cargo publish -p aimdb-derive
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-codegen (3/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-codegen (3/16)$(NC)\n"
 	@cargo publish -p aimdb-codegen
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-core (4/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-core (4/16)$(NC)\n"
 	@cargo publish -p aimdb-core
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (5/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (5/16)$(NC)\n"
 	@cargo publish -p aimdb-tokio-adapter
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (6/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (6/16)$(NC)\n"
 	@cargo publish -p aimdb-embassy-adapter --no-verify
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-client (7/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-client (7/16)$(NC)\n"
 	@cargo publish -p aimdb-client
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-sync (8/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-sync (8/16)$(NC)\n"
 	@cargo publish -p aimdb-sync
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence (9/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-persistence (9/16)$(NC)\n"
 	@cargo publish -p aimdb-persistence
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence-sqlite (10/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-persistence-sqlite (10/16)$(NC)\n"
 	@cargo publish -p aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (11/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (11/16)$(NC)\n"
 	@cargo publish -p aimdb-mqtt-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-knx-connector (12/15)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-knx-connector (12/16)$(NC)\n"
 	@cargo publish -p aimdb-knx-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
