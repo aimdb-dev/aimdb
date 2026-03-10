@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y \
     libudev-dev \
     # JSON processing
     jq \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------------------------
@@ -75,9 +76,28 @@ RUN cargo install probe-rs --features cli || \
     echo "Run: cargo install probe-rs --features cli")
 
 # --------------------------------------------------------------------
-# Use Bash for subsequent RUN instructions (important for nvm)
+# Use Bash for subsequent RUN instructions (important for fnm)
 # --------------------------------------------------------------------
 SHELL ["/bin/bash", "-c"]
+
+# --------------------------------------------------------------------
+# Install fnm (Fast Node Manager)
+# --------------------------------------------------------------------
+RUN curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell \
+    && export PATH="/home/$USERNAME/.local/share/fnm:$PATH" \
+    && fnm install 20 \
+    && fnm default 20
+
+# Add fnm shell integration to bashrc
+RUN echo '' >> /home/$USERNAME/.bashrc \
+    && echo '# fnm' >> /home/$USERNAME/.bashrc \
+    && echo 'FNM_PATH="/home/'"$USERNAME"'/.local/share/fnm"' >> /home/$USERNAME/.bashrc \
+    && echo 'if [ -d "$FNM_PATH" ]; then' >> /home/$USERNAME/.bashrc \
+    && echo '  export PATH="$FNM_PATH:$PATH"' >> /home/$USERNAME/.bashrc \
+    && echo '  eval "$(fnm env --shell bash)"' >> /home/$USERNAME/.bashrc \
+    && echo 'fi' >> /home/$USERNAME/.bashrc
+
+ENV PATH="/home/$USERNAME/.local/share/fnm/aliases/default/bin:/home/$USERNAME/.local/share/fnm:${PATH}"
 
 # --------------------------------------------------------------------
 # Final working directory
