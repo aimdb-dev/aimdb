@@ -294,11 +294,10 @@ fn write_if_changed(path: &Path, contents: &str, label: &str) -> CliResult<()> {
 
     if changed {
         std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
-        println!("  {} {} written", "→".cyan(), path.display());
+        println!("  {} {} ({label})", "→".cyan(), path.display());
     } else {
         println!("  {} {} unchanged", "·".dimmed(), path.display());
     }
 
-    let _ = label; // Suppresses unused warning; label available for future verbose output
     Ok(())
 }
