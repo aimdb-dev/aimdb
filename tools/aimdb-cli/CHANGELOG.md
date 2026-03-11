@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
+## [0.6.0] - 2026-03-11
+
+### Added
+
+- **Generate Command**: New `aimdb generate` subcommand for data-driven design tooling via `aimdb-codegen`
+  - Mermaid diagram generation from `.aimdb/state.toml`
+  - Rust schema source generation (`generated_schema.rs`)
+  - Common crate scaffolding
+  - Hub binary scaffolding
+- **Watch Command**: New `aimdb watch` subcommand for live record monitoring
+  - Real-time event streaming with formatted output
+- New dependency on `aimdb-codegen` for code generation capabilities
+
 ## [0.5.0] - 2026-02-21
 
 ### Added

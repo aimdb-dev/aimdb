@@ -19,8 +19,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aimdb-core = "0.1"
-aimdb-tokio-adapter = "0.1"
+aimdb-core = "1.0"
+aimdb-tokio-adapter = "0.5"
 tokio = { version = "1", features = ["full"] }
 ```
 

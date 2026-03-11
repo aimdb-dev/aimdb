@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
+## [0.6.0] - 2026-03-11
+
+### Added
+
+- **Architecture Agent**: Full design-time architecture agent with session state machine (`Idle → Gathering → Proposing → Resolve`)
+  - `ArchitectureState` management with file-locking and `.aimdb/state.toml` persistence
+  - Conflict detection and resolution module
+- **Architecture MCP Tools** (16+ new tools):
+  - `propose_add_record` — Add a record to the architecture proposal
+  - `propose_add_connector` — Add a connector to the proposal
+  - `propose_modify_buffer` — Modify buffer configuration
+  - `propose_modify_fields` — Modify record fields
+  - `propose_modify_key_variants` — Modify record key variants
+  - `remove_record` — Remove a record from architecture
+  - `rename_record` — Rename a record
+  - `reset_session` — Reset the architecture session
+  - `resolve_proposal` — Accept or reject a proposal, triggering codegen
+  - `save_memory` — Persist architecture decisions
+  - `validate_against_instance` — Validate architecture against a running AimDB instance
+  - `get_architecture` — Get current architecture state
+  - `get_buffer_metrics` — Get buffer performance metrics
+- **Architecture MCP Resources**: Mermaid diagram and validation results as MCP resources
+- **Architecture Prompts**: Updated prompts module with architecture agent guidance
+- `CONVENTIONS.md` asset for architecture agent prompt context
+- New dependencies on `aimdb-codegen` and `toml`
+
 ## [0.5.0] - 2026-02-21
 
 ### Added

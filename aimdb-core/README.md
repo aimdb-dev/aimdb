@@ -35,8 +35,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aimdb-core = "0.4"
-aimdb-tokio-adapter = "0.4"  # or aimdb-embassy-adapter
+aimdb-core = "1.0"
+aimdb-tokio-adapter = "0.5"  # or aimdb-embassy-adapter
 ```
 
 ### Basic Usage

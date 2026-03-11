@@ -35,7 +35,7 @@ aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-featur
 ] }
 
 # Core AimDB types - std version for Tokio (for DbError integration)
-aimdb-core = { version = "0.5.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "1.0.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
 

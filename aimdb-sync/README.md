@@ -43,9 +43,9 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aimdb-sync = "0.1"
-aimdb-core = "0.1"
-aimdb-tokio-adapter = "0.1"
+aimdb-sync = "0.5"
+aimdb-core = "1.0"
+aimdb-tokio-adapter = "0.5"
 ```
 
 ### Basic Example
