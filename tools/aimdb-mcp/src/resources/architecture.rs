@@ -19,7 +19,7 @@ const CONVENTIONS: &str = include_str!("../../assets/CONVENTIONS.md");
 
 // ── list ──────────────────────────────────────────────────────────────────────
 
-/// Return the 6 architecture resource descriptors.
+/// Return the 5 architecture resource descriptors.
 pub fn list_resources() -> Vec<Resource> {
     vec![
         Resource {
