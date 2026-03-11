@@ -94,11 +94,14 @@ pub fn read_resource(uri: &str) -> McpResult<ResourceReadResult> {
             Some(state) => aimdb_codegen::generate_mermaid(state),
         },
 
-        "aimdb://architecture/state" => match &state_opt {
-            None => "# No state.toml found.\n".to_string(),
-            Some(state) => serde_json::to_string_pretty(state)
-                .map_err(|e| McpError::Internal(format!("serialising state: {e}")))?,
-        },
+        "aimdb://architecture/state" => {
+            if state_path.exists() {
+                std::fs::read_to_string(&state_path)
+                    .map_err(|e| McpError::Internal(format!("reading state.toml: {e}")))?
+            } else {
+                "# No state.toml found.\n".to_string()
+            }
+        }
 
         "aimdb://architecture/conflicts" => match &state_opt {
             None => serde_json::to_string_pretty(&serde_json::json!({
@@ -144,11 +147,17 @@ pub fn read_resource(uri: &str) -> McpResult<ResourceReadResult> {
         }
     };
 
-    let mime_type = if uri.ends_with("architecture") {
-        Some("text/plain".to_string())
-    } else {
-        Some("application/json".to_string())
-    };
+    let mime_type = Some(
+        match uri {
+            "aimdb://architecture" => "text/plain",
+            "aimdb://architecture/state" => "application/toml",
+            "aimdb://architecture/conflicts" => "application/json",
+            "aimdb://architecture/conventions" => "text/markdown",
+            "aimdb://architecture/memory" => "text/markdown",
+            _ => "text/plain",
+        }
+        .to_string(),
+    );
 
     Ok(ResourceReadResult {
         contents: vec![ResourceContent {
