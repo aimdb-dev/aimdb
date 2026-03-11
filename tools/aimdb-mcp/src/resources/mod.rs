@@ -22,7 +22,7 @@ pub async fn list_resources() -> McpResult<ResourcesListResult> {
 /// Read a resource by URI (instances first, then architecture)
 pub async fn read_resource(uri: &str) -> McpResult<ResourceReadResult> {
     if uri.starts_with("aimdb://architecture") {
-        architecture::read_resource(uri)
+        architecture::read_resource(uri).await
     } else {
         instances::read_resource(uri).await
     }

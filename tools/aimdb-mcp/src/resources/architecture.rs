@@ -10,6 +10,7 @@
 use crate::architecture::{default_memory_path, default_state_path, read_state};
 use crate::error::{McpError, McpResult};
 use crate::protocol::{Resource, ResourceContent, ResourceReadResult};
+use std::path::PathBuf;
 use tracing::debug;
 
 /// Mermaid diagram conventions — embedded at compile time so the binary is
@@ -80,64 +81,39 @@ pub fn list_resources() -> Vec<Resource> {
 // ── read ──────────────────────────────────────────────────────────────────────
 
 /// Read a single architecture resource by URI.
-pub fn read_resource(uri: &str) -> McpResult<ResourceReadResult> {
+pub async fn read_resource(uri: &str) -> McpResult<ResourceReadResult> {
     debug!("architecture read_resource: {uri}");
 
-    let state_path = default_state_path();
-
-    let state_opt = read_state(&state_path)
-        .map_err(|e| McpError::Internal(format!("reading state.toml: {e}")))?;
-
     let text = match uri {
-        "aimdb://architecture" => match &state_opt {
-            None => "No state.toml found. Run the onboarding prompt to get started.".to_string(),
-            Some(state) => aimdb_codegen::generate_mermaid(state),
-        },
-
-        "aimdb://architecture/state" => {
-            if state_path.exists() {
-                std::fs::read_to_string(&state_path)
-                    .map_err(|e| McpError::Internal(format!("reading state.toml: {e}")))?
-            } else {
-                "# No state.toml found.\n".to_string()
-            }
+        // ── diagram & conflicts need the parsed state ──────────────────
+        "aimdb://architecture" | "aimdb://architecture/conflicts" => {
+            let uri_owned = uri.to_string();
+            tokio::task::spawn_blocking(move || read_with_state(&uri_owned))
+                .await
+                .map_err(|e| McpError::Internal(format!("spawn_blocking join: {e}")))?
+                .map_err(|e| McpError::Internal(format!("reading state.toml: {e}")))?
         }
 
-        "aimdb://architecture/conflicts" => match &state_opt {
-            None => serde_json::to_string_pretty(&serde_json::json!({
-                "errors": [],
-                "warnings": [],
-                "note": "No state.toml found"
-            }))
-            .unwrap(),
-            Some(state) => {
-                let errors = aimdb_codegen::validate(state);
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "errors": errors.iter()
-                        .filter(|e| e.severity == aimdb_codegen::Severity::Error)
-                        .map(|e| serde_json::json!({ "location": e.location, "message": e.message }))
-                        .collect::<Vec<_>>(),
-                    "warnings": errors.iter()
-                        .filter(|e| e.severity == aimdb_codegen::Severity::Warning)
-                        .map(|e| serde_json::json!({ "location": e.location, "message": e.message }))
-                        .collect::<Vec<_>>(),
-                }))
-                .map_err(|e| McpError::Internal(format!("serialising conflicts: {e}")))?
-            }
-        },
+        // ── raw TOML — just return the file bytes ──────────────────────
+        "aimdb://architecture/state" => {
+            let state_path = default_state_path();
+            read_file_or_fallback(&state_path, "# No state.toml found.\n", "state.toml").await?
+        }
 
+        // ── conventions — compile-time constant, no I/O ────────────────
         "aimdb://architecture/conventions" => CONVENTIONS.to_string(),
 
+        // ── memory — read .aimdb/memory.md ─────────────────────────────
         "aimdb://architecture/memory" => {
             let memory_path = default_memory_path();
-            if memory_path.exists() {
-                std::fs::read_to_string(&memory_path)
-                    .map_err(|e| McpError::Internal(format!("reading memory.md: {e}")))?
-            } else {
+            read_file_or_fallback(
+                &memory_path,
                 "# AimDB Architecture Memory\n\nNo memory recorded yet. \
-                 The architecture agent will populate this after the first confirmed proposal.\n"
-                    .to_string()
-            }
+                 The architecture agent will populate this after the first \
+                 confirmed proposal.\n",
+                "memory.md",
+            )
+            .await?
         }
 
         _ => {
@@ -167,4 +143,56 @@ pub fn read_resource(uri: &str) -> McpResult<ResourceReadResult> {
             blob: None,
         }],
     })
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Read a file with `tokio::fs`, returning a fallback string when absent.
+async fn read_file_or_fallback(path: &PathBuf, fallback: &str, label: &str) -> McpResult<String> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(contents) => Ok(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(fallback.to_string()),
+        Err(e) => Err(McpError::Internal(format!("reading {label}: {e}"))),
+    }
+}
+
+/// Synchronous helper executed inside `spawn_blocking`.
+/// Reads + parses state.toml and produces the text for `/` or `/conflicts`.
+fn read_with_state(uri: &str) -> Result<String, String> {
+    let state_path = default_state_path();
+    let state_opt = read_state(&state_path).map_err(|e| e.to_string())?;
+
+    match uri {
+        "aimdb://architecture" => match state_opt {
+            None => {
+                Ok("No state.toml found. Run the onboarding prompt to get started.".to_string())
+            }
+            Some(state) => Ok(aimdb_codegen::generate_mermaid(&state)),
+        },
+
+        "aimdb://architecture/conflicts" => match state_opt {
+            None => Ok(serde_json::to_string_pretty(&serde_json::json!({
+                "errors": [],
+                "warnings": [],
+                "note": "No state.toml found"
+            }))
+            .unwrap()),
+            Some(state) => {
+                let errors = aimdb_codegen::validate(&state);
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "errors": errors.iter()
+                        .filter(|e| e.severity == aimdb_codegen::Severity::Error)
+                        .map(|e| serde_json::json!({ "location": e.location, "message": e.message }))
+                        .collect::<Vec<_>>(),
+                    "warnings": errors.iter()
+                        .filter(|e| e.severity == aimdb_codegen::Severity::Warning)
+                        .map(|e| serde_json::json!({ "location": e.location, "message": e.message }))
+                        .collect::<Vec<_>>(),
+                }))
+                .map_err(|e| format!("serialising conflicts: {e}"))
+            }
+        },
+
+        _ => unreachable!("read_with_state called for unexpected URI: {uri}"),
+    }
 }
