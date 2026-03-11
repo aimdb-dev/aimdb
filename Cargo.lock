@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aimdb-client",
  "aimdb-codegen",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-core"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "aimdb-derive",
  "aimdb-executor",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aimdb-client",
  "aimdb-codegen",
@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "sync-api-demo"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -3326,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "tokio-knx-connector-demo"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",
@@ -3353,7 +3353,7 @@ dependencies = [
 
 [[package]]
 name = "tokio-mqtt-connector-demo"
-version = "0.5.0"
+version = "1.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",

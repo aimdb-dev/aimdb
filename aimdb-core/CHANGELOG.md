@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
+## [1.0.0] - 2026-03-11
+
+### Added
+
+- `ConnectorUrl::default_port()` now handles `ws://` (→ 1883) and `wss://` (→ 8883) URL schemes for WebSocket connectors
+- `ConnectorUrl::is_secure()` now includes the `wss` scheme
+- Documentation updated with WebSocket URL format examples
+
 ## [0.5.0] - 2026-02-21
 
 ### Added

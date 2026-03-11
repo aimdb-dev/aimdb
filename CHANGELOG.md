@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Note**: This is the global changelog for the AimDB project. For detailed changes to individual crates, see their respective CHANGELOG.md files:
 > - [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md)
+> - [aimdb-codegen/CHANGELOG.md](aimdb-codegen/CHANGELOG.md)
+> - [aimdb-data-contracts/CHANGELOG.md](aimdb-data-contracts/CHANGELOG.md)
 > - [aimdb-derive/CHANGELOG.md](aimdb-derive/CHANGELOG.md)
 > - [aimdb-executor/CHANGELOG.md](aimdb-executor/CHANGELOG.md)
 > - [aimdb-tokio-adapter/CHANGELOG.md](aimdb-tokio-adapter/CHANGELOG.md)
 > - [aimdb-embassy-adapter/CHANGELOG.md](aimdb-embassy-adapter/CHANGELOG.md)
 > - [aimdb-mqtt-connector/CHANGELOG.md](aimdb-mqtt-connector/CHANGELOG.md)
 > - [aimdb-knx-connector/CHANGELOG.md](aimdb-knx-connector/CHANGELOG.md)
+> - [aimdb-websocket-connector/CHANGELOG.md](aimdb-websocket-connector/CHANGELOG.md)
+> - [aimdb-ws-protocol/CHANGELOG.md](aimdb-ws-protocol/CHANGELOG.md)
+> - [aimdb-wasm-adapter/CHANGELOG.md](aimdb-wasm-adapter/CHANGELOG.md)
 > - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
 > - [aimdb-client/CHANGELOG.md](aimdb-client/CHANGELOG.md)
 > - [aimdb-persistence/CHANGELOG.md](aimdb-persistence/CHANGELOG.md)
@@ -23,6 +28,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 No changes yet.
+
+## [1.0.0] - 2026-03-11
+
+### Added
+
+- **aimdb-core** promoted to **1.0.0** — stable public API milestone
+- **aimdb-websocket-connector**: New crate for real-time bidirectional WebSocket streaming
+  - Server mode (Axum-based) with `link_to("ws://topic")` for pushing data to browser clients
+  - Client mode (tokio-tungstenite) with `link_to("ws-client://host/topic")` for AimDB-to-AimDB sync
+  - `AuthHandler` trait for pluggable authentication
+  - Client session management with automatic cleanup and late-join support
+- **aimdb-ws-protocol**: New crate with shared wire protocol types for the WebSocket ecosystem
+  - `ServerMessage` and `ClientMessage` enums with JSON-encoded `"type"` discriminant
+  - MQTT-style wildcard topic matching (`#` multi-level, `*` single-level)
+- **aimdb-wasm-adapter**: New crate enabling AimDB to run in the browser via WebAssembly
+  - Full `aimdb-executor` trait implementations (`RuntimeAdapter`, `Spawn`, `TimeOps`, `Logger`)
+  - `Rc<RefCell<…>>` buffers — zero-overhead for single-threaded WASM
+  - `WasmDb` facade via `#[wasm_bindgen]` with `configureRecord`, `get`, `set`, `subscribe`
+  - `WsBridge` — WebSocket bridge connecting browser to remote AimDB server
+  - `SchemaRegistry` for type-erased record dispatch
+  - React hooks: `useRecord<T>`, `useSetRecord<T>`, `useBridge`
+- **aimdb-codegen**: New crate for architecture-to-code generation
+  - `ArchitectureState` type for reading `.aimdb/state.toml` decision records
+  - Mermaid diagram generation (`generate_mermaid`)
+  - Rust source generation (`generate_rust`) — value structs, key enums, `SchemaType`/`Linkable` impls, `configure_schema()` scaffolding
+  - Common crate, hub crate, and binary crate scaffolding
+  - State validation module for architecture integrity checks
+- **aimdb-data-contracts**: Added `Streamable` trait and `StreamableVisitor` pattern for type-erased dispatch across WebSocket, WASM, and other wire boundaries
+- **aimdb-data-contracts**: Added `Migratable` trait with `MigrationChain` and `MigrationStep` for schema evolution
+- **aimdb-core**: Added `ws://` and `wss://` URL scheme support in `ConnectorUrl` for WebSocket connectors
+- **tools/aimdb-cli**: New `aimdb generate` subcommand for Mermaid diagrams, Rust schema generation, and crate scaffolding via `aimdb-codegen`
+- **tools/aimdb-cli**: New `aimdb watch` subcommand for live record monitoring
+- **tools/aimdb-mcp**: Architecture agent module with session state machine (`Idle → Gathering → Proposing → Resolve`)
+- **tools/aimdb-mcp**: 16+ new MCP tools: `propose_add_record`, `propose_add_connector`, `propose_modify_buffer`, `propose_modify_fields`, `propose_modify_key_variants`, `remove_record`, `rename_record`, `reset_session`, `resolve_proposal`, `save_memory`, `validate_against_instance`, `get_architecture`, `get_buffer_metrics`, and more
+- **tools/aimdb-mcp**: Architecture MCP resources — Mermaid diagram and validation results
+- **tools/aimdb-mcp**: `CONVENTIONS.md` asset for architecture agent prompts
+- Design documents: 023 (Architecture Agent), 024 (Codegen Common Crate), 025 (WASM Adapter)
+
+### Published Crates
+
+| Crate | Previous | New |
+|-------|----------|-----|
+| `aimdb-core` | 0.5.0 | **1.0.0** |
+| `aimdb-data-contracts` | 0.5.0 | **1.0.0** |
+| `aimdb-cli` | 0.5.0 | **0.6.0** |
+| `aimdb-mcp` | 0.5.0 | **0.6.0** |
+| `aimdb-codegen` | — | **0.1.0** (new) |
+| `aimdb-websocket-connector` | — | **0.1.0** (new) |
+| `aimdb-ws-protocol` | — | **0.1.0** (new) |
+| `aimdb-wasm-adapter` | — | **0.1.1** (new) |
+| `aimdb-tokio-adapter` | 0.5.0 | unchanged |
+| `aimdb-embassy-adapter` | 0.5.0 | unchanged |
+| `aimdb-client` | 0.5.0 | unchanged |
+| `aimdb-sync` | 0.5.0 | unchanged |
+| `aimdb-mqtt-connector` | 0.5.0 | unchanged |
+| `aimdb-knx-connector` | 0.3.0 | unchanged |
+| `aimdb-persistence` | 0.1.0 | unchanged |
+| `aimdb-persistence-sqlite` | 0.1.0 | unchanged |
+| `aimdb-derive` | 0.1.0 | unchanged |
+| `aimdb-executor` | 0.1.0 | unchanged |
 
 ## [0.5.0] - 2026-02-21
 
