@@ -16,11 +16,26 @@ use core::task::{Context, Poll};
 ///
 /// # Safety
 ///
-/// Only safe on `wasm32-unknown-unknown` where all execution is single-threaded.
+/// Only safe on `wasm32-unknown-unknown` where all execution is single-threaded
+/// **without** the `atomics` / shared-memory proposal enabled.
 /// The inner future will never actually be sent between threads.
+///
+/// The `Send` impl is gated on `target_arch = "wasm32"` so this type cannot
+/// accidentally satisfy a `Send` bound when cross-compiled for a native target.
 pub(crate) struct SendFuture<F>(pub(crate) F);
 
-// SAFETY: wasm32 is single-threaded — the future cannot be sent to another thread
+// Guard: detect wasm32 + threads (atomics target feature). The shared-memory
+// proposal makes wasm multi-threaded, which invalidates the Send blanket impl.
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+compile_error!(
+    "SendFuture's blanket `impl Send` is unsound with wasm threads enabled. \
+     Disable the `atomics` target feature or provide a thread-safe implementation."
+);
+
+// SAFETY: wasm32 (without atomics) is single-threaded — the future cannot be
+// sent to another thread. On non-wasm targets this impl is absent, so
+// SendFuture<F> is only Send when F: Send, which is the correct default.
+#[cfg(target_arch = "wasm32")]
 unsafe impl<F> Send for SendFuture<F> {}
 
 impl<F: Future> Future for SendFuture<F> {
@@ -43,10 +58,17 @@ pub struct WasmInstant(pub(crate) f64);
 #[derive(Clone, Debug)]
 pub struct WasmDuration(pub(crate) f64);
 
-// SAFETY: single-threaded wasm32 — no concurrent access possible
+// SAFETY: single-threaded wasm32 (without atomics) — no concurrent access
+// possible. On non-wasm targets these impls are absent; the types will only
+// be Send/Sync if their fields are (f64 is Send+Sync, so this is fine either
+// way, but we keep the cfg gate for consistency and to document intent).
+#[cfg(target_arch = "wasm32")]
 unsafe impl Send for WasmInstant {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl Sync for WasmInstant {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl Send for WasmDuration {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl Sync for WasmDuration {}
 
 // ─── globalThis helpers (Window + Worker compatible) ──────────────────────
@@ -54,7 +76,7 @@ unsafe impl Sync for WasmDuration {}
 /// Get `performance.now()` from `globalThis`.
 ///
 /// Works in Window, Worker, and ServiceWorker contexts.
-#[cfg(feature = "wasm-runtime")]
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 fn global_performance_now() -> f64 {
     use wasm_bindgen::JsCast;
 
@@ -74,7 +96,7 @@ fn global_performance_now() -> f64 {
 /// Call `globalThis.setTimeout(callback, delay)`.
 ///
 /// Works in Window, Worker, and ServiceWorker contexts.
-#[cfg(feature = "wasm-runtime")]
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 fn global_set_timeout(callback: &js_sys::Function, delay_ms: i32) {
     use wasm_bindgen::JsCast;
 
@@ -92,12 +114,12 @@ impl TimeOps for WasmAdapter {
     type Duration = WasmDuration;
 
     fn now(&self) -> WasmInstant {
-        #[cfg(feature = "wasm-runtime")]
+        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
         {
             WasmInstant(global_performance_now())
         }
 
-        #[cfg(not(feature = "wasm-runtime"))]
+        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
         {
             // Fallback for native-target unit tests — monotonic counter
             WasmInstant(0.0)
@@ -126,7 +148,7 @@ impl TimeOps for WasmAdapter {
     }
 
     fn sleep(&self, duration: WasmDuration) -> impl Future<Output = ()> + Send {
-        #[cfg(feature = "wasm-runtime")]
+        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
         {
             use futures_util::FutureExt;
 
@@ -145,7 +167,7 @@ impl TimeOps for WasmAdapter {
             SendFuture(fut)
         }
 
-        #[cfg(not(feature = "wasm-runtime"))]
+        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
         {
             let _ = duration;
             // Fallback for native-target unit tests — resolve immediately
