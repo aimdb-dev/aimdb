@@ -1,0 +1,11 @@
+[package]
+name = "aimdb-ws-protocol"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Shared wire protocol types for AimDB WebSocket connector and clients"
+keywords = ["websocket", "protocol", "aimdb"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

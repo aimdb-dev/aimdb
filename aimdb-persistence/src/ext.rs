@@ -67,7 +67,13 @@ where
                 }
             };
 
-            while let Ok(value) = reader.recv().await {
+            loop {
+                let value = match reader.recv().await {
+                    Ok(v) => v,
+                    Err(aimdb_core::DbError::BufferLagged { .. }) => continue,
+                    Err(_) => break,
+                };
+
                 // T is known here — serialize directly, no with_remote_access() needed.
                 let json = match serde_json::to_value(&value) {
                     Ok(v) => v,

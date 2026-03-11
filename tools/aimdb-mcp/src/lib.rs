@@ -21,6 +21,7 @@
 //! - **Version**: 2025-06-18
 //! - **Capabilities**: Tools (7), Resources (5), Prompts (2)
 
+pub mod architecture;
 pub mod connection;
 pub mod error;
 pub mod prompts;

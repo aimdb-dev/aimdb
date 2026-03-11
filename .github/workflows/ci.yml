@@ -22,7 +22,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        targets: thumbv7em-none-eabihf
+        targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
         components: rustfmt, clippy
     
     - name: Cache dependencies
@@ -52,7 +52,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        targets: thumbv7em-none-eabihf
+        targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
     
     - name: Cache dependencies
       uses: actions/cache@v3
@@ -108,7 +108,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        targets: thumbv7em-none-eabihf
+        targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
         components: rustfmt, clippy
     
     - name: Cache dependencies  

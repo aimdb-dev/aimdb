@@ -5,7 +5,8 @@
             "command": "/aimdb_ws/aimdb/target/release/aimdb-mcp",
             "args": [],
             "env": {
-                "RUST_LOG": "info"
+                "RUST_LOG": "info",
+                "AIMDB_WORKSPACE": "${workspaceFolder}"
             }
         }
     }
