@@ -1,7 +1,7 @@
 //! Mermaid diagram generator
 //!
 //! Converts an [`ArchitectureState`] into a `flowchart LR` Mermaid diagram
-//! following the conventions defined in `.aimdb/CONVENTIONS.md`.
+//! following the conventions defined in the architecture conventions document.
 
 use crate::state::{ArchitectureState, BufferType, ConnectorDirection};
 
