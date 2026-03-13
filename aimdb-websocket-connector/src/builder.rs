@@ -47,10 +47,12 @@ use aimdb_ws_protocol::TopicInfo;
 /// ```rust,ignore
 /// use aimdb_websocket_connector::WebSocketConnector;
 ///
-/// let connector = WebSocketConnector::new()
-///     .register::<Temperature>()
-///     .register::<Humidity>()
-///     .register::<GpsLocation>()
+/// let mut connector = WebSocketConnector::new();
+/// connector.register::<Temperature>();
+/// connector.register::<Humidity>();
+/// connector.register::<GpsLocation>();
+///
+/// let connector = connector
 ///     .bind("0.0.0.0:8080")
 ///     .path("/ws")
 ///     .with_late_join(true)
@@ -246,13 +248,14 @@ impl WebSocketConnectorBuilder {
     /// ```rust,ignore
     /// use aimdb_websocket_connector::WebSocketConnector;
     ///
-    /// let connector = WebSocketConnector::new()
-    ///     .register::<Temperature>()
-    ///     .register::<Humidity>()
-    ///     .register::<MyCustomSensor>()  // user's own type
-    ///     .bind("0.0.0.0:8080");
+    /// let mut connector = WebSocketConnector::new();
+    /// connector.register::<Temperature>();
+    /// connector.register::<Humidity>();
+    /// connector.register::<MyCustomSensor>();  // user's own type
+    ///
+    /// let connector = connector.bind("0.0.0.0:8080");
     /// ```
-    pub fn register<T: Streamable>(mut self) -> Self {
+    pub fn register<T: Streamable>(&mut self) -> &mut Self {
         self.streamable_registry.register::<T>();
         self
     }

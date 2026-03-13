@@ -15,7 +15,9 @@ std = []
 
 [dependencies]
 # AimDB dependencies
-weather-mesh-common = { path = "../weather-mesh-common", default-features = false }
+weather-mesh-common = { path = "../weather-mesh-common", default-features = false, features = [
+    "simulatable",
+] }
 aimdb-core = { path = "../../../aimdb-core", default-features = false, features = [
     "alloc",
 ] }
