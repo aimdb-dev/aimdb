@@ -140,18 +140,23 @@ impl core::fmt::Display for MigrationError {
 /// # Example
 ///
 /// ```rust,ignore
-/// struct TempV1ToV2;
-/// impl MigrationStep for TempV1ToV2 {
+/// struct TemperatureV1ToV2;
+/// impl MigrationStep for TemperatureV1ToV2 {
 ///     type Older = TemperatureV1;
-///     type Newer = Temperature;
+///     type Newer = TemperatureV2;
 ///     const FROM_VERSION: u32 = 1;
 ///     const TO_VERSION: u32 = 2;
 ///
-///     fn up(v1: TemperatureV1) -> Result<Temperature, MigrationError> {
-///         Ok(v1.to_v2())
+///     fn up(v1: TemperatureV1) -> Result<TemperatureV2, MigrationError> {
+///         let celsius = match v1.unit.as_str() {
+///             "F" => (v1.temp - 32.0) * 5.0 / 9.0,
+///             "K" => v1.temp - 273.15,
+///             _ => v1.temp,
+///         };
+///         Ok(TemperatureV2 { schema_version: 2, celsius, timestamp: v1.timestamp })
 ///     }
-///     fn down(v2: Temperature) -> Result<TemperatureV1, MigrationError> {
-///         Ok(TemperatureV1 { temp: v2.celsius, .. })
+///     fn down(v2: TemperatureV2) -> Result<TemperatureV1, MigrationError> {
+///         Ok(TemperatureV1 { schema_version: 1, temp: v2.celsius, timestamp: v2.timestamp, unit: "C".into() })
 ///     }
 /// }
 /// ```

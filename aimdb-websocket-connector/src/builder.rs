@@ -15,14 +15,13 @@
 //! ```
 
 use std::{
-    any::TypeId,
     collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
     sync::{Arc, Mutex},
 };
 
-use aimdb_data_contracts::for_each_streamable;
+use aimdb_data_contracts::Streamable;
 
 use aimdb_core::{router::RouterBuilder, ConnectorBuilder};
 use axum::Router as AxumRouter;
@@ -31,6 +30,7 @@ use crate::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
     client_manager::ClientManager,
     connector::WebSocketConnectorImpl,
+    registry::StreamableRegistry,
     server::start_server,
     session::{NoQuery, NoSnapshot, QueryHandler, SessionContext, SnapshotProvider},
 };
@@ -48,6 +48,9 @@ use aimdb_ws_protocol::TopicInfo;
 /// use aimdb_websocket_connector::WebSocketConnector;
 ///
 /// let connector = WebSocketConnector::new()
+///     .register::<Temperature>()
+///     .register::<Humidity>()
+///     .register::<GpsLocation>()
 ///     .bind("0.0.0.0:8080")
 ///     .path("/ws")
 ///     .with_late_join(true)
@@ -75,6 +78,8 @@ pub struct WebSocketConnectorBuilder {
     raw_payload: bool,
     /// Handler for client `query` messages (history retrieval).
     query_handler: Arc<dyn QueryHandler>,
+    /// Registered streamable types for schema resolution.
+    streamable_registry: StreamableRegistry,
 }
 
 impl Default for WebSocketConnectorBuilder {
@@ -90,6 +95,7 @@ impl Default for WebSocketConnectorBuilder {
             auto_subscribe_topics: Vec::new(),
             raw_payload: false,
             query_handler: Arc::new(NoQuery),
+            streamable_registry: StreamableRegistry::new(),
         }
     }
 }
@@ -228,6 +234,28 @@ impl WebSocketConnectorBuilder {
         self.query_handler = Arc::new(handler);
         self
     }
+
+    /// Register a [`Streamable`] type for WebSocket schema resolution.
+    ///
+    /// Each call monomorphizes closures that capture `T` for serialization,
+    /// deserialization, and routing. The concrete type is baked into the closure
+    /// at compile time — no `Box<dyn Any>` or downcast is needed at dispatch.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use aimdb_websocket_connector::WebSocketConnector;
+    ///
+    /// let connector = WebSocketConnector::new()
+    ///     .register::<Temperature>()
+    ///     .register::<Humidity>()
+    ///     .register::<MyCustomSensor>()  // user's own type
+    ///     .bind("0.0.0.0:8080");
+    /// ```
+    pub fn register<T: Streamable>(mut self) -> Self {
+        self.streamable_registry.register::<T>();
+        self
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -290,24 +318,14 @@ where
             };
 
             // ── Known topics (for list_topics responses) ──────────
-            // Build a TypeId → schema name map from all registered Streamable types.
-            struct TypeIdMap(HashMap<TypeId, &'static str>);
-            impl aimdb_data_contracts::StreamableVisitor for TypeIdMap {
-                fn visit<T: aimdb_data_contracts::Streamable>(&mut self) {
-                    self.0.insert(
-                        TypeId::of::<T>(),
-                        <T as aimdb_data_contracts::SchemaType>::NAME,
-                    );
-                }
-            }
-            let mut type_id_map = TypeIdMap(HashMap::new());
-            for_each_streamable(&mut type_id_map);
+            // Use the registered streamable types to resolve TypeId → schema name.
+            let type_id_map = &self.streamable_registry.type_id_to_name;
 
             let topic_type_ids = db.collect_outbound_topic_type_ids("ws");
             let known_topics: Vec<TopicInfo> = topic_type_ids
                 .into_iter()
                 .map(|(topic, type_id)| {
-                    let schema_type = type_id_map.0.get(&type_id).map(|s| s.to_string());
+                    let schema_type = type_id_map.get(&type_id).map(|s| s.to_string());
                     // Extract entity from topic name: "temp.vienna" → "vienna".
                     // The server owns the naming convention — clients receive
                     // the entity as a first-class field and never parse topics.

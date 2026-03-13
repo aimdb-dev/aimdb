@@ -1,12 +1,12 @@
 [package]
 name = "aimdb-data-contracts"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Data contracts for AimDB: portable schemas with built-in versioning and simulation support"
+description = "Trait definitions for AimDB data contracts: SchemaType, Streamable, Observable, Linkable, Simulatable, Migratable"
 keywords = ["aimdb", "iot", "edge", "schema", "contracts"]
 categories = ["embedded", "no-std"]
 
@@ -18,7 +18,6 @@ linkable = ["alloc", "serde_json"]
 simulatable = ["rand"]
 migratable = ["std", "serde_json"]
 observable = ["alloc", "aimdb-core", "aimdb-executor"]
-ts = ["std", "ts-rs"]
 
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -36,10 +35,6 @@ version = "0.8"
 optional = true
 default-features = false
 features = ["std_rng"]
-
-[dependencies.ts-rs]
-version = "10"
-optional = true
 
 [dev-dependencies]
 serde_json = "1.0"

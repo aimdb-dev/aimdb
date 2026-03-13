@@ -114,7 +114,7 @@ pub struct WasmDb {
     db: Option<AimDb<WasmAdapter>>,
     /// Maps record key → schema type name (always populated).
     schema_map: BTreeMap<String, String>,
-    /// Type-erased dispatch registry built from the visitor pattern.
+    /// Type-erased dispatch registry built via `.register::<T>()` calls.
     registry: SchemaRegistry,
 }
 
@@ -133,7 +133,7 @@ impl WasmDb {
             configs: Some(Vec::new()),
             db: None,
             schema_map: BTreeMap::new(),
-            registry: SchemaRegistry::build(),
+            registry: SchemaRegistry::new(),
         }
     }
 
@@ -295,9 +295,38 @@ impl WasmDb {
             .clone(); // cheap: two Arc pointer copies
 
         let schema_map = self.schema_map.clone();
-        let registry = SchemaRegistry::build();
+        let registry = self.registry.clone();
 
         WsBridge::new_internal(db, schema_map, registry, url, options)
+    }
+}
+
+// ─── Rust-only API (not exported to JS) ───────────────────────────────────
+
+use aimdb_data_contracts::Streamable;
+
+impl WasmDb {
+    /// Register a [`Streamable`] type for runtime dispatch.
+    ///
+    /// Must be called **before** [`build`](WasmDb::build) for the type to be
+    /// available via `configureRecord`, `get`, `set`, and `subscribe`.
+    ///
+    /// This method is Rust-only (not exported via `#[wasm_bindgen]`) because
+    /// generic type parameters cannot cross the WASM boundary. Typical usage
+    /// is in a factory function that builds a pre-configured `WasmDb`:
+    ///
+    /// ```rust,ignore
+    /// #[wasm_bindgen]
+    /// pub fn create_db() -> WasmDb {
+    ///     let mut db = WasmDb::new();
+    ///     db.register::<Temperature>();
+    ///     db.register::<Humidity>();
+    ///     db
+    /// }
+    /// ```
+    pub fn register<T: Streamable>(&mut self) -> &mut Self {
+        self.registry.register::<T>();
+        self
     }
 }
 

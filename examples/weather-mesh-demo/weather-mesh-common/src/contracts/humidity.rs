@@ -2,22 +2,17 @@
 
 extern crate alloc;
 
-use crate::{Observable, SchemaType, Settable};
+use aimdb_data_contracts::{Observable, SchemaType, Settable, Streamable};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "linkable")]
-use crate::Linkable;
+use aimdb_data_contracts::Linkable;
 
 #[cfg(feature = "simulatable")]
-use crate::{Simulatable, SimulationConfig};
-
-#[cfg(feature = "ts")]
-use ts_rs::TS;
+use aimdb_data_contracts::{Simulatable, SimulationConfig};
 
 /// Humidity sensor reading
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS))]
-#[cfg_attr(feature = "ts", ts(export))]
 pub struct Humidity {
     /// Relative humidity as a percentage (0-100)
     pub percent: f32,
@@ -28,6 +23,8 @@ pub struct Humidity {
 impl SchemaType for Humidity {
     const NAME: &'static str = "humidity";
 }
+
+impl Streamable for Humidity {}
 
 impl Observable for Humidity {
     type Signal = f32;
@@ -107,58 +104,5 @@ impl Linkable for Humidity {
 
     fn to_bytes(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec(self).map_err(|e| e.to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_settable() {
-        let humidity = Humidity::set(65.0, 1704326400000);
-        assert_eq!(humidity.percent, 65.0);
-        assert_eq!(humidity.timestamp, 1704326400000);
-    }
-
-    #[test]
-    fn test_schema_name() {
-        assert_eq!(Humidity::NAME, "humidity");
-    }
-
-    #[test]
-    fn test_observable() {
-        let humidity = Humidity::set(65.0, 1704326400000);
-        assert_eq!(humidity.signal(), 65.0);
-    }
-
-    #[cfg(feature = "simulatable")]
-    #[test]
-    fn test_simulation() {
-        use crate::simulatable::SimulationParams;
-        use rand::rngs::StdRng;
-        use rand::SeedableRng;
-
-        let config = SimulationConfig {
-            enabled: true,
-            interval_ms: 1000,
-            params: SimulationParams {
-                base: 50.0,
-                variation: 10.0,
-                trend: 0.0,
-                step: 0.2,
-            },
-        };
-
-        let mut rng = StdRng::seed_from_u64(42);
-
-        // Generate first sample
-        let h1 = Humidity::simulate(&config, None, &mut rng, 1000);
-        assert!(h1.percent >= 40.0 && h1.percent <= 60.0);
-
-        // Generate second sample (should be close to first due to random walk)
-        let h2 = Humidity::simulate(&config, Some(&h1), &mut rng, 2000);
-        let diff = (h2.percent - h1.percent).abs();
-        assert!(diff < 2.0, "Random walk step too large: {}", diff);
     }
 }

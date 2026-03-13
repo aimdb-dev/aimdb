@@ -82,6 +82,8 @@ pub mod client_manager;
 #[cfg(feature = "server")]
 pub mod connector;
 #[cfg(feature = "server")]
+pub(crate) mod registry;
+#[cfg(feature = "server")]
 pub(crate) mod server;
 #[cfg(feature = "server")]
 pub(crate) mod session;

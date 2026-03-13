@@ -1,11 +1,13 @@
 //! # AimDB Data Contracts
 //!
-//! Self-describing data schemas that work identically across MCU, edge, and cloud.
+//! Trait definitions for self-describing data schemas that work identically
+//! across MCU, edge, and cloud.
 //!
 //! This crate provides:
-//! - **Schema types** - Data structures with unique identifiers
-//! - **Contract profiles** - Configuration for runtime behavior
-//! - **Simulation support** - Generate realistic test data
+//! - **Schema types** — Data structures with unique identifiers ([`SchemaType`])
+//! - **Streamable** — Marker for types that cross serialization boundaries ([`Streamable`])
+//! - **Contract profiles** — Configuration for runtime behavior
+//! - **Simulation support** — Generate realistic test data
 //!
 //! ## Design Philosophy
 //!
@@ -15,16 +17,24 @@
 //! - Type-safe data exchange between systems
 //! - Configurable policies without changing code
 //!
-//! ## Example
+//! ## Defining a Custom Contract
 //!
 //! ```rust
-//! use aimdb_data_contracts::{SchemaType, Settable};
-//! use aimdb_data_contracts::contracts::Temperature;
+//! use aimdb_data_contracts::{SchemaType, Streamable};
+//! use serde::{Serialize, Deserialize};
 //!
-//! // Create a reading
-//! let temp = Temperature::set(22.5, 1704326400000);
-//! assert_eq!(temp.celsius, 22.5);
-//! assert_eq!(Temperature::NAME, "temperature");
+//! #[derive(Clone, Debug, Serialize, Deserialize)]
+//! pub struct MyCustomSensor {
+//!     pub reading: f64,
+//!     pub timestamp: u64,
+//! }
+//!
+//! impl SchemaType for MyCustomSensor {
+//!     const NAME: &'static str = "my_custom_sensor";
+//! }
+//!
+//! // Mark as streamable — can cross WebSocket / WASM boundaries
+//! impl Streamable for MyCustomSensor {}
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -34,10 +44,8 @@ extern crate std;
 
 extern crate alloc;
 
-pub mod contracts;
-
 mod streamable;
-pub use streamable::{for_each_streamable, Streamable, StreamableVisitor};
+pub use streamable::Streamable;
 
 #[cfg(feature = "linkable")]
 mod linkable;
@@ -206,7 +214,8 @@ pub trait Observable: SchemaType {
 /// # Example
 ///
 /// ```rust,ignore
-/// use aimdb_data_contracts::{Linkable, contracts::Temperature};
+/// use aimdb_data_contracts::Linkable;
+/// use my_app::Temperature;  // user-defined type implementing Linkable
 ///
 /// // In connector configuration:
 /// builder.configure::<Temperature>(NODE_ID, |reg| {

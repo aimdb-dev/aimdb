@@ -8,19 +8,32 @@
 //!
 //! `Streamable` is a *capability marker* — it combines [`SchemaType`] identity
 //! with the `serde` bounds needed for type-erased dispatch at serialization
-//! boundaries. The companion [`for_each_streamable`] function is the single
-//! source of truth for which types are streamable — consumers implement
-//! [`StreamableVisitor`] to build whatever dispatch tables they need.
+//! boundaries. Users register their `Streamable` types with connectors and
+//! adapters via `.register::<T>()` builder methods.
 //!
-//! # Adding a new streamable contract
+//! # Implementing Streamable for a Custom Type
 //!
-//! 1. Define your struct with `Serialize + Deserialize` in `contracts/`.
-//! 2. Implement `SchemaType` (unique `NAME`).
-//! 3. `impl Streamable for MyType {}` below.
-//! 4. Add `visitor.visit::<MyType>();` in [`for_each_streamable`].
+//! 1. Define your struct with `Serialize + Deserialize`.
+//! 2. Implement [`SchemaType`] (unique `NAME`).
+//! 3. `impl Streamable for MyType {}`.
+//! 4. Register it with your connector: `.register::<MyType>()`.
 //!
-//! That's it — every consumer that uses the visitor picks up the new type
-//! automatically.
+//! ```rust
+//! use aimdb_data_contracts::{SchemaType, Streamable};
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Clone, Debug, Serialize, Deserialize)]
+//! pub struct MyCustomSensor {
+//!     pub reading: f64,
+//!     pub timestamp: u64,
+//! }
+//!
+//! impl SchemaType for MyCustomSensor {
+//!     const NAME: &'static str = "my_custom_sensor";
+//! }
+//!
+//! impl Streamable for MyCustomSensor {}
+//! ```
 
 use crate::SchemaType;
 use core::fmt::Debug;
@@ -43,142 +56,69 @@ use serde::{de::DeserializeOwned, Serialize};
 ///
 /// ```rust
 /// use aimdb_data_contracts::{SchemaType, Streamable};
-/// use aimdb_data_contracts::contracts::Temperature;
+/// use serde::{Serialize, Deserialize};
 ///
-/// // Temperature implements Streamable — it can be used across boundaries
+/// #[derive(Clone, Debug, Serialize, Deserialize)]
+/// pub struct Pressure {
+///     pub hpa: f32,
+///     pub timestamp: u64,
+/// }
+///
+/// impl SchemaType for Pressure {
+///     const NAME: &'static str = "pressure";
+/// }
+///
+/// impl Streamable for Pressure {}
+///
 /// fn assert_streamable<T: Streamable>() {}
-/// assert_streamable::<Temperature>();
+/// assert_streamable::<Pressure>();
 /// ```
 pub trait Streamable:
     SchemaType + Serialize + DeserializeOwned + Send + Sync + Clone + Debug + 'static
 {
 }
 
-/// Visitor trait for iterating over all registered [`Streamable`] types.
-///
-/// Implement this trait to build type-erased dispatch tables, registries,
-/// or any other structure that needs to know about all streamable types.
-///
-/// # Example
-///
-/// ```rust
-/// use std::any::TypeId;
-/// use aimdb_data_contracts::{SchemaType, Streamable, StreamableVisitor, for_each_streamable};
-///
-/// struct TypeIdCollector {
-///     entries: Vec<(TypeId, &'static str)>,
-/// }
-///
-/// impl StreamableVisitor for TypeIdCollector {
-///     fn visit<T: Streamable>(&mut self) {
-///         self.entries.push((TypeId::of::<T>(), T::NAME));
-///     }
-/// }
-///
-/// let mut collector = TypeIdCollector { entries: Vec::new() };
-/// for_each_streamable(&mut collector);
-/// assert_eq!(collector.entries.len(), 3);
-/// ```
-pub trait StreamableVisitor {
-    /// Called once for each registered [`Streamable`] type.
-    fn visit<T: Streamable>(&mut self);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Implementations for built-in contracts
-// ═══════════════════════════════════════════════════════════════════
-
-use crate::contracts::{GpsLocation, Humidity, Temperature};
-
-impl Streamable for Temperature {}
-impl Streamable for Humidity {}
-impl Streamable for GpsLocation {}
-
-/// Iterate over every registered [`Streamable`] type via the visitor pattern.
-///
-/// This is the **single source of truth** for which types are streamable.
-/// All consumers (WASM adapter, WebSocket connector, CLI) use this function
-/// to discover streamable types instead of maintaining their own lists.
-///
-/// # Adding a new contract
-///
-/// 1. `impl Streamable for NewType {}` (above)
-/// 2. Add `visitor.visit::<NewType>();` here.
-pub fn for_each_streamable(visitor: &mut impl StreamableVisitor) {
-    visitor.visit::<Temperature>();
-    visitor.visit::<Humidity>();
-    visitor.visit::<GpsLocation>();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::any::TypeId;
+    use serde::{Deserialize, Serialize};
 
-    struct NameCollector {
-        names: alloc::vec::Vec<&'static str>,
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct TestSensor {
+        value: f32,
+        timestamp: u64,
     }
 
-    impl StreamableVisitor for NameCollector {
-        fn visit<T: Streamable>(&mut self) {
-            self.names.push(T::NAME);
-        }
+    impl SchemaType for TestSensor {
+        const NAME: &'static str = "test_sensor";
     }
 
-    struct TypeIdResolver {
-        target: TypeId,
-        result: Option<&'static str>,
-    }
+    impl Streamable for TestSensor {}
 
-    impl StreamableVisitor for TypeIdResolver {
-        fn visit<T: Streamable>(&mut self) {
-            if TypeId::of::<T>() == self.target {
-                self.result = Some(T::NAME);
-            }
-        }
+    #[test]
+    fn streamable_has_schema_name() {
+        assert_eq!(TestSensor::NAME, "test_sensor");
     }
 
     #[test]
-    fn visitor_discovers_all_types() {
-        let mut c = NameCollector {
-            names: alloc::vec::Vec::new(),
-        };
-        for_each_streamable(&mut c);
-        assert!(c.names.contains(&"temperature"));
-        assert!(c.names.contains(&"humidity"));
-        assert!(c.names.contains(&"gps_location"));
-        assert_eq!(c.names.len(), 3);
+    fn streamable_requires_schema_type() {
+        fn assert_streamable<T: Streamable>() {}
+        assert_streamable::<TestSensor>();
     }
 
     #[test]
-    fn visitor_resolves_type_id() {
-        let mut r = TypeIdResolver {
-            target: TypeId::of::<Temperature>(),
-            result: None,
+    fn streamable_requires_serde() {
+        let sensor = TestSensor {
+            value: 42.5,
+            timestamp: 1000,
         };
-        for_each_streamable(&mut r);
-        assert_eq!(r.result, Some("temperature"));
-    }
 
-    #[test]
-    fn visitor_returns_none_for_unknown() {
-        let mut r = TypeIdResolver {
-            target: TypeId::of::<u32>(),
-            result: None,
-        };
-        for_each_streamable(&mut r);
-        assert_eq!(r.result, None);
-    }
+        // Serialize
+        let json = serde_json::to_string(&sensor).unwrap();
+        assert!(json.contains("42.5"));
 
-    #[test]
-    fn known_schemas_are_discoverable() {
-        let mut c = NameCollector {
-            names: alloc::vec::Vec::new(),
-        };
-        for_each_streamable(&mut c);
-        assert!(c.names.contains(&"temperature"));
-        assert!(c.names.contains(&"humidity"));
-        assert!(c.names.contains(&"gps_location"));
-        assert!(!c.names.contains(&"unknown"));
+        // Deserialize
+        let restored: TestSensor = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.value, 42.5);
     }
 }
