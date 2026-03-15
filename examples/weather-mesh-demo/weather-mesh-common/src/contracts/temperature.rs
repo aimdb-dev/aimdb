@@ -102,7 +102,7 @@ impl TemperatureV1 {
 }
 
 impl SchemaType for TemperatureV1 {
-    const NAME: &'static str = "temperature_v1";
+    const NAME: &'static str = "temperature";
     const VERSION: u32 = 1;
 }
 
