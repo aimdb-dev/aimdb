@@ -34,10 +34,10 @@ tokio-runtime = ["server"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-aimdb-core = { path = "../aimdb-core", default-features = false }
-aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false }
-aimdb-executor = { path = "../aimdb-executor", default-features = false }
-aimdb-ws-protocol = { path = "../aimdb-ws-protocol" }
+aimdb-core = { version = "1.0.0", path = "../aimdb-core", default-features = false }
+aimdb-data-contracts = { version = "0.1.0", path = "../aimdb-data-contracts", default-features = false }
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
+aimdb-ws-protocol = { version = "0.1.0", path = "../aimdb-ws-protocol" }
 
 # Async runtime
 tokio = { version = "1", features = [

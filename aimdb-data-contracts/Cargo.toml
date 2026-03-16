@@ -25,10 +25,10 @@ serde_json = { version = "1.0", optional = true }
 
 # Optional dependencies for observable feature (log_tap function)
 # Note: aimdb-core requires alloc feature for core functionality
-aimdb-core = { path = "../aimdb-core", optional = true, default-features = false, features = [
+aimdb-core = { version = "1.0.0", path = "../aimdb-core", optional = true, default-features = false, features = [
     "alloc",
 ] }
-aimdb-executor = { path = "../aimdb-executor", optional = true, default-features = false }
+aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", optional = true, default-features = false }
 
 [dependencies.rand]
 version = "0.8"
