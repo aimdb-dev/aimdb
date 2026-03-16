@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
+## [0.5.1] - 2026-03-16
+
+### Changed
+
+- Updated Embassy dependency versions: executor 0.10.0, time 0.5.1, sync 0.8.0, net 0.9.0
+
 ## [0.5.0] - 2026-02-21
 
 ### Added

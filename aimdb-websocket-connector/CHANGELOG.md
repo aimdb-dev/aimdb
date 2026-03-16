@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
-## [0.1.0] - 2026-03-11
+## [0.1.0] - 2026-03-16
 
 ### Added
 
@@ -23,3 +23,7 @@ No changes yet.
   - Automatic reconnection
 - Shared wire protocol via `aimdb-ws-protocol`
 - `WebSocketConnector` builder API
+- `StreamableRegistry` for extensible type-erased dispatch
+  - Register `Streamable` types via `.register::<T>()` on the builder
+  - Schema-name collision detection at registration time
+  - Monomorphized closures for zero-overhead serialization/deserialization

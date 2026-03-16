@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
-## [1.0.0] - 2026-03-11
+## [1.0.0] - 2026-03-16
 
 ### Added
 
@@ -39,6 +39,7 @@ No changes yet.
   - Client mode (tokio-tungstenite) with `link_to("ws-client://host/topic")` for AimDB-to-AimDB sync
   - `AuthHandler` trait for pluggable authentication
   - Client session management with automatic cleanup and late-join support
+  - `StreamableRegistry` for extensible type-erased dispatch — register types via `.register::<T>()`
 - **aimdb-ws-protocol**: New crate with shared wire protocol types for the WebSocket ecosystem
   - `ServerMessage` and `ClientMessage` enums with JSON-encoded `"type"` discriminant
   - MQTT-style wildcard topic matching (`#` multi-level, `*` single-level)
@@ -47,7 +48,7 @@ No changes yet.
   - `Rc<RefCell<…>>` buffers — zero-overhead for single-threaded WASM
   - `WasmDb` facade via `#[wasm_bindgen]` with `configureRecord`, `get`, `set`, `subscribe`
   - `WsBridge` — WebSocket bridge connecting browser to remote AimDB server
-  - `SchemaRegistry` for type-erased record dispatch
+  - `SchemaRegistry` for type-erased record dispatch with extensible `.register::<T>()` API
   - React hooks: `useRecord<T>`, `useSetRecord<T>`, `useBridge`
 - **aimdb-codegen**: New crate for architecture-to-code generation
   - `ArchitectureState` type for reading `.aimdb/state.toml` decision records
@@ -55,8 +56,12 @@ No changes yet.
   - Rust source generation (`generate_rust`) — value structs, key enums, `SchemaType`/`Linkable` impls, `configure_schema()` scaffolding
   - Common crate, hub crate, and binary crate scaffolding
   - State validation module for architecture integrity checks
-- **aimdb-data-contracts**: Added `Streamable` trait and `StreamableVisitor` pattern for type-erased dispatch across WebSocket, WASM, and other wire boundaries
-- **aimdb-data-contracts**: Added `Migratable` trait with `MigrationChain` and `MigrationStep` for schema evolution
+- **aimdb-data-contracts**: Refocused as a pure trait-definition crate (`SchemaType`, `Streamable`, `Linkable`, `Simulatable`, `Observable`, `Migratable`)
+  - `Streamable` trait as capability marker for types crossing serialization boundaries
+  - `Migratable` trait with `MigrationChain` and `MigrationStep` for schema evolution
+  - Concrete contracts (Temperature, Humidity, GpsLocation) moved to application-level crates
+  - Removed closed `StreamableVisitor` dispatcher in favor of extensible registry pattern
+  - Removed `ts` feature (`ts-rs` dependency)
 - **aimdb-core**: Added `ws://` and `wss://` URL scheme support in `ConnectorUrl` for WebSocket connectors
 - **tools/aimdb-cli**: New `aimdb generate` subcommand for Mermaid diagrams, Rust schema generation, and crate scaffolding via `aimdb-codegen`
 - **tools/aimdb-cli**: New `aimdb watch` subcommand for live record monitoring
@@ -66,12 +71,21 @@ No changes yet.
 - **tools/aimdb-mcp**: `CONVENTIONS.md` asset for architecture agent prompts
 - Design documents: 023 (Architecture Agent), 024 (Codegen Common Crate), 025 (WASM Adapter)
 
+### Changed
+
+- **aimdb-data-contracts**: Restructured from schema+contract crate to pure trait-definition crate (version reset to 0.1.0)
+- **aimdb-websocket-connector**: Replaced closed dispatcher with extensible `StreamableRegistry` — users register types via builder `.register::<T>()`
+- **aimdb-wasm-adapter**: `SchemaRegistry` updated to use extensible `.register::<T>()` pattern
+- **aimdb-knx-connector**: Updated Embassy dependency versions (executor 0.10.0, time 0.5.1, sync 0.8.0, net 0.9.0)
+- **aimdb-mqtt-connector**: Updated Embassy dependency versions (executor 0.10.0, time 0.5.1, sync 0.8.0, net 0.9.0)
+- Embassy submodules updated to latest upstream commits
+
 ### Published Crates
 
 | Crate | Previous | New |
 |-------|----------|-----|
 | `aimdb-core` | 0.5.0 | **1.0.0** |
-| `aimdb-data-contracts` | 0.5.0 | **1.0.0** |
+| `aimdb-data-contracts` | 0.5.0 | **0.1.0** |
 | `aimdb-cli` | 0.5.0 | **0.6.0** |
 | `aimdb-mcp` | 0.5.0 | **0.6.0** |
 | `aimdb-codegen` | — | **0.1.0** (new) |
@@ -82,8 +96,8 @@ No changes yet.
 | `aimdb-embassy-adapter` | 0.5.0 | unchanged |
 | `aimdb-client` | 0.5.0 | unchanged |
 | `aimdb-sync` | 0.5.0 | unchanged |
-| `aimdb-mqtt-connector` | 0.5.0 | unchanged |
-| `aimdb-knx-connector` | 0.3.0 | unchanged |
+| `aimdb-mqtt-connector` | 0.5.0 | **0.5.1** |
+| `aimdb-knx-connector` | 0.3.0 | **0.3.1** |
 | `aimdb-persistence` | 0.1.0 | unchanged |
 | `aimdb-persistence-sqlite` | 0.1.0 | unchanged |
 | `aimdb-derive` | 0.1.0 | unchanged |

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
-## [0.1.1] - 2026-03-11
+## [0.1.1] - 2026-03-16
 
 ### Added
 
@@ -19,6 +19,6 @@ No changes yet.
 - All three buffer types: SPMC Ring, SingleLatest, Mailbox
 - `WasmDb` facade via `#[wasm_bindgen]`: `configureRecord`, `get`, `set`, `subscribe`
 - `WsBridge` — WebSocket bridge connecting browser to remote AimDB server
-- `SchemaRegistry` for type-erased record dispatch
+- `SchemaRegistry` for type-erased record dispatch with extensible `.register::<T>()` API
 - React hooks: `useRecord<T>`, `useSetRecord<T>`, `useBridge`
 - `no_std` + `alloc` compatible (`wasm32-unknown-unknown` target)
