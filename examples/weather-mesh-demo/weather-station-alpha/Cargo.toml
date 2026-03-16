@@ -11,7 +11,10 @@ name = "weather-station-alpha"
 path = "src/main.rs"
 
 [dependencies]
-weather-mesh-common = { path = "../weather-mesh-common" }
+weather-mesh-common = { path = "../weather-mesh-common", features = [
+    "linkable",
+    "migratable",
+] }
 aimdb-core = { path = "../../../aimdb-core" }
 aimdb-tokio-adapter = { path = "../../../aimdb-tokio-adapter" }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", features = [

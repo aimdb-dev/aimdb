@@ -19,7 +19,7 @@ use crate::Observable;
 /// # Example
 ///
 /// ```ignore
-/// use aimdb_data_contracts::{contracts::Temperature, log_tap};
+/// use aimdb_data_contracts::log_tap;
 ///
 /// builder.configure::<Temperature>(NodeKey::Alpha, |reg| {
 ///     reg.buffer(BufferCfg::SingleLatest)

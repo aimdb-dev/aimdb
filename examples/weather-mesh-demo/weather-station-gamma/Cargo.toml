@@ -15,7 +15,9 @@ std = []
 
 [dependencies]
 # AimDB dependencies
-weather-mesh-common = { path = "../weather-mesh-common", default-features = false }
+weather-mesh-common = { path = "../weather-mesh-common", default-features = false, features = [
+    "simulatable",
+] }
 aimdb-core = { path = "../../../aimdb-core", default-features = false, features = [
     "alloc",
 ] }
@@ -44,7 +46,7 @@ embassy-stm32 = { workspace = true, features = [
 ] }
 embassy-sync = { workspace = true, features = ["defmt"] }
 embassy-executor = { workspace = true, features = [
-    "arch-cortex-m",
+    "platform-cortex-m",
     "executor-thread",
     "defmt",
 ] }

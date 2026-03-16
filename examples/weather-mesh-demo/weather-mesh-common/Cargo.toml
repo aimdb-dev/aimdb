@@ -9,6 +9,9 @@ publish = false
 [features]
 default = ["std"]
 std = ["aimdb-data-contracts/std"]
+linkable = ["aimdb-data-contracts/linkable", "serde_json"]
+simulatable = ["aimdb-data-contracts/simulatable", "rand"]
+migratable = ["aimdb-data-contracts/migratable", "serde_json"]
 
 [dependencies]
 aimdb-core = { path = "../../../aimdb-core", default-features = false, features = [
@@ -17,3 +20,7 @@ aimdb-core = { path = "../../../aimdb-core", default-features = false, features 
 ] }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
+rand = { version = "0.8", optional = true, default-features = false, features = [
+    "std_rng",
+] }

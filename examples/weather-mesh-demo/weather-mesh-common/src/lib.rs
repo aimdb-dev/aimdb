@@ -6,9 +6,12 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-// Re-export contracts used in the mesh
-pub use aimdb_data_contracts::contracts::{GpsLocation, Humidity, Temperature};
-pub use aimdb_data_contracts::{SchemaType, Settable};
+// Local contract definitions (Temperature, Humidity, GpsLocation)
+pub mod contracts;
+pub use contracts::{GpsLocation, Humidity, Temperature};
+
+// Re-export traits from aimdb-data-contracts
+pub use aimdb_data_contracts::{SchemaType, Settable, Streamable};
 
 // Re-export RecordKey for convenience
 pub use aimdb_core::RecordKey;

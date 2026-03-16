@@ -38,7 +38,7 @@ aimdb-core = { version = "1.0.0", path = "../aimdb-core", default-features = fal
 aimdb-ws-protocol = { version = "0.1.0", path = "../aimdb-ws-protocol" }
 
 # Data contracts (alloc only — no std)
-aimdb-data-contracts = { version = "1.0.0", path = "../aimdb-data-contracts", default-features = false, features = [
+aimdb-data-contracts = { version = "0.1.0", path = "../aimdb-data-contracts", default-features = false, features = [
     "alloc",
 ] }
 
