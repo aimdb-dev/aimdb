@@ -63,11 +63,25 @@ impl StreamableRegistry {
     /// Register a [`Streamable`] type.
     ///
     /// Each call monomorphizes closures for `T`'s serialization and
-    /// deserialization. Duplicate registrations for the same type are
-    /// idempotent (last wins).
-    pub fn register<T: Streamable>(&mut self) {
+    /// deserialization. Re-registering the same type is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a *different* type has already been registered
+    /// under the same schema name (`T::NAME`).
+    pub fn register<T: Streamable>(&mut self) -> Result<(), String> {
         let type_id = TypeId::of::<T>();
         let name = T::NAME;
+
+        // Same type re-registered — idempotent, nothing to do.
+        if let Some(existing) = self.name_to_ops.get(name) {
+            if existing.type_id == type_id {
+                return Ok(());
+            }
+            return Err(format!(
+                "schema name collision: \"{name}\" is already registered by a different type"
+            ));
+        }
 
         let ops = StreamableOps {
             type_id,
@@ -86,6 +100,7 @@ impl StreamableRegistry {
 
         self.name_to_ops.insert(name, ops);
         self.type_id_to_name.insert(type_id, name);
+        Ok(())
     }
 
     /// Look up operations by schema name.
@@ -145,7 +160,7 @@ mod tests {
     #[test]
     fn register_and_lookup_by_name() {
         let mut reg = StreamableRegistry::new();
-        reg.register::<TestSensor>();
+        reg.register::<TestSensor>().unwrap();
 
         let ops = reg.get_by_name("test_sensor").unwrap();
         assert_eq!(ops.name, "test_sensor");
@@ -155,7 +170,7 @@ mod tests {
     #[test]
     fn register_and_resolve_type_id() {
         let mut reg = StreamableRegistry::new();
-        reg.register::<TestSensor>();
+        reg.register::<TestSensor>().unwrap();
 
         assert_eq!(
             reg.resolve_name(&TypeId::of::<TestSensor>()),
@@ -167,7 +182,7 @@ mod tests {
     #[test]
     fn serialize_roundtrip() {
         let mut reg = StreamableRegistry::new();
-        reg.register::<TestSensor>();
+        reg.register::<TestSensor>().unwrap();
 
         let sensor = TestSensor {
             value: 42.5,
@@ -186,17 +201,38 @@ mod tests {
     #[test]
     fn duplicate_registration_is_idempotent() {
         let mut reg = StreamableRegistry::new();
-        reg.register::<TestSensor>();
-        reg.register::<TestSensor>();
+        reg.register::<TestSensor>().unwrap();
+        reg.register::<TestSensor>().unwrap();
 
         assert_eq!(reg.known_names().len(), 1);
     }
 
     #[test]
+    fn name_collision_from_different_type_is_rejected() {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct FakeSensor {
+            fake: bool,
+        }
+
+        impl SchemaType for FakeSensor {
+            const NAME: &'static str = "test_sensor"; // same name as TestSensor
+        }
+
+        impl Streamable for FakeSensor {}
+
+        let mut reg = StreamableRegistry::new();
+        reg.register::<TestSensor>().unwrap();
+
+        let err = reg.register::<FakeSensor>().unwrap_err();
+        assert!(err.contains("test_sensor"));
+        assert!(err.contains("collision"));
+    }
+
+    #[test]
     fn multiple_types_registered() {
         let mut reg = StreamableRegistry::new();
-        reg.register::<TestSensor>();
-        reg.register::<TestActuator>();
+        reg.register::<TestSensor>().unwrap();
+        reg.register::<TestActuator>().unwrap();
 
         assert_eq!(reg.known_names().len(), 2);
         assert!(reg.get_by_name("test_sensor").is_some());
@@ -213,7 +249,7 @@ mod tests {
     #[test]
     fn unknown_schema_returns_none() {
         let mut reg = StreamableRegistry::new();
-        reg.register::<TestSensor>();
+        reg.register::<TestSensor>().unwrap();
 
         assert!(reg.get_by_name("unknown_schema").is_none());
     }

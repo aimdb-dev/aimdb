@@ -255,8 +255,14 @@ impl WebSocketConnectorBuilder {
     ///
     /// let connector = connector.bind("0.0.0.0:8080");
     /// ```
+    /// # Panics
+    ///
+    /// Panics if a *different* type has already been registered under the
+    /// same schema name (`T::NAME`).
     pub fn register<T: Streamable>(&mut self) -> &mut Self {
-        self.streamable_registry.register::<T>();
+        self.streamable_registry
+            .register::<T>()
+            .expect("schema name collision in StreamableRegistry");
         self
     }
 }
