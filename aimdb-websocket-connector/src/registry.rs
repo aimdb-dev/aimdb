@@ -2,8 +2,8 @@
 //!
 //! Built incrementally via [`StreamableRegistry::register::<T>()`] at
 //! connector construction time. Each entry stores monomorphized closures
-//! that capture the concrete type `T` — no `Box<dyn Any>` or runtime
-//! downcast needed.
+//! that capture the concrete type `T` — runtime downcasts are limited to
+//! a `TypeId`-guarded path inside the serializer closure.
 
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -24,8 +24,8 @@ type DeserializeFn =
 /// Type-erased operations for a single [`Streamable`] type.
 ///
 /// Each field is a monomorphized closure that captures `T` at compile time
-/// through generic instantiation. The concrete type is baked in — no
-/// enum dispatch or trait object downcast is needed on the hot path.
+/// through generic instantiation. The serializer performs a `downcast_ref`
+/// on `&dyn Any` to recover the concrete type.
 #[allow(dead_code)]
 pub(crate) struct StreamableOps {
     /// The `TypeId` of the concrete type.

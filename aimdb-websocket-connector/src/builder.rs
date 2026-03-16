@@ -240,8 +240,8 @@ impl WebSocketConnectorBuilder {
     /// Register a [`Streamable`] type for WebSocket schema resolution.
     ///
     /// Each call monomorphizes closures that capture `T` for serialization,
-    /// deserialization, and routing. The concrete type is baked into the closure
-    /// at compile time — no `Box<dyn Any>` or downcast is needed at dispatch.
+    /// deserialization, and routing. The serializer performs a `downcast_ref`
+    /// on `&dyn Any` to recover the concrete type at dispatch.
     ///
     /// # Example
     ///
