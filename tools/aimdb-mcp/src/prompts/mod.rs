@@ -176,7 +176,7 @@ These are not IoT-specific — they are universal data primitives.
 
 ### SpmcRing { capacity: usize }
 High-frequency stream. Every value matters. Multiple independent consumers.
-- Use when: telemetry, sensor readings, event logs, interaction streams
+- Use when: telemetry, sensor readings, event logs
 - Ask: "Does the consumer need every sample, or just the latest?"
 - Ask: "How many systems read this independently?"
 - Capacity rule: `data_rate_hz × lag_tolerance_seconds`, round up to power-of-2

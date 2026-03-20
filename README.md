@@ -40,7 +40,7 @@ In a data-driven architecture, every design decision starts with the data, not t
 
 | Buffer | Semantics | Use Cases |
 |--------|-----------|-----------|
-| **SPMC Ring** | Bounded stream with independent consumers | Sensor telemetry, event logs, interaction streams |
+| **SPMC Ring** | Bounded stream with independent consumers | Sensor telemetry, event logs |
 | **SingleLatest** | Only the current value matters | Feature flags, configuration, UI state |
 | **Mailbox** | Latest instruction wins | Device commands, actuation, RPC |
 

@@ -44,7 +44,7 @@ use serde::{de::DeserializeOwned, Serialize};
 /// Implementing this trait signals that a contract type supports:
 /// - Type-erased JSON/`JsValue` serialization and deserialization
 /// - Registration in AimDB builders by schema name string
-/// - Cross-boundary dispatch (WASM bindings, WebSocket bridge, CLI)
+/// - Cross-boundary dispatch (WASM bindings, WebSocket bridge)
 ///
 /// # Bounds
 ///
