@@ -1,0 +1,11 @@
+# cargo-audit configuration
+# See: https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+# Advisories to ignore (transitive dependencies we can't fix)
+ignore = [
+    # rustls-webpki 0.102.x CRL issue - no patch in 0.102.x line
+    # Transitive via rumqttc, waiting for upstream fix
+    # Low impact: requires compromised CA to exploit
+    "RUSTSEC-2026-0049",
+]
