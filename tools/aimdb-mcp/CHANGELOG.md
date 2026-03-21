@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
+## [0.6.1] - 2026-03-21
+
+### Fixed
+
+- **list_records Tool**: Added missing `record_key` field to `RecordInfo` response, making it easier to identify which key to use when calling `get_record` or `set_record`
+
 ## [0.6.0] - 2026-03-11
 
 ### Added
@@ -108,8 +114,10 @@ No changes yet.
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.6.1...HEAD
+[0.6.1]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.6.0...aimdb-mcp-v0.6.1
+[0.6.0]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.5.0...aimdb-mcp-v0.6.0
+[0.5.0]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.4.0...aimdb-mcp-v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0

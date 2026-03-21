@@ -48,6 +48,8 @@ struct DrainRecordParams {
 /// Record information (MCP format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RecordInfo {
+    /// Record key (use this for get_record/set_record)
+    record_key: String,
     /// Record type name
     name: String,
     /// TypeId as hexadecimal string
@@ -112,6 +114,7 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
     let record_infos: Vec<RecordInfo> = records
         .into_iter()
         .map(|r| RecordInfo {
+            record_key: r.record_key,
             name: r.name,
             type_id: r.type_id,
             buffer_type: r.buffer_type,
