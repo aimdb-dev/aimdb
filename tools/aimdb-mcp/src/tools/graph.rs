@@ -9,22 +9,22 @@ use tracing::debug;
 /// Parameters for graph_nodes tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GraphNodesParams {
-    /// Unix socket path to the AimDB instance
-    socket_path: String,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
+    socket_path: Option<String>,
 }
 
 /// Parameters for graph_edges tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GraphEdgesParams {
-    /// Unix socket path to the AimDB instance
-    socket_path: String,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
+    socket_path: Option<String>,
 }
 
 /// Parameters for graph_topo_order tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GraphTopoOrderParams {
-    /// Unix socket path to the AimDB instance
-    socket_path: String,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
+    socket_path: Option<String>,
 }
 
 /// Get all nodes in the dependency graph
@@ -50,17 +50,18 @@ pub async fn graph_nodes(args: Option<Value>) -> McpResult<Value> {
     // Parse parameters
     let params: GraphNodesParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
+    let socket_path = super::resolve_socket_path(params.socket_path)?;
 
-    debug!("🔌 Connecting to {}", params.socket_path);
+    debug!("🔌 Connecting to {}", socket_path);
 
     // Get or create connection from pool (if available)
     let mut client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&params.socket_path)
+        pool.get_connection(&socket_path)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&params.socket_path)
+        AimxClient::connect(&socket_path)
             .await
             .map_err(McpError::Client)?
     };
@@ -94,17 +95,18 @@ pub async fn graph_edges(args: Option<Value>) -> McpResult<Value> {
     // Parse parameters
     let params: GraphEdgesParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
+    let socket_path = super::resolve_socket_path(params.socket_path)?;
 
-    debug!("🔌 Connecting to {}", params.socket_path);
+    debug!("🔌 Connecting to {}", socket_path);
 
     // Get or create connection from pool (if available)
     let mut client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&params.socket_path)
+        pool.get_connection(&socket_path)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&params.socket_path)
+        AimxClient::connect(&socket_path)
             .await
             .map_err(McpError::Client)?
     };
@@ -136,17 +138,18 @@ pub async fn graph_topo_order(args: Option<Value>) -> McpResult<Value> {
     // Parse parameters
     let params: GraphTopoOrderParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
+    let socket_path = super::resolve_socket_path(params.socket_path)?;
 
-    debug!("🔌 Connecting to {}", params.socket_path);
+    debug!("🔌 Connecting to {}", socket_path);
 
     // Get or create connection from pool (if available)
     let mut client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&params.socket_path)
+        pool.get_connection(&socket_path)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&params.socket_path)
+        AimxClient::connect(&socket_path)
             .await
             .map_err(McpError::Client)?
     };

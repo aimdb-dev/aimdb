@@ -773,7 +773,8 @@ pub async fn rename_record(args: Option<Value>) -> McpResult<Value> {
 
 #[derive(Debug, Deserialize)]
 struct ValidateInstanceParams {
-    socket_path: String,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
+    socket_path: Option<String>,
     #[serde(default)]
     state_path: Option<String>,
 }
@@ -785,6 +786,7 @@ pub async fn validate_against_instance(args: Option<Value>) -> McpResult<Value> 
     debug!("validate_against_instance called");
     let params: ValidateInstanceParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("validate_against_instance: {e}")))?;
+    let socket_path = super::resolve_socket_path(params.socket_path)?;
 
     let state_path = params
         .state_path
@@ -801,7 +803,7 @@ pub async fn validate_against_instance(args: Option<Value>) -> McpResult<Value> 
         })?;
 
     // Connect and list live records
-    let mut client = AimxClient::connect(&params.socket_path)
+    let mut client = AimxClient::connect(&socket_path)
         .await
         .map_err(McpError::Client)?;
 
@@ -826,7 +828,8 @@ pub async fn validate_against_instance(args: Option<Value>) -> McpResult<Value> 
 
 #[derive(Debug, Deserialize)]
 struct GetBufferMetricsParams {
-    socket_path: String,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
+    socket_path: Option<String>,
     record_key: String,
 }
 
@@ -837,8 +840,9 @@ pub async fn get_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
     debug!("get_buffer_metrics called");
     let params: GetBufferMetricsParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("get_buffer_metrics: {e}")))?;
+    let socket_path = super::resolve_socket_path(params.socket_path)?;
 
-    let mut client = AimxClient::connect(&params.socket_path)
+    let mut client = AimxClient::connect(&socket_path)
         .await
         .map_err(McpError::Client)?;
 

@@ -24,6 +24,20 @@ pub(crate) fn connection_pool() -> Option<&'static ConnectionPool> {
     CONNECTION_POOL.get()
 }
 
+/// Resolve the socket path from an explicit argument or the `AIMDB_SOCKET` env var.
+///
+/// Returns an error if neither is set.
+pub(crate) fn resolve_socket_path(explicit: Option<String>) -> crate::error::McpResult<String> {
+    explicit
+        .or_else(|| std::env::var("AIMDB_SOCKET").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            crate::error::McpError::InvalidParams(
+                "Missing socket_path (pass it explicitly or set AIMDB_SOCKET env var)".into(),
+            )
+        })
+}
+
 // Re-export tool functions
 pub use architecture::{
     get_architecture, get_buffer_metrics, propose_add_binary, propose_add_connector,

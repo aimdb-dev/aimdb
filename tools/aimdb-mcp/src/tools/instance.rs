@@ -59,7 +59,8 @@ pub async fn discover_instances(_args: Option<Value>) -> McpResult<Value> {
 /// Parameters for get_instance_info tool
 #[derive(Debug, Deserialize)]
 struct GetInstanceInfoParams {
-    socket_path: String,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
+    socket_path: Option<String>,
 }
 
 /// Result from get_instance_info tool
@@ -93,15 +94,16 @@ pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
             ))
         }
     };
+    let socket_path = super::resolve_socket_path(params.socket_path)?;
 
-    debug!("🔍 Getting instance info for: {}", params.socket_path);
+    debug!("🔍 Getting instance info for: {}", socket_path);
 
     // Get or create connection from pool (if available)
     let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&params.socket_path).await?
+        pool.get_connection(&socket_path).await?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&params.socket_path).await?
+        AimxClient::connect(&socket_path).await?
     };
 
     // Get server info from the welcome message
@@ -109,7 +111,7 @@ pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
 
     // Convert to result format
     let result = InstanceInfoResult {
-        socket_path: params.socket_path.clone(),
+        socket_path: socket_path.clone(),
         server_version: server_info.server.clone(),
         protocol_version: server_info.version.clone(),
         permissions: server_info.permissions.clone(),

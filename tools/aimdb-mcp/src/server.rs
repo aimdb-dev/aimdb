@@ -140,10 +140,10 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         }
                     },
-                    "required": ["socket_path"],
+                    "required": [],
                     "additionalProperties": false
                 }),
             },
@@ -155,14 +155,14 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
                             "description": "Name of the record to retrieve (e.g., server::Temperature)"
                         }
                     },
-                    "required": ["socket_path", "record_name"],
+                    "required": ["record_name"],
                     "additionalProperties": false
                 }),
             },
@@ -174,7 +174,7 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
@@ -184,7 +184,7 @@ impl McpServer {
                             "description": "New value for the record (must match record's type schema)"
                         }
                     },
-                    "required": ["socket_path", "record_name", "value"],
+                    "required": ["record_name", "value"],
                     "additionalProperties": false
                 }),
             },
@@ -196,10 +196,10 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         }
                     },
-                    "required": ["socket_path"],
+                    "required": [],
                     "additionalProperties": false
                 }),
             },
@@ -216,7 +216,7 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
@@ -228,7 +228,7 @@ impl McpServer {
                             "default": true
                         }
                     },
-                    "required": ["socket_path", "record_name"],
+                    "required": ["record_name"],
                     "additionalProperties": false
                 }),
             },
@@ -245,7 +245,7 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
@@ -257,7 +257,7 @@ impl McpServer {
                             "minimum": 1
                         }
                     },
-                    "required": ["socket_path", "record_name"],
+                    "required": ["record_name"],
                     "additionalProperties": false
                 }),
             },
@@ -269,10 +269,10 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         }
                     },
-                    "required": ["socket_path"],
+                    "required": [],
                     "additionalProperties": false
                 }),
             },
@@ -284,10 +284,10 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         }
                     },
-                    "required": ["socket_path"],
+                    "required": [],
                     "additionalProperties": false
                 }),
             },
@@ -299,10 +299,10 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         }
                     },
-                    "required": ["socket_path"],
+                    "required": [],
                     "additionalProperties": false
                 }),
             },
@@ -698,14 +698,14 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the running AimDB instance (e.g., /tmp/aimdb-demo.sock)"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         },
                         "state_path": {
                             "type": "string",
                             "description": "Path to state.toml (default: .aimdb/state.toml)"
                         }
                     },
-                    "required": ["socket_path"],
+                    "required": [],
                     "additionalProperties": false
                 }),
             },
@@ -717,14 +717,14 @@ impl McpServer {
                     "properties": {
                         "socket_path": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance"
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
                         },
                         "record_key": {
                             "type": "string",
                             "description": "Substring to match against record names (e.g., 'Temperature')"
                         }
                     },
-                    "required": ["socket_path", "record_key"],
+                    "required": ["record_key"],
                     "additionalProperties": false
                 }),
             },

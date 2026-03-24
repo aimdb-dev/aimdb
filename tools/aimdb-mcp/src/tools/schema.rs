@@ -9,8 +9,8 @@ use tracing::debug;
 /// Parameters for query_schema tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuerySchemaParams {
-    /// Unix socket path to the AimDB instance
-    pub socket_path: String,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
+    pub socket_path: Option<String>,
 
     /// Name of the record to query schema for
     pub record_name: String,
@@ -109,20 +109,21 @@ pub async fn query_schema(args: Option<Value>) -> McpResult<Value> {
     // Parse parameters
     let params: QuerySchemaParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
+    let socket_path = super::resolve_socket_path(params.socket_path)?;
 
     debug!(
         "📊 Querying schema for record '{}' at {}",
-        params.record_name, params.socket_path
+        params.record_name, socket_path
     );
 
     // Get or create connection from pool (if available)
     let mut client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&params.socket_path)
+        pool.get_connection(&socket_path)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&params.socket_path)
+        AimxClient::connect(&socket_path)
             .await
             .map_err(McpError::Client)?
     };
@@ -338,7 +339,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(params.socket_path, "/tmp/test.sock");
+        assert_eq!(params.socket_path, Some("/tmp/test.sock".to_string()));
         assert_eq!(params.record_name, "test::Record");
         assert!(params.include_example); // Should default to true
     }
