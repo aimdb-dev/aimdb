@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes yet.
 
+## [0.7.0] - 2026-03-24
+
+### Changed
+
+- **Optional `socket_path`**: All tools now accept `socket_path` as optional, falling back to `AIMDB_SOCKET` environment variable when omitted. Reduces repetition when working with a single instance.
+
 ## [0.6.1] - 2026-03-21
 
 ### Fixed
