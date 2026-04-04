@@ -1,11 +1,12 @@
 [package]
 name = "aimdb-core"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Core database engine for AimDB - async in-memory data synchronization with bidirectional connectors"
+readme = "README.md"
+description = "Type-safe async data pipelines — one Rust codebase from MCU to cloud"
 keywords = ["database", "async", "in-memory", "sync", "embedded"]
 categories = ["database-implementations", "asynchronous", "embedded"]
 build = "build.rs"

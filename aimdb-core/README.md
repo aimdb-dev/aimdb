@@ -1,33 +1,18 @@
 # aimdb-core
 
-Core database engine for AimDB - async in-memory storage with data synchronization.
+Type-safe async data pipelines — one Rust codebase from MCU to cloud.
 
 ## Overview
 
-`aimdb-core` provides the foundational database engine for AimDB, designed for data synchronization across **MCU → edge → cloud** environments with low-latency synchronization.
+`aimdb-core` provides a type-safe, platform-agnostic data pipeline where the Rust type system is the schema and trait implementations define the behavior. Records flow through typed producer-consumer pipelines that compile unchanged for Tokio, Embassy and WASM.
 
 **Key Features:**
-- **Type-Safe Records**: `TypeId`-based routing eliminates string keys and enables compile-time safety
-- **Runtime Agnostic**: Works with any async runtime (Tokio, Embassy) via adapter pattern
-- **Producer-Consumer Model**: Built-in typed message passing with multiple buffer strategies
-- **Pluggable Buffers**: SPMC Ring, SingleLatest, and Mailbox for different data flow patterns
+- **Type-Safe Records**: Compile-time key + type pairs
+- **Runtime Agnostic**: One codebase targets Tokio, Embassy and WASM via adapter pattern
+- **Producer-Consumer Pipelines**: Source, tap and transform with typed buffers
+- **Pluggable Buffers**: SPMC Ring, SingleLatest and Mailbox for different data flow patterns
 - **No-std Compatible**: Core functionality works without standard library
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│           Database<A: RuntimeAdapter>           │
-│  - Unified API for all operations               │
-│  - Type-safe record management                  │
-│  - Builder pattern configuration                │
-└─────────────────────────────────────────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        ▼             ▼             ▼
-   Producers     Consumers      Connectors
-   (Async)       (Async)        (MQTT/Kafka)
-```
+- **Derive Macros**: `RecordKey` derive for compile-time safe record keys
 
 ## Quick Start
 
@@ -36,10 +21,61 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 aimdb-core = "1.0"
-aimdb-tokio-adapter = "0.5"  # or aimdb-embassy-adapter
+aimdb-tokio-adapter = "0.5"  # or aimdb-embassy-adapter / aimdb-wasm-adapter
 ```
 
-### Basic Usage
+### Define Records
+
+Records consist of a key and a type. The `RecordKey` derive macro maps each variant to a unique string identifier:
+
+```rust
+/// Compile-time safe record keys.
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
+#[key_prefix = "sensor."]
+pub enum SensorKey {
+    #[key = "temp.indoor"]
+    TempIndoor,
+    #[key = "temp.outdoor"]
+    TempOutdoor,
+}
+
+/// A plain Rust struct — no framework traits required.
+#[derive(Clone, Debug)]
+pub struct Temperature {
+    pub sensor_id: String,
+    pub celsius: f32,
+}
+```
+
+### Producer and Consumer
+
+Portable code uses `R: Runtime` — no platform imports needed:
+
+```rust
+/// Producer: reads a sensor and pushes typed values into AimDB.
+async fn sensor_producer<R: Runtime>(ctx: RuntimeContext<R>, producer: Producer<Temperature, R>) {
+    loop {
+        let reading = read_sensor().await;
+        producer.produce(Temperature {
+            sensor_id: "outdoor-001".into(),
+            celsius: reading,
+        }).await.ok();
+        ctx.time().sleep(ctx.time().secs(1)).await;
+    }
+}
+
+/// Consumer: subscribes to the buffer and reacts to every new value.
+async fn temp_logger<R: Runtime>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature, R>) {
+    let mut reader = consumer.subscribe().unwrap();
+    while let Ok(temp) = reader.recv().await {
+        ctx.log().info(&format!("{}: {:.1}°C", temp.sensor_id, temp.celsius));
+    }
+}
+```
+
+### Wire It Together
+
+The builder ties key, type, buffer, producer and consumer together:
 
 ```rust
 use aimdb_core::{AimDbBuilder, DbResult};
@@ -49,30 +85,59 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> DbResult<()> {
-    // Create runtime adapter
     let runtime = Arc::new(TokioAdapter::new()?);
-    
-    // Build database with typed records
     let mut builder = AimDbBuilder::new().runtime(runtime);
-    
-    builder.configure::<Temperature>(|reg| {
-        reg.buffer(BufferCfg::SingleLatest)
-           .source(temperature_producer)   // Async function that produces data
-           .tap(temperature_consumer);      // Async function that consumes data
+
+    builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+           .source(sensor_producer)
+           .tap(temp_logger)
+           .finish();
     });
-    
-    // Start the database
+
     let db = builder.build()?;
     db.start().await?;
-    
     Ok(())
 }
 ```
 
-For complete working examples with producers, consumers, and connectors, see:
-- `examples/tokio-mqtt-connector-demo` - Full producer/consumer with MQTT publishing
-- `examples/sync-api-demo` - Synchronous API usage
-- `examples/remote-access-demo` - Remote introspection server
+### Transforms
+
+Records relate to each other in a DAG. A transform derives one record type from another:
+
+```rust
+#[derive(Clone, Debug)]
+pub struct TemperatureAlert {
+    pub sensor_id: String,
+    pub celsius: f32,
+    pub level: &'static str,
+}
+
+fn to_alert(temp: &Temperature) -> Option<TemperatureAlert> {
+    if temp.celsius > 35.0 {
+        Some(TemperatureAlert {
+            sensor_id: temp.sensor_id.clone(),
+            celsius: temp.celsius,
+            level: "high",
+        })
+    } else {
+        None
+    }
+}
+
+builder.configure::<TemperatureAlert>("alert.temp.outdoor", |reg| {
+    reg.buffer(BufferCfg::SingleLatest)
+       .transform::<Temperature, _>(SensorKey::TempOutdoor, |t| t.map(to_alert))
+       .tap(alert_logger)
+       .finish();
+});
+```
+
+For complete working examples, see:
+- `examples/tokio-mqtt-connector-demo` — MQTT with Tokio runtime
+- `examples/embassy-mqtt-connector-demo` — MQTT on embedded (RP2040)
+- `examples/sync-api-demo` — Synchronous API usage
+- `examples/remote-access-demo` — AimX protocol server
 
 ## Buffer Types
 
@@ -81,8 +146,6 @@ Choose the right buffer strategy for your use case:
 ### SPMC Ring Buffer
 **Use for:** High-frequency data streams with bounded memory
 ```rust
-use aimdb_core::buffer::BufferCfg;
-
 reg.buffer(BufferCfg::SpmcRing { capacity: 2048 })
 ```
 - Bounded backlog for multiple consumers
@@ -96,7 +159,6 @@ reg.buffer(BufferCfg::SingleLatest)
 ```
 - Only stores newest value
 - Intermediate updates collapsed
-- History doesn't matter
 
 ### Mailbox
 **Use for:** Commands and one-shot events
@@ -105,83 +167,59 @@ reg.buffer(BufferCfg::Mailbox)
 ```
 - Single-slot with overwrite
 - Latest command wins
-- At-least-once delivery
-
-## Producer-Consumer Patterns
-
-### Source (Producer)
-Async function that generates and sends data:
-```rust
-async fn my_producer(
-    ctx: RuntimeContext<TokioAdapter>,
-    producer: Producer<MyData, TokioAdapter>,
-) {
-    let data = MyData { /* ... */ };
-    producer.produce(data).await.ok();
-}
-
-// Register in builder
-reg.buffer(BufferCfg::SingleLatest)
-   .source(my_producer);
-```
-
-### Tap (Consumer)
-Async function that receives and processes data:
-```rust
-async fn my_consumer(
-    ctx: RuntimeContext<TokioAdapter>,
-    consumer: Consumer<MyData, TokioAdapter>,
-) {
-    let mut reader = consumer.subscribe().expect("Failed to subscribe");
-    
-    while let Ok(data) = reader.recv().await {
-        // Process data
-    }
-}
-
-// Register in builder
-reg.tap(my_consumer);
-```
-
-For complete examples, see `examples/tokio-mqtt-connector-demo`.
-
-## Type Safety
-
-Records are identified by `TypeId`, not strings:
-
-```rust
-use std::any::TypeId;
-
-let type_id = TypeId::of::<Temperature>();
-// TypeId automatically used for record lookup
-```
-
-**Benefits:**
-- Compile-time type checking
-- No string parsing overhead
-- Impossible to mix types
 
 ## Runtime Adapters
 
+The only platform-specific code is choosing which runtime adapter to pass into the builder:
+
+```rust
+// On Linux / Cloud — Tokio
+let runtime = Arc::new(TokioAdapter::new()?);
+let mut builder = AimDbBuilder::new().runtime(runtime);
+
+// On Cortex-M4 — Embassy
+let runtime = EmbassyAdapter::new();
+let mut builder = AimDbBuilder::new().runtime(runtime);
+```
+
+Everything else — records, keys, producers, consumers, transforms — stays identical across platforms.
+
 Core depends on abstract traits from `aimdb-executor`:
+- `RuntimeAdapter` — Platform identification
+- `Spawn` — Task creation
+- `TimeOps` — Clocks and sleep
+- `Logger` — Structured output
 
-- **TokioAdapter**: Standard library environments
-- **EmbassyAdapter**: Embedded no_std environments
+Portable code receives a `RuntimeContext<R>` with two accessors:
+- `ctx.time()` → `Time<R>` with `.sleep()`, `.now()`, `.secs()`, etc.
+- `ctx.log()` → `Log<R>` with `.info()`, `.warn()`, etc.
 
-Adapters provide:
-- Task spawning (`Spawn`)
-- Time operations (`TimeOps`)
-- Logging (`Logger`)
-- Platform identification (`RuntimeAdapter`)
+Available adapters:
+- **[aimdb-tokio-adapter](https://crates.io/crates/aimdb-tokio-adapter)** — Standard library / server environments
+- **[aimdb-embassy-adapter](https://crates.io/crates/aimdb-embassy-adapter)** — Embedded `no_std` (Cortex-M)
+- **[aimdb-wasm-adapter](https://crates.io/crates/aimdb-wasm-adapter)** — Browser / WASM targets
+
+## Connectors
+
+Integrate with external systems:
+- **[aimdb-mqtt-connector](https://crates.io/crates/aimdb-mqtt-connector)** — MQTT for std (`rumqttc`) and embedded (`mountain-mqtt`)
+- **[aimdb-knx-connector](https://crates.io/crates/aimdb-knx-connector)** — KNX/IP for building automation
+- **[aimdb-websocket-connector](https://crates.io/crates/aimdb-websocket-connector)** — WebSocket transport
+
+See `examples/tokio-mqtt-connector-demo` for a complete connector integration.
 
 ## Features
 
 ```toml
 [features]
-std = []                    # Standard library support
-tracing = ["dep:tracing"]   # Structured logging
-metrics = []                # Performance metrics
-defmt = ["dep:defmt"]       # Embedded logging
+default = ["std", "alloc", "derive"]
+derive = ["aimdb-derive"]           # RecordKey derive macro
+std = ["alloc", "serde", ...]       # Standard library support
+alloc = ["serde"]                   # Heap allocation for no_std
+tracing = ["dep:tracing"]           # Structured logging (std + no_std)
+defmt = ["dep:defmt"]               # Embedded logging via probe
+metrics = ["dep:metrics", "std"]    # Performance metrics (requires std)
+test-utils = ["std"]                # Test helpers
 ```
 
 ## Error Handling
@@ -192,69 +230,23 @@ All operations return `DbResult<T>` with `DbError` enum:
 use aimdb_core::{DbResult, DbError};
 
 pub async fn operation() -> DbResult<()> {
-    // ... operations ...
+    // ...
     Ok(())
 }
 ```
 
-Common errors:
-- `RecordNotFound`: Requested type not registered
-- `ProducerFailed` / `ConsumerFailed`: Task execution errors
-- `BufferError`: Buffer operations failed
-- `ConnectorError`: External connector issues
-
-## Connectors
-
-Integrate with external systems like MQTT, Kafka, or custom protocols:
-
-```rust
-use aimdb_mqtt_connector::MqttConnector;
-use std::sync::Arc;
-
-let mqtt = Arc::new(MqttConnector::new("mqtt://localhost:1883").await?);
-
-let mut builder = AimDbBuilder::new()
-    .runtime(runtime)
-    .with_connector("mqtt", mqtt);
-
-builder.configure::<Temperature>(|reg| {
-    reg.buffer(BufferCfg::SingleLatest)
-       .source(temperature_producer)
-       .link("mqtt://sensors/temperature")
-       .with_serializer(|t| serde_json::to_vec(t).map_err(|_| SerializeError::InvalidData))
-       .finish();
-});
-
-let db = builder.build()?;
-```
-
-See `examples/tokio-mqtt-connector-demo` for complete connector integration.
+Common errors: `RecordNotFound`, `ProducerFailed`, `ConsumerFailed`, `BufferError`, `ConnectorError`.
 
 ## Testing
 
 ```bash
-# Run tests (std)
+# Run all tests
 cargo test -p aimdb-core
 
-# Run tests (no_std embedded)
-cargo test -p aimdb-core --no-default-features --target thumbv7em-none-eabihf
-```
-
-## Performance
-
-Design targets:
-- **< 50ms** end-to-end latency
-- **Lock-free** buffer operations
-- **Zero-copy** where possible
-- **Minimal allocations** in hot paths
-
-## Documentation
-
-Generate API docs:
-```bash
-cargo doc -p aimdb-core --open
+# Verify no_std compatibility
+cargo check -p aimdb-core --no-default-features --target thumbv7em-none-eabihf
 ```
 
 ## License
 
-See [LICENSE](../LICENSE) file.
+Apache 2.0 — see [LICENSE](../LICENSE).
