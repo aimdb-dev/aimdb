@@ -305,7 +305,7 @@ async fn test_topic_resolver_with_connector_registration() {
                 // Late-binding: resolve from environment at startup
                 std::env::var("TEST_COMMAND_TOPIC").ok()
             })
-            .with_deserializer(|data: &[u8]| Command::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| Command::from_json(data))
             .finish();
     });
 

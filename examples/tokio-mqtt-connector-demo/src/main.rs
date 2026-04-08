@@ -185,7 +185,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
             .link_from(CommandKey::TempIndoor.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
@@ -193,7 +193,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
             .link_from(CommandKey::TempOutdoor.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 

@@ -360,7 +360,7 @@ async fn test_knx_topic_resolver_with_connector_registration() {
                     .ok()
                     .map(|addr| format!("knx://{}", addr))
             })
-            .with_deserializer(|data: &[u8]| SwitchState::from_knx_bytes(data))
+            .with_deserializer(|_ctx, data: &[u8]| SwitchState::from_knx_bytes(data))
             .finish();
     });
 

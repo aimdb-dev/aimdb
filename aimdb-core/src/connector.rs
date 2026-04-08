@@ -531,6 +531,34 @@ impl ConnectorLink {
 pub type DeserializerFn =
     Arc<dyn Fn(&[u8]) -> Result<Box<dyn core::any::Any + Send>, String> + Send + Sync>;
 
+/// Type alias for context-aware type-erased deserializer callbacks
+///
+/// Like `DeserializerFn`, but receives a type-erased runtime context
+/// for platform-independent timestamps and logging during deserialization.
+///
+/// The first argument is the type-erased runtime (as `Arc<dyn Any + Send + Sync>`),
+/// which is downcast to the concrete runtime type via `RuntimeContext::extract_from_any`.
+pub type ContextDeserializerFn = Arc<
+    dyn Fn(
+            Arc<dyn core::any::Any + Send + Sync>,
+            &[u8],
+        ) -> Result<Box<dyn core::any::Any + Send>, String>
+        + Send
+        + Sync,
+>;
+
+/// Which deserializer variant is registered for an inbound link
+///
+/// Enforces mutual exclusivity between raw bytes-only deserializers
+/// and context-aware deserializers.
+#[derive(Clone)]
+pub enum DeserializerKind {
+    /// Plain bytes-only deserializer (from `.with_deserializer_raw()`)
+    Raw(DeserializerFn),
+    /// Context-aware deserializer (from `.with_deserializer()`)
+    Context(ContextDeserializerFn),
+}
+
 /// Type alias for producer factory callback (alloc feature)
 ///
 /// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ProducerTrait.
@@ -646,12 +674,12 @@ pub struct InboundConnectorLink {
 
     /// Deserialization callback that converts bytes to typed values
     ///
-    /// This is a type-erased function that takes `&[u8]` and returns
-    /// `Result<Box<dyn Any + Send>, String>`. The spawned task will
-    /// downcast to the concrete type before producing.
+    /// Either a plain bytes-only deserializer (`Raw`) or a context-aware
+    /// deserializer (`Context`) that receives `RuntimeContext` for timestamps
+    /// and logging.
     ///
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
-    pub deserializer: DeserializerFn,
+    pub deserializer: DeserializerKind,
 
     /// Producer creation callback (alloc feature)
     ///
@@ -700,7 +728,7 @@ impl Debug for InboundConnectorLink {
 
 impl InboundConnectorLink {
     /// Creates a new inbound connector link from a URL and deserializer
-    pub fn new(url: ConnectorUrl, deserializer: DeserializerFn) -> Self {
+    pub fn new(url: ConnectorUrl, deserializer: DeserializerKind) -> Self {
         Self {
             url,
             config: Vec::new(),
@@ -1153,12 +1181,12 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_default() {
-        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/temperature").unwrap();
         let deserializer: DeserializerFn =
             Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let link = InboundConnectorLink::new(url, deserializer);
+        let link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
 
         // No resolver configured, should return static topic from URL
         assert_eq!(link.resolve_topic(), "sensors/temperature");
@@ -1166,12 +1194,12 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_dynamic() {
-        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/default").unwrap();
         let deserializer: DeserializerFn =
             Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let mut link = InboundConnectorLink::new(url, deserializer);
+        let mut link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
 
         // Configure dynamic resolver
         link.topic_resolver = Some(Arc::new(|| Some("sensors/dynamic/kitchen".into())));
@@ -1182,12 +1210,12 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_fallback() {
-        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/fallback").unwrap();
         let deserializer: DeserializerFn =
             Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let mut link = InboundConnectorLink::new(url, deserializer);
+        let mut link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
 
         // Configure resolver that returns None
         link.topic_resolver = Some(Arc::new(|| None));

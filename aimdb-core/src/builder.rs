@@ -1450,7 +1450,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     ) -> Vec<(
         String,
         Box<dyn crate::connector::ProducerTrait>,
-        crate::connector::DeserializerFn,
+        crate::connector::DeserializerKind,
     )> {
         let mut routes = Vec::new();
 

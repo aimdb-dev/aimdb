@@ -523,7 +523,7 @@ where
     /// builder.configure::<LightState>(|reg| {
     ///     reg.buffer(BufferCfg::SingleLatest)
     ///        .link_from("mqtt://broker/lights/+/state")
-    ///            .with_deserializer(|bytes| parse_light_state(bytes))
+    ///            .with_deserializer(|_ctx, bytes: &[u8]| parse_light_state(bytes))
     ///            .finish()
     /// });
     /// ```
@@ -533,6 +533,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             deserializer: None,
+            context_deserializer: None,
             topic_resolver: None,
         }
     }
@@ -727,6 +728,7 @@ pub struct InboundConnectorBuilder<
     url: String,
     config: Vec<(String, String)>,
     deserializer: Option<TypedDeserializerFn<T>>,
+    context_deserializer: Option<crate::connector::ContextDeserializerFn>,
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
@@ -741,25 +743,56 @@ where
         self
     }
 
-    /// Sets a deserialization callback
+    /// Sets a raw deserialization callback (bytes only, no context)
     ///
-    /// The deserializer takes raw bytes from the external system and converts
-    /// them to the typed value `T`. Returns `Err(String)` if deserialization fails.
+    /// Prefer `.with_deserializer(|ctx, data| ...)` for access to
+    /// `RuntimeContext` (timestamps, logging). Use this raw variant
+    /// only when context is unnecessary.
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// .link_from("mqtt://broker/sensors/temp")
-    ///     .with_deserializer(|bytes| {
+    ///     .with_deserializer_raw(|bytes| {
     ///         serde_json::from_slice::<Temperature>(bytes)
     ///             .map_err(|e| e.to_string())
     ///     })
     /// ```
-    pub fn with_deserializer<F>(mut self, f: F) -> Self
+    pub fn with_deserializer_raw<F>(mut self, f: F) -> Self
     where
         F: Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static,
     {
         self.deserializer = Some(Arc::new(f));
+        self.context_deserializer = None; // mutually exclusive
+        self
+    }
+
+    /// Sets a context-aware deserialization callback
+    ///
+    /// The closure receives a `RuntimeContext<R>` for platform-independent
+    /// timestamps and logging, plus the raw bytes from the external system.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// .link_from("knx://gateway/9/1/0")
+    ///     .with_deserializer(|ctx, data: &[u8]| {
+    ///         let mut temp = from_knx(data, "9/1/0")?;
+    ///         temp.timestamp = ctx.time().now();
+    ///         Ok(temp)
+    ///     })
+    /// ```
+    pub fn with_deserializer<F>(mut self, f: F) -> Self
+    where
+        F: Fn(crate::RuntimeContext<R>, &[u8]) -> Result<T, String> + Send + Sync + 'static,
+        R: aimdb_executor::Runtime + Send + Sync,
+    {
+        let f = Arc::new(f);
+        self.context_deserializer = Some(Arc::new(move |ctx_any, bytes| {
+            let ctx = crate::RuntimeContext::<R>::extract_from_any(ctx_any);
+            (f)(ctx, bytes).map(|val| Box::new(val) as Box<dyn core::any::Any + Send>)
+        }));
+        self.deserializer = None; // mutually exclusive
         self
     }
 
@@ -797,7 +830,7 @@ where
     ///        let node_id = smart_contract.get_producer_node_id()?;
     ///        Some(format!("mesh/{}/data", node_id))
     ///    })
-    ///    .with_deserializer(|bytes| parse_sensor_data(bytes))
+    ///    .with_deserializer(|_ctx, bytes: &[u8]| parse_sensor_data(bytes))
     ///    .finish();
     /// ```
     pub fn with_topic_resolver<F>(mut self, resolver: F) -> Self
@@ -817,7 +850,7 @@ where
     /// - If no connector is registered for the URL scheme
     /// - If the URL is invalid
     pub fn finish(self) -> &'a mut RecordRegistrar<'a, T, R> {
-        use crate::connector::{ConnectorUrl, InboundConnectorLink};
+        use crate::connector::{ConnectorUrl, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse(&self.url)
             .unwrap_or_else(|_| panic!("Invalid connector URL: {}", self.url));
@@ -832,10 +865,18 @@ where
             );
         }
 
-        // Validation: Deserializer must be provided
-        let Some(deserializer) = self.deserializer else {
+        // Resolve deserializer variant (mutually exclusive)
+        let deser_kind = if let Some(ctx_deser) = self.context_deserializer {
+            DeserializerKind::Context(ctx_deser)
+        } else if let Some(raw_deser) = self.deserializer {
+            // Type-erase the raw deserializer
+            let erased: crate::connector::DeserializerFn = Arc::new(move |bytes: &[u8]| {
+                raw_deser(bytes).map(|val| Box::new(val) as Box<dyn core::any::Any + Send>)
+            });
+            DeserializerKind::Raw(erased)
+        } else {
             panic!(
-                "Inbound connector requires a deserializer. Call .with_deserializer() for {}",
+                "Inbound connector requires a deserializer. Call .with_deserializer() or .with_deserializer_raw() for {}",
                 self.url
             );
         };
@@ -854,14 +895,8 @@ where
             );
         }
 
-        // Create type-erased deserializer
-        let erased_deserializer: crate::connector::DeserializerFn =
-            Arc::new(move |bytes: &[u8]| {
-                deserializer(bytes).map(|val| Box::new(val) as Box<dyn core::any::Any + Send>)
-            });
-
         // Create inbound connector link
-        let mut link = InboundConnectorLink::new(url, erased_deserializer);
+        let mut link = InboundConnectorLink::new(url, deser_kind);
         link.config = self.config;
 
         // Wire through the topic resolver

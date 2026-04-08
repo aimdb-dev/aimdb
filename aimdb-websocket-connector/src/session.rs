@@ -379,7 +379,7 @@ async fn handle_write(
     };
 
     // Dispatch through the inbound router
-    if let Err(_e) = ctx.router.route(&topic, &bytes).await {
+    if let Err(_e) = ctx.router.route(&topic, &bytes, None).await {
         #[cfg(feature = "tracing")]
         tracing::warn!("{}: write routing failed for '{}': {}", id, topic, _e);
 

@@ -358,7 +358,7 @@ impl WsClientConnectorImpl {
                                 continue;
                             }
                         };
-                        if let Err(_e) = router.route(&topic, &bytes).await {
+                        if let Err(_e) = router.route(&topic, &bytes, None).await {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(
                                 "WS client: route failed for topic '{}': {:?}",

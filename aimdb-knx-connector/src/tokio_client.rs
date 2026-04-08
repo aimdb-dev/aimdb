@@ -688,7 +688,7 @@ async fn connect_and_listen(
                             tracing::debug!("KNX telegram: {} ({} bytes)", resource_id, data.len());
 
                             // Dispatch via router
-                            if let Err(_e) = router.route(&resource_id, &data).await {
+                            if let Err(_e) = router.route(&resource_id, &data, None).await {
                                 #[cfg(feature = "tracing")]
                                 tracing::warn!("Router dispatch failed for {}: {:?}", resource_id, _e);
                             }

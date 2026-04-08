@@ -489,7 +489,7 @@ fn spawn_event_loop(mut event_loop: EventLoop, _broker_key: String, router: Arc<
                         );
 
                         // Route to appropriate producer(s)
-                        if let Err(_e) = router.route(&topic, &payload).await {
+                        if let Err(_e) = router.route(&topic, &payload, None).await {
                             #[cfg(feature = "tracing")]
                             tracing::error!("Failed to route message on topic '{}': {}", topic, _e);
                         }

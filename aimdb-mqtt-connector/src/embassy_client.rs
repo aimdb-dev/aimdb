@@ -493,7 +493,7 @@ impl MqttConnectorImpl {
                         );
 
                         // Route the message through the router to the appropriate producer
-                        if let Err(_e) = router_for_task.route(&topic, &payload).await {
+                        if let Err(_e) = router_for_task.route(&topic, &payload, None).await {
                             #[cfg(feature = "defmt")]
                             defmt::warn!("Failed to route MQTT message from '{}'", topic.as_str());
                         }
