@@ -1213,6 +1213,14 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         &self.runtime
     }
 
+    /// Returns the runtime as a type-erased `Arc<dyn Any + Send + Sync>`
+    ///
+    /// Used by connectors to provide `RuntimeContext` to context-aware
+    /// deserializers during inbound message routing.
+    pub fn runtime_any(&self) -> Arc<dyn core::any::Any + Send + Sync> {
+        self.runtime.clone()
+    }
+
     /// Lists all registered records (std only)
     ///
     /// Returns metadata for all registered records, useful for remote access introspection.

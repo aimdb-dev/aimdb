@@ -133,15 +133,20 @@ where
             );
 
             // Build the actual connector
-            let connector =
-                KnxConnectorImpl::build_internal(self.gateway_url.as_str(), router, db.runtime())
-                    .await
-                    .map_err(|_e| {
-                        #[cfg(feature = "defmt")]
-                        defmt::error!("Failed to build KNX connector");
+            let runtime_ctx = db.runtime_any();
+            let connector = KnxConnectorImpl::build_internal(
+                self.gateway_url.as_str(),
+                router,
+                db.runtime(),
+                Some(runtime_ctx),
+            )
+            .await
+            .map_err(|_e| {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Failed to build KNX connector");
 
-                        aimdb_core::DbError::RuntimeError { _message: () }
-                    })?;
+                aimdb_core::DbError::RuntimeError { _message: () }
+            })?;
 
             // Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("knx");
@@ -258,6 +263,7 @@ impl KnxConnectorImpl {
         gateway_url: &str,
         router: Router,
         runtime: &R,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<Self, &'static str>
     where
         R: aimdb_executor::Spawn + aimdb_embassy_adapter::EmbassyNetwork + 'static,
@@ -298,6 +304,7 @@ impl KnxConnectorImpl {
                     port,
                     router_for_task,
                     command_channel,
+                    runtime_ctx,
                 )
                 .await;
             }
@@ -320,6 +327,7 @@ impl KnxConnectorImpl {
         gateway_port: u16,
         router: Arc<Router>,
         command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) {
         loop {
             #[cfg(feature = "defmt")]
@@ -335,6 +343,7 @@ impl KnxConnectorImpl {
                 gateway_port,
                 &router,
                 command_channel,
+                runtime_ctx.as_ref(),
             )
             .await
             {
@@ -363,6 +372,7 @@ impl KnxConnectorImpl {
         gateway_port: u16,
         router: &Router,
         command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        runtime_ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<(), &'static str> {
         // Create UDP socket with static buffers
         let mut rx_meta = [PacketMetadata::EMPTY; 4];
@@ -555,7 +565,9 @@ impl KnxConnectorImpl {
                                     data.len()
                                 );
 
-                                if let Err(_e) = router.route(&resource_id, &data, None).await {
+                                if let Err(_e) =
+                                    router.route(&resource_id, &data, runtime_ctx).await
+                                {
                                     #[cfg(feature = "defmt")]
                                     defmt::warn!(
                                         "Failed to route telegram to {}",

@@ -303,11 +303,13 @@ where
             defmt::info!("MQTT router has {} topics", router.resource_ids().len());
 
             // Build the actual connector
+            let runtime_ctx = db.runtime_any();
             let connector = MqttConnectorImpl::build_internal(
                 &self.broker_url,
                 &self.client_id,
                 router,
                 db.runtime(),
+                Some(runtime_ctx),
             )
             .await
             .map_err(|_e| {
@@ -363,11 +365,13 @@ impl MqttConnectorImpl {
     /// * `client_id` - MQTT client identifier
     /// * `router` - Pre-configured router with all routes
     /// * `runtime` - Embassy runtime adapter for spawning and network access
+    /// * `runtime_ctx` - Optional type-erased runtime for context-aware deserializers
     async fn build_internal<R>(
         broker_url: &str,
         client_id: &str,
         router: Router,
         runtime: &R,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<Self, &'static str>
     where
         R: aimdb_executor::Spawn + aimdb_embassy_adapter::EmbassyNetwork + 'static,
@@ -493,7 +497,10 @@ impl MqttConnectorImpl {
                         );
 
                         // Route the message through the router to the appropriate producer
-                        if let Err(_e) = router_for_task.route(&topic, &payload, None).await {
+                        if let Err(_e) = router_for_task
+                            .route(&topic, &payload, runtime_ctx.as_ref())
+                            .await
+                        {
                             #[cfg(feature = "defmt")]
                             defmt::warn!("Failed to route MQTT message from '{}'", topic.as_str());
                         }

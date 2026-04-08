@@ -112,20 +112,22 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
             );
 
             // Build the actual connector
-            let connector = KnxConnectorImpl::build_internal(&self.gateway_url, router)
-                .await
-                .map_err(|e| {
-                    #[cfg(feature = "std")]
-                    {
-                        aimdb_core::DbError::RuntimeError {
-                            message: format!("Failed to build KNX connector: {}", e),
+            let runtime_ctx = db.runtime_any();
+            let connector =
+                KnxConnectorImpl::build_internal(&self.gateway_url, router, Some(runtime_ctx))
+                    .await
+                    .map_err(|e| {
+                        #[cfg(feature = "std")]
+                        {
+                            aimdb_core::DbError::RuntimeError {
+                                message: format!("Failed to build KNX connector: {}", e),
+                            }
                         }
-                    }
-                    #[cfg(not(feature = "std"))]
-                    {
-                        aimdb_core::DbError::RuntimeError { _message: () }
-                    }
-                })?;
+                        #[cfg(not(feature = "std"))]
+                        {
+                            aimdb_core::DbError::RuntimeError { _message: () }
+                        }
+                    })?;
 
             // Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("knx");
@@ -166,7 +168,11 @@ impl KnxConnectorImpl {
     /// # Arguments
     /// * `gateway_url` - Gateway URL (knx://host:port)
     /// * `router` - Pre-configured router with all routes
-    async fn build_internal(gateway_url: &str, router: Router) -> Result<Self, String> {
+    async fn build_internal(
+        gateway_url: &str,
+        router: Router,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
+    ) -> Result<Self, String> {
         // Parse the gateway URL
         let mut url = gateway_url.to_string();
 
@@ -191,8 +197,12 @@ impl KnxConnectorImpl {
         let router_arc = Arc::new(router);
 
         // Spawn background connection task with reconnection
-        let command_tx =
-            spawn_connection_task(gateway_ip.clone(), gateway_port, router_arc.clone());
+        let command_tx = spawn_connection_task(
+            gateway_ip.clone(),
+            gateway_port,
+            router_arc.clone(),
+            runtime_ctx,
+        );
 
         Ok(Self {
             router: router_arc,
@@ -415,6 +425,7 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
 /// * `gateway_ip` - Gateway IP address
 /// * `gateway_port` - Gateway port (typically 3671)
 /// * `router` - Router for dispatching telegrams to producers
+/// * `runtime_ctx` - Optional type-erased runtime for context-aware deserializers
 ///
 /// # Returns
 /// * Command sender for publishing outbound telegrams
@@ -422,6 +433,7 @@ fn spawn_connection_task(
     gateway_ip: String,
     gateway_port: u16,
     router: Arc<Router>,
+    runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
 ) -> mpsc::Sender<KnxCommand> {
     let (command_tx, mut command_rx) = mpsc::channel(32); // Queue size: 32
 
@@ -434,8 +446,14 @@ fn spawn_connection_task(
         );
 
         loop {
-            match connect_and_listen(&gateway_ip, gateway_port, router.clone(), &mut command_rx)
-                .await
+            match connect_and_listen(
+                &gateway_ip,
+                gateway_port,
+                router.clone(),
+                &mut command_rx,
+                runtime_ctx.as_ref(),
+            )
+            .await
             {
                 Ok(_) => {
                     #[cfg(feature = "tracing")]
@@ -567,11 +585,13 @@ impl ChannelState {
 /// * `gateway_port` - Gateway port
 /// * `router` - Router for dispatching messages
 /// * `command_rx` - Command receiver for outbound publishing
+/// * `runtime_ctx` - Optional type-erased runtime for context-aware deserializers
 async fn connect_and_listen(
     gateway_ip: &str,
     gateway_port: u16,
     router: Arc<Router>,
     command_rx: &mut mpsc::Receiver<KnxCommand>,
+    runtime_ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
 ) -> Result<(), String> {
     // 1. Create UDP socket
     let socket = UdpSocket::bind("0.0.0.0:0")
@@ -688,7 +708,7 @@ async fn connect_and_listen(
                             tracing::debug!("KNX telegram: {} ({} bytes)", resource_id, data.len());
 
                             // Dispatch via router
-                            if let Err(_e) = router.route(&resource_id, &data, None).await {
+                            if let Err(_e) = router.route(&resource_id, &data, runtime_ctx).await {
                                 #[cfg(feature = "tracing")]
                                 tracing::warn!("Router dispatch failed for {}: {:?}", resource_id, _e);
                             }
@@ -1103,14 +1123,16 @@ mod tests {
     #[tokio::test]
     async fn test_connector_creation_with_router() {
         let router = RouterBuilder::new().build();
-        let connector = KnxConnectorImpl::build_internal("knx://192.168.1.19:3671", router).await;
+        let connector =
+            KnxConnectorImpl::build_internal("knx://192.168.1.19:3671", router, None).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_connector_with_port() {
         let router = RouterBuilder::new().build();
-        let connector = KnxConnectorImpl::build_internal("knx://gateway.local:3672", router).await;
+        let connector =
+            KnxConnectorImpl::build_internal("knx://gateway.local:3672", router, None).await;
         assert!(connector.is_ok());
     }
 
