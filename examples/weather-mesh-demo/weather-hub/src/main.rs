@@ -35,7 +35,7 @@ async fn main() -> aimdb_core::DbResult<()> {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
                 .tap(move |ctx, consumer| log_tap(ctx, consumer, key.as_str()))
                 .link_from(&topic)
-                .with_deserializer(Temperature::from_bytes)
+                .with_deserializer(|_ctx, data: &[u8]| Temperature::from_bytes(data))
                 .finish();
         });
     }
@@ -48,7 +48,7 @@ async fn main() -> aimdb_core::DbResult<()> {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
                 .tap(move |ctx, consumer| log_tap(ctx, consumer, key.as_str()))
                 .link_from(&topic)
-                .with_deserializer(Humidity::from_bytes)
+                .with_deserializer(|_ctx, data: &[u8]| Humidity::from_bytes(data))
                 .finish();
         });
     }

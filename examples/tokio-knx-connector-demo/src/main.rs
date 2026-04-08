@@ -104,7 +104,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor)
             .link_from(TemperatureKey::LivingRoom.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| {
+            .with_deserializer(|_ctx, data: &[u8]| {
                 let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
                 Ok(TemperatureReading::new("Living Room", celsius))
             })
@@ -115,7 +115,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor)
             .link_from(TemperatureKey::Bedroom.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| {
+            .with_deserializer(|_ctx, data: &[u8]| {
                 let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
                 Ok(TemperatureReading::new("Bedroom", celsius))
             })
@@ -126,7 +126,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(temperature_monitor)
             .link_from(TemperatureKey::Kitchen.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| {
+            .with_deserializer(|_ctx, data: &[u8]| {
                 let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
                 Ok(TemperatureReading::new("Kitchen", celsius))
             })
@@ -138,7 +138,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(light_monitor)
             .link_from(LightKey::Main.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| {
+            .with_deserializer(|_ctx, data: &[u8]| {
                 let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
                 Ok(LightState::new("1/0/7", is_on))
             })
@@ -149,7 +149,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(light_monitor)
             .link_from(LightKey::Hallway.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| {
+            .with_deserializer(|_ctx, data: &[u8]| {
                 let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
                 Ok(LightState::new("1/0/8", is_on))
             })

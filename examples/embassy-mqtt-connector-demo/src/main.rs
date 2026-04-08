@@ -365,7 +365,7 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
             .link_from(CommandKey::TempIndoor.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
@@ -373,7 +373,7 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
             .link_from(CommandKey::TempOutdoor.link_address().unwrap())
-            .with_deserializer(|data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
