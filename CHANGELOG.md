@@ -27,7 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Context-Aware Deserializers (Design 026)**: Inbound connector deserializers can now receive a `RuntimeContext<R>` for platform-independent timestamps and logging
+  - New `.with_deserializer(|ctx, bytes| ...)` API on `InboundConnectorBuilder` provides `RuntimeContext<R>` to deserialization closures
+  - New `.with_deserializer_raw(|bytes| ...)` for plain bytes-only deserialization when context is unnecessary
+  - `DeserializerKind` enum enforces mutual exclusivity between raw and context-aware deserializers
+  - `Router::route()` propagates optional runtime context to context-aware routes
+- Design document: 026 (Context-Aware Deserializers)
+
+### Changed
+
+- **aimdb-core**: Breaking API changes to `InboundConnectorLink`, `Router`, and `RouterBuilder` to support `DeserializerKind` (see [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md))
+- **aimdb-mqtt-connector**: Updated router dispatch for new `route()` signature
+- **aimdb-knx-connector**: Updated router dispatch for new `route()` signature
+- **aimdb-websocket-connector**: Updated router dispatch for new `route()` signature
+- All connector examples updated to use new `.with_deserializer(|_ctx, bytes| ...)` signature
 
 ## [1.0.0] - 2026-03-16
 

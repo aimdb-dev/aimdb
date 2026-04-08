@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- Updated `Router::route()` calls to pass `None` context, compatible with aimdb-core context-aware deserializer changes (Design 026)
 
 ## [0.5.1] - 2026-03-16
 
