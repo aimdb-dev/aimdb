@@ -973,4 +973,263 @@ mod tests {
         assert_eq!(url.host, "factory");
         assert_eq!(url.path, Some("/floor1/sensors/temp".to_string()));
     }
+
+    // ====================================================================
+    // Test infrastructure for InboundConnectorBuilder deserializer tests
+    // ====================================================================
+
+    /// Minimal mock runtime implementing Spawn (and Runtime for context tests)
+    struct MockRuntime;
+
+    impl aimdb_executor::RuntimeAdapter for MockRuntime {
+        fn runtime_name() -> &'static str {
+            "mock"
+        }
+    }
+
+    impl aimdb_executor::Spawn for MockRuntime {
+        type SpawnToken = ();
+        fn spawn<F>(&self, _future: F) -> aimdb_executor::ExecutorResult<Self::SpawnToken>
+        where
+            F: Future<Output = ()> + Send + 'static,
+        {
+            Ok(())
+        }
+    }
+
+    impl aimdb_executor::TimeOps for MockRuntime {
+        type Instant = u64;
+        type Duration = u64;
+        fn now(&self) -> u64 {
+            0
+        }
+        fn duration_since(&self, _later: u64, _earlier: u64) -> Option<u64> {
+            Some(0)
+        }
+        fn millis(&self, ms: u64) -> u64 {
+            ms
+        }
+        fn secs(&self, secs: u64) -> u64 {
+            secs * 1000
+        }
+        fn micros(&self, micros: u64) -> u64 {
+            micros
+        }
+        fn sleep(&self, _duration: u64) -> impl Future<Output = ()> + Send {
+            core::future::ready(())
+        }
+    }
+
+    impl aimdb_executor::Logger for MockRuntime {
+        fn info(&self, _message: &str) {}
+        fn debug(&self, _message: &str) {}
+        fn warn(&self, _message: &str) {}
+        fn error(&self, _message: &str) {}
+    }
+
+    /// Minimal mock buffer so `has_buffer()` returns true
+    struct MockBuffer;
+
+    impl crate::buffer::DynBuffer<TestRecord> for MockBuffer {
+        fn push(&self, _value: TestRecord) {}
+        fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
+            unimplemented!("not needed for deserializer tests")
+        }
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+    }
+
+    /// Mock connector builder that reports a given scheme
+    struct MockConnectorBuilder {
+        scheme: String,
+    }
+
+    impl crate::connector::ConnectorBuilder<MockRuntime> for MockConnectorBuilder {
+        fn build<'a>(
+            &'a self,
+            _db: &'a crate::AimDb<MockRuntime>,
+        ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn crate::transport::Connector>>> + Send + 'a>>
+        {
+            unimplemented!("not needed for deserializer tests")
+        }
+        fn scheme(&self) -> &str {
+            &self.scheme
+        }
+    }
+
+    /// Helper: build a RecordRegistrar wired to a TypedRecord with a buffer and a
+    /// mock connector builder for the given scheme.
+    fn make_registrar<'a>(
+        rec: &'a mut crate::typed_record::TypedRecord<TestRecord, MockRuntime>,
+        builders: &'a [Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>],
+        extensions: &'a crate::extensions::Extensions,
+    ) -> RecordRegistrar<'a, TestRecord, MockRuntime> {
+        RecordRegistrar {
+            rec,
+            connector_builders: builders,
+            record_key: "test::Record".to_string(),
+            extensions,
+        }
+    }
+
+    // ====================================================================
+    // Deserializer-kind selection tests
+    // ====================================================================
+
+    #[test]
+    fn inbound_finish_stores_raw_deserializer_kind() {
+        use crate::connector::DeserializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.link_from("mqtt://broker/topic")
+            .with_deserializer_raw(|bytes: &[u8]| {
+                Ok(TestRecord {
+                    value: bytes.len() as i32,
+                })
+            })
+            .finish();
+
+        assert_eq!(rec.inbound_connectors().len(), 1);
+        let link = &rec.inbound_connectors()[0];
+
+        // Variant must be Raw
+        assert!(
+            matches!(link.deserializer, DeserializerKind::Raw(_)),
+            "expected DeserializerKind::Raw, got Context"
+        );
+
+        // Verify the type-erased deserializer round-trips correctly
+        if let DeserializerKind::Raw(ref f) = link.deserializer {
+            let result = f(&[1, 2, 3]).expect("deserializer should succeed");
+            let record = result
+                .downcast::<TestRecord>()
+                .expect("should downcast to TestRecord");
+            assert_eq!(record.value, 3);
+        }
+    }
+
+    #[test]
+    fn inbound_finish_stores_context_deserializer_kind() {
+        use crate::connector::DeserializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.link_from("mqtt://broker/topic")
+            .with_deserializer(|_ctx: crate::RuntimeContext<MockRuntime>, bytes: &[u8]| {
+                Ok(TestRecord {
+                    value: bytes.len() as i32 * 10,
+                })
+            })
+            .finish();
+
+        assert_eq!(rec.inbound_connectors().len(), 1);
+
+        assert!(
+            matches!(
+                rec.inbound_connectors()[0].deserializer,
+                DeserializerKind::Context(_)
+            ),
+            "expected DeserializerKind::Context, got Raw"
+        );
+    }
+
+    #[test]
+    fn inbound_raw_overrides_previous_context_deserializer() {
+        use crate::connector::DeserializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        // Set context first, then override with raw — raw should win
+        reg.link_from("mqtt://broker/topic")
+            .with_deserializer(|_ctx: crate::RuntimeContext<MockRuntime>, _bytes: &[u8]| {
+                Ok(TestRecord { value: 0 })
+            })
+            .with_deserializer_raw(|bytes: &[u8]| {
+                Ok(TestRecord {
+                    value: bytes.len() as i32,
+                })
+            })
+            .finish();
+
+        assert!(matches!(
+            rec.inbound_connectors()[0].deserializer,
+            DeserializerKind::Raw(_)
+        ));
+    }
+
+    #[test]
+    fn inbound_context_overrides_previous_raw_deserializer() {
+        use crate::connector::DeserializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        // Set raw first, then override with context — context should win
+        reg.link_from("mqtt://broker/topic")
+            .with_deserializer_raw(|_bytes: &[u8]| Ok(TestRecord { value: 0 }))
+            .with_deserializer(|_ctx: crate::RuntimeContext<MockRuntime>, _bytes: &[u8]| {
+                Ok(TestRecord { value: 99 })
+            })
+            .finish();
+
+        assert!(matches!(
+            rec.inbound_connectors()[0].deserializer,
+            DeserializerKind::Context(_)
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "Inbound connector requires a deserializer")]
+    fn inbound_finish_panics_without_deserializer() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        // No deserializer set — should panic
+        reg.link_from("mqtt://broker/topic").finish();
+    }
 }
