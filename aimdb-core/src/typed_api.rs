@@ -944,6 +944,9 @@ pub trait RecordT<R: aimdb_executor::Spawn + 'static>:
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "std"))]
+    use alloc::vec;
+
     #[allow(dead_code)]
     #[derive(Clone, Debug)]
     struct TestRecord {
