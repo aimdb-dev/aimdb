@@ -1,7 +1,7 @@
 # Design: Context-Aware Deserializers
 
-**Status:** 📋 Planned  
-**Author:** GitHub Copilot  
+**Status:** ✅ Implemented  
+**Author:** AimDB Maintainers  
 **Date:** 2026-04-08  
 **Issue:** [#56 — Context-aware deserializers](https://github.com/aimdb-dev/aimdb/issues/56)  
 **Target:** Both `std` and `no_std` (with `alloc`) environments
