@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Updated `Router::route()` calls to pass `None` context in both client connector and session handler, compatible with aimdb-core context-aware deserializer changes (Design 026)
+- Updated `Router::route()` calls to pass runtime context via `db.runtime_any()` in both client connector and session handler, enabling context-aware deserializers (Design 026)
 
 ## [0.1.0] - 2026-03-16
 

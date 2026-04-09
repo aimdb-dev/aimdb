@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Updated `Router::route()` calls to pass `None` context in both Tokio and Embassy clients, compatible with aimdb-core context-aware deserializer changes (Design 026)
+- Updated `Router::route()` calls to pass runtime context via `db.runtime_any()` in both Tokio and Embassy clients, enabling context-aware deserializers (Design 026)
 
 ## [0.3.1] - 2026-03-16
 
