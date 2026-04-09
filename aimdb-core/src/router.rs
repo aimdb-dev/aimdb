@@ -103,11 +103,13 @@ impl Router {
         ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<(), String> {
         let mut routed = false;
+        let mut matched = false;
 
         // Linear search through all routes
         // Note: Multiple routes may match the same resource_id (different types)
         for route in &self.routes {
             if route.resource_id.as_ref() == resource_id {
+                matched = true;
                 // Deserialize the payload based on deserializer kind
                 let result = match &route.deserializer {
                     DeserializerKind::Raw(deser) => (deser)(payload),
@@ -178,11 +180,19 @@ impl Router {
         }
 
         if !routed {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("No route found for resource: '{}'", resource_id);
+            if matched {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("Route matched for '{}' but message was not produced (missing context or errors)", resource_id);
 
-            #[cfg(feature = "defmt")]
-            defmt::debug!("No route found for resource: '{}'", resource_id);
+                #[cfg(feature = "defmt")]
+                defmt::debug!("Route matched for '{}' but not produced", resource_id);
+            } else {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("No route found for resource: '{}'", resource_id);
+
+                #[cfg(feature = "defmt")]
+                defmt::debug!("No route found for resource: '{}'", resource_id);
+            }
         }
 
         Ok(())
