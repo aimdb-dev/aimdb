@@ -32,7 +32,7 @@
 //!     .configure::<Temperature>(TempKey::Vienna, |reg| {
 //!         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
 //!             .link_to("ws://sensors/temperature/vienna")
-//!             .with_serializer(|t| serde_json::to_vec(t).map_err(Into::into))
+//!             .with_serializer_raw(|t| serde_json::to_vec(t).map_err(Into::into))
 //!             .finish();
 //!     })
 //!     .build().await?;
@@ -51,7 +51,7 @@
 //!     .configure::<Temperature>("sensors/temp", |reg| {
 //!         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
 //!             .link_to("ws-client://sensors/temp")
-//!             .with_serializer(|t| serde_json::to_vec(t).map_err(Into::into))
+//!             .with_serializer_raw(|t| serde_json::to_vec(t).map_err(Into::into))
 //!             .finish()
 //!             .link_from("ws-client://config/threshold")
 //!             .with_deserializer(|data| serde_json::from_slice(data))

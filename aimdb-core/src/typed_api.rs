@@ -485,6 +485,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             serializer: None,
+            context_serializer: None,
             topic_provider: None,
         }
     }
@@ -509,6 +510,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             serializer: None,
+            context_serializer: None,
             topic_provider: None,
         }
     }
@@ -553,6 +555,7 @@ pub struct OutboundConnectorBuilder<
     url: String,
     config: Vec<(String, String)>,
     serializer: Option<TypedSerializerFn<T>>,
+    context_serializer: Option<crate::connector::ContextSerializerFn>,
     topic_provider: Option<crate::connector::TopicProviderFn>,
 }
 
@@ -567,12 +570,53 @@ where
         self
     }
 
-    /// Sets a serialization callback
-    pub fn with_serializer<F>(mut self, f: F) -> Self
+    /// Sets a raw serialization callback (value only, no context)
+    ///
+    /// Prefer `.with_serializer(|ctx, value| ...)` for access to
+    /// `RuntimeContext` (timestamps, logging). Use this raw variant
+    /// only when context is unnecessary.
+    pub fn with_serializer_raw<F>(mut self, f: F) -> Self
     where
         F: Fn(&T) -> Result<Vec<u8>, crate::connector::SerializeError> + Send + Sync + 'static,
     {
         self.serializer = Some(Arc::new(f));
+        self.context_serializer = None; // mutually exclusive
+        self
+    }
+
+    /// Sets a context-aware serialization callback
+    ///
+    /// The closure receives a `RuntimeContext<R>` for platform-independent
+    /// timestamps and logging, plus the typed value being serialized.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// .link_to("mqtt://broker/sensors/temp")
+    ///     .with_serializer(|ctx, value: &Temperature| {
+    ///         ctx.log().debug("Serializing temperature for MQTT");
+    ///         value.to_bytes()
+    ///             .map_err(|_| SerializeError::InvalidData)
+    ///     })
+    /// ```
+    pub fn with_serializer<F>(mut self, f: F) -> Self
+    where
+        F: Fn(crate::RuntimeContext<R>, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
+            + Send
+            + Sync
+            + 'static,
+        R: aimdb_executor::Runtime + Send + Sync,
+    {
+        let f = Arc::new(f);
+        self.context_serializer = Some(Arc::new(move |ctx_any, value_any| {
+            let ctx = crate::RuntimeContext::<R>::extract_from_any(ctx_any);
+            if let Some(value) = value_any.downcast_ref::<T>() {
+                (f)(ctx, value)
+            } else {
+                Err(crate::connector::SerializeError::TypeMismatch)
+            }
+        }));
+        self.serializer = None; // mutually exclusive
         self
     }
 
@@ -648,17 +692,28 @@ where
         let mut link = ConnectorLink::new(url.clone());
         link.config = self.config.clone();
 
-        if let Some(typed_callback) = self.serializer.clone() {
+        // Resolve serializer variant (mutually exclusive)
+        let ser_kind = if let Some(ctx_ser) = self.context_serializer {
+            crate::connector::SerializerKind::Context(ctx_ser)
+        } else if let Some(raw_ser) = self.serializer.clone() {
+            // Type-erase the raw serializer
             let erased: crate::connector::SerializerFn =
                 Arc::new(move |any: &dyn core::any::Any| {
                     if let Some(value) = any.downcast_ref::<T>() {
-                        (typed_callback)(value)
+                        (raw_ser)(value)
                     } else {
                         Err(crate::connector::SerializeError::TypeMismatch)
                     }
                 });
-            link.serializer = Some(erased);
-        }
+            crate::connector::SerializerKind::Raw(erased)
+        } else {
+            panic!(
+                "Outbound connector requires a serializer. Call .with_serializer() or .with_serializer_raw() for {}",
+                self.url
+            );
+        };
+
+        link.serializer = Some(ser_kind);
 
         // Wire through the topic provider
         link.topic_provider = self.topic_provider;
@@ -674,14 +729,6 @@ where
             panic!(
                 "No connector registered for scheme '{}'. Register via .with_connector() for {}",
                 scheme, url_string
-            );
-        }
-
-        // Validation: Serializer must be provided
-        if link.serializer.is_none() {
-            panic!(
-                "Outbound connector requires a serializer. Call .with_serializer() for {}",
-                url_string
             );
         }
 
@@ -1234,5 +1281,159 @@ mod tests {
 
         // No deserializer set — should panic
         reg.link_from("mqtt://broker/topic").finish();
+    }
+
+    // ====================================================================
+    // Serializer-kind selection tests
+    // ====================================================================
+
+    #[test]
+    fn outbound_finish_stores_raw_serializer_kind() {
+        use crate::connector::SerializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.link_to("mqtt://broker/topic")
+            .with_serializer_raw(|record: &TestRecord| Ok(record.value.to_le_bytes().to_vec()))
+            .finish();
+
+        assert_eq!(rec.outbound_connectors().len(), 1);
+        let link = &rec.outbound_connectors()[0];
+
+        // Variant must be Raw
+        let ser = link.serializer.as_ref().expect("serializer should be set");
+        assert!(
+            matches!(ser, SerializerKind::Raw(_)),
+            "expected SerializerKind::Raw, got Context"
+        );
+
+        // Verify the type-erased serializer round-trips correctly
+        if let SerializerKind::Raw(ref f) = ser {
+            let val = TestRecord { value: 42 };
+            let result = f(&val as &dyn core::any::Any).expect("serializer should succeed");
+            assert_eq!(result, 42i32.to_le_bytes().to_vec());
+        }
+    }
+
+    #[test]
+    fn outbound_finish_stores_context_serializer_kind() {
+        use crate::connector::SerializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.link_to("mqtt://broker/topic")
+            .with_serializer(
+                |_ctx: crate::RuntimeContext<MockRuntime>, record: &TestRecord| {
+                    Ok(record.value.to_le_bytes().to_vec())
+                },
+            )
+            .finish();
+
+        assert_eq!(rec.outbound_connectors().len(), 1);
+        let ser = rec.outbound_connectors()[0]
+            .serializer
+            .as_ref()
+            .expect("serializer should be set");
+
+        assert!(
+            matches!(ser, SerializerKind::Context(_)),
+            "expected SerializerKind::Context, got Raw"
+        );
+    }
+
+    #[test]
+    fn outbound_raw_overrides_previous_context_serializer() {
+        use crate::connector::SerializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        // Set context first, then override with raw — raw should win
+        reg.link_to("mqtt://broker/topic")
+            .with_serializer(
+                |_ctx: crate::RuntimeContext<MockRuntime>, _record: &TestRecord| Ok(vec![0]),
+            )
+            .with_serializer_raw(|record: &TestRecord| Ok(record.value.to_le_bytes().to_vec()))
+            .finish();
+
+        let ser = rec.outbound_connectors()[0]
+            .serializer
+            .as_ref()
+            .expect("serializer should be set");
+        assert!(matches!(ser, SerializerKind::Raw(_)));
+    }
+
+    #[test]
+    fn outbound_context_overrides_previous_raw_serializer() {
+        use crate::connector::SerializerKind;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        // Set raw first, then override with context — context should win
+        reg.link_to("mqtt://broker/topic")
+            .with_serializer_raw(|_record: &TestRecord| Ok(vec![0]))
+            .with_serializer(
+                |_ctx: crate::RuntimeContext<MockRuntime>, _record: &TestRecord| Ok(vec![99]),
+            )
+            .finish();
+
+        let ser = rec.outbound_connectors()[0]
+            .serializer
+            .as_ref()
+            .expect("serializer should be set");
+        assert!(matches!(ser, SerializerKind::Context(_)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Outbound connector requires a serializer")]
+    fn outbound_finish_panics_without_serializer() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        // No serializer set — should panic
+        reg.link_to("mqtt://broker/topic").finish();
     }
 }

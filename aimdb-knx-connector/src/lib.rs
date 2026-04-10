@@ -58,7 +58,7 @@
 //!            .finish()
 //!            // Outbound: Send commands to KNX
 //!            .link_to("knx://1/0/8")
-//!            .with_serializer(|state: &LightState| {
+//!            .with_serializer_raw(|state: &LightState| {
 //!                Ok(vec![if state.is_on { 1 } else { 0 }])
 //!            })
 //!            .finish();
@@ -88,7 +88,7 @@
 //!            .finish()
 //!            // Outbound: Send to KNX
 //!            .link_to("knx://1/0/11")
-//!            .with_serializer(|data| data.to_knx_bytes())
+//!            .with_serializer_raw(|data| data.to_knx_bytes())
 //!            .finish();
 //!     })
 //!     .build().await?;

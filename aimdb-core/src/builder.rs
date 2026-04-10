@@ -55,14 +55,14 @@ use crate::{DbError, DbResult};
 /// Each tuple contains:
 /// - `String` - Default topic/destination from the URL path
 /// - `Box<dyn ConsumerTrait>` - Consumer for subscribing to record values
-/// - `SerializerFn` - User-provided serializer for the record type
+/// - `SerializerKind` - User-provided serializer for the record type (raw or context-aware)
 /// - `Vec<(String, String)>` - Configuration options from the URL query
 /// - `Option<TopicProviderFn>` - Optional dynamic topic provider
 #[cfg(feature = "alloc")]
 pub type OutboundRoute = (
     String,
     Box<dyn crate::connector::ConsumerTrait>,
-    crate::connector::SerializerFn,
+    crate::connector::SerializerKind,
     Vec<(String, String)>,
     Option<crate::connector::TopicProviderFn>,
 );

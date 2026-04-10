@@ -62,7 +62,7 @@ These workarounds violate AimDB's principle of clean, declarative data pipelines
 - Backward compatibility for `.with_deserializer()` call sites (this is an intentional breaking change; existing callers migrate to `|ctx, data|` or rename to `.with_deserializer_raw()`)
 - Providing mutable database access from within deserializers
 - Async deserializers (deserialization should remain synchronous)
-- Providing context to serializers (outbound direction — separate concern)
+- ~~Providing context to serializers (outbound direction — separate concern)~~ — **Implemented**: Context-aware serializers were added in the same PR, following the identical pattern (`ContextSerializerFn`, `SerializerKind`, `.with_serializer(|ctx, value| ...)` / `.with_serializer_raw(|value| ...)`)
 
 ## Current Architecture
 

@@ -996,12 +996,14 @@ impl KnxConnectorImpl {
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
+        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
         for (default_group_addr_str, consumer, serializer, _config, topic_provider) in
             outbound_routes
         {
             let command_channel = self.command_channel;
             let default_group_addr_clone = default_group_addr_str.clone();
+            let runtime_ctx = runtime_ctx.clone();
 
             runtime.spawn(Box::pin(SendFutureWrapper(async move {
                 // Parse default group address using knx-pico's type-safe parser
@@ -1067,15 +1069,30 @@ impl KnxConnectorImpl {
                     };
 
                     // Serialize the type-erased value
-                    let bytes = match serializer(&*value_any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            #[cfg(feature = "defmt")]
-                            defmt::error!(
-                                "Failed to serialize for group address '{}'",
-                                group_addr_str.as_str()
-                            );
-                            continue;
+                    let bytes = match &serializer {
+                        aimdb_core::connector::SerializerKind::Raw(ser) => match ser(&*value_any) {
+                            Ok(b) => b,
+                            Err(_e) => {
+                                #[cfg(feature = "defmt")]
+                                defmt::error!(
+                                    "Failed to serialize for group address '{}'",
+                                    group_addr_str.as_str()
+                                );
+                                continue;
+                            }
+                        },
+                        aimdb_core::connector::SerializerKind::Context(ser) => {
+                            match ser(runtime_ctx.clone(), &*value_any) {
+                                Ok(b) => b,
+                                Err(_e) => {
+                                    #[cfg(feature = "defmt")]
+                                    defmt::error!(
+                                        "Failed to serialize for group address '{}'",
+                                        group_addr_str.as_str()
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     };
 

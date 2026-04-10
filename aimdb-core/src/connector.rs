@@ -105,6 +105,34 @@ impl std::error::Error for SerializeError {}
 pub type SerializerFn =
     Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, SerializeError> + Send + Sync>;
 
+/// Type alias for context-aware type-erased serializer callbacks
+///
+/// Like `SerializerFn`, but receives a type-erased runtime context
+/// for platform-independent timestamps and logging during serialization.
+///
+/// The first argument is the type-erased runtime (as `Arc<dyn Any + Send + Sync>`),
+/// which is downcast to the concrete runtime type via `RuntimeContext::extract_from_any`.
+pub type ContextSerializerFn = Arc<
+    dyn Fn(
+            Arc<dyn core::any::Any + Send + Sync>,
+            &dyn core::any::Any,
+        ) -> Result<Vec<u8>, SerializeError>
+        + Send
+        + Sync,
+>;
+
+/// Which serializer variant is registered for an outbound link
+///
+/// Enforces mutual exclusivity between raw value-only serializers
+/// and context-aware serializers.
+#[derive(Clone)]
+pub enum SerializerKind {
+    /// Plain value-only serializer (from `.with_serializer_raw()`)
+    Raw(SerializerFn),
+    /// Context-aware serializer (from `.with_serializer()`)
+    Context(ContextSerializerFn),
+}
+
 // ============================================================================
 // TopicProvider - Dynamic topic/destination routing
 // ============================================================================
@@ -434,13 +462,14 @@ pub struct ConnectorLink {
 
     /// Serialization callback that converts record values to bytes for publishing
     ///
-    /// This is a type-erased function that takes `&dyn Any` and returns `Result<Vec<u8>, String>`.
-    /// The connector implementation will downcast to the concrete type and call the serializer.
+    /// Either a plain value-only serializer (`Raw`) or a context-aware
+    /// serializer (`Context`) that receives `RuntimeContext` for timestamps
+    /// and logging.
     ///
     /// If `None`, the connector must provide a default serialization mechanism or fail.
     ///
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
-    pub serializer: Option<SerializerFn>,
+    pub serializer: Option<SerializerKind>,
 
     /// Consumer factory callback (alloc feature)
     ///
@@ -471,7 +500,10 @@ impl Debug for ConnectorLink {
             .field("config", &self.config)
             .field(
                 "serializer",
-                &self.serializer.as_ref().map(|_| "<function>"),
+                &self.serializer.as_ref().map(|s| match s {
+                    SerializerKind::Raw(_) => "<raw>",
+                    SerializerKind::Context(_) => "<context>",
+                }),
             )
             .field(
                 "consumer_factory",

@@ -334,7 +334,7 @@ async fn main(spawner: Spawner) {
             .source(indoor_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempIndoor.link_address().unwrap())
-            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -343,7 +343,7 @@ async fn main(spawner: Spawner) {
             .source(outdoor_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempOutdoor.link_address().unwrap())
-            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -352,7 +352,7 @@ async fn main(spawner: Spawner) {
             .source(server_room_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempServerRoom.link_address().unwrap())
-            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -365,7 +365,7 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
             .link_from(CommandKey::TempIndoor.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer_raw(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
@@ -373,7 +373,7 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .tap(command_consumer)
             .link_from(CommandKey::TempOutdoor.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer_raw(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 

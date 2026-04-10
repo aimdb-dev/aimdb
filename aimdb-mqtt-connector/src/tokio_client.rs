@@ -317,10 +317,12 @@ impl MqttConnectorImpl {
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
+        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
         for (default_topic, consumer, serializer, config, topic_provider) in routes {
             let client = self.client.clone();
             let default_topic_clone = default_topic.clone();
+            let runtime_ctx = runtime_ctx.clone();
 
             // Parse config options
             let mut qos = rumqttc::QoS::AtLeastOnce; // Default
@@ -376,12 +378,32 @@ impl MqttConnectorImpl {
                         .unwrap_or_else(|| default_topic_clone.clone());
 
                     // Serialize the type-erased value
-                    let bytes = match serializer(&*value_any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!("Failed to serialize for topic '{}': {:?}", topic, _e);
-                            continue;
+                    let bytes = match &serializer {
+                        aimdb_core::connector::SerializerKind::Raw(ser) => match ser(&*value_any) {
+                            Ok(b) => b,
+                            Err(_e) => {
+                                #[cfg(feature = "tracing")]
+                                tracing::error!(
+                                    "Failed to serialize for topic '{}': {:?}",
+                                    topic,
+                                    _e
+                                );
+                                continue;
+                            }
+                        },
+                        aimdb_core::connector::SerializerKind::Context(ser) => {
+                            match ser(runtime_ctx.clone(), &*value_any) {
+                                Ok(b) => b,
+                                Err(_e) => {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::error!(
+                                        "Failed to serialize for topic '{}': {:?}",
+                                        topic,
+                                        _e
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     };
 
