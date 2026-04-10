@@ -87,8 +87,8 @@ impl Router {
     /// * `ctx` - Optional type-erased runtime context for context-aware deserializers
     ///
     /// # Returns
-    /// * `Ok(())` - At least one route successfully processed the message
-    /// * `Err(_)` - All routes failed (or no routes found)
+    /// * `Ok(())` - Always returns Ok, even if no routes matched or processing failed.
+    ///   Failures are logged (via tracing/defmt) but do not propagate as errors.
     ///
     /// # Behavior
     /// - Checks all routes that match the resource_id (may be multiple)

@@ -28,14 +28,14 @@
 //!         reg.source(temperature_producer)
 //!            // Outbound: Publish to MQTT
 //!            .link_to("mqtt://sensors/temperature")
-//!            .with_serializer(|t| {
+//!            .with_serializer_raw(|t| {
 //!                serde_json::to_vec(t)
 //!                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
 //!            })
 //!            .finish()
 //!            // Inbound: Subscribe from MQTT
 //!            .link_from("mqtt://commands/temperature")
-//!            .with_deserializer(|data| Temperature::from_json(data))
+//!            .with_deserializer_raw(|data| Temperature::from_json(data))
 //!            .finish();
 //!     })
 //!     .build().await?;
@@ -59,11 +59,11 @@
 //!            .source(sensor_producer)
 //!            // Outbound: Publish to MQTT
 //!            .link_to("mqtt://sensors/data")
-//!            .with_serializer(|data| postcard::to_vec(data).map_err(|_| /* ... */))
+//!            .with_serializer_raw(|data| postcard::to_vec(data).map_err(|_| /* ... */))
 //!            .finish()
 //!            // Inbound: Subscribe from MQTT
 //!            .link_from("mqtt://commands/sensor")
-//!            .with_deserializer(|data| SensorCommand::from_bytes(data))
+//!            .with_deserializer_raw(|data| SensorCommand::from_bytes(data))
 //!            .finish();
 //!     })
 //!     .build().await?;

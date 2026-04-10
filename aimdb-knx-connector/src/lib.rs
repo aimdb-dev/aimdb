@@ -51,7 +51,7 @@
 //!         reg.buffer(BufferCfg::SingleLatest)
 //!            // Inbound: Monitor KNX bus
 //!            .link_from("knx://1/0/7")
-//!            .with_deserializer(|data: &[u8]| {
+//!            .with_deserializer_raw(|data: &[u8]| {
 //!                let is_on = data.get(0).map(|&b| b != 0).unwrap_or(false);
 //!                Ok(Box::new(LightState { is_on }))
 //!            })
@@ -84,7 +84,7 @@
 //!            .source(sensor_producer)
 //!            // Inbound: Monitor KNX bus
 //!            .link_from("knx://1/0/10")
-//!            .with_deserializer(|data| SensorData::from_knx(data))
+//!            .with_deserializer_raw(|data| SensorData::from_knx(data))
 //!            .finish()
 //!            // Outbound: Send to KNX
 //!            .link_to("knx://1/0/11")

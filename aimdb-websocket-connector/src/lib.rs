@@ -54,7 +54,7 @@
 //!             .with_serializer_raw(|t| serde_json::to_vec(t).map_err(Into::into))
 //!             .finish()
 //!             .link_from("ws-client://config/threshold")
-//!             .with_deserializer(|data| serde_json::from_slice(data))
+//!             .with_deserializer_raw(|data| serde_json::from_slice(data))
 //!             .finish();
 //!     })
 //!     .build().await?;

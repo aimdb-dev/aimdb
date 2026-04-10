@@ -45,7 +45,7 @@
 //!        .source(|producer, ctx| temperature_service(ctx, producer))
 //!        .tap(|consumer| temperature_logger(consumer))
 //!        .link_to("mqtt://sensors/temp")
-//!        .with_serializer(|t| serde_json::to_vec(t))
+//!        .with_serializer_raw(|t| serde_json::to_vec(t))
 //!        .finish();
 //! });
 //! ```
@@ -500,7 +500,7 @@ where
     /// builder.configure::<Temperature>(|reg| {
     ///     reg.buffer(BufferCfg::SingleLatest)
     ///        .link_to("mqtt://broker/sensors/temp")
-    ///            .with_serializer(|t| serde_json::to_vec(t).unwrap())
+    ///            .with_serializer_raw(|t| serde_json::to_vec(t).unwrap())
     ///            .finish()
     /// });
     /// ```
