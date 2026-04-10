@@ -272,7 +272,7 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
             .source(temperature_producer)
             .link_to(temp_topic)
-            .with_serializer(|t: &Temperature| {
+            .with_serializer_raw(|t: &Temperature| {
                 // Manual JSON serialization for no_std
                 let whole = t.celsius as i32;
                 let frac = ((t.celsius - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;
@@ -294,7 +294,7 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
             .source(humidity_producer)
             .link_to(humidity_topic)
-            .with_serializer(|h: &Humidity| {
+            .with_serializer_raw(|h: &Humidity| {
                 // Manual JSON serialization for no_std
                 let whole = h.percent as i32;
                 let frac = ((h.percent - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;

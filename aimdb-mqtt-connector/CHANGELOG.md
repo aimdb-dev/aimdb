@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- Updated `Router::route()` calls to pass runtime context via `db.runtime_any()`, enabling context-aware deserializers (Design 026)
+- Updated outbound publishers (Tokio and Embassy) to dispatch via `SerializerKind`, enabling context-aware serializers with `db.runtime_any()`
 
 ## [0.5.1] - 2026-03-16
 

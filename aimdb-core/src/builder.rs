@@ -55,14 +55,14 @@ use crate::{DbError, DbResult};
 /// Each tuple contains:
 /// - `String` - Default topic/destination from the URL path
 /// - `Box<dyn ConsumerTrait>` - Consumer for subscribing to record values
-/// - `SerializerFn` - User-provided serializer for the record type
+/// - `SerializerKind` - User-provided serializer for the record type (raw or context-aware)
 /// - `Vec<(String, String)>` - Configuration options from the URL query
 /// - `Option<TopicProviderFn>` - Optional dynamic topic provider
 #[cfg(feature = "alloc")]
 pub type OutboundRoute = (
     String,
     Box<dyn crate::connector::ConsumerTrait>,
-    crate::connector::SerializerFn,
+    crate::connector::SerializerKind,
     Vec<(String, String)>,
     Option<crate::connector::TopicProviderFn>,
 );
@@ -1213,6 +1213,14 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         &self.runtime
     }
 
+    /// Returns the runtime as a type-erased `Arc<dyn Any + Send + Sync>`
+    ///
+    /// Used by connectors to provide `RuntimeContext` to context-aware
+    /// deserializers during inbound message routing.
+    pub fn runtime_any(&self) -> Arc<dyn core::any::Any + Send + Sync> {
+        self.runtime.clone()
+    }
+
     /// Lists all registered records (std only)
     ///
     /// Returns metadata for all registered records, useful for remote access introspection.
@@ -1450,7 +1458,7 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
     ) -> Vec<(
         String,
         Box<dyn crate::connector::ProducerTrait>,
-        crate::connector::DeserializerFn,
+        crate::connector::DeserializerKind,
     )> {
         let mut routes = Vec::new();
 

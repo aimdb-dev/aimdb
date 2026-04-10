@@ -61,11 +61,13 @@ impl WebSocketConnectorImpl {
     {
         let runtime = db.runtime();
         let raw_payload = self.raw_payload;
+        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
         for (default_topic, consumer, serializer, _config, topic_provider) in outbound_routes {
             let client_mgr = self.client_mgr.clone();
             let snap = snapshot_map.clone();
             let default_topic_clone = default_topic.clone();
+            let runtime_ctx = runtime_ctx.clone();
 
             runtime.spawn(async move {
                 let mut reader = match consumer.subscribe_any().await {
@@ -95,16 +97,32 @@ impl WebSocketConnectorImpl {
                         .unwrap_or_else(|| default_topic_clone.clone());
 
                     // Serialize
-                    let bytes = match serializer(&*value_any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!(
-                                "WS outbound: serialize error for '{}': {:?}",
-                                topic,
-                                _e
-                            );
-                            continue;
+                    let bytes = match &serializer {
+                        aimdb_core::connector::SerializerKind::Raw(ser) => match ser(&*value_any) {
+                            Ok(b) => b,
+                            Err(_e) => {
+                                #[cfg(feature = "tracing")]
+                                tracing::error!(
+                                    "WS outbound: serialize error for '{}': {:?}",
+                                    topic,
+                                    _e
+                                );
+                                continue;
+                            }
+                        },
+                        aimdb_core::connector::SerializerKind::Context(ser) => {
+                            match ser(runtime_ctx.clone(), &*value_any) {
+                                Ok(b) => b,
+                                Err(_e) => {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::error!(
+                                        "WS outbound: serialize error for '{}': {:?}",
+                                        topic,
+                                        _e
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     };
 

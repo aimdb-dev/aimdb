@@ -27,7 +27,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Context-Aware Deserializers (Design 026)**: Inbound connector deserializers can now receive a `RuntimeContext<R>` for platform-independent timestamps and logging
+  - New `.with_deserializer(|ctx, bytes| ...)` API on `InboundConnectorBuilder` provides `RuntimeContext<R>` to deserialization closures
+  - New `.with_deserializer_raw(|bytes| ...)` for plain bytes-only deserialization when context is unnecessary
+  - `DeserializerKind` enum enforces mutual exclusivity between raw and context-aware deserializers
+  - `Router::route()` propagates optional runtime context to context-aware routes
+- **Context-Aware Serializers**: Outbound connector serializers can now receive a `RuntimeContext<R>`, symmetric with deserializers
+  - New `.with_serializer(|ctx, value| ...)` API on `OutboundConnectorBuilder` provides `RuntimeContext<R>` to serialization closures
+  - New `.with_serializer_raw(|value| ...)` for plain value-only serialization when context is unnecessary
+  - `SerializerKind` enum (`Raw` / `Context`) enforces mutual exclusivity
+  - All outbound connector publishers updated to propagate runtime context via `db.runtime_any()`
+- Design document: 026 (Context-Aware Deserializers)
+
+### Changed
+
+- **aimdb-core**: Breaking API changes to `InboundConnectorLink`, `Router`, and `RouterBuilder` to support `DeserializerKind` (see [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md))
+- **aimdb-core**: Breaking API change — `ConnectorLink.serializer` now stores `SerializerKind` instead of `SerializerFn`
+- **aimdb-core**: `.with_serializer()` renamed to `.with_serializer_raw()` for the old single-argument pattern
+- **aimdb-mqtt-connector**: Updated router dispatch for new `route()` signature; outbound publishers dispatch via `SerializerKind`
+- **aimdb-knx-connector**: Updated router dispatch for new `route()` signature; outbound publishers dispatch via `SerializerKind`
+- **aimdb-websocket-connector**: Updated router dispatch for new `route()` signature; outbound publishers dispatch via `SerializerKind`
+- All connector examples updated to use new `.with_deserializer(|_ctx, bytes| ...)` and `.with_serializer_raw(|value| ...)` signatures
 
 ## [1.0.0] - 2026-03-16
 

@@ -124,6 +124,8 @@ pub(crate) struct SessionContext {
     pub query_handler: Arc<dyn QueryHandler>,
     /// All outbound topics served by this endpoint, returned on `list_topics`.
     pub known_topics: Vec<TopicInfo>,
+    /// Type-erased runtime for context-aware deserializers.
+    pub runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 /// Provides the current serialized value of a record for late-join snapshots.
@@ -379,7 +381,11 @@ async fn handle_write(
     };
 
     // Dispatch through the inbound router
-    if let Err(_e) = ctx.router.route(&topic, &bytes).await {
+    if let Err(_e) = ctx
+        .router
+        .route(&topic, &bytes, ctx.runtime_ctx.as_ref())
+        .await
+    {
         #[cfg(feature = "tracing")]
         tracing::warn!("{}: write routing failed for '{}': {}", id, topic, _e);
 

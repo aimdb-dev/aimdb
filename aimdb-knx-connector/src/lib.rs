@@ -51,14 +51,14 @@
 //!         reg.buffer(BufferCfg::SingleLatest)
 //!            // Inbound: Monitor KNX bus
 //!            .link_from("knx://1/0/7")
-//!            .with_deserializer(|data: &[u8]| {
+//!            .with_deserializer_raw(|data: &[u8]| {
 //!                let is_on = data.get(0).map(|&b| b != 0).unwrap_or(false);
 //!                Ok(Box::new(LightState { is_on }))
 //!            })
 //!            .finish()
 //!            // Outbound: Send commands to KNX
 //!            .link_to("knx://1/0/8")
-//!            .with_serializer(|state: &LightState| {
+//!            .with_serializer_raw(|state: &LightState| {
 //!                Ok(vec![if state.is_on { 1 } else { 0 }])
 //!            })
 //!            .finish();
@@ -84,11 +84,11 @@
 //!            .source(sensor_producer)
 //!            // Inbound: Monitor KNX bus
 //!            .link_from("knx://1/0/10")
-//!            .with_deserializer(|data| SensorData::from_knx(data))
+//!            .with_deserializer_raw(|data| SensorData::from_knx(data))
 //!            .finish()
 //!            // Outbound: Send to KNX
 //!            .link_to("knx://1/0/11")
-//!            .with_serializer(|data| data.to_knx_bytes())
+//!            .with_serializer_raw(|data| data.to_knx_bytes())
 //!            .finish();
 //!     })
 //!     .build().await?;

@@ -192,7 +192,7 @@ mod tests {
             reg.source(|_ctx, _msg| async {})
                 .tap(|_ctx, _consumer| async {})
                 .link_to("mqtt://broker.example.com:1883")
-                .with_serializer(|_msg: &TestMessage| {
+                .with_serializer_raw(|_msg: &TestMessage| {
                     // Dummy serializer for testing
                     Ok(vec![1, 2, 3])
                 })

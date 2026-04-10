@@ -358,6 +358,7 @@ where
                 auto_subscribe_topics: self.auto_subscribe_topics.clone(),
                 query_handler: self.query_handler.clone(),
                 known_topics,
+                runtime_ctx: Some(db.runtime_any()),
             };
 
             // ── Build connector & spawn outbound publishers ───────────────

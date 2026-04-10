@@ -333,7 +333,7 @@ async fn test_knx_topic_provider_with_connector_registration() {
             )
             .link_to("knx://1/0/0") // Fallback group address
             .with_topic_provider(RoomBasedGroupAddressProvider::new(1, 0))
-            .with_serializer(|dimmer: &DimmerValue| Ok(dimmer.to_knx_bytes()))
+            .with_serializer_raw(|dimmer: &DimmerValue| Ok(dimmer.to_knx_bytes()))
             .finish();
     });
 
@@ -360,7 +360,7 @@ async fn test_knx_topic_resolver_with_connector_registration() {
                     .ok()
                     .map(|addr| format!("knx://{}", addr))
             })
-            .with_deserializer(|data: &[u8]| SwitchState::from_knx_bytes(data))
+            .with_deserializer(|_ctx, data: &[u8]| SwitchState::from_knx_bytes(data))
             .finish();
     });
 
@@ -393,7 +393,7 @@ async fn test_hvac_zone_routing() {
             )
             .link_to("knx://5/0/0") // Fallback for invalid zones
             .with_topic_provider(HvacZoneProvider)
-            .with_serializer(|sp: &TemperatureSetpoint| Ok(sp.to_knx_bytes()))
+            .with_serializer_raw(|sp: &TemperatureSetpoint| Ok(sp.to_knx_bytes()))
             .finish();
     });
 

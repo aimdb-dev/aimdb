@@ -133,15 +133,20 @@ where
             );
 
             // Build the actual connector
-            let connector =
-                KnxConnectorImpl::build_internal(self.gateway_url.as_str(), router, db.runtime())
-                    .await
-                    .map_err(|_e| {
-                        #[cfg(feature = "defmt")]
-                        defmt::error!("Failed to build KNX connector");
+            let runtime_ctx = db.runtime_any();
+            let connector = KnxConnectorImpl::build_internal(
+                self.gateway_url.as_str(),
+                router,
+                db.runtime(),
+                Some(runtime_ctx),
+            )
+            .await
+            .map_err(|_e| {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Failed to build KNX connector");
 
-                        aimdb_core::DbError::RuntimeError { _message: () }
-                    })?;
+                aimdb_core::DbError::RuntimeError { _message: () }
+            })?;
 
             // Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("knx");
@@ -258,6 +263,7 @@ impl KnxConnectorImpl {
         gateway_url: &str,
         router: Router,
         runtime: &R,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<Self, &'static str>
     where
         R: aimdb_executor::Spawn + aimdb_embassy_adapter::EmbassyNetwork + 'static,
@@ -298,6 +304,7 @@ impl KnxConnectorImpl {
                     port,
                     router_for_task,
                     command_channel,
+                    runtime_ctx,
                 )
                 .await;
             }
@@ -320,6 +327,7 @@ impl KnxConnectorImpl {
         gateway_port: u16,
         router: Arc<Router>,
         command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) {
         loop {
             #[cfg(feature = "defmt")]
@@ -335,6 +343,7 @@ impl KnxConnectorImpl {
                 gateway_port,
                 &router,
                 command_channel,
+                runtime_ctx.as_ref(),
             )
             .await
             {
@@ -363,6 +372,7 @@ impl KnxConnectorImpl {
         gateway_port: u16,
         router: &Router,
         command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        runtime_ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<(), &'static str> {
         // Create UDP socket with static buffers
         let mut rx_meta = [PacketMetadata::EMPTY; 4];
@@ -555,7 +565,9 @@ impl KnxConnectorImpl {
                                     data.len()
                                 );
 
-                                if let Err(_e) = router.route(&resource_id, &data).await {
+                                if let Err(_e) =
+                                    router.route(&resource_id, &data, runtime_ctx).await
+                                {
                                     #[cfg(feature = "defmt")]
                                     defmt::warn!(
                                         "Failed to route telegram to {}",
@@ -984,12 +996,14 @@ impl KnxConnectorImpl {
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
+        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
         for (default_group_addr_str, consumer, serializer, _config, topic_provider) in
             outbound_routes
         {
             let command_channel = self.command_channel;
             let default_group_addr_clone = default_group_addr_str.clone();
+            let runtime_ctx = runtime_ctx.clone();
 
             runtime.spawn(Box::pin(SendFutureWrapper(async move {
                 // Parse default group address using knx-pico's type-safe parser
@@ -1055,15 +1069,30 @@ impl KnxConnectorImpl {
                     };
 
                     // Serialize the type-erased value
-                    let bytes = match serializer(&*value_any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            #[cfg(feature = "defmt")]
-                            defmt::error!(
-                                "Failed to serialize for group address '{}'",
-                                group_addr_str.as_str()
-                            );
-                            continue;
+                    let bytes = match &serializer {
+                        aimdb_core::connector::SerializerKind::Raw(ser) => match ser(&*value_any) {
+                            Ok(b) => b,
+                            Err(_e) => {
+                                #[cfg(feature = "defmt")]
+                                defmt::error!(
+                                    "Failed to serialize for group address '{}'",
+                                    group_addr_str.as_str()
+                                );
+                                continue;
+                            }
+                        },
+                        aimdb_core::connector::SerializerKind::Context(ser) => {
+                            match ser(runtime_ctx.clone(), &*value_any) {
+                                Ok(b) => b,
+                                Err(_e) => {
+                                    #[cfg(feature = "defmt")]
+                                    defmt::error!(
+                                        "Failed to serialize for group address '{}'",
+                                        group_addr_str.as_str()
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     };
 

@@ -905,7 +905,7 @@ fn emit_connector_chain(
                     chain = quote! {
                         #chain
                             .link_to(#addr_var)
-                            .with_serializer(|v: &#value_type| {
+                            .with_serializer_raw(|v: &#value_type| {
                                 v.to_bytes()
                                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
                             })
@@ -1515,7 +1515,7 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
     let outbound_chain = if has_outbound {
         quote! {
             .link_to(addr)
-            .with_serializer(|v: &#value_type| {
+            .with_serializer_raw(|v: &#value_type| {
                 v.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
             })

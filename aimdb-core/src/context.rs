@@ -24,7 +24,7 @@ where
     #[cfg(feature = "std")]
     runtime: std::sync::Arc<R>,
     #[cfg(not(feature = "std"))]
-    runtime: &'static R,
+    runtime: alloc::sync::Arc<R>,
 }
 
 #[cfg(feature = "std")]
@@ -64,8 +64,15 @@ impl<R> RuntimeContext<R>
 where
     R: Runtime,
 {
-    /// Create a new RuntimeContext with static reference (no_std version)
-    pub fn new(runtime: &'static R) -> Self {
+    /// Create a new RuntimeContext (no_std version uses Arc internally)
+    pub fn new(runtime: R) -> Self {
+        Self {
+            runtime: alloc::sync::Arc::new(runtime),
+        }
+    }
+
+    /// Create from an existing Arc to avoid double-wrapping
+    pub fn from_arc(runtime: alloc::sync::Arc<R>) -> Self {
         Self { runtime }
     }
 
@@ -74,21 +81,13 @@ where
     /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
     /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
     ///
-    /// For no_std, this leaks the Arc to obtain a `&'static` reference, which is safe
-    /// because the runtime lives for the entire program lifetime in embedded contexts.
-    ///
     /// # Panics
     /// Panics if the runtime type doesn't match `R`.
     pub fn extract_from_any(ctx_any: alloc::sync::Arc<dyn core::any::Any + Send + Sync>) -> Self {
         let runtime = ctx_any
             .downcast::<R>()
             .expect("Runtime type mismatch - expected matching runtime adapter");
-
-        // Convert Arc<R> to &'static R by leaking it
-        // This is safe because in embedded contexts, the runtime lives for the entire program
-        let runtime_ref: &'static R = &*alloc::boxed::Box::leak(runtime.into());
-
-        Self::new(runtime_ref)
+        Self::from_arc(runtime)
     }
 }
 
@@ -117,8 +116,8 @@ where
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn runtime(&self) -> &'static R {
-        self.runtime
+    pub fn runtime(&self) -> &R {
+        &self.runtime
     }
 }
 

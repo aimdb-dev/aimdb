@@ -276,7 +276,7 @@ async fn test_topic_provider_with_connector_registration() {
             )
             .link_to("mqtt://sensors/temp/default") // Fallback topic
             .with_topic_provider(SensorIdTopicProvider) // Dynamic routing!
-            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -305,7 +305,7 @@ async fn test_topic_resolver_with_connector_registration() {
                 // Late-binding: resolve from environment at startup
                 std::env::var("TEST_COMMAND_TOPIC").ok()
             })
-            .with_deserializer(|data: &[u8]| Command::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| Command::from_json(data))
             .finish();
     });
 
@@ -338,7 +338,7 @@ async fn test_mixed_static_and_dynamic_topics() {
                 },
             )
             .link_to("mqtt://sensors/temp/static-topic")
-            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -356,7 +356,7 @@ async fn test_mixed_static_and_dynamic_topics() {
             )
             .link_to("mqtt://sensors/temp/fallback")
             .with_topic_provider(SensorIdTopicProvider)
-            .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 

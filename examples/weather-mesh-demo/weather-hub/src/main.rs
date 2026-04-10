@@ -35,7 +35,17 @@ async fn main() -> aimdb_core::DbResult<()> {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
                 .tap(move |ctx, consumer| log_tap(ctx, consumer, key.as_str()))
                 .link_from(&topic)
-                .with_deserializer(Temperature::from_bytes)
+                .with_deserializer(|ctx, data: &[u8]| {
+                    ctx.log()
+                        .debug("Deserializing temperature from MQTT payload");
+                    let temp = Temperature::from_bytes(data)?;
+                    ctx.log().info(&format!(
+                        "🌡️  Received: {:.1}°C (deserialized at runtime tick {:?})",
+                        temp.celsius,
+                        ctx.time().now()
+                    ));
+                    Ok(temp)
+                })
                 .finish();
         });
     }
@@ -48,7 +58,16 @@ async fn main() -> aimdb_core::DbResult<()> {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
                 .tap(move |ctx, consumer| log_tap(ctx, consumer, key.as_str()))
                 .link_from(&topic)
-                .with_deserializer(Humidity::from_bytes)
+                .with_deserializer(|ctx, data: &[u8]| {
+                    ctx.log().debug("Deserializing humidity from MQTT payload");
+                    let humidity = Humidity::from_bytes(data)?;
+                    ctx.log().info(&format!(
+                        "💧 Received: {:.1}% humidity (deserialized at runtime tick {:?})",
+                        humidity.percent,
+                        ctx.time().now()
+                    ));
+                    Ok(humidity)
+                })
                 .finish();
         });
     }

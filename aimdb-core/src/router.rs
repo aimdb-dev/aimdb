@@ -19,7 +19,7 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
-use crate::connector::{DeserializerFn, ProducerTrait};
+use crate::connector::{DeserializerKind, ProducerTrait};
 
 /// A single routing entry
 ///
@@ -45,8 +45,8 @@ pub struct Route {
     /// Type-erased producer for this route
     pub producer: Box<dyn ProducerTrait>,
 
-    /// Deserializer for converting bytes → typed value
-    pub deserializer: DeserializerFn,
+    /// Deserializer for converting bytes → typed value (raw or context-aware)
+    pub deserializer: DeserializerKind,
 }
 
 /// Generic message router for connector dispatch
@@ -84,24 +84,56 @@ impl Router {
     /// # Arguments
     /// * `resource_id` - Resource identifier (topic, path, segment name, etc.)
     /// * `payload` - Raw message payload bytes
+    /// * `ctx` - Optional type-erased runtime context for context-aware deserializers
     ///
     /// # Returns
-    /// * `Ok(())` - At least one route successfully processed the message
-    /// * `Err(_)` - All routes failed (or no routes found)
+    /// * `Ok(())` - Always returns Ok, even if no routes matched or processing failed.
+    ///   Failures are logged (via tracing/defmt) but do not propagate as errors.
     ///
     /// # Behavior
     /// - Checks all routes that match the resource_id (may be multiple)
+    /// - For `DeserializerKind::Raw`, calls the deserializer with payload only
+    /// - For `DeserializerKind::Context`, calls with context + payload (skips if no context)
     /// - Logs warnings on deserialization failures but continues
     /// - Logs debug message if no routes found for resource_id
-    pub async fn route(&self, resource_id: &str, payload: &[u8]) -> Result<(), String> {
+    pub async fn route(
+        &self,
+        resource_id: &str,
+        payload: &[u8],
+        ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
+    ) -> Result<(), String> {
         let mut routed = false;
+        let mut matched = false;
 
         // Linear search through all routes
         // Note: Multiple routes may match the same resource_id (different types)
         for route in &self.routes {
             if route.resource_id.as_ref() == resource_id {
-                // Deserialize the payload
-                match (route.deserializer)(payload) {
+                matched = true;
+                // Deserialize the payload based on deserializer kind
+                let result = match &route.deserializer {
+                    DeserializerKind::Raw(deser) => (deser)(payload),
+                    DeserializerKind::Context(deser) => match ctx {
+                        Some(ctx) => (deser)(ctx.clone(), payload),
+                        None => {
+                            #[cfg(feature = "tracing")]
+                            tracing::warn!(
+                                "Context deserializer on '{}' but no context provided, skipping",
+                                resource_id
+                            );
+
+                            #[cfg(feature = "defmt")]
+                            defmt::warn!(
+                                "Context deserializer on '{}' but no context provided",
+                                resource_id
+                            );
+
+                            continue;
+                        }
+                    },
+                };
+
+                match result {
                     Ok(value_any) => {
                         // Produce into the buffer
                         match route.producer.produce_any(value_any).await {
@@ -148,11 +180,19 @@ impl Router {
         }
 
         if !routed {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("No route found for resource: '{}'", resource_id);
+            if matched {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("Route matched for '{}' but message was not produced (missing context or errors)", resource_id);
 
-            #[cfg(feature = "defmt")]
-            defmt::debug!("No route found for resource: '{}'", resource_id);
+                #[cfg(feature = "defmt")]
+                defmt::debug!("Route matched for '{}' but not produced", resource_id);
+            } else {
+                #[cfg(feature = "tracing")]
+                tracing::debug!("No route found for resource: '{}'", resource_id);
+
+                #[cfg(feature = "defmt")]
+                defmt::debug!("No route found for resource: '{}'", resource_id);
+            }
         }
 
         Ok(())
@@ -233,7 +273,7 @@ impl RouterBuilder {
     /// let router = RouterBuilder::from_routes(routes).build();
     /// connector.set_router(router).await?;
     /// ```
-    pub fn from_routes(routes: Vec<(String, Box<dyn ProducerTrait>, DeserializerFn)>) -> Self {
+    pub fn from_routes(routes: Vec<(String, Box<dyn ProducerTrait>, DeserializerKind)>) -> Self {
         let mut builder = Self::new();
         for (resource_id, producer, deserializer) in routes {
             // Convert String to Arc<str> - no leaking needed!
@@ -248,7 +288,7 @@ impl RouterBuilder {
     /// # Arguments
     /// * `resource_id` - Resource identifier to match (as Arc<str>)
     /// * `producer` - Producer that implements ProducerTrait
-    /// * `deserializer` - Function to deserialize bytes to the target type
+    /// * `deserializer` - Deserializer variant (raw or context-aware)
     ///
     /// # Resource ID Memory Management
     /// The resource_id is stored as Arc<str> for proper reference counting and cleanup.
@@ -259,7 +299,7 @@ impl RouterBuilder {
         mut self,
         resource_id: Arc<str>,
         producer: Box<dyn ProducerTrait>,
-        deserializer: DeserializerFn,
+        deserializer: DeserializerKind,
     ) -> Self {
         self.routes.push(Route {
             resource_id,
@@ -325,12 +365,12 @@ mod tests {
             producer: Box::new(MockProducer {
                 call_count: call_count.clone(),
             }),
-            deserializer: Arc::new(|_bytes| Ok(Box::new(42i32))),
+            deserializer: DeserializerKind::Raw(Arc::new(|_bytes| Ok(Box::new(42i32)))),
         }];
 
         let router = Router::new(routes);
 
-        router.route("test/resource", b"dummy").await.unwrap();
+        router.route("test/resource", b"dummy", None).await.unwrap();
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
@@ -346,20 +386,25 @@ mod tests {
                 producer: Box::new(MockProducer {
                     call_count: call_count1.clone(),
                 }),
-                deserializer: Arc::new(|_bytes| Ok(Box::new(42i32))),
+                deserializer: DeserializerKind::Raw(Arc::new(|_bytes| Ok(Box::new(42i32)))),
             },
             Route {
                 resource_id: Arc::from("shared/resource"),
                 producer: Box::new(MockProducer {
                     call_count: call_count2.clone(),
                 }),
-                deserializer: Arc::new(|_bytes| Ok(Box::new("test".to_string()))),
+                deserializer: DeserializerKind::Raw(Arc::new(|_bytes| {
+                    Ok(Box::new("test".to_string()))
+                })),
             },
         ];
 
         let router = Router::new(routes);
 
-        router.route("shared/resource", b"dummy").await.unwrap();
+        router
+            .route("shared/resource", b"dummy", None)
+            .await
+            .unwrap();
 
         // Both producers should be called
         assert_eq!(call_count1.load(Ordering::SeqCst), 1);
@@ -373,13 +418,16 @@ mod tests {
             producer: Box::new(MockProducer {
                 call_count: Arc::new(AtomicUsize::new(0)),
             }),
-            deserializer: Arc::new(|_bytes| Ok(Box::new(42i32))),
+            deserializer: DeserializerKind::Raw(Arc::new(|_bytes| Ok(Box::new(42i32)))),
         }];
 
         let router = Router::new(routes);
 
         // Should not panic on unknown resource
-        router.route("unknown/resource", b"dummy").await.unwrap();
+        router
+            .route("unknown/resource", b"dummy", None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -390,21 +438,23 @@ mod tests {
                 producer: Box::new(MockProducer {
                     call_count: Arc::new(AtomicUsize::new(0)),
                 }),
-                deserializer: Arc::new(|_bytes| Ok(Box::new(42i32))),
+                deserializer: DeserializerKind::Raw(Arc::new(|_bytes| Ok(Box::new(42i32)))),
             },
             Route {
                 resource_id: Arc::from("resource1"), // Duplicate
                 producer: Box::new(MockProducer {
                     call_count: Arc::new(AtomicUsize::new(0)),
                 }),
-                deserializer: Arc::new(|_bytes| Ok(Box::new("test".to_string()))),
+                deserializer: DeserializerKind::Raw(Arc::new(|_bytes| {
+                    Ok(Box::new("test".to_string()))
+                })),
             },
             Route {
                 resource_id: Arc::from("resource2"),
                 producer: Box::new(MockProducer {
                     call_count: Arc::new(AtomicUsize::new(0)),
                 }),
-                deserializer: Arc::new(|_bytes| Ok(Box::new(99i32))),
+                deserializer: DeserializerKind::Raw(Arc::new(|_bytes| Ok(Box::new(99i32)))),
             },
         ];
 
@@ -414,5 +464,54 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.iter().any(|id| id.as_ref() == "resource1"));
         assert!(ids.iter().any(|id| id.as_ref() == "resource2"));
+    }
+
+    #[tokio::test]
+    async fn test_context_deserializer_with_context() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let routes = vec![Route {
+            resource_id: Arc::from("ctx/resource"),
+            producer: Box::new(MockProducer {
+                call_count: call_count.clone(),
+            }),
+            deserializer: DeserializerKind::Context(Arc::new(move |_ctx, _bytes| {
+                Ok(Box::new(42i32) as Box<dyn Any + Send>)
+            })),
+        }];
+
+        let router = Router::new(routes);
+
+        // Provide a dummy context (just an i32 wrapped in Arc)
+        let ctx: Arc<dyn Any + Send + Sync> = Arc::new(0i32);
+        router
+            .route("ctx/resource", b"dummy", Some(&ctx))
+            .await
+            .unwrap();
+
+        assert_eq!(call_count_clone.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_context_deserializer_without_context_skips() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let routes = vec![Route {
+            resource_id: Arc::from("ctx/resource"),
+            producer: Box::new(MockProducer {
+                call_count: call_count.clone(),
+            }),
+            deserializer: DeserializerKind::Context(Arc::new(|_ctx, _bytes| {
+                Ok(Box::new(42i32) as Box<dyn Any + Send>)
+            })),
+        }];
+
+        let router = Router::new(routes);
+
+        // No context provided — context deserializer should be skipped
+        router.route("ctx/resource", b"dummy", None).await.unwrap();
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
     }
 }

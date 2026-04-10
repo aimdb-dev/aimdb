@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Context-Aware Deserializers (Design 026)**: Inbound connector deserializers can now receive a `RuntimeContext<R>` for platform-independent timestamps and logging during deserialization
+  - New `ContextDeserializerFn` type alias for context-aware type-erased deserializer callbacks
+  - New `DeserializerKind` enum (`Raw` / `Context`) to enforce mutual exclusivity between plain and context-aware deserializers
+  - `.with_deserializer(|ctx, bytes| ...)` now accepts a context-aware closure receiving `RuntimeContext<R>`
+  - `.with_deserializer_raw(|bytes| ...)` added for plain bytes-only deserialization (no context needed)
+  - `Router::route()` now accepts an optional type-erased runtime context (`Option<&Arc<dyn Any + Send + Sync>>`)
+  - Context deserializer routes are gracefully skipped when no context is provided
+- **Context-Aware Serializers**: Outbound connector serializers can now receive a `RuntimeContext<R>`, symmetric with deserializers
+  - New `ContextSerializerFn` type alias for context-aware type-erased serializer callbacks
+  - New `SerializerKind` enum (`Raw` / `Context`) to enforce mutual exclusivity between plain and context-aware serializers
+  - `.with_serializer(|ctx, value| ...)` now accepts a context-aware closure receiving `RuntimeContext<R>`
+  - `.with_serializer_raw(|value| ...)` added for plain value-only serialization (no context needed)
+
+### Changed
+
+- **Breaking**: `InboundConnectorLink::deserializer` field type changed from `DeserializerFn` to `DeserializerKind`
+- **Breaking**: `InboundConnectorLink::new()` now takes `DeserializerKind` instead of `DeserializerFn`
+- **Breaking**: `Router::route()` signature changed to accept an additional `ctx` parameter
+- **Breaking**: `RouterBuilder::from_routes()` and `RouterBuilder::add_route()` now take `DeserializerKind` instead of `DeserializerFn`
+- **Breaking**: `ConnectorLink::serializer` field type changed from `Option<SerializerFn>` to `Option<SerializerKind>`
+- **Breaking**: `.with_serializer()` renamed to `.with_serializer_raw()` — old single-argument pattern
+- **Breaking**: `OutboundRoute` type alias updated to use `SerializerKind`
+- **Breaking**: `.with_deserializer()` on `InboundConnectorBuilder` now expects `Fn(RuntimeContext<R>, &[u8]) -> Result<T, String>` instead of `Fn(&[u8]) -> Result<T, String>` — use `.with_deserializer_raw()` for the previous bytes-only signature
+- `AimDb::collect_inbound_routes()` return type updated to use `DeserializerKind`
 
 ## [1.0.0] - 2026-03-11
 

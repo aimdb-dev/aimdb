@@ -117,21 +117,26 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for MqttConnectorBu
             tracing::info!("MQTT router has {} topics", router.resource_ids().len());
 
             // Build the actual connector
-            let connector =
-                MqttConnectorImpl::build_internal(&self.broker_url, self.client_id.clone(), router)
-                    .await
-                    .map_err(|e| {
-                        #[cfg(feature = "std")]
-                        {
-                            aimdb_core::DbError::RuntimeError {
-                                message: format!("Failed to build MQTT connector: {}", e).into(),
-                            }
-                        }
-                        #[cfg(not(feature = "std"))]
-                        {
-                            aimdb_core::DbError::RuntimeError { _message: () }
-                        }
-                    })?;
+            let runtime_ctx = db.runtime_any();
+            let connector = MqttConnectorImpl::build_internal(
+                &self.broker_url,
+                self.client_id.clone(),
+                router,
+                Some(runtime_ctx),
+            )
+            .await
+            .map_err(|e| {
+                #[cfg(feature = "std")]
+                {
+                    aimdb_core::DbError::RuntimeError {
+                        message: format!("Failed to build MQTT connector: {}", e).into(),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    aimdb_core::DbError::RuntimeError { _message: () }
+                }
+            })?;
 
             // NEW: Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("mqtt");
@@ -171,10 +176,12 @@ impl MqttConnectorImpl {
     /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
     /// * `client_id` - Optional client ID (if None, generates UUID-based ID)
     /// * `router` - Pre-configured router with all routes
+    /// * `runtime_ctx` - Optional type-erased runtime for context-aware deserializers
     async fn build_internal(
         broker_url: &str,
         client_id: Option<String>,
         router: Router,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<Self, String> {
         // Parse the broker URL - we accept it with or without a topic
         let mut url = broker_url.to_string();
@@ -243,7 +250,7 @@ impl MqttConnectorImpl {
         let client_arc = Arc::new(client);
 
         // CRITICAL: Spawn event loop BEFORE subscribing to topics
-        spawn_event_loop(event_loop, broker_key, router_arc.clone());
+        spawn_event_loop(event_loop, broker_key, router_arc.clone(), runtime_ctx);
 
         // Yield to ensure the event loop task is scheduled before we start subscribing
         tokio::task::yield_now().await;
@@ -310,10 +317,12 @@ impl MqttConnectorImpl {
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
+        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
         for (default_topic, consumer, serializer, config, topic_provider) in routes {
             let client = self.client.clone();
             let default_topic_clone = default_topic.clone();
+            let runtime_ctx = runtime_ctx.clone();
 
             // Parse config options
             let mut qos = rumqttc::QoS::AtLeastOnce; // Default
@@ -369,12 +378,32 @@ impl MqttConnectorImpl {
                         .unwrap_or_else(|| default_topic_clone.clone());
 
                     // Serialize the type-erased value
-                    let bytes = match serializer(&*value_any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!("Failed to serialize for topic '{}': {:?}", topic, _e);
-                            continue;
+                    let bytes = match &serializer {
+                        aimdb_core::connector::SerializerKind::Raw(ser) => match ser(&*value_any) {
+                            Ok(b) => b,
+                            Err(_e) => {
+                                #[cfg(feature = "tracing")]
+                                tracing::error!(
+                                    "Failed to serialize for topic '{}': {:?}",
+                                    topic,
+                                    _e
+                                );
+                                continue;
+                            }
+                        },
+                        aimdb_core::connector::SerializerKind::Context(ser) => {
+                            match ser(runtime_ctx.clone(), &*value_any) {
+                                Ok(b) => b,
+                                Err(_e) => {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::error!(
+                                        "Failed to serialize for topic '{}': {:?}",
+                                        topic,
+                                        _e
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     };
 
@@ -468,7 +497,13 @@ impl aimdb_core::transport::Connector for MqttConnectorImpl {
 /// * `event_loop` - The rumqttc EventLoop to run
 /// * `_broker_key` - Broker identifier for logging (unused in release builds)
 /// * `router` - Router for dispatching messages to producers
-fn spawn_event_loop(mut event_loop: EventLoop, _broker_key: String, router: Arc<Router>) {
+/// * `runtime_ctx` - Optional type-erased runtime for context-aware deserializers
+fn spawn_event_loop(
+    mut event_loop: EventLoop,
+    _broker_key: String,
+    router: Arc<Router>,
+    runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
+) {
     tokio::spawn(async move {
         #[cfg(feature = "tracing")]
         tracing::debug!("MQTT event loop started for {}", _broker_key);
@@ -489,7 +524,8 @@ fn spawn_event_loop(mut event_loop: EventLoop, _broker_key: String, router: Arc<
                         );
 
                         // Route to appropriate producer(s)
-                        if let Err(_e) = router.route(&topic, &payload).await {
+                        if let Err(_e) = router.route(&topic, &payload, runtime_ctx.as_ref()).await
+                        {
                             #[cfg(feature = "tracing")]
                             tracing::error!("Failed to route message on topic '{}': {}", topic, _e);
                         }
@@ -516,7 +552,7 @@ mod tests {
     async fn test_connector_creation_with_router() {
         let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, router).await;
+            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, router, None).await;
         assert!(connector.is_ok());
     }
 
@@ -524,14 +560,15 @@ mod tests {
     async fn test_connector_with_port() {
         let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, router).await;
+            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, router, None).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_invalid_url() {
         let router = RouterBuilder::new().build();
-        let connector = MqttConnectorImpl::build_internal("not-a-valid-url", None, router).await;
+        let connector =
+            MqttConnectorImpl::build_internal("not-a-valid-url", None, router, None).await;
         assert!(connector.is_err());
     }
 }

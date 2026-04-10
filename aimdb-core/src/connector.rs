@@ -105,6 +105,34 @@ impl std::error::Error for SerializeError {}
 pub type SerializerFn =
     Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, SerializeError> + Send + Sync>;
 
+/// Type alias for context-aware type-erased serializer callbacks
+///
+/// Like `SerializerFn`, but receives a type-erased runtime context
+/// for platform-independent timestamps and logging during serialization.
+///
+/// The first argument is the type-erased runtime (as `Arc<dyn Any + Send + Sync>`),
+/// which is downcast to the concrete runtime type via `RuntimeContext::extract_from_any`.
+pub type ContextSerializerFn = Arc<
+    dyn Fn(
+            Arc<dyn core::any::Any + Send + Sync>,
+            &dyn core::any::Any,
+        ) -> Result<Vec<u8>, SerializeError>
+        + Send
+        + Sync,
+>;
+
+/// Which serializer variant is registered for an outbound link
+///
+/// Enforces mutual exclusivity between raw value-only serializers
+/// and context-aware serializers.
+#[derive(Clone)]
+pub enum SerializerKind {
+    /// Plain value-only serializer (from `.with_serializer_raw()`)
+    Raw(SerializerFn),
+    /// Context-aware serializer (from `.with_serializer()`)
+    Context(ContextSerializerFn),
+}
+
 // ============================================================================
 // TopicProvider - Dynamic topic/destination routing
 // ============================================================================
@@ -434,13 +462,14 @@ pub struct ConnectorLink {
 
     /// Serialization callback that converts record values to bytes for publishing
     ///
-    /// This is a type-erased function that takes `&dyn Any` and returns `Result<Vec<u8>, String>`.
-    /// The connector implementation will downcast to the concrete type and call the serializer.
+    /// Either a plain value-only serializer (`Raw`) or a context-aware
+    /// serializer (`Context`) that receives `RuntimeContext` for timestamps
+    /// and logging.
     ///
     /// If `None`, the connector must provide a default serialization mechanism or fail.
     ///
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
-    pub serializer: Option<SerializerFn>,
+    pub serializer: Option<SerializerKind>,
 
     /// Consumer factory callback (alloc feature)
     ///
@@ -471,7 +500,10 @@ impl Debug for ConnectorLink {
             .field("config", &self.config)
             .field(
                 "serializer",
-                &self.serializer.as_ref().map(|_| "<function>"),
+                &self.serializer.as_ref().map(|s| match s {
+                    SerializerKind::Raw(_) => "<raw>",
+                    SerializerKind::Context(_) => "<context>",
+                }),
             )
             .field(
                 "consumer_factory",
@@ -530,6 +562,34 @@ impl ConnectorLink {
 /// This allows storing deserializers for different types in a unified collection.
 pub type DeserializerFn =
     Arc<dyn Fn(&[u8]) -> Result<Box<dyn core::any::Any + Send>, String> + Send + Sync>;
+
+/// Type alias for context-aware type-erased deserializer callbacks
+///
+/// Like `DeserializerFn`, but receives a type-erased runtime context
+/// for platform-independent timestamps and logging during deserialization.
+///
+/// The first argument is the type-erased runtime (as `Arc<dyn Any + Send + Sync>`),
+/// which is downcast to the concrete runtime type via `RuntimeContext::extract_from_any`.
+pub type ContextDeserializerFn = Arc<
+    dyn Fn(
+            Arc<dyn core::any::Any + Send + Sync>,
+            &[u8],
+        ) -> Result<Box<dyn core::any::Any + Send>, String>
+        + Send
+        + Sync,
+>;
+
+/// Which deserializer variant is registered for an inbound link
+///
+/// Enforces mutual exclusivity between raw bytes-only deserializers
+/// and context-aware deserializers.
+#[derive(Clone)]
+pub enum DeserializerKind {
+    /// Plain bytes-only deserializer (from `.with_deserializer_raw()`)
+    Raw(DeserializerFn),
+    /// Context-aware deserializer (from `.with_deserializer()`)
+    Context(ContextDeserializerFn),
+}
 
 /// Type alias for producer factory callback (alloc feature)
 ///
@@ -646,12 +706,12 @@ pub struct InboundConnectorLink {
 
     /// Deserialization callback that converts bytes to typed values
     ///
-    /// This is a type-erased function that takes `&[u8]` and returns
-    /// `Result<Box<dyn Any + Send>, String>`. The spawned task will
-    /// downcast to the concrete type before producing.
+    /// Either a plain bytes-only deserializer (`Raw`) or a context-aware
+    /// deserializer (`Context`) that receives `RuntimeContext` for timestamps
+    /// and logging.
     ///
     /// Available in both `std` and `no_std` (with `alloc` feature) environments.
-    pub deserializer: DeserializerFn,
+    pub deserializer: DeserializerKind,
 
     /// Producer creation callback (alloc feature)
     ///
@@ -700,7 +760,7 @@ impl Debug for InboundConnectorLink {
 
 impl InboundConnectorLink {
     /// Creates a new inbound connector link from a URL and deserializer
-    pub fn new(url: ConnectorUrl, deserializer: DeserializerFn) -> Self {
+    pub fn new(url: ConnectorUrl, deserializer: DeserializerKind) -> Self {
         Self {
             url,
             config: Vec::new(),
@@ -1153,12 +1213,12 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_default() {
-        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/temperature").unwrap();
         let deserializer: DeserializerFn =
             Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let link = InboundConnectorLink::new(url, deserializer);
+        let link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
 
         // No resolver configured, should return static topic from URL
         assert_eq!(link.resolve_topic(), "sensors/temperature");
@@ -1166,12 +1226,12 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_dynamic() {
-        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/default").unwrap();
         let deserializer: DeserializerFn =
             Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let mut link = InboundConnectorLink::new(url, deserializer);
+        let mut link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
 
         // Configure dynamic resolver
         link.topic_resolver = Some(Arc::new(|| Some("sensors/dynamic/kitchen".into())));
@@ -1182,12 +1242,12 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_fallback() {
-        use super::{ConnectorUrl, DeserializerFn, InboundConnectorLink};
+        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/fallback").unwrap();
         let deserializer: DeserializerFn =
             Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let mut link = InboundConnectorLink::new(url, deserializer);
+        let mut link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
 
         // Configure resolver that returns None
         link.topic_resolver = Some(Arc::new(|| None));

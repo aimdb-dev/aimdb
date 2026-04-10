@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.configure::<Temperature>(TempKey::Alpha, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .link_to(temp_topic)
-            .with_serializer(|t: &Temperature| {
+            .with_serializer_raw(|t: &Temperature| {
                 t.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
             })
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.configure::<Humidity>(HumidityKey::Alpha, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .link_to(humidity_topic)
-            .with_serializer(|h: &Humidity| {
+            .with_serializer_raw(|h: &Humidity| {
                 h.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
             })

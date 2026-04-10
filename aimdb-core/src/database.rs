@@ -12,10 +12,10 @@ use core::fmt::Debug;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 
 #[cfg(feature = "std")]
-use std::boxed::Box;
+use std::{boxed::Box, sync::Arc};
 
 /// AimDB Database implementation
 ///
@@ -136,17 +136,7 @@ impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
     where
         A: aimdb_executor::Runtime + Clone,
     {
-        #[cfg(feature = "std")]
-        {
-            RuntimeContext::from_arc(std::sync::Arc::new(self.adapter.clone()))
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            // For no_std, we need a static reference - this would typically be handled
-            // by the caller storing the adapter in a static cell first
-            // For now, we'll document this limitation
-            panic!("context() not supported in no_std without a static reference. To use context(), store your adapter in a static cell (e.g., StaticCell from portable-atomic or embassy-sync), or use adapter() directly.")
-        }
+        RuntimeContext::from_arc(Arc::new(self.adapter.clone()))
     }
 }
 

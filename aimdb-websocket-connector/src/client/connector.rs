@@ -129,6 +129,7 @@ impl WsClientConnectorImpl {
         let auto_reconnect = config.auto_reconnect;
         let max_reconnect_attempts = config.max_reconnect_attempts;
         let router_for_reconnect = router.clone();
+        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
         db.runtime()
             .spawn({
@@ -149,8 +150,9 @@ impl WsClientConnectorImpl {
         db.runtime()
             .spawn({
                 let router = router.clone();
+                let runtime_ctx = runtime_ctx.clone();
                 async move {
-                    Self::run_read_loop(ws_read, &router).await;
+                    Self::run_read_loop(ws_read, &router, Some(&runtime_ctx)).await;
 
                     #[cfg(feature = "tracing")]
                     tracing::warn!("WS client: read loop ended");
@@ -173,6 +175,7 @@ impl WsClientConnectorImpl {
             db.runtime()
                 .spawn({
                     let state = state.clone();
+                    let runtime_ctx = runtime_ctx.clone();
                     async move {
                         Self::run_reconnect_watcher(
                             state,
@@ -180,6 +183,7 @@ impl WsClientConnectorImpl {
                             reconnect_topics,
                             router_for_reconnect,
                             max_reconnect_attempts,
+                            Some(runtime_ctx),
                         )
                         .await;
                     }
@@ -203,10 +207,12 @@ impl WsClientConnectorImpl {
         R: aimdb_executor::Spawn + 'static,
     {
         let runtime = db.runtime();
+        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
         for (default_topic, consumer, serializer, _config, topic_provider) in outbound_routes {
             let state = self.state.clone();
             let default_topic_clone = default_topic.clone();
+            let runtime_ctx = runtime_ctx.clone();
 
             runtime
                 .spawn(async move {
@@ -237,16 +243,34 @@ impl WsClientConnectorImpl {
                             .unwrap_or_else(|| default_topic_clone.clone());
 
                         // Serialize
-                        let bytes = match serializer(&*value_any) {
-                            Ok(b) => b,
-                            Err(_e) => {
-                                #[cfg(feature = "tracing")]
-                                tracing::error!(
-                                    "WS client outbound: serialize error for '{}': {:?}",
-                                    topic,
-                                    _e
-                                );
-                                continue;
+                        let bytes = match &serializer {
+                            aimdb_core::connector::SerializerKind::Raw(ser) => {
+                                match ser(&*value_any) {
+                                    Ok(b) => b,
+                                    Err(_e) => {
+                                        #[cfg(feature = "tracing")]
+                                        tracing::error!(
+                                            "WS client outbound: serialize error for '{}': {:?}",
+                                            topic,
+                                            _e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            aimdb_core::connector::SerializerKind::Context(ser) => {
+                                match ser(runtime_ctx.clone(), &*value_any) {
+                                    Ok(b) => b,
+                                    Err(_e) => {
+                                        #[cfg(feature = "tracing")]
+                                        tracing::error!(
+                                            "WS client outbound: serialize error for '{}': {:?}",
+                                            topic,
+                                            _e
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
                         };
 
@@ -321,6 +345,7 @@ impl WsClientConnectorImpl {
             >,
         >,
         router: &Router,
+        runtime_ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
     ) {
         while let Some(Ok(msg)) = ws_read.next().await {
             let text = match msg {
@@ -358,7 +383,7 @@ impl WsClientConnectorImpl {
                                 continue;
                             }
                         };
-                        if let Err(_e) = router.route(&topic, &bytes).await {
+                        if let Err(_e) = router.route(&topic, &bytes, runtime_ctx).await {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(
                                 "WS client: route failed for topic '{}': {:?}",
@@ -424,6 +449,7 @@ impl WsClientConnectorImpl {
         subscribe_topics: Vec<String>,
         router: Arc<Router>,
         max_attempts: usize,
+        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) {
         let backoff = [500u64, 1_000, 2_000, 4_000, 8_000];
         let mut attempt = 0usize;
@@ -480,8 +506,10 @@ impl WsClientConnectorImpl {
 
                     // Spawn new read loop
                     let router_clone = router.clone();
+                    let runtime_ctx_clone = runtime_ctx.clone();
                     tokio::spawn(async move {
-                        Self::run_read_loop(ws_read, &router_clone).await;
+                        Self::run_read_loop(ws_read, &router_clone, runtime_ctx_clone.as_ref())
+                            .await;
                     });
 
                     // Re-subscribe
