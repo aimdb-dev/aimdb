@@ -17,6 +17,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
 
+/// Tools exposed in public mode (read-only, safe for untrusted clients).
+const PUBLIC_TOOLS: &[&str] = &["discover_instances", "list_records", "get_record"];
+
 /// MCP server state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerState {
@@ -32,6 +35,8 @@ pub enum ServerState {
 pub struct McpServer {
     state: Arc<Mutex<ServerState>>,
     connection_pool: ConnectionPool,
+    /// When true, only PUBLIC_TOOLS are advertised and callable.
+    public_mode: bool,
 }
 
 impl McpServer {
@@ -40,7 +45,19 @@ impl McpServer {
         Self {
             state: Arc::new(Mutex::new(ServerState::Uninitialized)),
             connection_pool: ConnectionPool::new(),
+            public_mode: false,
         }
+    }
+
+    /// Enable public mode: only read-only tools are available.
+    pub fn with_public_mode(mut self, enabled: bool) -> Self {
+        self.public_mode = enabled;
+        self
+    }
+
+    /// Returns true if the server is in public (restricted) mode.
+    pub fn is_public(&self) -> bool {
+        self.public_mode
     }
 
     /// Get the connection pool
@@ -83,17 +100,25 @@ impl McpServer {
         // Initialize session store for architecture agent
         crate::architecture::init_session_store();
 
-        // Build server capabilities
+        // Build server capabilities — in public mode, only tools are available
         let capabilities = ServerCapabilities {
             tools: Some(ToolsCapability {
-                list_changed: Some(false), // Tool list is static for now
+                list_changed: Some(false),
             }),
-            resources: Some(ResourcesCapability {
-                subscribe: Some(false),
-            }),
-            prompts: Some(PromptsCapability {
-                list_changed: Some(false), // Prompt list is static
-            }),
+            resources: if self.public_mode {
+                None
+            } else {
+                Some(ResourcesCapability {
+                    subscribe: Some(false),
+                })
+            },
+            prompts: if self.public_mode {
+                None
+            } else {
+                Some(PromptsCapability {
+                    list_changed: Some(false),
+                })
+            },
         };
 
         // Build server info (version from Cargo.toml)
@@ -122,7 +147,7 @@ impl McpServer {
 
         debug!("📋 Listing available tools");
 
-        let tools = vec![
+        let mut tools = vec![
             Tool {
                 name: "discover_instances".to_string(),
                 description: "Discover all running AimDB instances on the system. Scans /tmp/*.sock and /var/run/aimdb/*.sock for AimDB servers.".to_string(),
@@ -767,6 +792,11 @@ impl McpServer {
             },
         ];
 
+        // In public mode, only expose the allowlisted tools
+        if self.public_mode {
+            tools.retain(|t| PUBLIC_TOOLS.contains(&t.name.as_str()));
+        }
+
         Ok(ToolsListResult { tools })
     }
 
@@ -779,6 +809,14 @@ impl McpServer {
         }
 
         debug!("🛠️  Calling tool: {}", params.name);
+
+        // Reject non-public tools in public mode (defense in depth)
+        if self.public_mode && !PUBLIC_TOOLS.contains(&params.name.as_str()) {
+            return Err(McpError::MethodNotFound(format!(
+                "Unknown tool: {}",
+                params.name
+            )));
+        }
 
         let result = match params.name.as_str() {
             "discover_instances" => tools::discover_instances(params.arguments).await?,
@@ -900,5 +938,63 @@ impl McpServer {
 impl Default for McpServer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_tools_allowlist_is_valid() {
+        // Ensure the allowlist only contains tool names that actually exist
+        // in the dispatch table (catches typos if tools are renamed).
+        let known_tools = [
+            "discover_instances",
+            "list_records",
+            "get_record",
+            "set_record",
+            "get_instance_info",
+            "query_schema",
+            "drain_record",
+            "graph_nodes",
+            "graph_edges",
+            "graph_topo_order",
+            "get_architecture",
+            "propose_add_record",
+            "propose_modify_buffer",
+            "propose_add_connector",
+            "propose_modify_fields",
+            "propose_modify_key_variants",
+            "propose_add_task",
+            "propose_add_binary",
+            "resolve_proposal",
+            "remove_record",
+            "rename_record",
+            "remove_task",
+            "remove_binary",
+            "validate_against_instance",
+            "get_buffer_metrics",
+            "save_memory",
+            "reset_session",
+        ];
+        for tool in PUBLIC_TOOLS {
+            assert!(
+                known_tools.contains(tool),
+                "PUBLIC_TOOLS contains unknown tool: {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn public_mode_defaults_to_off() {
+        let server = McpServer::new();
+        assert!(!server.is_public());
+    }
+
+    #[test]
+    fn public_mode_can_be_enabled() {
+        let server = McpServer::new().with_public_mode(true);
+        assert!(server.is_public());
     }
 }
