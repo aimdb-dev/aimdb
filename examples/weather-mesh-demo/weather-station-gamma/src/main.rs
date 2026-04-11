@@ -85,7 +85,7 @@ async fn temperature_producer(
         },
     };
 
-    let mut rng = rand::rngs::SmallRng::from_seed([42; 16]);
+    let mut rng = rand::rngs::SmallRng::from_seed([42; 32]);
     let mut prev: Option<Temperature> = None;
 
     loop {
@@ -122,7 +122,7 @@ async fn humidity_producer(
         },
     };
 
-    let mut rng = rand::rngs::SmallRng::from_seed([84; 16]);
+    let mut rng = rand::rngs::SmallRng::from_seed([84; 32]);
     let mut prev: Option<Humidity> = None;
 
     loop {

@@ -84,7 +84,7 @@ stm32-fmc = { workspace = true }
 embedded-alloc = { version = "0.6", features = ["llff"] }
 
 # RNG for unique client IDs
-rand = { version = "0.8", default-features = false, features = ["small_rng"] }
+rand = { version = "0.10.1", default-features = false }
 
 [package.metadata.embassy]
 build = [

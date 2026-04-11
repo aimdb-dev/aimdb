@@ -88,7 +88,7 @@ stm32-fmc = { workspace = true }
 embedded-alloc = { version = "0.6", features = ["llff"] }
 
 # Random number generation for simulation
-rand = { version = "0.8", default-features = false, features = ["small_rng"] }
+rand = { version = "0.10.1", default-features = false }
 
 [profile.release]
 opt-level = "s"

@@ -24,10 +24,8 @@ version = 2
 yanked = "warn"
 # rustls-pemfile is unmaintained but not vulnerable - waiting for rumqttc to migrate
 # See: https://github.com/rustls/pemfile/issues/61
-# rustls-webpki 0.102.x has no patch (fix only in 0.103.10+) - transitive via rumqttc
 ignore = [
     "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via rumqttc)
-    "RUSTSEC-2026-0049", # rustls-webpki 0.102.x CRL issue (no patch in 0.102.x line, rumqttc transitive)
 ]
 
 [sources]
