@@ -21,6 +21,8 @@ use aimdb_data_contracts::Linkable;
 
 #[cfg(feature = "simulatable")]
 use aimdb_data_contracts::{Simulatable, SimulationConfig};
+#[cfg(feature = "simulatable")]
+use rand::RngExt;
 
 #[cfg(feature = "migratable")]
 use aimdb_data_contracts::{MigrationError, MigrationStep};
@@ -208,10 +210,10 @@ impl Simulatable for TemperatureV2 {
         // Random walk: small delta from previous value, clamped to range
         let current = match previous {
             Some(prev) => {
-                let delta = (rng.gen::<f32>() - 0.5) * variation * step;
+                let delta = (rng.random::<f32>() - 0.5) * variation * step;
                 (prev.celsius + delta + trend).clamp(base - variation, base + variation)
             }
-            None => base + (rng.gen::<f32>() - 0.5) * variation,
+            None => base + (rng.random::<f32>() - 0.5) * variation,
         };
 
         TemperatureV2 {
