@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Public mode** (`--public` flag): Restricts the server to read-only tools (`discover_instances`, `list_records`, `get_record`) for safe internet-facing deployments. Suppresses resources and prompts capabilities. Strips client-supplied `socket_path` arguments to prevent SSRF.
+- **Default socket flag** (`--socket <PATH>`): Sets a default socket path at startup, removing the need for clients to pass `socket_path` on every call. Resolution order: explicit arg → `--socket` → `AIMDB_SOCKET` env var.
+- **CLI argument parsing**: Added `clap` dependency for structured CLI flags.
+- **Comprehensive tests**: Public mode tool filtering, tool rejection, socket stripping, and capability suppression.
 
 ## [0.7.0] - 2026-03-24
 
