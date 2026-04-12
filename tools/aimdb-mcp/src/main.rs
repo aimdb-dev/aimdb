@@ -33,9 +33,8 @@ struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    // Expose --socket as AIMDB_SOCKET so all tool code picks it up automatically
     if let Some(ref socket) = cli.socket {
-        std::env::set_var("AIMDB_SOCKET", socket);
+        aimdb_mcp::tools::set_default_socket(socket.clone());
     }
 
     // Initialize tracing

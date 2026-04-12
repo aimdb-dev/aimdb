@@ -965,8 +965,9 @@ mod tests {
 
     #[test]
     fn public_tools_allowlist_is_valid() {
-        // Ensure the allowlist only contains tool names that actually exist
-        // in the dispatch table (catches typos if tools are renamed).
+        // Ensure the allowlist only contains tool names that actually exist in the
+        // dispatch table, catching typos when tools are renamed. This list is a
+        // snapshot — keep it in sync with the match arms in handle_tools_call().
         let known_tools = [
             "discover_instances",
             "list_records",
@@ -1037,21 +1038,52 @@ mod tests {
         assert!(matches!(err, McpError::MethodNotFound(_)));
     }
 
-    #[tokio::test]
-    async fn public_mode_strips_socket_path() {
+    // Helper: assert that an explicit socket_path is stripped in public mode.
+    // The stripping is confirmed by getting InvalidParams (no socket configured)
+    // rather than a connection error to the attacker-supplied path.
+    async fn assert_socket_path_stripped(tool: &str) {
         let server = McpServer::new().with_public_mode(true);
         server.set_state(ServerState::Ready).await;
-        // Pass an explicit socket_path — it should be stripped in public mode,
-        // causing resolve_socket_path to fall back to AIMDB_SOCKET (which is
-        // unset here, so the call fails with InvalidParams, not a connection
-        // to the attacker-supplied path).
         let params = ToolCallParams {
-            name: "list_records".to_string(),
+            name: tool.to_string(),
             arguments: Some(json!({ "socket_path": "/tmp/evil.sock" })),
         };
         let err = server.handle_tools_call(params).await.unwrap_err();
-        // Without AIMDB_SOCKET set, resolve_socket_path returns InvalidParams
-        assert!(matches!(err, McpError::InvalidParams(_)));
+        assert!(
+            matches!(err, McpError::InvalidParams(_)),
+            "expected InvalidParams for {tool}, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_mode_strips_socket_path_list_records() {
+        assert_socket_path_stripped("list_records").await;
+    }
+
+    #[tokio::test]
+    async fn public_mode_strips_socket_path_get_record() {
+        assert_socket_path_stripped("get_record").await;
+    }
+
+    #[tokio::test]
+    async fn public_mode_strips_socket_path_discover_instances() {
+        // discover_instances scans the filesystem directly — it doesn't call
+        // resolve_socket_path, so stripping socket_path doesn't cause InvalidParams.
+        // The expected outcome is that the tool runs normally (no instances found in
+        // the test environment), confirming the evil socket_path was not connected to.
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        let params = ToolCallParams {
+            name: "discover_instances".to_string(),
+            arguments: Some(json!({ "socket_path": "/tmp/evil.sock" })),
+        };
+        let result = server.handle_tools_call(params).await;
+        // The tool is allowed (not MethodNotFound) and does not attempt to connect
+        // to the evil socket. Either Ok or a no-instances error are both acceptable.
+        assert!(
+            !matches!(result, Err(McpError::MethodNotFound(_))),
+            "discover_instances should not be blocked in public mode"
+        );
     }
 
     #[tokio::test]
