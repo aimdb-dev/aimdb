@@ -818,6 +818,24 @@ impl McpServer {
             )));
         }
 
+        // In public mode, strip any explicit socket_path so resolve_socket_path
+        // always falls back to the pinned AIMDB_SOCKET env var. This prevents
+        // clients from probing arbitrary Unix sockets on the host.
+        let arguments = if self.public_mode {
+            params.arguments.map(|mut v| {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.remove("socket_path");
+                }
+                v
+            })
+        } else {
+            params.arguments
+        };
+        let params = ToolCallParams {
+            name: params.name,
+            arguments,
+        };
+
         let result = match params.name.as_str() {
             "discover_instances" => tools::discover_instances(params.arguments).await?,
             "list_records" => tools::list_records(params.arguments).await?,
@@ -996,5 +1014,68 @@ mod tests {
     fn public_mode_can_be_enabled() {
         let server = McpServer::new().with_public_mode(true);
         assert!(server.is_public());
+    }
+
+    #[tokio::test]
+    async fn public_mode_filters_tools_list() {
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        let result = server.handle_tools_list().await.unwrap();
+        let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, PUBLIC_TOOLS);
+    }
+
+    #[tokio::test]
+    async fn public_mode_rejects_non_public_tool() {
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        let params = ToolCallParams {
+            name: "set_record".to_string(),
+            arguments: None,
+        };
+        let err = server.handle_tools_call(params).await.unwrap_err();
+        assert!(matches!(err, McpError::MethodNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn public_mode_strips_socket_path() {
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        // Pass an explicit socket_path — it should be stripped in public mode,
+        // causing resolve_socket_path to fall back to AIMDB_SOCKET (which is
+        // unset here, so the call fails with InvalidParams, not a connection
+        // to the attacker-supplied path).
+        let params = ToolCallParams {
+            name: "list_records".to_string(),
+            arguments: Some(json!({ "socket_path": "/tmp/evil.sock" })),
+        };
+        let err = server.handle_tools_call(params).await.unwrap_err();
+        // Without AIMDB_SOCKET set, resolve_socket_path returns InvalidParams
+        assert!(matches!(err, McpError::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn normal_mode_lists_all_tools() {
+        let server = McpServer::new();
+        server.set_state(ServerState::Ready).await;
+        let result = server.handle_tools_list().await.unwrap();
+        assert!(result.tools.len() > PUBLIC_TOOLS.len());
+    }
+
+    #[tokio::test]
+    async fn public_mode_suppresses_resources_and_prompts() {
+        let server = McpServer::new().with_public_mode(true);
+        let params = InitializeParams {
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+            capabilities: crate::protocol::ClientCapabilities { sampling: None },
+            client_info: crate::protocol::ClientInfo {
+                name: "test".to_string(),
+                version: "0.1".to_string(),
+            },
+        };
+        let result = server.handle_initialize(params).await.unwrap();
+        assert!(result.capabilities.tools.is_some());
+        assert!(result.capabilities.resources.is_none());
+        assert!(result.capabilities.prompts.is_none());
     }
 }
