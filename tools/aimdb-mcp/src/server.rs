@@ -818,9 +818,10 @@ impl McpServer {
             )));
         }
 
-        // In public mode, strip any explicit socket_path so resolve_socket_path
-        // always falls back to the pinned AIMDB_SOCKET env var. This prevents
-        // clients from probing arbitrary Unix sockets on the host.
+        // In public mode, strip any client-supplied socket_path so
+        // resolve_socket_path falls back to the server-pinned --socket flag
+        // or the AIMDB_SOCKET env var (never a client-chosen path).
+        // This prevents clients from probing arbitrary Unix sockets on the host.
         let arguments = if self.public_mode {
             params.arguments.map(|mut v| {
                 if let Some(obj) = v.as_object_mut() {
@@ -895,6 +896,9 @@ impl McpServer {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
         }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("resources/list".to_string()));
+        }
 
         debug!("📋 Handling resources/list");
         resources::list_resources().await
@@ -910,6 +914,9 @@ impl McpServer {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
         }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("resources/read".to_string()));
+        }
 
         debug!("📖 Handling resources/read: {}", params.uri);
         resources::read_resource(&params.uri).await
@@ -921,6 +928,9 @@ impl McpServer {
     pub async fn handle_prompts_list(&self) -> McpResult<PromptsListResult> {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
+        }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("prompts/list".to_string()));
         }
 
         debug!("📋 Listing available prompts");
@@ -939,6 +949,9 @@ impl McpServer {
     ) -> McpResult<PromptsGetResult> {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
+        }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("prompts/get".to_string()));
         }
 
         debug!("📝 Getting prompt: {}", params.name);
@@ -1042,6 +1055,9 @@ mod tests {
     // The stripping is confirmed by getting InvalidParams (no socket configured)
     // rather than a connection error to the attacker-supplied path.
     async fn assert_socket_path_stripped(tool: &str) {
+        // Clear env so it doesn't interfere with the expected InvalidParams result.
+        std::env::remove_var("AIMDB_SOCKET");
+
         let server = McpServer::new().with_public_mode(true);
         server.set_state(ServerState::Ready).await;
         let params = ToolCallParams {

@@ -31,14 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MCP public mode**: New `--public` flag restricts the MCP server to read-only tools for safe internet-facing deployments with SSRF protection ([tools/aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md))
 - **MCP `--socket` flag**: Default socket path can be set at startup, simplifying single-instance workflows ([tools/aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md))
-
-### Changed
-
-- **`rand` 0.8 → 0.10.1**: Upgraded across workspace (`aimdb-data-contracts`, `aimdb-embassy-adapter`, examples). Migrated API: `gen` → `random`, `SmallRng` seed size 16 → 32, added `RngExt` imports.
-- **README**: Reordered quickstart — remote MCP exploration (zero install) is now step 2, local Docker setup moved to step 3.
-
-### Added
-
 - **Context-Aware Deserializers (Design 026)**: Inbound connector deserializers can now receive a `RuntimeContext<R>` for platform-independent timestamps and logging
   - New `.with_deserializer(|ctx, bytes| ...)` API on `InboundConnectorBuilder` provides `RuntimeContext<R>` to deserialization closures
   - New `.with_deserializer_raw(|bytes| ...)` for plain bytes-only deserialization when context is unnecessary
@@ -60,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **aimdb-knx-connector**: Updated router dispatch for new `route()` signature; outbound publishers dispatch via `SerializerKind`
 - **aimdb-websocket-connector**: Updated router dispatch for new `route()` signature; outbound publishers dispatch via `SerializerKind`
 - All connector examples updated to use new `.with_deserializer(|_ctx, bytes| ...)` and `.with_serializer_raw(|value| ...)` signatures
+- **`rand` 0.8 → 0.10.1**: Upgraded across workspace (`aimdb-data-contracts`, `aimdb-embassy-adapter`, examples). Migrated API: `gen` → `random`, `SmallRng` seed size 16 → 32, added `RngExt` imports.
+- **README**: Reordered quickstart — remote MCP exploration (zero install) is now step 2, local Docker setup moved to step 3.
 
 ## [1.0.0] - 2026-03-16
 
