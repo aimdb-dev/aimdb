@@ -31,7 +31,7 @@ aimdb-core = { version = "1.0.0", path = "../aimdb-core", optional = true, defau
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", optional = true, default-features = false }
 
 [dependencies.rand]
-version = "0.8"
+version = "0.10.1"
 optional = true
 default-features = false
 features = ["std_rng"]

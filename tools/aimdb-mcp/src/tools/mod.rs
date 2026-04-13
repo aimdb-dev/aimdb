@@ -14,9 +14,17 @@ pub mod schema;
 // Global connection pool (initialized once)
 static CONNECTION_POOL: OnceCell<ConnectionPool> = OnceCell::new();
 
+// Default socket path set by --socket at startup (takes precedence over AIMDB_SOCKET env var)
+static DEFAULT_SOCKET: OnceCell<String> = OnceCell::new();
+
 /// Initialize the connection pool for tools
 pub fn init_connection_pool(pool: ConnectionPool) {
     CONNECTION_POOL.set(pool).ok();
+}
+
+/// Set the default socket path (called once at startup from --socket flag).
+pub fn set_default_socket(path: String) {
+    DEFAULT_SOCKET.set(path).ok();
 }
 
 /// Get the connection pool
@@ -24,16 +32,18 @@ pub(crate) fn connection_pool() -> Option<&'static ConnectionPool> {
     CONNECTION_POOL.get()
 }
 
-/// Resolve the socket path from an explicit argument or the `AIMDB_SOCKET` env var.
+/// Resolve the socket path from an explicit argument, the `--socket` flag, or
+/// the `AIMDB_SOCKET` env var (checked in that order).
 ///
-/// Returns an error if neither is set.
+/// Returns an error if none are set.
 pub(crate) fn resolve_socket_path(explicit: Option<String>) -> crate::error::McpResult<String> {
     explicit
+        .or_else(|| DEFAULT_SOCKET.get().cloned())
         .or_else(|| std::env::var("AIMDB_SOCKET").ok())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             crate::error::McpError::InvalidParams(
-                "Missing socket_path (pass it explicitly or set AIMDB_SOCKET env var)".into(),
+                "Missing socket_path (pass it explicitly, use --socket, or set AIMDB_SOCKET env var)".into(),
             )
         })
 }

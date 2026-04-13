@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // Create RNG (StdRng is Send, ThreadRng is not)
-        let mut rng = rand::rngs::StdRng::from_entropy();
+        let mut rng = rand::rngs::StdRng::from_rng(&mut rand::rng());
         let mut prev_temp: Option<Temperature> = None;
         let mut prev_humidity: Option<Humidity> = None;
 

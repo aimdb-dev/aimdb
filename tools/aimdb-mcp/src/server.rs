@@ -17,6 +17,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
 
+/// Tools exposed in public mode (read-only, safe for untrusted clients).
+const PUBLIC_TOOLS: &[&str] = &["discover_instances", "list_records", "get_record"];
+
 /// MCP server state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerState {
@@ -32,6 +35,8 @@ pub enum ServerState {
 pub struct McpServer {
     state: Arc<Mutex<ServerState>>,
     connection_pool: ConnectionPool,
+    /// When true, only PUBLIC_TOOLS are advertised and callable.
+    public_mode: bool,
 }
 
 impl McpServer {
@@ -40,7 +45,19 @@ impl McpServer {
         Self {
             state: Arc::new(Mutex::new(ServerState::Uninitialized)),
             connection_pool: ConnectionPool::new(),
+            public_mode: false,
         }
+    }
+
+    /// Enable public mode: only read-only tools are available.
+    pub fn with_public_mode(mut self, enabled: bool) -> Self {
+        self.public_mode = enabled;
+        self
+    }
+
+    /// Returns true if the server is in public (restricted) mode.
+    pub fn is_public(&self) -> bool {
+        self.public_mode
     }
 
     /// Get the connection pool
@@ -83,17 +100,25 @@ impl McpServer {
         // Initialize session store for architecture agent
         crate::architecture::init_session_store();
 
-        // Build server capabilities
+        // Build server capabilities — in public mode, only tools are available
         let capabilities = ServerCapabilities {
             tools: Some(ToolsCapability {
-                list_changed: Some(false), // Tool list is static for now
+                list_changed: Some(false),
             }),
-            resources: Some(ResourcesCapability {
-                subscribe: Some(false),
-            }),
-            prompts: Some(PromptsCapability {
-                list_changed: Some(false), // Prompt list is static
-            }),
+            resources: if self.public_mode {
+                None
+            } else {
+                Some(ResourcesCapability {
+                    subscribe: Some(false),
+                })
+            },
+            prompts: if self.public_mode {
+                None
+            } else {
+                Some(PromptsCapability {
+                    list_changed: Some(false),
+                })
+            },
         };
 
         // Build server info (version from Cargo.toml)
@@ -122,7 +147,7 @@ impl McpServer {
 
         debug!("📋 Listing available tools");
 
-        let tools = vec![
+        let mut tools = vec![
             Tool {
                 name: "discover_instances".to_string(),
                 description: "Discover all running AimDB instances on the system. Scans /tmp/*.sock and /var/run/aimdb/*.sock for AimDB servers.".to_string(),
@@ -767,6 +792,11 @@ impl McpServer {
             },
         ];
 
+        // In public mode, only expose the allowlisted tools
+        if self.public_mode {
+            tools.retain(|t| PUBLIC_TOOLS.contains(&t.name.as_str()));
+        }
+
         Ok(ToolsListResult { tools })
     }
 
@@ -779,6 +809,33 @@ impl McpServer {
         }
 
         debug!("🛠️  Calling tool: {}", params.name);
+
+        // Reject non-public tools in public mode (defense in depth)
+        if self.public_mode && !PUBLIC_TOOLS.contains(&params.name.as_str()) {
+            return Err(McpError::MethodNotFound(format!(
+                "Unknown tool: {}",
+                params.name
+            )));
+        }
+
+        // In public mode, strip any client-supplied socket_path so
+        // resolve_socket_path falls back to the server-pinned --socket flag
+        // or the AIMDB_SOCKET env var (never a client-chosen path).
+        // This prevents clients from probing arbitrary Unix sockets on the host.
+        let arguments = if self.public_mode {
+            params.arguments.map(|mut v| {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.remove("socket_path");
+                }
+                v
+            })
+        } else {
+            params.arguments
+        };
+        let params = ToolCallParams {
+            name: params.name,
+            arguments,
+        };
 
         let result = match params.name.as_str() {
             "discover_instances" => tools::discover_instances(params.arguments).await?,
@@ -839,6 +896,9 @@ impl McpServer {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
         }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("resources/list".to_string()));
+        }
 
         debug!("📋 Handling resources/list");
         resources::list_resources().await
@@ -854,6 +914,9 @@ impl McpServer {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
         }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("resources/read".to_string()));
+        }
 
         debug!("📖 Handling resources/read: {}", params.uri);
         resources::read_resource(&params.uri).await
@@ -865,6 +928,9 @@ impl McpServer {
     pub async fn handle_prompts_list(&self) -> McpResult<PromptsListResult> {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
+        }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("prompts/list".to_string()));
         }
 
         debug!("📋 Listing available prompts");
@@ -884,6 +950,9 @@ impl McpServer {
         if !self.is_ready().await {
             return Err(McpError::NotInitialized);
         }
+        if self.public_mode {
+            return Err(McpError::MethodNotFound("prompts/get".to_string()));
+        }
 
         debug!("📝 Getting prompt: {}", params.name);
 
@@ -900,5 +969,161 @@ impl McpServer {
 impl Default for McpServer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_tools_allowlist_is_valid() {
+        // Ensure the allowlist only contains tool names that actually exist in the
+        // dispatch table, catching typos when tools are renamed. This list is a
+        // snapshot — keep it in sync with the match arms in handle_tools_call().
+        let known_tools = [
+            "discover_instances",
+            "list_records",
+            "get_record",
+            "set_record",
+            "get_instance_info",
+            "query_schema",
+            "drain_record",
+            "graph_nodes",
+            "graph_edges",
+            "graph_topo_order",
+            "get_architecture",
+            "propose_add_record",
+            "propose_modify_buffer",
+            "propose_add_connector",
+            "propose_modify_fields",
+            "propose_modify_key_variants",
+            "propose_add_task",
+            "propose_add_binary",
+            "resolve_proposal",
+            "remove_record",
+            "rename_record",
+            "remove_task",
+            "remove_binary",
+            "validate_against_instance",
+            "get_buffer_metrics",
+            "save_memory",
+            "reset_session",
+        ];
+        for tool in PUBLIC_TOOLS {
+            assert!(
+                known_tools.contains(tool),
+                "PUBLIC_TOOLS contains unknown tool: {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn public_mode_defaults_to_off() {
+        let server = McpServer::new();
+        assert!(!server.is_public());
+    }
+
+    #[test]
+    fn public_mode_can_be_enabled() {
+        let server = McpServer::new().with_public_mode(true);
+        assert!(server.is_public());
+    }
+
+    #[tokio::test]
+    async fn public_mode_filters_tools_list() {
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        let result = server.handle_tools_list().await.unwrap();
+        let names: Vec<&str> = result.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, PUBLIC_TOOLS);
+    }
+
+    #[tokio::test]
+    async fn public_mode_rejects_non_public_tool() {
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        let params = ToolCallParams {
+            name: "set_record".to_string(),
+            arguments: None,
+        };
+        let err = server.handle_tools_call(params).await.unwrap_err();
+        assert!(matches!(err, McpError::MethodNotFound(_)));
+    }
+
+    // Helper: assert that an explicit socket_path is stripped in public mode.
+    // The stripping is confirmed by getting InvalidParams (no socket configured)
+    // rather than a connection error to the attacker-supplied path.
+    async fn assert_socket_path_stripped(tool: &str) {
+        // Clear env so it doesn't interfere with the expected InvalidParams result.
+        std::env::remove_var("AIMDB_SOCKET");
+
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        let params = ToolCallParams {
+            name: tool.to_string(),
+            arguments: Some(json!({ "socket_path": "/tmp/evil.sock" })),
+        };
+        let err = server.handle_tools_call(params).await.unwrap_err();
+        assert!(
+            matches!(err, McpError::InvalidParams(_)),
+            "expected InvalidParams for {tool}, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_mode_strips_socket_path_list_records() {
+        assert_socket_path_stripped("list_records").await;
+    }
+
+    #[tokio::test]
+    async fn public_mode_strips_socket_path_get_record() {
+        assert_socket_path_stripped("get_record").await;
+    }
+
+    #[tokio::test]
+    async fn public_mode_strips_socket_path_discover_instances() {
+        // discover_instances scans the filesystem directly — it doesn't call
+        // resolve_socket_path, so stripping socket_path doesn't cause InvalidParams.
+        // The expected outcome is that the tool runs normally (no instances found in
+        // the test environment), confirming the evil socket_path was not connected to.
+        let server = McpServer::new().with_public_mode(true);
+        server.set_state(ServerState::Ready).await;
+        let params = ToolCallParams {
+            name: "discover_instances".to_string(),
+            arguments: Some(json!({ "socket_path": "/tmp/evil.sock" })),
+        };
+        let result = server.handle_tools_call(params).await;
+        // The tool is allowed (not MethodNotFound) and does not attempt to connect
+        // to the evil socket. Either Ok or a no-instances error are both acceptable.
+        assert!(
+            !matches!(result, Err(McpError::MethodNotFound(_))),
+            "discover_instances should not be blocked in public mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_mode_lists_all_tools() {
+        let server = McpServer::new();
+        server.set_state(ServerState::Ready).await;
+        let result = server.handle_tools_list().await.unwrap();
+        assert!(result.tools.len() > PUBLIC_TOOLS.len());
+    }
+
+    #[tokio::test]
+    async fn public_mode_suppresses_resources_and_prompts() {
+        let server = McpServer::new().with_public_mode(true);
+        let params = InitializeParams {
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+            capabilities: crate::protocol::ClientCapabilities { sampling: None },
+            client_info: crate::protocol::ClientInfo {
+                name: "test".to_string(),
+                version: "0.1".to_string(),
+            },
+        };
+        let result = server.handle_initialize(params).await.unwrap();
+        assert!(result.capabilities.tools.is_some());
+        assert!(result.capabilities.resources.is_none());
+        assert!(result.capabilities.prompts.is_none());
     }
 }

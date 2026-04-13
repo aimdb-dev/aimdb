@@ -10,6 +10,8 @@ use aimdb_data_contracts::Linkable;
 
 #[cfg(feature = "simulatable")]
 use aimdb_data_contracts::{Simulatable, SimulationConfig};
+#[cfg(feature = "simulatable")]
+use rand::RngExt;
 
 /// GPS location reading
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -93,8 +95,8 @@ impl Simulatable for GpsLocation {
         // Random walk from previous position or start near base
         let (lat, lon) = match previous {
             Some(prev) => {
-                let lat_delta = (rng.gen::<f64>() - 0.5) * max_delta * step;
-                let lon_delta = (rng.gen::<f64>() - 0.5) * max_delta * step;
+                let lat_delta = (rng.random::<f64>() - 0.5) * max_delta * step;
+                let lon_delta = (rng.random::<f64>() - 0.5) * max_delta * step;
                 let new_lat =
                     (prev.latitude + lat_delta).clamp(base_lat - max_delta, base_lat + max_delta);
                 let new_lon =
@@ -102,8 +104,8 @@ impl Simulatable for GpsLocation {
                 (new_lat, new_lon)
             }
             None => {
-                let lat = base_lat + (rng.gen::<f64>() - 0.5) * max_delta;
-                let lon = base_lon + (rng.gen::<f64>() - 0.5) * max_delta;
+                let lat = base_lat + (rng.random::<f64>() - 0.5) * max_delta;
+                let lon = base_lon + (rng.random::<f64>() - 0.5) * max_delta;
                 (lat, lon)
             }
         };
@@ -111,8 +113,8 @@ impl Simulatable for GpsLocation {
         GpsLocation {
             latitude: lat,
             longitude: lon,
-            altitude: Some(200.0 + rng.gen::<f32>() * 10.0),
-            accuracy: Some(5.0 + rng.gen::<f32>() * 10.0),
+            altitude: Some(200.0 + rng.random::<f32>() * 10.0),
+            accuracy: Some(5.0 + rng.random::<f32>() * 10.0),
             timestamp,
         }
     }

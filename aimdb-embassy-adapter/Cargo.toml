@@ -80,4 +80,4 @@ futures = "0.3"
 tracing-test = "0.2"
 
 # Random number generation for tests
-rand = "0.8"
+rand = "0.10.1"

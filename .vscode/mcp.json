@@ -1,13 +1,8 @@
 {
     "servers": {
-        "aimdb": {
-            "type": "stdio",
-            "command": "/aimdb_ws/aimdb/target/release/aimdb-mcp",
-            "args": [],
-            "env": {
-                "RUST_LOG": "info",
-                "AIMDB_WORKSPACE": "${workspaceFolder}"
-            }
+        "aimdb-weather": {
+            "type": "http",
+            "url": "http://aimdb.dev/mcp"
         }
     }
 }

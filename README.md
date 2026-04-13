@@ -180,7 +180,32 @@ Explore a running sensor mesh — no setup required:
 
 > **[aimdb.dev](https://aimdb.dev)** — live weather stations streaming typed contracts across MCU, edge and cloud.
 
-#### 2. Run locally
+#### 2. Explore with AI
+
+Connect an MCP-compatible editor to the live demo and query your data in natural language — no install required:
+
+<p align="center">
+  <img src="assets/copilot-communication.gif" alt="AimDB MCP Live Demo" width="600">
+</p>
+
+Add the remote MCP server to your workspace:
+
+`.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "aimdb-weather": {
+      "type": "http",
+      "url": "http://aimdb.dev/mcp"
+    }
+  }
+}
+```
+
+Then ask: *"What's the current temperature in Munich?"* — see the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors.
+
+#### 3. Run locally
 
 Spin up a full MCU → edge → cloud mesh with one command:
 
@@ -190,35 +215,6 @@ docker compose up
 ```
 
 This starts three weather stations, an MQTT broker and a central hub — all wired together with typed data contracts.
-
-#### 3. Explore with AI
-
-With the mesh running, connect an MCP-compatible editor to query your data in natural language:
-
-<p align="center">
-  <img src="assets/copilot-communication.gif" alt="AimDB MCP Live Demo" width="600">
-</p>
-
-Install the MCP server and add it to your workspace:
-
-```bash
-cargo install aimdb-mcp
-```
-
-`.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "aimdb": {
-      "type": "stdio",
-      "command": "${userHome}/.cargo/bin/aimdb-mcp"
-    }
-  }
-}
-```
-
-Then ask: *"What's the current temperature from station alpha?"* — see the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors.
 
 #### 4. Build your own
 

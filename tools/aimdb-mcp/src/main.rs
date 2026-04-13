@@ -9,11 +9,34 @@ use aimdb_mcp::protocol::{
     JsonRpcResponse, PromptsGetParams, ResourceReadParams, ToolCallParams,
 };
 use aimdb_mcp::{McpServer, StdioTransport};
+use clap::Parser;
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
+/// AimDB MCP Server — LLM-powered introspection for AimDB instances.
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    /// Public mode: expose only read-only tools (discover_instances, list_records, get_record).
+    /// Intended for untrusted / internet-facing endpoints.
+    #[arg(long)]
+    public: bool,
+
+    /// Default Unix socket path for AimDB connections.
+    /// Tools will use this instead of requiring an explicit socket_path argument.
+    /// Equivalent to setting the AIMDB_SOCKET environment variable.
+    #[arg(long, value_name = "PATH")]
+    socket: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+
+    if let Some(ref socket) = cli.socket {
+        aimdb_mcp::tools::set_default_socket(socket.clone());
+    }
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -26,9 +49,15 @@ async fn main() {
     info!("🚀 Starting AimDB MCP Server");
     info!("📡 Protocol: MCP 2025-06-18 over JSON-RPC 2.0");
     info!("🔌 Transport: stdio (NDJSON)");
+    if cli.public {
+        info!("🔒 Public mode: only read-only tools are available");
+    }
+    if let Some(ref socket) = cli.socket {
+        info!("📎 Default socket: {}", socket);
+    }
 
     // Create server and transport
-    let server = McpServer::new();
+    let server = McpServer::new().with_public_mode(cli.public);
     let mut transport = StdioTransport::new();
 
     info!("✅ Server ready, waiting for initialize request...");
