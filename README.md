@@ -22,13 +22,13 @@
 </a>
 </p>
 
-AimDB turns data contracts into the architecture. Define your schemas once — with built-in versioning, observability and serialization — and deploy them unchanged across microcontrollers, edge gateways, Kubernetes and the browser.
+AimDB turns data contracts into the architecture. Define your schemas once and deploy them unchanged across microcontrollers, edge gateways, Kubernetes and the browser.
 
 ---
 
 ### Vision
 
-A future where every system — from a $2 sensor to a global fleet — shares one data language. Contracts define how data moves, evolves and is observed. Infrastructure adapts to the data, not the other way around.
+A future where every system, from a $2 sensor to a global fleet, shares one data language. Contracts define how data flows, evolves and how it is observed. Infrastructure adapts to data, not the other way around.
 
 ---
 
