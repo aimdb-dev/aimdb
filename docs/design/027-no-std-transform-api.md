@@ -197,13 +197,13 @@ aimdb-core/src/
         join.rs            # runtime-agnostic join implementation
 
 aimdb-tokio-adapter/src/
-    join_fanin.rs          # tokio JoinFanInRuntime implementation
+    join_queue.rs          # tokio JoinFanInRuntime implementation
 
 aimdb-embassy-adapter/src/
-    join_fanin.rs          # embassy JoinFanInRuntime implementation
+    join_queue.rs          # embassy JoinFanInRuntime implementation
 
 aimdb-wasm-adapter/src/
-    join_fanin.rs          # wasm JoinFanInRuntime implementation
+    join_queue.rs          # wasm JoinFanInRuntime implementation
 ```
 
 No split between `join_std.rs` and `join_nostd.rs` in core.

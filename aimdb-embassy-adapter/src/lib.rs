@@ -85,7 +85,7 @@ extern crate alloc;
 pub mod buffer;
 
 #[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]
-pub mod join_fanin;
+pub mod join_queue;
 
 #[cfg(not(feature = "std"))]
 mod error;

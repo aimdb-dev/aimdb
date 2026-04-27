@@ -34,7 +34,7 @@ pub mod buffer;
 pub mod connector;
 pub mod error;
 #[cfg(feature = "tokio-runtime")]
-pub mod join_fanin;
+pub mod join_queue;
 pub mod runtime;
 pub mod time;
 
