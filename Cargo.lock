@@ -280,6 +280,7 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-executor",
  "aimdb-ws-protocol",
+ "futures-channel",
  "futures-util",
  "js-sys",
  "serde",

@@ -73,6 +73,6 @@ pub use record_id::{RecordId, RecordKey, StringKey};
 pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo, RecordOrigin};
 
 // Transform API exports
-#[cfg(feature = "std")]
+#[cfg(feature = "alloc")]
 pub use transform::{JoinBuilder, JoinPipeline, JoinTrigger};
 pub use transform::{TransformBuilder, TransformPipeline};

@@ -33,6 +33,8 @@ compile_error!("tokio-adapter requires the std feature");
 pub mod buffer;
 pub mod connector;
 pub mod error;
+#[cfg(feature = "tokio-runtime")]
+pub mod join_fanin;
 pub mod runtime;
 pub mod time;
 
