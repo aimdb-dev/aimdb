@@ -1,8 +1,11 @@
-use aimdb_executor::{ExecutorResult, JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
+use aimdb_executor::{ExecutorResult, JoinQueue, JoinReceiver, JoinSender};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 
+#[cfg(all(feature = "embassy-runtime", feature = "alloc"))]
 use crate::runtime::EmbassyAdapter;
+#[cfg(all(feature = "embassy-runtime", feature = "alloc"))]
+use aimdb_executor::JoinFanInRuntime;
 
 /// Internal queue capacity for Embassy join fan-in.
 ///

@@ -1050,7 +1050,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-net"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-time-queue-utils"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "embassy-executor-timer-queue",
  "heapless 0.9.1",
@@ -1170,7 +1170,6 @@ dependencies = [
 name = "embassy-usb-driver"
 version = "0.2.0"
 dependencies = [
- "bitflags 2.11.0",
  "defmt 1.0.1",
  "embedded-io-async 0.7.0",
 ]
@@ -3013,7 +3012,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-5f15bbfaf37bd6a6330fec66a3a39de0042d64ac#8da545d80e11594b00efdcc6fb94c70054bee09a"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-10af491da4af2cf36f885e8a244139ddb97296c4#f4a6d7f10ba1e2681ab8d004138c8d836a264d92"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
