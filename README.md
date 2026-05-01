@@ -32,12 +32,12 @@ AimDB turns data contracts into the architecture. Define your schemas once and d
 
 ## Why AimDB exists
 
-Most distributed systems layer observability, sync and schema management on top. AimDB builds them into the data model itself.
+AimDB makes **the Rust type the contract** — defined once, compiled unchanged from a `no_std` microcontroller to a Kubernetes pod. No separate schema files. No code generators. No translation layer between firmware and cloud. The code is law.
 
+- **One type, every tier** — the same struct compiles for bare-metal firmware and a cloud service, with no conversion layer between them.
 - **No glue code between layers** — the buffer type on a record defines how it moves. No manual queue wiring.
-- **Every record is observable by default** — no separate metrics layer to wire up.
-- **Sync is part of the schema, not a service** — declare a connector on the key, not as a separate process.
-- **Schema evolution, serialization and connectors derive from the type** — add a trait, not a dependency.
+- **Observability built-in** — implement the `Observable` trait and every record emits metrics automatically. No separate instrumentation layer.
+- **Connectors derive from the type** — declare a connector on the key, not as a separate process.
 
 → [The Next Era of Software Architecture Is Data-First](https://aimdb.dev/blog/data-driven-design)
 
