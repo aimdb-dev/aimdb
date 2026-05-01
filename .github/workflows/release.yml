@@ -16,7 +16,7 @@ jobs:
       contents: write
       discussions: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         submodules: recursive
     
@@ -27,7 +27,7 @@ jobs:
         components: rustfmt, clippy
     
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v5
       with:
         path: |
           ~/.cargo/registry
@@ -59,7 +59,7 @@ jobs:
         fi
     
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3
       with:
         body_path: release_notes.md
         draft: false
