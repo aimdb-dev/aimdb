@@ -24,131 +24,109 @@
 
 AimDB turns data contracts into the architecture. Define your schemas once and deploy them unchanged across microcontrollers, edge gateways, Kubernetes and the browser.
 
----
+[![AimDB Live Demo](assets/demo.gif)](https://aimdb.dev)
 
-### Vision
-
-A future where every system, from a $2 sensor to a global fleet, shares one data language. Contracts define how data flows, evolves and how it is observed. Infrastructure adapts to data, not the other way around.
+> **[See it running →](https://aimdb.dev)** Live weather stations streaming typed contracts across MCU, edge and cloud.
 
 ---
 
-### Design Philosophy
+## Why AimDB exists
 
-In a data-driven architecture, every design decision starts with the data, not the service that produces it.
+Most distributed systems layer observability, sync and schema management on top. AimDB builds them into the data model itself.
 
-**Records declare their own semantics.** When you register a record in AimDB, you choose a buffer type that defines how the data moves:
+- **No glue code between layers** — the buffer type on a record defines how it moves. No manual queue wiring.
+- **Every record is observable by default** — no separate metrics layer to wire up.
+- **Sync is part of the schema, not a service** — declare a connector on the key, not as a separate process.
+- **Schema evolution, serialization and connectors derive from the type** — add a trait, not a dependency.
 
-| Buffer | Semantics | Use Cases |
-|--------|-----------|-----------|
-| **SPMC Ring** | Bounded stream with independent consumers | Sensor telemetry, event logs |
-| **SingleLatest** | Only the current value matters | Feature flags, configuration, UI state |
-| **Mailbox** | Latest instruction wins | Device commands, actuation, RPC |
-
-These are the three universal primitives of data movement — portable, typed and runtime-agnostic.
-
-**Observability becomes automatic.** A record that exists is observable by definition. Every producer and consumer relationship is declared in the builder, not discovered through instrumentation.
-
-**Synchronization becomes declarative.** You don't build a sync layer between your MCU, edge gateway and cloud backend. You declare a record with connector metadata on its key and the same typed data flows across all environments without translation.
-
-**Cross-cutting concerns derive from the schema.** Instead of adding observability libraries, feature flag SDKs and experiment frameworks as separate integrations, they become intrinsic properties of records — declared once, applied everywhere.
+→ [The Next Era of Software Architecture Is Data-First](https://aimdb.dev/blog/data-driven-design)
 
 ---
 
-### How It Works
+## Quick start
 
-Define your contracts, choose buffer semantics and wire up connectors — all in one builder block:
+### Run it locally in 5 min
 
-```rust
-// A sensor node: produce temperature readings, publish over MQTT
-builder.configure::<Temperature>("sensor::temp", |reg| {
-    reg.buffer(BufferCfg::SpmcRing { capacity: 256 })
-        .source(|ctx, producer| async move {
-            loop {
-                let reading = read_sensor().await;
-                producer.send(Temperature::set(reading, now())).await.ok();
-                ctx.sleep(Duration::from_secs(1)).await;
-            }
-        })
-        .link_to("mqtt://sensors/temperature")
-        .with_serializer(Temperature::to_bytes)
-        .finish();
-});
-
-// An edge gateway: receive from MQTT, observe and forward
-builder.configure::<Temperature>("gateway::temp", |reg| {
-    reg.buffer(BufferCfg::SingleLatest)
-        .link_from("mqtt://sensors/temperature")
-        .with_deserializer(Temperature::from_bytes)
-        .tap(log_tap::<Temperature>("edge"))   // [edge] 22.5 °C
-        .finish();
-});
+```bash
+cargo new my-aimdb-app && cd my-aimdb-app
+cargo add aimdb-core aimdb-tokio-adapter tokio --features tokio/full
 ```
 
-Transport topics can be passed as strings to `link_to` / `link_from`, or declared on key enums with `#[link_address = "mqtt://..."]` and resolved at runtime. No separate instrumentation. No SDK integration. No sync code.
-
----
-
-### Data Contracts
-
-Data contracts are the heart of AimDB. A contract is a plain Rust struct that carries its own identity, version and capabilities — the single source of truth from sensor firmware to browser UI.
+Drop this into `src/main.rs`:
 
 ```rust
-use aimdb_data_contracts::{SchemaType, Settable};
-use serde::{Deserialize, Serialize};
+use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
+use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use std::sync::Arc;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Temperature {
     pub celsius: f32,
-    pub timestamp: u64,
 }
 
-impl SchemaType for Temperature {
-    const NAME: &'static str = "temperature";
-    const VERSION: u32 = 1;
-}
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = Arc::new(TokioAdapter::new()?);
+    let mut builder = AimDbBuilder::new().runtime(runtime);
 
-impl Settable for Temperature {
-    type Value = f32;
-    fn set(value: Self::Value, timestamp: u64) -> Self {
-        Self { celsius: value, timestamp }
-    }
-}
-```
+    builder.configure::<Temperature>("temp.indoor", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+            .source(|ctx, producer| async move {
+                for celsius in [21.0, 22.5, 24.1] {
+                    producer.produce(Temperature { celsius }).await.ok();
+                    ctx.time().sleep(ctx.time().secs(1)).await;
+                }
+            })
+            .tap(|ctx, consumer| async move {
+                let mut reader = consumer.subscribe().unwrap();
+                while let Ok(t) = reader.recv().await {
+                    ctx.log().info(&format!("temp: {:.1}°C", t.celsius));
+                }
+            })
+            .finish();
+    });
 
-This struct compiles for `no_std` embedded targets and standard Rust alike. `SchemaType` gives the record its identity and version. `Settable` provides a canonical constructor so producers can create records from a raw value — this is the interface used by `producer.send(Temperature::set(reading, now()))` in the builder.
-
-#### Contract Attributes
-
-Contracts gain capabilities through trait implementations. Each trait is a compile-time declaration of what a contract *can do*, not a runtime configuration:
-
-| Attribute | Trait | What It Enables |
-|-----------|-------|-----------------|
-| **Settable** | `Settable` | Canonical constructor from a raw value — the interface behind `producer.send(T::set(value, ts))`. |
-| **Streamable** | `Streamable` | Cross-boundary transport — WASM, WebSocket, CLI. One registry, zero parallel type systems. |
-| **Migratable** | `MigrationStep` | Bidirectional schema evolution with typed up/down transforms and chained version steps. |
-| **Observable** | `Observable` | Signal extraction for thresholds, logging and monitoring. Icon, unit and `format_log()` built in. |
-| **Linkable** | `Linkable` | Wire-format serialization for connectors — MQTT, KNX and any future transport. |
-| **Simulatable** | `Simulatable` | Realistic test data generation with random walks, trends and configurable parameters. |
-
-For example, `Observable` turns a contract into a loggable, monitorable signal:
-
-```rust
-impl Observable for Temperature {
-    type Signal = f32;
-    const ICON: &'static str = "thermometer";
-    const UNIT: &'static str = "°C";
-
-    fn signal(&self) -> f32 { self.celsius }
-
-    fn format_log(&self, node_id: &str) -> String {
-        format!("[{}] {:.1} °C", node_id, self.celsius)
-    }
+    builder.build()?.run().await?;
+    Ok(())
 }
 ```
 
-Each trait you implement unlocks a capability — contracts without `Observable` simply can't be tapped; contracts without `Linkable` can't be wired to connectors. The type system enforces what your data can do.
+`cargo run` — three temperature readings stream through a typed pipeline. The same code compiles for Embassy on a Cortex-M4 or WASM in the browser by swapping the runtime adapter — nothing else changes.
 
-#### Platform-Agnostic by Design
+### Run a real weather mesh in less than 30 min
+
+A full MCU → edge → cloud mesh: three weather stations, MQTT broker and a central hub.
+
+```bash
+git clone https://github.com/aimdb-dev/aimdb
+cd aimdb/examples/weather-mesh-demo
+docker compose up
+```
+
+→ [Walkthrough in the docs](https://aimdb.dev/docs/getting-started)
+
+---
+
+## What you get
+
+- **One async API across MCU, edge, cloud and browser.** Tokio, Embassy, WASM — same code, different runtime adapter. → [How the runtime abstraction works](https://aimdb.dev/blog/building-aimdb-one-async-api)
+- **Typed Rust structs are the schema.** No IDL, no codegen step, no schema registry.
+- **Three buffer primitives** that cover most data-movement patterns:
+
+| Buffer | Semantics | Use cases |
+| --- | --- | --- |
+| **SPMC Ring** | Bounded stream with independent consumers | Sensor telemetry, event logs |
+| **SingleLatest** | Only the current value matters | Feature flags, config, UI state |
+| **Mailbox** | Latest instruction wins | Device commands, actuation, RPC |
+
+- **Capabilities are unlocked by traits.** Implement `Streamable` to cross WASM/WebSocket/CLI boundaries, `Migratable` for typed schema evolution, `Observable` for monitoring, `Linkable` for wire-format connectors. Without the trait, the type system says no.
+- **Connectors that ship today:** MQTT, KNX, WebSocket. Writing your own is one trait impl.
+
+→ Deep dives: [data contracts](https://aimdb.dev/blog/data-contracts-deep-dive) · [source/tap/transform](https://aimdb.dev/blog/source-tap-transform) · [schema migration](https://aimdb.dev/blog/schema-migration-without-ceremony) · [reactive pipelines](https://aimdb.dev/blog/reactive-pipelines)
+
+---
+
+### Platform-Agnostic by Design
 
 The same contract works across all runtimes without modification:
 
@@ -166,29 +144,13 @@ The Rust type system enforces correctness at compile time. The dataflow engine's
 
 ---
 
-### Getting Started
+## Ask your AI about your running system
 
-#### 1. See it live
+AimDB ships an MCP server. Point any MCP-compatible client at a running instance and query it in natural language.
 
-Explore a running sensor mesh — no setup required:
+[![AimDB MCP demo](assets/copilot-communication.gif)](assets/copilot-communication.gif)
 
-<p align="center">
-  <a href="https://aimdb.dev">
-    <img src="assets/demo.gif" alt="AimDB Live Demo" width="600">
-  </a>
-</p>
-
-> **[aimdb.dev](https://aimdb.dev)** — live weather stations streaming typed contracts across MCU, edge and cloud.
-
-#### 2. Explore with AI
-
-Connect an MCP-compatible editor to the live demo and query your data in natural language — no install required:
-
-<p align="center">
-  <img src="assets/copilot-communication.gif" alt="AimDB MCP Live Demo" width="600">
-</p>
-
-Add the remote MCP server to your workspace:
+Try it against the live demo — no install required. Add this to your workspace:
 
 `.vscode/mcp.json`:
 
@@ -203,27 +165,18 @@ Add the remote MCP server to your workspace:
 }
 ```
 
-Then ask: *"What's the current temperature in Munich?"* — see the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors.
+Then ask: *"What's the current temperature in Munich?"*
 
-#### 3. Run locally
+See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors or read the deep dive: [AI-Assisted System Introspection: AimDB Meets the Model Context Protocol](https://aimdb.dev/blog/ai-introspection-with-mcp).
 
-Spin up a full MCU → edge → cloud mesh with one command:
+---
 
-```bash
-cd examples/weather-mesh-demo
-docker compose up
-```
+## Learn more
 
-This starts three weather stations, an MQTT broker and a central hub — all wired together with typed data contracts.
-
-#### 4. Build your own
-
-- [Quick Start Guide](https://aimdb.dev/docs/getting-started) — Dependencies, platform setup and your first contract
-- [Data Contracts](https://aimdb.dev/docs/data-contracts) — Type-safe schemas with built-in capabilities
-- [Connectors](https://aimdb.dev/docs/connectors) — MQTT, KNX, WebSocket and more
-- [Deployment](https://aimdb.dev/docs/deployment) — Running on MCU, edge, cloud and browser
-- [API Reference](https://docs.rs/aimdb-core) — Full Rust API documentation
-- [Blog](https://aimdb.dev/blog) — News, tutorials and insights from the AimDB team
+- [Quick Start Guide](https://aimdb.dev/docs/getting-started) — dependencies, platform setup, your first contract
+- [API reference (docs.rs)](https://docs.rs/aimdb-core) — full Rust API
+- [Blog](https://aimdb.dev/blog) — design notes, deep dives, release write-ups
+- [Live demo](https://aimdb.dev) — running sensor mesh
 
 ---
 
@@ -250,7 +203,7 @@ This starts three weather stations, an MQTT broker and a central hub — all wir
 
 ---
 
-### Contributing
+## Contributing
 
 Found a bug or want a feature? Open a [GitHub issue](https://github.com/aimdb-dev/aimdb/issues).
 
@@ -260,7 +213,7 @@ Want to contribute? See the [contributing guide](CONTRIBUTING.md). We have [good
 
 ---
 
-### License
+## License
 
 [Apache 2.0](LICENSE)
 
