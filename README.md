@@ -220,7 +220,7 @@ Want to contribute? See the [contributing guide](CONTRIBUTING.md). We have [good
 ---
 
 <p align="center">
-  <strong>Define once. Deploy anywhere. Observe everything.</strong>
+  <strong>Define once. Deploy anywhere.</strong>
   <br><br>
   <a href="https://aimdb.dev/docs/getting-started">Get started</a> · <a href="https://aimdb.dev">Live demo</a> · <a href="https://github.com/aimdb-dev/aimdb/discussions">Join the discussion</a>
 </p>
