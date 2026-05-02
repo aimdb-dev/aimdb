@@ -176,6 +176,7 @@ macro_rules! impl_record_registrar_ext {
             {
                 self.transform_raw::<I, F>(input_key, build_fn)
             }
+
         }
     };
 
@@ -235,6 +236,7 @@ macro_rules! impl_record_registrar_ext {
                 F: FnOnce(
                     $crate::transform::TransformBuilder<I, T, $runtime>,
                 ) -> $crate::transform::TransformPipeline<I, T, $runtime>;
+
         }
 
         #[cfg(all($(feature = $feature),+))]
@@ -308,6 +310,7 @@ macro_rules! impl_record_registrar_ext {
             {
                 self.transform_raw::<I, F>(input_key, build_fn)
             }
+
         }
     };
 }

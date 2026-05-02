@@ -93,3 +93,83 @@ impl JoinFanInRuntime for EmbassyAdapter {
         Ok(EmbassyJoinQueue { channel })
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// These tests cover: roundtrip ordering, bounded backpressure, and sender cloning.
+// Embassy channels do not close — there are no QueueClosed scenarios to test.
+//
+// NOTE: these tests require the ARM embedded target. They compile as part of
+// `cargo check --target thumbv7em-none-eabihf --features embassy-runtime` but
+// cannot run on x86_64 because the workspace `embassy-executor` uses
+// `platform-cortex-m` (ARM assembly). Run them on an Embassy-capable board or
+// ARM simulator. The `critical-section` dev-dep with `std` feature satisfies
+// the CriticalSectionRawMutex requirement for the channel on the target.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aimdb_executor::{JoinQueue as _, JoinReceiver as _, JoinSender as _};
+    use futures::executor::block_on;
+
+    fn make_channel() -> &'static EmbassyChan<u32> {
+        extern crate alloc;
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(Channel::new()))
+    }
+
+    fn make_queue() -> (EmbassyJoinSender<u32>, EmbassyJoinReceiver<u32>) {
+        EmbassyJoinQueue {
+            channel: make_channel(),
+        }
+        .split()
+    }
+
+    #[test]
+    fn roundtrip_send_recv() {
+        let (tx, mut rx) = make_queue();
+        block_on(async {
+            tx.send(1).await.unwrap();
+            tx.send(2).await.unwrap();
+            tx.send(3).await.unwrap();
+            assert_eq!(rx.recv().await.unwrap(), 1);
+            assert_eq!(rx.recv().await.unwrap(), 2);
+            assert_eq!(rx.recv().await.unwrap(), 3);
+        });
+    }
+
+    #[test]
+    fn bounded_capacity_8() {
+        // Fill to CAPACITY without consuming, then assert an extra send is Pending.
+        let channel: &'static EmbassyChan<u32> = make_channel();
+        block_on(async {
+            for i in 0..CAPACITY as u32 {
+                channel.send(i).await;
+            }
+        });
+        // One more send should not resolve immediately (channel is full)
+        let mut polled = false;
+        let send_fut = channel.send(99u32);
+        futures::pin_mut!(send_fut);
+        let waker = futures::task::noop_waker();
+        let mut cx = core::task::Context::from_waker(&waker);
+        if core::future::Future::poll(core::pin::Pin::new(&mut send_fut), &mut cx)
+            == core::task::Poll::Pending
+        {
+            polled = true;
+        }
+        assert!(polled, "send should be Pending when channel is at capacity");
+    }
+
+    #[test]
+    fn clone_sender_routes_to_same_receiver() {
+        let (tx, mut rx) = make_queue();
+        let tx2 = tx.clone();
+        block_on(async {
+            tx.send(10).await.unwrap();
+            tx2.send(20).await.unwrap();
+            assert_eq!(rx.recv().await.unwrap(), 10);
+            assert_eq!(rx.recv().await.unwrap(), 20);
+        });
+    }
+}

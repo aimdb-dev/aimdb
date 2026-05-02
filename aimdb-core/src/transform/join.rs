@@ -19,7 +19,11 @@ use crate::typed_record::BoxFuture;
 // JoinTrigger
 // ============================================================================
 
-/// Tells the join handler which input produced a value.
+/// Identifies which input produced a value in a multi-input join transform.
+///
+/// Passed to the handler registered with [`JoinStateBuilder::on_trigger`].
+/// Use [`JoinTrigger::index`] to branch on the source input and
+/// [`JoinTrigger::as_input`] to downcast the value to the concrete type.
 pub enum JoinTrigger {
     Input {
         index: usize,
@@ -60,6 +64,13 @@ type JoinInputFactory<R> = Box<
 >;
 
 /// Configures a multi-input join transform.
+///
+/// Available on any runtime that implements [`aimdb_executor::JoinFanInRuntime`].
+/// The fan-in queue (bounded channel between input forwarders and the trigger
+/// loop) is created by the runtime adapter at database startup — capacity is an
+/// internal constant chosen per adapter (Tokio: 64, Embassy: 8, WASM: 64).
+///
+/// Obtain via [`RecordRegistrar::transform_join`].
 #[cfg(feature = "alloc")]
 pub struct JoinBuilder<O, R: JoinFanInRuntime + 'static> {
     inputs: Vec<(String, JoinInputFactory<R>)>,
@@ -141,7 +152,10 @@ where
     }
 }
 
-/// Intermediate builder for setting the join trigger handler.
+/// Intermediate builder that holds join inputs and initial state.
+///
+/// Created by [`JoinBuilder::with_state`]. Call [`JoinStateBuilder::on_trigger`]
+/// to complete the pipeline.
 #[cfg(feature = "alloc")]
 pub struct JoinStateBuilder<O, S, R: JoinFanInRuntime + 'static> {
     inputs: Vec<(String, JoinInputFactory<R>)>,
@@ -156,7 +170,25 @@ where
     S: Send + Sync + 'static,
     R: JoinFanInRuntime + 'static,
 {
-    /// Async handler called whenever any input produces a value.
+    /// Register the handler called whenever any input produces a value.
+    ///
+    /// The handler receives a [`JoinTrigger`] (which input fired), a mutable
+    /// reference to the shared state `S`, and a [`crate::Producer`] to emit
+    /// output values.
+    ///
+    /// Because the returned future must be `'static`, the handler must not
+    /// capture the `state` or `producer` references directly in the `async`
+    /// block. The idiomatic pattern is to update state synchronously, then
+    /// clone/copy any values needed into an owned `async move` block:
+    ///
+    /// ```rust,ignore
+    /// .on_trigger(|trigger, state, producer| {
+    ///     state.value = trigger.as_input::<Input>().copied();
+    ///     let p = producer.clone();
+    ///     let v = state.value;
+    ///     Box::pin(async move { if let Some(v) = v { let _ = p.produce(v).await; } })
+    /// })
+    /// ```
     pub fn on_trigger<F, Fut>(self, handler: F) -> JoinPipeline<O, R>
     where
         F: Fn(JoinTrigger, &mut S, &crate::Producer<O, R>) -> Fut + Send + Sync + 'static,
@@ -182,7 +214,10 @@ where
     }
 }
 
-/// Completed multi-input join pipeline, ready to be stored in `TypedRecord`.
+/// Completed multi-input join pipeline, ready to be registered on a record.
+///
+/// Produced by [`JoinStateBuilder::on_trigger`] and consumed by
+/// [`RecordRegistrar::transform_join`]. Not normally constructed directly.
 #[cfg(feature = "alloc")]
 pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static, R: JoinFanInRuntime + 'static> {
     pub(crate) _input_keys: Vec<String>,

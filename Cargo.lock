@@ -119,6 +119,7 @@ version = "0.5.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",
+ "critical-section",
  "defmt 1.0.1",
  "embassy-executor",
  "embassy-net",
