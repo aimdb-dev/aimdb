@@ -115,7 +115,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("✅ Database initialized with 3 record types");
     info!("   - Temperature: {}", temp_topic);
     info!("   - Humidity: {}", humidity_topic);
-    info!("   - DewPoint: {} (derived via transform_join)", dew_point_topic);
+    info!(
+        "   - DewPoint: {} (derived via transform_join)",
+        dew_point_topic
+    );
 
     // Get producers
     let temp_producer = db.producer::<Temperature>(TempKey::Alpha.as_str());
