@@ -25,7 +25,7 @@ pub mod single;
 pub use single::{StatefulTransformBuilder, TransformBuilder, TransformPipeline};
 
 #[cfg(feature = "alloc")]
-pub use join::{JoinBuilder, JoinPipeline, JoinStateBuilder, JoinTrigger};
+pub use join::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 
 // JoinTrigger is always available (no std dependency)
 #[cfg(not(feature = "alloc"))]
@@ -48,7 +48,6 @@ where
                 Arc<crate::AimDb<R>>,
                 Arc<dyn Any + Send + Sync>,
             ) -> BoxFuture<'static, ()>
-            + Send
-            + Sync,
+            + Send,
     >,
 }

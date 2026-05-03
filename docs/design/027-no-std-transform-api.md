@@ -1,9 +1,9 @@
 # `no_std` Support for the Transform API
 
-**Version:** 1.1
-**Status:** Draft
-**Last Updated:** 2026-04-26
-**Issue:** [#73 — `no_std` Support for Transform API](https://github.com/schnorr-lab/aimdb/issues/73)
+**Version:** 1.3
+**Status:** Implemented
+**Last Updated:** 2026-05-03
+**Issue:** [#73 — `no_std` Support for Transform API](https://github.com/aimdb-dev/aimdb/issues/73)
 **Milestone:** M10 / M11 — Embedded First-Class Support
 **Depends On:** [020-M9-transform-api](020-M9-transform-api.md)
 
@@ -25,30 +25,35 @@
 - [Alternatives Considered](#alternatives-considered)
 - [Risk & Constraints](#risk--constraints)
 - [Open Questions & Required Clarifications](#open-questions--required-clarifications)
+  - [Q4 — `on_trigger` callback model prevents full async in the handler](#q4--on_trigger-callback-model-prevents-full-async-in-the-handler)
 - [Acceptance Criteria](#acceptance-criteria)
 
 ---
 
 ## Summary
 
-The transform API (`TransformBuilder`, `StatefulTransformBuilder`, `TransformPipeline`) is
-partially usable in `no_std` environments today, but the multi-input join path
-(`JoinBuilder`, `JoinStateBuilder`, `JoinPipeline`, `run_join_transform`) is currently
-`std`-only because join fan-in is hardcoded to `tokio::sync::mpsc`.
+This revision made the full transform API — both single-input and multi-input join —
+available on `no_std + alloc` targets. Previously the join path was `std`-only because
+fan-in was hardcoded to `tokio::sync::mpsc`.
 
-This revision adopts a clean end-state architecture: join fan-in is defined in
-`aimdb-executor` as runtime capabilities, and implemented by each runtime adapter
-(Tokio, Embassy, WASM, future runtimes). `aimdb-core` no longer imports Tokio- or
-Embassy-specific queue types for join execution.
+The adopted architecture: join fan-in is defined in `aimdb-executor` as runtime-agnostic
+traits (`JoinFanInRuntime`, `JoinQueue`, `JoinSender`, `JoinReceiver`) and implemented by
+each runtime adapter (Tokio, Embassy, WASM). `aimdb-core` contains no Tokio- or
+Embassy-specific types in the join path.
 
-This intentionally allows API changes across crates to achieve a single, runtime-agnostic
-join implementation.
+During implementation, the join handler API was also redesigned: the original callback
+model (`with_state().on_trigger(Fn(...) -> Pin<Box<dyn Future>>)`) was replaced with a
+task model (`on_triggers(FnOnce(JoinEventRx, Producer) -> impl Future)`). This eliminated
+per-event heap allocation and the restriction that state could not be borrowed across
+`.await` points. See [Q4](#q4--on_trigger-callback-model-prevents-full-async-in-the-handler)
+and [Alternative D](#alternative-d--keep-the-callback-model-on_trigger) for the full
+trade-off record.
 
 ---
 
-## Current State
+## State Before This Revision
 
-### Symbols that are `std`-only and why
+### Symbols that were `std`-only and why
 
 | Symbol | Location | Root dependency |
 |---|---|---|
@@ -60,17 +65,17 @@ join implementation.
 | `transform_join_raw()` | `typed_api.rs` | `JoinBuilder` / `JoinPipeline` |
 | `transform_join()` in `impl_record_registrar_ext!` | `ext_macros.rs` | Same |
 
-### What already works in `no_std`
+### What already worked in `no_std`
 
-- `TransformDescriptor` is alloc-only.
-- `TransformBuilder` / `StatefulTransformBuilder` / `TransformPipeline` have no std dependency.
-- `run_single_transform` is async and runtime-agnostic.
-- `TypedRecord::set_transform()` already works on `no_std + alloc`.
+- `TransformDescriptor` was alloc-only.
+- `TransformBuilder` / `StatefulTransformBuilder` / `TransformPipeline` had no std dependency.
+- `run_single_transform` was async and runtime-agnostic.
+- `TypedRecord::set_transform()` already worked on `no_std + alloc`.
 
-### What is broken for `no_std`
+### What was broken for `no_std`
 
-- Multi-input join is unavailable because fan-in is not abstracted by runtime traits.
-- API exposure (`transform_join`) follows that same std-only wiring.
+- Multi-input join was unavailable because fan-in was not abstracted by runtime traits.
+- API exposure (`transform_join`) followed that same std-only wiring.
 
 ---
 
@@ -219,64 +224,77 @@ No intentional user-facing changes.
 ### Multi-input join
 
 User-facing API is unified across runtimes and does not require runtime queue types.
+`JoinStateBuilder` and `with_state().on_trigger()` were replaced by `on_triggers()` —
+see [Q4](#q4--on_trigger-callback-model-prevents-full-async-in-the-handler).
 
 ```rust
 registrar
-    .register::<HeatIndex>("sensor::HeatIndex", buffer_sized::<4, 2>(SpmcRing))
-    .transform_join(|b| {
-        b.input::<Temperature>("sensor::Temperature")
-         .input::<Humidity>("sensor::Humidity")
-         .with_state(HeatIndexState::default())
-         .on_trigger(|trigger, state, producer| async move {
-             match trigger.index() {
-                 0 => state.temperature = trigger.as_input::<Temperature>().copied(),
-                 1 => state.humidity = trigger.as_input::<Humidity>().copied(),
-                 _ => {}
-             }
-             if let (Some(t), Some(h)) = (state.temperature, state.humidity) {
-                 let _ = producer.produce(heat_index(t, h)).await;
-             }
-         })
+    .configure::<HeatIndex>("sensor::HeatIndex", |reg| {
+        reg.buffer_sized::<4, 2>(EmbassyBufferType::SpmcRing)
+           .transform_join(|b| {
+               b.input::<Temperature>("sensor::Temperature")
+                .input::<Humidity>("sensor::Humidity")
+                .on_triggers(|mut rx, producer| async move {
+                    let mut last_t: Option<Temperature> = None;
+                    let mut last_h: Option<Humidity> = None;
+                    while let Ok(trigger) = rx.recv().await {
+                        match trigger.index() {
+                            0 => last_t = trigger.as_input::<Temperature>().cloned(),
+                            1 => last_h = trigger.as_input::<Humidity>().cloned(),
+                            _ => {}
+                        }
+                        // Borrow both across .await — possible because both are
+                        // owned by this async block, not borrowed from a caller frame.
+                        if let (Some(t), Some(h)) = (&last_t, &last_h) {
+                            producer.produce(heat_index(t, h)).await.ok();
+                        }
+                    }
+                })
+           });
     });
 ```
 
+`JoinEventRx` is the type of `rx` — a type-erased wrapper around the runtime's concrete
+receiver, allocated once at task startup. Its `recv().await` returns `Ok(JoinTrigger)`
+until all upstream input forwarders have exited.
+
 Queue capacity is an internal runtime detail and is not part of the user-facing API.
-Each runtime adapter documents its fixed default.
+Each runtime adapter documents its fixed default (Tokio: 64, Embassy: 8, WASM: 64).
 
 ---
 
 ## Implementation Checklist
 
 ### Step 1 — Core unblocking
-- [ ] Ensure `.transform()` compiles with embedded target (`thumbv7em-none-eabihf`) under `alloc`.
-- [ ] Gate join-only exports/features from single-input path where needed.
+- [x] Ensure `.transform()` compiles with embedded target (`thumbv7em-none-eabihf`) under `alloc`.
+- [x] Gate join-only exports/features from single-input path where needed.
 
 ### Step 2 — Executor contract
-- [ ] Add `join` module and fan-in traits to `aimdb-executor`.
-- [ ] Add tests for trait behavior contract (bounded semantics, send/recv errors).
-- [ ] Re-export new traits from `aimdb-executor` root.
+- [x] Add `join` module and fan-in traits to `aimdb-executor`.
+- [x] Add tests for trait behavior contract (bounded semantics, send/recv errors).
+- [x] Re-export new traits from `aimdb-executor` root.
 
 ### Step 3 — Core refactor
-- [ ] Remove direct `tokio::mpsc` usage from `aimdb-core` join pipeline.
-- [ ] Refactor `JoinBuilder`/`JoinPipeline` to depend on executor join traits.
-- [ ] Update `typed_api.rs` and extension macros to call unified join API.
+- [x] Remove direct `tokio::mpsc` usage from `aimdb-core` join pipeline.
+- [x] Refactor `JoinBuilder`/`JoinPipeline` to depend on executor join traits. `JoinStateBuilder` removed; `on_triggers(FnOnce)` task model adopted (see Q4).
+- [x] Update `typed_api.rs` and extension macros to call unified join API.
 
 ### Step 4 — Runtime adapter implementations
-- [ ] Implement join fan-in traits in `aimdb-tokio-adapter`.
-- [ ] Implement join fan-in traits in `aimdb-embassy-adapter`.
-- [ ] Implement join fan-in traits in `aimdb-wasm-adapter`.
-- [ ] Enable any required optional dependencies and feature wiring.
+- [x] Implement join fan-in traits in `aimdb-tokio-adapter`.
+- [x] Implement join fan-in traits in `aimdb-embassy-adapter`. Gated on `#[cfg(all(feature = "embassy-runtime", feature = "alloc"))]`.
+- [x] Implement join fan-in traits in `aimdb-wasm-adapter`.
+- [x] Enable any required optional dependencies and feature wiring.
 
 ### Step 5 — Validation
-- [ ] `cargo check --target thumbv7em-none-eabihf --features embassy-runtime` passes for `.transform()`.
-- [ ] `cargo check --target thumbv7em-none-eabihf --features embassy-runtime` passes for `.transform_join()`.
-- [ ] `cargo check --target wasm32-unknown-unknown -p aimdb-wasm-adapter` passes for join fan-in implementation.
-- [ ] Workspace tests pass on std path.
-- [ ] Add integration tests showing identical join behavior on Tokio, Embassy, and WASM adapters.
+- [x] `cargo check --target thumbv7em-none-eabihf --features embassy-runtime` passes for `.transform()`.
+- [x] `cargo check --target thumbv7em-none-eabihf --features embassy-runtime` passes for `.transform_join()`. Embassy target is ARM-only compile-checked; full execution tests run on Tokio/WASM.
+- [x] `cargo check --target wasm32-unknown-unknown -p aimdb-wasm-adapter` passes for join fan-in implementation.
+- [x] Workspace tests pass on std path (`make check`, `make all`).
+- [x] Integration tests added for Tokio and WASM adapters showing `transform_join` with inline `on_triggers` closure.
 
 ### Docs
-- [ ] Update transform docs to describe runtime-owned fan-in model.
-- [ ] Document each adapter's fixed queue capacity and backpressure behaviour.
+- [x] API Surface updated with `on_triggers` task-model example (this document).
+- [x] Each adapter's fixed queue capacity documented (Q1 resolution below).
 - [ ] Update `020-M9-transform-api.md` with new join API notes.
 
 ---
@@ -302,6 +320,31 @@ internal complexity.
 
 **Decision:** Rejected in favor of executor-owned contract.
 
+### Alternative D — Keep the callback model (`on_trigger`)
+
+The original API used a per-event callback:
+
+```rust
+.with_state(initial_state)
+.on_trigger(|trigger, state, producer| {
+    // must return Pin<Box<dyn Future + Send + 'static>>
+})
+```
+
+The framework owned the event loop and called the user closure once per incoming trigger.
+This avoided user-visible `while` loops and felt similar to stream combinators.
+
+The cost: `Fut: 'static` forced every reference to `state` or `producer` to be cloned or
+copied synchronously before the first `.await`. Any async work in the handler body needed a
+`Pin<Box<...>>` allocation on every trigger even for no-op branches. Named function syntax
+was required because async closures do not compose with HRTB in stable Rust.
+
+**Decision:** Rejected in favor of the task model (`on_triggers`). The task model costs one
+`Box` at task startup instead of one per event, allows state to be borrowed freely across
+`.await` points (owned by the `async move` block), allows inline closure syntax, and makes
+the event loop explicit — which is also more composable (users can `select!` with other
+futures or break early).
+
 ---
 
 ## Risk & Constraints
@@ -317,10 +360,9 @@ internal complexity.
 
 ---
 
-## Open Questions & Required Clarifications
+## Open Questions & Resolutions
 
-The following gaps were identified during codebase review. Each needs an explicit decision
-before the corresponding implementation step begins.
+The following gaps were identified during codebase review. All are now resolved.
 
 ---
 
@@ -352,8 +394,8 @@ The `.capacity()` method is removed from `JoinBuilder`. No user-facing knob exis
 runtime. If a specific workload needs a different size, the adapter constant can be raised in
 a future release.
 
-**Decision needed**: Confirm the proposed per-adapter defaults (64 / 8 / 64), or nominate
-different values.
+**Resolved**: Per-adapter defaults confirmed and implemented — Tokio: 64, Embassy: 8, WASM: 64.
+No user-facing capacity knob exists on any runtime.
 
 ---
 
@@ -423,6 +465,12 @@ the Embassy `JoinFanInRuntime` impl must land in the same PR. If the method is a
 trait without the adapter impl, the `impl EmbassyRecordRegistrarExt for RecordRegistrar<...,
 EmbassyAdapter>` block will fail to satisfy the `JoinFanInRuntime` bound.
 
+**Resolved**: All `#[cfg(feature = "std")]` gates on join types replaced with
+`#[cfg(feature = "alloc")]` in `transform.rs`, `typed_api.rs`, and `lib.rs`. The macro
+extension was updated in both the single-feature and multi-feature arms. Embassy adapter
+`JoinFanInRuntime` impl gated on `#[cfg(all(feature = "embassy-runtime", feature = "alloc"))]`
+and landed together with the macro change.
+
 ---
 
 ### Q3 — `aimdb-wasm-adapter` is missing `futures-channel` for the WASM fan-in
@@ -446,17 +494,118 @@ futures-channel = { version = "0.3", default-features = false, features = ["allo
 This is a one-line Cargo.toml change. No design decision needed; listing it here so it is not
 forgotten when the WASM fan-in PR is opened.
 
-**Decision needed**: None. Confirm `futures::channel::mpsc` is the preferred queue primitive
-for WASM, or nominate an alternative (e.g., `async-channel` which is `no_std + alloc` friendly).
+**Resolved**: `futures-channel = { version = "0.3", features = ["std", "sink"] }` added to
+`aimdb-wasm-adapter/Cargo.toml`. Note: `features = ["alloc"]` alone is insufficient —
+`BiLock` inside `futures-channel` depends on `std::sync`; `std` is the minimum required
+feature. `futures::channel::mpsc` confirmed as the WASM fan-in primitive.
+
+---
+
+### Q4 — `on_trigger` callback model prevents full async in the handler
+
+**Problem**
+
+The current `on_trigger` signature:
+
+```rust
+F: Fn(JoinTrigger, &mut S, &Producer<O, R>) -> Fut + Send + Sync + 'static,
+Fut: core::future::Future<Output = ()> + Send + 'static,
+```
+
+requires `Fut: 'static`, but `state` and `producer` are borrowed from the framework's event
+loop stack frame — not `'static`. Any future that references them would inherit their lifetime,
+violating the bound. The consequence is that the handler body cannot borrow `state` or
+`producer` across an `.await` point. All values needed in the async portion must be cloned or
+copied out synchronously before the first `.await`, and every trigger — including no-op
+branches — requires a `Box::pin()` heap allocation.
+
+**Root cause**
+
+The framework owns the event loop and calls user code as a *callback per event* (`Fn`). The
+canonical way to express "this future borrows from its arguments" would be higher-ranked trait
+bounds (`for<'a> Fn(&'a mut S) -> Fut<'a>`), but async closures do not compose cleanly with
+HRTB in stable Rust. The API escapes the problem by requiring `Fut: 'static` and shifting the
+burden onto the caller.
+
+The current workaround (synchronous state update → clone into `async move` → `Box::pin`) is
+functional but non-obvious, requires a named function instead of an inline closure, and
+allocates on every event.
+
+**Proposed alternative — task model**
+
+Change the ownership model: instead of the framework running `while let Ok(trigger) = rx.recv().await`
+and calling a user callback on each iteration, hand the `rx` end of the fan-in queue directly
+to a user-supplied `async` closure. The framework still creates the queue and spawns the
+per-input forwarders; it no longer owns the event loop.
+
+```rust
+// Current — callback model (framework event loop, user callback per event)
+.with_state(initial_state)
+.on_trigger(|trigger, state, producer| {
+    // must return Pin<Box<dyn Future + Send + 'static>>
+    // cannot borrow state or producer across .await
+})
+
+// Proposed — task model (user owns the event loop and state)
+.on_triggers(|mut rx, producer| async move {
+    let mut state = initial_state;
+    while let Ok(trigger) = rx.recv().await {
+        // state is owned — can borrow across .await freely
+        // producer is owned — no clone needed
+        match trigger.index() { ... }
+        if ready {
+            let result = some_async_computation(&state.field).await;
+            producer.produce(result).await;
+        }
+    }
+})
+```
+
+The `rx` parameter type would be `Box<dyn JoinReceiver<JoinTrigger> + Send>` — type-erased
+once at task startup (one allocation per transform, not per event) to avoid exposing the
+concrete runtime queue type in the public API.
+
+**Trade-offs**
+
+| | Callback (`Fn`) | Task (`FnOnce`) |
+|---|---|---|
+| `Box::pin` allocation | Per event | Once at task start |
+| Borrow state across `.await` | No | Yes |
+| `with_state()` builder step | Required | Gone (state lives in closure) |
+| User writes event loop | No | Yes (more explicit) |
+| Full async in handler | No | Yes |
+| Inline closure syntax | No (named fn required) | Yes |
+
+The cost of the task model is that users write the `while let` loop themselves. This is more
+explicit but also more flexible — users can `select!` across the trigger receiver and other
+futures, implement their own timeout logic, or break early on a sentinel value.
+
+**Affected step**: Step 3 (core refactor — `run_join_transform`, `JoinStateBuilder`,
+`on_trigger` API) and Step 4 (macro/extension trait signatures).
+
+**Resolved**: Task model adopted. `JoinStateBuilder` removed entirely. The new signature:
+
+```rust
+pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O, R>
+where
+    F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
+    Fut: core::future::Future<Output = ()> + Send + 'static,
+```
+
+`JoinEventRx` is a type-erased wrapper (`Box<dyn DynJoinRx + Send>`) allocated once at task
+startup. Its `recv().await` is the user's event source. The framework still creates the fan-in
+queue and spawns per-input forwarder tasks; user code owns the event loop. See
+[Alternative D](#alternative-d--keep-the-callback-model-on_trigger) for the full trade-off
+record.
 
 ---
 
 ## Acceptance Criteria
 
-1. `aimdb-core` join code contains no Tokio- or Embassy-specific imports.
-2. `aimdb-executor` exposes join fan-in runtime traits used by `aimdb-core`.
-3. Tokio, Embassy, and WASM adapters implement join fan-in traits.
-4. Embedded target build passes with both single-input and multi-input transform usage.
-5. Runtime-specific queue types are not exposed in public transform API.
-6. WASM target build (`wasm32-unknown-unknown`) passes with join fan-in enabled.
-7. Join behavior is bounded and documented consistently across runtimes.
+1. ✅ `aimdb-core` join code contains no Tokio- or Embassy-specific imports.
+2. ✅ `aimdb-executor` exposes join fan-in runtime traits used by `aimdb-core`.
+3. ✅ Tokio, Embassy, and WASM adapters implement join fan-in traits.
+4. ✅ Embedded target build passes with both single-input and multi-input transform usage.
+5. ✅ Runtime-specific queue types are not exposed in public transform API. `JoinEventRx` is the only type users see; its concrete queue is erased.
+6. ✅ WASM target build (`wasm32-unknown-unknown`) passes with join fan-in enabled.
+7. ✅ Join behavior is bounded and documented consistently across runtimes (Tokio: 64, Embassy: 8, WASM: 64).

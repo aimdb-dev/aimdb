@@ -5,12 +5,10 @@
 //!
 //! Run with: wasm-pack test --headless --chrome (or --firefox)
 
-use std::pin::Pin;
 use std::sync::Arc;
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::transform::JoinTrigger;
-use aimdb_core::{AimDbBuilder, Producer};
+use aimdb_core::AimDbBuilder;
 use aimdb_wasm_adapter::{WasmAdapter, WasmRecordRegistrarExt};
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -28,32 +26,6 @@ struct ValueB(u32);
 
 #[derive(Clone, Debug, PartialEq, Copy)]
 struct Sum(u32);
-
-// ---------------------------------------------------------------------------
-// Join handler
-// ---------------------------------------------------------------------------
-
-fn sum_handler(
-    trigger: JoinTrigger,
-    state: &mut (Option<u32>, Option<u32>),
-    producer: &Producer<Sum, WasmAdapter>,
-) -> Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>> {
-    match trigger.index() {
-        0 => state.0 = trigger.as_input::<ValueA>().copied().map(|v| v.0),
-        1 => state.1 = trigger.as_input::<ValueB>().copied().map(|v| v.0),
-        _ => {}
-    }
-    match (state.0, state.1) {
-        (Some(a), Some(b)) => {
-            let p = producer.clone();
-            let sum = a + b;
-            Box::pin(async move {
-                let _ = p.produce(Sum(sum)).await;
-            })
-        }
-        _ => Box::pin(async {}),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Test
@@ -75,8 +47,20 @@ async fn transform_join_produces_sum_on_both_inputs() {
             .transform_join(|b| {
                 b.input::<ValueA>("test::A")
                     .input::<ValueB>("test::B")
-                    .with_state((None::<u32>, None::<u32>))
-                    .on_trigger(sum_handler)
+                    .on_triggers(|mut rx, producer| async move {
+                        let mut last_a: Option<u32> = None;
+                        let mut last_b: Option<u32> = None;
+                        while let Ok(trigger) = rx.recv().await {
+                            match trigger.index() {
+                                0 => last_a = trigger.as_input::<ValueA>().copied().map(|v| v.0),
+                                1 => last_b = trigger.as_input::<ValueB>().copied().map(|v| v.0),
+                                _ => {}
+                            }
+                            if let (Some(a), Some(b)) = (last_a, last_b) {
+                                let _ = producer.produce(Sum(a + b)).await;
+                            }
+                        }
+                    })
             });
     });
 

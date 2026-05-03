@@ -74,5 +74,5 @@ pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo
 
 // Transform API exports
 #[cfg(feature = "alloc")]
-pub use transform::{JoinBuilder, JoinPipeline, JoinTrigger};
+pub use transform::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 pub use transform::{TransformBuilder, TransformPipeline};

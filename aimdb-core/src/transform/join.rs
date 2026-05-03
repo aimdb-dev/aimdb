@@ -10,7 +10,7 @@ use alloc::{
     vec::Vec,
 };
 
-use aimdb_executor::{JoinFanInRuntime, JoinQueue, JoinReceiver as _, JoinSender};
+use aimdb_executor::{ExecutorResult, JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
 
 use crate::transform::TransformDescriptor;
 use crate::typed_record::BoxFuture;
@@ -21,7 +21,7 @@ use crate::typed_record::BoxFuture;
 
 /// Identifies which input produced a value in a multi-input join transform.
 ///
-/// Passed to the handler registered with [`JoinStateBuilder::on_trigger`].
+/// Passed to the event loop inside the closure registered with [`JoinBuilder::on_triggers`].
 /// Use [`JoinTrigger::index`] to branch on the source input and
 /// [`JoinTrigger::as_input`] to downcast the value to the concrete type.
 pub enum JoinTrigger {
@@ -46,12 +46,65 @@ impl JoinTrigger {
 }
 
 // ============================================================================
+// JoinEventRx — type-erased trigger receiver
+// ============================================================================
+
+/// Type-erased receiver for join trigger events.
+///
+/// Obtained as the first argument to the [`JoinBuilder::on_triggers`] closure.
+/// Call `.recv().await` in a loop to consume trigger events from all input forwarders.
+/// Returns `Err` when all input forwarders have exited and the channel is closed.
+///
+/// ```rust,ignore
+/// .on_triggers(|mut rx, producer| async move {
+///     let mut last_a: Option<f32> = None;
+///     let mut last_b: Option<f32> = None;
+///     while let Ok(trigger) = rx.recv().await {
+///         match trigger.index() {
+///             0 => last_a = trigger.as_input::<InputA>().copied(),
+///             1 => last_b = trigger.as_input::<InputB>().copied(),
+///             _ => {}
+///         }
+///         if let (Some(a), Some(b)) = (last_a, last_b) {
+///             producer.produce(compute(a, b)).await.ok();
+///         }
+///     }
+/// })
+/// ```
+pub struct JoinEventRx {
+    inner: Box<dyn DynJoinRx + Send>,
+}
+
+impl JoinEventRx {
+    fn new<R: JoinReceiver<JoinTrigger> + Send + 'static>(inner: R) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+
+    /// Receive the next trigger event.
+    ///
+    /// Returns `Ok(JoinTrigger)` when an input fires, or `Err` when all inputs are closed.
+    pub async fn recv(&mut self) -> ExecutorResult<JoinTrigger> {
+        self.inner.recv_boxed().await
+    }
+}
+
+trait DynJoinRx: Send {
+    fn recv_boxed<'a>(&'a mut self) -> BoxFuture<'a, ExecutorResult<JoinTrigger>>;
+}
+
+impl<R: JoinReceiver<JoinTrigger> + Send> DynJoinRx for R {
+    fn recv_boxed<'a>(&'a mut self) -> BoxFuture<'a, ExecutorResult<JoinTrigger>> {
+        Box::pin(self.recv())
+    }
+}
+
+// ============================================================================
 // JoinBuilder → JoinPipeline
 // ============================================================================
 
 /// Type-erased factory for creating a forwarder task for one join input.
-///
-/// The third argument is the concrete sender from the runtime's join queue.
 #[cfg(feature = "alloc")]
 type JoinInputFactory<R> = Box<
     dyn FnOnce(
@@ -142,61 +195,36 @@ where
         self
     }
 
-    /// Set the join state and begin configuring the trigger handler.
-    pub fn with_state<S: Send + Sync + 'static>(self, initial: S) -> JoinStateBuilder<O, S, R> {
-        JoinStateBuilder {
-            inputs: self.inputs,
-            initial_state: initial,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-/// Intermediate builder that holds join inputs and initial state.
-///
-/// Created by [`JoinBuilder::with_state`]. Call [`JoinStateBuilder::on_trigger`]
-/// to complete the pipeline.
-#[cfg(feature = "alloc")]
-pub struct JoinStateBuilder<O, S, R: JoinFanInRuntime + 'static> {
-    inputs: Vec<(String, JoinInputFactory<R>)>,
-    initial_state: S,
-    _phantom: PhantomData<(O, R)>,
-}
-
-#[cfg(feature = "alloc")]
-impl<O, S, R> JoinStateBuilder<O, S, R>
-where
-    O: Send + Sync + Clone + Debug + 'static,
-    S: Send + Sync + 'static,
-    R: JoinFanInRuntime + 'static,
-{
-    /// Register the handler called whenever any input produces a value.
+    /// Complete the pipeline by providing an async task that owns the event loop and state.
     ///
-    /// The handler receives a [`JoinTrigger`] (which input fired), a mutable
-    /// reference to the shared state `S`, and a [`crate::Producer`] to emit
-    /// output values.
+    /// The closure receives a [`JoinEventRx`] to read trigger events and a [`crate::Producer`]
+    /// to emit output values. Both are owned — moved into the `async move` block — so the
+    /// closure can freely hold borrows across `.await` points and maintain any state it needs.
     ///
-    /// Because the returned future must be `'static`, the handler must not
-    /// capture the `state` or `producer` references directly in the `async`
-    /// block. The idiomatic pattern is to update state synchronously, then
-    /// clone/copy any values needed into an owned `async move` block:
+    /// The task runs until all input forwarders close (i.e., all upstream records stop producing).
     ///
     /// ```rust,ignore
-    /// .on_trigger(|trigger, state, producer| {
-    ///     state.value = trigger.as_input::<Input>().copied();
-    ///     let p = producer.clone();
-    ///     let v = state.value;
-    ///     Box::pin(async move { if let Some(v) = v { let _ = p.produce(v).await; } })
+    /// .on_triggers(|mut rx, producer| async move {
+    ///     let mut last_a: Option<f32> = None;
+    ///     let mut last_b: Option<f32> = None;
+    ///     while let Ok(trigger) = rx.recv().await {
+    ///         match trigger.index() {
+    ///             0 => last_a = trigger.as_input::<InputA>().copied(),
+    ///             1 => last_b = trigger.as_input::<InputB>().copied(),
+    ///             _ => {}
+    ///         }
+    ///         if let (Some(a), Some(b)) = (last_a, last_b) {
+    ///             producer.produce(compute(a, b)).await.ok();
+    ///         }
+    ///     }
     /// })
     /// ```
-    pub fn on_trigger<F, Fut>(self, handler: F) -> JoinPipeline<O, R>
+    pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O, R>
     where
-        F: Fn(JoinTrigger, &mut S, &crate::Producer<O, R>) -> Fut + Send + Sync + 'static,
+        F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         let inputs = self.inputs;
-        let initial = self.initial_state;
-
         let input_keys_for_descriptor: Vec<String> =
             inputs.iter().map(|(k, _)| k.clone()).collect();
 
@@ -205,9 +233,7 @@ where
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
                 spawn_fn: Box::new(move |producer, db, ctx| {
-                    Box::pin(run_join_transform(
-                        db, inputs, producer, initial, handler, ctx,
-                    ))
+                    Box::pin(run_join_transform(db, inputs, producer, handler, ctx))
                 }),
             }),
         }
@@ -216,12 +242,12 @@ where
 
 /// Completed multi-input join pipeline, ready to be registered on a record.
 ///
-/// Produced by [`JoinStateBuilder::on_trigger`] and consumed by
+/// Produced by [`JoinBuilder::on_triggers`] and consumed by
 /// [`RecordRegistrar::transform_join`]. Not normally constructed directly.
 #[cfg(feature = "alloc")]
 pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static, R: JoinFanInRuntime + 'static> {
     pub(crate) _input_keys: Vec<String>,
-    pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O, R> + Send + Sync>,
+    pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O, R> + Send>,
 }
 
 #[cfg(feature = "alloc")]
@@ -241,18 +267,16 @@ where
 
 #[cfg(feature = "alloc")]
 #[allow(unused_variables)]
-async fn run_join_transform<O, S, R, F, Fut>(
+async fn run_join_transform<O, R, F, Fut>(
     db: Arc<crate::AimDb<R>>,
     inputs: Vec<(String, JoinInputFactory<R>)>,
     producer: crate::Producer<O, R>,
-    mut state: S,
     handler: F,
     runtime_ctx: Arc<dyn Any + Send + Sync>,
 ) where
     O: Send + Sync + Clone + Debug + 'static,
-    S: Send + 'static,
     R: JoinFanInRuntime + 'static,
-    F: Fn(JoinTrigger, &mut S, &crate::Producer<O, R>) -> Fut + Send + Sync + 'static,
+    F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
     Fut: core::future::Future<Output = ()> + Send + 'static,
 {
     let output_key = producer.key().to_string();
@@ -271,7 +295,6 @@ async fn run_join_transform<O, S, R, F, Fut>(
         .or_else(|| runtime_ctx.downcast_ref::<R>())
         .expect("Failed to extract runtime from context for join transform");
 
-    // Create the shared trigger queue via runtime trait
     let queue = match runtime.create_join_queue::<JoinTrigger>() {
         Ok(q) => q,
         Err(_e) => {
@@ -283,9 +306,8 @@ async fn run_join_transform<O, S, R, F, Fut>(
             return;
         }
     };
-    let (tx, mut rx) = queue.split();
+    let (tx, rx) = queue.split();
 
-    // Spawn per-input forwarder tasks
     for (index, (_key, factory)) in inputs.into_iter().enumerate() {
         let sender = tx.clone();
         let db = db.clone();
@@ -302,22 +324,16 @@ async fn run_join_transform<O, S, R, F, Fut>(
         }
     }
 
-    // Drop our sender copy — when all forwarders exit the channel closes
     drop(tx);
 
     #[cfg(feature = "tracing")]
     tracing::debug!(
-        "✅ Join transform '{}' all forwarders spawned, entering event loop",
+        "✅ Join transform '{}' all forwarders spawned, handing receiver to user task",
         output_key
     );
 
-    while let Ok(trigger) = rx.recv().await {
-        handler(trigger, &mut state, &producer).await;
-    }
+    handler(JoinEventRx::new(rx), producer).await;
 
     #[cfg(feature = "tracing")]
-    tracing::warn!(
-        "🔄 Join transform '{}' all inputs closed, task exiting",
-        output_key
-    );
+    tracing::warn!("🔄 Join transform '{}' user task exited", output_key);
 }
