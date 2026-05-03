@@ -92,6 +92,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let (Some(t), Some(h)) = (&last_temp, &last_hum) {
                                 let dew_point = t.celsius - (100.0 - h.percent) / 5.0;
                                 let timestamp = t.timestamp.max(h.timestamp);
+                                tracing::info!(
+                                    "💧 DewPoint computed: {:.2}°C (T={:.1}°C, RH={:.1}%)",
+                                    dew_point,
+                                    t.celsius,
+                                    h.percent
+                                );
                                 let _ = producer
                                     .produce(DewPoint {
                                         celsius: dew_point,
