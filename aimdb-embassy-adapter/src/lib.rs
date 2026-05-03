@@ -259,9 +259,16 @@ where
     /// reg.buffer_sized::<1, 4>(EmbassyBufferType::Mailbox)
     /// ```
     ///
-    /// # Rule of Thumb
-    /// - Set `CAP` to your desired ring buffer size for SPMC
-    /// - Set `CONSUMERS` to match your number of `.tap()` consumers
+    /// # Counting CONSUMERS
+    ///
+    /// `CONSUMERS` must cover **every** entity that calls `.subscribe()` on this record:
+    /// - Each `.tap()` consumer: +1
+    /// - Each `.link_to()` outbound connector: +1
+    /// - Each `transform_join` that lists this record as an input: +1
+    ///
+    /// Exhausting the slot count is a silent failure at runtime (the subscriber exits
+    /// immediately, producing no output). A `defmt::error!` is emitted, but set
+    /// `CONSUMERS` high enough to avoid it altogether.
     fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
         &'a mut self,
         buffer_type: EmbassyBufferType,

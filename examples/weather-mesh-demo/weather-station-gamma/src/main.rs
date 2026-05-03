@@ -269,7 +269,7 @@ async fn main(spawner: Spawner) {
     // Configure temperature record
     let temp_topic = TempKey::Gamma.link_address().unwrap();
     builder.configure::<Temperature>(TempKey::Gamma, |reg| {
-        reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
             .source(temperature_producer)
             .link_to(temp_topic)
             .with_serializer_raw(|t: &Temperature| {
@@ -291,7 +291,7 @@ async fn main(spawner: Spawner) {
     // Configure humidity record
     let humidity_topic = HumidityKey::Gamma.link_address().unwrap();
     builder.configure::<Humidity>(HumidityKey::Gamma, |reg| {
-        reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
             .source(humidity_producer)
             .link_to(humidity_topic)
             .with_serializer_raw(|h: &Humidity| {
@@ -335,6 +335,9 @@ async fn main(spawner: Spawner) {
                                 // Magnus approximation: T_dp ≈ T - (100 - RH) / 5
                                 let dew_point = t.celsius - (100.0 - h.percent) / 5.0;
                                 let timestamp = t.timestamp.max(h.timestamp);
+                                let whole = dew_point as i32;
+                                let frac = ((dew_point - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;
+                                info!("📊 DewPoint: {}.{}°C", whole, frac);
                                 let _ = producer
                                     .produce(DewPoint {
                                         celsius: dew_point,
