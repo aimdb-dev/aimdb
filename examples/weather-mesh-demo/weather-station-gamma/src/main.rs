@@ -41,7 +41,7 @@ use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config};
 use embassy_time::{Duration, Timer};
 use rand::SeedableRng;
 use static_cell::StaticCell;
-use weather_mesh_common::{DewPoint, DewPointKey, Humidity, HumidityKey, Temperature, TempKey};
+use weather_mesh_common::{DewPoint, DewPointKey, Humidity, HumidityKey, TempKey, Temperature};
 use {defmt_rtt as _, panic_probe as _};
 
 // Simple embedded allocator
@@ -350,8 +350,7 @@ async fn main(spawner: Spawner) {
                 let whole = d.celsius as i32;
                 let frac = ((d.celsius - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;
                 Ok(alloc::format!(
-                    r#"{{"celsius":{}.{},"timestamp":{}}}
-"#,
+                    r#"{{"celsius":{}.{},"timestamp":{}}}"#,
                     whole,
                     frac,
                     d.timestamp
@@ -364,7 +363,7 @@ async fn main(spawner: Spawner) {
     info!("✅ Database configured with synthetic sensors:");
     info!("   Temperature: {}", temp_topic);
     info!("   Humidity: {}", humidity_topic);
-    info!("   DewPoint: {} (derived via transform_join)", dew_point_topic);
+    info!("   DewPoint: {}", dew_point_topic);
     info!("   Broker: {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
     info!("");
 
