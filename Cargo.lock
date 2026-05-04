@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-usb-driver"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "defmt 1.0.1",
  "embedded-io-async 0.7.0",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-usb-synopsys-otg"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "critical-section",
  "defmt 1.0.1",
