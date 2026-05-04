@@ -13,7 +13,6 @@
 use core::any::Any;
 use core::fmt::Debug;
 
-extern crate alloc;
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use crate::typed_record::BoxFuture;
@@ -26,10 +25,6 @@ pub use single::{StatefulTransformBuilder, TransformBuilder, TransformPipeline};
 
 #[cfg(feature = "alloc")]
 pub use join::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
-
-// JoinTrigger is always available (no std dependency)
-#[cfg(not(feature = "alloc"))]
-pub use join::JoinTrigger;
 
 // ============================================================================
 // TransformDescriptor — stored per output record in TypedRecord

@@ -33,11 +33,14 @@ async fn transform_join_produces_sum_on_both_inputs() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
+    // SpmcRing inputs (vs SingleLatest) so that values produced before the join
+    // transform's forwarders subscribe are still buffered and replayed — removes
+    // a startup race where the test might otherwise need a hand-tuned barrier.
     builder.configure::<ValueA>("test::A", |reg| {
-        reg.buffer(BufferCfg::SingleLatest);
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
     builder.configure::<ValueB>("test::B", |reg| {
-        reg.buffer(BufferCfg::SingleLatest);
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
     builder.configure::<Sum>("test::Sum", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
@@ -91,4 +94,105 @@ async fn transform_join_produces_sum_on_both_inputs() {
         .unwrap()
         .unwrap();
     assert_eq!(s.0, 22, "expected 2+20=22");
+}
+
+/// Stress test for the bounded(64) Tokio fan-in channel: pushes well over 64
+/// events through a single-input join while the handler intentionally yields
+/// between receives. If backpressure is wired correctly, this completes
+/// without deadlock and every produced value is observed in order.
+#[tokio::test]
+async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
+    const N: u32 = 200;
+    const SENTINEL: u32 = u32::MAX;
+    let cap = (N + 16) as usize;
+
+    let runtime = Arc::new(TokioAdapter::new().unwrap());
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+
+    // Input/output rings sized larger than the bounded(64) fan-in so the SpmcRing
+    // itself isn't the limiter — we want the bounded channel to be the bottleneck.
+    builder.configure::<ValueA>("stress::A", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: cap });
+    });
+    builder.configure::<Sum>("stress::Echo", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: cap })
+            .transform_join(|b| {
+                b.input::<ValueA>("stress::A")
+                    .on_triggers(|mut rx, producer| async move {
+                        while let Ok(trigger) = rx.recv().await {
+                            if let Some(v) = trigger.as_input::<ValueA>().copied() {
+                                // Yield between receives to keep the fan-in channel
+                                // pressured well above its 64-slot capacity.
+                                tokio::task::yield_now().await;
+                                let _ = producer.produce(Sum(v.0)).await;
+                            }
+                        }
+                    })
+            });
+    });
+
+    let db = builder.build().await.unwrap();
+    let mut echo_rx = db.subscribe::<Sum>("stress::Echo").unwrap();
+
+    // Warm-up: keep producing a sentinel until its echo lands. SpmcRing buffers
+    // are tokio broadcast channels, so subscribers (including the join input
+    // forwarder) only see values produced after they subscribe — the round-trip
+    // gives us a deterministic barrier for "forwarder is up".
+    {
+        let warmup_db = db.clone();
+        let warmup = tokio::spawn(async move {
+            loop {
+                warmup_db
+                    .produce::<ValueA>("stress::A", ValueA(SENTINEL))
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        loop {
+            let s = tokio::time::timeout(Duration::from_secs(2), echo_rx.recv())
+                .await
+                .expect("warm-up: join forwarder did not subscribe in time")
+                .unwrap();
+            if s.0 == SENTINEL {
+                break;
+            }
+        }
+        warmup.abort();
+        let _ = warmup.await;
+    }
+
+    // Drain any remaining warm-up echoes so the burst checker sees a clean stream.
+    while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_millis(50), echo_rx.recv()).await {
+        assert_eq!(
+            s.0, SENTINEL,
+            "only warm-up sentinels should be in flight here"
+        );
+    }
+
+    // Burst N events. The join handler yields between every receive, so the
+    // bounded(64) fan-in fills up and backpressures the input forwarder. A
+    // missing or broken backpressure path would deadlock here.
+    let producer_db = db.clone();
+    let producer_task = tokio::spawn(async move {
+        for i in 0..N {
+            producer_db
+                .produce::<ValueA>("stress::A", ValueA(i))
+                .await
+                .unwrap();
+        }
+    });
+
+    for expected in 0..N {
+        let s = tokio::time::timeout(Duration::from_secs(5), echo_rx.recv())
+            .await
+            .expect("backpressured fan-in should not deadlock")
+            .unwrap();
+        assert_eq!(
+            s.0, expected,
+            "values must arrive in order under backpressure"
+        );
+    }
+
+    producer_task.await.unwrap();
 }

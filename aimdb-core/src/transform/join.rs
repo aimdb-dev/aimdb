@@ -2,7 +2,6 @@ use core::any::Any;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-extern crate alloc;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
@@ -85,6 +84,16 @@ impl JoinEventRx {
     /// Receive the next trigger event.
     ///
     /// Returns `Ok(JoinTrigger)` when an input fires, or `Err` when all inputs are closed.
+    ///
+    /// # Runtime portability
+    ///
+    /// On Tokio and WASM, the channel closes once every input forwarder has
+    /// dropped its sender, and `recv` returns `Err`, ending any
+    /// `while let Ok(_) = rx.recv().await` loop.
+    ///
+    /// On Embassy the channel **never** closes — this branch is unreachable
+    /// and the loop runs for the device lifetime. Portable handlers should
+    /// not rely on the loop exiting to release resources.
     pub async fn recv(&mut self) -> ExecutorResult<JoinTrigger> {
         self.inner.recv_boxed().await
     }
@@ -289,11 +298,17 @@ async fn run_join_transform<O, R, F, Fut>(
         output_key
     );
 
-    let runtime: &R = runtime_ctx
-        .downcast_ref::<Arc<R>>()
-        .map(|arc| arc.as_ref())
-        .or_else(|| runtime_ctx.downcast_ref::<R>())
-        .expect("Failed to extract runtime from context for join transform");
+    let runtime: &R = match runtime_ctx.downcast_ref::<R>() {
+        Some(r) => r,
+        None => {
+            #[cfg(feature = "tracing")]
+            tracing::error!(
+                "🔄 Join transform '{}' FATAL: runtime context downcast failed",
+                output_key
+            );
+            return;
+        }
+    };
 
     let queue = match runtime.create_join_queue::<JoinTrigger>() {
         Ok(q) => q,

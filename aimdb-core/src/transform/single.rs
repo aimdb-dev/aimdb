@@ -1,7 +1,6 @@
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-extern crate alloc;
 use alloc::{
     boxed::Box,
     string::{String, ToString},

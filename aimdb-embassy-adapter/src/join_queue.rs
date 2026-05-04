@@ -101,12 +101,19 @@ impl JoinFanInRuntime for EmbassyAdapter {
 // These tests cover: roundtrip ordering, bounded backpressure, and sender cloning.
 // Embassy channels do not close — there are no QueueClosed scenarios to test.
 //
-// NOTE: these tests require the ARM embedded target. They compile as part of
-// `cargo check --target thumbv7em-none-eabihf --features embassy-runtime` but
-// cannot run on x86_64 because the workspace `embassy-executor` uses
-// `platform-cortex-m` (ARM assembly). Run them on an Embassy-capable board or
-// ARM simulator. The `critical-section` dev-dep with `std` feature satisfies
-// the CriticalSectionRawMutex requirement for the channel on the target.
+// NOTE: the tests themselves only depend on `embassy_sync::Channel` and
+// `futures::executor::block_on`, both of which are host-portable. The
+// `critical-section` dev-dep with `std` feature is provided so the
+// `CriticalSectionRawMutex` link target is satisfied on host.
+//
+// However, the tests live in a module gated on `feature = "embassy-runtime"`,
+// which transitively pulls in `embassy-executor`'s `platform-cortex-m` (ARM
+// assembly) and so does not compile under `cargo test` on x86_64. As a result
+// they are NOT exercised by `make check` / `make all` today — only by
+// `cargo check --target thumbv7em-none-eabihf --features embassy-runtime`,
+// which type-checks but does not execute them. Run them manually on an
+// Embassy-capable board or ARM simulator, or via a host-side harness that
+// builds the queue module without the executor.
 #[cfg(test)]
 mod tests {
     use super::*;
