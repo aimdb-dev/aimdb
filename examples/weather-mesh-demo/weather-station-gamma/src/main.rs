@@ -41,7 +41,7 @@ use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config};
 use embassy_time::{Duration, Timer};
 use rand::SeedableRng;
 use static_cell::StaticCell;
-use weather_mesh_common::{Humidity, HumidityKey, Temperature, TempKey};
+use weather_mesh_common::{DewPoint, DewPointKey, Humidity, HumidityKey, TempKey, Temperature};
 use {defmt_rtt as _, panic_probe as _};
 
 // Simple embedded allocator
@@ -269,7 +269,7 @@ async fn main(spawner: Spawner) {
     // Configure temperature record
     let temp_topic = TempKey::Gamma.link_address().unwrap();
     builder.configure::<Temperature>(TempKey::Gamma, |reg| {
-        reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
             .source(temperature_producer)
             .link_to(temp_topic)
             .with_serializer_raw(|t: &Temperature| {
@@ -291,7 +291,7 @@ async fn main(spawner: Spawner) {
     // Configure humidity record
     let humidity_topic = HumidityKey::Gamma.link_address().unwrap();
     builder.configure::<Humidity>(HumidityKey::Gamma, |reg| {
-        reg.buffer_sized::<16, 1>(EmbassyBufferType::SpmcRing)
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
             .source(humidity_producer)
             .link_to(humidity_topic)
             .with_serializer_raw(|h: &Humidity| {
@@ -310,9 +310,71 @@ async fn main(spawner: Spawner) {
             .finish();
     });
 
+    // Configure dew point record — derived from temperature and humidity
+    //
+    // Showcases the transform_join task model: the closure owns its state and
+    // can hold borrows across .await without Box::pin or manual cloning.
+    let dew_point_topic = DewPointKey::Gamma.link_address().unwrap();
+    builder.configure::<DewPoint>(DewPointKey::Gamma, |reg| {
+        reg.buffer_sized::<8, 1>(EmbassyBufferType::SpmcRing)
+            .transform_join(|b| {
+                b.input::<Temperature>(TempKey::Gamma)
+                    .input::<Humidity>(HumidityKey::Gamma)
+                    .on_triggers(|mut rx, producer| async move {
+                        let mut last_temp: Option<Temperature> = None;
+                        let mut last_hum: Option<Humidity> = None;
+                        while let Ok(trigger) = rx.recv().await {
+                            match trigger.index() {
+                                0 => last_temp = trigger.as_input::<Temperature>().cloned(),
+                                1 => last_hum = trigger.as_input::<Humidity>().cloned(),
+                                _ => {}
+                            }
+                            // Borrow both inputs across the .await — possible because
+                            // last_temp and last_hum are owned by this async block.
+                            if let (Some(t), Some(h)) = (&last_temp, &last_hum) {
+                                // Magnus approximation: T_dp ≈ T - (100 - RH) / 5
+                                let dew_point = t.celsius - (100.0 - h.percent) / 5.0;
+                                let timestamp = t.timestamp.max(h.timestamp);
+                                // Format around magnitude so sign survives -1 < x < 0.
+                                let neg = dew_point < 0.0;
+                                let mag = if neg { -dew_point } else { dew_point };
+                                let whole = mag as i32;
+                                let frac = ((mag - whole as f32) * 10.0 + 0.5) as i32 % 10;
+                                let sign = if neg { "-" } else { "" };
+                                info!("📊 DewPoint: {}{}.{}°C", sign, whole, frac);
+                                let _ = producer
+                                    .produce(DewPoint {
+                                        celsius: dew_point,
+                                        timestamp,
+                                    })
+                                    .await;
+                            }
+                        }
+                    })
+            })
+            .link_to(dew_point_topic)
+            .with_serializer_raw(|d: &DewPoint| {
+                let neg = d.celsius < 0.0;
+                let mag = if neg { -d.celsius } else { d.celsius };
+                let whole = mag as i32;
+                let frac = ((mag - whole as f32) * 10.0 + 0.5) as i32 % 10;
+                let sign = if neg { "-" } else { "" };
+                Ok(alloc::format!(
+                    r#"{{"celsius":{}{}.{},"timestamp":{}}}"#,
+                    sign,
+                    whole,
+                    frac,
+                    d.timestamp
+                )
+                .into_bytes())
+            })
+            .finish();
+    });
+
     info!("✅ Database configured with synthetic sensors:");
     info!("   Temperature: {}", temp_topic);
     info!("   Humidity: {}", humidity_topic);
+    info!("   DewPoint: {}", dew_point_topic);
     info!("   Broker: {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
     info!("");
 

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`no_std` support for the full Transform API (Design 027)**: `.transform()` and `.transform_join()` are now available on `no_std + alloc` targets. Multi-input join fan-in is no longer hardcoded to `tokio::sync::mpsc`; it uses the runtime-agnostic `JoinFanInRuntime` traits from `aimdb-executor`, implemented by Tokio, Embassy, and WASM adapters.
+- **`JoinEventRx`** — type-erased trigger receiver passed to the `on_triggers` handler. Call `.recv().await` in a loop to consume `JoinTrigger` events from all input forwarders.
+- **`transform_join` as an inherent method on `RecordRegistrar`** (gated `feature = "alloc"`, `R: JoinFanInRuntime`). Previously only exposed via the `impl_record_registrar_ext!` macro under `feature = "std"`.
 - **Context-Aware Deserializers (Design 026)**: Inbound connector deserializers can now receive a `RuntimeContext<R>` for platform-independent timestamps and logging during deserialization
   - New `ContextDeserializerFn` type alias for context-aware type-erased deserializer callbacks
   - New `DeserializerKind` enum (`Raw` / `Context`) to enforce mutual exclusivity between plain and context-aware deserializers
@@ -24,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking — Join handler API redesign (Design 027 §Q4)**: `JoinBuilder::with_state(...).on_trigger(Fn(...) -> Pin<Box<dyn Future>>)` replaced with task-model `JoinBuilder::on_triggers(FnOnce(JoinEventRx, Producer) -> impl Future)`. The handler now owns the event loop, eliminating per-event heap allocation and allowing state to be borrowed across `.await` points.
+- **`transform.rs` split into `transform/{mod,single,join}.rs`** — internal reorganization to keep the `alloc`-only join path separate from the runtime-agnostic single-input path. `JoinBuilder`, `JoinPipeline`, `JoinTrigger`, `JoinEventRx` are now re-exported from `transform::join`.
+- `transform_join_raw` now requires `R: JoinFanInRuntime` (was `feature = "std"`).
+- `ExecutorError::QueueClosed` mapped to `DbError::RuntimeError` in `From<ExecutorError>`.
 - **Breaking**: `InboundConnectorLink::deserializer` field type changed from `DeserializerFn` to `DeserializerKind`
 - **Breaking**: `InboundConnectorLink::new()` now takes `DeserializerKind` instead of `DeserializerFn`
 - **Breaking**: `Router::route()` signature changed to accept an additional `ctx` parameter

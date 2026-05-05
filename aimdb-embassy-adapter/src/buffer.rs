@@ -351,9 +351,15 @@ impl<
                             PUBS,
                         > = unsafe { &*(channel as *const _) };
                         self.spmc_subscriber = Some(
-                            channel_static
-                                .subscriber()
-                                .map_err(|_| DbError::BufferClosed { _buffer_name: () })?,
+                            channel_static.subscriber().map_err(|_| {
+                                defmt::error!(
+                                    "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
+                                     Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
+                                     Count one slot per link_to connector plus one per transform_join input.",
+                                    SUBS
+                                );
+                                DbError::BufferClosed { _buffer_name: () }
+                            })?,
                         );
                     }
                     match self.spmc_subscriber.as_mut().unwrap().next_message().await {
@@ -411,9 +417,15 @@ impl<
                         PUBS,
                     > = unsafe { &*(channel as *const _) };
                     self.spmc_subscriber = Some(
-                        channel_static
-                            .subscriber()
-                            .map_err(|_| DbError::BufferClosed { _buffer_name: () })?,
+                        channel_static.subscriber().map_err(|_| {
+                            defmt::error!(
+                                "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
+                                 Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
+                                 Count one slot per link_to connector plus one per transform_join input.",
+                                SUBS
+                            );
+                            DbError::BufferClosed { _buffer_name: () }
+                        })?,
                     );
                 }
                 match self

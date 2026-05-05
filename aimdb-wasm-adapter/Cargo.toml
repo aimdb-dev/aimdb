@@ -65,7 +65,13 @@ serde-wasm-bindgen = { version = "0.6", optional = true }
 # Async utilities (minimal, no_std compatible)
 futures-util = { version = "0.3", default-features = false, features = [
     "alloc",
+    "sink",
 ] }
+
+# Bounded MPSC channel for join fan-in.
+# Note: futures-channel mpsc requires "std" because its internal BiLock uses std::sync.
+# The "alloc"-only path does not expose mpsc; "std" is the minimum required feature.
+futures-channel = { version = "0.3", default-features = false, features = ["std", "sink"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

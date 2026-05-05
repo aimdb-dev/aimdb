@@ -1589,8 +1589,7 @@ fn build_transform_call(task: &TaskDef, variant_ident: &syn::Ident) -> TokenStre
         quote! {
             .transform_join(|j| {
                 j #(#input_calls)*
-                    .with_state(())
-                    .on_trigger(#handler_ident)
+                    .on_triggers(#handler_ident)
             })
         }
     } else {
@@ -1612,7 +1611,7 @@ fn build_transform_call(task: &TaskDef, variant_ident: &syn::Ident) -> TokenStre
 ///
 /// | Inputs | Outputs | API                   | Generated stub            |
 /// |--------|---------|-----------------------|---------------------------|
-/// | N > 1  | ≥ 1     | `.transform_join()`   | `fn task_handler(JoinTrigger, &mut (), &Producer<O, R>)` |
+/// | N > 1  | ≥ 1     | `.transform_join()`   | `async fn task_handler(JoinEventRx, Producer<O, R>)` |
 /// | 1      | ≥ 1     | `.transform().map()`  | `fn task_transform(&Input) -> Option<Output>` |
 /// | 0      | ≥ 1     | `.source()`           | `async fn task(RuntimeContext, Producer<O, R>)` |
 /// | ≥ 1    | 0       | `.tap()`              | `async fn task(RuntimeContext, Consumer<I, R>)` |
@@ -1647,9 +1646,7 @@ pub fn generate_hub_tasks_rs(state: &ArchitectureState) -> String {
         }
 
         if n_in > 1 && n_out >= 1 {
-            // Multi-input → join handler
-            // Returns Pin<Box<dyn Future>> — the only concrete return type that satisfies
-            // the for<'a,'b> HRTB on on_trigger. `-> impl Future` does NOT work here.
+            // Multi-input → join handler (task model: owns event loop and state)
             let handler = format!("{}_handler", task.name);
             let inputs_doc = task
                 .inputs
@@ -1661,12 +1658,13 @@ pub fn generate_hub_tasks_rs(state: &ArchitectureState) -> String {
             fns.push_str(&format!(
                 "/// Join handler — match `trigger.index()` to identify which input fired:\n\
 /// {inputs_doc}\n\
-pub fn {handler}(\n\
-    _trigger: aimdb_core::transform::JoinTrigger,\n\
-    _state: &mut (),\n\
-    _producer: &aimdb_core::Producer<{out_t}, TokioAdapter>,\n\
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {{\n\
-    Box::pin(async move {{ todo!(\"implement {handler}\") }})\n\
+pub async fn {handler}(\n\
+    mut _rx: aimdb_core::transform::JoinEventRx,\n\
+    _producer: aimdb_core::Producer<{out_t}, TokioAdapter>,\n\
+) {{\n\
+    while let Ok(_trigger) = _rx.recv().await {{\n\
+        todo!(\"implement {handler}\")\n\
+    }}\n\
 }}\n\n"
             ));
         } else if n_in == 1 && n_out >= 1 {

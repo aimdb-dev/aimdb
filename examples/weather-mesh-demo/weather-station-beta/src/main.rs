@@ -11,7 +11,7 @@ use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use rand::SeedableRng;
 use std::sync::Arc;
 use tracing::info;
-use weather_mesh_common::{Humidity, HumidityKey, TempKey, Temperature};
+use weather_mesh_common::{DewPoint, DewPointKey, Humidity, HumidityKey, TempKey, Temperature};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,11 +73,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .finish();
     });
 
+    // Configure dew point record — derived from temperature and humidity
+    let dew_point_topic = DewPointKey::Beta.link_address().unwrap();
+    builder.configure::<DewPoint>(DewPointKey::Beta, |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
+            .transform_join(|b| {
+                b.input::<Temperature>(TempKey::Beta)
+                    .input::<Humidity>(HumidityKey::Beta)
+                    .on_triggers(|mut rx, producer| async move {
+                        let mut last_temp: Option<Temperature> = None;
+                        let mut last_hum: Option<Humidity> = None;
+                        while let Ok(trigger) = rx.recv().await {
+                            match trigger.index() {
+                                0 => last_temp = trigger.as_input::<Temperature>().cloned(),
+                                1 => last_hum = trigger.as_input::<Humidity>().cloned(),
+                                _ => {}
+                            }
+                            if let (Some(t), Some(h)) = (&last_temp, &last_hum) {
+                                let dew_point = t.celsius - (100.0 - h.percent) / 5.0;
+                                let timestamp = t.timestamp.max(h.timestamp);
+                                tracing::info!(
+                                    "💧 DewPoint computed: {:.2}°C (T={:.1}°C, RH={:.1}%)",
+                                    dew_point,
+                                    t.celsius,
+                                    h.percent
+                                );
+                                let _ = producer
+                                    .produce(DewPoint {
+                                        celsius: dew_point,
+                                        timestamp,
+                                    })
+                                    .await;
+                            }
+                        }
+                    })
+            })
+            .link_to(dew_point_topic)
+            .with_serializer_raw(|d: &DewPoint| {
+                d.to_bytes()
+                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
+            })
+            .finish();
+    });
+
     let db = builder.build().await?;
 
-    info!("✅ Database initialized with 2 record types");
+    info!("✅ Database initialized with 3 record types");
     info!("   - Temperature: {} (synthetic)", temp_topic);
     info!("   - Humidity: {} (synthetic)", humidity_topic);
+    info!(
+        "   - DewPoint: {} (derived via transform_join)",
+        dew_point_topic
+    );
 
     // Get producers
     let temp_producer = db.producer::<Temperature>(TempKey::Beta.as_str());
@@ -151,6 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("📡 Publishing to MQTT topics:");
     info!("   - {}", temp_topic);
     info!("   - {}", humidity_topic);
+    info!("   - {}", dew_point_topic);
     info!("");
     info!("Press Ctrl+C to stop");
 

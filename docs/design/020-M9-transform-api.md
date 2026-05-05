@@ -426,6 +426,36 @@ builder.configure::<ForecastValidation>(AccuracyKey::Vienna, |reg| {
 });
 ```
 
+### Runtime-Owned Fan-In
+
+Multi-input joins require a fan-in queue: a bounded channel that forwards
+triggers from each input forwarder task to the central trigger loop. This queue
+is created by the runtime adapter via the `JoinFanInRuntime` trait defined in
+`aimdb-executor`:
+
+```rust
+pub trait JoinFanInRuntime: Spawn {
+    type JoinQueue<T: Send + 'static>: JoinQueue<T>;
+    fn create_join_queue<T: Send + 'static>(&self) -> ExecutorResult<Self::JoinQueue<T>>;
+}
+```
+
+Queue capacity is an internal constant chosen per adapter — not exposed in the
+public API. Each adapter documents its fixed default:
+
+| Runtime | Queue primitive | Default capacity |
+|---------|----------------|-----------------|
+| Tokio   | `tokio::sync::mpsc::channel` | 64 |
+| Embassy | `embassy_sync::channel::Channel` (compile-time const) | 8 |
+| WASM    | `futures_channel::mpsc::channel` | 64 |
+
+**Closure semantics differ by runtime:** Tokio and WASM channels signal
+`QueueClosed` when the receiver or all senders are dropped. Embassy channels
+do not close — the trigger loop runs for the device lifetime.
+
+See [027-no-std-transform-api.md](./027-no-std-transform-api.md) for the
+full no_std refactor that introduced this abstraction.
+
 ### Method Signatures
 
 #### On `RecordRegistrar` (low-level, runtime-agnostic)
@@ -453,42 +483,30 @@ where
 
     /// Register a multi-input transform (join). Panics if a source or
     /// transform is already registered for this record.
+    /// Requires the runtime to implement `JoinFanInRuntime`.
     pub fn transform_join_raw<F>(
         &'a mut self,
         build_fn: F,
     ) -> &'a mut Self
     where
-        F: FnOnce(JoinBuilder<T, R>) -> JoinPipeline<T, R> + Send + 'static;
+        R: JoinFanInRuntime,
+        F: FnOnce(JoinBuilder<T, R>) -> JoinPipeline<T, R>;
 }
 ```
 
 #### On the generated extension trait (e.g., `TokioRecordRegistrarExt`)
 
-```rust
-pub trait TokioRecordRegistrarExt<'a, T> {
-    // ... existing source(), tap(), buffer() ...
+The `impl_record_registrar_ext!` macro generates `source()`, `tap()`,
+`buffer()`, and `transform()` convenience methods. `transform_join` is NOT
+included in the generated extension trait — it is available directly on
+`RecordRegistrar` via the inherent impl above. This avoids a Rust
+well-formedness check limitation (issue #48214) that arises when referencing
+`JoinBuilder<T, R>` in a macro-generated trait definition before the
+`R: JoinFanInRuntime` bound is known to hold at the definition site.
 
-    /// Single-input reactive transform.
-    fn transform<I, F>(
-        &'a mut self,
-        input_key: impl RecordKey,
-        build_fn: F,
-    ) -> &'a mut RecordRegistrar<'a, T, TokioAdapter>
-    where
-        I: Send + Sync + Clone + Debug + 'static,
-        F: FnOnce(TransformBuilder<I, T>) -> TransformPipeline<I, T, TokioAdapter>
-            + Send + 'static;
-
-    /// Multi-input reactive transform (join).
-    fn transform_join<F>(
-        &'a mut self,
-        build_fn: F,
-    ) -> &'a mut RecordRegistrar<'a, T, TokioAdapter>
-    where
-        F: FnOnce(JoinBuilder<T, TokioAdapter>) -> JoinPipeline<T, TokioAdapter>
-            + Send + 'static;
-}
-```
+Users call `.transform_join()` directly on the registrar — no trait import
+needed. The `R: JoinFanInRuntime` bound on the inherent method ensures
+runtimes that don't implement it produce a clear compile error at the call site.
 
 ### Builder Types
 
