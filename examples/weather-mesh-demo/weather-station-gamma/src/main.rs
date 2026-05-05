@@ -335,9 +335,13 @@ async fn main(spawner: Spawner) {
                                 // Magnus approximation: T_dp ≈ T - (100 - RH) / 5
                                 let dew_point = t.celsius - (100.0 - h.percent) / 5.0;
                                 let timestamp = t.timestamp.max(h.timestamp);
-                                let whole = dew_point as i32;
-                                let frac = ((dew_point - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;
-                                info!("📊 DewPoint: {}.{}°C", whole, frac);
+                                // Format around magnitude so sign survives -1 < x < 0.
+                                let neg = dew_point < 0.0;
+                                let mag = if neg { -dew_point } else { dew_point };
+                                let whole = mag as i32;
+                                let frac = ((mag - whole as f32) * 10.0 + 0.5) as i32 % 10;
+                                let sign = if neg { "-" } else { "" };
+                                info!("📊 DewPoint: {}{}.{}°C", sign, whole, frac);
                                 let _ = producer
                                     .produce(DewPoint {
                                         celsius: dew_point,
@@ -350,10 +354,14 @@ async fn main(spawner: Spawner) {
             })
             .link_to(dew_point_topic)
             .with_serializer_raw(|d: &DewPoint| {
-                let whole = d.celsius as i32;
-                let frac = ((d.celsius - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;
+                let neg = d.celsius < 0.0;
+                let mag = if neg { -d.celsius } else { d.celsius };
+                let whole = mag as i32;
+                let frac = ((mag - whole as f32) * 10.0 + 0.5) as i32 % 10;
+                let sign = if neg { "-" } else { "" };
                 Ok(alloc::format!(
-                    r#"{{"celsius":{}.{},"timestamp":{}}}"#,
+                    r#"{{"celsius":{}{}.{},"timestamp":{}}}"#,
+                    sign,
                     whole,
                     frac,
                     d.timestamp

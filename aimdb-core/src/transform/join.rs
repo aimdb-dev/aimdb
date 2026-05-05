@@ -238,7 +238,6 @@ where
             inputs.iter().map(|(k, _)| k.clone()).collect();
 
         JoinPipeline {
-            _input_keys: input_keys_for_descriptor.clone(),
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
                 spawn_fn: Box::new(move |producer, db, ctx| {
@@ -255,7 +254,6 @@ where
 /// [`RecordRegistrar::transform_join`]. Not normally constructed directly.
 #[cfg(feature = "alloc")]
 pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static, R: JoinFanInRuntime + 'static> {
-    pub(crate) _input_keys: Vec<String>,
     pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O, R> + Send>,
 }
 

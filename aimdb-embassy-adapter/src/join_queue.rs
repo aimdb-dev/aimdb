@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use aimdb_executor::{ExecutorResult, JoinQueue, JoinReceiver, JoinSender};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -84,7 +86,6 @@ impl JoinFanInRuntime for EmbassyAdapter {
     type JoinQueue<T: Send + 'static> = EmbassyJoinQueue<T>;
 
     fn create_join_queue<T: Send + 'static>(&self) -> ExecutorResult<Self::JoinQueue<T>> {
-        extern crate alloc;
         // Leak the channel to obtain a 'static reference.
         // Called once per join transform at database startup — the leak is intentional
         // and matches the DB lifetime on embedded targets.
