@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **`TokioJoinQueue` (Design 027)**: Tokio implementation of the `JoinFanInRuntime` traits from `aimdb-executor`, backed by `tokio::sync::mpsc::channel` with internal capacity 64. Enables `transform_join` on the Tokio runtime through the new runtime-agnostic abstraction.
+- **`transform_join` integration tests** (`tests/transform_join_integration_tests.rs`): two-input sum scenario plus a backpressure stress test that pushes 200 events through a yielding handler to verify the bounded fan-in does not deadlock.
 
 ## [0.5.0] - 2026-02-21
 
