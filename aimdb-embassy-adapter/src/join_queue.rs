@@ -161,9 +161,7 @@ mod tests {
         futures::pin_mut!(send_fut);
         let waker = futures::task::noop_waker();
         let mut cx = core::task::Context::from_waker(&waker);
-        if core::future::Future::poll(core::pin::Pin::new(&mut send_fut), &mut cx)
-            == core::task::Poll::Pending
-        {
+        if core::future::Future::poll(send_fut.as_mut(), &mut cx) == core::task::Poll::Pending {
             polled = true;
         }
         assert!(polled, "send should be Pending when channel is at capacity");

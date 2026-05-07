@@ -342,12 +342,15 @@ async fn main(spawner: Spawner) {
                                 let frac = ((mag - whole as f32) * 10.0 + 0.5) as i32 % 10;
                                 let sign = if neg { "-" } else { "" };
                                 info!("📊 DewPoint: {}{}.{}°C", sign, whole, frac);
-                                let _ = producer
+                                if let Err(_e) = producer
                                     .produce(DewPoint {
                                         celsius: dew_point,
                                         timestamp,
                                     })
-                                    .await;
+                                    .await
+                                {
+                                    defmt::warn!("DewPoint produce failed");
+                                }
                             }
                         }
                     })

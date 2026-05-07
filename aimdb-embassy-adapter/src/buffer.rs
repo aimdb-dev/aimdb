@@ -355,7 +355,7 @@ impl<
                                 defmt::error!(
                                     "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
                                      Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
-                                     Count one slot per link_to connector plus one per transform_join input.",
+                                     Count one slot per .tap(), .link_to() connector, and each transform_join input.",
                                     SUBS
                                 );
                                 DbError::BufferClosed { _buffer_name: () }
@@ -421,7 +421,7 @@ impl<
                             defmt::error!(
                                 "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
                                  Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
-                                 Count one slot per link_to connector plus one per transform_join input.",
+                                 Count one slot per .tap(), .link_to() connector, and each transform_join input.",
                                 SUBS
                             );
                             DbError::BufferClosed { _buffer_name: () }
