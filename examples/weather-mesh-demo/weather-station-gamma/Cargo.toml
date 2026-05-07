@@ -22,12 +22,11 @@ aimdb-core = { path = "../../../aimdb-core", default-features = false, features 
     "alloc",
 ] }
 aimdb-embassy-adapter = { path = "../../../aimdb-embassy-adapter", default-features = false, features = [
+    "alloc",
     "embassy-runtime",
-    "embassy-task-pool-8", # Need ~6 tasks: 2 producers + net + MQTT tasks
+    "embassy-task-pool-16", # 2 producers + net + MQTT + join transform + 2 forwarders
 ] }
-aimdb-executor = { path = "../../../aimdb-executor", default-features = false, features = [
-    "embassy-types",
-] }
+aimdb-executor = { path = "../../../aimdb-executor", default-features = false }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false, features = [
     "simulatable",
 ] }

@@ -35,6 +35,7 @@
 extern crate alloc;
 
 pub mod buffer;
+pub mod join_queue;
 pub mod logger;
 pub mod runtime;
 pub mod time;

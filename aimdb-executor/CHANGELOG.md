@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes in this release.
+### Added
+
+- **Join fan-in traits (Design 027)**: Runtime-agnostic abstraction for multi-input transform fan-in queues, replacing the previous `tokio::sync::mpsc`-only path in `aimdb-core`.
+  - `JoinFanInRuntime` trait — runtime capability for creating bounded fan-in queues; implemented per adapter.
+  - `JoinQueue<T>` trait — splittable into `Sender` / `Receiver` halves.
+  - `JoinSender<T>` / `JoinReceiver<T>` traits — `async fn send` / `async fn recv` returning `ExecutorResult<()>`.
+- **`ExecutorError::QueueClosed`** variant — returned by `JoinSender::send` / `JoinReceiver::recv` when the channel is closed (Tokio, WASM). Embassy channels never close, so this variant is unreachable on Embassy.
 
 ## [0.1.0] - 2025-11-06
 

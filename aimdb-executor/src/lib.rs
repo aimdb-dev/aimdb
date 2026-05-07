@@ -22,6 +22,9 @@
 
 use core::future::Future;
 
+pub mod join;
+pub use join::{JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
+
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -54,6 +57,9 @@ pub enum ExecutorError {
         #[cfg(not(feature = "std"))]
         message: &'static str,
     },
+
+    #[cfg_attr(feature = "std", error("Join queue closed"))]
+    QueueClosed,
 }
 
 // ============================================================================

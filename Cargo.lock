@@ -119,6 +119,7 @@ version = "0.5.0"
 dependencies = [
  "aimdb-core",
  "aimdb-executor",
+ "critical-section",
  "defmt 1.0.1",
  "embassy-executor",
  "embassy-net",
@@ -280,6 +281,7 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-executor",
  "aimdb-ws-protocol",
+ "futures-channel",
  "futures-util",
  "js-sys",
  "serde",
@@ -1049,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-net"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
@@ -1159,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-time-queue-utils"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "embassy-executor-timer-queue",
  "heapless 0.9.1",
@@ -1167,16 +1169,15 @@ dependencies = [
 
 [[package]]
 name = "embassy-usb-driver"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
- "bitflags 2.11.0",
  "defmt 1.0.1",
  "embedded-io-async 0.7.0",
 ]
 
 [[package]]
 name = "embassy-usb-synopsys-otg"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "critical-section",
  "defmt 1.0.1",
@@ -3012,7 +3013,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-5f15bbfaf37bd6a6330fec66a3a39de0042d64ac#8da545d80e11594b00efdcc6fb94c70054bee09a"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-5261d86838979da64855b1860a6f3ea8ef90746f#9fc43c9d87d9a0cde91089bd7532fed520873482"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

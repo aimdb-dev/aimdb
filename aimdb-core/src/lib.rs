@@ -16,6 +16,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 pub mod buffer;
 pub mod builder;
 pub mod connector;
@@ -73,6 +76,6 @@ pub use record_id::{RecordId, RecordKey, StringKey};
 pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo, RecordOrigin};
 
 // Transform API exports
-#[cfg(feature = "std")]
-pub use transform::{JoinBuilder, JoinPipeline, JoinTrigger};
+#[cfg(feature = "alloc")]
+pub use transform::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 pub use transform::{TransformBuilder, TransformPipeline};

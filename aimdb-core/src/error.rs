@@ -697,6 +697,18 @@ impl From<aimdb_executor::ExecutorError> for DbError {
                     DbError::RuntimeError { _message: () }
                 }
             }
+            ExecutorError::QueueClosed => {
+                #[cfg(feature = "std")]
+                {
+                    DbError::RuntimeError {
+                        message: "join queue closed".to_string(),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    DbError::RuntimeError { _message: () }
+                }
+            }
         }
     }
 }

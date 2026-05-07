@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- **Generated join handler stubs** updated to match the new task-model `on_triggers` API (Design 027). Multi-input task handlers are now generated as:
+  ```rust
+  pub async fn task_handler(
+      mut _rx: aimdb_core::transform::JoinEventRx,
+      _producer: aimdb_core::Producer<Output, TokioAdapter>,
+  ) {
+      while let Ok(_trigger) = _rx.recv().await {
+          todo!("implement task_handler")
+      }
+  }
+  ```
+  Previously generated `fn task_handler(JoinTrigger, &mut (), &Producer<...>) -> Pin<Box<dyn Future>>` for the callback model.
+- `build_transform_call` for join tasks now emits `.on_triggers(handler)` instead of `.with_state(()).on_trigger(handler)`.
 
 ## [0.1.0] - 2026-03-11
 

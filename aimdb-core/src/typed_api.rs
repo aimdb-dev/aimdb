@@ -455,16 +455,11 @@ where
 
     /// Register a multi-input join transform (low-level API).
     ///
-    /// **Note:** This is the foundational API. Most users should use the higher-level
-    /// `transform_join()` method provided by runtime adapter extension traits.
-    ///
     /// Panics if a `.source()` or another `.transform()` is already registered.
-    ///
-    /// # Arguments
-    /// * `build_fn` - Closure that configures the join via `JoinBuilder`
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     pub fn transform_join_raw<F>(&'a mut self, build_fn: F) -> &'a mut Self
     where
+        R: aimdb_executor::JoinFanInRuntime,
         F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
     {
         let builder = crate::transform::JoinBuilder::<T, R>::new();
@@ -472,6 +467,20 @@ where
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
         self
+    }
+
+    /// Multi-input reactive transform (join).
+    ///
+    /// Derives this record from multiple input records. Available on any runtime
+    /// that implements `JoinFanInRuntime`. Panics if a `.source()` or another
+    /// `.transform()` is already registered.
+    #[cfg(feature = "alloc")]
+    pub fn transform_join<F>(&'a mut self, build_fn: F) -> &'a mut Self
+    where
+        R: aimdb_executor::JoinFanInRuntime,
+        F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
+    {
+        self.transform_join_raw(build_fn)
     }
 
     /// Adds a connector link for external system integration (DEPRECATED)
