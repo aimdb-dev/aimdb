@@ -623,7 +623,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Long-running task that generates data via `producer.produce()`. Auto-spawned during `build()`.
     ///
     /// # Panics
-    /// Panics if producer already set (one producer per record).
+    /// Panics if producer already set (one producer per record), if a transform is registered,
+    /// or if a `.link_from()` inbound connector is registered (all three would race on the buffer).
     pub fn set_producer_service<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(crate::Producer<T, R>, Arc<dyn Any + Send + Sync>) -> Fut + Send + Sync + 'static,
@@ -637,6 +638,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
         if has_transform {
             panic!("Record already has a .transform(); cannot also have a .source().");
+        }
+
+        if !self.inbound_connectors.is_empty() {
+            panic!("Record already has a .link_from(); cannot also have a .source().");
         }
 
         // Check if already set
@@ -711,8 +716,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
     /// Sets the transform descriptor for this record.
     ///
-    /// A transform is mutually exclusive with a `.source()` — a record cannot
-    /// have both. Panics if a source or transform is already registered.
+    /// A transform is mutually exclusive with `.source()` and with any
+    /// `.link_from()` inbound connector — all three write to the same buffer
+    /// and would race as last-writer-wins. Panics if any of those are
+    /// already registered, or if a transform is already set.
     pub(crate) fn set_transform(
         &mut self,
         descriptor: crate::transform::TransformDescriptor<T, R>,
@@ -725,6 +732,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
         if has_source {
             panic!("Record already has a .source(); cannot also have a .transform().");
+        }
+
+        if !self.inbound_connectors.is_empty() {
+            panic!("Record already has a .link_from(); cannot also have a .transform().");
         }
 
         #[cfg(feature = "std")]
@@ -1061,7 +1072,30 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Adds an inbound connector link (External → AimDB)
     ///
     /// Called by `.link_from()` builder API during record configuration.
+    ///
+    /// # Panics
+    /// Panics if a `.source()` or `.transform()` is already registered.
+    /// All three write to the same buffer and would race as last-writer-wins.
+    /// Multiple inbound connectors on the same record are permitted (fan-in).
     pub fn add_inbound_connector(&mut self, link: crate::connector::InboundConnectorLink) {
+        #[cfg(feature = "std")]
+        let has_source = self.producer_service.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_source = self.producer_service.lock().is_some();
+
+        if has_source {
+            panic!("Record already has a .source(); cannot also have a .link_from().");
+        }
+
+        #[cfg(feature = "std")]
+        let has_transform = self.transform.lock().unwrap().is_some();
+        #[cfg(not(feature = "std"))]
+        let has_transform = self.transform.lock().is_some();
+
+        if has_transform {
+            panic!("Record already has a .transform(); cannot also have a .link_from().");
+        }
+
         self.inbound_connectors.push(link);
     }
 
