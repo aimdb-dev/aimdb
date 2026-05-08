@@ -203,13 +203,31 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 
 ---
 
+## Help wanted
+
+We're a small team building something ambitious. The fastest way to help is to take on a scoped piece of it. Each of these is sized for a few hours and includes file pointers, acceptance criteria, and a place to ask questions:
+
+- [#91 — `is_*_error()` predicates for `DbError`](https://github.com/aimdb-dev/aimdb/issues/91) · 1–2h · core
+- [#92 — `no_std` `Display` for `DbError` should include numeric fields](https://github.com/aimdb-dev/aimdb/issues/92) · 2–3h · core · embedded
+- [#93 — Minimal example: `hello-single-latest`](https://github.com/aimdb-dev/aimdb/issues/93) · 2–3h · docs
+- [#94 — Minimal example: `hello-mailbox`](https://github.com/aimdb-dev/aimdb/issues/94) · 2–3h · docs
+- [#95 — CLI: add `aimdb instance ping` subcommand](https://github.com/aimdb-dev/aimdb/issues/95) · 3–4h · cli
+- [#96 — CI: fail on broken rustdoc links](https://github.com/aimdb-dev/aimdb/issues/96) · 1–2h · docs
+- [#97 — Doctests for `BufferCfg` variants](https://github.com/aimdb-dev/aimdb/issues/97) · 2–3h · core · docs
+
+[See all good first issues →](https://github.com/aimdb-dev/aimdb/labels/good%20first%20issue)
+
+Comment on an issue if you'd like to take it — we respond within a day. New ideas welcome on [Discussions](https://github.com/aimdb-dev/aimdb/discussions).
+
+---
+
 ## Contributing
 
 Found a bug or want a feature? Open a [GitHub issue](https://github.com/aimdb-dev/aimdb/issues).
 
 Have questions or ideas? Join the discussion on [GitHub Discussions](https://github.com/aimdb-dev/aimdb/discussions).
 
-Want to contribute? See the [contributing guide](CONTRIBUTING.md). We have [good first issues](https://github.com/aimdb-dev/aimdb/labels/good-first-issue) to get started.
+See the [contributing guide](CONTRIBUTING.md) for build, test and style requirements.
 
 ---
 
