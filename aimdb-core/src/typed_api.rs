@@ -905,6 +905,8 @@ where
     /// - If no deserializer is provided
     /// - If no connector is registered for the URL scheme
     /// - If the URL is invalid
+    /// - If the record already has a `.source()` or `.transform()`
+    ///   (local producer + inbound connector would race as last-writer-wins)
     pub fn finish(self) -> &'a mut RecordRegistrar<'a, T, R> {
         use crate::connector::{ConnectorUrl, DeserializerKind, InboundConnectorLink};
 
@@ -918,6 +920,23 @@ where
             panic!(
                 "Inbound connector requires a buffer. Call .buffer() before .link_from() for record type {}",
                 core::any::type_name::<T>()
+            );
+        }
+
+        // Mutual exclusion with local producers — both write to the same
+        // buffer and would race as last-writer-wins. Builder-level check
+        // surfaces the URL in the message; `add_inbound_connector` enforces
+        // the same invariant from the other direction.
+        if self.registrar.rec.has_transform() {
+            panic!(
+                "Record already has a .transform(); cannot also have a .link_from() for {}",
+                self.url
+            );
+        }
+        if self.registrar.rec.has_producer_service() {
+            panic!(
+                "Record already has a .source(); cannot also have a .link_from() for {}",
+                self.url
             );
         }
 
@@ -1444,5 +1463,128 @@ mod tests {
 
         // No serializer set — should panic
         reg.link_to("mqtt://broker/topic").finish();
+    }
+
+    // ====================================================================
+    // Writer-exclusivity tests (.source / .transform / .link_from)
+    // ====================================================================
+
+    /// Helper: build a `TransformDescriptor` with a no-op spawn function.
+    fn dummy_transform_descriptor() -> crate::transform::TransformDescriptor<TestRecord, MockRuntime>
+    {
+        crate::transform::TransformDescriptor::<TestRecord, MockRuntime> {
+            input_keys: vec![],
+            spawn_fn: Box::new(|_p, _db, _ctx| Box::pin(async {})),
+        }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Record already has a .source(); cannot also have a .link_from() for mqtt://broker/topic"
+    )]
+    fn link_from_after_source_panics() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        rec.set_producer_service(|_p, _ctx| async move {});
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+        reg.link_from("mqtt://broker/topic")
+            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .finish();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Record already has a .transform(); cannot also have a .link_from() for mqtt://broker/topic"
+    )]
+    fn link_from_after_transform_panics() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        rec.set_transform(dummy_transform_descriptor());
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+        reg.link_from("mqtt://broker/topic")
+            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .finish();
+    }
+
+    #[test]
+    #[should_panic(expected = "Record already has a .link_from(); cannot also have a .source().")]
+    fn source_after_link_from_panics() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        {
+            let mut reg = make_registrar(&mut rec, &builders, &extensions);
+            reg.link_from("mqtt://broker/topic")
+                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+        }
+
+        rec.set_producer_service(|_p, _ctx| async move {});
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Record already has a .link_from(); cannot also have a .transform()."
+    )]
+    fn transform_after_link_from_panics() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        {
+            let mut reg = make_registrar(&mut rec, &builders, &extensions);
+            reg.link_from("mqtt://broker/topic")
+                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+        }
+
+        rec.set_transform(dummy_transform_descriptor());
+    }
+
+    #[test]
+    fn multiple_link_from_allowed() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        // Chain via finish() → &mut RecordRegistrar — the registrar's
+        // lifetime only permits one borrow chain at a time.
+        reg.link_from("mqtt://broker/topic-a")
+            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .finish()
+            .link_from("mqtt://broker/topic-b")
+            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .finish();
+
+        assert_eq!(rec.inbound_connectors().len(), 2);
     }
 }
