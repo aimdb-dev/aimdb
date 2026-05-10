@@ -12,7 +12,7 @@ it runs 2 rounds:
   - the second round sends 2 Colors and the MailBox only gets the last message.
 
 ## How to run
-To run the demo, compile and run the `hello-mailbox` example, you need to go to the `aimdb/examples/hello-mailbox` directory and run:
+From the workspace root, run:
 ```
 cargo run -p hello-mailbox
 ```
