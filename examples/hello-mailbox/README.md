@@ -1,6 +1,5 @@
 # hello-mailbox: Mailbox buffer demo
-The Mailbox buffer demo proves that only the last message is retained/read, in simple terms 
-It's like when you have a mailbox and only you can see the last letter.
+The Mailbox buffer keeps only the last message written. It's like a real mailbox where only the most recent letter is visible.
 
 ## When to use
 This Mailbox buffer demo is useful in a variety of scenarios where you want to retain only the last message, for example:
