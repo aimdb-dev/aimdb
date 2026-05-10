@@ -394,6 +394,65 @@ impl DbError {
         matches!(self, DbError::HardwareError { .. })
     }
 
+    /// Returns true if this is a database-related error
+    pub fn is_database_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::RecordNotFound { .. }
+                | DbError::RecordKeyNotFound { .. }
+                | DbError::InvalidRecordId { .. }
+                | DbError::TypeMismatch { .. }
+                | DbError::AmbiguousType { .. }
+                | DbError::DuplicateRecordKey { .. }
+                | DbError::InvalidOperation { .. }
+                | DbError::PermissionDenied { .. }
+        )
+    }
+
+    /// Returns true if this is a buffer-related error
+    pub fn is_buffer_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::BufferFull { .. }
+                | DbError::BufferLagged { .. }
+                | DbError::BufferClosed { .. }
+                | DbError::BufferEmpty
+        )
+    }
+
+    /// Returns true if this is a configuration-related error
+    pub fn is_configuration_error(&self) -> bool {
+        matches!(self, DbError::MissingConfiguration { .. })
+    }
+
+    /// Returns true if this is a runtime-related error
+    pub fn is_runtime_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::RuntimeError { .. } | DbError::ResourceUnavailable { .. }
+        )
+    }
+
+    /// Returns true if this is a transform-related error
+    pub fn is_transform_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::CyclicDependency { .. } | DbError::TransformInputNotFound { .. }
+        )
+    }
+
+    /// Returns true if this is an I/O-related error
+    #[cfg(feature = "std")]
+    pub fn is_io_error(&self) -> bool {
+        matches!(self, DbError::Io { .. } | DbError::IoWithContext { .. })
+    }
+
+    /// Returns true if this is a JSON-related error
+    #[cfg(feature = "std")]
+    pub fn is_json_error(&self) -> bool {
+        matches!(self, DbError::Json { .. } | DbError::JsonWithContext { .. })
+    }
+
     /// Returns a numeric error code for embedded environments
     pub const fn error_code(&self) -> u32 {
         match self {
@@ -779,6 +838,105 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_is_database_error_predicate() {
+        let record_error = DbError::RecordNotFound {
+            #[cfg(feature = "std")]
+            record_name: "temperature".to_string(),
+            #[cfg(not(feature = "std"))]
+            _record_name: (),
+        };
+        assert!(record_error.is_database_error());
+
+        let duplicate_key_error = DbError::DuplicateRecordKey {
+            #[cfg(feature = "std")]
+            key: "temp.outdoor".to_string(),
+            #[cfg(not(feature = "std"))]
+            _key: (),
+        };
+        assert!(duplicate_key_error.is_database_error());
+
+        assert!(!DbError::internal(500).is_database_error());
+    }
+
+    #[test]
+    fn test_is_buffer_error_predicate() {
+        let full_error = DbError::BufferFull {
+            size: 16,
+            #[cfg(feature = "std")]
+            buffer_name: "telemetry".to_string(),
+            #[cfg(not(feature = "std"))]
+            _buffer_name: (),
+        };
+        assert!(full_error.is_buffer_error());
+        assert!(DbError::BufferEmpty.is_buffer_error());
+
+        let config_error = DbError::MissingConfiguration {
+            #[cfg(feature = "std")]
+            parameter: "mqtt.url".to_string(),
+            #[cfg(not(feature = "std"))]
+            _parameter: (),
+        };
+        assert!(!config_error.is_buffer_error());
+    }
+
+    #[test]
+    fn test_is_configuration_error_predicate() {
+        let config_error = DbError::MissingConfiguration {
+            #[cfg(feature = "std")]
+            parameter: "aimdb.runtime".to_string(),
+            #[cfg(not(feature = "std"))]
+            _parameter: (),
+        };
+        assert!(config_error.is_configuration_error());
+        assert!(!DbError::internal(7).is_configuration_error());
+    }
+
+    #[test]
+    fn test_is_runtime_error_predicate() {
+        let runtime_error = DbError::RuntimeError {
+            #[cfg(feature = "std")]
+            message: "executor shut down".to_string(),
+            #[cfg(not(feature = "std"))]
+            _message: (),
+        };
+        assert!(runtime_error.is_runtime_error());
+
+        let resource_error = DbError::ResourceUnavailable {
+            resource_type: 1,
+            #[cfg(feature = "std")]
+            resource_name: "mqtt socket".to_string(),
+            #[cfg(not(feature = "std"))]
+            _resource_name: (),
+        };
+        assert!(resource_error.is_runtime_error());
+        assert!(!DbError::BufferEmpty.is_runtime_error());
+    }
+
+    #[test]
+    fn test_is_transform_error_predicate() {
+        let cyclic_error = DbError::CyclicDependency {
+            #[cfg(feature = "std")]
+            records: vec!["a".to_string(), "b".to_string()],
+            #[cfg(not(feature = "std"))]
+            _records: (),
+        };
+        assert!(cyclic_error.is_transform_error());
+
+        let missing_input_error = DbError::TransformInputNotFound {
+            #[cfg(feature = "std")]
+            input_key: "temp.input".to_string(),
+            #[cfg(feature = "std")]
+            output_key: "temp.output".to_string(),
+            #[cfg(not(feature = "std"))]
+            _input_key: (),
+            #[cfg(not(feature = "std"))]
+            _output_key: (),
+        };
+        assert!(missing_input_error.is_transform_error());
+        assert!(!DbError::internal(99).is_transform_error());
+    }
+
     #[cfg(feature = "std")]
     #[test]
     fn test_error_context() {
@@ -806,5 +964,33 @@ mod tests {
         let json_error = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let db_error: DbError = json_error.into();
         assert!(matches!(db_error, DbError::Json { .. }));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_is_io_error_predicate() {
+        let io_error: DbError = std::io::Error::other("disk full").into();
+        assert!(io_error.is_io_error());
+
+        let io_with_context: DbError = std::io::Error::other("disk full").into();
+        let io_with_context = io_with_context.with_context("persisting snapshot");
+        assert!(io_with_context.is_io_error());
+        assert!(!DbError::internal(123).is_io_error());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_is_json_error_predicate() {
+        let json_error: DbError = serde_json::from_str::<serde_json::Value>("invalid")
+            .unwrap_err()
+            .into();
+        assert!(json_error.is_json_error());
+
+        let json_with_context: DbError = serde_json::from_str::<serde_json::Value>("invalid")
+            .unwrap_err()
+            .into();
+        let json_with_context = json_with_context.with_context("decoding config");
+        assert!(json_with_context.is_json_error());
+        assert!(!DbError::internal(456).is_json_error());
     }
 }
