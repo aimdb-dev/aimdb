@@ -1,0 +1,13 @@
+[package]
+name = "hello-mailbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AimDB minimal example demonstrating Mailbox buffer (latest-wins) semantics"
+publish = false
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = ["tokio-runtime"] }
+aimdb-sync = { path = "../../aimdb-sync" }
+tokio = { workspace = true, features = ["full"] }
