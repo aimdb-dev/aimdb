@@ -117,7 +117,7 @@ docker compose up
 | --- | --- | --- |
 | **SPMC Ring** | Bounded stream with independent consumers | Sensor telemetry, event logs |
 | **SingleLatest** | Only the current value matters | Feature flags, config, UI state |
-| [**Mailbox**](https://github.com/aimdb/aimdb/tree/main/examples/hello-mailbox) | Latest instruction wins | Device commands, actuation, RPC |
+| [**Mailbox**](https://github.com/aimdb-dev/aimdb/tree/main/examples/hello-mailbox) | Latest instruction wins | Device commands, actuation, RPC |
 
 - **Capabilities are unlocked by traits.** Implement `Streamable` to cross WASM/WebSocket/CLI boundaries, `Migratable` for typed schema evolution, `Observable` for monitoring, `Linkable` for wire-format connectors. Without the trait, the type system says no.
 - **Connectors that ship today:** MQTT, KNX, WebSocket. Writing your own is one trait impl.
