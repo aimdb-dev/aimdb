@@ -1,7 +1,6 @@
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_sync::AimDbBuilderSyncExt;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
