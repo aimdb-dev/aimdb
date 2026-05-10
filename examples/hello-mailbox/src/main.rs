@@ -14,7 +14,7 @@ enum Color {
 }
 
 // Struct representing the LED state
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Led {
     color: Color,
 }
