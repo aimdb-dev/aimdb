@@ -3,7 +3,7 @@ name = "hello-mailbox"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Hello Mailbox for issue #94"
+description = "AimDB minimal example demonstrating Mailbox buffer (latest-wins) semantics"
 publish = false
 
 [dependencies]
