@@ -210,10 +210,12 @@ We're a small team building something ambitious. The fastest way to help is to t
 - [#91 — `is_*_error()` predicates for `DbError`](https://github.com/aimdb-dev/aimdb/issues/91) · 1–2h · core
 - [#92 — `no_std` `Display` for `DbError` should include numeric fields](https://github.com/aimdb-dev/aimdb/issues/92) · 2–3h · core · embedded
 - [#93 — Minimal example: `hello-single-latest`](https://github.com/aimdb-dev/aimdb/issues/93) · 2–3h · docs
-- [#94 — Minimal example: `hello-mailbox`](https://github.com/aimdb-dev/aimdb/issues/94) · 2–3h · docs
 - [#95 — CLI: add `aimdb instance ping` subcommand](https://github.com/aimdb-dev/aimdb/issues/95) · 3–4h · cli
 - [#96 — CI: fail on broken rustdoc links](https://github.com/aimdb-dev/aimdb/issues/96) · 1–2h · docs
 - [#97 — Doctests for `BufferCfg` variants](https://github.com/aimdb-dev/aimdb/issues/97) · 2–3h · core · docs
+- [#99 — Async example: `hello-mailbox-async`](https://github.com/aimdb-dev/aimdb/issues/99) · 2–3h · docs
+- [#100 — Async example: `hello-single-latest-async`](https://github.com/aimdb-dev/aimdb/issues/100) · 2–3h · docs
+- [#101 — Async example: `hello-spmc-ring-async`](https://github.com/aimdb-dev/aimdb/issues/101) · 2–3h · docs
 
 [See all good first issues →](https://github.com/aimdb-dev/aimdb/labels/good%20first%20issue)
 
