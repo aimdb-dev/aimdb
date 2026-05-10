@@ -30,7 +30,8 @@ members = [
     "examples/weather-mesh-demo/weather-hub",
     "examples/weather-mesh-demo/weather-station-alpha",
     "examples/weather-mesh-demo/weather-station-beta",
-    "examples/weather-mesh-demo/weather-station-gamma", "examples/hello-mailbox",
+    "examples/weather-mesh-demo/weather-station-gamma",
+    "examples/hello-mailbox",
 ]
 exclude = ["_external"]
 resolver = "2"
