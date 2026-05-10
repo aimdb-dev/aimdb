@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 // Enum of colors for the LED
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Color {
     Red,
     Green,
