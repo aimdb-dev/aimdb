@@ -11,5 +11,3 @@ aimdb-core = { path = "../../aimdb-core", features = ["std"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = ["tokio-runtime"] }
 aimdb-sync = { path = "../../aimdb-sync" }
 tokio = { workspace = true, features = ["full"] }
-serde = { workspace = true, features = ["derive"] }
-rand = { version = "0.8", features = ["std_rng"] }
