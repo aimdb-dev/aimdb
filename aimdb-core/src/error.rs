@@ -394,6 +394,7 @@ impl DbError {
         matches!(self, DbError::HardwareError { .. })
     }
 
+    /// Returns true if this is a buffer-related error
     pub fn is_buffer_error(&self) -> bool {
         matches!(
             self,
@@ -404,6 +405,7 @@ impl DbError {
         )
     }
 
+    /// Returns true if this is a database-related error
     pub fn is_database_error(&self) -> bool {
         matches!(
             self,
@@ -418,10 +420,12 @@ impl DbError {
         )
     }
 
+    /// Returns true if this is a configuration-related error
     pub fn is_configuration_error(&self) -> bool {
         matches!(self, DbError::MissingConfiguration { .. })
     }
 
+    /// Returns true if this is a runtime error
     pub fn is_runtime_error(&self) -> bool {
         matches!(
             self,
@@ -429,6 +433,7 @@ impl DbError {
         )
     }
 
+    /// Returns true if this is a transform error
     pub fn is_transform_error(&self) -> bool {
         matches!(
             self,
@@ -436,11 +441,13 @@ impl DbError {
         )
     }
 
+    /// Returns true if this is an IO error
     #[cfg(feature = "std")]
     pub fn is_io_error(&self) -> bool {
         matches!(self, DbError::Io { .. } | DbError::IoWithContext { .. })
     }
 
+    /// Returns true if this is a JSON error
     #[cfg(feature = "std")]
     pub fn is_json_error(&self) -> bool {
         matches!(self, DbError::Json { .. } | DbError::JsonWithContext { .. })
