@@ -9,7 +9,7 @@
 //! different deployment targets:
 //!
 //! - **MCU/Embedded**: Minimal memory footprint with `no_std` compatibility
-//! - **Edge/Desktop**: Rich error context with standard library features  
+//! - **Edge/Desktop**: Rich error context with standard library features
 //! - **Cloud**: Full error chains and debugging capabilities with thiserror integration
 //!
 //! # Error Categories
@@ -384,7 +384,7 @@ impl DbError {
         matches!(self, DbError::ConnectionFailed { .. })
     }
 
-    /// Returns true if this is a capacity-related error  
+    /// Returns true if this is a capacity-related error
     pub fn is_capacity_error(&self) -> bool {
         matches!(self, DbError::BufferFull { .. })
     }
@@ -392,6 +392,65 @@ impl DbError {
     /// Returns true if this is a hardware-related error
     pub fn is_hardware_error(&self) -> bool {
         matches!(self, DbError::HardwareError { .. })
+    }
+
+    /// Returns true if this is a buffer-related error
+    pub fn is_buffer_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::BufferFull { .. }
+                | DbError::BufferEmpty
+                | DbError::BufferLagged { .. }
+                | DbError::BufferClosed { .. }
+        )
+    }
+
+    /// Returns true if this is a database-related error
+    pub fn is_database_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::RecordNotFound { .. }
+                | DbError::RecordKeyNotFound { .. }
+                | DbError::InvalidRecordId { .. }
+                | DbError::TypeMismatch { .. }
+                | DbError::AmbiguousType { .. }
+                | DbError::DuplicateRecordKey { .. }
+                | DbError::InvalidOperation { .. }
+                | DbError::PermissionDenied { .. }
+        )
+    }
+
+    /// Returns true if this is a configuration-related error
+    pub fn is_configuration_error(&self) -> bool {
+        matches!(self, DbError::MissingConfiguration { .. })
+    }
+
+    /// Returns true if this is a runtime error
+    pub fn is_runtime_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::RuntimeError { .. } | DbError::ResourceUnavailable { .. }
+        )
+    }
+
+    /// Returns true if this is a transform error
+    pub fn is_transform_error(&self) -> bool {
+        matches!(
+            self,
+            DbError::CyclicDependency { .. } | DbError::TransformInputNotFound { .. }
+        )
+    }
+
+    /// Returns true if this is an IO error
+    #[cfg(feature = "std")]
+    pub fn is_io_error(&self) -> bool {
+        matches!(self, DbError::Io { .. } | DbError::IoWithContext { .. })
+    }
+
+    /// Returns true if this is a JSON error
+    #[cfg(feature = "std")]
+    pub fn is_json_error(&self) -> bool {
+        matches!(self, DbError::Json { .. } | DbError::JsonWithContext { .. })
     }
 
     /// Returns a numeric error code for embedded environments
@@ -806,5 +865,67 @@ mod tests {
         let json_error = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let db_error: DbError = json_error.into();
         assert!(matches!(db_error, DbError::Json { .. }));
+    }
+
+    #[test]
+    fn test_buffer_empty() {
+        let buffer = DbError::BufferEmpty;
+        assert!(buffer.is_buffer_error());
+        assert!(!buffer.is_network_error());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_configuration_error() {
+        let configuration = DbError::MissingConfiguration {
+            parameter: "my_parameter".to_string(),
+        };
+        assert!(configuration.is_configuration_error());
+        assert!(!configuration.is_buffer_error());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_runtime_error() {
+        let runtime = DbError::RuntimeError {
+            message: "Hello, World".to_string(),
+        };
+        assert!(runtime.is_runtime_error());
+        assert!(!runtime.is_buffer_error());
+    }
+
+    #[test]
+    fn test_database_error() {
+        let database = DbError::InvalidRecordId { id: 5 };
+        assert!(database.is_database_error());
+        assert!(!database.is_buffer_error());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_transform_error() {
+        let transform = DbError::CyclicDependency {
+            records: vec!["Hello, World!".to_string()],
+        };
+        assert!(transform.is_transform_error());
+        assert!(!transform.is_buffer_error());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_io_error() {
+        let io_error = std::io::Error::other("test");
+        let db_error: DbError = io_error.into();
+        assert!(db_error.is_io_error());
+        assert!(!db_error.is_buffer_error());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_json_error() {
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let db_error: DbError = json_error.into();
+        assert!(db_error.is_json_error());
+        assert!(!db_error.is_buffer_error());
     }
 }
