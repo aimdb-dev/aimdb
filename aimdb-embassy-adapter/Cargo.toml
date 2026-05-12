@@ -38,11 +38,11 @@ std = []
 # This feature exists only to silence cfg warnings and for API consistency.
 metrics = []
 
-# Stage profiling placeholder — enables cfg(feature = "profiling") checks but does
-# nothing yet. Real Embassy support needs `portable-atomic`'s 64-bit-atomic fallback
-# (`critical-section`) wired through for `thumbv7em`-class targets; tracked for a
-# follow-up. This feature exists for API/cfg consistency.
-profiling = []
+# Automatic stage profiling. Uses portable-atomic (with the `critical-section`
+# fallback for 64-bit atomics, pulled in via aimdb-core/profiling) plus the Embassy
+# clock, so it works on no_std targets. The final binary must provide a
+# `critical-section` implementation (cortex-m / embassy HALs do).
+profiling = ["aimdb-core/profiling", "embassy-runtime"]
 
 [dependencies]
 # Executor traits

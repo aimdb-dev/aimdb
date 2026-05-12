@@ -1265,6 +1265,14 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         self.inner.list_records()
     }
 
+    /// Resets stage profiling counters for every record (feature `profiling`).
+    #[cfg(feature = "profiling")]
+    pub fn reset_stage_profiling(&self) {
+        for record in &self.inner.storages {
+            record.reset_profiling();
+        }
+    }
+
     /// Try to get record's latest value as JSON by name (std only)
     ///
     /// Convenience wrapper around `AimDbInner::try_latest_as_json()`.

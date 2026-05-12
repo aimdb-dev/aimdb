@@ -8,6 +8,7 @@ use once_cell::sync::OnceCell;
 pub mod architecture;
 pub mod graph;
 pub mod instance;
+pub mod profiling;
 pub mod record;
 pub mod schema;
 
@@ -57,5 +58,6 @@ pub use architecture::{
 };
 pub use graph::{graph_edges, graph_nodes, graph_topo_order};
 pub use instance::{discover_instances, get_instance_info};
+pub use profiling::{get_stage_profiling, reset_stage_profiling};
 pub use record::{drain_record, get_record, list_records, set_record};
 pub use schema::query_schema;

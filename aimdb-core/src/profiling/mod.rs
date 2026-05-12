@@ -15,9 +15,11 @@
 //! answers *which* stage is slow, not *why*. Use `tracing` / `tokio-console` for
 //! CPU-vs-I/O analysis.
 
+mod info;
 mod record_profiling;
 mod stage_metrics;
 
+pub use info::StageProfilingInfo;
 pub use record_profiling::{RecordProfilingMetrics, StageEntry};
 pub use stage_metrics::StageMetrics;
 

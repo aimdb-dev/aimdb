@@ -754,6 +754,39 @@ impl McpServer {
                 }),
             },
             Tool {
+                name: "get_stage_profiling".to_string(),
+                description: "Get automatic stage profiling (per-`.source()`/`.tap()`/`.link()` callback wall-clock timing) for records matching a key from a running AimDB instance, including the slowest stage ('bottleneck'). Requires the instance to be built with the `profiling` feature.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                        },
+                        "record_key": {
+                            "type": "string",
+                            "description": "Substring to match against record names/keys (e.g., 'Temperature')"
+                        }
+                    },
+                    "required": ["record_key"],
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
+                name: "reset_stage_profiling".to_string(),
+                description: "Reset stage profiling counters for every record on a running AimDB instance (requires write permission and the `profiling` feature).".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
                 name: "save_memory".to_string(),
                 description: "Persist ideation context and design rationale to .aimdb/memory.md. \
                     Call this after every confirmed proposal with a narrative summary of what the user is building, \
@@ -868,6 +901,8 @@ impl McpServer {
                 tools::validate_against_instance(params.arguments).await?
             }
             "get_buffer_metrics" => tools::get_buffer_metrics(params.arguments).await?,
+            "get_stage_profiling" => tools::get_stage_profiling(params.arguments).await?,
+            "reset_stage_profiling" => tools::reset_stage_profiling(params.arguments).await?,
             "save_memory" => tools::save_memory(params.arguments).await?,
             "reset_session" => tools::reset_session(params.arguments).await?,
             _ => {

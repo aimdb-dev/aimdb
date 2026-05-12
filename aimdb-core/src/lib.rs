@@ -84,7 +84,7 @@ pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // Stage profiling exports (feature-gated)
 #[cfg(feature = "profiling")]
-pub use profiling::{RecordProfilingMetrics, StageMetrics};
+pub use profiling::{RecordProfilingMetrics, StageMetrics, StageProfilingInfo};
 
 // Connector Infrastructure exports
 pub use connector::TopicResolverFn;

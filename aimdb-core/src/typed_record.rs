@@ -398,6 +398,12 @@ pub trait AnyRecord: Send + Sync {
 
     /// Get the inbound connector links for this record
     fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
+
+    /// Resets this record's stage profiling counters (feature `profiling`).
+    ///
+    /// Default implementation is a no-op; `TypedRecord` overrides it.
+    #[cfg(feature = "profiling")]
+    fn reset_profiling(&self) {}
 }
 
 // Helper extension trait for type-safe downcasting
@@ -1522,9 +1528,9 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             }
         };
 
-        // Phase 4: when `profiling` is enabled, attach stage profiling here, e.g.
-        //   #[cfg(feature = "profiling")]
-        //   let metadata = metadata.with_stage_profiling(self.profiling.snapshot());
+        // Attach stage profiling metrics when the feature is enabled.
+        #[cfg(feature = "profiling")]
+        let metadata = metadata.with_stage_profiling(self.profiling.snapshot());
 
         metadata
     }
@@ -1701,5 +1707,10 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
 
     fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
         &self.inbound_connectors
+    }
+
+    #[cfg(feature = "profiling")]
+    fn reset_profiling(&self) {
+        self.profiling.reset_all();
     }
 }

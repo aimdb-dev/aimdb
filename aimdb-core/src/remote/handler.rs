@@ -579,6 +579,8 @@ where
         "graph.nodes" => handle_graph_nodes(db, request.id).await,
         "graph.edges" => handle_graph_edges(db, request.id).await,
         "graph.topo_order" => handle_graph_topo_order(db, request.id).await,
+        #[cfg(feature = "profiling")]
+        "profiling.reset" => handle_profiling_reset(db, config, request.id).await,
         _ => {
             #[cfg(feature = "tracing")]
             tracing::warn!("Unknown method: {}", request.method);
@@ -623,6 +625,37 @@ where
 
     // Convert to JSON and return
     Response::success(request_id, json!(records))
+}
+
+/// Handles profiling.reset method
+///
+/// Clears stage profiling counters for every record. Requires write permission.
+#[cfg(all(feature = "std", feature = "profiling"))]
+async fn handle_profiling_reset<R>(
+    db: &Arc<AimDb<R>>,
+    config: &AimxConfig,
+    request_id: u64,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    if matches!(
+        config.security_policy,
+        crate::remote::SecurityPolicy::ReadOnly
+    ) {
+        return Response::error(
+            request_id,
+            "permission_denied",
+            "profiling.reset requires write permission (ReadOnly security policy)".to_string(),
+        );
+    }
+
+    db.reset_stage_profiling();
+
+    #[cfg(feature = "tracing")]
+    tracing::info!("Stage profiling counters reset");
+
+    Response::success(request_id, json!({ "reset": true }))
 }
 
 /// Handles record.get method

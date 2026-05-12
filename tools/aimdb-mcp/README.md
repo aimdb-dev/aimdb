@@ -214,6 +214,34 @@ Query: "Where is subscription data saved?"
 Result: Path to notification directory
 ```
 
+### 11. get_stage_profiling
+
+Show automatic per-stage timing — how long each `.source()` / `.tap()` / `.link()`
+callback takes (wall-clock, including `.await` / I/O / sleeps) — for records
+matching a key, and flag the slowest stage. Requires the target instance to be
+built with the `profiling` feature; otherwise records carry no profiling data.
+
+```
+Query: "Which stage of my Temperature pipeline is the bottleneck?"
+
+Result: Per-stage call_count / avg / min / max (ns) plus a "bottleneck" pointing
+        at the stage with the highest average time, with a recommendation string.
+```
+
+Stage names come from `.with_name("...")` on the registrar; unnamed stages show as
+`source[0]`, `tap[0]`, etc.
+
+### 12. reset_stage_profiling
+
+Reset stage profiling counters for every record on the target instance (requires
+write permission and the `profiling` feature). Useful for windowed measurements.
+
+```
+Query: "Reset the stage profiling counters."
+
+Result: { "reset": true }
+```
+
 ## Schema Inference
 
 The MCP server can infer JSON schemas from record values:

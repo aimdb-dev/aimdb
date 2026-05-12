@@ -1,11 +1,28 @@
 # RFC: Integrated Stage Profiling
 
-> **Status**: 📝 Draft (RFC - Not Yet Implemented)  
+> **Status**: ✅ Implemented (issue #58)  
 > **Target**: `aimdb-core` (feature-flagged)  
-> **Priority**: Medium  
-> **Estimated Effort**: 2-3 days  
 > **Feature Flag**: `profiling`  
 > **Date**: November 2025
+
+---
+
+## Implementation notes (vs. this RFC)
+
+- Timing is **wrapped around `Producer::produce()` and the buffer reader returned by
+  `Consumer::subscribe()`**, not around per-value handler closures (the actual
+  `.source()`/`.tap()` API takes whole-task closures that loop internally). A
+  source's "iteration time" is the interval between `produce()` calls; a tap's
+  "invocation time" is the interval from a `recv()` yielding a value to the next
+  `recv()` call.
+- Timing uses the **runtime clock** (`aimdb_executor::TimeOps`, extended with
+  `duration_as_nanos`), not `std::time::Instant` — so the feature works on `no_std`
+  / Embassy too. `StageMetrics` uses `portable_atomic::AtomicU64` (the
+  `profiling` feature pulls `portable-atomic/critical-section` for the 64-bit-atomic
+  fallback on targets that need it).
+- `RecordRegistrar::with_name("...")` is always available (no-op without the
+  feature). MCP tools: `get_stage_profiling` (incl. bottleneck detection) and
+  `reset_stage_profiling`.
 
 ---
 
