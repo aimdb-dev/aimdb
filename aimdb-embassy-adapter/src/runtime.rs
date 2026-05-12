@@ -297,6 +297,12 @@ impl aimdb_executor::TimeOps for EmbassyAdapter {
     fn sleep(&self, duration: Self::Duration) -> impl core::future::Future<Output = ()> + Send {
         embassy_time::Timer::after(duration)
     }
+
+    fn duration_as_nanos(&self, duration: Self::Duration) -> u64 {
+        // `embassy_time::Duration` resolution depends on the configured tick rate;
+        // microsecond granularity is the portable lower bound.
+        duration.as_micros().saturating_mul(1_000)
+    }
 }
 
 // Implement Logger trait

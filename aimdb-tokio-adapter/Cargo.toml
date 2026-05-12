@@ -23,6 +23,7 @@ tokio-runtime = ["tokio", "std"]
 # Observability features
 tracing = ["aimdb-core/tracing", "dep:tracing"]
 metrics = ["aimdb-core/metrics", "tokio-runtime"]
+profiling = ["aimdb-core/profiling", "tokio-runtime"]
 
 # Testing features
 test-utils = ["aimdb-core/test-utils", "tokio-runtime"]

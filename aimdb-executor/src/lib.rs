@@ -88,6 +88,13 @@ pub trait TimeOps: RuntimeAdapter {
     fn secs(&self, secs: u64) -> Self::Duration;
     fn micros(&self, micros: u64) -> Self::Duration;
     fn sleep(&self, duration: Self::Duration) -> impl Future<Output = ()> + Send;
+
+    /// Returns the number of whole nanoseconds in `duration`.
+    ///
+    /// Used by features (e.g. stage profiling) that need a numeric, runtime-agnostic
+    /// representation of an elapsed [`Self::Duration`]. Implementations should saturate
+    /// rather than overflow for durations larger than `u64::MAX` nanoseconds.
+    fn duration_as_nanos(&self, duration: Self::Duration) -> u64;
 }
 
 /// Logging trait - enables ctx.log() accessor

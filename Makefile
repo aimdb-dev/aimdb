@@ -57,8 +57,14 @@ build:
 	cargo build --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
 	cargo build --package aimdb-core --features "std,tracing,metrics"
+	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + profiling)$(NC)\n"
+	cargo build --package aimdb-core --no-default-features --features "alloc,profiling"
+	@printf "$(YELLOW)  → Building aimdb-core (std + profiling)$(NC)\n"
+	cargo build --package aimdb-core --features "std,tracing,profiling"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
+	@printf "$(YELLOW)  → Building tokio adapter (with profiling)$(NC)\n"
+	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
@@ -90,12 +96,18 @@ test:
 	cargo test --package aimdb-core --features "std,tracing"
 	@printf "$(YELLOW)  → Testing aimdb-core (std + metrics)$(NC)\n"
 	cargo test --package aimdb-core --features "std,tracing,metrics"
+	@printf "$(YELLOW)  → Testing aimdb-core (std + profiling)$(NC)\n"
+	cargo test --package aimdb-core --features "std,tracing,profiling"
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + profiling)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features --features "alloc,profiling"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
+	@printf "$(YELLOW)  → Testing tokio adapter (with profiling)$(NC)\n"
+	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"

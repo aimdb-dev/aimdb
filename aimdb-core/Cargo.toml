@@ -36,6 +36,10 @@ tracing = ["dep:tracing"]        # Works in both std and no_std environments
 defmt = ["dep:defmt"]            # Embedded logging via probe (no_std)
 metrics = ["dep:metrics", "std"] # Requires std for aggregation
 
+# Automatic stage profiling (.source()/.tap()/.link() timing).
+# Independent of `metrics`; works in no_std (only needs heap + a runtime clock).
+profiling = ["alloc"]
+
 # Testing features
 test-utils = ["std"]
 

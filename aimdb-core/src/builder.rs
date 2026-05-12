@@ -589,6 +589,7 @@ where
             #[cfg(feature = "alloc")]
             record_key: record_key.as_str().to_string(),
             extensions: &self.extensions,
+            last_stage: None,
         };
         f(&mut reg);
 
@@ -675,7 +676,10 @@ where
     ///         .run().await  // Runs forever
     /// }
     /// ```
-    pub async fn run(self) -> DbResult<()> {
+    pub async fn run(self) -> DbResult<()>
+    where
+        R: crate::RuntimeForProfiling,
+    {
         #[cfg(feature = "tracing")]
         tracing::info!("Building database and spawning background tasks...");
 
@@ -728,7 +732,10 @@ where
     /// # Returns
     /// `DbResult<AimDb<R>>` - The database instance
     #[cfg_attr(not(feature = "std"), allow(unused_mut))]
-    pub async fn build(self) -> DbResult<AimDb<R>> {
+    pub async fn build(self) -> DbResult<AimDb<R>>
+    where
+        R: crate::RuntimeForProfiling,
+    {
         use crate::DbError;
 
         // Validate all records
@@ -836,9 +843,14 @@ where
             extensions: self.extensions,
         });
 
+        #[cfg(feature = "profiling")]
+        let profiling_clock = crate::profiling::make_clock(runtime.clone());
+
         let db = Arc::new(AimDb {
             inner: inner.clone(),
             runtime: runtime.clone(),
+            #[cfg(feature = "profiling")]
+            profiling_clock,
         });
 
         #[cfg(feature = "tracing")]
@@ -1016,6 +1028,10 @@ pub struct AimDb<R: aimdb_executor::Spawn + 'static> {
 
     /// Runtime adapter with concrete type
     runtime: Arc<R>,
+
+    /// Shared wall clock for stage profiling, built from the runtime at `build()` time.
+    #[cfg(feature = "profiling")]
+    profiling_clock: crate::profiling::Clock,
 }
 
 impl<R: aimdb_executor::Spawn + 'static> Clone for AimDb<R> {
@@ -1023,6 +1039,8 @@ impl<R: aimdb_executor::Spawn + 'static> Clone for AimDb<R> {
         Self {
             inner: self.inner.clone(),
             runtime: self.runtime.clone(),
+            #[cfg(feature = "profiling")]
+            profiling_clock: self.profiling_clock.clone(),
         }
     }
 }
@@ -1050,8 +1068,17 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         &self.inner.extensions
     }
 
+    /// Shared wall clock used by stage profiling (nanoseconds since an arbitrary epoch).
+    #[cfg(feature = "profiling")]
+    pub(crate) fn profiling_clock(&self) -> &crate::profiling::Clock {
+        &self.profiling_clock
+    }
+
     /// Builds a database with a closure-based builder pattern
-    pub async fn build_with(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder<R>)) -> DbResult<()> {
+    pub async fn build_with(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder<R>)) -> DbResult<()>
+    where
+        R: crate::RuntimeForProfiling,
+    {
         let mut b = AimDbBuilder::new().runtime(rt);
         f(&mut b);
         b.run().await
