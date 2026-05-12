@@ -1,0 +1,11 @@
+[package]
+name = "hello-single-latest-async"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core", features = ["async"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
