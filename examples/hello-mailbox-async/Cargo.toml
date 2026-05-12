@@ -1,0 +1,14 @@
+[package]
+name = "hello-mailbox-async"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Async hello-mailbox example for AimDB"
+publish = false
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
