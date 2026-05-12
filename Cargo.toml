@@ -32,6 +32,7 @@ members = [
     "examples/weather-mesh-demo/weather-station-beta",
     "examples/weather-mesh-demo/weather-station-gamma",
     "examples/hello-mailbox",
+    "examples/hello-single-latest-async",
 ]
 exclude = ["_external"]
 resolver = "2"
