@@ -249,22 +249,8 @@ See the [contributing guide](CONTRIBUTING.md) for build, test and style requirem
 
 ---
 
-## Stay in the loop
-
-Get release notes and new posts delivered to your inbox — scan or click to subscribe:
-
-<p align="center">
-  <a href="https://buttondown.com/aimdb">
-    <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https%3A%2F%2Fbuttondown.com%2Faimdb&margin=8" alt="Subscribe to the AimDB newsletter" width="150">
-  </a>
-  <br><br>
-  <a href="https://buttondown.com/aimdb">buttondown.com/aimdb</a>
-</p>
-
----
-
 <p align="center">
   <strong>Distributed by design. Data-driven by default.</strong>
   <br><br>
-  <a href="https://aimdb.dev/docs/getting-started">Get started</a> · <a href="https://aimdb.dev">Live demo</a> · <a href="https://github.com/aimdb-dev/aimdb/discussions">Join the discussion</a>
+  <a href="https://aimdb.dev/docs/getting-started">Get started</a> · <a href="https://aimdb.dev">Live demo</a> · <a href="https://github.com/aimdb-dev/aimdb/discussions">Join the discussion</a> · <a href="https://buttondown.com/aimdb"><img src="https://img.shields.io/badge/newsletter-subscribe-1adbc8?style=flat-square" alt="Newsletter"></a>
 </p>
