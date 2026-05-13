@@ -58,11 +58,7 @@ impl StageMetrics {
     /// Mean wall-clock time per invocation, in nanoseconds (0 if no samples).
     pub fn avg_time_ns(&self) -> u64 {
         let count = self.call_count();
-        if count == 0 {
-            0
-        } else {
-            self.total_time_ns() / count
-        }
+        self.total_time_ns().checked_div(count).unwrap_or(0)
     }
 
     /// Fastest recorded invocation, in nanoseconds (0 if no samples).
