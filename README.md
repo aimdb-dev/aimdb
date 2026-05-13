@@ -22,7 +22,9 @@
 </a>
 </p>
 
-AimDB turns data contracts into the architecture. Define your schemas once and deploy them unchanged across microcontrollers, edge gateways, Kubernetes and the browser.
+AimDB turns data contracts into the architecture. Define your schemas once and deploy them unchanged across microcontrollers, edge gateways, Kubernetes and the browser, with explicit, typed migrations when the contract evolves.
+
+AimDB is not a storage engine. It's a typed data plane where the Rust type *is* the wire format.
 
 [![AimDB Live Demo](assets/demo.gif)](https://aimdb.dev)
 
@@ -32,12 +34,11 @@ AimDB turns data contracts into the architecture. Define your schemas once and d
 
 ## Why AimDB exists
 
-AimDB makes **the Rust type the contract** — defined once, compiled unchanged from a `no_std` microcontroller to a Kubernetes pod. No separate schema files. No code generators. No translation layer between firmware and cloud. The code is law.
+Distributed systems spend most of their complexity budget translating between layers. IDLs, codegen, serialization, schema registries and glue services. AimDB removes that layer by making **the Rust type the contract**: defined once, compiled unchanged from a `no_std` microcontroller to the browser.
 
-- **One type, every tier** — the same struct compiles for bare-metal firmware and a cloud service, with no conversion layer between them.
-- **No glue code between layers** — the buffer type on a record defines how it moves. No manual queue wiring.
-- **Observability built-in** — implement the `Observable` trait and every record emits metrics automatically. No separate instrumentation layer.
-- **Connectors derive from the type** — declare a connector on the key, not as a separate process.
+- **One type, every tier.** The same struct compiles for firmware and cloud. No conversion layer between them.
+- **The buffer defines how data moves.** No manual queue wiring, no separate transport config.
+- **No untyped boundaries.** Capabilities, like streaming, migration, observability and connectors, are unlocked by traits.
 
 → [The Next Era of Software Architecture Is Data-First](https://aimdb.dev/blog/data-driven-design)
 
@@ -49,7 +50,8 @@ AimDB makes **the Rust type the contract** — defined once, compiled unchanged 
 
 ```bash
 cargo new my-aimdb-app && cd my-aimdb-app
-cargo add aimdb-core aimdb-tokio-adapter tokio --features tokio/full
+cargo add aimdb-core aimdb-tokio-adapter
+cargo add tokio --features full
 ```
 
 Drop this into `src/main.rs`:
@@ -91,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`cargo run` — three temperature readings stream through a typed pipeline. The same code compiles for Embassy on a Cortex-M4 or WASM in the browser by swapping the runtime adapter — nothing else changes.
+`cargo run` — three temperature readings stream through a typed pipeline. The same code compiles for Embassy on a Cortex-M4 or WASM in the browser by swapping the runtime adapter.
 
 ### Run a real weather mesh in less than 30 min
 
@@ -109,9 +111,7 @@ docker compose up
 
 ## What you get
 
-- **One async API across MCU, edge, cloud and browser.** Tokio, Embassy, WASM — same code, different runtime adapter. → [How the runtime abstraction works](https://aimdb.dev/blog/building-aimdb-one-async-api)
-- **Typed Rust structs are the schema.** No IDL, no codegen step, no schema registry.
-- **Three buffer primitives** that cover most data-movement patterns:
+**Three buffer primitives** that cover most data-movement patterns:
 
 | Buffer | Semantics | Use cases |
 | --- | --- | --- |
@@ -119,28 +119,39 @@ docker compose up
 | **SingleLatest** | Only the current value matters | Feature flags, config, UI state |
 | [**Mailbox**](https://github.com/aimdb-dev/aimdb/tree/main/examples/hello-mailbox) | Latest instruction wins | Device commands, actuation, RPC |
 
-- **Capabilities are unlocked by traits.** Implement `Streamable` to cross WASM/WebSocket/CLI boundaries, `Migratable` for typed schema evolution, `Observable` for monitoring, `Linkable` for wire-format connectors. Without the trait, the type system says no.
-- **Connectors that ship today:** MQTT, KNX, WebSocket. Writing your own is one trait impl.
+**Four capability traits** — opt-in, type-checked:
+
+| Trait | What it unlocks |
+| --- | --- |
+| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | Crossing WASM / WebSocket / CLI boundaries |
+| [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | Typed schema evolution across deployed fleets |
+| `Observable` | Automatic per-record metrics |
+| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | Wire-format connectors |
+
+**One async API across runtimes.** Tokio, Embassy, WASM — swap the runtime adapter, keep the code. → [How the runtime abstraction works](https://aimdb.dev/blog/building-aimdb-one-async-api)
+
+**Connectors that ship today:** MQTT, KNX, WebSocket. Writing your own is one trait impl.
 
 → Deep dives: [data contracts](https://aimdb.dev/blog/data-contracts-deep-dive) · [source/tap/transform](https://aimdb.dev/blog/source-tap-transform) · [schema migration](https://aimdb.dev/blog/schema-migration-without-ceremony) · [reactive pipelines](https://aimdb.dev/blog/reactive-pipelines)
 
 ---
 
-### Platform-Agnostic by Design
+### How the dataflow fits together
 
-The same contract works across all runtimes without modification:
+A record is written by a `Source`, lands in a typed `Buffer`, and fans out to in-process subscribers (`Tap`) and wire-format bridges (`Link` → connector):
 
 ```
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                           Temperature Contract                                │
-├───────────────────┬───────────────────┬───────────────────┬───────────────────┤
-│  MCU (Embassy)    │  Edge (Tokio)     │  Cloud (Tokio)    │  Browser (WASM)   │
-│  no_std + alloc   │  std              │  Kubernetes       │  wasm32           │
-│  Cortex-M4        │  Linux / RPi      │  Full featured    │  Single-threaded  │
-└───────────────────┴───────────────────┴───────────────────┴───────────────────┘
+   Producer                        Consumers
+   ────────                        ─────────
+
+                ┌──────────────┐ ───►  Tap   (in-process subscriber)
+   Source  ───► │   Buffer     │
+   (typed)      │ SPMC / SL /  │ ───►  Tap   (another subscriber)
+                │   Mailbox    │
+                └──────────────┘ ───►  Link ──► MQTT / KNX / WebSocket
 ```
 
-The Rust type system enforces correctness at compile time. The dataflow engine's buffer semantics enforce flow guarantees at runtime. Connectors wire everything to your infrastructure without an integration layer.
+The Rust type system enforces correctness at compile time, buffer semantics enforce flow guarantees at runtime and connectors wire to your infrastructure without an integration layer. The same code compiles for MCU, edge, cloud or browser — see [Platform Support](#platform-support) below.
 
 ---
 
@@ -148,7 +159,7 @@ The Rust type system enforces correctness at compile time. The dataflow engine's
 
 AimDB ships an MCP server. Point any MCP-compatible client at a running instance and query it in natural language.
 
-[![AimDB MCP demo](assets/copilot-communication.gif)](assets/copilot-communication.gif)
+<img src="assets/copilot-communication.gif" alt="AimDB MCP demo" width="600">
 
 Try it against the live demo — no install required. Add this to your workspace:
 
@@ -182,13 +193,13 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 
 ### Connectors
 
-| Protocol | Crate | Status | Runtimes |
-|----------|-------|--------|----------|
-| **MQTT** | `aimdb-mqtt-connector` | ✅ Ready | std, no_std |
-| **KNX** | `aimdb-knx-connector` | ✅ Ready | std, no_std |
-| **WebSocket** | `aimdb-websocket-connector` | ✅ Ready | std, wasm |
-| **Kafka** | — | 📋 Planned | std |
-| **Modbus** | — | 📋 Planned | std, no_std |
+| Protocol | Status | Runtimes |
+|----------|--------|----------|
+| **MQTT** — `aimdb-mqtt-connector` | ✅ Ready | std, no_std |
+| **KNX** — `aimdb-knx-connector` | ✅ Ready | std, no_std |
+| **WebSocket** — `aimdb-websocket-connector` | ✅ Ready | std, wasm |
+| **Kafka** | 📋 Planned | std |
+| **Modbus** | 📋 Planned | std, no_std |
 
 ---
 
@@ -239,7 +250,7 @@ See the [contributing guide](CONTRIBUTING.md) for build, test and style requirem
 ---
 
 <p align="center">
-  <strong>Define once. Deploy anywhere.</strong>
+  <strong>Distributed by design. Data-driven by default.</strong>
   <br><br>
   <a href="https://aimdb.dev/docs/getting-started">Get started</a> · <a href="https://aimdb.dev">Live demo</a> · <a href="https://github.com/aimdb-dev/aimdb/discussions">Join the discussion</a>
 </p>
