@@ -41,7 +41,7 @@ metrics = ["dep:metrics", "std"] # Requires std for aggregation
 # `portable-atomic/critical-section` provides the 64-bit-atomic fallback on targets
 # without native 64-bit atomics (e.g. thumbv7em); it's a no-op where native atomics
 # exist, and embedded binaries already supply a `critical-section` impl.
-profiling = ["alloc", "portable-atomic/critical-section"]
+profiling = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
 
 # Testing features
 test-utils = ["std"]
