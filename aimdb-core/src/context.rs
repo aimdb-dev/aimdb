@@ -180,6 +180,11 @@ impl<'a, R: Runtime> Time<'a, R> {
     pub fn duration_since(&self, later: R::Instant, earlier: R::Instant) -> Option<R::Duration> {
         self.ctx.runtime.duration_since(later, earlier)
     }
+
+    /// Number of whole nanoseconds in a duration (runtime-agnostic).
+    pub fn duration_as_nanos(&self, duration: R::Duration) -> u64 {
+        self.ctx.runtime.duration_as_nanos(duration)
+    }
 }
 
 /// Log utilities accessor for RuntimeContext

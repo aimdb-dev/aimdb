@@ -398,6 +398,12 @@ pub trait AnyRecord: Send + Sync {
 
     /// Get the inbound connector links for this record
     fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
+
+    /// Resets this record's stage profiling counters (feature `profiling`).
+    ///
+    /// Default implementation is a no-op; `TypedRecord` overrides it.
+    #[cfg(feature = "profiling")]
+    fn reset_profiling(&self) {}
 }
 
 // Helper extension trait for type-safe downcasting
@@ -555,6 +561,12 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     /// and produces values into this record's buffer
     inbound_connectors: Vec<crate::connector::InboundConnectorLink>,
 
+    /// Per-stage profiling metrics (feature `profiling`).
+    /// Stages are appended here in the same order they are registered on the
+    /// `RecordRegistrar`, which matches the order the spawn machinery iterates them.
+    #[cfg(feature = "profiling")]
+    profiling: crate::profiling::RecordProfilingMetrics,
+
     /// Metadata tracking (std only - for remote access)
     #[cfg(feature = "std")]
     metadata: RecordMetadataTracker,
@@ -605,6 +617,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             buffer_cfg: None,
             outbound_connectors: Vec::new(),
             inbound_connectors: Vec::new(),
+            #[cfg(feature = "profiling")]
+            profiling: crate::profiling::RecordProfilingMetrics::new(),
             #[cfg(feature = "std")]
             metadata: RecordMetadataTracker::new::<T>(),
             #[cfg(feature = "std")]
@@ -616,6 +630,19 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             #[cfg(not(feature = "std"))]
             latest_snapshot: Arc::new(spin::Mutex::new(None)),
         }
+    }
+
+    /// Stage profiling metrics for this record (feature `profiling`).
+    #[cfg(feature = "profiling")]
+    pub fn profiling(&self) -> &crate::profiling::RecordProfilingMetrics {
+        &self.profiling
+    }
+
+    /// Mutable access to the stage profiling metrics — used during registration
+    /// to append per-stage entries and assign names.
+    #[cfg(feature = "profiling")]
+    pub(crate) fn profiling_mut(&mut self) -> &mut crate::profiling::RecordProfilingMetrics {
+        &mut self.profiling
     }
 
     /// Sets the producer service for this record
@@ -1154,10 +1181,22 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         #[cfg(feature = "tracing")]
         let count = consumers.len();
 
+        // Invariant: taps are pushed to `profiling` in the same order consumers are
+        // added (both happen in `RecordRegistrar::tap_raw`), so index `i` lines up.
+        #[cfg(feature = "profiling")]
+        debug_assert_eq!(self.profiling.tap_count(), consumers.len());
+
         // Spawn each consumer as a background task
-        for consumer_fn in consumers {
+        #[cfg_attr(not(feature = "profiling"), allow(unused_variables))]
+        for (i, consumer_fn) in consumers.into_iter().enumerate() {
             // Create a Consumer<T> handle bound to the specific record key
-            let consumer = crate::typed_api::Consumer::new(db.clone(), record_key.to_string());
+            #[allow(unused_mut)]
+            let mut consumer = crate::typed_api::Consumer::new(db.clone(), record_key.to_string());
+
+            #[cfg(feature = "profiling")]
+            if let Some(entry) = self.profiling.tap(i) {
+                consumer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
+            }
 
             // Get runtime context as Arc<dyn Any> by cloning the Arc
             let runtime_any: Arc<dyn Any + Send + Sync> = runtime.clone();
@@ -1212,7 +1251,14 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             );
 
             // Create Producer<T> bound to the specific record key
-            let producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
+            #[allow(unused_mut)]
+            let mut producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
+
+            #[cfg(feature = "profiling")]
+            if let Some(entry) = self.profiling.source(0) {
+                producer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
+            }
+
             let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
 
             // Call the service function to get the future
@@ -1482,6 +1528,10 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             }
         };
 
+        // Attach stage profiling metrics when the feature is enabled.
+        #[cfg(feature = "profiling")]
+        let metadata = metadata.with_stage_profiling(self.profiling.snapshot());
+
         metadata
     }
 
@@ -1657,5 +1707,10 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
 
     fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
         &self.inbound_connectors
+    }
+
+    #[cfg(feature = "profiling")]
+    fn reset_profiling(&self) {
+        self.profiling.reset_all();
     }
 }

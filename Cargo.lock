@@ -977,6 +977,8 @@ version = "0.1.2"
 name = "embassy-hal-internal"
 version = "0.5.0"
 dependencies = [
+ "aligned",
+ "as-slice",
  "cortex-m",
  "critical-section",
  "defmt 1.0.1",
@@ -2372,6 +2374,9 @@ name = "portable-atomic"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
+dependencies = [
+ "critical-section",
+]
 
 [[package]]
 name = "potential_utf"
@@ -3023,7 +3028,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-5261d86838979da64855b1860a6f3ea8ef90746f#9fc43c9d87d9a0cde91089bd7532fed520873482"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-fe91bec726df47c6467dafce3fcf64075f662a3c#1569e3dc33adb6924329da79ef7dc8ce64bc791d"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

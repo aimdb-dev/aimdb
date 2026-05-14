@@ -190,6 +190,10 @@ impl TimeOps for TokioAdapter {
     fn sleep(&self, duration: Self::Duration) -> impl Future<Output = ()> + Send {
         tokio::time::sleep(duration)
     }
+
+    fn duration_as_nanos(&self, duration: Self::Duration) -> u64 {
+        duration.as_nanos().min(u64::MAX as u128) as u64
+    }
 }
 
 #[cfg(feature = "tokio-runtime")]

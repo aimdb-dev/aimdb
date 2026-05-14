@@ -93,6 +93,9 @@ pub struct Producer<T, R: aimdb_executor::Spawn + 'static> {
     db: Arc<AimDb<R>>,
     /// Record key for key-based routing (required - all records have keys)
     record_key: String,
+    /// Stage profiling state (set by the spawn machinery for `.source()` stages).
+    #[cfg(feature = "profiling")]
+    profiling: Option<Arc<crate::profiling::ProducerProfilingState>>,
     /// Phantom data to bind the type parameter T
     _phantom: PhantomData<T>,
 }
@@ -107,8 +110,22 @@ where
         Self {
             db,
             record_key: key,
+            #[cfg(feature = "profiling")]
+            profiling: None,
             _phantom: PhantomData,
         }
+    }
+
+    /// Attaches stage profiling state. Internal — called by the spawn machinery.
+    #[cfg(feature = "profiling")]
+    pub(crate) fn set_profiling(
+        &mut self,
+        metrics: Arc<crate::profiling::StageMetrics>,
+        clock: crate::profiling::Clock,
+    ) {
+        self.profiling = Some(Arc::new(crate::profiling::ProducerProfilingState::new(
+            metrics, clock,
+        )));
     }
 
     /// Produce a value of type T
@@ -118,6 +135,10 @@ where
     /// 2. All link connectors are triggered
     /// 3. Buffers are updated (if configured)
     pub async fn produce(&self, value: T) -> DbResult<()> {
+        #[cfg(feature = "profiling")]
+        if let Some(state) = &self.profiling {
+            state.record_produce();
+        }
         self.db.produce::<T>(&self.record_key, value).await
     }
 
@@ -135,6 +156,8 @@ where
         Self {
             db: self.db.clone(),
             record_key: self.record_key.clone(),
+            #[cfg(feature = "profiling")]
+            profiling: self.profiling.clone(),
             _phantom: PhantomData,
         }
     }
@@ -197,6 +220,9 @@ pub struct Consumer<T, R: aimdb_executor::Spawn + 'static> {
     db: Arc<AimDb<R>>,
     /// Record key for key-based routing (required - all records have keys)
     record_key: String,
+    /// Stage profiling state (set by the spawn machinery for `.tap()` / `.link()`).
+    #[cfg(feature = "profiling")]
+    profiling: Option<(Arc<crate::profiling::StageMetrics>, crate::profiling::Clock)>,
     /// Phantom data to bind the type parameter T
     _phantom: PhantomData<T>,
 }
@@ -211,15 +237,36 @@ where
         Self {
             db,
             record_key: key,
+            #[cfg(feature = "profiling")]
+            profiling: None,
             _phantom: PhantomData,
         }
+    }
+
+    /// Attaches stage profiling state. Internal — called by the spawn machinery.
+    #[cfg(feature = "profiling")]
+    pub(crate) fn set_profiling(
+        &mut self,
+        metrics: Arc<crate::profiling::StageMetrics>,
+        clock: crate::profiling::Clock,
+    ) {
+        self.profiling = Some((metrics, clock));
     }
 
     /// Subscribe to updates for this record type
     ///
     /// Returns a reader that yields values when they are produced.
     pub fn subscribe(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
-        self.db.subscribe::<T>(&self.record_key)
+        let reader = self.db.subscribe::<T>(&self.record_key)?;
+        #[cfg(feature = "profiling")]
+        if let Some((metrics, clock)) = &self.profiling {
+            return Ok(Box::new(crate::profiling::ProfilingBufferReader::new(
+                reader,
+                metrics.clone(),
+                clock.clone(),
+            )));
+        }
+        Ok(reader)
     }
 
     /// Returns the key this consumer is bound to
@@ -284,6 +331,21 @@ where
 type TypedSerializerFn<T> =
     Arc<dyn Fn(&T) -> Result<Vec<u8>, crate::connector::SerializeError> + Send + Sync + 'static>;
 
+/// Kind of execution stage, used to address per-stage profiling metrics and to
+/// remember which stage `RecordRegistrar::with_name` should rename.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StageKind {
+    /// A `.source()` producer callback.
+    Source,
+    /// A `.tap()` observer callback.
+    Tap,
+    /// An outbound `.link_to()` connector.
+    Link,
+    /// A `.transform()` callback (reserved; not yet instrumented).
+    Transform,
+}
+
 /// Registrar for configuring a typed record
 ///
 /// Provides a fluent API for registering producer and consumer functions.
@@ -301,6 +363,10 @@ pub struct RecordRegistrar<
     /// Extension storage from the builder — allows external crates (e.g.
     /// `aimdb-persistence`) to retrieve typed state inside `.persist()`.
     pub(crate) extensions: &'a crate::extensions::Extensions,
+    /// The most recently registered stage, so `.with_name()` knows what to name.
+    /// Tracked even when the `profiling` feature is off (then it's just unused).
+    #[cfg_attr(not(feature = "profiling"), allow(dead_code))]
+    pub(crate) last_stage: Option<(StageKind, usize)>,
 }
 
 impl<'a, T, R> RecordRegistrar<'a, T, R>
@@ -315,6 +381,26 @@ where
     /// `builder.extensions_mut().insert(...)` before `configure()` was called.
     pub fn extensions(&self) -> &crate::extensions::Extensions {
         self.extensions
+    }
+
+    /// Assigns a human-readable name to the stage registered immediately before
+    /// this call (the most recent `.source()`, `.tap()`, or `.link_to()`).
+    ///
+    /// The name shows up in stage profiling output. This method is always
+    /// available; when the `profiling` feature is disabled it is a no-op.
+    ///
+    /// ```rust,ignore
+    /// reg.source(|ctx, producer| async move { /* ... */ })
+    ///    .with_name("sensor_reader");
+    /// ```
+    pub fn with_name(&'a mut self, name: &str) -> &'a mut Self {
+        #[cfg(feature = "profiling")]
+        if let Some((kind, idx)) = self.last_stage {
+            self.rec.profiling_mut().set_stage_name(kind, idx, name);
+        }
+        #[cfg(not(feature = "profiling"))]
+        let _ = name;
+        self
     }
 
     /// Registers a producer service for this record type (low-level API)
@@ -337,6 +423,15 @@ where
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.rec.set_producer_service(f);
+        #[cfg(feature = "profiling")]
+        {
+            let (idx, _) = self.rec.profiling_mut().push_source();
+            self.last_stage = Some((StageKind::Source, idx));
+        }
+        #[cfg(not(feature = "profiling"))]
+        {
+            self.last_stage = Some((StageKind::Source, 0));
+        }
         self
     }
 
@@ -360,6 +455,15 @@ where
         T: Sync,
     {
         self.rec.add_consumer(f);
+        #[cfg(feature = "profiling")]
+        {
+            let (idx, _) = self.rec.profiling_mut().push_tap();
+            self.last_stage = Some((StageKind::Tap, idx));
+        }
+        #[cfg(not(feature = "profiling"))]
+        {
+            self.last_stage = Some((StageKind::Tap, 0));
+        }
         self
     }
 
@@ -450,6 +554,9 @@ where
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
+        // Transform stages are not yet instrumented; track the kind so `.with_name()`
+        // remains coherent (it currently has nowhere to store the name).
+        self.last_stage = Some((StageKind::Transform, 0));
         self
     }
 
@@ -466,6 +573,7 @@ where
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
+        self.last_stage = Some((StageKind::Transform, 0));
         self
     }
 
@@ -741,6 +849,19 @@ where
             );
         }
 
+        // Register the link as a profiling stage (so `.with_name()` can name it
+        // and the consumer it creates can be timed).
+        #[cfg(feature = "profiling")]
+        let link_metrics = {
+            let (idx, metrics) = self.registrar.rec.profiling_mut().push_link();
+            self.registrar.last_stage = Some((StageKind::Link, idx));
+            metrics
+        };
+        #[cfg(not(feature = "profiling"))]
+        {
+            self.registrar.last_stage = Some((StageKind::Link, 0));
+        }
+
         // Store consumer factory that captures type T and record key
         // This allows the connector to subscribe to values without knowing T at compile time
         {
@@ -754,8 +875,11 @@ where
                     let db = Arc::new(db_ref.clone());
 
                     // Create Consumer<T, R> with captured type T and record key
-                    Box::new(Consumer::<T, R>::new(db, record_key.clone()))
-                        as Box<dyn crate::connector::ConsumerTrait>
+                    #[allow(unused_mut)]
+                    let mut consumer = Consumer::<T, R>::new(db.clone(), record_key.clone());
+                    #[cfg(feature = "profiling")]
+                    consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+                    Box::new(consumer) as Box<dyn crate::connector::ConsumerTrait>
                 },
             ));
         }
@@ -1096,6 +1220,9 @@ mod tests {
         fn sleep(&self, _duration: u64) -> impl Future<Output = ()> + Send {
             core::future::ready(())
         }
+        fn duration_as_nanos(&self, duration: u64) -> u64 {
+            duration
+        }
     }
 
     impl aimdb_executor::Logger for MockRuntime {
@@ -1148,6 +1275,7 @@ mod tests {
             connector_builders: builders,
             record_key: "test::Record".to_string(),
             extensions,
+            last_stage: None,
         }
     }
 

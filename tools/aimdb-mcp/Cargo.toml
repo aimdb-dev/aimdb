@@ -30,6 +30,7 @@ aimdb-client = { version = "0.5.0", path = "../../aimdb-client" }
 aimdb-codegen = { version = "0.1.0", path = "../../aimdb-codegen" }
 aimdb-core = { version = "1.0.0", path = "../../aimdb-core", features = [
     "std",
+    "profiling",
 ] }
 
 # Async runtime

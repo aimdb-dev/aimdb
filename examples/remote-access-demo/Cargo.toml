@@ -13,10 +13,11 @@ name = "client"
 path = "src/client.rs"
 
 [dependencies]
-aimdb-core = { path = "../../aimdb-core", features = ["std", "tracing"] }
+aimdb-core = { path = "../../aimdb-core", features = ["std", "tracing", "profiling"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
     "tracing",
+    "profiling",
 ] }
 tokio = { version = "1.48", features = ["full"] }
 tracing = "0.1"

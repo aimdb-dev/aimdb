@@ -38,6 +38,12 @@ std = []
 # This feature exists only to silence cfg warnings and for API consistency.
 metrics = []
 
+# Automatic stage profiling. Uses portable-atomic (with the `critical-section`
+# fallback for 64-bit atomics, pulled in via aimdb-core/profiling) plus the Embassy
+# clock, so it works on no_std targets. The final binary must provide a
+# `critical-section` implementation (cortex-m / embassy HALs do).
+profiling = ["aimdb-core/profiling", "embassy-runtime"]
+
 [dependencies]
 # Executor traits
 aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }

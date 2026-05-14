@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **`AimxClient::reset_stage_profiling()`** (Issue #58): New method issuing the `profiling.reset` AimX request to clear stage profiling counters for every record on the server. Requires the server to be built with the `profiling` feature and the connection to have write permission.
 
 ## [0.5.0] - 2026-02-21
 

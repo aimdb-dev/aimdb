@@ -28,6 +28,8 @@ mod error;
 pub mod ext_macros;
 pub mod extensions;
 pub mod graph;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 pub mod record_id;
 #[cfg(feature = "std")]
 pub mod remote;
@@ -37,6 +39,25 @@ pub mod transform;
 pub mod transport;
 pub mod typed_api;
 pub mod typed_record;
+
+/// Marker trait used to add a `TimeOps` requirement to runtime-agnostic builder
+/// methods *only* when the `profiling` feature is enabled.
+///
+/// When `profiling` is off this is a blanket no-op (every `R` implements it), so
+/// the public API is unchanged. When `profiling` is on it requires
+/// [`aimdb_executor::TimeOps`], which every real runtime adapter already provides
+/// (it is part of [`aimdb_executor::Runtime`]).
+#[cfg(feature = "profiling")]
+pub trait RuntimeForProfiling: aimdb_executor::TimeOps {}
+#[cfg(feature = "profiling")]
+impl<R: aimdb_executor::TimeOps> RuntimeForProfiling for R {}
+
+/// See the `profiling`-enabled definition above. Blanket no-op when `profiling`
+/// is disabled.
+#[cfg(not(feature = "profiling"))]
+pub trait RuntimeForProfiling {}
+#[cfg(not(feature = "profiling"))]
+impl<R> RuntimeForProfiling for R {}
 
 // Public API exports
 pub use context::RuntimeContext;
@@ -58,8 +79,12 @@ pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
-pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT};
+pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT, StageKind};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
+
+// Stage profiling exports (feature-gated)
+#[cfg(feature = "profiling")]
+pub use profiling::{RecordProfilingMetrics, StageMetrics, StageProfilingInfo};
 
 // Connector Infrastructure exports
 pub use connector::TopicResolverFn;

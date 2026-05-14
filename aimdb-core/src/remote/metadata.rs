@@ -77,6 +77,13 @@ pub struct RecordMetadata {
     #[cfg(feature = "metrics")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occupancy: Option<(usize, usize)>,
+
+    // ===== Stage profiling (feature-gated) =====
+    /// Per-stage timing metrics (`.source()`/`.tap()`/`.link()`), if the
+    /// `profiling` feature is enabled and any stage has been registered.
+    #[cfg(feature = "profiling")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_profiling: Option<std::vec::Vec<crate::profiling::StageProfilingInfo>>,
 }
 
 impl RecordMetadata {
@@ -132,6 +139,8 @@ impl RecordMetadata {
             dropped_count: None,
             #[cfg(feature = "metrics")]
             occupancy: None,
+            #[cfg(feature = "profiling")]
+            stage_profiling: None,
         }
     }
 
@@ -159,6 +168,18 @@ impl RecordMetadata {
         // Only include occupancy if it's meaningful (non-zero capacity)
         if snapshot.occupancy.1 > 0 {
             self.occupancy = Some(snapshot.occupancy);
+        }
+        self
+    }
+
+    /// Attaches a stage profiling snapshot (profiling feature only).
+    #[cfg(feature = "profiling")]
+    pub fn with_stage_profiling(
+        mut self,
+        stages: std::vec::Vec<crate::profiling::StageProfilingInfo>,
+    ) -> Self {
+        if !stages.is_empty() {
+            self.stage_profiling = Some(stages);
         }
         self
     }

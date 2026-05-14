@@ -174,4 +174,14 @@ impl TimeOps for WasmAdapter {
             SendFuture(core::future::ready(()))
         }
     }
+
+    fn duration_as_nanos(&self, duration: WasmDuration) -> u64 {
+        // WasmDuration is milliseconds as f64.
+        let nanos = duration.0.max(0.0) * 1_000_000.0;
+        if nanos >= u64::MAX as f64 {
+            u64::MAX
+        } else {
+            nanos as u64
+        }
+    }
 }

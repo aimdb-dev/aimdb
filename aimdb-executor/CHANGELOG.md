@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`TimeOps::duration_as_nanos`** — new required method on the `TimeOps` trait that returns the number of whole nanoseconds in a `Self::Duration`. Introduced for stage profiling (Issue #58) so features can convert elapsed time to a numeric, runtime-agnostic representation without binding to `std::time`. Implementations should saturate rather than overflow for durations larger than `u64::MAX` nanoseconds.
 - **Join fan-in traits (Design 027)**: Runtime-agnostic abstraction for multi-input transform fan-in queues, replacing the previous `tokio::sync::mpsc`-only path in `aimdb-core`.
   - `JoinFanInRuntime` trait — runtime capability for creating bounded fan-in queues; implemented per adapter.
   - `JoinQueue<T>` trait — splittable into `Sender` / `Receiver` halves.
