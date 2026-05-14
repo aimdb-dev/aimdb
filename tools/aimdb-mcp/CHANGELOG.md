@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Stage profiling tools** (Issue #58): Two new MCP tools surfaced from the `aimdb-core` `profiling` feature (enabled here on the `aimdb-core` dependency so the server always understands the `stage_profiling` metadata field).
+  - `get_stage_profiling` — per-stage wall-clock timing for `.source()` / `.tap()` / `.link()` callbacks of records matching a `record_key` substring. Returns per-stage `call_count` / `avg_time_ns` / `min_time_ns` / `max_time_ns` plus a `bottleneck` pointing at the stage with the highest average, with a human-readable `recommendation` string. Unnamed stages appear as `source[0]`, `tap[0]`, etc.; names set via `.with_name("...")` on the registrar surface as the `name` field.
+  - `reset_stage_profiling` — clears profiling counters for every record on the target instance. Issues the `profiling.reset` AimX request via `aimdb-client`; requires write permission. Falls back to a friendly `{ "reset": false, "message": ... }` response when the target was built without the `profiling` feature.
 - **Public mode** (`--public` flag): Restricts the server to read-only tools (`discover_instances`, `list_records`, `get_record`) for safe internet-facing deployments. Suppresses resources and prompts capabilities. Strips client-supplied `socket_path` arguments to prevent SSRF.
 - **Default socket flag** (`--socket <PATH>`): Sets a default socket path at startup, removing the need for clients to pass `socket_path` on every call. Resolution order: explicit arg → `--socket` → `AIMDB_SOCKET` env var.
 - **CLI argument parsing**: Added `clap` dependency for structured CLI flags.

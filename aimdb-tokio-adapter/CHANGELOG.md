@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`profiling` feature** (Issue #58): Forwards to `aimdb-core/profiling`. Enables automatic per-stage wall-clock timing for `.source()`, `.tap()`, and `.link()` on the Tokio runtime. Off by default; zero overhead when disabled.
+- **`TimeOps::duration_as_nanos` implementation**: Returns `Duration::as_nanos()` saturated to `u64::MAX`. Required by the new `aimdb-executor` trait method.
+- **Stage profiling integration test** (`tests/stage_profiling.rs`, gated on `--features profiling`): Drives a record with a periodic `.source()` and a slow `.tap()`, then asserts that call counts are recorded, the `min ≤ avg ≤ max` invariant holds, `.with_name(...)` is reflected on the registered stages, and `reset_all()` clears the counters.
 - **`TokioJoinQueue` (Design 027)**: Tokio implementation of the `JoinFanInRuntime` traits from `aimdb-executor`, backed by `tokio::sync::mpsc::channel` with internal capacity 64. Enables `transform_join` on the Tokio runtime through the new runtime-agnostic abstraction.
 - **`transform_join` integration tests** (`tests/transform_join_integration_tests.rs`): two-input sum scenario plus a backpressure stress test that pushes 200 events through a yielding handler to verify the bounded fan-in does not deadlock.
 
