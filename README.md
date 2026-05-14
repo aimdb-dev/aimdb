@@ -33,6 +33,8 @@ AimDB is not a storage engine. It's a typed data plane where the Rust type *is* 
 
 > **[See it running](https://aimdb.dev)**  → Live weather stations streaming typed contracts across MCU, edge and cloud.
 
+> **[Ask your AI about it](#ask-your-ai-about-your-running-system)**  → Query the live weather mesh in natural language. No install required.
+
 ---
 
 ## Why AimDB exists
