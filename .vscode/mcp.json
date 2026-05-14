@@ -10,7 +10,7 @@
             "args": [
                 "run",
                 "--manifest-path",
-                "/aimdb_ws/aimdb/tools/aimdb-mcp/Cargo.toml",
+                "${workspaceFolder}/tools/aimdb-mcp/Cargo.toml",
                 "--",
                 "--socket",
                 "/tmp/aimdb-demo.sock"

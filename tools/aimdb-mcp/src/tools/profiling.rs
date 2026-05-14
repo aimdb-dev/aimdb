@@ -116,17 +116,15 @@ pub async fn reset_stage_profiling(args: Option<Value>) -> McpResult<Value> {
             "reset": true,
             "message": "Stage profiling counters reset on all records.",
         })),
-        Err(e) => {
-            // Most likely the server was built without the `profiling` feature.
-            let msg = e.to_string();
-            if msg.contains("method_not_found") || msg.contains("Unknown method") {
-                Ok(json!({
-                    "reset": false,
-                    "message": "The target instance does not support profiling.reset (built without the `profiling` feature?).",
-                }))
-            } else {
-                Err(McpError::Client(e))
-            }
+        Err(aimdb_client::ClientError::ServerError { ref code, .. })
+            if code == "method_not_found" =>
+        {
+            // The server was built without the `profiling` feature.
+            Ok(json!({
+                "reset": false,
+                "message": "The target instance does not support profiling.reset (built without the `profiling` feature?).",
+            }))
         }
+        Err(e) => Err(McpError::Client(e)),
     }
 }

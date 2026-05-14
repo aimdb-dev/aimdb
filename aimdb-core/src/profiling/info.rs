@@ -50,7 +50,7 @@ impl StageProfilingInfo {
 
 impl RecordProfilingMetrics {
     /// Returns a serializable snapshot of every registered stage's metrics,
-    /// ordered sources → taps → links → transforms.
+    /// ordered sources → taps → links.
     pub fn snapshot(&self) -> Vec<StageProfilingInfo> {
         let mut out = Vec::new();
         for (kind, stages) in [
