@@ -70,6 +70,14 @@
             color: #2980b9;
         }
 
+        code {
+            background: #f0f0f0;
+            padding: 0.1rem 0.35rem;
+            border-radius: 3px;
+            font-size: 0.9em;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        }
+
         .badge {
             background: #e3f2fd;
             color: #1976d2;
@@ -112,32 +120,44 @@
 
 <body>
     <h1>AimDB Documentation</h1>
+    <p style="color:#666; font-size:1.1rem; margin-top:-0.5rem;"><em>Distributed by design. Data-driven by default.</em>
+    </p>
 
     <div class="intro">
-        <p><strong>AimDB</strong> is an async, in-memory database designed for data synchronization across MCU
-            → edge → cloud environments. Built with Rust for millisecond-level reactivity and platform portability.</p>
-        <p><span class="badge">Async-First</span> <span class="badge">Lock-Free</span> <span
-                class="badge">Cross-Platform</span> <span class="badge">Low-Latency</span></p>
+        <p>AimDB turns data contracts into the architecture. Define your schemas once and deploy them unchanged across
+            microcontrollers, edge gateways, Kubernetes and the browser, with explicit, typed migrations when the
+            contract evolves.</p>
+        <p>AimDB is not a storage engine. It's a <strong>typed data plane</strong> where the Rust type <em>is</em> the
+            wire format.</p>
+        <p><span class="badge">One Type, Every Tier</span> <span class="badge">Typed Data Plane</span> <span
+                class="badge">No Untyped Boundaries</span> <span class="badge">Runtime Agnostic</span></p>
     </div>
 
     <h2>Platform-Specific Documentation</h2>
 
     <div class="crates-grid">
         <div class="crate platform-card">
-            <h3>🌐 <a href="cloud/">Cloud & Edge Documentation</a></h3>
+            <h3>🌐 <a href="cloud/">Cloud &amp; Edge Documentation</a></h3>
             <p>Complete API documentation for cloud and edge deployments using Tokio runtime. Includes full std library
-                support,
-                networking, metrics, and tracing capabilities.</p>
+                support, networking, metrics, and tracing capabilities.</p>
             <p><span class="badge">std + Tokio</span> <span class="badge">Full Features</span> <span
                     class="badge">Linux/Cloud</span></p>
         </div>
 
         <div class="crate platform-card">
-            <h3>🔧 <a href="embedded/">Embedded & MCU Documentation</a></h3>
-            <p>API documentation for embedded and microcontroller deployments using Embassy runtime.
-                Optimized for no_std environments with minimal resource usage.</p>
+            <h3>🔧 <a href="embedded/">Embedded &amp; MCU Documentation</a></h3>
+            <p>API documentation for embedded and microcontroller deployments using Embassy runtime. Optimized for
+                no_std environments with minimal resource usage.</p>
             <p><span class="badge">no_std + Embassy</span> <span class="badge">MCU Optimized</span> <span
                     class="badge">Embedded</span></p>
+        </div>
+
+        <div class="crate platform-card">
+            <h3>🕸 <a href="cloud/">Browser &amp; WASM Documentation</a></h3>
+            <p>API documentation for WebAssembly deployments in the browser or edge workers. Single-threaded runtime
+                with full typed record support.</p>
+            <p><span class="badge">wasm32</span> <span class="badge">Single-Threaded</span> <span
+                    class="badge">Browser/SPA</span></p>
         </div>
     </div>
 
@@ -146,8 +166,7 @@
     <div class="crates-grid">
         <div class="crate">
             <h3>aimdb-core</h3>
-            <p>Core database engine and fundamental data structures. Contains the async database implementation,
-                lock-free data structures, and core APIs.</p>
+            <p>Core database engine, typed records, buffer primitives and the AimX protocol for remote access.</p>
             <p>
                 <a href="cloud/aimdb_core/">📚 Cloud/Edge API</a> |
                 <a href="embedded/aimdb_core/">🔧 Embedded API</a>
@@ -157,8 +176,8 @@
 
         <div class="crate">
             <h3>Runtime Adapters</h3>
-            <p>Platform-specific async runtime adapters. Tokio for cloud/edge environments, Embassy for embedded MCU
-                targets.</p>
+            <p>Platform-specific async runtime adapters. Tokio for cloud/edge, Embassy for embedded MCU targets, WASM
+                for the browser.</p>
             <p>
                 <a href="cloud/aimdb_tokio_adapter/">📚 Tokio Adapter</a> |
                 <a href="embedded/aimdb_embassy_adapter/">🔧 Embassy Adapter</a>
@@ -167,23 +186,53 @@
         </div>
 
         <div class="crate">
+            <h3>aimdb-client</h3>
+            <p>AimX protocol client for remote database access over Unix sockets. Supports introspection, record
+                read/write and subscriptions.</p>
+            <p><a href="cloud/aimdb_client/">📚 API Docs</a></p>
+            <p><span class="badge">Remote Access</span></p>
+        </div>
+
+        <div class="crate">
+            <h3>aimdb-sync</h3>
+            <p>Synchronous wrapper for blocking code integration. Bridges async AimDB to sync environments using Tokio
+                channels.</p>
+            <p><a href="cloud/aimdb_sync/">📚 API Docs</a></p>
+            <p><span class="badge">Sync API</span></p>
+        </div>
+
+        <div class="crate">
             <h3><a href="cloud/aimdb_cli/">aimdb-cli</a></h3>
-            <p>Command-line interface for managing AimDB instances, configuration, and monitoring. Essential tool for
+            <p>Command-line interface for managing AimDB instances, introspection and monitoring. Essential tool for
                 cloud and edge operations.</p>
             <p><span class="badge">CLI Tools</span> <span class="badge">Cloud Only</span></p>
+        </div>
+
+        <div class="crate">
+            <h3>aimdb-mcp</h3>
+            <p>MCP server for LLM-powered introspection. Point any MCP-compatible client at a running instance and
+                query it in natural language.</p>
+            <p><a href="cloud/aimdb_mcp/">📚 API Docs</a></p>
+            <p><span class="badge">AI Tooling</span> <span class="badge">Cloud Only</span></p>
         </div>
     </div>
 
     <h2>Quick Links</h2>
     <ul>
+        <li><a href="https://aimdb.dev">Live Demo</a> — running weather mesh across MCU, edge and cloud</li>
+        <li><a href="https://aimdb.dev/docs/getting-started">Quick Start Guide</a> — dependencies, platform setup,
+            your first contract</li>
+        <li><a href="https://docs.rs/aimdb-core">API Reference (docs.rs)</a></li>
+        <li><a href="https://aimdb.dev/blog">Blog</a> — design notes, deep dives, release write-ups</li>
         <li><a href="https://github.com/aimdb-dev/aimdb">GitHub Repository</a></li>
-        <li><a href="https://github.com/aimdb-dev/aimdb/blob/main/README.md">Getting Started</a></li>
         <li><a href="https://github.com/aimdb-dev/aimdb/tree/main/examples">Examples</a></li>
-        <li><a href="https://github.com/aimdb-dev/aimdb/issues">Issues & Support</a></li>
+        <li><a href="https://github.com/aimdb-dev/aimdb/discussions">GitHub Discussions</a></li>
+        <li><a href="https://buttondown.com/aimdb">Newsletter</a></li>
     </ul>
 
     <div class="footer">
-        <p>Generated from AimDB source code • <a href="https://github.com/aimdb-dev/aimdb">View on GitHub</a></p>
+        <p>Generated from AimDB source code • <a href="https://github.com/aimdb-dev/aimdb">View on GitHub</a> • <a
+                href="https://aimdb.dev">aimdb.dev</a></p>
     </div>
 </body>
 
