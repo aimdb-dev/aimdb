@@ -31,7 +31,7 @@ AimDB is not a storage engine. It's a typed data plane where the Rust type *is* 
 
 [![AimDB Live Demo](assets/demo.gif)](https://aimdb.dev)
 
-> **[See it running →](https://aimdb.dev)** Live weather stations streaming typed contracts across MCU, edge and cloud.
+> **[See it running](https://aimdb.dev)**  → Live weather stations streaming typed contracts across MCU, edge and cloud.
 
 ---
 
@@ -43,7 +43,7 @@ Distributed systems spend most of their complexity budget translating between la
 - **The buffer defines how data moves.** No manual queue wiring, no separate transport config.
 - **No untyped boundaries.** Capabilities, like streaming, migration, observability and connectors, are unlocked by traits.
 
-→ [The Next Era of Software Architecture Is Data-First](https://aimdb.dev/blog/data-driven-design)
+[The Next Era of Software Architecture Is Data-First](https://aimdb.dev/blog/data-driven-design)
 
 ---
 
@@ -108,7 +108,7 @@ cd aimdb/examples/weather-mesh-demo
 docker compose up
 ```
 
-→ [Walkthrough in the docs](https://aimdb.dev/docs/getting-started)
+[Walkthrough in the docs](https://aimdb.dev/docs/getting-started)
 
 ---
 
@@ -135,13 +135,13 @@ docker compose up
 
 **Connectors that ship today:** MQTT, KNX, WebSocket. Writing your own is one trait impl.
 
-→ Deep dives: [data contracts](https://aimdb.dev/blog/data-contracts-deep-dive) · [source/tap/transform](https://aimdb.dev/blog/source-tap-transform) · [schema migration](https://aimdb.dev/blog/schema-migration-without-ceremony) · [reactive pipelines](https://aimdb.dev/blog/reactive-pipelines)
+Deep dives: [data contracts](https://aimdb.dev/blog/data-contracts-deep-dive) · [source/tap/transform](https://aimdb.dev/blog/source-tap-transform) · [schema migration](https://aimdb.dev/blog/schema-migration-without-ceremony) · [reactive pipelines](https://aimdb.dev/blog/reactive-pipelines)
 
 ---
 
 ### How the dataflow fits together
 
-A record is written by a `Source`, lands in a typed `Buffer`, and fans out to in-process subscribers (`Tap`) and wire-format bridges (`Link` → connector):
+A record is written by a `Source`, lands in a typed `Buffer` and fans out to in-process subscribers (`Tap`) and wire-format bridges (`Link` → connector):
 
 ```
    Producer                        Consumers
@@ -219,7 +219,7 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 
 ## Help wanted
 
-We're a small team building something ambitious. The fastest way to help is to take on a scoped piece of it. Each of these is sized for a few hours and includes file pointers, acceptance criteria, and a place to ask questions:
+We're a small team building something ambitious. The fastest way to help is to take on a scoped piece of it. Each of these is sized for a few hours and includes file pointers, acceptance criteria and a place to ask questions:
 
 - [#92 — `no_std` `Display` for `DbError` should include numeric fields](https://github.com/aimdb-dev/aimdb/issues/92) · 2–3h · core · embedded
 - [#93 — Minimal example: `hello-single-latest`](https://github.com/aimdb-dev/aimdb/issues/93) · 2–3h · docs
