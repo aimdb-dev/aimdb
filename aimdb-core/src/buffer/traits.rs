@@ -83,6 +83,14 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         None
     }
+
+    /// Reset buffer metrics counters (metrics feature only)
+    ///
+    /// Default implementation is a no-op so buffers without metrics support are
+    /// safe to call. Implementations that track counters should override this
+    /// to zero them.
+    #[cfg(feature = "metrics")]
+    fn reset_metrics(&self) {}
 }
 
 /// Reader trait for consuming values from a buffer

@@ -132,6 +132,14 @@ impl AimxClient {
         self.send_request("profiling.reset", None).await
     }
 
+    /// Reset buffer introspection counters for every record on the server.
+    ///
+    /// Requires the server to be built with the `metrics` feature and the
+    /// connection to have write permission.
+    pub async fn reset_buffer_metrics(&mut self) -> ClientResult<serde_json::Value> {
+        self.send_request("buffer_metrics.reset", None).await
+    }
+
     /// Get current value of a record
     pub async fn get_record(&mut self, name: &str) -> ClientResult<serde_json::Value> {
         let params = json!({ "record": name });

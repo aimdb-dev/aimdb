@@ -189,6 +189,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   get_stage_profiling   record_key=\"Temperature\"   → per-stage timing");
     info!("   reset_stage_profiling                              → clear counters");
     info!("");
+    info!("📊 Buffer metrics are enabled. Query via the aimdb-mcp tools:");
+    info!("   get_buffer_metrics    record_key=\"SystemStatus\"  → produced/consumed/dropped");
+    info!("   reset_buffer_metrics                               → clear counters");
+    info!("");
     info!("Press Ctrl+C to stop the server");
 
     // Keep server running

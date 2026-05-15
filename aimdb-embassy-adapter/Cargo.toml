@@ -33,10 +33,11 @@ tracing = ["aimdb-core/tracing", "dep:tracing"]
 # This provides clear error messages when accidentally enabled
 std = []
 
-# Metrics feature placeholder - enables cfg(feature = "metrics") checks but does nothing.
-# Actual metrics support requires std (AtomicU64, etc.) and is not implemented for Embassy.
-# This feature exists only to silence cfg warnings and for API consistency.
-metrics = []
+# Buffer introspection counters (produced/consumed/dropped/occupancy).
+# Backed by `aimdb-core`'s portable-atomic-based `BufferCounters` so it works on
+# no_std targets (the final binary must provide a `critical-section` impl —
+# cortex-m / embassy HALs do, same as `profiling`).
+metrics = ["aimdb-core/metrics", "embassy-runtime"]
 
 # Automatic stage profiling. Uses portable-atomic (with the `critical-section`
 # fallback for 64-bit atomics, pulled in via aimdb-core/profiling) plus the Embassy

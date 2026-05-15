@@ -5,7 +5,7 @@
 //! `propose_add_connector`, `propose_modify_fields`, `propose_modify_key_variants`,
 //! `propose_add_task`, `propose_add_binary`,
 //! `resolve_proposal`, `remove_record`, `rename_record`, `remove_task`, `remove_binary`,
-//! `validate_against_instance`, `get_buffer_metrics`, `reset_session`.
+//! `validate_against_instance`, `reset_session`.
 //!
 //! All proposal-related tools are routed through the session state machine,
 //! which enforces: `Idle → Gathering → Proposing → (resolve) → Gathering`.
@@ -822,50 +822,6 @@ pub async fn validate_against_instance(args: Option<Value>) -> McpResult<Value> 
     let report = detect_conflicts(&state, &live_records);
 
     Ok(serde_json::to_value(&report)?)
-}
-
-// ── get_buffer_metrics ────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct GetBufferMetricsParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
-    record_key: String,
-}
-
-/// Get live buffer metrics for a record key (delegates to list_records, filters by key).
-///
-/// Session-agnostic: works in any phase.
-pub async fn get_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
-    debug!("get_buffer_metrics called");
-    let params: GetBufferMetricsParams = serde_json::from_value(args.unwrap_or(Value::Null))
-        .map_err(|e| McpError::InvalidParams(format!("get_buffer_metrics: {e}")))?;
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
-
-    let mut client = AimxClient::connect(&socket_path)
-        .await
-        .map_err(McpError::Client)?;
-
-    let raw = client.list_records().await.map_err(McpError::Client)?;
-
-    let matching: Vec<_> = raw
-        .into_iter()
-        .filter(|r| r.name.contains(&params.record_key))
-        .collect();
-
-    if matching.is_empty() {
-        return Ok(serde_json::json!({
-            "found": false,
-            "record_key": params.record_key,
-            "message": "No records matching this key were found in the running instance.",
-        }));
-    }
-
-    Ok(serde_json::json!({
-        "found": true,
-        "record_key": params.record_key,
-        "records": serde_json::to_value(matching)?,
-    }))
 }
 
 // ── reset_session ─────────────────────────────────────────────────────────────

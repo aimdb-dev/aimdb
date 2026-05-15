@@ -1273,6 +1273,14 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         }
     }
 
+    /// Resets buffer introspection counters for every record (feature `metrics`).
+    #[cfg(feature = "metrics")]
+    pub fn reset_buffer_metrics(&self) {
+        for record in &self.inner.storages {
+            record.reset_buffer_metrics();
+        }
+    }
+
     /// Try to get record's latest value as JSON by name (std only)
     ///
     /// Convenience wrapper around `AimDbInner::try_latest_as_json()`.

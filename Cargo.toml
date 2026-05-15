@@ -72,9 +72,6 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 # Basic observability
 tracing = { version = "0.1", default-features = false }
 
-# Metrics
-metrics = "0.23"
-
 # Async utilities
 futures = "0.3"
 

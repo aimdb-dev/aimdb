@@ -404,6 +404,12 @@ pub trait AnyRecord: Send + Sync {
     /// Default implementation is a no-op; `TypedRecord` overrides it.
     #[cfg(feature = "profiling")]
     fn reset_profiling(&self) {}
+
+    /// Resets this record's buffer introspection counters (feature `metrics`).
+    ///
+    /// Default implementation is a no-op; `TypedRecord` overrides it.
+    #[cfg(feature = "metrics")]
+    fn reset_buffer_metrics(&self) {}
 }
 
 // Helper extension trait for type-safe downcasting
@@ -1712,5 +1718,12 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
     #[cfg(feature = "profiling")]
     fn reset_profiling(&self) {
         self.profiling.reset_all();
+    }
+
+    #[cfg(feature = "metrics")]
+    fn reset_buffer_metrics(&self) {
+        if let Some(buf) = &self.buffer {
+            buf.reset_metrics();
+        }
     }
 }

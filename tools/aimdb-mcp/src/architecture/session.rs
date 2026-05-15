@@ -4,8 +4,7 @@
 //! `Idle → Gathering → Proposing → (resolve) → Gathering → ...`
 //!
 //! Only one proposal may be pending at a time. Read-only tools
-//! (`get_architecture`, `get_buffer_metrics`, `validate_against_instance`)
-//! are allowed in any phase.
+//! (`get_architecture`, `validate_against_instance`) are allowed in any phase.
 
 use super::Proposal;
 use chrono::Utc;

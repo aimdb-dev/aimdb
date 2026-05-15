@@ -581,6 +581,8 @@ where
         "graph.topo_order" => handle_graph_topo_order(db, request.id).await,
         #[cfg(feature = "profiling")]
         "profiling.reset" => handle_profiling_reset(db, config, request.id).await,
+        #[cfg(feature = "metrics")]
+        "buffer_metrics.reset" => handle_buffer_metrics_reset(db, config, request.id).await,
         _ => {
             #[cfg(feature = "tracing")]
             tracing::warn!("Unknown method: {}", request.method);
@@ -654,6 +656,37 @@ where
 
     #[cfg(feature = "tracing")]
     tracing::info!("Stage profiling counters reset");
+
+    Response::success(request_id, json!({ "reset": true }))
+}
+
+/// Handles buffer_metrics.reset method
+///
+/// Clears buffer introspection counters for every record. Requires write permission.
+#[cfg(all(feature = "std", feature = "metrics"))]
+async fn handle_buffer_metrics_reset<R>(
+    db: &Arc<AimDb<R>>,
+    config: &AimxConfig,
+    request_id: u64,
+) -> Response
+where
+    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+{
+    if matches!(
+        config.security_policy,
+        crate::remote::SecurityPolicy::ReadOnly
+    ) {
+        return Response::error(
+            request_id,
+            "permission_denied",
+            "buffer_metrics.reset requires write permission (ReadOnly security policy)".to_string(),
+        );
+    }
+
+    db.reset_buffer_metrics();
+
+    #[cfg(feature = "tracing")]
+    tracing::info!("Buffer metrics counters reset");
 
     Response::success(request_id, json!({ "reset": true }))
 }

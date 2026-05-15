@@ -16,71 +16,13 @@ use aimdb_core::DbError;
 use tokio::sync::{broadcast, watch, Notify};
 
 #[cfg(feature = "metrics")]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(feature = "metrics")]
-use aimdb_core::buffer::{BufferMetrics, BufferMetricsSnapshot};
-
-/// Metrics counters for buffer introspection (feature-gated)
-///
-/// Shared between buffer and all readers via `Arc`. Contains atomic
-/// counters for produced, consumed, and dropped items.
-#[cfg(feature = "metrics")]
-pub struct BufferMetricsInner {
-    /// Total items pushed
-    produced: AtomicU64,
-    /// Total items consumed (aggregate across all readers)
-    consumed: AtomicU64,
-    /// Total items dropped due to lag
-    dropped: AtomicU64,
-    /// Buffer capacity (for occupancy calculation)
-    capacity: usize,
-}
-
-#[cfg(feature = "metrics")]
-impl BufferMetricsInner {
-    fn new(capacity: usize) -> Self {
-        Self {
-            produced: AtomicU64::new(0),
-            consumed: AtomicU64::new(0),
-            dropped: AtomicU64::new(0),
-            capacity,
-        }
-    }
-
-    fn increment_produced(&self) {
-        self.produced.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn increment_consumed(&self) {
-        self.consumed.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn add_dropped(&self, count: u64) {
-        self.dropped.fetch_add(count, Ordering::Relaxed);
-    }
-
-    fn snapshot(&self, current_occupancy: usize) -> BufferMetricsSnapshot {
-        BufferMetricsSnapshot {
-            produced_count: self.produced.load(Ordering::Relaxed),
-            consumed_count: self.consumed.load(Ordering::Relaxed),
-            dropped_count: self.dropped.load(Ordering::Relaxed),
-            occupancy: (current_occupancy, self.capacity),
-        }
-    }
-
-    fn reset(&self) {
-        self.produced.store(0, Ordering::Relaxed);
-        self.consumed.store(0, Ordering::Relaxed);
-        self.dropped.store(0, Ordering::Relaxed);
-    }
-}
+use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 
 /// Tokio buffer implementation
 pub struct TokioBuffer<T: Clone + Send + Sync + 'static> {
     inner: Arc<TokioBufferInner<T>>,
     #[cfg(feature = "metrics")]
-    metrics: Arc<BufferMetricsInner>,
+    metrics: Arc<BufferCounters>,
 }
 
 /// Internal buffer variants using Tokio primitives
@@ -126,7 +68,7 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
         Self {
             inner: Arc::new(inner),
             #[cfg(feature = "metrics")]
-            metrics: Arc::new(BufferMetricsInner::new(capacity)),
+            metrics: Arc::new(BufferCounters::new(capacity)),
         }
     }
 
@@ -191,6 +133,11 @@ impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for Toki
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         Some(<Self as BufferMetrics>::metrics(self))
     }
+
+    #[cfg(feature = "metrics")]
+    fn reset_metrics(&self) {
+        <Self as BufferMetrics>::reset_metrics(self);
+    }
 }
 
 /// Implementation of BufferMetrics for TokioBuffer (metrics feature only)
@@ -224,7 +171,8 @@ impl<T: Clone + Send + Sync + 'static> BufferMetrics for TokioBuffer<T> {
             }
         };
 
-        self.metrics.snapshot(current_occupancy)
+        self.metrics
+            .snapshot((current_occupancy, self.metrics.capacity()))
     }
 
     fn reset_metrics(&self) {
@@ -308,18 +256,18 @@ pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
     Broadcast {
         rx: broadcast::Receiver<T>,
         #[cfg(feature = "metrics")]
-        metrics: Arc<BufferMetricsInner>,
+        metrics: Arc<BufferCounters>,
     },
     Watch {
         rx: watch::Receiver<Option<T>>,
         #[cfg(feature = "metrics")]
-        metrics: Arc<BufferMetricsInner>,
+        metrics: Arc<BufferCounters>,
     },
     Notify {
         slot: Arc<StdMutex<Option<T>>>,
         notify: Arc<Notify>,
         #[cfg(feature = "metrics")]
-        metrics: Arc<BufferMetricsInner>,
+        metrics: Arc<BufferCounters>,
     },
 }
 

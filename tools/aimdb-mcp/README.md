@@ -242,6 +242,31 @@ Query: "Reset the stage profiling counters."
 Result: { "reset": true }
 ```
 
+### 13. get_buffer_metrics
+
+Return live buffer introspection counters
+(`produced_count` / `consumed_count` / `dropped_count` / `occupancy`) for records
+matching a key. Requires the target instance to be built with the `metrics`
+feature; otherwise records carry no buffer metrics.
+
+```
+Query: "What's the producer/consumer lag on my Temperature buffer?"
+
+Result: Per-record produced/consumed/dropped counts and current (used, capacity).
+```
+
+### 14. reset_buffer_metrics
+
+Reset buffer introspection counters for every record on the target instance
+(requires write permission and the `metrics` feature). Useful for windowed
+measurements.
+
+```
+Query: "Reset the buffer metrics counters."
+
+Result: { "reset": true }
+```
+
 ## Schema Inference
 
 The MCP server can infer JSON schemas from record values:

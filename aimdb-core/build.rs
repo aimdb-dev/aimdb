@@ -14,7 +14,6 @@ fn main() {
     let std_enabled = env::var("CARGO_FEATURE_STD").is_ok();
     let tokio_runtime_enabled = env::var("CARGO_FEATURE_TOKIO_RUNTIME").is_ok();
     let embassy_runtime_enabled = env::var("CARGO_FEATURE_EMBASSY_RUNTIME").is_ok();
-    let metrics_enabled = env::var("CARGO_FEATURE_METRICS").is_ok();
 
     // Note: no_std is the absence of std feature, no validation needed for mutual exclusion
 
@@ -23,19 +22,6 @@ fn main() {
         // Allow this for --all-features testing, but warn
         eprintln!("⚠️  Warning: Both tokio-runtime and embassy-runtime enabled (likely from --all-features)");
         eprintln!("   This is only valid for testing. Production builds should use one runtime.");
-    }
-
-    // Validate metrics require std
-    if metrics_enabled && !std_enabled {
-        panic!(
-            r#"
-❌ Invalid feature combination: 'metrics' requires 'std' platform
-
-   Metrics collection requires standard library support.
-
-   Use: features = ["std", "metrics"]
-"#
-        );
     }
 
     // Validate runtime dependencies

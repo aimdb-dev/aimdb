@@ -57,6 +57,8 @@ extern crate alloc;
 
 // Module structure
 mod cfg;
+#[cfg(feature = "metrics")]
+mod counters;
 mod traits;
 
 // Public API exports
@@ -67,7 +69,9 @@ pub use traits::{Buffer, BufferReader, DynBuffer};
 #[cfg(feature = "std")]
 pub use traits::JsonBufferReader;
 
-// Buffer metrics (std only, feature-gated)
+// Buffer metrics (feature-gated; works in no_std with portable-atomic)
+#[cfg(feature = "metrics")]
+pub use counters::BufferCounters;
 #[cfg(feature = "metrics")]
 pub use traits::{BufferMetrics, BufferMetricsSnapshot};
 

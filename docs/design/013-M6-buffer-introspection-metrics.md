@@ -3,8 +3,40 @@
 > **Status**: ✅ Implemented  
 > **Target**: `aimdb-core` (feature-flagged)  
 > **Priority**: Medium  
-> **Implementation Date**: November 2025  
+> **Implementation Date**: November 2025; modernized in May 2026 (issue #107)  
 > **Feature Flag**: `metrics`
+
+---
+
+## Implementation notes (modernization — issue #107)
+
+The original implementation forced `std`, embedded counter state in the Tokio
+adapter, and shipped only `get_buffer_metrics` on the MCP side. Issue #107
+brought it in line with the `profiling` feature without changing the data
+exposed:
+
+- Shared counter state moved from `aimdb-tokio-adapter`'s `BufferMetricsInner`
+  into `aimdb_core::buffer::BufferCounters` (`portable-atomic` based, `no_std`
+  + `alloc` compatible). The Tokio and Embassy adapters embed the same `Arc<BufferCounters>`.
+- The feature now compiles in `no_std`: `metrics = ["alloc",
+  "portable-atomic/fallback", "portable-atomic/critical-section"]`. The external
+  `metrics` crate dependency (never actually used) was dropped from
+  `aimdb-core/Cargo.toml` and the workspace.
+- `aimdb-embassy-adapter` gains real `BufferMetrics` support
+  (`metrics = ["aimdb-core/metrics", "embassy-runtime"]`); `EmbassyBuffer::metrics_snapshot()`
+  returns live counters on `thumbv7em` targets.
+- The reset path mirrors `profiling.reset` end-to-end: a new
+  `AnyRecord::reset_buffer_metrics` (default no-op, overridden on `TypedRecord`),
+  `AimDb::reset_buffer_metrics`, a `buffer_metrics.reset` AimX handler
+  (write-permission gated), `AimxClient::reset_buffer_metrics`, and a new
+  `reset_buffer_metrics` MCP tool with the same `method_not_found` fallback as
+  `reset_stage_profiling`.
+- `get_buffer_metrics` moved into its own MCP module
+  (`tools/aimdb-mcp/src/tools/buffer_metrics.rs`) — out of the architecture-agent
+  module — alongside the new `reset_buffer_metrics` tool.
+
+The public shape (`BufferMetrics` trait, `BufferMetricsSnapshot`, the
+`metrics`-gated fields of `RecordMetadata`) is unchanged.
 
 ---
 

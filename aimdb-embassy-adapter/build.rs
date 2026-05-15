@@ -11,7 +11,6 @@ fn main() {
     // Validate feature combinations for no_std target
     let std_enabled = env::var("CARGO_FEATURE_STD").is_ok();
     let _embassy_runtime_enabled = env::var("CARGO_FEATURE_EMBASSY_RUNTIME").is_ok();
-    let metrics_enabled = env::var("CARGO_FEATURE_METRICS").is_ok();
 
     // Prevent std usage on embassy adapter (embassy is no_std only)
     if std_enabled {
@@ -26,19 +25,6 @@ fn main() {
    • tracing         (no_std compatible tracing)
 
    For std features, use aimdb-tokio-adapter instead.
-"#
-        );
-    }
-
-    // Prevent std-only features on no_std
-    if metrics_enabled {
-        panic!(
-            r#"
-❌ Invalid feature: 'metrics' not supported on no_std targets
-
-   Metrics collection requires std library support.
-
-   Use aimdb-tokio-adapter for metrics collection.
 "#
         );
     }

@@ -116,6 +116,60 @@ echo '{"id":1,"method":"profiling.reset"}' | socat - UNIX-CONNECT:/tmp/aimdb-dem
 The per-stage snapshot is also embedded in each record's metadata via the
 `stage_profiling` field of `record.list`.
 
+## Buffer Metrics
+
+The server is also built with the `metrics` feature, so every buffer tracks
+`produced_count` / `consumed_count` / `dropped_count` / `occupancy`. The
+`Temperature` and `SystemStatus` records exercise this naturally — the
+simulators produce on a 2 s / 5 s cadence and the taps consume.
+
+After letting the server run for ~30 seconds, query buffer metrics via the
+`aimdb-mcp` `get_buffer_metrics` tool with `record_key="SystemStatus"`. Each
+matching record's `buffer_metrics` field will look like:
+
+```json
+{
+  "produced_count": 6,
+  "consumed_count": 5,
+  "dropped_count": 0,
+  "occupancy": [1, 50]
+}
+```
+
+`produced - consumed` reflects the slow consumer's lag; `occupancy` is
+`(current_items, capacity)`. The same fields are embedded in each entry of
+`record.list`, so you can also see them via the client demo.
+
+### Reset end-to-end
+
+A small companion binary, [`verify_buffer_metrics`](src/verify_buffer_metrics.rs),
+exercises the full reset round-trip via `AimxClient`. Start the server, let it
+run for ~10 seconds, then in a separate terminal:
+
+```bash
+cargo run --package remote-access-demo --bin verify_buffer_metrics
+```
+
+Expected output:
+
+```
+🔌 Connecting to /tmp/aimdb-demo.sock
+📊 Before reset: produced=49 consumed=49 occupancy=Some((0, 50))
+🧹 Calling buffer_metrics.reset
+   response: {"reset":true}
+📊 After  reset: produced=0 consumed=0 occupancy=Some((0, 50))
+✅ buffer_metrics.reset verified end-to-end
+```
+
+The server's `ReadWrite` security policy permits the reset. To verify the
+write-permission gate, change [server.rs](src/server.rs) `SecurityPolicy::read_write()`
+to `SecurityPolicy::read_only()` and rerun the server — the verifier then exits
+with:
+
+```
+Error: ServerError { code: "permission_denied", message: "buffer_metrics.reset requires write permission (ReadOnly security policy)", ... }
+```
+
 ## Next Steps
 
 Future enhancements will add:

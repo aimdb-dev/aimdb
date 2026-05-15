@@ -787,6 +787,20 @@ impl McpServer {
                 }),
             },
             Tool {
+                name: "reset_buffer_metrics".to_string(),
+                description: "Reset buffer introspection counters (produced/consumed/dropped/occupancy) for every record on a running AimDB instance (requires write permission and the `metrics` feature).".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "socket_path": {
+                            "type": "string",
+                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            Tool {
                 name: "save_memory".to_string(),
                 description: "Persist ideation context and design rationale to .aimdb/memory.md. \
                     Call this after every confirmed proposal with a narrative summary of what the user is building, \
@@ -901,6 +915,7 @@ impl McpServer {
                 tools::validate_against_instance(params.arguments).await?
             }
             "get_buffer_metrics" => tools::get_buffer_metrics(params.arguments).await?,
+            "reset_buffer_metrics" => tools::reset_buffer_metrics(params.arguments).await?,
             "get_stage_profiling" => tools::get_stage_profiling(params.arguments).await?,
             "reset_stage_profiling" => tools::reset_stage_profiling(params.arguments).await?,
             "save_memory" => tools::save_memory(params.arguments).await?,

@@ -50,6 +50,9 @@ use embassy_sync::channel::Channel;
 use embassy_sync::pubsub::{PubSubChannel, WaitResult};
 use embassy_sync::watch::Watch;
 
+#[cfg(feature = "metrics")]
+use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
+
 /// Embassy buffer implementation that wraps the appropriate Embassy primitive
 /// based on the buffer configuration.
 ///
@@ -86,6 +89,8 @@ pub struct EmbassyBuffer<
     const WATCH_N: usize,
 > {
     inner: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
+    #[cfg(feature = "metrics")]
+    metrics: Arc<BufferCounters>,
 }
 
 /// Inner buffer variants using Embassy primitives
@@ -121,6 +126,8 @@ impl<
     pub fn new_spmc() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::SpmcRing(PubSubChannel::new())),
+            #[cfg(feature = "metrics")]
+            metrics: Arc::new(BufferCounters::new(CAP)),
         }
     }
 
@@ -128,6 +135,8 @@ impl<
     pub fn new_watch() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::Watch(Watch::new())),
+            #[cfg(feature = "metrics")]
+            metrics: Arc::new(BufferCounters::new(1)),
         }
     }
 
@@ -135,6 +144,8 @@ impl<
     pub fn new_mailbox() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::Mailbox(Channel::new())),
+            #[cfg(feature = "metrics")]
+            metrics: Arc::new(BufferCounters::new(1)),
         }
     }
 }
@@ -168,6 +179,9 @@ impl<
     }
 
     fn push(&self, value: T) {
+        #[cfg(feature = "metrics")]
+        self.metrics.increment_produced();
+
         match &*self.inner {
             EmbassyBufferInner::SpmcRing(channel) => {
                 // Use immediate publish to avoid blocking
@@ -197,6 +211,8 @@ impl<
             buffer: Arc::clone(&self.inner),
             watch_receiver: None, // Will be initialized on first recv() for Watch buffers
             spmc_subscriber: None, // Will be initialized on first recv() for SpmcRing buffers
+            #[cfg(feature = "metrics")]
+            metrics: Arc::clone(&self.metrics),
         }
     }
 }
@@ -204,11 +220,6 @@ impl<
 /// Explicit DynBuffer implementation for EmbassyBuffer
 ///
 /// Required since there is no blanket impl - each adapter provides its own.
-///
-/// **Note on metrics**: Embassy adapter does not currently support buffer metrics.
-/// The `metrics_snapshot()` method returns `None`. Metrics support for embedded
-/// targets would require careful consideration of atomic availability and memory
-/// constraints. See the Tokio adapter for a reference implementation.
 impl<
         T: Clone + Send + 'static,
         const CAP: usize,
@@ -229,13 +240,59 @@ impl<
         self
     }
 
-    // Embassy adapter does not support metrics yet.
-    // AtomicU64 availability varies across embedded targets, and memory-constrained
-    // environments may not want the overhead. Future work could add opt-in metrics
-    // with target-specific atomic implementations.
     #[cfg(feature = "metrics")]
-    fn metrics_snapshot(&self) -> Option<aimdb_core::buffer::BufferMetricsSnapshot> {
-        None
+    fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
+        Some(<Self as BufferMetrics>::metrics(self))
+    }
+
+    #[cfg(feature = "metrics")]
+    fn reset_metrics(&self) {
+        <Self as BufferMetrics>::reset_metrics(self);
+    }
+}
+
+/// Implementation of BufferMetrics for EmbassyBuffer (metrics feature only).
+///
+/// Counter state is shared with readers via `Arc<BufferCounters>`. Occupancy
+/// readings:
+/// - `SpmcRing`: `PubSubChannel::len()` (current queued messages) over `CAP`.
+/// - `Watch`: `(1, 1)` once a value has been published (tracked via the
+///   `produced` counter — embassy's `Watch` doesn't expose state), else `(0, 1)`.
+/// - `Mailbox`: `(1, 1)` if the slot is occupied, else `(0, 1)`.
+#[cfg(feature = "metrics")]
+impl<
+        T: Clone + Send + 'static,
+        const CAP: usize,
+        const SUBS: usize,
+        const PUBS: usize,
+        const WATCH_N: usize,
+    > BufferMetrics for EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
+{
+    fn metrics(&self) -> BufferMetricsSnapshot {
+        let snap_partial = self.metrics.snapshot((0, self.metrics.capacity()));
+        let current_occupancy = match &*self.inner {
+            EmbassyBufferInner::SpmcRing(channel) => channel.len(),
+            EmbassyBufferInner::Watch(_) => {
+                if snap_partial.produced_count > 0 {
+                    1
+                } else {
+                    0
+                }
+            }
+            EmbassyBufferInner::Mailbox(channel) => {
+                if channel.is_full() {
+                    1
+                } else {
+                    0
+                }
+            }
+        };
+        self.metrics
+            .snapshot((current_occupancy, self.metrics.capacity()))
+    }
+
+    fn reset_metrics(&self) {
+        self.metrics.reset();
     }
 }
 
@@ -321,6 +378,9 @@ pub struct EmbassyBufferReader<
     spmc_subscriber: Option<
         embassy_sync::pubsub::Subscriber<'static, CriticalSectionRawMutex, T, CAP, SUBS, PUBS>,
     >,
+    /// Shared counter state (cloned from the parent buffer at subscribe time).
+    #[cfg(feature = "metrics")]
+    metrics: Arc<BufferCounters>,
 }
 
 impl<
@@ -363,11 +423,19 @@ impl<
                         );
                     }
                     match self.spmc_subscriber.as_mut().unwrap().next_message().await {
-                        WaitResult::Message(value) => Ok(value),
-                        WaitResult::Lagged(n) => Err(DbError::BufferLagged {
-                            lag_count: n,
-                            _buffer_name: (),
-                        }),
+                        WaitResult::Message(value) => {
+                            #[cfg(feature = "metrics")]
+                            self.metrics.increment_consumed();
+                            Ok(value)
+                        }
+                        WaitResult::Lagged(n) => {
+                            #[cfg(feature = "metrics")]
+                            self.metrics.add_dropped(n);
+                            Err(DbError::BufferLagged {
+                                lag_count: n,
+                                _buffer_name: (),
+                            })
+                        }
                     }
                 }
                 EmbassyBufferInner::Watch(watch) => {
@@ -391,14 +459,20 @@ impl<
 
                     // Use the persistent receiver to detect changes
                     if let Some(ref mut rx) = self.watch_receiver {
-                        Ok(rx.changed().await)
+                        let value = rx.changed().await;
+                        #[cfg(feature = "metrics")]
+                        self.metrics.increment_consumed();
+                        Ok(value)
                     } else {
                         Err(DbError::BufferClosed { _buffer_name: () })
                     }
                 }
                 EmbassyBufferInner::Mailbox(channel) => {
                     let rx = channel.receiver();
-                    Ok(rx.receive().await)
+                    let value = rx.receive().await;
+                    #[cfg(feature = "metrics")]
+                    self.metrics.increment_consumed();
+                    Ok(value)
                 }
             }
         })
@@ -434,14 +508,22 @@ impl<
                     .unwrap()
                     .try_next_message_pure()
                 {
-                    Some(value) => Ok(value),
+                    Some(value) => {
+                        #[cfg(feature = "metrics")]
+                        self.metrics.increment_consumed();
+                        Ok(value)
+                    }
                     None => Err(DbError::BufferEmpty),
                 }
             }
             EmbassyBufferInner::Watch(_) => {
                 if let Some(ref mut rx) = self.watch_receiver {
                     match rx.try_changed() {
-                        Some(value) => Ok(value),
+                        Some(value) => {
+                            #[cfg(feature = "metrics")]
+                            self.metrics.increment_consumed();
+                            Ok(value)
+                        }
                         None => Err(DbError::BufferEmpty),
                     }
                 } else {
@@ -449,7 +531,11 @@ impl<
                 }
             }
             EmbassyBufferInner::Mailbox(channel) => match channel.try_receive() {
-                Ok(val) => Ok(val),
+                Ok(val) => {
+                    #[cfg(feature = "metrics")]
+                    self.metrics.increment_consumed();
+                    Ok(val)
+                }
                 Err(_) => Err(DbError::BufferEmpty),
             },
         }

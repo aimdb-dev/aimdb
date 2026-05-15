@@ -83,7 +83,6 @@ dependencies = [
  "futures-util",
  "hashbrown 0.15.5",
  "heapless 0.9.1",
- "metrics",
  "portable-atomic",
  "serde",
  "serde_json",
@@ -2119,16 +2118,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
-name = "metrics"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3045b4193fbdc5b5681f32f11070da9be3609f189a79f3390706d42587f46bb5"
-dependencies = [
- "ahash",
- "portable-atomic",
-]
-
-[[package]]
 name = "micromath"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2552,6 +2541,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 name = "remote-access-demo"
 version = "0.1.0"
 dependencies = [
+ "aimdb-client",
  "aimdb-core",
  "aimdb-tokio-adapter",
  "serde",

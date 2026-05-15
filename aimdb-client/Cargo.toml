@@ -9,6 +9,10 @@ description = "AimX protocol client for remote AimDB introspection and managemen
 keywords = ["client", "protocol", "database", "remote", "rpc"]
 categories = ["database", "network-programming"]
 
+[features]
+metrics = ["aimdb-core/metrics"]
+profiling = ["aimdb-core/profiling"]
+
 [dependencies]
 # Core dependencies - protocol types from aimdb-core
 aimdb-core = { version = "1.0.0", path = "../aimdb-core", features = ["std"] }
