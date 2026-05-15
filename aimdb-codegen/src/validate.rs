@@ -555,6 +555,12 @@ description = "Value"
 
     #[test]
     fn warning_for_capacity_on_non_spmc() {
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
         let toml = VALID_TOML.replace("buffer = \"SpmcRing\"", "buffer = \"SingleLatest\"");
         let state = ArchitectureState::from_toml(&toml).unwrap();
         let errs = validate(&state);
