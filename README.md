@@ -121,7 +121,7 @@ docker compose up
 | Buffer | Semantics | Use cases |
 | --- | --- | --- |
 | **SPMC Ring** | Bounded stream with independent consumers | Sensor telemetry, event logs |
-| **SingleLatest** | Only the current value matters | Feature flags, config, UI state |
+| [**SingleLatest**](examples/hello-single-latest-async) | Only the current value matters | Feature flags, config, UI state |
 | [**Mailbox**](https://github.com/aimdb-dev/aimdb/tree/main/examples/hello-mailbox) | Latest instruction wins | Device commands, actuation, RPC |
 
 **Four capability traits** — opt-in, type-checked:
