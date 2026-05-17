@@ -65,7 +65,17 @@ async fn rollout_observer(
     };
     let time = ctx.time();
 
+    let mut first = true;
     while let Ok(gate) = reader.recv().await {
+        if first {
+            first = false;
+            if gate.rollout_percent != 0 {
+                println!(
+                    "   (rollouts before {}% were overwritten before the tap could read them - SingleLatest keeps only the latest)",
+                    gate.rollout_percent
+                );
+            }
+        }
         println!("tap observed current rollout: {}%", gate.rollout_percent);
         if gate.rollout_percent == 100 {
             break;
