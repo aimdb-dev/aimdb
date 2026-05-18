@@ -1673,6 +1673,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hello-single-latest-async"
+version = "1.0.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-tokio-adapter",
+ "tokio",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
