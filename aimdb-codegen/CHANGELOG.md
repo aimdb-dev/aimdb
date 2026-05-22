@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-22
+
 ### Changed
 
 - **Generated join handler stubs** updated to match the new task-model `on_triggers` API (Design 027). Multi-input task handlers are now generated as:

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-22
+
 ### Added
 
 - **Automatic stage profiling (Issue #58, RFC 014, feature `profiling`)**: AimDB now measures wall-clock time per `.source()`, `.tap()`, and `.link()` stage with no user instrumentation. Feature is off by default and adds zero overhead when disabled; `alloc` + a runtime clock is enough, so it works on `no_std + alloc` targets too.
@@ -306,7 +308,9 @@ warning fires if you exceed 1000 interned keys.
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/aimdb-dev/aimdb/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0

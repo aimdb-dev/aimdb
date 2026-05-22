@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-mcp"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -26,12 +26,12 @@ path = "src/lib.rs"
 
 [dependencies]
 # AimDB dependencies
-aimdb-client = { version = "0.5.0", path = "../../aimdb-client", features = [
+aimdb-client = { version = "0.6.0", path = "../../aimdb-client", features = [
     "metrics",
     "profiling",
 ] }
-aimdb-codegen = { version = "0.1.0", path = "../../aimdb-codegen" }
-aimdb-core = { version = "1.0.0", path = "../../aimdb-core", features = [
+aimdb-codegen = { version = "0.2.0", path = "../../aimdb-codegen" }
+aimdb-core = { version = "1.1.0", path = "../../aimdb-core", features = [
     "std",
     "profiling",
     "metrics",

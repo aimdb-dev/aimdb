@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-embassy-adapter"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
@@ -47,10 +47,10 @@ profiling = ["aimdb-core/profiling", "embassy-runtime"]
 
 [dependencies]
 # Executor traits
-aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false }
+aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
 
 # Core AimDB types - no_std for Embassy (requires alloc for typed APIs)
-aimdb-core = { version = "1.0.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false, features = [
     "alloc",
 ] }
 

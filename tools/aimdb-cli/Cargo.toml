@@ -16,11 +16,11 @@ path = "src/main.rs"
 
 [dependencies]
 # AimDB client library
-aimdb-client = { version = "0.5.0", path = "../../aimdb-client" }
-aimdb-codegen = { version = "0.1.0", path = "../../aimdb-codegen" }
+aimdb-client = { version = "0.6.0", path = "../../aimdb-client" }
+aimdb-codegen = { version = "0.2.0", path = "../../aimdb-codegen" }
 
 # Core dependencies - reuse protocol types from aimdb-core
-aimdb-core = { version = "1.0.0", path = "../../aimdb-core", features = [
+aimdb-core = { version = "1.1.0", path = "../../aimdb-core", features = [
     "std",
 ] }
 serde = { version = "1", features = ["derive"] }

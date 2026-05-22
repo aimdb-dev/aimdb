@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-22
+
 ### Changed
 
 - Updated `Router::route()` calls to pass runtime context via `db.runtime_any()` in both client connector and session handler, enabling context-aware deserializers (Design 026)

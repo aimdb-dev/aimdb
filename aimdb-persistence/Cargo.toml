@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-persistence"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
@@ -15,10 +15,10 @@ std = ["aimdb-core/std", "serde_json/std"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-aimdb-core = { version = "1.0.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
-aimdb-executor = { version = "0.1.0", path = "../aimdb-executor", default-features = false, features = [
+aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false, features = [
     "std",
 ] }
 serde = { workspace = true, features = ["derive"] }

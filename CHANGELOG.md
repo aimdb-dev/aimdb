@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-22
+
 ### Added
 
 - **Automatic stage profiling (Issue #58, RFC 014)**: New `profiling` feature on `aimdb-core` automatically measures wall-clock time per `.source()` / `.tap()` / `.link()` stage and exposes `call_count` / `total` / `avg` / `min` / `max` counters per stage. Name stages with `RecordRegistrar::with_name("...")`. Works on `no_std + alloc` via the runtime clock (`aimdb_executor::TimeOps`) and `portable-atomic` for 64-bit atomics on `thumbv7em`. New MCP tools `get_stage_profiling` (with bottleneck detection + recommendation) and `reset_stage_profiling`. Feature is off by default and zero-cost when disabled. ([aimdb-core](aimdb-core/CHANGELOG.md), [aimdb-executor](aimdb-executor/CHANGELOG.md), [aimdb-tokio-adapter](aimdb-tokio-adapter/CHANGELOG.md), [aimdb-embassy-adapter](aimdb-embassy-adapter/CHANGELOG.md), [aimdb-wasm-adapter](aimdb-wasm-adapter/CHANGELOG.md), [aimdb-client](aimdb-client/CHANGELOG.md), [tools/aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md))
@@ -657,7 +659,9 @@ https://github.com/aimdb-dev/aimdb
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/aimdb-dev/aimdb/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0

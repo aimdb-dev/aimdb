@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-22
+
+### Changed
+
+- Bumped `aimdb-core` dependency to `1.1.0` and `aimdb-executor` to `0.2.0`
+
 ## [0.1.0] — 2026-02-21
 
 ### Added
@@ -58,5 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/aimdb-persistence-v0.1.1...HEAD
+[0.1.1]: https://github.com/aimdb-dev/aimdb/compare/aimdb-persistence-v0.1.0...aimdb-persistence-v0.1.1
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/aimdb-persistence-v0.1.0

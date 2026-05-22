@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-22
+
 ### Added
 
 - **`profiling` feature** (Issue #58): Forwards to `aimdb-core/profiling` and enables the Embassy runtime clock for stage timing. Pulls `portable-atomic` with `fallback` + `critical-section` (via `aimdb-core/profiling`) to emulate 64-bit atomics on targets without native `AtomicU64` (e.g. `thumbv7em-none-eabihf`). The final binary must provide a `critical-section` implementation — cortex-m and Embassy HALs already do.
@@ -74,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0

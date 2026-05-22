@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-persistence-sqlite"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
@@ -14,7 +14,7 @@ default = []
 tracing = ["dep:tracing"]
 
 [dependencies]
-aimdb-persistence = { version = "0.1.0", path = "../aimdb-persistence" }
+aimdb-persistence = { version = "0.1.1", path = "../aimdb-persistence" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"] }

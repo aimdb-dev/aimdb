@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-22
+
 ### Added
 
 - **`TimeOps::duration_as_nanos`** — new required method on the `TimeOps` trait that returns the number of whole nanoseconds in a `Self::Duration`. Introduced for stage profiling (Issue #58) so features can convert elapsed time to a numeric, runtime-agnostic representation without binding to `std::time`. Implementations should saturate rather than overflow for durations larger than `u64::MAX` nanoseconds.
@@ -30,5 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0

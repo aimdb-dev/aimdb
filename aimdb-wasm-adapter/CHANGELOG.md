@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-22
+
 ### Added
 
 - **`TimeOps::duration_as_nanos` implementation**: Converts `WasmDuration` (milliseconds as `f64`) to nanoseconds, clamped to `[0, u64::MAX]`. Required by the new `aimdb-executor` trait method (used by stage profiling, Issue #58).

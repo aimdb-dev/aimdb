@@ -11,8 +11,8 @@ categories = ["database", "api-bindings"]
 
 [dependencies]
 # Core dependencies
-aimdb-core = { path = "../aimdb-core", version = "1.0.0" }
-aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", version = "0.5.0" }
+aimdb-core = { path = "../aimdb-core", version = "1.1.0" }
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", version = "0.6.0" }
 
 # Tokio for channels and runtime
 tokio = { version = "1.40", features = ["sync", "rt", "time"] }
