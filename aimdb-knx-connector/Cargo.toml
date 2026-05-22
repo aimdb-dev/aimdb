@@ -11,7 +11,7 @@ keywords = ["knx", "knxnet-ip", "building-automation", "iot", "connector"]
 categories = ["network-programming", "embedded", "asynchronous"]
 
 [features]
-default = []
+default = ["aimdb-core/alloc"]
 std = ["aimdb-core/std", "knx-pico/std", "thiserror"]
 tokio-runtime = ["std", "tokio", "uuid", "async-stream", "futures-util"]
 embassy-runtime = [
