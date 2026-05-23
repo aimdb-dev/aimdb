@@ -136,7 +136,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
-    let db = builder.build().await?;
+    let (db, runner) = builder.build().await?;
+    tokio::spawn(runner.run());
 
     info!("✅ Database initialized with 5 record types");
     info!("   - Temperature (SpmcRing×100, has producer — drainable 🔄)");

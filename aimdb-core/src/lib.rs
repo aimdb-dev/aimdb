@@ -67,7 +67,7 @@ pub use extensions::Extensions;
 // Runtime trait re-exports from aimdb-executor
 // These traits define the platform-specific execution, timing, and logging capabilities
 pub use aimdb_executor::{
-    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Spawn, TimeOps,
+    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, TimeOps,
 };
 
 // Database implementation exports

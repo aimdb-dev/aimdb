@@ -176,9 +176,8 @@ impl AimDbHandle {
 
                 // Build the database inside the async context
                 runtime.block_on(async move {
-                    // Build the database (now we're in Tokio context where it can spawn tasks!)
-                    let db = match builder.build().await {
-                        Ok(d) => Arc::new(d),
+                    let (db, runner) = match builder.build().await {
+                        Ok(d) => (Arc::new(d.0), d.1),
                         Err(e) => {
                             eprintln!("Failed to build database: {}", e);
                             return;
@@ -191,8 +190,14 @@ impl AimDbHandle {
                         return;
                     }
 
-                    // Wait for shutdown signal, keeping database alive
-                    let _ = shutdown_rx.recv().await;
+                    // Drive the runner until shutdown.
+                    // If runner.run() completes early (e.g. all tap futures finish),
+                    // we must NOT drop the runtime — tasks spawned via runtime_handle
+                    // would be aborted. Keep waiting for the explicit shutdown signal.
+                    tokio::select! {
+                        _ = runner.run() => { let _ = shutdown_rx.recv().await; }
+                        _ = shutdown_rx.recv() => {}
+                    }
                 });
             })
             .map_err(|e| DbError::AttachFailed {

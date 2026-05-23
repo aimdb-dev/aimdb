@@ -4,7 +4,7 @@
 //! enabling async task spawning and execution in std environments using Tokio.
 
 use aimdb_core::{DbError, DbResult};
-use aimdb_executor::{ExecutorResult, Logger, RuntimeAdapter, Spawn, TimeOps};
+use aimdb_executor::{Logger, RuntimeAdapter, TimeOps};
 use core::future::Future;
 use std::time::{Duration, Instant};
 
@@ -141,22 +141,6 @@ impl RuntimeAdapter for TokioAdapter {
     }
 }
 
-// Implement Spawn trait for dynamic task spawning
-#[cfg(feature = "tokio-runtime")]
-impl Spawn for TokioAdapter {
-    type SpawnToken = tokio::task::JoinHandle<()>;
-
-    fn spawn<F>(&self, future: F) -> ExecutorResult<Self::SpawnToken>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        #[cfg(feature = "tracing")]
-        tracing::debug!("Spawning future on Tokio runtime");
-
-        Ok(tokio::spawn(future))
-    }
-}
-
 // New unified Runtime trait implementations
 #[cfg(feature = "tokio-runtime")]
 impl TimeOps for TokioAdapter {
@@ -218,4 +202,4 @@ impl Logger for TokioAdapter {
     }
 }
 
-// Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger + Spawn are implemented
+// Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger are implemented

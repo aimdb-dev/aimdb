@@ -64,7 +64,9 @@ async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb<TokioAdapter>
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
-    builder.build().await.unwrap()
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
+    db
 }
 
 /// Helper: set up server with a small ring to test overflow
@@ -87,7 +89,9 @@ async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb<TokioAd
             .with_remote_access();
     });
 
-    builder.build().await.unwrap()
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
+    db
 }
 
 /// Helper: set up server with a record that does NOT have remote access
@@ -110,7 +114,9 @@ async fn setup_no_remote_access_server(socket_path: &str) -> aimdb_core::AimDb<T
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
     });
 
-    builder.build().await.unwrap()
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
+    db
 }
 
 // ============================================================================

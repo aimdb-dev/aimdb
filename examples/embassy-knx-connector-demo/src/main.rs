@@ -250,7 +250,7 @@ async fn main(spawner: Spawner) {
 
     info!("🔌 Initializing KNX client...");
 
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(stack));
 
     use alloc::format;
     let gateway_url = format!("knx://{}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);
@@ -355,15 +355,19 @@ async fn main(spawner: Spawner) {
     info!("Press USER button to toggle light (1/0/6)");
 
     static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
-    let _db = DB_CELL.init(builder.build().await.expect("Failed to build database"));
+    let (db, db_runner) = builder.build().await.expect("Failed to build database");
+    let _db = DB_CELL.init(db);
 
     info!("✅ Database running");
 
-    // Main loop - blink LED to show system is alive
-    loop {
-        led.set_high();
-        Timer::after(Duration::from_millis(100)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(900)).await;
-    }
+    // Drive the AimDB runner and LED blink concurrently.
+    embassy_futures::join::join(db_runner.run(), async {
+        loop {
+            led.set_high();
+            Timer::after(Duration::from_millis(100)).await;
+            led.set_low();
+            Timer::after(Duration::from_millis(900)).await;
+        }
+    })
+    .await;
 }

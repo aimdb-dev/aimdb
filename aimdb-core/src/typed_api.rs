@@ -88,7 +88,7 @@ use crate::{AimDb, DbResult};
 /// - **Clear Intent**: Function signature shows what it produces
 /// - **Decoupling**: No access to other record types
 /// - **Security**: Cannot misuse database for unintended operations
-pub struct Producer<T, R: aimdb_executor::Spawn + 'static> {
+pub struct Producer<T, R: aimdb_executor::RuntimeAdapter + 'static> {
     /// Reference to the database
     db: Arc<AimDb<R>>,
     /// Record key for key-based routing (required - all records have keys)
@@ -96,14 +96,15 @@ pub struct Producer<T, R: aimdb_executor::Spawn + 'static> {
     /// Stage profiling state (set by the spawn machinery for `.source()` stages).
     #[cfg(feature = "profiling")]
     profiling: Option<Arc<crate::profiling::ProducerProfilingState>>,
-    /// Phantom data to bind the type parameter T
-    _phantom: PhantomData<T>,
+    // `fn() -> T` carries T without forcing Producer's Send/Sync to depend on T.
+    // T is only a type-system marker here — it is never stored or referenced.
+    _phantom: PhantomData<fn() -> T>,
 }
 
 impl<T, R> Producer<T, R>
 where
     T: Send + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Create a new producer bound to a specific record key
     pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
@@ -150,7 +151,7 @@ where
 
 impl<T, R> Clone for Producer<T, R>
 where
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -163,14 +164,11 @@ where
     }
 }
 
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Producer<T, R> {}
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Producer<T, R> {}
-
 // Implement ProducerTrait for type-erased routing
 impl<T, R> crate::connector::ProducerTrait for Producer<T, R>
 where
     T: Send + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn produce_any<'a>(
         &'a self,
@@ -215,7 +213,7 @@ where
 /// - **Decoupling**: No access to other record types
 /// - **Security**: Cannot misuse database for unintended operations
 #[derive(Clone)]
-pub struct Consumer<T, R: aimdb_executor::Spawn + 'static> {
+pub struct Consumer<T, R: aimdb_executor::RuntimeAdapter + 'static> {
     /// Reference to the database
     db: Arc<AimDb<R>>,
     /// Record key for key-based routing (required - all records have keys)
@@ -223,14 +221,14 @@ pub struct Consumer<T, R: aimdb_executor::Spawn + 'static> {
     /// Stage profiling state (set by the spawn machinery for `.tap()` / `.link()`).
     #[cfg(feature = "profiling")]
     profiling: Option<(Arc<crate::profiling::StageMetrics>, crate::profiling::Clock)>,
-    /// Phantom data to bind the type parameter T
-    _phantom: PhantomData<T>,
+    // See Producer<T, R>: `fn() -> T` keeps Send/Sync independent of T.
+    _phantom: PhantomData<fn() -> T>,
 }
 
 impl<T, R> Consumer<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Create a new consumer bound to a specific record key
     pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
@@ -275,9 +273,6 @@ where
     }
 }
 
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Consumer<T, R> {}
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Consumer<T, R> {}
-
 // ============================================================================
 // Type-erased Consumer Trait Implementation
 // ============================================================================
@@ -309,7 +304,7 @@ impl<T: Clone + Send + 'static> crate::connector::AnyReader for TypedAnyReader<T
 impl<T, R> crate::connector::ConsumerTrait for Consumer<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn subscribe_any<'a>(
         &'a self,
@@ -352,7 +347,7 @@ pub enum StageKind {
 pub struct RecordRegistrar<
     'a,
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 > {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T, R>,
@@ -372,7 +367,7 @@ pub struct RecordRegistrar<
 impl<'a, T, R> RecordRegistrar<'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Returns a reference to the builder's extension storage.
     ///
@@ -666,7 +661,7 @@ where
 pub struct OutboundConnectorBuilder<
     'a,
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 > {
     registrar: &'a mut RecordRegistrar<'a, T, R>,
     url: String,
@@ -679,7 +674,7 @@ pub struct OutboundConnectorBuilder<
 impl<'a, T, R> OutboundConnectorBuilder<'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
@@ -902,7 +897,7 @@ type TypedDeserializerFn<T> = Arc<dyn Fn(&[u8]) -> Result<T, String> + Send + Sy
 pub struct InboundConnectorBuilder<
     'a,
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 > {
     registrar: &'a mut RecordRegistrar<'a, T, R>,
     url: String,
@@ -915,7 +910,7 @@ pub struct InboundConnectorBuilder<
 impl<'a, T, R> InboundConnectorBuilder<'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
@@ -1129,7 +1124,7 @@ where
 ///
 /// Records implementing this trait register their producer and consumer
 /// functions, encapsulating behavior with their type.
-pub trait RecordT<R: aimdb_executor::Spawn + 'static>:
+pub trait RecordT<R: aimdb_executor::RuntimeAdapter + 'static>:
     Send + Sync + 'static + Debug + Clone
 {
     /// Configuration type for this record
@@ -1180,22 +1175,12 @@ mod tests {
     // Test infrastructure for InboundConnectorBuilder deserializer tests
     // ====================================================================
 
-    /// Minimal mock runtime implementing Spawn (and Runtime for context tests)
+    /// Minimal mock runtime for context tests
     struct MockRuntime;
 
     impl aimdb_executor::RuntimeAdapter for MockRuntime {
         fn runtime_name() -> &'static str {
             "mock"
-        }
-    }
-
-    impl aimdb_executor::Spawn for MockRuntime {
-        type SpawnToken = ();
-        fn spawn<F>(&self, _future: F) -> aimdb_executor::ExecutorResult<Self::SpawnToken>
-        where
-            F: Future<Output = ()> + Send + 'static,
-        {
-            Ok(())
         }
     }
 
@@ -1254,8 +1239,14 @@ mod tests {
         fn build<'a>(
             &'a self,
             _db: &'a crate::AimDb<MockRuntime>,
-        ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn crate::transport::Connector>>> + Send + 'a>>
-        {
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
             unimplemented!("not needed for deserializer tests")
         }
         fn scheme(&self) -> &str {
@@ -1602,7 +1593,10 @@ mod tests {
     {
         crate::transform::TransformDescriptor::<TestRecord, MockRuntime> {
             input_keys: vec![],
-            spawn_fn: Box::new(|_p, _db, _ctx| Box::pin(async {})),
+            build_fn: Box::new(|_p, _db, _ctx| crate::transform::CollectedTransform {
+                task_future: Box::pin(async {}),
+                fanin_futures: vec![],
+            }),
         }
     }
 

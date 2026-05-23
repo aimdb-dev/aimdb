@@ -194,10 +194,17 @@ impl WasmDb {
             apply_record_config(&self.registry, &mut builder, config)?;
         }
 
-        let db = builder
+        let (db, runner) = builder
             .build()
             .await
             .map_err(|e| JsError::new(&format!("Build failed: {e:?}")))?;
+
+        // Drive the runner on the JS microtask queue. The runner future is
+        // !Send (it owns wasm-only state), but `wasm_bindgen_futures::spawn_local`
+        // doesn't require Send — WASM is single-threaded.
+        wasm_bindgen_futures::spawn_local(async move {
+            runner.run().await;
+        });
 
         self.db = Some(db);
         Ok(())

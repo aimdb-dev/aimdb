@@ -43,7 +43,7 @@ use alloc::{
 #[cfg(feature = "std")]
 use alloc::format;
 
-use crate::{builder::AimDb, transport::Connector, DbResult};
+use crate::{builder::AimDb, DbResult};
 
 /// Error that can occur during serialization
 ///
@@ -930,7 +930,7 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 ///
 /// impl<R> ConnectorBuilder<R> for MqttConnectorBuilder
 /// where
-///     R: aimdb_executor::Spawn + 'static,
+///     R: aimdb_executor::RuntimeAdapter + 'static,
 /// {
 ///     fn build<'a>(
 ///         &'a self,
@@ -951,26 +951,32 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 /// ```
 pub trait ConnectorBuilder<R>: Send + Sync
 where
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
-    /// Build the connector using the database
+    /// Build the connector and return its driving futures.
     ///
-    /// This method is called during `AimDbBuilder::build()` after the database
-    /// has been constructed. The builder can use the database to:
-    /// - Collect inbound routes via `db.collect_inbound_routes()`
-    /// - Access database configuration
-    /// - Register subscriptions
+    /// Called during `AimDbBuilder::build()` after the database has been
+    /// constructed. The returned futures (infrastructure loops + per-route
+    /// publishers) are appended to the builder's accumulator and driven by
+    /// `AimDbRunner::run()`.
     ///
     /// # Arguments
     /// * `db` - The constructed database instance
     ///
     /// # Returns
-    /// An `Arc<dyn Connector>` that will be registered with the database
+    /// All `BoxFuture`s the connector needs to operate. Empty if the connector
+    /// has no work to drive.
     #[allow(clippy::type_complexity)]
     fn build<'a>(
         &'a self,
         db: &'a AimDb<R>,
-    ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn Connector>>> + Send + 'a>>;
+    ) -> Pin<
+        Box<
+            dyn Future<Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>>
+                + Send
+                + 'a,
+        >,
+    >;
 
     /// The URL scheme this connector handles
     ///

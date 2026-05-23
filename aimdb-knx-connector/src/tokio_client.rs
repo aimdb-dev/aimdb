@@ -81,17 +81,13 @@ impl KnxConnectorBuilder {
     }
 }
 
-impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBuilder {
+type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+impl<R: aimdb_executor::RuntimeAdapter + 'static> ConnectorBuilder<R> for KnxConnectorBuilder {
     fn build<'a>(
         &'a self,
         db: &'a aimdb_core::builder::AimDb<R>,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = aimdb_core::DbResult<Arc<dyn aimdb_core::transport::Connector>>>
-                + Send
-                + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
         Box::pin(async move {
             // Collect inbound routes from database
             let inbound_routes = db.collect_inbound_routes("knx");
@@ -111,9 +107,14 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
                 router.resource_ids().len()
             );
 
-            // Build the actual connector
+            // Build the command channel + connection-task future.
+            //
+            // Channel ownership ordering (design 028 §"KNX channel ownership"):
+            //   1. mpsc::channel created here.
+            //   2. Receiver captured by `connection_future`.
+            //   3. Sender cloned into each outbound publisher future below.
             let runtime_ctx = db.runtime_any();
-            let connector =
+            let (command_tx, connection_future) =
                 KnxConnectorImpl::build_internal(&self.gateway_url, router, Some(runtime_ctx))
                     .await
                     .map_err(|e| {
@@ -129,7 +130,6 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
                         }
                     })?;
 
-            // Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("knx");
 
             #[cfg(feature = "tracing")]
@@ -138,9 +138,16 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
                 outbound_routes.len()
             );
 
-            connector.spawn_outbound_publishers(db, outbound_routes)?;
+            let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
+            let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_routes.len());
+            futures.push(connection_future);
+            futures.extend(KnxConnectorImpl::collect_outbound_futures(
+                command_tx,
+                runtime_ctx,
+                outbound_routes,
+            ));
 
-            Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
+            Ok(futures)
         })
     }
 
@@ -149,21 +156,18 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for KnxConnectorBui
     }
 }
 
-/// Internal KNX connector implementation
+/// Build-time helper aggregating KNX construction logic.
 ///
-/// This is the actual connector created after collecting routes from the database.
-pub struct KnxConnectorImpl {
-    router: Arc<Router>,
-    /// Command sender for outbound publishing
-    command_tx: mpsc::Sender<KnxCommand>,
-}
+/// `KnxConnectorBuilder::build()` produces a `Vec<BoxFuture>` containing one
+/// connection-task future plus one publisher future per outbound route. There
+/// is no longer a long-lived `KnxConnectorImpl` value — the previous
+/// `Connector::publish` direct-publish path was unreachable through the
+/// public API (`AimDbBuilder` discarded the `Arc<dyn Connector>`).
+pub struct KnxConnectorImpl;
 
 impl KnxConnectorImpl {
-    /// Create a new KNX connector with pre-configured router (internal)
-    ///
-    /// Creates a connection to the KNX/IP gateway and monitors telegrams
-    /// for all group addresses defined in the router. The connection task
-    /// is spawned automatically with reconnection logic.
+    /// Builds the KNX connection-task future and returns it along with the
+    /// command sender for use by outbound publishers.
     ///
     /// # Arguments
     /// * `gateway_url` - Gateway URL (knx://host:port)
@@ -172,7 +176,7 @@ impl KnxConnectorImpl {
         gateway_url: &str,
         router: Router,
         runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
-    ) -> Result<Self, String> {
+    ) -> Result<(mpsc::Sender<KnxCommand>, BoxFuture), String> {
         // Parse the gateway URL
         let mut url = gateway_url.to_string();
 
@@ -196,61 +200,40 @@ impl KnxConnectorImpl {
 
         let router_arc = Arc::new(router);
 
-        // Spawn background connection task with reconnection
-        let command_tx = spawn_connection_task(
-            gateway_ip.clone(),
+        // 1. Create command channel; receiver goes to the connection future,
+        //    sender is returned for the publisher futures to clone.
+        let (command_tx, command_rx) = mpsc::channel::<KnxCommand>(32);
+
+        // 2. Build the connection-task future (captures the receiver).
+        let connection_future = build_connection_future(
+            gateway_ip,
             gateway_port,
-            router_arc.clone(),
+            router_arc,
             runtime_ctx,
+            command_rx,
         );
 
-        Ok(Self {
-            router: router_arc,
-            command_tx,
-        })
+        Ok((command_tx, connection_future))
     }
 
-    /// Get list of all group addresses this connector monitors
+    /// Collects outbound publisher futures for all configured routes (internal).
     ///
-    /// Returns the unique group addresses from the router configuration.
-    /// Useful for debugging and monitoring.
-    pub fn group_addresses(&self) -> Vec<Arc<str>> {
-        self.router.resource_ids()
-    }
-
-    /// Get the number of routes configured in this connector
-    ///
-    /// Each route represents a (group_address, type) mapping.
-    /// Multiple routes can exist for the same address if different types subscribe to it.
-    pub fn route_count(&self) -> usize {
-        self.router.route_count()
-    }
-
-    /// Spawns outbound publisher tasks for all configured routes (internal)
-    ///
-    /// Called automatically during build() to start publishing data from AimDB to KNX.
-    /// Each route spawns an independent task that subscribes to the record
-    /// and publishes to the KNX gateway via the command queue.
-    ///
-    /// If a topic provider is configured, it will be called for each value to
-    /// dynamically determine the KNX group address. Otherwise, the static default is used.
-    fn spawn_outbound_publishers<R>(
-        &self,
-        db: &aimdb_core::builder::AimDb<R>,
+    /// Each route's future subscribes to its typed record, serializes values, and
+    /// sends them as `KnxCommand::GroupWrite` to the connection task via
+    /// `command_tx`. Returned futures are appended to the runner's accumulator.
+    fn collect_outbound_futures(
+        command_tx: mpsc::Sender<KnxCommand>,
+        runtime_ctx: Arc<dyn core::any::Any + Send + Sync>,
         routes: Vec<aimdb_core::OutboundRoute>,
-    ) -> aimdb_core::DbResult<()>
-    where
-        R: aimdb_executor::Spawn + 'static,
-    {
-        let runtime = db.runtime();
-        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
+    ) -> Vec<BoxFuture> {
+        let mut futures: Vec<BoxFuture> = Vec::with_capacity(routes.len());
 
         for (default_group_addr_str, consumer, serializer, _config, topic_provider) in routes {
-            let command_tx = self.command_tx.clone();
+            let command_tx = command_tx.clone();
             let default_group_addr_clone = default_group_addr_str.clone();
             let runtime_ctx = runtime_ctx.clone();
 
-            runtime.spawn(async move {
+            futures.push(Box::pin(async move {
                 // Parse default group address using knx-pico's type-safe parser
                 let default_group_addr = match default_group_addr_clone.parse::<GroupAddress>() {
                     Ok(addr) => Some(addr),
@@ -368,69 +351,14 @@ impl KnxConnectorImpl {
                     "KNX outbound publisher stopped for: {}",
                     default_group_addr_clone
                 );
-            })?;
+            }));
         }
 
-        Ok(())
+        futures
     }
 }
 
-// Implement the connector trait from aimdb-core
-impl aimdb_core::transport::Connector for KnxConnectorImpl {
-    fn publish(
-        &self,
-        destination: &str,
-        _config: &aimdb_core::transport::ConnectorConfig,
-        payload: &[u8],
-    ) -> Pin<Box<dyn Future<Output = Result<(), aimdb_core::transport::PublishError>> + Send + '_>>
-    {
-        use aimdb_core::transport::PublishError;
-
-        // Destination is the group address (from ConnectorUrl::resource_id())
-        let group_addr_str = destination.to_string();
-        let payload_owned = payload.to_vec();
-        let command_tx = self.command_tx.clone();
-
-        Box::pin(async move {
-            // Parse group address using knx-pico's type-safe parser
-            let group_addr = group_addr_str
-                .parse::<GroupAddress>()
-                .map_err(|_| PublishError::InvalidDestination)?;
-
-            // Create response channel for error reporting
-            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-
-            // Send command to connection task
-            let cmd = KnxCommand::GroupWrite {
-                group_addr,
-                data: payload_owned,
-                response: Some(response_tx),
-            };
-
-            command_tx
-                .send(cmd)
-                .await
-                .map_err(|_| PublishError::ConnectionFailed)?;
-
-            // Wait for response from connection task
-            response_rx
-                .await
-                .map_err(|_| PublishError::ConnectionFailed)?
-                .map_err(|_e| {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!("KNX publish failed: {}", _e);
-
-                    PublishError::ConnectionFailed
-                })?;
-
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Published to group address: {}", group_addr_str);
-            Ok(())
-        })
-    }
-}
-
-/// Spawn the KNX connection task in the background with reconnection logic
+/// Builds the KNX connection-task future with reconnection logic.
 ///
 /// The connection task handles:
 /// - KNXnet/IP connection establishment
@@ -444,18 +372,15 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
 /// * `gateway_port` - Gateway port (typically 3671)
 /// * `router` - Router for dispatching telegrams to producers
 /// * `runtime_ctx` - Optional type-erased runtime for context-aware deserializers
-///
-/// # Returns
-/// * Command sender for publishing outbound telegrams
-fn spawn_connection_task(
+/// * `command_rx` - Receiver half of the outbound command channel
+fn build_connection_future(
     gateway_ip: String,
     gateway_port: u16,
     router: Arc<Router>,
     runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
-) -> mpsc::Sender<KnxCommand> {
-    let (command_tx, mut command_rx) = mpsc::channel(32); // Queue size: 32
-
-    tokio::spawn(async move {
+    mut command_rx: mpsc::Receiver<KnxCommand>,
+) -> BoxFuture {
+    Box::pin(async move {
         #[cfg(feature = "tracing")]
         tracing::info!(
             "KNX connection task started for {}:{}",
@@ -486,9 +411,7 @@ fn spawn_connection_task(
             // Wait before reconnecting
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
-    });
-
-    command_tx
+    })
 }
 
 /// Build CONNECTIONSTATE_REQUEST for heartbeat using knx-pico

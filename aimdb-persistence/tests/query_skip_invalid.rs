@@ -71,7 +71,7 @@ impl PersistenceBackend for MockBackend {
 /// configured — we only need the Extensions TypeMap and the query path).
 async fn build_db(mock: Arc<MockBackend>) -> aimdb_core::AimDb<TokioAdapter> {
     let adapter = Arc::new(TokioAdapter);
-    AimDbBuilder::new()
+    let (db, runner) = AimDbBuilder::new()
         .runtime(adapter)
         .with_persistence(
             mock as Arc<dyn PersistenceBackend>,
@@ -80,7 +80,9 @@ async fn build_db(mock: Arc<MockBackend>) -> aimdb_core::AimDb<TokioAdapter> {
         )
         .build()
         .await
-        .expect("AimDb build failed")
+        .expect("AimDb build failed");
+    tokio::spawn(runner.run());
+    db
 }
 
 /// Shared fixture: four rows where rows at indices 1 and 3 cannot be

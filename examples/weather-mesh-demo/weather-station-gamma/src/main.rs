@@ -256,7 +256,7 @@ async fn main(spawner: Spawner) {
     info!("🔌 Initializing MQTT client...");
 
     // Create AimDB database with Embassy adapter
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(stack));
 
     // Build MQTT broker URL
     use alloc::format;
@@ -382,16 +382,20 @@ async fn main(spawner: Spawner) {
     info!("");
 
     static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
-    let _db = DB_CELL.init(builder.build().await.expect("Failed to build database"));
+    let (db, db_runner) = builder.build().await.expect("Failed to build database");
+    let _db = DB_CELL.init(db);
 
     info!("✅ Database running");
     info!("🎯 Weather Station Gamma ready!");
 
-    // Main loop - blink LED to show system is alive
-    loop {
-        led.set_high();
-        Timer::after(Duration::from_millis(100)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(900)).await;
-    }
+    // Drive the AimDB runner and LED blink concurrently.
+    embassy_futures::join::join(db_runner.run(), async {
+        loop {
+            led.set_high();
+            Timer::after(Duration::from_millis(100)).await;
+            led.set_low();
+            Timer::after(Duration::from_millis(900)).await;
+        }
+    })
+    .await;
 }

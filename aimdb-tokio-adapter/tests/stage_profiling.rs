@@ -49,7 +49,8 @@ async fn source_and_tap_stages_are_timed_and_named() {
             .with_name("data_processor");
     });
 
-    let db = builder.build().await.expect("build");
+    let (db, runner) = builder.build().await.expect("build");
+    tokio::spawn(runner.run());
 
     // Let the pipeline run for a bunch of iterations.
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -108,7 +109,8 @@ async fn with_name_is_a_no_op_friendly_builder() {
             })
             .with_name("idle_tap");
     });
-    let db = builder.build().await.expect("build");
+    let (db, runner) = builder.build().await.expect("build");
+    tokio::spawn(runner.run());
     let rec = db
         .inner()
         .get_typed_record_by_key::<Reading, TokioAdapter>("profiling::Unused")

@@ -11,7 +11,7 @@ use alloc::{
 
 use aimdb_executor::{ExecutorResult, JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
 
-use crate::transform::TransformDescriptor;
+use crate::transform::{CollectedTransform, TransformDescriptor};
 use crate::typed_record::BoxFuture;
 
 // ============================================================================
@@ -240,8 +240,8 @@ where
         JoinPipeline {
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
-                spawn_fn: Box::new(move |producer, db, ctx| {
-                    Box::pin(run_join_transform(db, inputs, producer, handler, ctx))
+                build_fn: Box::new(move |producer, db, runtime| {
+                    build_join_collected(db, inputs, producer, handler, runtime)
                 }),
             }),
         }
@@ -269,44 +269,35 @@ where
 }
 
 // ============================================================================
-// Join Transform Task Runner
+// Join Transform Build (forwarders + handler future, both collected at build time)
 // ============================================================================
 
 #[cfg(feature = "alloc")]
 #[allow(unused_variables)]
-async fn run_join_transform<O, R, F, Fut>(
+fn build_join_collected<O, R, F, Fut>(
     db: Arc<crate::AimDb<R>>,
     inputs: Vec<(String, JoinInputFactory<R>)>,
     producer: crate::Producer<O, R>,
     handler: F,
-    runtime_ctx: Arc<dyn Any + Send + Sync>,
-) where
+    runtime: Arc<R>,
+) -> CollectedTransform
+where
     O: Send + Sync + Clone + Debug + 'static,
     R: JoinFanInRuntime + 'static,
     F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
     Fut: core::future::Future<Output = ()> + Send + 'static,
 {
     let output_key = producer.key().to_string();
-    let input_keys: Vec<String> = inputs.iter().map(|(k, _)| k.clone()).collect();
 
     #[cfg(feature = "tracing")]
-    tracing::info!(
-        "🔄 Join transform started: {:?} → '{}'",
-        input_keys,
-        output_key
-    );
-
-    let runtime: &R = match runtime_ctx.downcast_ref::<R>() {
-        Some(r) => r,
-        None => {
-            #[cfg(feature = "tracing")]
-            tracing::error!(
-                "🔄 Join transform '{}' FATAL: runtime context downcast failed",
-                output_key
-            );
-            return;
-        }
-    };
+    {
+        let input_keys: Vec<String> = inputs.iter().map(|(k, _)| k.clone()).collect();
+        tracing::info!(
+            "🔄 Join transform building: {:?} → '{}'",
+            input_keys,
+            output_key
+        );
+    }
 
     let queue = match runtime.create_join_queue::<JoinTrigger>() {
         Ok(q) => q,
@@ -316,37 +307,43 @@ async fn run_join_transform<O, R, F, Fut>(
                 "🔄 Join transform '{}' FATAL: failed to create join queue",
                 output_key
             );
-            return;
+            // Empty collected transform — caller still receives a valid descriptor.
+            return CollectedTransform {
+                task_future: Box::pin(async {}),
+                fanin_futures: Vec::new(),
+            };
         }
     };
     let (tx, rx) = queue.split();
 
-    for (index, (_key, factory)) in inputs.into_iter().enumerate() {
-        let sender = tx.clone();
-        let db = db.clone();
+    // Build all forwarder futures eagerly; they will be driven by AimDbRunner.
+    let fanin_futures: Vec<BoxFuture<'static, ()>> = inputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, (_key, factory))| {
+            let sender = tx.clone();
+            factory(db.clone(), index, sender)
+        })
+        .collect();
 
-        let forwarder_future = factory(db, index, sender);
-        if let Err(_e) = runtime.spawn(forwarder_future) {
-            #[cfg(feature = "tracing")]
-            tracing::error!(
-                "🔄 Join transform '{}' FATAL: failed to spawn forwarder for input index {}",
-                output_key,
-                index
-            );
-            return;
-        }
-    }
-
+    // Drop our local sender so the receiver closes once all forwarders exit.
     drop(tx);
 
-    #[cfg(feature = "tracing")]
-    tracing::debug!(
-        "✅ Join transform '{}' all forwarders spawned, handing receiver to user task",
-        output_key
-    );
+    let task_future: BoxFuture<'static, ()> = Box::pin(async move {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "✅ Join transform '{}' handing receiver to user task",
+            output_key
+        );
 
-    handler(JoinEventRx::new(rx), producer).await;
+        handler(JoinEventRx::new(rx), producer).await;
 
-    #[cfg(feature = "tracing")]
-    tracing::warn!("🔄 Join transform '{}' user task exited", output_key);
+        #[cfg(feature = "tracing")]
+        tracing::warn!("🔄 Join transform '{}' user task exited", output_key);
+    });
+
+    CollectedTransform {
+        task_future,
+        fanin_futures,
+    }
 }

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use aimdb_core::typed_api::RecordRegistrar;
-use aimdb_executor::Spawn;
+use aimdb_executor::RuntimeAdapter;
 
 use crate::backend::PersistenceBackend;
 use crate::builder_ext::PersistenceState;
@@ -16,7 +16,7 @@ use crate::builder_ext::PersistenceState;
 pub trait RecordRegistrarPersistExt<'a, T, R>
 where
     T: serde::Serialize + Send + Sync + Clone + core::fmt::Debug + 'static,
-    R: Spawn + 'static,
+    R: RuntimeAdapter + 'static,
 {
     /// Opt this record into persistence.
     ///
@@ -29,7 +29,7 @@ where
 impl<'a, T, R> RecordRegistrarPersistExt<'a, T, R> for RecordRegistrar<'a, T, R>
 where
     T: serde::Serialize + Send + Sync + Clone + core::fmt::Debug + 'static,
-    R: Spawn + 'static,
+    R: RuntimeAdapter + 'static,
 {
     fn persist(&'a mut self, record_name: impl Into<String>) -> &'a mut RecordRegistrar<'a, T, R> {
         let record_name: String = record_name.into();

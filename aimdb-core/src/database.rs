@@ -4,8 +4,7 @@
 //! in-memory storage with type-safe records and data synchronization across
 //! MCU → edge → cloud environments.
 
-use crate::{AimDb, DbError, DbResult, RuntimeAdapter, RuntimeContext};
-use aimdb_executor::Spawn;
+use crate::{AimDb, DbResult, RuntimeAdapter, RuntimeContext};
 use core::fmt::Debug;
 
 #[cfg(not(feature = "std"))]
@@ -24,12 +23,12 @@ use std::{boxed::Box, sync::Arc};
 ///
 /// This is a thin wrapper around `AimDb<R>` that adds adapter-specific functionality.
 /// Most users should use `AimDbBuilder` directly to create databases.
-pub struct Database<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> {
+pub struct Database<A: RuntimeAdapter + 'static> {
     adapter: A,
     aimdb: AimDb<A>,
 }
 
-impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
+impl<A: RuntimeAdapter + 'static> Database<A> {
     /// Internal accessor for the AimDb instance
     ///
     /// Used by adapter crates. Should not be used by application code.
@@ -137,46 +136,5 @@ impl<A: RuntimeAdapter + aimdb_executor::Spawn + 'static> Database<A> {
         A: aimdb_executor::Runtime + Clone,
     {
         RuntimeContext::from_arc(Arc::new(self.adapter.clone()))
-    }
-}
-
-// Spawn implementation for databases with spawn-capable adapters
-impl<A> Database<A>
-where
-    A: RuntimeAdapter + Spawn,
-{
-    /// Spawns a service on the database's runtime
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// # use aimdb_core::Database;
-    /// # use aimdb_executor::{Runtime, Spawn};
-    /// # #[cfg(feature = "tokio-runtime")]
-    /// # {
-    /// async fn my_service<R: Runtime>(ctx: aimdb_core::RuntimeContext<R>) -> aimdb_core::DbResult<()> {
-    ///     // Service implementation
-    ///     Ok(())
-    /// }
-    ///
-    /// # async fn example<A: Runtime + Spawn>(db: Database<A>) -> aimdb_core::DbResult<()> {
-    /// let ctx = db.context();
-    /// db.spawn(async move {
-    ///     if let Err(e) = my_service(ctx).await {
-    ///         eprintln!("Service error: {:?}", e);
-    ///     }
-    /// })?;
-    /// # Ok(())
-    /// # }
-    /// # }
-    /// ```
-    pub fn spawn<F>(&self, future: F) -> DbResult<()>
-    where
-        F: core::future::Future<Output = ()> + Send + 'static,
-    {
-        #[cfg(feature = "tracing")]
-        tracing::debug!("Spawning service on database runtime");
-
-        self.adapter.spawn(future).map_err(DbError::from)?;
-        Ok(())
     }
 }

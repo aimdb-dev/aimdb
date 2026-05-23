@@ -24,30 +24,26 @@ use std::{boxed::Box, sync::Arc};
 use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
 
+/// Shorthand for a heap-pinned, `Send`, `'static` future — the unit of work
+/// the `AimDbRunner` drives.
+pub type BoxFuture = core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
+
 /// Type-erased on_start function stored in `AimDbBuilder::start_fns`.
 ///
 /// Defined once here so `on_start()` (which stores) and `build()` (which
 /// downcasts) share the *exact same* type and a silent type mismatch cannot
-/// cause a runtime panic.
-#[cfg(feature = "std")]
-type StartFnType<R> = Box<
-    dyn FnOnce(
-            Arc<R>,
-        )
-            -> core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>
-        + Send,
->;
-#[cfg(not(feature = "std"))]
-type NoStdStartFnType<R> = Box<
-    dyn FnOnce(
-            Arc<R>,
-        )
-            -> core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>
-        + Send,
->;
+/// cause a runtime panic. Single alias regardless of `std`/`no_std`.
+type StartFnType<R> = Box<dyn FnOnce(Arc<R>) -> BoxFuture + Send>;
+
+/// Type-erased per-record future collector stored in `AimDbBuilder::spawn_fns`.
+///
+/// At `build()` time each is invoked in topological order; the returned
+/// `Vec<BoxFuture>` is appended to the runner's accumulator.
+type SpawnFnType<R> =
+    Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<Vec<BoxFuture>> + Send>;
 use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
-use crate::typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
+use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
 use crate::{DbError, DbResult};
 
 /// Type alias for outbound route tuples returned by `collect_outbound_routes`
@@ -182,7 +178,7 @@ impl AimDbInner {
     ) -> DbResult<&TypedRecord<T, R>>
     where
         T: Send + 'static + Debug + Clone,
-        R: aimdb_executor::Spawn + 'static,
+        R: aimdb_executor::RuntimeAdapter + 'static,
     {
         let key_str = key.as_ref();
 
@@ -207,7 +203,7 @@ impl AimDbInner {
     pub fn get_typed_record_by_id<T, R>(&self, id: RecordId) -> DbResult<&TypedRecord<T, R>>
     where
         T: Send + 'static + Debug + Clone,
-        R: aimdb_executor::Spawn + 'static,
+        R: aimdb_executor::RuntimeAdapter + 'static,
     {
         use crate::typed_record::AnyRecordExt;
 
@@ -393,7 +389,7 @@ impl AimDbBuilder<NoRuntime> {
     /// are not parameterized by the runtime type.
     pub fn runtime<R>(self, rt: Arc<R>) -> AimDbBuilder<R>
     where
-        R: aimdb_executor::Spawn + 'static,
+        R: aimdb_executor::RuntimeAdapter + 'static,
     {
         AimDbBuilder {
             records: self.records,
@@ -411,7 +407,7 @@ impl AimDbBuilder<NoRuntime> {
 
 impl<R> AimDbBuilder<R>
 where
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Returns a shared reference to the extension storage.
     ///
@@ -452,10 +448,7 @@ where
         // Type-erase so the field can be shared with the `NoRuntime` builder struct.
         // Uses the module-level `StartFnType<R>` alias — must stay in sync with
         // the downcast in `build()`.
-        #[cfg(feature = "std")]
         let boxed: StartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
-        #[cfg(not(feature = "std"))]
-        let boxed: NoStdStartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
         self.start_fns.push(Box::new(boxed));
         self
     }
@@ -597,27 +590,22 @@ where
         if is_new_record {
             let spawn_key = record_key;
 
-            #[allow(clippy::type_complexity)]
-            let spawn_fn: Box<
-                dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<()> + Send,
-            > = Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>, id: RecordId| {
-                // Use RecordSpawner to spawn tasks for this record type
-                use crate::typed_record::RecordSpawner;
-
-                let typed_record = db.inner().get_typed_record_by_id::<T, R>(id)?;
-                // Get the record key from the database to enable key-based producer/consumer
-                #[cfg(feature = "alloc")]
-                let key = db
-                    .inner()
-                    .key_for(id)
-                    .map(|k| k.as_str().to_string())
-                    .unwrap_or_else(|| alloc::format!("__record_{}", id.index()));
-                #[cfg(not(feature = "alloc"))]
-                let key = "";
-                #[cfg(feature = "alloc")]
-                let key = key.as_str();
-                RecordSpawner::<T>::spawn_all_tasks(typed_record, runtime, db, key)
-            });
+            let spawn_fn: SpawnFnType<R> =
+                Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>, id: RecordId| {
+                    let typed_record = db.inner().get_typed_record_by_id::<T, R>(id)?;
+                    // Resolve the record's key for key-based Producer/Consumer construction.
+                    let key = db
+                        .inner()
+                        .key_for(id)
+                        .map(|k| k.as_str().to_string())
+                        .unwrap_or_else(|| alloc::format!("__record_{}", id.index()));
+                    RecordFutureCollector::<T>::collect_all_futures(
+                        typed_record,
+                        runtime,
+                        db,
+                        key.as_str(),
+                    )
+                });
 
             // Store the spawn function (type-erased in Box<dyn Any>)
             self.spawn_fns.push((spawn_key, Box::new(spawn_fn)));
@@ -650,16 +638,17 @@ where
         self.configure::<T>(key, |reg| T::register(reg, cfg))
     }
 
-    /// Runs the database indefinitely (never returns)
+    /// Builds the database and drives every collected future to completion.
     ///
-    /// This method builds the database, spawns all producer and consumer tasks, and then
-    /// parks the current task indefinitely. This is the primary way to run AimDB services.
+    /// Convenience wrapper for the common case: call `build()`, then immediately
+    /// `runner.run().await`. The database handle is dropped on exit.
     ///
-    /// All logic runs in background tasks via producers, consumers, and connectors. The
-    /// application continues until interrupted (e.g., Ctrl+C).
+    /// For programmatic access to the handle (manual subscriptions, holding the
+    /// `AimDb<R>` for other uses), prefer `build()` directly.
     ///
     /// # Returns
-    /// `DbResult<()>` - Ok when database starts successfully, then parks forever
+    /// `DbResult<()>` — Ok once the database starts; the call then blocks until
+    /// every future the runner is driving has completed (typically forever).
     ///
     /// # Example
     ///
@@ -683,66 +672,55 @@ where
         #[cfg(feature = "tracing")]
         tracing::info!("Building database and spawning background tasks...");
 
-        let _db = self.build().await?;
+        let (_db, runner) = self.build().await?;
 
         #[cfg(feature = "tracing")]
-        tracing::info!("Database running, background tasks active. Press Ctrl+C to stop.");
+        tracing::info!("Database running, runner driving collected futures.");
 
-        // Park indefinitely - the background tasks will continue running
-        // The database handle is kept alive here to prevent dropping it
-        core::future::pending::<()>().await;
+        runner.run().await;
 
         Ok(())
     }
 
-    /// Builds the database and returns the handle (async)
+    /// Builds the database and returns a `(handle, runner)` pair.
     ///
-    /// Use this when you need programmatic access to the database handle for
-    /// manual subscriptions or production. For typical services, use `.run().await` instead.
+    /// `build()` collects every future the database needs to drive (producer
+    /// services, consumer taps, transforms with fan-in forwarders, connectors,
+    /// remote-access supervisor, `on_start` tasks) into the [`AimDbRunner`]
+    /// returned alongside the clone-able [`AimDb<R>`] handle. **No background
+    /// work runs until `runner.run().await` is awaited.**
     ///
-    /// **Automatic Task Spawning:** This method spawns all producer services and
-    /// `.tap()` observer tasks that were registered during configuration.
+    /// Use this when you need programmatic access to the handle for manual
+    /// subscriptions or production. For typical services, use `.run().await`
+    /// which calls `build()` and `runner.run()` for you.
     ///
-    /// **Connector Setup:** Connectors must be created manually before calling `build()`:
-    ///
-    /// ```rust,ignore
-    /// use aimdb_mqtt_connector::{MqttConnector, router::RouterBuilder};
-    ///
-    /// // Configure records with connector links
-    /// let builder = AimDbBuilder::new()
-    ///     .runtime(runtime)
-    ///     .configure::<Temp>("temp", |reg| {
-    ///         reg.link_from("mqtt://commands/temp")
-    ///            .with_buffer(BufferCfg::SingleLatest)
-    ///            .with_remote_access();
-    ///     });
-    ///
-    /// // Create MQTT connector with router
-    /// let router = RouterBuilder::new()
-    ///     .route("commands/temp", /* deserializer */)
-    ///     .build();
-    /// let connector = MqttConnector::new("mqtt://localhost:1883", router).await?;
-    ///
-    /// // Register connector and build
-    /// let db = builder
-    ///     .with_connector("mqtt", Arc::new(connector))
-    ///     .build().await?;
-    /// ```
+    /// **Connector Setup:** Connectors are constructed during `build()` from
+    /// the `ConnectorBuilder`s previously registered via `.with_connector()`.
+    /// Their driving futures are appended to the runner.
     ///
     /// # Returns
-    /// `DbResult<AimDb<R>>` - The database instance
-    #[cfg_attr(not(feature = "std"), allow(unused_mut))]
-    pub async fn build(self) -> DbResult<AimDb<R>>
+    /// `DbResult<(AimDb<R>, AimDbRunner)>` — the handle (cloneable) and the
+    /// non-`Clone` runner that owns the collected futures.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let (db, runner) = AimDbBuilder::new()
+    ///     .runtime(runtime)
+    ///     .configure::<Temp>("temp", |reg| { /* … */ })
+    ///     .with_connector(mqtt_builder)
+    ///     .build().await?;
+    ///
+    /// let handle = db.clone();              // clone freely before runner.run()
+    /// runner.run().await;                   // drives everything to completion
+    /// ```
+    pub async fn build(self) -> DbResult<(AimDb<R>, AimDbRunner)>
     where
         R: crate::RuntimeForProfiling,
     {
-        use crate::DbError;
-
         // Validate all records
         for (key, _, record) in &self.records {
             record.validate().map_err(|_msg| {
-                // Suppress unused warning for key in no_std
-                let _ = &key;
                 #[cfg(feature = "std")]
                 {
                     DbError::RuntimeError {
@@ -751,6 +729,8 @@ where
                 }
                 #[cfg(not(feature = "std"))]
                 {
+                    // Suppress unused warning for key in no_std
+                    let _ = &key;
                     DbError::RuntimeError { _message: () }
                 }
             })?;
@@ -853,32 +833,28 @@ where
             profiling_clock,
         });
 
+        // Accumulator for every future the runner will drive.
+        let mut futures_acc: Vec<BoxFuture> = Vec::new();
+
         #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Spawning producer services and tap observers for {} records",
-            self.spawn_fns.len()
-        );
+        tracing::info!("Collecting futures for {} records", self.spawn_fns.len());
 
         // Build a lookup map from spawn_fns for topological ordering
         let mut spawn_fn_map: HashMap<StringKey, Box<dyn core::any::Any + Send>> =
             self.spawn_fns.into_iter().collect();
 
-        // Execute spawn functions in topological order
-        // This ensures transforms are spawned after their input records
+        // Execute collectors in topological order — transforms collect after their inputs.
         for key_str in inner.dependency_graph.topo_order() {
-            // Find the StringKey that matches this key string
             let key = match inner.by_key.keys().find(|k| k.as_str() == key_str) {
                 Some(k) => *k,
-                None => continue, // Key not in spawn_fns, skip
+                None => continue,
             };
 
-            // Take the spawn function (if any) for this key
             let spawn_fn_any = match spawn_fn_map.remove(&key) {
                 Some(f) => f,
-                None => continue, // No spawn function for this key
+                None => continue,
             };
 
-            // Resolve key to RecordId
             let id = inner.resolve(&key).ok_or({
                 #[cfg(feature = "std")]
                 {
@@ -892,27 +868,22 @@ where
                 }
             })?;
 
-            // Downcast from Box<dyn Any> back to the concrete spawn function type
-            type SpawnFnType<R> =
-                Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<()> + Send>;
-
             let spawn_fn = spawn_fn_any
                 .downcast::<SpawnFnType<R>>()
                 .expect("spawn function type mismatch");
 
-            // Execute the spawn function
-            (*spawn_fn)(&runtime, &db, id)?;
+            futures_acc.extend((*spawn_fn)(&runtime, &db, id)?);
         }
 
         #[cfg(feature = "tracing")]
-        tracing::info!("Automatic spawning complete");
+        tracing::info!("Record future collection complete");
 
-        // Spawn remote access supervisor if configured (std only)
+        // Collect the remote-access supervisor future, if configured (std only).
         #[cfg(feature = "std")]
         if let Some(remote_cfg) = self.remote_config {
             #[cfg(feature = "tracing")]
             tracing::info!(
-                "Spawning remote access supervisor on socket: {}",
+                "Building remote access supervisor for socket: {}",
                 remote_cfg.socket_path.display()
             );
 
@@ -923,77 +894,54 @@ where
                     #[cfg(feature = "tracing")]
                     tracing::debug!("Marking record '{}' as writable", key_str);
 
-                    // Mark the record as writable (type-erased call)
                     inner.storages[id.index()].set_writable_erased(true);
                 }
             }
 
-            // Spawn the remote supervisor task
-            crate::remote::supervisor::spawn_supervisor(db.clone(), runtime.clone(), remote_cfg)?;
+            let supervisor_future =
+                crate::remote::supervisor::build_supervisor_future(db.clone(), remote_cfg)?;
+            futures_acc.push(supervisor_future);
 
             #[cfg(feature = "tracing")]
-            tracing::info!("Remote access supervisor spawned successfully");
+            tracing::info!("Remote access supervisor future collected");
         }
 
-        // Build connectors from builders (after database is fully constructed)
-        // This allows connectors to use collect_inbound_routes() which creates
-        // producers tied to this specific database instance
+        // Collect connector futures. After issue #88 connector builders return
+        // a `Vec<BoxFuture>` instead of an `Arc<dyn Connector>` (which previously
+        // was discarded anyway — see design doc 028 §"The dropped Arc<dyn Connector> object").
         for builder in self.connector_builders {
             #[cfg(feature = "tracing")]
-            let scheme = {
-                #[cfg(feature = "std")]
-                {
-                    builder.scheme().to_string()
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    alloc::string::String::from(builder.scheme())
-                }
-            };
+            let scheme = builder.scheme().to_string();
 
             #[cfg(feature = "tracing")]
             tracing::debug!("Building connector for scheme: {}", scheme);
 
-            // Build the connector (this spawns tasks as a side effect)
-            let _connector = builder.build(&db).await?;
+            let connector_futures = builder.build(&db).await?;
+            futures_acc.extend(connector_futures);
 
             #[cfg(feature = "tracing")]
-            tracing::info!("Connector built and spawned successfully: {}", scheme);
+            tracing::info!("Connector '{}' contributed {} future(s)", scheme, "n");
         }
 
-        // Spawn on_start tasks (registered by external crates like aimdb-persistence)
+        // Collect on_start futures (registered by external crates like aimdb-persistence).
         if !self.start_fns.is_empty() {
             #[cfg(feature = "tracing")]
-            tracing::debug!("Spawning {} on_start task(s)", self.start_fns.len());
+            tracing::debug!("Collecting {} on_start future(s)", self.start_fns.len());
 
-            #[cfg(feature = "std")]
             for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
                 let start_fn = start_fn_any
                     .downcast::<StartFnType<R>>()
                     .unwrap_or_else(|_| {
                         panic!("on_start fn[{idx}] type mismatch — this is a bug in aimdb-core")
                     });
-                let future = (*start_fn)(runtime.clone());
-                runtime.spawn(future).map_err(DbError::from)?;
-            }
-
-            #[cfg(not(feature = "std"))]
-            for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
-                let start_fn = start_fn_any
-                    .downcast::<NoStdStartFnType<R>>()
-                    .unwrap_or_else(|_| {
-                        panic!("on_start fn[{idx}] type mismatch — this is a bug in aimdb-core")
-                    });
-                let future = (*start_fn)(runtime.clone());
-                runtime.spawn(future).map_err(DbError::from)?;
+                futures_acc.push((*start_fn)(runtime.clone()));
             }
         }
 
-        // Unwrap the Arc to return the owned AimDb
-        // This is safe because we just created it and hold the only reference
+        // Unwrap the Arc to return the owned AimDb (safe: we just created it and hold the only ref).
         let db_owned = Arc::try_unwrap(db).unwrap_or_else(|arc| (*arc).clone());
 
-        Ok(db_owned)
+        Ok((db_owned, AimDbRunner::new(futures_acc)))
     }
 }
 
@@ -1022,7 +970,7 @@ impl Default for AimDbBuilder<NoRuntime> {
 ///     .register_record::<Temperature>(&TemperatureConfig)
 ///     .build()?;
 /// ```
-pub struct AimDb<R: aimdb_executor::Spawn + 'static> {
+pub struct AimDb<R: aimdb_executor::RuntimeAdapter + 'static> {
     /// Internal state
     inner: Arc<AimDbInner>,
 
@@ -1034,7 +982,7 @@ pub struct AimDb<R: aimdb_executor::Spawn + 'static> {
     profiling_clock: crate::profiling::Clock,
 }
 
-impl<R: aimdb_executor::Spawn + 'static> Clone for AimDb<R> {
+impl<R: aimdb_executor::RuntimeAdapter + 'static> Clone for AimDb<R> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -1045,7 +993,56 @@ impl<R: aimdb_executor::Spawn + 'static> Clone for AimDb<R> {
     }
 }
 
-impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
+// ============================================================================
+// AimDbRunner — drives every future the builder collected
+// ============================================================================
+
+/// Non-`Clone` runner returned alongside [`AimDb<R>`] from
+/// [`AimDbBuilder::build()`].
+///
+/// Owns the complete set of futures that drive the database (producer
+/// services, consumer taps, transforms with fan-in forwarders, connectors,
+/// remote-access supervisor, `on_start` tasks). `run()` consumes `self`,
+/// drives every future cooperatively via a `FuturesUnordered`, and returns
+/// only when **every** future has completed — typically never, since
+/// producer/consumer loops run for the application's lifetime.
+///
+/// Cancellation is the application's responsibility — wrap `runner.run()`
+/// in `tokio::select!` with a shutdown signal, or use a `CancellationToken`
+/// inside each registered service.
+pub struct AimDbRunner {
+    futures: Vec<BoxFuture>,
+}
+
+impl AimDbRunner {
+    pub(crate) fn new(futures: Vec<BoxFuture>) -> Self {
+        Self { futures }
+    }
+
+    /// Returns the number of futures the runner will drive. Useful for tests
+    /// and diagnostic logging.
+    pub fn future_count(&self) -> usize {
+        self.futures.len()
+    }
+
+    /// Drives every collected future to completion.
+    ///
+    /// Returns when all futures complete (normally: never, while producer and
+    /// consumer loops are alive). Drop the runner — or wrap this call in a
+    /// `select!` with a shutdown signal — to cancel.
+    pub async fn run(self) {
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+
+        if self.futures.is_empty() {
+            return;
+        }
+
+        let mut set: FuturesUnordered<BoxFuture> = self.futures.into_iter().collect();
+        while set.next().await.is_some() {}
+    }
+}
+
+impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// Internal accessor for the inner state
     ///
     /// Used by adapter crates and internal spawning logic.
@@ -1082,23 +1079,6 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         let mut b = AimDbBuilder::new().runtime(rt);
         f(&mut b);
         b.run().await
-    }
-
-    /// Spawns a task using the database's runtime adapter
-    ///
-    /// This method provides direct access to the runtime's spawn capability.
-    ///
-    /// # Arguments
-    /// * `future` - The future to spawn
-    ///
-    /// # Returns
-    /// `DbResult<()>` - Ok if the task was spawned successfully
-    pub fn spawn_task<F>(&self, future: F) -> DbResult<()>
-    where
-        F: core::future::Future<Output = ()> + Send + 'static,
-    {
-        self.runtime.spawn(future).map_err(DbError::from)?;
-        Ok(())
     }
 
     /// Produces a value to a specific record by key
@@ -1403,10 +1383,10 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
         let type_id = self.inner.types[id.index()];
         let key = self.inner.keys[id.index()];
         let record_metadata = record.collect_metadata(type_id, key, id);
-        let runtime = self.runtime.clone();
 
-        // Spawn consumer task that forwards JSON values from buffer to channel
-        let spawn_result = runtime.spawn(async move {
+        // Bridge state (design 028 §"Remote supervisor"): drop into `tokio::spawn`
+        // directly. The nested-`FuturesUnordered` rewrite is the AimX follow-up.
+        tokio::spawn(async move {
             #[cfg(feature = "tracing")]
             tracing::debug!(
                 "Subscription consumer task started for {}",
@@ -1467,8 +1447,6 @@ impl<R: aimdb_executor::Spawn + 'static> AimDb<R> {
             #[cfg(feature = "tracing")]
             tracing::debug!("Subscription consumer task terminated");
         });
-
-        spawn_result.map_err(DbError::from)?;
 
         Ok((value_rx, cancel_tx))
     }

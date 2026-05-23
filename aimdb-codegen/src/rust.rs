@@ -557,7 +557,7 @@ fn emit_imports(state: &ArchitectureState) -> TokenStream {
         use aimdb_core::builder::AimDbBuilder;
         use aimdb_core::RecordKey;
         use aimdb_data_contracts::{#(#contract_traits),*};
-        use aimdb_executor::Spawn;
+        use aimdb_executor::RuntimeAdapter;
         use serde::{Deserialize, Serialize};
     }
 }
@@ -731,7 +731,7 @@ fn emit_configure_schema(state: &ArchitectureState) -> TokenStream {
         /// addresses. Producers, consumers, serializers, and deserializers contain
         /// business logic and must be provided by application code — they are not
         /// generated here.
-        pub fn configure_schema<R: Spawn + 'static>(builder: &mut AimDbBuilder<R>) {
+        pub fn configure_schema<R: RuntimeAdapter + 'static>(builder: &mut AimDbBuilder<R>) {
             #(#record_blocks)*
         }
     }
@@ -1250,7 +1250,7 @@ pub fn generate_hub_schema_rs(state: &ArchitectureState) -> String {
     let file_tokens = quote! {
         use aimdb_core::buffer::BufferCfg;
         use aimdb_core::builder::AimDbBuilder;
-        use aimdb_executor::Spawn;
+        use aimdb_executor::RuntimeAdapter;
         use #common_crate::*;
 
         #configure_fn
@@ -1833,8 +1833,8 @@ url = "mqtt://ota/cmd/{variant}"
             "Missing RecordKey import:\n{out}"
         );
         assert!(
-            out.contains("use aimdb_executor::Spawn;"),
-            "Missing Spawn import:\n{out}"
+            out.contains("use aimdb_executor::RuntimeAdapter;"),
+            "Missing RuntimeAdapter import:\n{out}"
         );
         assert!(
             out.contains("use serde::{Deserialize, Serialize};"),
@@ -1938,7 +1938,7 @@ url = "mqtt://ota/cmd/{variant}"
         let out = generated();
         assert!(
             out.contains(
-                "pub fn configure_schema<R: Spawn + 'static>(builder: &mut AimDbBuilder<R>)"
+                "pub fn configure_schema<R: RuntimeAdapter + 'static>(builder: &mut AimDbBuilder<R>)"
             ),
             "Missing configure_schema function:\n{out}"
         );

@@ -10,7 +10,6 @@
 //! - Single-input: `.transform()` with `TransformBuilder`
 //! - Multi-input: `.transform_join()` with `JoinBuilder`
 
-use core::any::Any;
 use core::fmt::Debug;
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
@@ -30,19 +29,24 @@ pub use join::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 // TransformDescriptor — stored per output record in TypedRecord
 // ============================================================================
 
-pub(crate) struct TransformDescriptor<T, R: aimdb_executor::Spawn + 'static>
+/// Futures contributed by a transform at build-time collection.
+///
+/// `task_future` is the transform's main event loop; `fanin_futures` is any
+/// per-input forwarder needed for multi-input joins (empty for single-input).
+pub(crate) struct CollectedTransform {
+    pub task_future: BoxFuture<'static, ()>,
+    pub fanin_futures: Vec<BoxFuture<'static, ()>>,
+}
+
+pub(crate) struct TransformDescriptor<T, R: aimdb_executor::RuntimeAdapter + 'static>
 where
     T: Send + 'static + Debug + Clone,
 {
     pub input_keys: Vec<String>,
 
     #[allow(clippy::type_complexity)]
-    pub spawn_fn: Box<
-        dyn FnOnce(
-                crate::Producer<T, R>,
-                Arc<crate::AimDb<R>>,
-                Arc<dyn Any + Send + Sync>,
-            ) -> BoxFuture<'static, ()>
+    pub build_fn: Box<
+        dyn FnOnce(crate::Producer<T, R>, Arc<crate::AimDb<R>>, Arc<R>) -> CollectedTransform
             + Send,
     >,
 }

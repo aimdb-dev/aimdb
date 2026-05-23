@@ -1,8 +1,9 @@
 # Remove `Spawn` Trait — `build()` Collects, `run()` Drives
 
-**Version:** 0.1 (draft)
+**Version:** 0.2 (draft — revised after code audit)
 **Status:** 📝 Design
 **Issue:** [#88](https://github.com/aimdb-dev/aimdb/issues/88)
+**Follow-up issue:** [AimX remote-access portability](../issues/aimx-remote-spawn-free.md) — TBD
 **Last Updated:** May 23, 2026
 **Milestone:** M13 — Architectural clean-up
 
@@ -16,12 +17,13 @@
   - [Where `Spawn` propagates today](#where-spawn-propagates-today)
   - [Embassy workaround](#embassy-workaround)
   - [WASM workaround](#wasm-workaround)
-  - [The key audit finding](#the-key-audit-finding)
+  - [Runtime spawn sites — full inventory](#runtime-spawn-sites--full-inventory)
 - [Proposed Design](#proposed-design)
   - [New public API](#new-public-api)
   - [Internal mechanics](#internal-mechanics)
   - [Connector futures](#connector-futures)
   - [Remote supervisor](#remote-supervisor)
+  - [`AimDb::spawn_task` deletion](#aimdbspawn_task-deletion)
 - [Type-System Changes](#type-system-changes)
   - [Bound removals — summary table](#bound-removals--summary-table)
   - [unsafe impl Send/Sync analysis](#unsafe-impl-sendsync-analysis)
@@ -32,10 +34,12 @@
   - [WASM (wasm32-unknown-unknown)](#wasm-wasm32-unknown-unknown)
 - [Shutdown / Cancellation](#shutdown--cancellation)
 - [Connector API impact](#connector-api-impact)
+  - [Other affected crates](#other-affected-crates)
 - [Breaking Changes](#breaking-changes)
 - [Implementation Plan](#implementation-plan)
 - [Alternatives Considered](#alternatives-considered)
-- [Open Questions](#open-questions)
+- [Decisions](#decisions)
+- [Out of Scope](#out-of-scope)
 
 ---
 
@@ -47,9 +51,24 @@ inside `build()` are instead **collected** into a `Vec<BoxFuture>`. A new
 `AimDb::run()` method drives them via `FuturesUnordered`, blocking until
 shutdown.
 
-The core invariant that makes this safe: **all `spawn()` calls in AimDB happen
-inside `build()`.** No task is ever spawned after initialisation completes
-(with one narrow exception — the remote-access supervisor, discussed below).
+The intended invariant: **all `spawn()` calls reachable from `aimdb-core` happen
+inside `build()` after this refactor.** A code audit (v0.2 of this doc)
+identified five categories of runtime-spawn sites; the table in
+[Runtime spawn sites — full inventory](#runtime-spawn-sites--full-inventory)
+catalogues each and assigns it to one of: *converted to build-time
+collection*, *deleted as part of this PR*, or *deferred to a follow-up
+issue*.
+
+> **Scope note (v0.2):** The v0.1 framing of "one narrow exception" was an
+> oversimplification. The AimX remote-access spawn calls (per-connection
+> handler + per-subscription stream) are non-trivial to remove because they
+> are inherently dynamic-fan-out. Rather than couple their refactor to the
+> `Spawn`-trait removal, this design **defers** them to a separate issue
+> ([AimX remote-access portability](../issues/aimx-remote-spawn-free.md))
+> so M13 can land as a focused trait-removal change. Within this PR, the AimX
+> path keeps using bare `tokio::spawn` internally — which is fine because
+> AimX is already `#[cfg(feature = "std")]`-gated. The follow-up issue both
+> removes those spawn calls and prepares AimX for eventual un-gating.
 
 ---
 
@@ -119,6 +138,12 @@ because they hold `Arc<AimDb<R>>` which transitively requires `R: Send + Sync`.
 | `aimdb-core/src/database.rs` | `Database<A: Spawn>` | high-level wrapper |
 | `aimdb-core/src/remote/supervisor.rs` | `R: Spawn` | supervisor spawning |
 | `aimdb-core/src/remote/handler.rs` | `R: Spawn` (×14 bounds) | handler dispatch |
+| `aimdb-codegen/src/rust.rs` | emits `<R: Spawn + 'static>` into generated `configure_schema` | code generation |
+| `aimdb-persistence/src/builder_ext.rs` | `R: Spawn + TimeOps` | persistence builder extension trait |
+| `aimdb-persistence/src/ext.rs` | `R: Spawn + 'static` (×2) | persistence trait bounds |
+| `aimdb-persistence/src/query_ext.rs` | `R: Spawn + 'static` (×2) | query trait + backend helper |
+| `aimdb-sync/src/handle.rs` | `R: Spawn` | sync handle bounds |
+| `aimdb-tokio-adapter/src/connector.rs` | `TokioAdapter::spawn_connectors` (test-only helper) | unused helper, deletable |
 
 ### Embassy workaround
 
@@ -155,42 +180,64 @@ unsafe impl Sync for WasmAdapter {}
 The `unsafe` exists solely to satisfy the `Spawn` trait's `F: Send` bound,
 which is vacuously satisfied on single-threaded WASM.
 
-### The key audit finding
+### Runtime spawn sites — full inventory
 
-All `spawn()` call sites in AimDB are inside `build()`:
+The v0.1 audit listed six build-time spawn sites and claimed they were the
+total. A line-by-line code search produced the following complete picture.
+Sites are grouped by disposition (what this PR does with them).
+
+**Group 1 — Build-time spawns converted to returned futures (in scope).**
 
 | Call site | File | One future per… |
 |---|---|---|
-| `spawn_producer_service` | `typed_record.rs` | `.source()` |
-| `spawn_consumer_tasks` | `typed_record.rs` | `.tap()` |
-| `spawn_transform_task` | `typed_record.rs` | `.transform()` / `.transform_join()` |
-| on_start tasks | `builder.rs` | `.on_start()` |
-| Connector tasks | `builder.rs` (via `ConnectorBuilder::build`) | per-connector |
-| Remote supervisor | `builder.rs` → `supervisor.rs` | one per `with_remote_access()` |
+| `spawn_producer_service` | `aimdb-core/src/typed_record.rs:1228` | `.source()` |
+| `spawn_consumer_tasks` | `aimdb-core/src/typed_record.rs:1155` | `.tap()` |
+| `spawn_transform_task` | `aimdb-core/src/typed_record.rs:881` | `.transform()` / `.transform_join()` |
+| on_start tasks | `aimdb-core/src/builder.rs:977,988` | `.on_start()` |
+| Connector outbound publishers | per-connector `spawn_outbound_publishers()` | `.link_to()` route |
+| Connector infrastructure | MQTT `spawn_event_loop()`, KNX `spawn_connection_task()`, WS `start_server()` | one per connector |
+| Remote supervisor entry point | `aimdb-core/src/builder.rs` → `supervisor.rs:108` | one per `with_remote_access()` |
 
-The total future count is **fully determined** by the database configuration at
-the point `build()` is called. This is exactly the use case `FuturesUnordered`
-is designed for.
+**Group 2 — Runtime spawn that hoists to build time (in scope, new in v0.2).**
 
-> **Exception — per-connection handlers:** The remote-access supervisor spawns
-> **per-connection** handlers at runtime using bare `tokio::spawn`. These are
-> already outside the `Spawn` trait abstraction and are unaffected by this
-> change. See [Remote supervisor](#remote-supervisor) below.
->
-> **Exception — connector infrastructure tasks:** Each Tokio connector also
-> spawns one permanent infrastructure task via bare `tokio::spawn` — entirely
-> separate from the outbound-publisher tasks that go through `runtime.spawn()`:
->
-> | Connector | Infrastructure task | Current call |
-> |---|---|---|
-> | MQTT (Tokio) | `rumqttc` EventLoop poll loop | `spawn_event_loop()` → `tokio::spawn` |
-> | KNX (Tokio) | UDP connection + reconnect loop | `spawn_connection_task()` → `tokio::spawn` |
-> | WebSocket | Axum server (`axum::serve`) | `start_server()` → `tokio::spawn` |
->
-> Unlike the per-connection handlers, these infrastructure tasks **must be
-> converted** to returned futures as part of Step 6. If left unchanged,
-> connectors continue to call `tokio::spawn` directly and their infrastructure
-> futures are invisible to `AimDbRunner`.
+| Call site | File | Why it's actually a build-time fan-out |
+|---|---|---|
+| Join transform forwarders | `aimdb-core/src/transform/join.rs:329` | `inputs.len()` is fixed at `transform_join()` registration; lazy spawn is incidental |
+
+The forwarder count is statically known when the `JoinPipeline` is built.
+Step 3a converts the lazy spawn into build-time collection alongside the
+join transform future itself.
+
+**Group 3 — Runtime spawn deleted as part of this PR (in scope).**
+
+| Item | File | Disposition |
+|---|---|---|
+| `AimDb::spawn_task` public method | `aimdb-core/src/builder.rs:1096` | Delete. With `Spawn` gone there is no portable backing primitive; the method has no internal callers. |
+| `TokioAdapter::spawn_connectors` | `aimdb-tokio-adapter/src/connector.rs:54` | Delete. Test-only helper, no production callers. |
+| `BufferOps::spawn_dispatcher` | `aimdb-tokio-adapter/src/buffer.rs:205` | Keep (test-only utility), but mark for removal in a follow-up tidy if no external user adopts it. |
+
+**Group 4 — Runtime spawn deferred to follow-up issue (out of scope).**
+
+| Call site | File | Reason for deferral |
+|---|---|---|
+| AimX per-connection handler | `aimdb-core/src/remote/supervisor.rs:122` (bare `tokio::spawn`) | Dynamic fan-out by client count; needs nested-`FuturesUnordered` refactor — see [Out of Scope](#out-of-scope) |
+| AimX per-subscription stream | `aimdb-core/src/remote/handler.rs:1042` (bare `tokio::spawn`) + `builder.rs:1409` (`runtime.spawn` inside `subscribe_record_updates`) | Same as above; coupled to handler refactor |
+| WebSocket **client** reconnect | `aimdb-websocket-connector/src/client/connector.rs:505,510` (bare `tokio::spawn`) | Dynamic fan-out per reconnect; same nested-`FuturesUnordered` pattern as AimX. Tracked alongside follow-up. |
+
+**Group 5 — External / out-of-codebase (informational).**
+
+`wasm_bindgen_futures::spawn_local` calls in `aimdb-wasm-adapter/src/{ws_bridge.rs,bindings.rs}` are WASM-runtime glue invoked by JS callbacks; they are outside the `Spawn` trait surface and unaffected. Example binaries and tests that call `tokio::spawn` directly are user code, not core.
+
+#### Why these groupings make the refactor safe
+
+Groups 1, 2, and 3 cover **every** `runtime.spawn(...)` call within
+`aimdb-core` and every connector — once they land, the `Spawn` trait has no
+internal callers. Group 4 retains bare `tokio::spawn` calls inside
+`aimdb-core/src/remote/`, but those calls do **not** depend on the trait
+— they call Tokio directly through `#[cfg(feature = "std")]`. The trait
+can therefore be deleted in this PR without breaking the remote-access
+path; the follow-up issue removes the remaining `tokio::spawn` calls in a
+separate, focused change.
 
 ---
 
@@ -365,12 +412,41 @@ pub fn build_supervisor<R: RuntimeAdapter>(
 ) -> DbResult<BoxFuture<'static, ()>>
 ```
 
-The supervisor loop internally calls `tokio::spawn` for per-connection handlers
-— this is a Tokio-specific behaviour that already bypasses the `Spawn` trait
-and is **unchanged** by this refactor. Per-connection spawning happens inside a
-future that is driven by `FuturesUnordered`, which is fine because
-`FuturesUnordered` is poll-based: the supervisor future yields control between
-accepted connections.
+**Bridge state inside this PR.** The supervisor body keeps two existing
+`tokio::spawn` call sites untouched: the per-connection handler at
+`supervisor.rs:122` and the per-subscription event streamer at
+`handler.rs:1042`. The internal `AimDb::subscribe_record_updates`
+([builder.rs:1409](../../aimdb-core/src/builder.rs#L1409)) — which today
+uses `runtime.spawn(...)` — is rewritten in this PR to call `tokio::spawn`
+directly, matching the rest of the AimX path. None of these depend on the
+`Spawn` trait after the rewrite, so the trait can be deleted cleanly.
+
+This is a deliberate bridge: AimX is already `#[cfg(feature = "std")]`-gated,
+so the temporary use of bare `tokio::spawn` does not regress portability.
+The handler dispatch and supervisor still drop their `R: Spawn` bound (it
+becomes `R: RuntimeAdapter`), which is the change that lets the rest of
+the type system loosen.
+
+**Target state (follow-up issue).** The bare `tokio::spawn` calls are
+replaced with nested `FuturesUnordered` driven by `select_biased!`, making
+the AimX path runtime-agnostic. This is the prerequisite for ever lifting
+the `std` gate from AimX. See
+[AimX remote-access portability](../issues/aimx-remote-spawn-free.md) for
+the full plan; not part of this PR.
+
+### `AimDb::spawn_task` deletion
+
+[`AimDb::spawn_task`](../../aimdb-core/src/builder.rs#L1096) is a public
+convenience that forwards to `R::spawn`. With the trait removed there is
+no portable backing primitive, and the method has no internal callers.
+**Deleted in this PR** (Step 4). Downstream code that wants post-build task
+creation must either:
+
+1. Register the future via `on_start()` (preferred — collected by `build()`).
+2. Place a `FuturesUnordered` inside its own future and push children there.
+
+There is no third option. This is intentional: the surface area we are
+removing is exactly the surface area that made the trait viral.
 
 ---
 
@@ -392,6 +468,10 @@ accepted connections.
 | `Database<A>` | `A: Spawn + 'static` | `A: RuntimeAdapter + 'static` |
 | `remote/handler.rs` (×14) | `R: Spawn + 'static` | `R: RuntimeAdapter + 'static` |
 | `remote/supervisor.rs` | `R: Spawn + 'static` | `R: RuntimeAdapter + 'static` |
+| `impl Clone for AimDb<R>` | `R: Spawn + 'static` | `R: RuntimeAdapter + 'static` |
+| `aimdb-codegen/src/rust.rs` emitted code | `<R: Spawn + 'static>` | `<R: RuntimeAdapter + 'static>` (golden tests update) |
+| `aimdb-persistence` (3 files) | `R: Spawn (+ TimeOps)` | `R: RuntimeAdapter (+ TimeOps)` |
+| `aimdb-sync/src/handle.rs` | `R: Spawn` | `R: RuntimeAdapter` |
 
 ### `RecordSpawner` → `RecordFutureCollector`
 
@@ -442,6 +522,18 @@ only an `Option<&'static Stack<'static>>` (the network stack, gated by
 
 The `new_with_spawner()` constructor is removed (breaking change — see
 [Breaking Changes](#breaking-changes)).
+
+`new_with_network(spawner, network)` ([runtime.rs:162](../../aimdb-embassy-adapter/src/runtime.rs#L162))
+currently also takes a `Spawner`. With `Spawn` removed the parameter is dead
+weight. The signature changes to `new_with_network(network)`. This breaks
+three example binaries and any aimdb-pro snippets that pass `spawner`:
+
+| Affected file | Current call |
+|---|---|
+| `examples/embassy-knx-connector-demo/src/main.rs:253` | `EmbassyAdapter::new_with_network(spawner, stack)` |
+| `examples/embassy-mqtt-connector-demo/src/main.rs:317` | same |
+| `examples/weather-mesh-demo/weather-station-gamma/src/main.rs:259` | same |
+| aimdb-pro UI docs (llms-full.txt, 04-deployment.md) | same |
 
 **`WasmAdapter`:**
 
@@ -521,6 +613,18 @@ Heap usage is therefore unchanged.
 
 **Pool size feature flags** (`embassy-task-pool-8/16/32`) are **deleted**.
 
+**Cooperative-scheduling implication.** Today each AimDB future runs in its
+own Embassy task with its own stack: a producer that blocks between awaits
+only starves itself. After this change, **all** collected futures share a
+single Embassy task's stack and yield budget. In practice this is
+benign — AimDB futures are async I/O loops that yield frequently — but it
+is a real semantic shift. If an application registers a future that does
+heavy synchronous work between awaits, that work now blocks every other
+AimDB future, not just itself. Document this in the user-facing migration
+note. (The eventual lift of `std` gating on AimX, when it lands via the
+follow-up issue, will further amplify this — at that point the AimX
+supervisor lives in the same shared stack.)
+
 ### WASM (wasm32-unknown-unknown)
 
 WASM's single-threaded runtime presents no new concerns because
@@ -578,6 +682,18 @@ async fn build(
 Affected connectors: `aimdb-mqtt-connector` (Tokio and Embassy), `aimdb-knx-connector`,
 `aimdb-websocket-connector`, and aimdb-pro call sites.
 
+### Other affected crates
+
+Beyond the connector trait, three additional crates carry `R: Spawn` bounds
+that must be loosened to `R: RuntimeAdapter` (mechanical, no behaviour change):
+
+- **`aimdb-codegen`** ([rust.rs:560,734,1253](../../aimdb-codegen/src/rust.rs#L560)) — the schema-codegen emits `use aimdb_executor::Spawn;` and `<R: Spawn + 'static>` into generated `configure_schema` functions. Update the emitter and the two golden tests at [rust.rs:1836,1941](../../aimdb-codegen/src/rust.rs#L1836).
+- **`aimdb-persistence`** ([builder_ext.rs:23](../../aimdb-persistence/src/builder_ext.rs#L23), [ext.rs:19,32](../../aimdb-persistence/src/ext.rs#L19), [query_ext.rs:59,68](../../aimdb-persistence/src/query_ext.rs#L59)) — five `R: Spawn` bounds across three files.
+- **`aimdb-sync`** ([handle.rs](../../aimdb-sync/src/handle.rs)) — sync-API handle types carry `R: Spawn`.
+
+None of these crates *call* `runtime.spawn`; they only propagate the bound.
+Removing the bound is a find-replace.
+
 ---
 
 ## Breaking Changes
@@ -586,9 +702,16 @@ Affected connectors: `aimdb-mqtt-connector` (Tokio and Embassy), `aimdb-knx-conn
 |---|---|
 | Public API | `db.run().await` must be called after `build()` — tasks do not start until `run()` |
 | `Runtime` supertrait | `Spawn` removed — custom adapters no longer need to implement it |
-| `EmbassyAdapter` | `new_with_spawner(spawner)` constructor removed |
+| `Spawn` trait | Deleted entirely from `aimdb-executor` (`SpawnToken` associated type goes with it) |
+| `ExecutorError::SpawnFailed` | Variant removed |
+| `AimDb::spawn_task` | Public method **removed** — use `on_start()` or nested `FuturesUnordered` |
+| `EmbassyAdapter::new_with_spawner` | Constructor removed |
+| `EmbassyAdapter::new_with_network(spawner, network)` | Signature changes to `(network)` — `spawner` arg removed |
 | `EmbassyAdapter` feature flags | `embassy-task-pool-8/16/32` removed |
 | `ConnectorBuilder` trait | `build()` now returns `Vec<BoxFuture>` instead of `Box<dyn Connector>` |
+| `TokioAdapter::spawn_connectors` | Removed (test-only helper, unused) |
+| Generated code (codegen) | `configure_schema<R: Spawn + 'static>` → `<R: RuntimeAdapter + 'static>` — regenerate downstream |
+| `aimdb-persistence`, `aimdb-sync` trait bounds | `R: Spawn` → `R: RuntimeAdapter` on public traits |
 | `spawn_fns` in `AimDbBuilder` | internal — no public API change, but internal structure changes |
 
 ---
@@ -640,6 +763,26 @@ Each method constructs the future and returns it rather than calling
 
 ---
 
+### Step 3a — Core: hoist join-transform forwarder spawning
+
+**File:** `aimdb-core/src/transform/join.rs`
+
+`run_join_transform` ([join.rs:329](../../aimdb-core/src/transform/join.rs#L329))
+currently calls `runtime.spawn(forwarder_future)` lazily inside the
+already-running transform task. The forwarder count equals `inputs.len()`,
+which is known when the `JoinPipeline` is registered.
+
+- Change `JoinPipeline::into_descriptor()` to return both the transform
+  future *and* the forwarder futures: e.g.
+  `TransformDescriptor { task_future, fanin_futures: Vec<BoxFuture<'static, ()>> }`.
+- Construct the `JoinTrigger` queue and forwarder futures at descriptor
+  construction time (build phase), not inside `run_join_transform`.
+- `collect_transform_future` (Step 3) appends both `task_future` and every
+  `fanin_future` to the accumulator vec.
+- Delete the `runtime.spawn(...)` call inside `run_join_transform`.
+
+---
+
 ### Step 4 — Core: `build()` accumulates, `run()` drives
 
 **File:** `aimdb-core/src/builder.rs`
@@ -653,20 +796,24 @@ Each method constructs the future and returns it rather than calling
 - Implement `AimDbRunner::run(self)` using `FuturesUnordered`.
 - `AimDb<R>` itself gains no new fields — it remains a plain clone-able handle.
 - Remove `R: Spawn` bound from `AimDb<R>`, `AimDbBuilder<R>`,
-  `AimDbInner::get_typed_record_by_key/id`.
-- Collapse the `std`/`no_std` `on_start` bifurcation: unify
-  `StartFnType<R>` and `NoStdStartFnType<R>` into a single alias
-  `type StartFnType<R> = Box<dyn FnOnce(Arc<R>) -> BoxFuture<'static, ()>>;`
-  (drop `+ Send` from the `FnOnce` — the closure is called once during
-  `build()`, not moved across threads; `Send` is already required by the
-  `BoxFuture` output type). Remove the `#[cfg(feature = "std")]` split.
+  `AimDbInner::get_typed_record_by_key/id`, **and the manual
+  `impl Clone for AimDb<R>` at [builder.rs:1037](../../aimdb-core/src/builder.rs#L1037)**.
+- **Delete `AimDb::spawn_task`** ([builder.rs:1096](../../aimdb-core/src/builder.rs#L1096)).
+  No internal callers; downstream callers migrate to `on_start()` or nested
+  `FuturesUnordered`.
+- Collapse the `std`/`no_std` `on_start` bifurcation: the two type aliases
+  at [builder.rs:32-47](../../aimdb-core/src/builder.rs#L32-L47) are **already
+  identical** — the bifurcation is vestigial. Unify into a single
+  `type StartFnType<R> = Box<dyn FnOnce(Arc<R>) -> BoxFuture<'static, ()> + Send>;`
+  and remove the `#[cfg(feature = "std")]` split. No closure-bound change
+  needed.
 
 ---
 
 ### Step 5 — Core: remote access bounds
 
 **Files:** `aimdb-core/src/remote/supervisor.rs`,
-`aimdb-core/src/remote/handler.rs`
+`aimdb-core/src/remote/handler.rs`, `aimdb-core/src/builder.rs`
 
 - Rename `spawn_supervisor` → `build_supervisor_future`; return
   `DbResult<BoxFuture<'static, ()>>` instead of spawning.
@@ -674,6 +821,12 @@ Each method constructs the future and returns it rather than calling
   with `R: RuntimeAdapter`.
 - `build()` in `builder.rs` calls `build_supervisor_future()` and pushes the
   returned future to the accumulator.
+- **`AimDb::subscribe_record_updates`** ([builder.rs:1409](../../aimdb-core/src/builder.rs#L1409))
+  currently calls `runtime.spawn(...)`. Rewrite to call `tokio::spawn`
+  directly under `#[cfg(feature = "std")]`. This is the bridge state — the
+  full nested-`FuturesUnordered` rewrite is deferred to the follow-up issue.
+- Bare `tokio::spawn` calls at `supervisor.rs:122` and `handler.rs:1042`
+  remain **unchanged** in this PR; they are addressed in the follow-up.
 
 ---
 
@@ -753,10 +906,41 @@ collection point.
 
 ---
 
+### Step 9a — Codegen
+
+**File:** `aimdb-codegen/src/rust.rs`
+
+- Replace emitted `use aimdb_executor::Spawn;` with whatever the new bundle
+  exports (or drop it — `AimDbBuilder<R>` no longer needs an explicit bound).
+- Change emitted `<R: Spawn + 'static>` to `<R: aimdb_executor::RuntimeAdapter + 'static>` in `configure_schema` signatures (lines 560, 734, 1253).
+- Update the two golden-string tests at lines 1836 and 1941.
+
+### Step 9b — Persistence and sync
+
+- **`aimdb-persistence`** (`builder_ext.rs`, `ext.rs`, `query_ext.rs`):
+  replace every `R: Spawn` with `R: RuntimeAdapter`. No runtime calls
+  change.
+- **`aimdb-sync`** (`handle.rs`): same find-replace.
+
+### Step 9c — Delete `TokioAdapter::spawn_connectors`
+
+`aimdb-tokio-adapter/src/connector.rs`: delete the helper and its tests.
+Test-only, no external callers.
+
+---
+
 ### Step 10 — Examples and aimdb-pro call sites
 
-Update all examples to add `db.run().await` after `build()`. Update aimdb-pro
-demo binaries, connectors, and any internal tooling that calls `build()`.
+Update all examples to add `runner.run().await` after `build()`. Update
+aimdb-pro demo binaries, connectors, and any internal tooling that calls
+`build()`. Three Embassy examples plus aimdb-pro docs require an
+`EmbassyAdapter::new_with_network(spawner, stack)` → `new_with_network(stack)`
+edit:
+
+- `examples/embassy-knx-connector-demo/src/main.rs`
+- `examples/embassy-mqtt-connector-demo/src/main.rs`
+- `examples/weather-mesh-demo/weather-station-gamma/src/main.rs`
+- aimdb-pro UI docs (`llms-full.txt`, `04-deployment.md`)
 
 ---
 
@@ -795,6 +979,23 @@ spawning (e.g. a custom connector). **Deferred** — no current use case inside
 the AimDB codebase requires it. Can be re-introduced if a concrete need arises,
 backed by an explicit `Spawn` impl on the adapter.
 
+### E — Channel-based `AimDbSpawner` handle
+
+A handle returned from `build()` that can submit new futures into the
+running `FuturesUnordered` via an unbounded mpsc. **Rejected** — adds API
+surface (`AimDbSpawner`, channel polling in `run()`) for a use case (AimX
+per-connection / per-subscription fan-out) that has a strictly cleaner
+local solution: nested `FuturesUnordered` inside the supervisor future
+itself. See [Out of Scope](#out-of-scope).
+
+### F — Nested `FuturesUnordered` for AimX, inside this PR
+
+Combine the AimX portability refactor with the trait removal. **Deferred** —
+two unrelated changes, doubles the review surface, and the AimX rewrite
+touches subscription cancellation semantics (today: `oneshot::Sender` per
+subscription; after: drop the future). Cleaner as a focused follow-up.
+See [Out of Scope](#out-of-scope).
+
 ---
 
 ## Decisions
@@ -825,4 +1026,60 @@ All design questions raised during review have been resolved:
    reconsidered in a future milestone when a concrete use case exists.
 
 6. **`on_start` std/no_std bifurcation** → **Collapse.**
-   Unify into a single `StartFnType<R>` alias (see Step 4 for details).
+   Unify into a single `StartFnType<R>` alias (see Step 4 for details). The
+   two existing aliases are already byte-for-byte identical; this is a pure
+   simplification.
+
+7. **Join-transform forwarders** → **Hoist to build time.**
+   `inputs.len()` is statically known when `transform_join()` registers the
+   pipeline. The lazy `runtime.spawn(forwarder)` inside `run_join_transform`
+   becomes build-time collection (Step 3a). This keeps the "no spawn
+   reachable from `aimdb-core` after `build()`" invariant clean — modulo
+   the AimX exception below.
+
+8. **AimX remote-access portability** → **Defer to follow-up issue.**
+   The supervisor and handler currently call bare `tokio::spawn` for
+   per-connection and per-subscription tasks. These do **not** depend on
+   the `Spawn` trait, so they can stay as-is for this PR (AimX is
+   `std`-gated). A separate issue replaces them with nested
+   `FuturesUnordered` driven by `select_biased!`, which makes the AimX
+   path runtime-agnostic and is the prerequisite for eventually un-gating
+   AimX from `std`. See [Out of Scope](#out-of-scope).
+
+9. **`AimDb::spawn_task`** → **Delete.**
+   Public convenience method with no internal callers. After the trait
+   removal there is no portable backing primitive. Downstream callers
+   migrate to `on_start()` (build-time collection) or to a private
+   `FuturesUnordered` inside their own future. No deprecation cycle;
+   already breaking release.
+
+---
+
+## Out of Scope
+
+The following are explicitly **not** part of this PR / issue #88:
+
+### AimX remote-access spawn-free refactor
+
+**Tracked in:** [AimX remote-access portability](../issues/aimx-remote-spawn-free.md) (TBD on filing).
+
+The AimX path retains three bare `tokio::spawn` (or `runtime.spawn`-via-bridge)
+calls that are not addressed here:
+
+- `aimdb-core/src/remote/supervisor.rs:122` — per-connection handler spawn
+- `aimdb-core/src/remote/handler.rs:1042` — per-subscription event-stream spawn
+- The temporary `tokio::spawn` inside the rewritten `AimDb::subscribe_record_updates` (this PR replaces `runtime.spawn` with `tokio::spawn`; the follow-up replaces the whole method with a `Stream`-returning helper)
+
+The follow-up issue replaces all three with nested `FuturesUnordered` driven
+by `futures::select_biased!`, eliminates the per-subscription `oneshot`
+cancel channel (cancellation = drop the future), and is a prerequisite for
+ever lifting the `#[cfg(feature = "std")]` gate on AimX.
+
+### WebSocket client reconnect spawn
+
+The WS *client* connector's reconnect loop ([client/connector.rs:505,510](../../aimdb-websocket-connector/src/client/connector.rs#L505)) calls bare `tokio::spawn` on every reconnect. Same nested-`FuturesUnordered` pattern applies; bundled with the AimX follow-up.
+
+### Removing `R` from `Producer<T, R>` and `Consumer<T, R>`
+
+Already deferred (Alternative C). Touches every public API signature and is
+a larger surface change with no functional benefit on top of this refactor.

@@ -31,7 +31,7 @@ use crate::{
     client_manager::ClientManager,
     connector::WebSocketConnectorImpl,
     registry::StreamableRegistry,
-    server::start_server,
+    server::build_server_future,
     session::{NoQuery, NoSnapshot, QueryHandler, SessionContext, SnapshotProvider},
 };
 use aimdb_ws_protocol::TopicInfo;
@@ -271,9 +271,11 @@ impl WebSocketConnectorBuilder {
 // ConnectorBuilder impl
 // ════════════════════════════════════════════════════════════════════
 
+type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
+
 impl<R> ConnectorBuilder<R> for WebSocketConnectorBuilder
 where
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn scheme(&self) -> &str {
         "ws"
@@ -282,14 +284,8 @@ where
     fn build<'a>(
         &'a self,
         db: &'a aimdb_core::builder::AimDb<R>,
-    ) -> Pin<
-        Box<
-            dyn core::future::Future<
-                    Output = aimdb_core::DbResult<Arc<dyn aimdb_core::transport::Connector>>,
-                > + Send
-                + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn core::future::Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>>
+    {
         Box::pin(async move {
             // ── Inbound routes ──────────────────────────────────────
             let inbound_routes = db.collect_inbound_routes("ws");
@@ -361,20 +357,24 @@ where
                 runtime_ctx: Some(db.runtime_any()),
             };
 
-            // ── Build connector & spawn outbound publishers ───────────────
+            // ── Build connector & collect outbound publishers ───────────────
             let connector = WebSocketConnectorImpl::new(client_mgr, self.raw_payload);
-            connector.spawn_outbound_publishers(db, outbound_routes, snapshot_map)?;
+            let outbound_futures =
+                connector.collect_outbound_futures(db, outbound_routes, snapshot_map);
 
-            // ── Start Axum server ─────────────────────────────────
+            // ── Build Axum server future ──────────────────────────
             let additional = self.additional_routes.clone();
-            start_server(
+            let server_future = build_server_future(
                 self.bind_addr,
                 self.ws_path.clone(),
                 session_ctx,
                 additional,
             );
 
-            Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
+            let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_futures.len());
+            futures.push(server_future);
+            futures.extend(outbound_futures);
+            Ok(futures)
         })
     }
 }

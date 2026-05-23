@@ -140,6 +140,7 @@ name = "aimdb-executor"
 version = "0.2.0"
 dependencies = [
  "embassy-executor",
+ "futures-util",
  "thiserror 2.0.17",
  "tokio",
 ]

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use aimdb_core::builder::AimDb;
-use aimdb_executor::Spawn;
+use aimdb_executor::RuntimeAdapter;
 use serde::de::DeserializeOwned;
 
 use crate::backend::{BoxFuture, PersistenceBackend, QueryParams};
@@ -56,7 +56,7 @@ pub trait AimDbQueryExt {
 }
 
 /// Helper: extract the backend from the `AimDb` extensions.
-fn get_backend<R: Spawn + 'static>(
+fn get_backend<R: RuntimeAdapter + 'static>(
     db: &AimDb<R>,
 ) -> Result<Arc<dyn PersistenceBackend>, PersistenceError> {
     db.extensions()
@@ -65,7 +65,7 @@ fn get_backend<R: Spawn + 'static>(
         .ok_or(PersistenceError::NotConfigured)
 }
 
-impl<R: Spawn + 'static> AimDbQueryExt for AimDb<R> {
+impl<R: RuntimeAdapter + 'static> AimDbQueryExt for AimDb<R> {
     fn query_latest<T: DeserializeOwned>(
         &self,
         record_pattern: &str,

@@ -119,7 +119,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .finish();
     });
 
-    let db = builder.build().await?;
+    let (db, runner) = builder.build().await?;
+    tokio::spawn(runner.run());
 
     info!("✅ Database initialized with 3 record types");
     info!("   - Temperature: {} (synthetic)", temp_topic);

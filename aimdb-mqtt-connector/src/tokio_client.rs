@@ -89,17 +89,13 @@ impl MqttConnectorBuilder {
     }
 }
 
-impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for MqttConnectorBuilder {
+type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+impl<R: aimdb_executor::RuntimeAdapter + 'static> ConnectorBuilder<R> for MqttConnectorBuilder {
     fn build<'a>(
         &'a self,
         db: &'a aimdb_core::builder::AimDb<R>,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = aimdb_core::DbResult<Arc<dyn aimdb_core::transport::Connector>>>
-                + Send
-                + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
         Box::pin(async move {
             // Collect inbound routes from database
             let inbound_routes = db.collect_inbound_routes("mqtt");
@@ -116,9 +112,9 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for MqttConnectorBu
             #[cfg(feature = "tracing")]
             tracing::info!("MQTT router has {} topics", router.resource_ids().len());
 
-            // Build the actual connector
+            // Build the client + event-loop future
             let runtime_ctx = db.runtime_any();
-            let connector = MqttConnectorImpl::build_internal(
+            let (client, event_loop_future) = MqttConnectorImpl::build_internal(
                 &self.broker_url,
                 self.client_id.clone(),
                 router,
@@ -138,7 +134,6 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for MqttConnectorBu
                 }
             })?;
 
-            // NEW: Collect and spawn outbound publishers
             let outbound_routes = db.collect_outbound_routes("mqtt");
 
             #[cfg(feature = "tracing")]
@@ -147,9 +142,16 @@ impl<R: aimdb_executor::Spawn + 'static> ConnectorBuilder<R> for MqttConnectorBu
                 outbound_routes.len()
             );
 
-            connector.spawn_outbound_publishers(db, outbound_routes)?;
+            let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
+            let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_routes.len());
+            futures.push(event_loop_future);
+            futures.extend(MqttConnectorImpl::collect_outbound_futures(
+                client,
+                runtime_ctx,
+                outbound_routes,
+            ));
 
-            Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
+            Ok(futures)
         })
     }
 
@@ -182,7 +184,7 @@ impl MqttConnectorImpl {
         client_id: Option<String>,
         router: Router,
         runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
-    ) -> Result<Self, String> {
+    ) -> Result<(Arc<AsyncClient>, BoxFuture), String> {
         // Parse the broker URL - we accept it with or without a topic
         let mut url = broker_url.to_string();
 
@@ -249,14 +251,12 @@ impl MqttConnectorImpl {
         let (client, event_loop) = AsyncClient::new(mqtt_opts, channel_capacity);
         let client_arc = Arc::new(client);
 
-        // CRITICAL: Spawn event loop BEFORE subscribing to topics
-        spawn_event_loop(event_loop, broker_key, router_arc.clone(), runtime_ctx);
+        // Build the event-loop future (returned to the caller for the runner to
+        // drive). Per design 028 §"Connector futures", the event loop runs
+        // concurrently with outbound publishers under one `FuturesUnordered`.
+        let event_loop_future =
+            build_event_loop_future(event_loop, broker_key, router_arc.clone(), runtime_ctx);
 
-        // Yield to ensure the event loop task is scheduled before we start subscribing
-        tokio::task::yield_now().await;
-
-        // Subscribe to topics from the router
-        // Now safe for any number of topics since event loop is draining the channel
         let topics = router_arc.resource_ids();
 
         #[cfg(feature = "tracing")]
@@ -275,10 +275,7 @@ impl MqttConnectorImpl {
         #[cfg(feature = "tracing")]
         tracing::info!("MQTT subscriptions complete");
 
-        Ok(Self {
-            client: client_arc,
-            router: router_arc,
-        })
+        Ok((client_arc, event_loop_future))
     }
 
     /// Get list of all MQTT topics this connector is subscribed to
@@ -297,30 +294,21 @@ impl MqttConnectorImpl {
         self.router.route_count()
     }
 
-    /// Spawns outbound publisher tasks for all configured routes (internal)
+    /// Collects outbound publisher futures for all configured routes (internal).
     ///
-    /// Called automatically during build() to start publishing data from AimDB to MQTT.
-    /// Each route spawns an independent task that subscribes to the record
-    /// and publishes to the MQTT broker.
-    ///
-    /// This method uses the ConsumerTrait + factory pattern to subscribe to
-    /// typed records without knowing the concrete type T at compile time.
-    ///
-    /// If a topic provider is configured, it will be called for each value to
-    /// dynamically determine the MQTT topic. Otherwise, the static default topic is used.
-    fn spawn_outbound_publishers<R>(
-        &self,
-        db: &aimdb_core::builder::AimDb<R>,
+    /// Called automatically during `build()` to construct the per-route
+    /// publisher futures. Each subscribes to its record (type-erased), serializes
+    /// values, and publishes them to the MQTT broker. Returned futures are
+    /// appended to the `AimDbRunner` accumulator.
+    fn collect_outbound_futures(
+        client: Arc<AsyncClient>,
+        runtime_ctx: Arc<dyn core::any::Any + Send + Sync>,
         routes: Vec<aimdb_core::OutboundRoute>,
-    ) -> aimdb_core::DbResult<()>
-    where
-        R: aimdb_executor::Spawn + 'static,
-    {
-        let runtime = db.runtime();
-        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
+    ) -> Vec<BoxFuture> {
+        let mut futures: Vec<BoxFuture> = Vec::with_capacity(routes.len());
 
         for (default_topic, consumer, serializer, config, topic_provider) in routes {
-            let client = self.client.clone();
+            let client = client.clone();
             let default_topic_clone = default_topic.clone();
             let runtime_ctx = runtime_ctx.clone();
 
@@ -349,7 +337,7 @@ impl MqttConnectorImpl {
                 }
             }
 
-            runtime.spawn(async move {
+            futures.push(Box::pin(async move {
                 // Subscribe to typed values (type-erased)
                 let mut reader = match consumer.subscribe_any().await {
                     Ok(r) => r,
@@ -422,10 +410,10 @@ impl MqttConnectorImpl {
                     "MQTT outbound publisher stopped for topic: {}",
                     default_topic_clone
                 );
-            })?;
+            }));
         }
 
-        Ok(())
+        futures
     }
 }
 
@@ -485,7 +473,7 @@ impl aimdb_core::transport::Connector for MqttConnectorImpl {
     // Inbound routing now uses the MqttRouter passed to new()
 }
 
-/// Spawn the MQTT event loop in a background task with router-based dispatch
+/// Builds the MQTT event-loop future with router-based dispatch.
 ///
 /// The event loop is required by rumqttc to handle:
 /// - Network I/O (reading/writing packets)
@@ -493,18 +481,20 @@ impl aimdb_core::transport::Connector for MqttConnectorImpl {
 /// - QoS handshakes
 /// - Routing incoming publishes to AimDB producers
 ///
+/// Returns a `BoxFuture` that is appended to the `AimDbRunner` accumulator.
+///
 /// # Arguments
 /// * `event_loop` - The rumqttc EventLoop to run
 /// * `_broker_key` - Broker identifier for logging (unused in release builds)
 /// * `router` - Router for dispatching messages to producers
 /// * `runtime_ctx` - Optional type-erased runtime for context-aware deserializers
-fn spawn_event_loop(
+fn build_event_loop_future(
     mut event_loop: EventLoop,
     _broker_key: String,
     router: Arc<Router>,
     runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
-) {
-    tokio::spawn(async move {
+) -> BoxFuture {
+    Box::pin(async move {
         #[cfg(feature = "tracing")]
         tracing::debug!("MQTT event loop started for {}", _broker_key);
 
@@ -540,7 +530,7 @@ fn spawn_event_loop(
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

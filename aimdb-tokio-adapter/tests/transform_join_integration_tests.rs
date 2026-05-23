@@ -64,7 +64,8 @@ async fn transform_join_produces_sum_on_both_inputs() {
             });
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
     let mut sum_rx = db.subscribe::<Sum>("test::Sum").unwrap();
 
     // Yield to let the join transform task spawn its input forwarders and subscribe.
@@ -131,7 +132,8 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
             });
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
     let mut echo_rx = db.subscribe::<Sum>("stress::Echo").unwrap();
 
     // Warm-up: keep producing a sentinel until its echo lands. SpmcRing buffers

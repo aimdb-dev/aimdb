@@ -38,7 +38,8 @@ async fn test_multi_instance_same_type() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Produce to each record separately
     db.produce::<Temperature>("sensors.indoor", Temperature { celsius: 22.0 })
@@ -76,7 +77,8 @@ async fn test_producer() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Get key-bound producers
     let producer_a = db.producer::<Temperature>("sensor.a");
@@ -112,7 +114,8 @@ async fn test_consumer() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Get key-bound consumers
     let consumer_north = db.consumer::<Temperature>("zone.north");
@@ -139,7 +142,8 @@ async fn test_single_instance_key_lookup() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Key-based produce should work
     db.produce::<Temperature>("single.temp", Temperature { celsius: 30.0 })
@@ -161,7 +165,8 @@ async fn test_key_not_found_error() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Try to produce to non-existent key
     let result = db
@@ -188,7 +193,8 @@ async fn test_type_mismatch_error() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Try to produce AppConfig to a Temperature record
     let result = db
@@ -251,7 +257,8 @@ async fn test_record_id_stability() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // RecordIds should be assigned in registration order
     let id_first = db.resolve_key("first").unwrap();
@@ -287,7 +294,8 @@ async fn test_records_of_type_introspection() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Should find 3 Temperature records
     let temp_ids = db.records_of_type::<Temperature>();
