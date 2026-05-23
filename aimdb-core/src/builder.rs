@@ -376,7 +376,7 @@ impl AimDbBuilder<NoRuntime> {
     ///
     /// These types are incompatible and cannot be transferred. However, this is not a bug
     /// because `.with_connector()` is only available AFTER calling `.runtime()` (it's defined
-    /// in the `impl<R> where R: Spawn` block, not in `impl AimDbBuilder<NoRuntime>`).
+    /// in the `impl<R> where R: RuntimeAdapter` block, not in `impl AimDbBuilder<NoRuntime>`).
     ///
     /// This means the type system **enforces** the correct call order:
     /// ```rust,ignore

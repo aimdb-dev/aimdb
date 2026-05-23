@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **`Spawn` trait deleted (Issue #88).** Including the `SpawnToken` associated type and the `ExecutorError::SpawnFailed` variant. The `Runtime` bundle trait is now `RuntimeAdapter + TimeOps + Logger` (no `Spawn` supertrait). Task execution moves to `AimDbRunner::run()` in `aimdb-core`, which drives every collected future via a single `FuturesUnordered`. Custom adapters must drop `impl Spawn`.
+- `JoinFanInRuntime` supertrait relaxed from `Spawn` to `RuntimeAdapter`.
+
+### Added
+
+- `futures-util` (alloc-only) as a regular dependency — provides `FuturesUnordered` used by `aimdb-core`'s `AimDbRunner`.
+
 ## [0.2.0] - 2026-05-22
 
 ### Added

@@ -21,7 +21,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .tap(rollout_observer);
     });
 
-    let _db = builder.build().await?;
+    let (_db, runner) = builder.build().await?;
+    // Drive the database futures concurrently with the demo's wait — without
+    // this the registered source/tap futures never run.
+    tokio::spawn(runner.run());
 
     tokio::time::sleep(Duration::from_millis(700)).await;
     println!("Done. SingleLatest keeps only the current value for each subscriber.");

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **`impl Spawn for EmbassyAdapter` deleted (Issue #88).** Static `generic_task_runner` task pool gone, along with `BoxedFuture` and the `unsafe Pin::new_unchecked` cast that fed the pool. Drive database futures by awaiting `AimDbRunner::run()` from inside the Embassy main task.
+- **`embassy-task-pool-8` / `embassy-task-pool-16` / `embassy-task-pool-32` Cargo features deleted.** No pool — `FuturesUnordered` grows as needed within a single Embassy task's heap budget.
+- **`EmbassyAdapter::new_with_spawner(spawner)` constructor deleted.**
+- **`EmbassyAdapter::new_with_network(spawner, network)` signature changed** to `new_with_network(network)` — the `spawner` argument is gone. Update callers (three example binaries plus aimdb-pro docs).
+- `spawner: Option<Spawner>` field and `spawner()` accessor deleted.
+
+### Notes
+
+- `unsafe impl Send/Sync for EmbassyAdapter` is **retained** when the `embassy-net-support` feature is enabled: `embassy_net::Stack` contains a `RefCell` and is `!Sync`. Embassy's single-threaded cooperative executor makes this sound, and the impl now has a smaller surface (no `Spawner` to justify it).
+
 ## [0.6.0] - 2026-05-22
 
 ### Added

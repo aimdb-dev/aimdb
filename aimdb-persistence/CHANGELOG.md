@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- All `R: Spawn` bounds replaced with `R: RuntimeAdapter` on public traits (`AimDbBuilderPersistExt`, `RecordRegistrarPersistExt`, `AimDbQueryExt`) and internal helpers (Issue #88). No behavioural change — `aimdb-persistence` never called `runtime.spawn` directly, the bound was just propagated.
+
 ## [0.1.1] - 2026-05-22
 
 ### Changed
