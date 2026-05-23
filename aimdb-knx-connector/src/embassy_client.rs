@@ -70,12 +70,21 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
-/// Static channel for KNX commands (32 slots to match Tokio implementation)
-static KNX_COMMAND_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, KnxCommand, 32>> =
-    StaticCell::new();
+/// Capacity of the static KNX command channel.
+///
+/// Embassy requires a compile-time const generic — runtime configurability is
+/// not possible with `StaticCell<Channel<..., N>>`. Adjust this constant and
+/// recompile if your installation needs a larger buffer.
+const KNX_COMMAND_QUEUE_SIZE: usize = 32;
+
+/// Static channel for KNX commands (capacity: [`KNX_COMMAND_QUEUE_SIZE`])
+static KNX_COMMAND_CHANNEL: StaticCell<
+    Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>,
+> = StaticCell::new();
 
 /// Get or initialize the command channel
-fn get_command_channel() -> &'static Channel<CriticalSectionRawMutex, KnxCommand, 32> {
+fn get_command_channel(
+) -> &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE> {
     KNX_COMMAND_CHANNEL.init(Channel::new())
 }
 
@@ -265,7 +274,7 @@ impl ChannelState {
 
 /// Internal KNX connector implementation
 pub struct KnxConnectorImpl {
-    command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+    command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>,
 }
 
 impl KnxConnectorImpl {
@@ -277,7 +286,7 @@ impl KnxConnectorImpl {
         runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<
         (
-            &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+            &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>,
             BoxFuture,
         ),
         &'static str,
@@ -339,7 +348,11 @@ impl KnxConnectorImpl {
         gateway_addr: Ipv4Address,
         gateway_port: u16,
         router: Arc<Router>,
-        command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        command_channel: &'static Channel<
+            CriticalSectionRawMutex,
+            KnxCommand,
+            KNX_COMMAND_QUEUE_SIZE,
+        >,
         runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) {
         loop {
@@ -384,7 +397,11 @@ impl KnxConnectorImpl {
         gateway_addr: Ipv4Address,
         gateway_port: u16,
         router: &Router,
-        command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        command_channel: &'static Channel<
+            CriticalSectionRawMutex,
+            KnxCommand,
+            KNX_COMMAND_QUEUE_SIZE,
+        >,
         runtime_ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<(), &'static str> {
         // Create UDP socket with static buffers
@@ -1001,7 +1018,11 @@ impl KnxConnectorImpl {
     /// If a topic provider is configured, it will be called for each value to
     /// dynamically determine the KNX group address. Otherwise, the static default is used.
     fn collect_outbound_futures(
-        command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        command_channel: &'static Channel<
+            CriticalSectionRawMutex,
+            KnxCommand,
+            KNX_COMMAND_QUEUE_SIZE,
+        >,
         runtime_ctx: Arc<dyn core::any::Any + Send + Sync>,
         outbound_routes: Vec<aimdb_core::OutboundRoute>,
     ) -> Vec<BoxFuture> {

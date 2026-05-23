@@ -61,6 +61,9 @@ enum KnxCommand {
 /// automatically monitors all required KNX group addresses.
 pub struct KnxConnectorBuilder {
     gateway_url: String,
+    /// Capacity of the mpsc channel between outbound publishers and the
+    /// connection task. Defaults to 32.
+    command_queue_size: usize,
 }
 
 impl KnxConnectorBuilder {
@@ -77,7 +80,18 @@ impl KnxConnectorBuilder {
     pub fn new(gateway_url: impl Into<String>) -> Self {
         Self {
             gateway_url: gateway_url.into(),
+            command_queue_size: 32,
         }
+    }
+
+    /// Override the internal command channel capacity (default: 32).
+    ///
+    /// The channel sits between outbound publisher futures and the single
+    /// connection task that serializes UDP sends. Increase this for
+    /// installations with many outbound routes or bursty publish patterns.
+    pub fn with_command_queue_size(mut self, size: usize) -> Self {
+        self.command_queue_size = size;
+        self
     }
 }
 
@@ -114,21 +128,25 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> ConnectorBuilder<R> for KnxCon
             //   2. Receiver captured by `connection_future`.
             //   3. Sender cloned into each outbound publisher future below.
             let runtime_ctx = db.runtime_any();
-            let (command_tx, connection_future) =
-                KnxConnectorImpl::build_internal(&self.gateway_url, router, Some(runtime_ctx))
-                    .await
-                    .map_err(|e| {
-                        #[cfg(feature = "std")]
-                        {
-                            aimdb_core::DbError::RuntimeError {
-                                message: format!("Failed to build KNX connector: {}", e),
-                            }
-                        }
-                        #[cfg(not(feature = "std"))]
-                        {
-                            aimdb_core::DbError::RuntimeError { _message: () }
-                        }
-                    })?;
+            let (command_tx, connection_future) = KnxConnectorImpl::build_internal(
+                &self.gateway_url,
+                router,
+                Some(runtime_ctx),
+                self.command_queue_size,
+            )
+            .await
+            .map_err(|e| {
+                #[cfg(feature = "std")]
+                {
+                    aimdb_core::DbError::RuntimeError {
+                        message: format!("Failed to build KNX connector: {}", e),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    aimdb_core::DbError::RuntimeError { _message: () }
+                }
+            })?;
 
             let outbound_routes = db.collect_outbound_routes("knx");
 
@@ -176,6 +194,7 @@ impl KnxConnectorImpl {
         gateway_url: &str,
         router: Router,
         runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
+        command_queue_size: usize,
     ) -> Result<(mpsc::Sender<KnxCommand>, BoxFuture), String> {
         // Parse the gateway URL
         let mut url = gateway_url.to_string();
@@ -202,7 +221,7 @@ impl KnxConnectorImpl {
 
         // 1. Create command channel; receiver goes to the connection future,
         //    sender is returned for the publisher futures to clone.
-        let (command_tx, command_rx) = mpsc::channel::<KnxCommand>(32);
+        let (command_tx, command_rx) = mpsc::channel::<KnxCommand>(command_queue_size);
 
         // 2. Build the connection-task future (captures the receiver).
         let connection_future = build_connection_future(
@@ -1065,7 +1084,7 @@ mod tests {
     async fn test_connector_creation_with_router() {
         let router = RouterBuilder::new().build();
         let connector =
-            KnxConnectorImpl::build_internal("knx://192.168.1.19:3671", router, None).await;
+            KnxConnectorImpl::build_internal("knx://192.168.1.19:3671", router, None, 32).await;
         assert!(connector.is_ok());
     }
 
@@ -1073,7 +1092,7 @@ mod tests {
     async fn test_connector_with_port() {
         let router = RouterBuilder::new().build();
         let connector =
-            KnxConnectorImpl::build_internal("knx://gateway.local:3672", router, None).await;
+            KnxConnectorImpl::build_internal("knx://gateway.local:3672", router, None, 32).await;
         assert!(connector.is_ok());
     }
 
