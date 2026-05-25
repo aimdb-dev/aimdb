@@ -295,6 +295,8 @@ examples:
 	cargo build --package weather-station-beta
 	@printf "$(YELLOW)  → Building weather-station-gamma (embedded, embassy runtime)$(NC)\n"
 	cargo build --package weather-station-gamma --target thumbv7em-none-eabihf
+	@printf "$(YELLOW)  → Building remote-access-demo (AimX server + client)$(NC)\n"
+	cargo build --package remote-access-demo
 	@printf "$(YELLOW)  → Building hello-mailbox (sync)$(NC)\n"
 	cargo build --package hello-mailbox
 	@printf "$(YELLOW)  → Building hello-single-latest-async$(NC)\n"

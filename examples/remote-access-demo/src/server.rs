@@ -149,13 +149,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("📝 Populating initial record data...");
 
     let config_producer = db.producer::<Config>("server::Config")?;
-    config_producer
-        .produce(Config {
-            app_name: "AimDB Demo".to_string(),
-            version: "0.1.0".to_string(),
-            debug_mode: true,
-        })
-        .await?;
+    config_producer.produce(Config {
+        app_name: "AimDB Demo".to_string(),
+        version: "0.1.0".to_string(),
+        debug_mode: true,
+    });
 
     // Initialize AppSettings WITHOUT creating a producer
     // This makes it writable via remote access (record.set)
