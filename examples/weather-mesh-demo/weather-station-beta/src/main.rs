@@ -98,15 +98,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     t.celsius,
                                     h.percent
                                 );
-                                if let Err(e) = producer
-                                    .produce(DewPoint {
-                                        celsius: dew_point,
-                                        timestamp,
-                                    })
-                                    .await
-                                {
-                                    tracing::warn!("DewPoint produce failed: {:?}", e);
-                                }
+                                producer.produce(DewPoint {
+                                    celsius: dew_point,
+                                    timestamp,
+                                });
                             }
                         }
                     })
