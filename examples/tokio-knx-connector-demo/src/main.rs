@@ -59,17 +59,7 @@ async fn input_handler(ctx: RuntimeContext<TokioAdapter>, producer: Producer<Lig
 
                 let state = LightControl::new("1/0/6", light_on);
 
-                match producer.produce(state).await {
-                    Ok(_) => {
-                        log.info(&format!(
-                            "✅ Published to KNX: 1/0/6 = {} (sent to bus)",
-                            if light_on { "ON ✨" } else { "OFF" }
-                        ));
-                    }
-                    Err(e) => {
-                        log.error(&format!("❌ Failed to publish: {:?}", e));
-                    }
-                }
+                producer.produce(state);
             }
             Err(e) => {
                 log.error(&format!("Error reading input: {}", e));

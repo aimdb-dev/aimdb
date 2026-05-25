@@ -57,7 +57,7 @@ async fn transform_join_produces_sum_on_both_inputs() {
                                 _ => {}
                             }
                             if let (Some(a), Some(b)) = (last_a, last_b) {
-                                let _ = producer.produce(Sum(a + b)).await;
+                                producer.produce(Sum(a + b));
                             }
                         }
                     })
@@ -72,8 +72,8 @@ async fn transform_join_produces_sum_on_both_inputs() {
     tokio::task::yield_now().await;
 
     // A=1, B=10 → Sum=11 (first time both are present)
-    db.produce::<ValueA>("test::A", ValueA(1)).await.unwrap();
-    db.produce::<ValueB>("test::B", ValueB(10)).await.unwrap();
+    db.produce::<ValueA>("test::A", ValueA(1)).unwrap();
+    db.produce::<ValueB>("test::B", ValueB(10)).unwrap();
     let s = tokio::time::timeout(Duration::from_secs(2), sum_rx.recv())
         .await
         .unwrap()
@@ -81,7 +81,7 @@ async fn transform_join_produces_sum_on_both_inputs() {
     assert_eq!(s.0, 11, "expected 1+10=11");
 
     // A=2 → Sum=12 (B stays 10)
-    db.produce::<ValueA>("test::A", ValueA(2)).await.unwrap();
+    db.produce::<ValueA>("test::A", ValueA(2)).unwrap();
     let s = tokio::time::timeout(Duration::from_secs(2), sum_rx.recv())
         .await
         .unwrap()
@@ -89,7 +89,7 @@ async fn transform_join_produces_sum_on_both_inputs() {
     assert_eq!(s.0, 12, "expected 2+10=12");
 
     // B=20 → Sum=22 (A stays 2)
-    db.produce::<ValueB>("test::B", ValueB(20)).await.unwrap();
+    db.produce::<ValueB>("test::B", ValueB(20)).unwrap();
     let s = tokio::time::timeout(Duration::from_secs(2), sum_rx.recv())
         .await
         .unwrap()
@@ -125,7 +125,7 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
                                 // Yield between receives to keep the fan-in channel
                                 // pressured well above its 64-slot capacity.
                                 tokio::task::yield_now().await;
-                                let _ = producer.produce(Sum(v.0)).await;
+                                producer.produce(Sum(v.0));
                             }
                         }
                     })
@@ -146,7 +146,6 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
             loop {
                 warmup_db
                     .produce::<ValueA>("stress::A", ValueA(SENTINEL))
-                    .await
                     .unwrap();
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -180,7 +179,6 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
         for i in 0..N {
             producer_db
                 .produce::<ValueA>("stress::A", ValueA(i))
-                .await
                 .unwrap();
         }
     });

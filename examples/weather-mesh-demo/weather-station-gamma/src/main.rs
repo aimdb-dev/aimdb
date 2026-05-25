@@ -94,9 +94,7 @@ async fn temperature_producer(
 
         log.info(&alloc::format!("📊 Temp: {:.1}°C", temp.celsius));
 
-        if let Err(e) = producer.produce(temp.clone()).await {
-            log.error(&alloc::format!("❌ Failed to produce: {:?}", e));
-        }
+        producer.produce(temp.clone());
 
         prev = Some(temp);
         Timer::after(Duration::from_secs(5)).await;
@@ -128,9 +126,7 @@ async fn humidity_producer(ctx: RuntimeContext<EmbassyAdapter>, producer: Produc
 
         log.info(&alloc::format!("📊 Humidity: {:.1}%", humidity.percent));
 
-        if let Err(e) = producer.produce(humidity.clone()).await {
-            log.error(&alloc::format!("❌ Failed to produce: {:?}", e));
-        }
+        producer.produce(humidity.clone());
 
         prev = Some(humidity);
         Timer::after(Duration::from_secs(5)).await;

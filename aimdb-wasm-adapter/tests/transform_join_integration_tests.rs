@@ -57,7 +57,7 @@ async fn transform_join_produces_sum_on_both_inputs() {
                                 _ => {}
                             }
                             if let (Some(a), Some(b)) = (last_a, last_b) {
-                                let _ = producer.produce(Sum(a + b)).await;
+                                producer.produce(Sum(a + b));
                             }
                         }
                     })

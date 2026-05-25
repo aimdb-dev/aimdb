@@ -33,10 +33,7 @@ where
     let log = ctx.log();
     log.info("🌡️  Temperature monitor started\n");
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to temperature buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(temp) = reader.recv().await {
         let (whole, frac) = temp.display_parts();
@@ -63,10 +60,7 @@ where
     let log = ctx.log();
     log.info("💡 Light monitor started\n");
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to light buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(state) = reader.recv().await {
         log.info(&alloc::format!(

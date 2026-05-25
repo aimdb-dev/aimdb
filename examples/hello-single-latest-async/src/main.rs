@@ -49,17 +49,11 @@ async fn rollout_source(ctx: RuntimeContext<TokioAdapter>, producer: Producer<Fe
 
 async fn publish_rollout(producer: &Producer<FeatureGate>, rollout_percent: u8) {
     let gate = FeatureGate { rollout_percent };
-    match producer.produce(gate).await {
-        Ok(()) => println!("source published rollout: {rollout_percent}%"),
-        Err(err) => eprintln!("failed to publish rollout {rollout_percent}%: {err}"),
-    }
+    producer.produce(gate);
 }
 
 async fn rollout_observer(ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<FeatureGate>) {
-    let Ok(mut reader) = consumer.subscribe() else {
-        eprintln!("failed to subscribe to config.checkout_rollout");
-        return;
-    };
+    let mut reader = consumer.subscribe();
     let time = ctx.time();
 
     let mut first = true;

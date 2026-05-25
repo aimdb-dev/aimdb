@@ -757,7 +757,7 @@ where
             let inner = db.inner();
             match inner.get_typed_record_by_key::<T, WasmAdapter>(key) {
                 Ok(typed) => {
-                    crate::bindings::poll_sync(typed.produce(val));
+                    typed.produce(val);
                 }
                 Err(e) => {
                     web_sys::console::warn_1(

@@ -72,16 +72,16 @@ impl<A: RuntimeAdapter + 'static> Database<A> {
     ///
     /// # Example
     /// ```rust,ignore
-    /// # async fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) -> aimdb_core::DbResult<()> {
-    /// db.produce("sensor.temp", SensorData { temp: 23.5 }).await?;
+    /// # fn example<A: aimdb_core::RuntimeAdapter>(db: aimdb_core::Database<A>) -> aimdb_core::DbResult<()> {
+    /// db.produce("sensor.temp", SensorData { temp: 23.5 })?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn produce<T>(&self, key: impl AsRef<str>, data: T) -> DbResult<()>
+    pub fn produce<T>(&self, key: impl AsRef<str>, data: T) -> DbResult<()>
     where
         T: Send + 'static + Clone + core::fmt::Debug,
     {
-        self.aimdb.produce(key, data).await
+        self.aimdb.produce(key, data)
     }
 
     /// Subscribes to a record by key

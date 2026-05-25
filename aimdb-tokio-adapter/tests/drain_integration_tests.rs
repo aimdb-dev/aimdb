@@ -136,7 +136,6 @@ async fn test_drain_cold_start_returns_empty() {
             sensor_id: "s1".to_string(),
         },
     )
-    .await
     .unwrap();
 
     // Give the server time to start listening
@@ -185,7 +184,6 @@ async fn test_drain_returns_accumulated_values() {
                 sensor_id: format!("s{}", i),
             },
         )
-        .await
         .unwrap();
     }
 
@@ -239,7 +237,6 @@ async fn test_drain_sequential_only_new_values() {
                 sensor_id: format!("batch1-{}", i),
             },
         )
-        .await
         .unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -261,7 +258,6 @@ async fn test_drain_sequential_only_new_values() {
                 sensor_id: format!("batch2-{}", i),
             },
         )
-        .await
         .unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -311,7 +307,6 @@ async fn test_drain_with_limit() {
                 sensor_id: format!("s{}", i),
             },
         )
-        .await
         .unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -371,7 +366,6 @@ async fn test_drain_single_latest_at_most_one() {
     // Write 5 values — SingleLatest overwrites, only last survives
     for i in 0..5 {
         db.produce::<Counter>("test::Counter", Counter { value: i })
-            .await
             .unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -460,7 +454,6 @@ async fn test_drain_with_ring_overflow() {
     // Write 20 values into capacity-4 ring — causes overflow
     for i in 0..20 {
         db.produce::<Counter>("test::Counter", Counter { value: i })
-            .await
             .unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -516,13 +509,11 @@ async fn test_drain_multiple_records_independent() {
                 sensor_id: "temp".to_string(),
             },
         )
-        .await
         .unwrap();
     }
 
     // Write to Counter only
     db.produce::<Counter>("test::Counter", Counter { value: 42 })
-        .await
         .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -567,7 +558,6 @@ async fn test_drain_response_structure() {
             sensor_id: "test-sensor".to_string(),
         },
     )
-    .await
     .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -614,7 +604,6 @@ async fn test_drain_with_zero_limit() {
                 sensor_id: "s".to_string(),
             },
         )
-        .await
         .unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -664,7 +653,6 @@ async fn test_drain_independent_of_other_consumers() {
                 sensor_id: "test".to_string(),
             },
         )
-        .await
         .unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

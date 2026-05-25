@@ -65,7 +65,7 @@ impl JoinTrigger {
 ///             _ => {}
 ///         }
 ///         if let (Some(a), Some(b)) = (last_a, last_b) {
-///             producer.produce(compute(a, b)).await.ok();
+///             producer.produce(compute(a, b));
 ///         }
 ///     }
 /// })
@@ -163,8 +163,8 @@ where
         type Tx<R> =
             <<R as JoinFanInRuntime>::JoinQueue<JoinTrigger> as JoinQueue<JoinTrigger>>::Sender;
 
-        let factory: JoinInputFactory<R> = Box::new(
-            move |db: Arc<crate::AimDb<R>>, index: usize, tx: Tx<R>| {
+        let factory: JoinInputFactory<R> =
+            Box::new(move |db: Arc<crate::AimDb<R>>, index: usize, tx: Tx<R>| {
                 Box::pin(async move {
                     let consumer = match db.consumer::<I>(&key_for_factory) {
                         Ok(c) => c,
@@ -176,32 +176,10 @@ where
                                 index,
                                 _e
                             );
-                            #[cfg(all(feature = "std", not(feature = "tracing")))]
-                            eprintln!(
-                                "AIMDB TRANSFORM ERROR: Join input '{}' (index {}) consumer resolution failed: {:?}",
-                                key_for_factory, index, _e
-                            );
                             return;
                         }
                     };
-                    let mut reader = match consumer.subscribe() {
-                        Ok(r) => r,
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!(
-                                "🔄 Join input '{}' (index {}) subscription failed: {:?}",
-                                key_for_factory,
-                                index,
-                                _e
-                            );
-                            #[cfg(all(feature = "std", not(feature = "tracing")))]
-                            eprintln!(
-                                "AIMDB TRANSFORM ERROR: Join input '{}' (index {}) subscription failed: {:?}",
-                                key_for_factory, index, _e
-                            );
-                            return;
-                        }
-                    };
+                    let mut reader = consumer.subscribe();
 
                     while let Ok(value) = reader.recv().await {
                         let trigger = JoinTrigger::Input {
@@ -213,8 +191,7 @@ where
                         }
                     }
                 }) as BoxFuture<'static, ()>
-            },
-        );
+            });
 
         self.inputs.push((key_str, factory));
         self
@@ -239,7 +216,7 @@ where
     ///             _ => {}
     ///         }
     ///         if let (Some(a), Some(b)) = (last_a, last_b) {
-    ///             producer.produce(compute(a, b)).await.ok();
+    ///             producer.produce(compute(a, b));
     ///         }
     ///     }
     /// })

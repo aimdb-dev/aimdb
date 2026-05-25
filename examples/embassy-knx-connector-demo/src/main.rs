@@ -115,17 +115,7 @@ async fn button_handler(
 
         let state = LightControl::new("1/0/6", light_on);
 
-        match producer.produce(state).await {
-            Ok(_) => {
-                log.info(&alloc::format!(
-                    "✅ Published to KNX: 1/0/6 = {}",
-                    if light_on { "ON ✨" } else { "OFF" }
-                ));
-            }
-            Err(e) => {
-                log.error(&alloc::format!("❌ Failed to publish: {:?}", e));
-            }
-        }
+        producer.produce(state);
 
         button.wait_for_rising_edge().await;
         time.sleep(time.millis(50)).await;

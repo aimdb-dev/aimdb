@@ -1081,9 +1081,13 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         b.run().await
     }
 
-    /// Produces a value to a specific record by key
+    /// Produces a value to a specific record by key.
     ///
-    /// Uses O(1) key-based lookup to find the correct record.
+    /// Uses O(1) key-based lookup to find the correct record. Sync + fallible —
+    /// only the lookup can fail; the buffer push itself is infallible.
+    ///
+    /// For hot paths, prefer `db.producer::<T>(key)?` once and reuse the
+    /// returned handle.
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
@@ -1092,15 +1096,15 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// db.produce::<Temperature>("sensors.indoor", indoor_temp).await?;
-    /// db.produce::<Temperature>("sensors.outdoor", outdoor_temp).await?;
+    /// db.produce::<Temperature>("sensors.indoor", indoor_temp)?;
+    /// db.produce::<Temperature>("sensors.outdoor", outdoor_temp)?;
     /// ```
-    pub async fn produce<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
+    pub fn produce<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
     where
         T: Send + 'static + Debug + Clone,
     {
         let typed_rec = self.inner.get_typed_record_by_key::<T, R>(key)?;
-        typed_rec.produce(value).await;
+        typed_rec.produce(value);
         Ok(())
     }
 
@@ -1144,8 +1148,8 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// let outdoor_producer = db.producer::<Temperature>("sensors.outdoor");
     ///
     /// // Each producer writes to its own record
-    /// indoor_producer.produce(indoor_temp).await?;
-    /// outdoor_producer.produce(outdoor_temp).await?;
+    /// indoor_producer.produce(indoor_temp);
+    /// outdoor_producer.produce(outdoor_temp);
     /// ```
     pub fn producer<T>(
         &self,
@@ -1175,7 +1179,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// let outdoor_consumer = db.consumer::<Temperature>("sensors.outdoor");
     ///
     /// // Each consumer reads from its own record
-    /// let mut rx = indoor_consumer.subscribe()?;
+    /// let mut rx = indoor_consumer.subscribe();
     /// ```
     pub fn consumer<T>(
         &self,

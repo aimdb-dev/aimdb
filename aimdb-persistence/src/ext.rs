@@ -53,19 +53,7 @@ where
         // The second closure argument is the runtime context (Arc<dyn Any>),
         // which we don't need — persistence is runtime-agnostic.
         self.tap_raw(move |consumer, _ctx| async move {
-            let mut reader = match consumer.subscribe() {
-                Ok(r) => r,
-                Err(e) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!(
-                        "Persistence subscriber for '{}' failed to subscribe: {:?}",
-                        record_name,
-                        e
-                    );
-                    let _ = e;
-                    return;
-                }
-            };
+            let mut reader = consumer.subscribe();
 
             loop {
                 let value = match reader.recv().await {

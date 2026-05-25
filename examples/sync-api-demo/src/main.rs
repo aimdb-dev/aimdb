@@ -47,10 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             // Add a simple consumer that logs values
             .tap(|_ctx, consumer| async move {
-                let Ok(mut reader) = consumer.subscribe() else {
-                    eprintln!("Failed to subscribe to temperature buffer");
-                    return;
-                };
+                let mut reader = consumer.subscribe();
                 while let Ok(temp) = reader.recv().await {
                     println!("   [Database] Received: {:.1}°C", temp.celsius);
                 }

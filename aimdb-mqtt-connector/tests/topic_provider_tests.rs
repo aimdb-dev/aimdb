@@ -238,7 +238,7 @@ async fn test_topic_provider_registration_api() {
                 let counter = counter.clone();
                 async move {
                     let temp = Temperature::new("test-001", 22.5);
-                    producer.produce(temp).await.ok();
+                    producer.produce(temp);
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
@@ -269,7 +269,7 @@ async fn test_topic_provider_with_connector_registration() {
             .source(
                 |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<Temperature>| async move {
                     let temp = Temperature::new("kitchen", 22.5);
-                    producer.produce(temp).await.ok();
+                    producer.produce(temp);
                 },
             )
             .link_to("mqtt://sensors/temp/default") // Fallback topic
@@ -328,10 +328,7 @@ async fn test_mixed_static_and_dynamic_topics() {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
                 |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<Temperature>| async move {
-                    producer
-                        .produce(Temperature::new("static", 20.0))
-                        .await
-                        .ok();
+                    producer.produce(Temperature::new("static", 20.0));
                 },
             )
             .link_to("mqtt://sensors/temp/static-topic")
@@ -344,10 +341,7 @@ async fn test_mixed_static_and_dynamic_topics() {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
                 |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<Temperature>| async move {
-                    producer
-                        .produce(Temperature::new("dynamic", 25.0))
-                        .await
-                        .ok();
+                    producer.produce(Temperature::new("dynamic", 25.0));
                 },
             )
             .link_to("mqtt://sensors/temp/fallback")

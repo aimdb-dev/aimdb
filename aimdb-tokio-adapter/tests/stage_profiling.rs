@@ -32,14 +32,14 @@ async fn source_and_tap_stages_are_timed_and_named() {
             .source(|ctx, producer| async move {
                 let mut n = 0u64;
                 loop {
-                    let _ = producer.produce(Reading { value: n }).await;
+                    producer.produce(Reading { value: n });
                     n += 1;
                     ctx.time().sleep(ctx.time().millis(10)).await;
                 }
             })
             .with_name("sensor_reader")
             .tap(|ctx, consumer| async move {
-                let mut reader = consumer.subscribe().expect("subscribe");
+                let mut reader = consumer.subscribe();
                 while let Ok(reading) = reader.recv().await {
                     // Simulate per-value processing work (wall-clock).
                     let _ = reading.value;
@@ -104,7 +104,7 @@ async fn with_name_is_a_no_op_friendly_builder() {
     builder.configure::<Reading>("profiling::Unused", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(|_ctx, consumer| async move {
-                let mut reader = consumer.subscribe().expect("subscribe");
+                let mut reader = consumer.subscribe();
                 let _ = reader.recv().await;
             })
             .with_name("idle_tap");

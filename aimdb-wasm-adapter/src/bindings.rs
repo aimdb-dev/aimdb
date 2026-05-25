@@ -550,10 +550,7 @@ where
         .get_typed_record_by_key::<T, WasmAdapter>(key)
         .map_err(|e| JsError::new(&format!("{e:?}")))?;
 
-    // TypedRecord::produce() is declared `async` but its body is synchronous:
-    // it updates `latest_snapshot` and calls `buf.push(val)` — both complete
-    // immediately on WasmBuffer. We poll the future exactly once.
-    poll_sync(typed.produce(val));
+    typed.produce(val);
     Ok(())
 }
 
@@ -620,31 +617,3 @@ where
 }
 
 // ─── Sync future polling ──────────────────────────────────────────────────
-
-/// Poll a future that is known to resolve in a single poll (no real I/O).
-///
-/// Used for `TypedRecord::produce()` whose body is synchronous despite being
-/// declared `async fn` — it just updates a snapshot and pushes to a buffer.
-///
-/// # Panics
-///
-/// Panics if the future returns `Pending`. This should never happen for
-/// operations on `WasmBuffer` (which are single-threaded, non-blocking).
-pub(crate) fn poll_sync<F: core::future::Future>(f: F) -> F::Output {
-    use core::pin::Pin;
-    use core::task::{Context, Poll, Waker};
-
-    // SAFETY: the future is stack-local and will not be moved after pinning.
-    let mut f = f;
-    let f = unsafe { Pin::new_unchecked(&mut f) };
-
-    let waker = Waker::noop();
-    let mut cx = Context::from_waker(waker);
-
-    match f.poll(&mut cx) {
-        Poll::Ready(val) => val,
-        Poll::Pending => {
-            panic!("poll_sync: future returned Pending (expected synchronous completion)")
-        }
-    }
-}

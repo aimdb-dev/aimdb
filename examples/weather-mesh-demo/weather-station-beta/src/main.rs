@@ -174,13 +174,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Humidity::simulate(&humidity_config, prev_humidity.as_ref(), &mut rng, now);
 
             // Produce the readings
-            if let Err(e) = temp_producer.produce(temp.clone()).await {
-                tracing::warn!("Failed to produce temperature: {:?}", e);
-            }
+            temp_producer.produce(temp.clone());
 
-            if let Err(e) = humidity_producer.produce(humidity.clone()).await {
-                tracing::warn!("Failed to produce humidity: {:?}", e);
-            }
+            humidity_producer.produce(humidity.clone());
 
             tracing::info!(
                 "📊 Published: {:.1}°C, {:.1}%",

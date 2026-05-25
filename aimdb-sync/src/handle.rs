@@ -404,7 +404,7 @@ impl AimDbHandle {
         self.runtime_handle.spawn(async move {
             while let Some((value, result_tx)) = rx.recv().await {
                 // Forward the value to the database's produce pipeline
-                let result = db.produce(&record_key, value).await;
+                let result = db.produce(&record_key, value);
 
                 // Send the result back to the caller (may fail if caller dropped)
                 let _ = result_tx.send(result);

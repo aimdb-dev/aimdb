@@ -151,13 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         timestamp: now,
                     };
 
-                    if let Err(e) = temp_producer.produce(temp).await {
-                        tracing::warn!("Failed to produce temperature: {:?}", e);
-                    }
+                    temp_producer.produce(temp);
 
-                    if let Err(e) = humidity_producer.produce(humidity).await {
-                        tracing::warn!("Failed to produce humidity: {:?}", e);
-                    }
+                    humidity_producer.produce(humidity);
 
                     tracing::info!(
                         "📊 Published: {:.1}°C, {:.1}%",

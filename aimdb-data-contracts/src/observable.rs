@@ -38,10 +38,7 @@ pub async fn log_tap<T, R>(
 {
     let log = ctx.log();
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error(&alloc::format!("Failed to subscribe to {} buffer", T::NAME));
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(value) = reader.recv().await {
         log.info(&value.format_log(node_id));

@@ -114,9 +114,7 @@ async fn indoor_temp_producer(
             temp.celsius
         ));
 
-        if let Err(e) = temperature.produce(temp).await {
-            log.error(&alloc::format!("❌ Failed to produce indoor temp: {:?}", e));
-        }
+        temperature.produce(temp);
 
         Timer::after(Duration::from_secs(2)).await;
     }
@@ -140,12 +138,7 @@ async fn outdoor_temp_producer(
             temp.celsius
         ));
 
-        if let Err(e) = temperature.produce(temp).await {
-            log.error(&alloc::format!(
-                "❌ Failed to produce outdoor temp: {:?}",
-                e
-            ));
-        }
+        temperature.produce(temp);
 
         Timer::after(Duration::from_secs(2)).await;
     }
@@ -169,12 +162,7 @@ async fn server_room_temp_producer(
             temp.celsius
         ));
 
-        if let Err(e) = temperature.produce(temp).await {
-            log.error(&alloc::format!(
-                "❌ Failed to produce server room temp: {:?}",
-                e
-            ));
-        }
+        temperature.produce(temp);
 
         Timer::after(Duration::from_secs(2)).await;
     }

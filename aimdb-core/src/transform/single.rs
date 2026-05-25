@@ -182,32 +182,10 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
                 output_key,
                 _e
             );
-            #[cfg(all(feature = "std", not(feature = "tracing")))]
-            eprintln!(
-                "AIMDB TRANSFORM ERROR: '{}' → '{}' failed to resolve consumer: {:?}",
-                input_key, output_key, _e
-            );
             return;
         }
     };
-    let mut reader = match consumer.subscribe() {
-        Ok(r) => r,
-        Err(_e) => {
-            #[cfg(feature = "tracing")]
-            tracing::error!(
-                "🔄 Transform '{}' → '{}' FATAL: failed to subscribe to input: {:?}",
-                input_key,
-                output_key,
-                _e
-            );
-            #[cfg(all(feature = "std", not(feature = "tracing")))]
-            eprintln!(
-                "AIMDB TRANSFORM ERROR: '{}' → '{}' failed to subscribe to input: {:?}",
-                input_key, output_key, _e
-            );
-            return;
-        }
-    };
+    let mut reader = consumer.subscribe();
 
     #[cfg(feature = "tracing")]
     tracing::debug!(
@@ -220,7 +198,7 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
         match reader.recv().await {
             Ok(input_value) => {
                 if let Some(output_value) = transform_fn(&input_value, &mut state) {
-                    let _ = producer.produce(output_value).await;
+                    producer.produce(output_value);
                 }
             }
             Err(crate::DbError::BufferLagged { .. }) => {

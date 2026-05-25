@@ -730,7 +730,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     ///
     /// ```rust,ignore
     /// record.add_consumer(|consumer, ctx_any| async move {
-    ///     let mut rx = consumer.subscribe().unwrap();
+    ///     let mut rx = consumer.subscribe();
     ///     while let Ok(value) = rx.recv().await {
     ///         println!("Consumer: {:?}", value);
     ///     }
@@ -1337,7 +1337,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// Produces a value by pushing to the buffer
     ///
     /// Enqueues value for consumer tasks and updates latest snapshot.
-    pub async fn produce(&self, val: T) {
+    pub fn produce(&self, val: T) {
         // Cache snapshot for latest() API (both std and no_std)
         #[cfg(feature = "std")]
         {

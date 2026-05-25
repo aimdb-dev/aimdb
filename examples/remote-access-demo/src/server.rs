@@ -232,9 +232,7 @@ async fn temperature_simulator(
             timestamp,
         };
 
-        if let Err(e) = temperature.produce(reading).await {
-            tracing::error!("Failed to produce temperature: {}", e);
-        }
+        temperature.produce(reading);
 
         counter += 1;
         time.sleep(time.secs(2)).await;
@@ -244,10 +242,7 @@ async fn temperature_simulator(
 /// Fast tap on Temperature — just logs. Stage profiling will show it as
 /// substantially faster than `slow_status_processor` on SystemStatus.
 async fn temperature_logger(_ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<Temperature>) {
-    let Ok(mut reader) = consumer.subscribe() else {
-        tracing::error!("Failed to subscribe to Temperature");
-        return;
-    };
+    let mut reader = consumer.subscribe();
     while let Ok(reading) = reader.recv().await {
         tracing::debug!(
             "🌡️  Logged temperature: {:.1} °C from {}",
@@ -271,9 +266,7 @@ async fn system_status_simulator(
             memory_usage: 40.0 + ((uptime as f64 / 10.0) % 20.0),
         };
 
-        if let Err(e) = status.produce(snapshot).await {
-            tracing::error!("Failed to produce system status: {}", e);
-        }
+        status.produce(snapshot);
 
         uptime += 5;
         time.sleep(time.secs(5)).await;
@@ -288,10 +281,7 @@ async fn slow_status_processor(
     consumer: Consumer<SystemStatus>,
 ) {
     let time = ctx.time();
-    let Ok(mut reader) = consumer.subscribe() else {
-        tracing::error!("Failed to subscribe to SystemStatus");
-        return;
-    };
+    let mut reader = consumer.subscribe();
     while let Ok(snapshot) = reader.recv().await {
         time.sleep(time.millis(100)).await;
         tracing::debug!(

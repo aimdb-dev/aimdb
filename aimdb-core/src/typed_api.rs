@@ -16,7 +16,7 @@
 //! ) {
 //!     loop {
 //!         let temp = read_sensor().await;
-//!         producer.produce(temp).await?;
+//!         producer.produce(temp);
 //!         ctx.time().sleep(ctx.time().secs(1)).await;
 //!     }
 //! }
@@ -30,7 +30,7 @@
 //!     ctx: RuntimeContext<R>,
 //!     consumer: Consumer<Temperature>,
 //! ) {
-//!     let mut rx = consumer.subscribe()?;
+//!     let mut rx = consumer.subscribe();
 //!     while let Ok(temp) = rx.recv().await {
 //!         ctx.log().info(&format!("Temp: {:.1}°C", temp.celsius));
 //!     }
@@ -132,22 +132,16 @@ where
 
     /// Produce a value of type T
     ///
-    /// This triggers the entire pipeline for this record type:
-    /// 1. All tap observers are notified
-    /// 2. All link connectors are triggered
-    /// 3. Buffers are updated (if configured)
+    /// Push to the record's buffer, update the latest-snapshot cache, and
+    /// notify tap observers + outbound link connectors. Synchronous and
+    /// infallible — the underlying `WriteHandle::push` cannot fail.
     ///
-    /// Signature is kept `async fn ... -> DbResult<()>` for source-level
-    /// compatibility with existing `producer.produce(x).await?` call sites and
-    /// to leave headroom for future backpressure-aware buffers — even though
-    /// the body is currently synchronous and infallible.
-    pub async fn produce(&self, value: T) -> DbResult<()> {
+    pub fn produce(&self, value: T) {
         #[cfg(feature = "profiling")]
         if let Some(state) = &self.profiling {
             state.record_produce();
         }
         self.write.push(value);
-        Ok(())
     }
 }
 
@@ -172,18 +166,16 @@ where
         value: Box<dyn core::any::Any + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            // Downcast the Box<dyn Any> to Box<T>
+            // The only fallibility left is the type-erasure downcast; the
+            // produce itself is synchronous + infallible after M14.
             let value = value.downcast::<T>().map_err(|_| {
                 format!(
                     "Failed to downcast value to type {}",
                     core::any::type_name::<T>()
                 )
             })?;
-
-            // Produce the value
-            self.produce(*value)
-                .await
-                .map_err(|e| format!("Failed to produce value: {}", e))
+            self.produce(*value);
+            Ok(())
         })
     }
 }
@@ -242,23 +234,21 @@ where
         self.profiling = Some((metrics, clock));
     }
 
-    /// Subscribe to updates for this record type
+    /// Subscribe to updates for this record type.
     ///
-    /// Returns a reader that yields values when they are produced.
-    ///
-    /// Signature is kept as `DbResult<…>` for source-level compatibility; the
-    /// body is now infallible (the buffer is pre-resolved at construction).
-    pub fn subscribe(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
+    /// Returns a reader that yields values as they are produced.
+    /// Infallible — the buffer is pre-resolved at `Consumer` construction.
+    pub fn subscribe(&self) -> Box<dyn crate::buffer::BufferReader<T> + Send> {
         let reader = self.buffer.subscribe_boxed();
         #[cfg(feature = "profiling")]
         if let Some((metrics, clock)) = &self.profiling {
-            return Ok(Box::new(crate::profiling::ProfilingBufferReader::new(
+            return Box::new(crate::profiling::ProfilingBufferReader::new(
                 reader,
                 metrics.clone(),
                 clock.clone(),
-            )));
+            ));
         }
-        Ok(reader)
+        reader
     }
 }
 
@@ -310,7 +300,9 @@ where
     ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn crate::connector::AnyReader>>> + Send + 'a>>
     {
         Box::pin(async move {
-            let reader = self.subscribe()?;
+            // `subscribe()` is infallible after M14; keep the `DbResult` on
+            // the trait surface so connector code stays unchanged.
+            let reader = self.subscribe();
             Ok(Box::new(TypedAnyReader::<T> { inner: reader })
                 as Box<dyn crate::connector::AnyReader>)
         })

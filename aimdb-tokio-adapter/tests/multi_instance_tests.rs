@@ -43,11 +43,9 @@ async fn test_multi_instance_same_type() {
 
     // Produce to each record separately
     db.produce::<Temperature>("sensors.indoor", Temperature { celsius: 22.0 })
-        .await
         .unwrap();
 
     db.produce::<Temperature>("sensors.outdoor", Temperature { celsius: -5.0 })
-        .await
         .unwrap();
 
     // Verify we can resolve both keys
@@ -86,14 +84,8 @@ async fn test_producer() {
     let producer_b = db.producer::<Temperature>("sensor.b").unwrap();
 
     // Produce values
-    producer_a
-        .produce(Temperature { celsius: 10.0 })
-        .await
-        .unwrap();
-    producer_b
-        .produce(Temperature { celsius: 20.0 })
-        .await
-        .unwrap();
+    producer_a.produce(Temperature { celsius: 10.0 });
+    producer_b.produce(Temperature { celsius: 20.0 });
 }
 
 /// Test: Key-based consumer works correctly
@@ -120,8 +112,8 @@ async fn test_consumer() {
     let consumer_south = db.consumer::<Temperature>("zone.south").unwrap();
 
     // Subscribe should work
-    let _reader_north = consumer_north.subscribe().unwrap();
-    let _reader_south = consumer_south.subscribe().unwrap();
+    let _reader_north = consumer_north.subscribe();
+    let _reader_south = consumer_south.subscribe();
 }
 
 /// Test: Single instance key-based lookup works
@@ -141,7 +133,6 @@ async fn test_single_instance_key_lookup() {
 
     // Key-based produce should work
     db.produce::<Temperature>("single.temp", Temperature { celsius: 30.0 })
-        .await
         .unwrap();
 
     // Key-based subscribe should work
@@ -163,9 +154,7 @@ async fn test_key_not_found_error() {
     tokio::spawn(runner.run());
 
     // Try to produce to non-existent key
-    let result = db
-        .produce::<Temperature>("nonexistent.key", Temperature { celsius: 0.0 })
-        .await;
+    let result = db.produce::<Temperature>("nonexistent.key", Temperature { celsius: 0.0 });
 
     match result {
         Err(DbError::RecordKeyNotFound { key }) => {
@@ -191,15 +180,13 @@ async fn test_type_mismatch_error() {
     tokio::spawn(runner.run());
 
     // Try to produce AppConfig to a Temperature record
-    let result = db
-        .produce::<AppConfig>(
-            "sensor.temp",
-            AppConfig {
-                debug: true,
-                name: "test".to_string(),
-            },
-        )
-        .await;
+    let result = db.produce::<AppConfig>(
+        "sensor.temp",
+        AppConfig {
+            debug: true,
+            name: "test".to_string(),
+        },
+    );
 
     match result {
         Err(DbError::TypeMismatch { record_id, .. }) => {

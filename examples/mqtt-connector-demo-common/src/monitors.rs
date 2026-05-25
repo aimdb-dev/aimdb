@@ -31,10 +31,7 @@ where
 {
     let log = ctx.log();
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to temperature buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(temp) = reader.recv().await {
         log.info(&alloc::format!(
@@ -60,10 +57,7 @@ where
     let log = ctx.log();
     log.info("📨 Command consumer started\n");
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to command buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(cmd) = reader.recv().await {
         log.info(&alloc::format!(
