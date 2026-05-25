@@ -32,10 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn rollout_source(
-    ctx: RuntimeContext<TokioAdapter>,
-    producer: Producer<FeatureGate, TokioAdapter>,
-) {
+async fn rollout_source(ctx: RuntimeContext<TokioAdapter>, producer: Producer<FeatureGate>) {
     let time = ctx.time();
 
     time.sleep(time.millis(50)).await;
@@ -50,7 +47,7 @@ async fn rollout_source(
     }
 }
 
-async fn publish_rollout(producer: &Producer<FeatureGate, TokioAdapter>, rollout_percent: u8) {
+async fn publish_rollout(producer: &Producer<FeatureGate>, rollout_percent: u8) {
     let gate = FeatureGate { rollout_percent };
     match producer.produce(gate).await {
         Ok(()) => println!("source published rollout: {rollout_percent}%"),
@@ -58,10 +55,7 @@ async fn publish_rollout(producer: &Producer<FeatureGate, TokioAdapter>, rollout
     }
 }
 
-async fn rollout_observer(
-    ctx: RuntimeContext<TokioAdapter>,
-    consumer: Consumer<FeatureGate, TokioAdapter>,
-) {
+async fn rollout_observer(ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<FeatureGate>) {
     let Ok(mut reader) = consumer.subscribe() else {
         eprintln!("failed to subscribe to config.checkout_rollout");
         return;

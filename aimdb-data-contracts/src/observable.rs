@@ -30,7 +30,7 @@ use crate::Observable;
 #[cfg(feature = "observable")]
 pub async fn log_tap<T, R>(
     ctx: aimdb_core::RuntimeContext<R>,
-    consumer: aimdb_core::typed_api::Consumer<T, R>,
+    consumer: aimdb_core::typed_api::Consumer<T>,
     node_id: &'static str,
 ) where
     T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Generated extension trait emits `Producer<T>` / `Consumer<T>`** (no `, TokioAdapter`) via the updated `impl_record_registrar_ext!` macro from `aimdb-core` (Design 029, M14). User-side `.source(|ctx, producer| ...)` / `.tap(|ctx, consumer| ...)` callbacks now receive the simpler types.
+
 ### Removed (breaking)
 
 - **`impl Spawn for TokioAdapter` deleted (Issue #88).** Adapter is now `RuntimeAdapter + TimeOps + Logger` only. Drive database futures by awaiting `AimDbRunner::run()` returned from `AimDbBuilder::build()`.

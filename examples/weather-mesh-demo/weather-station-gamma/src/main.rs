@@ -69,7 +69,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 /// Temperature producer - generates synthetic data
 async fn temperature_producer(
     ctx: RuntimeContext<EmbassyAdapter>,
-    producer: Producer<Temperature, EmbassyAdapter>,
+    producer: Producer<Temperature>,
 ) {
     let log = ctx.log();
     log.info("🌡️  Starting temperature producer...");
@@ -104,10 +104,7 @@ async fn temperature_producer(
 }
 
 /// Humidity producer - generates synthetic data
-async fn humidity_producer(
-    ctx: RuntimeContext<EmbassyAdapter>,
-    producer: Producer<Humidity, EmbassyAdapter>,
-) {
+async fn humidity_producer(ctx: RuntimeContext<EmbassyAdapter>, producer: Producer<Humidity>) {
     let log = ctx.log();
     log.info("💧 Starting humidity producer...");
 

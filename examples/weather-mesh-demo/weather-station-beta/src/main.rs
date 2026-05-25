@@ -131,8 +131,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Get producers
-    let temp_producer = db.producer::<Temperature>(TempKey::Beta.as_str());
-    let humidity_producer = db.producer::<Humidity>(HumidityKey::Beta.as_str());
+    let temp_producer = db.producer::<Temperature>(TempKey::Beta.as_str())?;
+    let humidity_producer = db.producer::<Humidity>(HumidityKey::Beta.as_str())?;
 
     // Spawn synthetic data producer
     info!("🎲 Starting synthetic data producer...");

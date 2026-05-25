@@ -60,10 +60,15 @@ mod cfg;
 #[cfg(feature = "metrics")]
 mod counters;
 mod traits;
+mod writer;
 
 // Public API exports
 pub use cfg::BufferCfg;
 pub use traits::{Buffer, BufferReader, DynBuffer};
+
+// Crate-private — used by Producer<T> to push without per-call lookup
+pub(crate) use traits::WriteHandle;
+pub(crate) use writer::RecordWriter;
 
 // JSON streaming support (std only)
 #[cfg(feature = "std")]

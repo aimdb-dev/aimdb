@@ -279,7 +279,7 @@ where
     ///
     /// async fn button_handler(
     ///     ctx: RuntimeContext<EmbassyAdapter>,
-    ///     producer: Producer<LightControl, EmbassyAdapter>,
+    ///     producer: Producer<LightControl>,
     ///     button: ExtiInput<'static>,
     /// ) {
     ///     // Use the button peripheral
@@ -294,11 +294,7 @@ where
     ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
     where
         Ctx: Send + Sync + 'static,
-        F: FnOnce(
-                aimdb_core::RuntimeContext<EmbassyAdapter>,
-                aimdb_core::Producer<T, EmbassyAdapter>,
-                Ctx,
-            ) -> Fut
+        F: FnOnce(aimdb_core::RuntimeContext<EmbassyAdapter>, aimdb_core::Producer<T>, Ctx) -> Fut
             + Send
             + Sync
             + 'static,
@@ -347,11 +343,7 @@ where
     ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
     where
         Ctx: Send + Sync + 'static,
-        F: FnOnce(
-                aimdb_core::RuntimeContext<EmbassyAdapter>,
-                aimdb_core::Producer<T, EmbassyAdapter>,
-                Ctx,
-            ) -> Fut
+        F: FnOnce(aimdb_core::RuntimeContext<EmbassyAdapter>, aimdb_core::Producer<T>, Ctx) -> Fut
             + Send
             + Sync
             + 'static,

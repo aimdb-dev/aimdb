@@ -166,8 +166,24 @@ where
         let factory: JoinInputFactory<R> = Box::new(
             move |db: Arc<crate::AimDb<R>>, index: usize, tx: Tx<R>| {
                 Box::pin(async move {
-                    let consumer =
-                        crate::typed_api::Consumer::<I, R>::new(db, key_for_factory.clone());
+                    let consumer = match db.consumer::<I>(&key_for_factory) {
+                        Ok(c) => c,
+                        Err(_e) => {
+                            #[cfg(feature = "tracing")]
+                            tracing::error!(
+                                "🔄 Join input '{}' (index {}) consumer resolution failed: {:?}",
+                                key_for_factory,
+                                index,
+                                _e
+                            );
+                            #[cfg(all(feature = "std", not(feature = "tracing")))]
+                            eprintln!(
+                                "AIMDB TRANSFORM ERROR: Join input '{}' (index {}) consumer resolution failed: {:?}",
+                                key_for_factory, index, _e
+                            );
+                            return;
+                        }
+                    };
                     let mut reader = match consumer.subscribe() {
                         Ok(r) => r,
                         Err(_e) => {
@@ -206,7 +222,7 @@ where
 
     /// Complete the pipeline by providing an async task that owns the event loop and state.
     ///
-    /// The closure receives a [`JoinEventRx`] to read trigger events and a [`crate::Producer`]
+    /// The closure receives a [`JoinEventRx`] to read trigger events and a `Producer<O>`
     /// to emit output values. Both are owned — moved into the `async move` block — so the
     /// closure can freely hold borrows across `.await` points and maintain any state it needs.
     ///
@@ -230,7 +246,7 @@ where
     /// ```
     pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O, R>
     where
-        F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
+        F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         let inputs = self.inputs;
@@ -240,8 +256,8 @@ where
         JoinPipeline {
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
-                build_fn: Box::new(move |producer, db, runtime| {
-                    build_join_collected(db, inputs, producer, handler, runtime)
+                build_fn: Box::new(move |producer, db, runtime, output_key| {
+                    build_join_collected(db, inputs, producer, handler, runtime, output_key)
                 }),
             }),
         }
@@ -277,17 +293,23 @@ where
 fn build_join_collected<O, R, F, Fut>(
     db: Arc<crate::AimDb<R>>,
     inputs: Vec<(String, JoinInputFactory<R>)>,
-    producer: crate::Producer<O, R>,
+    producer: crate::Producer<O>,
     handler: F,
     runtime: Arc<R>,
+    output_key: &str,
 ) -> CollectedTransform
 where
     O: Send + Sync + Clone + Debug + 'static,
     R: JoinFanInRuntime + 'static,
-    F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
+    F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,
     Fut: core::future::Future<Output = ()> + Send + 'static,
 {
-    let output_key = producer.key().to_string();
+    // Output key is threaded in from the descriptor so diagnostics stay
+    // unambiguous when multiple records share output type `O` (design 029).
+    #[cfg(feature = "tracing")]
+    let output_key_owned = output_key.to_string();
+    #[cfg(not(feature = "tracing"))]
+    let _ = output_key;
 
     #[cfg(feature = "tracing")]
     {
@@ -295,7 +317,7 @@ where
         tracing::info!(
             "🔄 Join transform building: {:?} → '{}'",
             input_keys,
-            output_key
+            output_key_owned
         );
     }
 
@@ -305,7 +327,7 @@ where
             #[cfg(feature = "tracing")]
             tracing::error!(
                 "🔄 Join transform '{}' FATAL: failed to create join queue",
-                output_key
+                output_key_owned
             );
             // Empty collected transform — caller still receives a valid descriptor.
             return CollectedTransform {
@@ -333,13 +355,13 @@ where
         #[cfg(feature = "tracing")]
         tracing::debug!(
             "✅ Join transform '{}' handing receiver to user task",
-            output_key
+            output_key_owned
         );
 
         handler(JoinEventRx::new(rx), producer).await;
 
         #[cfg(feature = "tracing")]
-        tracing::warn!("🔄 Join transform '{}' user task exited", output_key);
+        tracing::warn!("🔄 Join transform '{}' user task exited", output_key_owned);
     });
 
     CollectedTransform {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Generated extension trait emits `Producer<T>` / `Consumer<T>`** (no `, EmbassyAdapter`) via the updated `impl_record_registrar_ext!` macro from `aimdb-core` (Design 029, M14). Embassy demo signatures collapse from `Producer<LightControl, EmbassyAdapter>` to `Producer<LightControl>`.
+
 ### Removed (breaking)
 
 - **`impl Spawn for EmbassyAdapter` deleted (Issue #88).** Static `generic_task_runner` task pool gone, along with `BoxedFuture` and the `unsafe Pin::new_unchecked` cast that fed the pool. Drive database futures by awaiting `AimDbRunner::run()` from inside the Embassy main task.

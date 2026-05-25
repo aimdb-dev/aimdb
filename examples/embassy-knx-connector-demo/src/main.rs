@@ -92,7 +92,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 /// Button handler that toggles light on button press
 async fn button_handler(
     ctx: RuntimeContext<EmbassyAdapter>,
-    producer: aimdb_core::Producer<LightControl, EmbassyAdapter>,
+    producer: aimdb_core::Producer<LightControl>,
     mut button: ExtiInput<'static, embassy_stm32::mode::Async>,
 ) {
     let log = ctx.log();

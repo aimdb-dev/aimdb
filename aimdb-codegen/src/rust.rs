@@ -387,12 +387,12 @@ pub fn generate_tasks_rs(state: &ArchitectureState, binary_name: &str) -> Option
             for input in &task.inputs {
                 let arg_name = format_ident!("{}", to_snake_case(&input.record));
                 let value_type = format_ident!("{}Value", input.record);
-                params.push(quote! { #arg_name: Consumer<#value_type, TokioAdapter> });
+                params.push(quote! { #arg_name: Consumer<#value_type> });
             }
             for output in &task.outputs {
                 let arg_name = format_ident!("{}", to_snake_case(&output.record));
                 let value_type = format_ident!("{}Value", output.record);
-                params.push(quote! { #arg_name: Producer<#value_type, TokioAdapter> });
+                params.push(quote! { #arg_name: Producer<#value_type> });
             }
 
             let todo_msg = match &task.task_type {
@@ -1611,10 +1611,10 @@ fn build_transform_call(task: &TaskDef, variant_ident: &syn::Ident) -> TokenStre
 ///
 /// | Inputs | Outputs | API                   | Generated stub            |
 /// |--------|---------|-----------------------|---------------------------|
-/// | N > 1  | ≥ 1     | `.transform_join()`   | `async fn task_handler(JoinEventRx, Producer<O, R>)` |
+/// | N > 1  | ≥ 1     | `.transform_join()`   | `async fn task_handler(JoinEventRx, Producer<O>)` |
 /// | 1      | ≥ 1     | `.transform().map()`  | `fn task_transform(&Input) -> Option<Output>` |
-/// | 0      | ≥ 1     | `.source()`           | `async fn task(RuntimeContext, Producer<O, R>)` |
-/// | ≥ 1    | 0       | `.tap()`              | `async fn task(RuntimeContext, Consumer<I, R>)` |
+/// | 0      | ≥ 1     | `.source()`           | `async fn task(RuntimeContext, Producer<O>)` |
+/// | ≥ 1    | 0       | `.tap()`              | `async fn task(RuntimeContext, Consumer<I>)` |
 pub fn generate_hub_tasks_rs(state: &ArchitectureState) -> String {
     let project = state
         .project
@@ -1660,7 +1660,7 @@ pub fn generate_hub_tasks_rs(state: &ArchitectureState) -> String {
 /// {inputs_doc}\n\
 pub async fn {handler}(\n\
     mut _rx: aimdb_core::transform::JoinEventRx,\n\
-    _producer: aimdb_core::Producer<{out_t}, TokioAdapter>,\n\
+    _producer: aimdb_core::Producer<{out_t}>,\n\
 ) {{\n\
     while let Ok(_trigger) = _rx.recv().await {{\n\
         todo!(\"implement {handler}\")\n\
@@ -1689,7 +1689,7 @@ pub fn {handler}(input: &{in_t}) -> Option<{out_t}> {{\n\
             fns.push_str(&format!(
                 "pub async fn {}(\n\
     _ctx: aimdb_core::RuntimeContext<TokioAdapter>,\n\
-    _producer: aimdb_core::Producer<{out_t}, TokioAdapter>,\n\
+    _producer: aimdb_core::Producer<{out_t}>,\n\
 ) {{\n\
     todo!(\"implement {}\")\n\
 }}\n\n",
@@ -1700,7 +1700,7 @@ pub fn {handler}(input: &{in_t}) -> Option<{out_t}> {{\n\
             fns.push_str(&format!(
                 "pub async fn {}(\n\
     _ctx: aimdb_core::RuntimeContext<TokioAdapter>,\n\
-    _consumer: aimdb_core::Consumer<{in_t}, TokioAdapter>,\n\
+    _consumer: aimdb_core::Consumer<{in_t}>,\n\
 ) {{\n\
     todo!(\"implement {}\")\n\
 }}\n\n",

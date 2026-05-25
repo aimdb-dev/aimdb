@@ -1132,7 +1132,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
 
     /// Creates a type-safe producer for a specific record by key
     ///
-    /// Returns a `Producer<T, R>` bound to a specific record key.
+    /// Returns a `Producer<T>` bound to a specific record key.
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
@@ -1150,16 +1150,20 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     pub fn producer<T>(
         &self,
         key: impl Into<alloc::string::String>,
-    ) -> crate::typed_api::Producer<T, R>
+    ) -> DbResult<crate::typed_api::Producer<T>>
     where
         T: Send + 'static + Debug + Clone,
     {
-        crate::typed_api::Producer::new(Arc::new(self.clone()), key.into())
+        // Pre-resolve the typed record so the returned Producer holds a write
+        // handle to the record's buffer/snapshot/metadata directly
+        let key_str: alloc::string::String = key.into();
+        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(&key_str)?;
+        Ok(crate::typed_api::Producer::new(typed_rec.writer_handle()))
     }
 
     /// Creates a type-safe consumer for a specific record by key
     ///
-    /// Returns a `Consumer<T, R>` bound to a specific record key.
+    /// Returns a `Consumer<T>` bound to a specific record key.
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
@@ -1176,11 +1180,29 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     pub fn consumer<T>(
         &self,
         key: impl Into<alloc::string::String>,
-    ) -> crate::typed_api::Consumer<T, R>
+    ) -> DbResult<crate::typed_api::Consumer<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        crate::typed_api::Consumer::new(Arc::new(self.clone()), key.into())
+        // Pre-resolve the buffer Arc so the returned Consumer subscribes
+        // through a direct virtual call (design 029). A `.consumer()` without
+        // a configured buffer surfaces as `MissingConfiguration` here rather
+        // than panicking later inside `subscribe()`.
+        let key_str: alloc::string::String = key.into();
+        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(&key_str)?;
+        let buffer = typed_rec.buffer_handle().ok_or({
+            #[cfg(feature = "std")]
+            {
+                DbError::MissingConfiguration {
+                    parameter: alloc::format!("buffer for record '{}'", key_str),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                DbError::MissingConfiguration { _parameter: () }
+            }
+        })?;
+        Ok(crate::typed_api::Consumer::new(buffer))
     }
 
     /// Resolve a record key to its RecordId

@@ -234,8 +234,7 @@ async fn test_topic_provider_registration_api() {
     builder.configure::<Temperature>("test.sensor.dynamic", |reg| {
         let counter = produced_count_clone.clone();
         reg.buffer(BufferCfg::SingleLatest).source(
-            move |_ctx: RuntimeContext<TokioAdapter>,
-                  producer: Producer<Temperature, TokioAdapter>| {
+            move |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<Temperature>| {
                 let counter = counter.clone();
                 async move {
                     let temp = Temperature::new("test-001", 22.5);
@@ -268,8 +267,7 @@ async fn test_topic_provider_with_connector_registration() {
     builder.configure::<Temperature>("test.sensor.dynamic", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
-                |_ctx: RuntimeContext<TokioAdapter>,
-                 producer: Producer<Temperature, TokioAdapter>| async move {
+                |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<Temperature>| async move {
                     let temp = Temperature::new("kitchen", 22.5);
                     producer.produce(temp).await.ok();
                 },
@@ -329,8 +327,7 @@ async fn test_mixed_static_and_dynamic_topics() {
     builder.configure::<Temperature>("test.sensor.static", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
-                |_ctx: RuntimeContext<TokioAdapter>,
-                 producer: Producer<Temperature, TokioAdapter>| async move {
+                |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<Temperature>| async move {
                     producer
                         .produce(Temperature::new("static", 20.0))
                         .await
@@ -346,8 +343,7 @@ async fn test_mixed_static_and_dynamic_topics() {
     builder.configure::<Temperature>("test.sensor.dynamic", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
-                |_ctx: RuntimeContext<TokioAdapter>,
-                 producer: Producer<Temperature, TokioAdapter>| async move {
+                |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<Temperature>| async move {
                     producer
                         .produce(Temperature::new("dynamic", 25.0))
                         .await

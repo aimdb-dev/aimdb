@@ -39,10 +39,7 @@ use knx_connector_demo_common::{
 // ============================================================================
 
 /// Keyboard input handler - toggles light on ENTER
-async fn input_handler(
-    ctx: RuntimeContext<TokioAdapter>,
-    producer: Producer<LightControl, TokioAdapter>,
-) {
+async fn input_handler(ctx: RuntimeContext<TokioAdapter>, producer: Producer<LightControl>) {
     let log = ctx.log();
     log.info("\n⌨️  Input handler started. Press ENTER to toggle light on 1/0/6");
     log.info("   (This sends GroupValueWrite to the KNX bus)\n");

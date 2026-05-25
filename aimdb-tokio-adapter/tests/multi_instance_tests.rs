@@ -80,13 +80,10 @@ async fn test_producer() {
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
 
-    // Get key-bound producers
-    let producer_a = db.producer::<Temperature>("sensor.a");
-    let producer_b = db.producer::<Temperature>("sensor.b");
-
-    // Verify keys are bound correctly
-    assert_eq!(producer_a.key(), "sensor.a");
-    assert_eq!(producer_b.key(), "sensor.b");
+    // Get key-bound producers. Post-M14 these resolve the typed record up front
+    // (Producer<T> no longer carries `R` and no longer exposes `.key()`).
+    let producer_a = db.producer::<Temperature>("sensor.a").unwrap();
+    let producer_b = db.producer::<Temperature>("sensor.b").unwrap();
 
     // Produce values
     producer_a
@@ -117,13 +114,10 @@ async fn test_consumer() {
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
 
-    // Get key-bound consumers
-    let consumer_north = db.consumer::<Temperature>("zone.north");
-    let consumer_south = db.consumer::<Temperature>("zone.south");
-
-    // Verify keys are bound correctly
-    assert_eq!(consumer_north.key(), "zone.north");
-    assert_eq!(consumer_south.key(), "zone.south");
+    // Get key-bound consumers. Post-M14 these resolve the typed record up front
+    // (Consumer<T> no longer carries `R` and no longer exposes `.key()`).
+    let consumer_north = db.consumer::<Temperature>("zone.north").unwrap();
+    let consumer_south = db.consumer::<Temperature>("zone.south").unwrap();
 
     // Subscribe should work
     let _reader_north = consumer_north.subscribe().unwrap();

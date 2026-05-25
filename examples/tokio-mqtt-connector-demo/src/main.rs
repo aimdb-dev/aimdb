@@ -51,7 +51,7 @@ use mqtt_connector_demo_common::{
 /// Indoor temperature sensor producer
 async fn indoor_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature>,
 ) {
     let log = ctx.log();
     let time = ctx.time();
@@ -79,7 +79,7 @@ async fn indoor_temp_producer(
 /// Outdoor temperature sensor producer
 async fn outdoor_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature>,
 ) {
     let log = ctx.log();
     let time = ctx.time();
@@ -107,7 +107,7 @@ async fn outdoor_temp_producer(
 /// Server room temperature sensor producer
 async fn server_room_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature>,
 ) {
     let log = ctx.log();
     let time = ctx.time();

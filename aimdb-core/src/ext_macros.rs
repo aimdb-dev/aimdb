@@ -71,7 +71,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
                     + Sync
                     + 'static,
@@ -83,7 +83,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
                     + 'static,
                 Fut: core::future::Future<Output = ()> + Send + 'static;
@@ -135,7 +135,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
                     + Sync
                     + 'static,
@@ -152,7 +152,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
                     + 'static,
                 Fut: core::future::Future<Output = ()> + Send + 'static,
@@ -208,7 +208,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
                     + Sync
                     + 'static,
@@ -220,7 +220,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
                     + 'static,
                 Fut: core::future::Future<Output = ()> + Send + 'static;
@@ -269,7 +269,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
                     + Sync
                     + 'static,
@@ -286,7 +286,7 @@ macro_rules! impl_record_registrar_ext {
                 f: F,
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
             where
-                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T, $runtime>) -> Fut
+                F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
                     + 'static,
                 Fut: core::future::Future<Output = ()> + Send + 'static,

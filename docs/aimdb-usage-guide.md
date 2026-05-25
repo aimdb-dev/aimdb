@@ -200,7 +200,7 @@ struct ButtonPress {
 /// Button handler that produces events on button press
 async fn button_handler(
     ctx: RuntimeContext<EmbassyAdapter>,
-    producer: Producer<ButtonPress, EmbassyAdapter>,
+    producer: Producer<ButtonPress>,
     mut button: Input<'static>,
 ) {
     let log = ctx.log();

@@ -132,16 +132,19 @@ where
 
     TransformDescriptor {
         input_keys,
-        build_fn: Box::new(move |producer, db, _runtime| CollectedTransform {
-            task_future: Box::pin(run_single_transform::<I, O, S, R>(
-                db,
-                input_key_clone,
-                producer,
-                initial_state,
-                transform_fn,
-            )),
-            fanin_futures: alloc::vec::Vec::new(),
-        }),
+        build_fn: Box::new(
+            move |producer, db, _runtime, output_key| CollectedTransform {
+                task_future: Box::pin(run_single_transform::<I, O, S, R>(
+                    db,
+                    input_key_clone,
+                    output_key.to_string(),
+                    producer,
+                    initial_state,
+                    transform_fn,
+                )),
+                fanin_futures: alloc::vec::Vec::new(),
+            },
+        ),
     }
 }
 
@@ -153,7 +156,8 @@ where
 pub(crate) async fn run_single_transform<I, O, S, R>(
     db: Arc<crate::AimDb<R>>,
     input_key: String,
-    producer: crate::Producer<O, R>,
+    output_key: String,
+    producer: crate::Producer<O>,
     mut state: S,
     transform_fn: impl Fn(&I, &mut S) -> Option<O> + Send + Sync + 'static,
 ) where
@@ -162,12 +166,30 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
     S: Send + 'static,
     R: aimdb_executor::RuntimeAdapter + 'static,
 {
-    let output_key = producer.key().to_string();
-
+    // `Producer<O>` no longer exposes a `.key()` accessor (design 029) — the
+    // output key is threaded in by the transform descriptor so diagnostics
+    // remain unambiguous when multiple records share type `O`.
     #[cfg(feature = "tracing")]
     tracing::info!("🔄 Transform started: '{}' → '{}'", input_key, output_key);
 
-    let consumer = crate::typed_api::Consumer::<I, R>::new(db, input_key.clone());
+    let consumer = match db.consumer::<I>(&input_key) {
+        Ok(c) => c,
+        Err(_e) => {
+            #[cfg(feature = "tracing")]
+            tracing::error!(
+                "🔄 Transform '{}' → '{}' FATAL: failed to resolve consumer: {:?}",
+                input_key,
+                output_key,
+                _e
+            );
+            #[cfg(all(feature = "std", not(feature = "tracing")))]
+            eprintln!(
+                "AIMDB TRANSFORM ERROR: '{}' → '{}' failed to resolve consumer: {:?}",
+                input_key, output_key, _e
+            );
+            return;
+        }
+    };
     let mut reader = match consumer.subscribe() {
         Ok(r) => r,
         Err(_e) => {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- `log_tap<T, R>(ctx, consumer, node_id)` now takes `Consumer<T>` instead of `Consumer<T, R>` — `R` is still on `RuntimeContext<R>` (Design 029, M14). User-visible signature shrink only; behaviour unchanged.
+
 ## [0.1.1] - 2026-05-22
 
 ### Changed

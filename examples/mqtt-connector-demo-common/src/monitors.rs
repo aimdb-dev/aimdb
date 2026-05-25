@@ -25,7 +25,7 @@ use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
 ///        .finish();
 /// });
 /// ```
-pub async fn temperature_logger<R>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature, R>)
+pub async fn temperature_logger<R>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature>)
 where
     R: Runtime + Logger + Send + Sync + 'static,
 {
@@ -53,7 +53,7 @@ where
 /// Command consumer that logs received commands
 ///
 /// Uses the action and sensor_id from the `TemperatureCommand` data.
-pub async fn command_consumer<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureCommand, R>)
+pub async fn command_consumer<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureCommand>)
 where
     R: Runtime + Logger + Send + Sync + 'static,
 {

@@ -26,10 +26,8 @@ use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
 ///        .finish();
 /// });
 /// ```
-pub async fn temperature_monitor<R>(
-    ctx: RuntimeContext<R>,
-    consumer: Consumer<TemperatureReading, R>,
-) where
+pub async fn temperature_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureReading>)
+where
     R: Runtime + Logger + Send + Sync + 'static,
 {
     let log = ctx.log();
@@ -58,7 +56,7 @@ pub async fn temperature_monitor<R>(
 /// Light monitor that logs state changes from the buffer
 ///
 /// Uses the group address from the `LightState` data itself.
-pub async fn light_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<LightState, R>)
+pub async fn light_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<LightState>)
 where
     R: Runtime + Logger + Send + Sync + 'static,
 {
