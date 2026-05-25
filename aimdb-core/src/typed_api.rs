@@ -404,7 +404,6 @@ where
     where
         F: FnOnce(crate::Producer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
             + Send
-            + Sync
             + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {

@@ -938,8 +938,7 @@ where
             }
         }
 
-        // Unwrap the Arc to return the owned AimDb (safe: we just created it and hold the only ref).
-        let db_owned = Arc::try_unwrap(db).unwrap_or_else(|arc| (*arc).clone());
+        let db_owned = (*db).clone();
 
         Ok((db_owned, AimDbRunner::new(futures_acc)))
     }
@@ -1028,8 +1027,10 @@ impl AimDbRunner {
     /// Drives every collected future to completion.
     ///
     /// Returns when all futures complete (normally: never, while producer and
-    /// consumer loops are alive). Drop the runner — or wrap this call in a
-    /// `select!` with a shutdown signal — to cancel.
+    /// consumer loops are alive). To cancel, wrap this call in `tokio::select!`
+    /// (or the analogous primitive on Embassy / WASM) with a shutdown signal —
+    /// when the `select!` arm fires, this future is dropped and every
+    /// `FuturesUnordered` entry is cancelled with it.
     pub async fn run(self) {
         use futures_util::stream::{FuturesUnordered, StreamExt};
 

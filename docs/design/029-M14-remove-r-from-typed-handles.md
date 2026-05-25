@@ -1,6 +1,6 @@
 # Remove `R` from `Producer<T>` and `Consumer<T>`
 
-**Version:** 0.3 (implemented)
+**Version:** 0.4 (implemented — produce/subscribe collapsed to sync)
 **Status:** ✅ Implemented
 **Issue:** TBD
 **Depends on:** [M13 — Remove `Spawn` Trait](028-M13-remove-spawn-trait.md) (#88)
@@ -318,27 +318,35 @@ Gone: the `db: Arc<AimDb<R>>` field, the `record_key: String` field, the
 `produce()` becomes:
 
 ```rust
-pub async fn produce(&self, value: T) -> DbResult<()> {
+pub fn produce(&self, value: T) {
     #[cfg(feature = "profiling")]
     if let Some(state) = &self.profiling {
         state.record_produce();
     }
     self.write.push(value);
-    Ok(())
 }
 ```
 
-**Signature stability:** `async fn ... -> DbResult<()>` is *intentionally
-kept* even though the body is synchronous and infallible. Reasons:
+**Signature change (v0.4 revision).** The earlier draft preserved
+`async fn ... -> DbResult<()>` for source-level compatibility. After
+implementation we reversed that decision: every reachable code path is
+synchronous and infallible (one virtual `WriteHandle::push`), so the wrapper
+was pure ceremony. Keeping `async`/`Result` would have meant `.await?` at
+every call site forever — propagating fictional fallibility to please a
+type signature.
 
-1. Source-level compatibility — every existing `producer.produce(x).await?`
-   call site keeps working unchanged.
-2. Forward compatibility — future backpressure-aware buffers (async
-   `push`) or shutdown-signalling semantics (`Err(ChannelClosed)`) can be
-   added without another breaking change.
+**Trade-off accepted.** `producer.produce(x).await?` no longer compiles —
+call sites drop both the `.await` and the `?`. This is a one-time edit on
+~50 examples / aimdb-pro sites and is called out as a breaking change in
+the aimdb-core 1.1.0 CHANGELOG. If backpressure-aware buffers or
+shutdown-signalling semantics show up in a future milestone, they can be
+introduced as a new `produce_async(&self, value: T) -> impl Future<Output =
+DbResult<()>>` method alongside the sync one — additive, not breaking.
 
-Cost is negligible (an `Ok` wrapper and a no-op await), both compile to
-nothing.
+The type-erased trait surface keeps a `Future<Output = Result<...>>`:
+`ProducerTrait::produce_any` still returns a pinned future because its
+fallibility is real (the `Any` downcast can fail when a route delivers the
+wrong type).
 
 ### `Consumer<T>` — after
 
@@ -354,18 +362,27 @@ pub struct Consumer<T> {
 `subscribe()` collapses to:
 
 ```rust
-pub fn subscribe(&self) -> DbResult<Box<dyn BufferReader<T> + Send>> {
+pub fn subscribe(&self) -> Box<dyn BufferReader<T> + Send> {
     let reader = self.buffer.subscribe_boxed();
     #[cfg(feature = "profiling")]
     if let Some((metrics, clock)) = &self.profiling {
-        return Ok(Box::new(ProfilingBufferReader::new(reader, metrics.clone(), clock.clone())));
+        return Box::new(ProfilingBufferReader::new(reader, metrics.clone(), clock.clone()));
     }
-    Ok(reader)
+    reader
 }
 ```
 
 `DynBuffer<T>` already exists and is the natural read-side counterpart — no
 new trait required.
+
+Same v0.4 revision as `produce()`: the buffer Arc is pre-resolved at
+`Consumer::new`, so the lookup that previously produced `DbResult` is gone
+and there is nothing left to fail. The `DbResult<>` wrapper was dropped to
+avoid forcing a `.unwrap()` / `?` at every call site. The type-erased
+`ConsumerTrait::subscribe_any` keeps its `DbResult` (factories still resolve
+records through a downcast that can fail) — see `impl ConsumerTrait for
+Consumer<T>` in `typed_api.rs`, which wraps the infallible inner call in
+`Ok(...)`.
 
 ### `ConnectorBuilder` — cascade (zero-LOC)
 
@@ -399,8 +416,8 @@ deferred to a separate milestone (needs a `ConnectorContext` abstraction).
 | `Producer<T, R>` | `Producer<T>` |
 | `Consumer<T, R>` | `Consumer<T>` |
 | `Producer::key(&self) -> &str` | **removed** |
-| `Producer::produce(&self, T) -> impl Future<Output = DbResult<()>>` | unchanged signature (body simplified) |
-| `Consumer::subscribe(&self) -> DbResult<…>` | unchanged signature (body simplified) |
+| `Producer::produce(&self, T) -> impl Future<Output = DbResult<()>>` | `pub fn produce(&self, T)` — synchronous, infallible (v0.4 revision) |
+| `Consumer::subscribe(&self) -> DbResult<…>` | `pub fn subscribe(&self) -> Box<dyn BufferReader<T> + Send>` — infallible (v0.4 revision) |
 | `TypedRecord::buffer: Option<Box<dyn DynBuffer<T>>>` | `Option<Arc<dyn DynBuffer<T>>>` |
 | `RecordRegistrar<R>` (build-time only) | unchanged — still needs `R` to resolve records |
 | `ConnectorBuilder<R>` | unchanged trait |
@@ -422,6 +439,8 @@ setup (inference handles `R` in `|reg| { ... }` closures).
 - `Producer<T, R>` → `Producer<T>` — any code that names the two-parameter form breaks. Code that uses `Producer` via type inference (the common case) compiles without changes.
 - `Consumer<T, R>` → `Consumer<T>` — same.
 - `Producer::key()` is **removed**. Code that called `producer.key()` for diagnostic strings should capture the key at the registration site instead. Two internal callers in `aimdb-core` (`run_single_transform`, `run_join_transform`) are updated as part of step 7.
+- **`Producer::produce()` is now `pub fn produce(&self, value: T)` — synchronous and infallible** (v0.4 revision). Every `producer.produce(x).await?` call site must drop both the `.await` and the `?`. ProducerTrait::produce_any keeps its async/Result surface for type-erased routing where the Any downcast can still fail.
+- **`Consumer::subscribe()` is now `pub fn subscribe(&self) -> Box<dyn BufferReader<T> + Send>`** — the `DbResult<>` wrapper is gone because the buffer Arc is pre-resolved at `Consumer::new`. Call sites drop the `?`. ConsumerTrait::subscribe_any keeps its `DbResult` for factory-side fallibility.
 
 **Codegen:** emitted code does not reference `Producer` / `Consumer` with type parameters directly. Golden-test strings update mechanically; no template changes.
 
@@ -461,8 +480,8 @@ steps 1–9 landing first).
 - Drop type parameter `R` from `Producer<T, R>` → `Producer<T>`.
 - Replace `db: Arc<AimDb<R>>` with `write: Arc<dyn WriteHandle<T>>`.
 - Delete `record_key: String` field and the `pub fn key(&self) -> &str` accessor (two internal callers `run_single_transform` / `run_join_transform` are updated in step 7 to capture the key via closure instead).
-- Keep `produce()` signature unchanged (`async fn produce(&self, value: T) -> DbResult<()>`).
-- Update `impl ProducerTrait for Producer<T>` likewise.
+- Change `produce()` signature to `pub fn produce(&self, value: T)` (v0.4 revision — synchronous and infallible; see Decision 2).
+- Update `impl ProducerTrait for Producer<T>` likewise — keeps async/Result for type-erased fallibility.
 
 ### Step 4 — `Consumer<T>` removes `R`
 
@@ -470,8 +489,8 @@ steps 1–9 landing first).
 
 - Drop type parameter `R` from `Consumer<T, R>` → `Consumer<T>`.
 - Replace `db: Arc<AimDb<R>>` field with `buffer: Arc<dyn DynBuffer<T>>`.
-- Update `subscribe()` to call `self.buffer.subscribe_boxed()` directly (no error path through `AimDb::subscribe`).
-- Update `impl ConsumerTrait for Consumer<T>` likewise.
+- Update `subscribe()` to call `self.buffer.subscribe_boxed()` directly (no error path through `AimDb::subscribe`). Return `Box<dyn BufferReader<T> + Send>` directly — drop the `DbResult<>` wrapper (v0.4 revision).
+- Update `impl ConsumerTrait for Consumer<T>` likewise — keeps `DbResult` on the trait surface for factory-side fallibility.
 
 ### Step 5 — `collect_*` construction sites
 
@@ -533,7 +552,7 @@ All open questions raised in design review (May 24, 2026) are resolved:
 
 1. **`Producer::key()` accessor** → **Delete**, along with the `record_key: String` field. Two internal callers (`run_single_transform`, `run_join_transform`) capture the key into the spawning closure instead. External users get the key from the registration site by construction, not from the Producer.
 
-2. **`Producer::produce()` return type** → **Keep `async fn ... -> DbResult<()>` unchanged.** Even though the body is synchronous and infallible after M14, keeping the signature avoids breakage on every existing `.await?` call site and leaves room for future backpressure-aware buffers or shutdown-signalling semantics. Cost is two no-op compile-time abstractions.
+2. **`Producer::produce()` / `Consumer::subscribe()` return types** → **Collapse to sync, infallible** (v0.4 revision — reversing the v0.3 decision). The body has no async or fallible operations after M14: `produce` is one virtual `WriteHandle::push`, `subscribe` is one virtual `DynBuffer::subscribe_boxed`. Keeping `async fn ... -> DbResult<()>` would have forced `.await?` at every call site forever, propagating fictional fallibility purely to please a signature. The one-time `.await?` removal across ~50 examples / aimdb-pro sites is worth the cleaner steady state. Future backpressure-aware variants can be added as additional methods (`produce_async`, `try_produce`) — additive, not breaking. The type-erased trait surfaces (`ProducerTrait::produce_any`, `ConsumerTrait::subscribe_any`) keep async/Result for genuine fallibility (downcast, factory resolution).
 
 3. **`ConnectorBuilder<R>` cascade** → **v0.1 Option A**, but with the realisation that it is **zero LOC** for connector structs. Verified: no connector struct in `aimdb-mqtt-connector`, `aimdb-knx-connector`, or `aimdb-websocket-connector` carries an `R` phantom today (M13 already cleaned them). The only `R` left is on the `impl<R> ConnectorBuilder<R> for X` line and stays untouched. Full non-generic-isation is deferred to a separate milestone.
 

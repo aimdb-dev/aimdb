@@ -1,7 +1,7 @@
 # Remove `Spawn` Trait — `build()` Collects, `run()` Drives
 
-**Version:** 0.2 (draft — revised after code audit)
-**Status:** 📝 Design
+**Version:** 0.3 (implemented — `unsafe impl` outcome on Embassy corrected)
+**Status:** ✅ Implemented
 **Issue:** [#88](https://github.com/aimdb-dev/aimdb/issues/88)
 **Follow-up issue:** [AimX remote-access portability](../issues/aimx-remote-spawn-free.md) — TBD
 **Last Updated:** May 23, 2026
@@ -517,8 +517,28 @@ used in `impl Spawn for EmbassyAdapter`). **Remove the `spawner` field.**
 
 After removing `spawner`, `EmbassyAdapter` becomes a simple struct holding
 only an `Option<&'static Stack<'static>>` (the network stack, gated by
-`embassy-net-support`). `&'static Stack<'static>` is `Send + Sync`, so
-`EmbassyAdapter` auto-derives `Send + Sync`. **Remove the `unsafe impl`.**
+`embassy-net-support`).
+
+> **Implementation note (v0.3).** The earlier draft assumed
+> `&'static Stack<'static>` would be `Send + Sync` and the `unsafe impl`
+> blocks could be deleted outright. In practice `embassy_net::Stack`
+> contains a `RefCell` and is `!Sync`, so the adapter still needs:
+>
+> ```rust
+> // SAFETY: Embassy executors run cooperatively on a single core. The
+> // `embassy_net::Stack` (when present) is `!Sync` only because of its
+> // internal `RefCell`; in a single-threaded executor no concurrent access
+> // is possible.
+> unsafe impl Send for EmbassyAdapter {}
+> unsafe impl Sync for EmbassyAdapter {}
+> ```
+>
+> The *justification* changes (single-threaded cooperative executor, no
+> longer "satisfy the `Spawn` trait's `F: Send` bound") and the audit-trail
+> comment is rewritten accordingly, but the `unsafe` blocks themselves
+> stay. The net `unsafe`-block count on the adapter goes from
+> [Send, Sync, Pin::new_unchecked in task pool] to just [Send, Sync] —
+> the task-pool `Pin::new_unchecked` is the one that actually disappears.
 
 The `new_with_spawner()` constructor is removed (breaking change — see
 [Breaking Changes](#breaking-changes)).

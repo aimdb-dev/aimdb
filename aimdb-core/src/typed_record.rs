@@ -223,11 +223,12 @@ type ConsumerServiceFn<T> = Box<
 
 /// Type alias for producer service closure stored in TypedRecord
 /// Takes (Producer<T>, RuntimeContext) and returns a Future
-/// This will be auto-spawned during build()
+/// This will be auto-spawned during build().
+/// `Send` only — `Sync` is not required because the closure is taken out of
+/// `Mutex<Option<...>>` exactly once via `.take()`, and `Mutex<T>: Sync`
+/// already holds when `T: Send`. Matches the consumer-side `ConsumerServiceFn`.
 type ProducerServiceFn<T> = Box<
-    dyn FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()>
-        + Send
-        + Sync,
+    dyn FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()> + Send,
 >;
 
 /// Type-erased trait for records
@@ -672,7 +673,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// or if a `.link_from()` inbound connector is registered (all three would race on the buffer).
     pub fn set_producer_service<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + Sync + 'static,
+        F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Check for existing transform (mutual exclusion)
@@ -1713,40 +1714,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             core::any::type_name::<T>()
         );
 
-        // Check if buffer exists before trying to produce
-        if self.buffer.is_none() {
-            return Err(DbError::RuntimeError {
-                message: format!(
-                    "Record '{}' has no buffer configured. \
-                     Cannot produce value without buffer.",
-                    core::any::type_name::<T>()
-                ),
-            });
-        }
-
-        // Use the existing produce() method which handles:
-        // 1. Updating latest_snapshot
-        // 2. Pushing to buffer
-        // 3. Updating metadata timestamp (std only)
-        // This is a synchronous wrapper around the async produce()
-        {
-            #[cfg(feature = "std")]
-            {
-                *self.latest_snapshot.lock().unwrap() = Some(value.clone());
-            }
-
-            #[cfg(not(feature = "std"))]
-            {
-                *self.latest_snapshot.lock() = Some(value.clone());
-            }
-
-            if let Some(buf) = &self.buffer {
-                buf.push(value);
-
-                #[cfg(feature = "std")]
-                self.metadata.mark_updated();
-            }
-        }
+        self.produce(value);
 
         #[cfg(feature = "tracing")]
         tracing::info!(
