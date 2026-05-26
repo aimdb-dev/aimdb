@@ -1149,6 +1149,7 @@ dependencies = [
  "defmt 1.0.1",
  "document-features",
  "embassy-time-driver",
+ "embassy-time-queue-utils",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -1180,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-usb-synopsys-otg"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "critical-section",
  "defmt 1.0.1",

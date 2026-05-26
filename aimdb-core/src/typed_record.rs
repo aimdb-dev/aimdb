@@ -20,8 +20,7 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-// ToString is only needed when alloc is enabled (for record_key.to_string())
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
+#[cfg(not(feature = "std"))]
 use alloc::string::ToString;
 
 #[cfg(feature = "std")]

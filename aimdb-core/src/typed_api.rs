@@ -548,7 +548,6 @@ where
     /// Register a multi-input join transform (low-level API).
     ///
     /// Panics if a `.source()` or another `.transform()` is already registered.
-    #[cfg(feature = "alloc")]
     pub fn transform_join_raw<F>(&'a mut self, build_fn: F) -> &'a mut Self
     where
         R: aimdb_executor::JoinFanInRuntime,
@@ -567,7 +566,6 @@ where
     /// Derives this record from multiple input records. Available on any runtime
     /// that implements `JoinFanInRuntime`. Panics if a `.source()` or another
     /// `.transform()` is already registered.
-    #[cfg(feature = "alloc")]
     pub fn transform_join<F>(&'a mut self, build_fn: F) -> &'a mut Self
     where
         R: aimdb_executor::JoinFanInRuntime,

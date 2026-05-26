@@ -22,7 +22,6 @@ pub mod single;
 // Public re-exports
 pub use single::{StatefulTransformBuilder, TransformBuilder, TransformPipeline};
 
-#[cfg(feature = "alloc")]
 pub use join::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 
 // ============================================================================

@@ -16,7 +16,6 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
 pub mod buffer;
@@ -74,7 +73,6 @@ pub use aimdb_executor::{
 pub use database::Database;
 
 // Producer-Consumer Pattern exports
-#[cfg(feature = "alloc")]
 pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
@@ -101,6 +99,5 @@ pub use record_id::{RecordId, RecordKey, StringKey};
 pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo, RecordOrigin};
 
 // Transform API exports
-#[cfg(feature = "alloc")]
 pub use transform::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 pub use transform::{TransformBuilder, TransformPipeline};

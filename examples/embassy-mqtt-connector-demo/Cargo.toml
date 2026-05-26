@@ -51,6 +51,7 @@ embassy-time = { workspace = true, features = [
     "defmt",
     "defmt-timestamp-uptime",
     "tick-hz-32_768",
+    "generic-queue-16",
 ] }
 embassy-net = { workspace = true, features = [
     "defmt",

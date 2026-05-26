@@ -15,7 +15,7 @@ use hashbrown::HashMap;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc};
 
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
+#[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
 
 #[cfg(feature = "std")]
@@ -54,7 +54,6 @@ use crate::{DbError, DbResult};
 /// - `SerializerKind` - User-provided serializer for the record type (raw or context-aware)
 /// - `Vec<(String, String)>` - Configuration options from the URL query
 /// - `Option<TopicProviderFn>` - Optional dynamic topic provider
-#[cfg(feature = "alloc")]
 pub type OutboundRoute = (
     String,
     Box<dyn crate::connector::ConsumerTrait>,
@@ -579,7 +578,6 @@ where
         let mut reg = RecordRegistrar {
             rec,
             connector_builders: &self.connector_builders,
-            #[cfg(feature = "alloc")]
             record_key: record_key.as_str().to_string(),
             extensions: &self.extensions,
             last_stage: None,
@@ -1499,7 +1497,6 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// let router = RouterBuilder::from_routes(routes).build();
     /// connector.set_router(router).await?;
     /// ```
-    #[cfg(feature = "alloc")]
     pub fn collect_inbound_routes(
         &self,
         scheme: &str,
@@ -1577,7 +1574,6 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     ///
     /// The returned TypeId is the `TypeId::of::<T>()` for the record type `T`
     /// that was used in the corresponding `configure::<T>()` call.
-    #[cfg(feature = "alloc")]
     pub fn collect_outbound_topic_type_ids(&self, scheme: &str) -> Vec<(String, TypeId)> {
         let mut result = Vec::new();
 
@@ -1595,7 +1591,6 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         result
     }
 
-    #[cfg(feature = "alloc")]
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
         let mut routes = Vec::new();
 

@@ -114,7 +114,6 @@ impl<R: JoinReceiver<JoinTrigger> + Send> DynJoinRx for R {
 // ============================================================================
 
 /// Type-erased factory for creating a forwarder task for one join input.
-#[cfg(feature = "alloc")]
 type JoinInputFactory<R> = Box<
     dyn FnOnce(
             Arc<crate::AimDb<R>>,
@@ -133,13 +132,11 @@ type JoinInputFactory<R> = Box<
 /// internal constant chosen per adapter (Tokio: 64, Embassy: 8, WASM: 64).
 ///
 /// Obtain via [`RecordRegistrar::transform_join`].
-#[cfg(feature = "alloc")]
 pub struct JoinBuilder<O, R: JoinFanInRuntime + 'static> {
     inputs: Vec<(String, JoinInputFactory<R>)>,
     _phantom: PhantomData<(O, R)>,
 }
 
-#[cfg(feature = "alloc")]
 impl<O, R> JoinBuilder<O, R>
 where
     O: Send + Sync + Clone + Debug + 'static,
@@ -245,12 +242,10 @@ where
 ///
 /// Produced by [`JoinBuilder::on_triggers`] and consumed by
 /// [`RecordRegistrar::transform_join`]. Not normally constructed directly.
-#[cfg(feature = "alloc")]
 pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static, R: JoinFanInRuntime + 'static> {
     pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O, R> + Send>,
 }
 
-#[cfg(feature = "alloc")]
 impl<O, R> JoinPipeline<O, R>
 where
     O: Send + Sync + Clone + Debug + 'static,
@@ -265,7 +260,6 @@ where
 // Join Transform Build (forwarders + handler future, both collected at build time)
 // ============================================================================
 
-#[cfg(feature = "alloc")]
 #[allow(unused_variables)]
 fn build_join_collected<O, R, F, Fut>(
     db: Arc<crate::AimDb<R>>,

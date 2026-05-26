@@ -637,7 +637,7 @@ impl KnxConnectorImpl {
                     let timed_out = state.check_ack_timeouts();
                     if !timed_out.is_empty() {
                         #[cfg(feature = "defmt")]
-                        defmt::warn!("⚠️  ACK timeouts for sequences: {:?}", timed_out);
+                        defmt::warn!("⚠️  ACK timeouts for sequences: {:?}", timed_out.as_slice());
                     }
                 }
             }
