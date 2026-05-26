@@ -159,7 +159,7 @@ aimdb-embassy-adapter = { version = "0.3", features = ["embassy-runtime", "embas
 
 # Embassy runtime (example for RP2040)
 embassy-executor = { version = "0.6", features = ["arch-cortex-m", "executor-thread"] }
-embassy-time = { version = "0.3" }
+embassy-time = { version = "0.3", features = ["generic-queue-16"] } # REQUIRED — see note below
 embassy-rp = { version = "0.2", features = ["time-driver"] }
 
 # CRITICAL: Patch dependencies for compatibility
@@ -178,6 +178,18 @@ knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master
 mountain-mqtt = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch = "main" }
 mountain-mqtt-embassy = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch = "main" }
 ```
+
+> **Required: `embassy-time` generic timer queue.** AimDB drives every
+> registered future from a single Embassy task via `FuturesUnordered`, so
+> `embassy_time::Timer` and `Ticker` are polled with `FuturesUnordered`'s
+> waker rather than an Embassy-executor waker. The default
+> executor-integrated timer queue rejects that waker and panics with
+> *"Found waker not created by the Embassy executor…"* at the first timer
+> await. Enable one of the `generic-queue-N` features on `embassy-time` in
+> your binary — `generic-queue-16` is a reasonable starting point; raise it
+> if you have many concurrent timers in flight. This is a binary-level
+> choice: AimDB's own crates deliberately do **not** enable a queue size,
+> following [embassy-time's guidance for libraries](https://docs.embassy.dev/embassy-time/git/default/index.html#generic-queue).
 
 ### Basic Example (main.rs)
 
