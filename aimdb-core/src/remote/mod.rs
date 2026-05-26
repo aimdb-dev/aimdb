@@ -46,4 +46,6 @@ pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeM
 
 // Internal exports for implementation
 pub(crate) mod handler;
+#[cfg(feature = "std")]
+pub(crate) mod stream;
 pub(crate) mod supervisor;

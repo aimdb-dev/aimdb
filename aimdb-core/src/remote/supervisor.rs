@@ -1,7 +1,9 @@
 //! Remote access supervisor
 //!
-//! Manages the Unix domain socket server and spawns connection handlers for
-//! remote clients connecting via the AimX protocol.
+//! Manages the Unix domain socket server and drives per-connection
+//! handlers for remote clients connecting via the AimX protocol. Each
+//! accepted connection is pushed onto a per-supervisor
+//! [`FuturesUnordered`]; there is no `tokio::spawn`.
 
 use crate::builder::BoxFuture;
 use crate::remote::AimxConfig;
@@ -14,6 +16,8 @@ use std::sync::Arc;
 use std::os::unix::fs::PermissionsExt;
 
 #[cfg(feature = "std")]
+use futures_util::stream::{FuturesUnordered, StreamExt};
+#[cfg(feature = "std")]
 use tokio::net::UnixListener;
 
 /// Builds the remote access supervisor future.
@@ -21,11 +25,11 @@ use tokio::net::UnixListener;
 /// Synchronously: binds the Unix domain socket and sets file permissions
 /// (so binding errors surface from `build()` rather than at task-start time).
 ///
-/// The returned `BoxFuture` is appended to the `AimDbRunner` accumulator;
-/// when driven, it accepts incoming connections in a loop and uses
-/// `tokio::spawn` to dispatch a per-connection handler (bridge state per
-/// design 028 §"Remote supervisor" — future work in the AimX portability
-/// follow-up replaces this with a nested `FuturesUnordered`).
+/// The returned [`BoxFuture`] is appended to the `AimDbRunner` accumulator;
+/// when driven, it accepts incoming connections in a loop and pushes each
+/// per-connection handler onto a [`FuturesUnordered`]. `tokio::select!`
+/// with `biased;` keeps `accept` polled ahead of connection drains so a
+/// chatty client cannot starve new connects.
 ///
 /// # Arguments
 /// * `db` - Database instance (for introspection and subscriptions)
@@ -104,46 +108,69 @@ where
     #[cfg(feature = "tracing")]
     tracing::info!("Socket permissions set to {:o}", permissions);
 
-    // The accept loop is the future the runner drives. Per-connection handlers
-    // still use `tokio::spawn` (AimX is `#[cfg(feature = "std")]`-gated — see
-    // design doc 028 §"Out of Scope" / AimX follow-up).
+    // The accept loop is the future the runner drives. Per-connection
+    // handler futures live in a `FuturesUnordered` owned by this future;
+    // dropping the supervisor (e.g. when the runner is cancelled) drops
+    // every active connection in turn.
     let supervisor_future: BoxFuture = Box::pin(async move {
         #[cfg(feature = "tracing")]
         tracing::info!("Remote access supervisor task started");
 
+        let mut connections: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
+
         loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("Accepted new client connection");
+            tokio::select! {
+                biased;
 
-                    let db_clone = db.clone();
-                    let config_clone = config.clone();
-
-                    tokio::spawn(async move {
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!("Connection handler spawned for client");
-
-                        if let Err(_e) = crate::remote::handler::handle_connection(
-                            db_clone,
-                            config_clone,
-                            stream,
-                        )
-                        .await
-                        {
+                // Accept the next incoming connection
+                accept_res = listener.accept() => match accept_res {
+                    Ok((stream, _addr)) => {
+                        // Refuse if we are already at the connection cap.
+                        // The accepted `UnixStream` is dropped, which closes
+                        // the socket; the client sees a closed connection.
+                        if connections.len() >= config.max_connections {
                             #[cfg(feature = "tracing")]
-                            tracing::error!("Connection handler error: {}", _e);
+                            tracing::warn!(
+                                "max_connections={} reached, refusing new client",
+                                config.max_connections
+                            );
+                            drop(stream);
+                            continue;
                         }
 
                         #[cfg(feature = "tracing")]
-                        tracing::debug!("Connection handler terminated");
-                    });
-                }
-                Err(_e) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!("Failed to accept connection: {}", _e);
-                    // Continue accepting other connections despite error
-                }
+                        tracing::debug!("Accepted new client connection");
+
+                        let db_clone = db.clone();
+                        let config_clone = config.clone();
+                        connections.push(Box::pin(async move {
+                            if let Err(_e) = crate::remote::handler::handle_connection(
+                                db_clone,
+                                config_clone,
+                                stream,
+                            )
+                            .await
+                            {
+                                #[cfg(feature = "tracing")]
+                                tracing::error!("Connection handler error: {}", _e);
+                            }
+
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!("Connection handler terminated");
+                        }));
+                    }
+                    Err(_e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("Failed to accept connection: {}", _e);
+                        // Continue accepting other connections despite error
+                    }
+                },
+
+                // Drain finished connection futures. The guard ensures the
+                // arm is disabled (not polled) when the set is empty —
+                // `FuturesUnordered::is_terminated()` returns `is_empty()`,
+                // so `select_next_some` would panic.
+                _ = connections.next(), if !connections.is_empty() => {}
             }
         }
     });

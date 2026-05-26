@@ -10,11 +10,11 @@
 //! AimDbBuilder::build()
 //!   └─ WsClientConnectorBuilder::build(&db)
 //!        ├─ db.collect_inbound_routes("ws-client")  → Router
-//!        ├─ db.collect_outbound_routes("ws-client")  → outbound tasks
+//!        ├─ db.collect_outbound_routes("ws-client") → outbound futures
 //!        ├─ connect to remote WebSocket server
-//!        ├─ spawn receive loop (router dispatch)
-//!        ├─ spawn outbound publisher tasks
-//!        └─ return Arc<WsClientConnectorImpl>
+//!        ├─ build connector_future (read + write + keepalive + reconnect)
+//!        ├─ build outbound publisher futures
+//!        └─ return Vec<BoxFuture> (drained by AimDbRunner)
 //! ```
 
 use std::{pin::Pin, sync::Arc, time::Duration};
@@ -190,21 +190,24 @@ where
                 subscribe_topics: topics,
             };
 
-            // ── Build the connector (internal tasks are spawned via tokio::spawn — Group 4) ──
-            let connector = WsClientConnectorImpl::connect(config, router, db)
+            // ── Build the connector and collect its infrastructure future ──
+            // The connector future owns a `FuturesUnordered` driving the
+            // write/read/keepalive loops and reconnect watcher; no
+            // `tokio::spawn` is involved.
+            let (connector, connector_future) = WsClientConnectorImpl::connect(config, router, db)
                 .await
                 .map_err(|e| aimdb_core::DbError::RuntimeError {
                     message: format!("WS client connect failed: {}", e),
                 })?;
 
             // ── Collect outbound publisher futures ───────────────────
-            let futures = connector.collect_outbound_futures(db, outbound_routes);
+            let mut futures = connector.collect_outbound_futures(db, outbound_routes);
 
-            // The `WsClientConnectorImpl` itself is no longer returned (the
-            // `Arc<dyn Connector>` was discarded by `AimDbBuilder` anyway).
-            // Its background tasks live on inside the tokio spawns started in
-            // `connect()`; the only futures the runner drives from this connector
-            // are the per-route publishers.
+            // Prepend the connector's infrastructure future so it gets
+            // driven alongside the per-route publishers. Order does not
+            // matter to `FuturesUnordered`, but front-loading the long-
+            // running infra future keeps logs readable.
+            futures.insert(0, connector_future);
             Ok(futures)
         })
     }

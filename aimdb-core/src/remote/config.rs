@@ -16,10 +16,22 @@ pub struct AimxConfig {
     /// Security policy (read-only or read-write)
     pub security_policy: SecurityPolicy,
 
-    /// Maximum number of concurrent connections
+    /// Maximum number of concurrent client connections accepted by the
+    /// supervisor. When the in-flight connection count reaches this
+    /// value, newly-accepted Unix sockets are closed immediately (the
+    /// client sees a closed socket on connect).
     pub max_connections: usize,
 
-    /// Subscription queue size per client per subscription
+    /// Maximum number of concurrent subscriptions allowed per connection.
+    /// Once a connection holds this many subscriptions, further
+    /// `record.subscribe` calls receive a `too_many_subscriptions` error
+    /// until one is released via `record.unsubscribe`.
+    pub max_subs_per_connection: usize,
+
+    /// Subscription queue size per client per subscription. Retained for
+    /// protocol-response compatibility; the per-sub mpsc channel it used
+    /// to bound was eliminated when subscriptions moved to a nested
+    /// [`FuturesUnordered`].
     pub subscription_queue_size: usize,
 
     /// Optional authentication token
@@ -37,6 +49,7 @@ impl AimxConfig {
     /// - Socket path: `/tmp/aimdb.sock`
     /// - Security policy: Read-only
     /// - Max connections: 16
+    /// - Max subscriptions per connection: 32
     /// - Subscription queue size: 100
     /// - No auth token
     /// - Socket permissions: 0o600 (owner-only)
@@ -45,6 +58,7 @@ impl AimxConfig {
             socket_path: PathBuf::from("/tmp/aimdb.sock"),
             security_policy: SecurityPolicy::ReadOnly,
             max_connections: 16,
+            max_subs_per_connection: 32,
             subscription_queue_size: 100,
             auth_token: None,
             socket_permissions: Some(0o600),
@@ -66,6 +80,12 @@ impl AimxConfig {
     /// Sets the maximum number of concurrent connections
     pub fn max_connections(mut self, max: usize) -> Self {
         self.max_connections = max;
+        self
+    }
+
+    /// Sets the maximum number of concurrent subscriptions per connection
+    pub fn max_subs_per_connection(mut self, max: usize) -> Self {
+        self.max_subs_per_connection = max;
         self
     }
 
@@ -206,6 +226,7 @@ mod tests {
         let config = AimxConfig::uds_default();
         assert_eq!(config.socket_path, PathBuf::from("/tmp/aimdb.sock"));
         assert_eq!(config.max_connections, 16);
+        assert_eq!(config.max_subs_per_connection, 32);
         assert_eq!(config.subscription_queue_size, 100);
         assert!(matches!(config.security_policy, SecurityPolicy::ReadOnly));
         assert!(config.auth_token.is_none());
@@ -217,12 +238,14 @@ mod tests {
         let config = AimxConfig::uds_default()
             .socket_path("/var/run/aimdb.sock")
             .max_connections(32)
+            .max_subs_per_connection(8)
             .subscription_queue_size(200)
             .auth_token("secret-token")
             .socket_permissions(0o660);
 
         assert_eq!(config.socket_path, PathBuf::from("/var/run/aimdb.sock"));
         assert_eq!(config.max_connections, 32);
+        assert_eq!(config.max_subs_per_connection, 8);
         assert_eq!(config.subscription_queue_size, 200);
         assert_eq!(config.auth_token, Some("secret-token".to_string()));
         assert_eq!(config.socket_permissions, Some(0o660));
