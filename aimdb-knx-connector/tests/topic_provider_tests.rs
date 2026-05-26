@@ -293,12 +293,11 @@ async fn test_knx_topic_provider_registration_api() {
     builder.configure::<DimmerValue>("knx.dimmer.living", |reg| {
         let counter = produced_count_clone.clone();
         reg.buffer(BufferCfg::SingleLatest).source(
-            move |_ctx: RuntimeContext<TokioAdapter>,
-                  producer: Producer<DimmerValue, TokioAdapter>| {
+            move |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<DimmerValue>| {
                 let counter = counter.clone();
                 async move {
                     let dimmer = DimmerValue::new("living", 200);
-                    producer.produce(dimmer).await.ok();
+                    producer.produce(dimmer);
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
             },
@@ -325,10 +324,9 @@ async fn test_knx_topic_provider_with_connector_registration() {
     builder.configure::<DimmerValue>("knx.dimmer.living", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
-                |_ctx: RuntimeContext<TokioAdapter>,
-                 producer: Producer<DimmerValue, TokioAdapter>| async move {
+                |_ctx: RuntimeContext<TokioAdapter>, producer: Producer<DimmerValue>| async move {
                     let dimmer = DimmerValue::new("living", 200);
-                    producer.produce(dimmer).await.ok();
+                    producer.produce(dimmer);
                 },
             )
             .link_to("knx://1/0/0") // Fallback group address
@@ -383,11 +381,11 @@ async fn test_hvac_zone_routing() {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
                 |_ctx: RuntimeContext<TokioAdapter>,
-                 producer: Producer<TemperatureSetpoint, TokioAdapter>| async move {
+                 producer: Producer<TemperatureSetpoint>| async move {
                     // Different zones get routed to different group addresses
                     for zone in 1..=4 {
                         let setpoint = TemperatureSetpoint::new(zone, 21.0 + zone as f32 * 0.5);
-                        producer.produce(setpoint).await.ok();
+                        producer.produce(setpoint);
                     }
                 },
             )

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`Producer::produce` is now sync + infallible; `Consumer::subscribe` is now infallible (Design 029 follow-up, M14).** The pre-resolved `WriteHandle::push` cannot fail and the pre-resolved buffer Arc makes `subscribe()` infallible. Call sites collapse: `producer.produce(x).await?` → `producer.produce(x);` and `let Ok(reader) = consumer.subscribe() else { ... }` → `let reader = consumer.subscribe();`. The `ProducerTrait::produce_any` / `ConsumerTrait::subscribe_any` trait surfaces stay `Result`/`async` because the type-erasure downcast remains fallible.
+  - `AimDb::produce<T>(key, value) -> DbResult<()>` is now sync; `.await` on the call site goes away. Only the key lookup can fail.
+  - `Database::produce` likewise sync.
+  - `TypedRecord::produce` is now `pub fn produce(&self, val: T)` (was `pub async fn produce`).
+  - `aimdb-wasm-adapter`: `bindings::poll_sync` helper deleted — no remaining callers now that `TypedRecord::produce` is sync.
+  - Dead `consumer.subscribe()` error arms in `transform/single.rs` and `transform/join.rs` removed (the `Err` branch was unreachable after M14).
+
+- **`Producer<T>` / `Consumer<T>` drop the runtime parameter `R` and pre-resolve the record at build time (Design 029, M14).** Producer/Consumer become handles to a buffer rather than tickets to look one up: `produce()` is one virtual call (no `HashMap<key>` probe, no `TypeId` check, no downcast), and `subscribe()` collapses to `buffer.subscribe_boxed()`. The internal mechanic is a new crate-private `WriteHandle<T>` trait backed by `RecordWriter<T>` (in `aimdb-core/src/buffer/writer.rs`), pre-bound to the record's `Arc<dyn DynBuffer<T>>` + snapshot mutex + metadata tracker.
+  - `Producer<T, R>` → `Producer<T>`; `Consumer<T, R>` → `Consumer<T>`. User code that names the two-parameter form must drop the trailing adapter arg.
+  - `Producer::key(&self) -> &str` is **removed**. Capture the record key at the registration site instead.
+  - `Producer::produce(value) -> ()` and `Consumer::subscribe() -> Box<dyn BufferReader<T> + Send>` (v0.4 revision — see the sync/infallible bullet above for the rationale and migration). The `ProducerTrait::produce_any` / `ConsumerTrait::subscribe_any` trait surfaces retain `async`/`Result` for the type-erased downcast that can still fail.
+  - `AimDb::producer<T>(key)` / `AimDb::consumer<T>(key)` now return `DbResult<…>` (was infallible). They resolve the typed record up front, so callers that previously assumed inference must add `?`.
+  - `Consumer<T>` cannot exist without a buffer: `.tap()` on a record with no `.buffer(...)` now surfaces as `MissingConfiguration` at build time (was a deferred subscribe-time error).
+  - `TypedRecord::buffer` field is `Option<Arc<dyn DynBuffer<T>>>` (was `Box`); `TypedRecord::set_buffer(Box<…>)` keeps its public signature and converts via `Arc::from(box_)` internally.
+  - `TypedRecord::create_producer_trait(&self)` no longer takes `db` / `record_key` — it uses the new `writer_handle()`.
+  - `ConnectorBuilder<R>` cascade is zero-LOC: no connector struct carried `R` after M13. The outbound `consumer_factory` / inbound `producer_factory` callbacks now resolve the record once at link-startup time (via `db.inner().get_typed_record_by_key`) and construct the new handles.
+  - Codegen-emitted task scaffolds use `Producer<T>` / `Consumer<T>` (no `, TokioAdapter`).
+  - `data-contracts` `log_tap` parameter is `Consumer<T>`.
+
+- **`Spawn` trait removed; `AimDbBuilder::build()` now returns `(AimDb<R>, AimDbRunner)` (Issue #88, Design 028).** Every future the database needs — `.source()`/`.tap()`/`.transform()` tasks, on_start hooks, connector loops, the remote-access supervisor — is collected at build time into the new `AimDbRunner`, then driven by a single `FuturesUnordered` from `runner.run().await`. No background work runs until the runner is polled.
+  - `AimDb::spawn_task` is **deleted**. Migrate to `on_start()` (collected at build) or to a private `FuturesUnordered` inside your own future.
+  - The `Runtime` bundle no longer supertrait-requires `Spawn`. Custom adapters drop `impl Spawn`.
+  - `R: Spawn` bounds are gone everywhere in `aimdb-core` (`Producer`, `Consumer`, `TypedRecord`, `TransformDescriptor`, `RecordRegistrar`, `RecordT`, `AnyRecordExt::as_typed`, remote handler/supervisor, `Database<A>`) — replaced by `R: RuntimeAdapter`.
+  - `RecordSpawner<T>` renamed to `RecordFutureCollector<T>`; its `spawn_all_tasks` → `collect_all_futures`. Internal `spawn_consumer_tasks`/`spawn_producer_service`/`spawn_transform_task` on `TypedRecord` become `collect_consumer_futures`/`collect_producer_future`/`collect_transform_futures`.
+  - Join transforms now hoist their per-input forwarder construction to build time — `JoinPipeline::into_descriptor()` returns a `CollectedTransform { task_future, fanin_futures }` and the lazy `runtime.spawn(forwarder)` inside `run_join_transform` is gone.
+  - `ConnectorBuilder::build()` now returns `Vec<BoxFuture<'static, ()>>` instead of `Arc<dyn Connector>` (which `AimDbBuilder` already discarded).
+  - Unsafe `impl Send/Sync` blocks on `Producer<T, R>` / `Consumer<T, R>` deleted — they auto-derive now.
+  - On the AimX remote-access path, three `runtime.spawn(...)` call sites bridge to `tokio::spawn` directly under `#[cfg(feature = "std")]`. These (per-connection handler, per-subscription event stream, `subscribe_record_updates`) are addressed in the AimX portability follow-up.
+- `on_start` no_std bifurcation collapsed: a single `StartFnType<R>` alias replaces the byte-identical std/no_std pair.
+
 ## [1.1.0] - 2026-05-22
 
 ### Added

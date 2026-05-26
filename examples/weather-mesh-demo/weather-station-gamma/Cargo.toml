@@ -24,7 +24,6 @@ aimdb-core = { path = "../../../aimdb-core", default-features = false, features 
 aimdb-embassy-adapter = { path = "../../../aimdb-embassy-adapter", default-features = false, features = [
     "alloc",
     "embassy-runtime",
-    "embassy-task-pool-16", # 2 producers + net + MQTT + join transform + 2 forwarders
 ] }
 aimdb-executor = { path = "../../../aimdb-executor", default-features = false }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false, features = [
@@ -53,6 +52,7 @@ embassy-time = { workspace = true, features = [
     "defmt",
     "defmt-timestamp-uptime",
     "tick-hz-32_768",
+    "generic-queue-16",
 ] }
 embassy-net = { workspace = true, features = [
     "defmt",

@@ -136,7 +136,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
-    let db = builder.build().await?;
+    let (db, runner) = builder.build().await?;
+    tokio::spawn(runner.run());
 
     info!("✅ Database initialized with 5 record types");
     info!("   - Temperature (SpmcRing×100, has producer — drainable 🔄)");
@@ -147,14 +148,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("📝 Populating initial record data...");
 
-    let config_producer = db.producer::<Config>("server::Config");
-    config_producer
-        .produce(Config {
-            app_name: "AimDB Demo".to_string(),
-            version: "0.1.0".to_string(),
-            debug_mode: true,
-        })
-        .await?;
+    let config_producer = db.producer::<Config>("server::Config")?;
+    config_producer.produce(Config {
+        app_name: "AimDB Demo".to_string(),
+        version: "0.1.0".to_string(),
+        debug_mode: true,
+    });
 
     // Initialize AppSettings WITHOUT creating a producer
     // This makes it writable via remote access (record.set)
@@ -213,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// timed by the `profiling` feature — see `get_stage_profiling`.
 async fn temperature_simulator(
     ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature>,
 ) {
     let time = ctx.time();
     let mut counter = 0u64;
@@ -231,9 +230,7 @@ async fn temperature_simulator(
             timestamp,
         };
 
-        if let Err(e) = temperature.produce(reading).await {
-            tracing::error!("Failed to produce temperature: {}", e);
-        }
+        temperature.produce(reading);
 
         counter += 1;
         time.sleep(time.secs(2)).await;
@@ -242,14 +239,8 @@ async fn temperature_simulator(
 
 /// Fast tap on Temperature — just logs. Stage profiling will show it as
 /// substantially faster than `slow_status_processor` on SystemStatus.
-async fn temperature_logger(
-    _ctx: RuntimeContext<TokioAdapter>,
-    consumer: Consumer<Temperature, TokioAdapter>,
-) {
-    let Ok(mut reader) = consumer.subscribe() else {
-        tracing::error!("Failed to subscribe to Temperature");
-        return;
-    };
+async fn temperature_logger(_ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<Temperature>) {
+    let mut reader = consumer.subscribe();
     while let Ok(reading) = reader.recv().await {
         tracing::debug!(
             "🌡️  Logged temperature: {:.1} °C from {}",
@@ -262,7 +253,7 @@ async fn temperature_logger(
 /// Periodically produces SystemStatus readings.
 async fn system_status_simulator(
     ctx: RuntimeContext<TokioAdapter>,
-    status: Producer<SystemStatus, TokioAdapter>,
+    status: Producer<SystemStatus>,
 ) {
     let time = ctx.time();
     let mut uptime = 3600u64;
@@ -273,9 +264,7 @@ async fn system_status_simulator(
             memory_usage: 40.0 + ((uptime as f64 / 10.0) % 20.0),
         };
 
-        if let Err(e) = status.produce(snapshot).await {
-            tracing::error!("Failed to produce system status: {}", e);
-        }
+        status.produce(snapshot);
 
         uptime += 5;
         time.sleep(time.secs(5)).await;
@@ -287,13 +276,10 @@ async fn system_status_simulator(
 /// as the per-record bottleneck in `get_stage_profiling`.
 async fn slow_status_processor(
     ctx: RuntimeContext<TokioAdapter>,
-    consumer: Consumer<SystemStatus, TokioAdapter>,
+    consumer: Consumer<SystemStatus>,
 ) {
     let time = ctx.time();
-    let Ok(mut reader) = consumer.subscribe() else {
-        tracing::error!("Failed to subscribe to SystemStatus");
-        return;
-    };
+    let mut reader = consumer.subscribe();
     while let Ok(snapshot) = reader.recv().await {
         time.sleep(time.millis(100)).await;
         tracing::debug!(

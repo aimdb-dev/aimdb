@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **`impl Spawn for WasmAdapter` deleted (Issue #88).** Also removed the `unsafe impl Send/Sync for WasmAdapter` — the adapter is a ZST and auto-derives both.
+- `bindings.rs::Database::build()` now consumes the `AimDbRunner` returned from `AimDbBuilder::build()` and drives it via `wasm_bindgen_futures::spawn_local`, so existing JS callers keep working with no API change.
+
 ## [0.2.0] - 2026-05-22
 
 ### Added

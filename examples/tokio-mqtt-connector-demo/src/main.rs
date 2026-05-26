@@ -51,7 +51,7 @@ use mqtt_connector_demo_common::{
 /// Indoor temperature sensor producer
 async fn indoor_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature>,
 ) {
     let log = ctx.log();
     let time = ctx.time();
@@ -66,9 +66,7 @@ async fn indoor_temp_producer(
             temp.celsius
         ));
 
-        if let Err(e) = temperature.produce(temp).await {
-            log.error(&format!("❌ Failed to produce indoor temp: {:?}", e));
-        }
+        temperature.produce(temp);
 
         time.sleep(time.secs(2)).await;
     }
@@ -79,7 +77,7 @@ async fn indoor_temp_producer(
 /// Outdoor temperature sensor producer
 async fn outdoor_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature>,
 ) {
     let log = ctx.log();
     let time = ctx.time();
@@ -94,9 +92,7 @@ async fn outdoor_temp_producer(
             temp.celsius
         ));
 
-        if let Err(e) = temperature.produce(temp).await {
-            log.error(&format!("❌ Failed to produce outdoor temp: {:?}", e));
-        }
+        temperature.produce(temp);
 
         time.sleep(time.secs(2)).await;
     }
@@ -107,7 +103,7 @@ async fn outdoor_temp_producer(
 /// Server room temperature sensor producer
 async fn server_room_temp_producer(
     ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature, TokioAdapter>,
+    temperature: Producer<Temperature>,
 ) {
     let log = ctx.log();
     let time = ctx.time();
@@ -122,9 +118,7 @@ async fn server_room_temp_producer(
             temp.celsius
         ));
 
-        if let Err(e) = temperature.produce(temp).await {
-            log.error(&format!("❌ Failed to produce server room temp: {:?}", e));
-        }
+        temperature.produce(temp);
 
         time.sleep(time.secs(2)).await;
     }

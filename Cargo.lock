@@ -140,6 +140,7 @@ name = "aimdb-executor"
 version = "0.2.0"
 dependencies = [
  "embassy-executor",
+ "futures-util",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -1110,6 +1111,7 @@ dependencies = [
  "futures-util",
  "heapless 0.9.1",
  "nb 1.1.0",
+ "once_cell",
  "proc-macro2",
  "quote",
  "rand_core 0.10.0",
@@ -1147,6 +1149,7 @@ dependencies = [
  "defmt 1.0.1",
  "document-features",
  "embassy-time-driver",
+ "embassy-time-queue-utils",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -1178,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-usb-synopsys-otg"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "critical-section",
  "defmt 1.0.1",
@@ -2245,9 +2248,13 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.21.3"
+version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+dependencies = [
+ "critical-section",
+ "portable-atomic",
+]
 
 [[package]]
 name = "once_cell_polyfill"
@@ -3026,7 +3033,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-fe91bec726df47c6467dafce3fcf64075f662a3c#1569e3dc33adb6924329da79ef7dc8ce64bc791d"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-6d108b6d3695cafd30923b033bc82291da5859a7#afce0040f03f376ad34e62e78e201fbfe275a0a1"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

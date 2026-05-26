@@ -54,7 +54,7 @@ pub use runtime::WasmAdapter;
 
 // Re-export executor traits for convenience
 pub use aimdb_executor::{
-    ExecutorError, ExecutorResult, Logger as LoggerTrait, Runtime, RuntimeAdapter, Spawn, TimeOps,
+    ExecutorError, ExecutorResult, Logger as LoggerTrait, Runtime, RuntimeAdapter, TimeOps,
 };
 
 // Re-export buffer types

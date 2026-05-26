@@ -26,19 +26,14 @@ use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
 ///        .finish();
 /// });
 /// ```
-pub async fn temperature_monitor<R>(
-    ctx: RuntimeContext<R>,
-    consumer: Consumer<TemperatureReading, R>,
-) where
+pub async fn temperature_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureReading>)
+where
     R: Runtime + Logger + Send + Sync + 'static,
 {
     let log = ctx.log();
     log.info("🌡️  Temperature monitor started\n");
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to temperature buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(temp) = reader.recv().await {
         let (whole, frac) = temp.display_parts();
@@ -58,17 +53,14 @@ pub async fn temperature_monitor<R>(
 /// Light monitor that logs state changes from the buffer
 ///
 /// Uses the group address from the `LightState` data itself.
-pub async fn light_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<LightState, R>)
+pub async fn light_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<LightState>)
 where
     R: Runtime + Logger + Send + Sync + 'static,
 {
     let log = ctx.log();
     log.info("💡 Light monitor started\n");
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to light buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(state) = reader.recv().await {
         log.info(&alloc::format!(

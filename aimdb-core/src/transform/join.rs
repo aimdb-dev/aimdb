@@ -11,7 +11,7 @@ use alloc::{
 
 use aimdb_executor::{ExecutorResult, JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
 
-use crate::transform::TransformDescriptor;
+use crate::transform::{CollectedTransform, TransformDescriptor};
 use crate::typed_record::BoxFuture;
 
 // ============================================================================
@@ -65,7 +65,7 @@ impl JoinTrigger {
 ///             _ => {}
 ///         }
 ///         if let (Some(a), Some(b)) = (last_a, last_b) {
-///             producer.produce(compute(a, b)).await.ok();
+///             producer.produce(compute(a, b));
 ///         }
 ///     }
 /// })
@@ -114,7 +114,6 @@ impl<R: JoinReceiver<JoinTrigger> + Send> DynJoinRx for R {
 // ============================================================================
 
 /// Type-erased factory for creating a forwarder task for one join input.
-#[cfg(feature = "alloc")]
 type JoinInputFactory<R> = Box<
     dyn FnOnce(
             Arc<crate::AimDb<R>>,
@@ -133,13 +132,11 @@ type JoinInputFactory<R> = Box<
 /// internal constant chosen per adapter (Tokio: 64, Embassy: 8, WASM: 64).
 ///
 /// Obtain via [`RecordRegistrar::transform_join`].
-#[cfg(feature = "alloc")]
 pub struct JoinBuilder<O, R: JoinFanInRuntime + 'static> {
     inputs: Vec<(String, JoinInputFactory<R>)>,
     _phantom: PhantomData<(O, R)>,
 }
 
-#[cfg(feature = "alloc")]
 impl<O, R> JoinBuilder<O, R>
 where
     O: Send + Sync + Clone + Debug + 'static,
@@ -163,29 +160,23 @@ where
         type Tx<R> =
             <<R as JoinFanInRuntime>::JoinQueue<JoinTrigger> as JoinQueue<JoinTrigger>>::Sender;
 
-        let factory: JoinInputFactory<R> = Box::new(
-            move |db: Arc<crate::AimDb<R>>, index: usize, tx: Tx<R>| {
+        let factory: JoinInputFactory<R> =
+            Box::new(move |db: Arc<crate::AimDb<R>>, index: usize, tx: Tx<R>| {
                 Box::pin(async move {
-                    let consumer =
-                        crate::typed_api::Consumer::<I, R>::new(db, key_for_factory.clone());
-                    let mut reader = match consumer.subscribe() {
-                        Ok(r) => r,
+                    let consumer = match db.consumer::<I>(&key_for_factory) {
+                        Ok(c) => c,
                         Err(_e) => {
                             #[cfg(feature = "tracing")]
                             tracing::error!(
-                                "🔄 Join input '{}' (index {}) subscription failed: {:?}",
+                                "🔄 Join input '{}' (index {}) consumer resolution failed: {:?}",
                                 key_for_factory,
                                 index,
                                 _e
                             );
-                            #[cfg(all(feature = "std", not(feature = "tracing")))]
-                            eprintln!(
-                                "AIMDB TRANSFORM ERROR: Join input '{}' (index {}) subscription failed: {:?}",
-                                key_for_factory, index, _e
-                            );
                             return;
                         }
                     };
+                    let mut reader = consumer.subscribe();
 
                     while let Ok(value) = reader.recv().await {
                         let trigger = JoinTrigger::Input {
@@ -197,8 +188,7 @@ where
                         }
                     }
                 }) as BoxFuture<'static, ()>
-            },
-        );
+            });
 
         self.inputs.push((key_str, factory));
         self
@@ -206,7 +196,7 @@ where
 
     /// Complete the pipeline by providing an async task that owns the event loop and state.
     ///
-    /// The closure receives a [`JoinEventRx`] to read trigger events and a [`crate::Producer`]
+    /// The closure receives a [`JoinEventRx`] to read trigger events and a `Producer<O>`
     /// to emit output values. Both are owned — moved into the `async move` block — so the
     /// closure can freely hold borrows across `.await` points and maintain any state it needs.
     ///
@@ -223,14 +213,14 @@ where
     ///             _ => {}
     ///         }
     ///         if let (Some(a), Some(b)) = (last_a, last_b) {
-    ///             producer.produce(compute(a, b)).await.ok();
+    ///             producer.produce(compute(a, b));
     ///         }
     ///     }
     /// })
     /// ```
     pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O, R>
     where
-        F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
+        F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         let inputs = self.inputs;
@@ -240,8 +230,8 @@ where
         JoinPipeline {
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
-                spawn_fn: Box::new(move |producer, db, ctx| {
-                    Box::pin(run_join_transform(db, inputs, producer, handler, ctx))
+                build_fn: Box::new(move |producer, db, runtime, output_key| {
+                    build_join_collected(db, inputs, producer, handler, runtime, output_key)
                 }),
             }),
         }
@@ -252,12 +242,10 @@ where
 ///
 /// Produced by [`JoinBuilder::on_triggers`] and consumed by
 /// [`RecordRegistrar::transform_join`]. Not normally constructed directly.
-#[cfg(feature = "alloc")]
 pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static, R: JoinFanInRuntime + 'static> {
     pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O, R> + Send>,
 }
 
-#[cfg(feature = "alloc")]
 impl<O, R> JoinPipeline<O, R>
 where
     O: Send + Sync + Clone + Debug + 'static,
@@ -269,44 +257,40 @@ where
 }
 
 // ============================================================================
-// Join Transform Task Runner
+// Join Transform Build (forwarders + handler future, both collected at build time)
 // ============================================================================
 
-#[cfg(feature = "alloc")]
 #[allow(unused_variables)]
-async fn run_join_transform<O, R, F, Fut>(
+fn build_join_collected<O, R, F, Fut>(
     db: Arc<crate::AimDb<R>>,
     inputs: Vec<(String, JoinInputFactory<R>)>,
-    producer: crate::Producer<O, R>,
+    producer: crate::Producer<O>,
     handler: F,
-    runtime_ctx: Arc<dyn Any + Send + Sync>,
-) where
+    runtime: Arc<R>,
+    output_key: &str,
+) -> CollectedTransform
+where
     O: Send + Sync + Clone + Debug + 'static,
     R: JoinFanInRuntime + 'static,
-    F: FnOnce(JoinEventRx, crate::Producer<O, R>) -> Fut + Send + 'static,
+    F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,
     Fut: core::future::Future<Output = ()> + Send + 'static,
 {
-    let output_key = producer.key().to_string();
-    let input_keys: Vec<String> = inputs.iter().map(|(k, _)| k.clone()).collect();
+    // Output key is threaded in from the descriptor so diagnostics stay
+    // unambiguous when multiple records share output type `O` (design 029).
+    #[cfg(feature = "tracing")]
+    let output_key_owned = output_key.to_string();
+    #[cfg(not(feature = "tracing"))]
+    let _ = output_key;
 
     #[cfg(feature = "tracing")]
-    tracing::info!(
-        "🔄 Join transform started: {:?} → '{}'",
-        input_keys,
-        output_key
-    );
-
-    let runtime: &R = match runtime_ctx.downcast_ref::<R>() {
-        Some(r) => r,
-        None => {
-            #[cfg(feature = "tracing")]
-            tracing::error!(
-                "🔄 Join transform '{}' FATAL: runtime context downcast failed",
-                output_key
-            );
-            return;
-        }
-    };
+    {
+        let input_keys: Vec<String> = inputs.iter().map(|(k, _)| k.clone()).collect();
+        tracing::info!(
+            "🔄 Join transform building: {:?} → '{}'",
+            input_keys,
+            output_key_owned
+        );
+    }
 
     let queue = match runtime.create_join_queue::<JoinTrigger>() {
         Ok(q) => q,
@@ -314,39 +298,45 @@ async fn run_join_transform<O, R, F, Fut>(
             #[cfg(feature = "tracing")]
             tracing::error!(
                 "🔄 Join transform '{}' FATAL: failed to create join queue",
-                output_key
+                output_key_owned
             );
-            return;
+            // Empty collected transform — caller still receives a valid descriptor.
+            return CollectedTransform {
+                task_future: Box::pin(async {}),
+                fanin_futures: Vec::new(),
+            };
         }
     };
     let (tx, rx) = queue.split();
 
-    for (index, (_key, factory)) in inputs.into_iter().enumerate() {
-        let sender = tx.clone();
-        let db = db.clone();
+    // Build all forwarder futures eagerly; they will be driven by AimDbRunner.
+    let fanin_futures: Vec<BoxFuture<'static, ()>> = inputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, (_key, factory))| {
+            let sender = tx.clone();
+            factory(db.clone(), index, sender)
+        })
+        .collect();
 
-        let forwarder_future = factory(db, index, sender);
-        if let Err(_e) = runtime.spawn(forwarder_future) {
-            #[cfg(feature = "tracing")]
-            tracing::error!(
-                "🔄 Join transform '{}' FATAL: failed to spawn forwarder for input index {}",
-                output_key,
-                index
-            );
-            return;
-        }
-    }
-
+    // Drop our local sender so the receiver closes once all forwarders exit.
     drop(tx);
 
-    #[cfg(feature = "tracing")]
-    tracing::debug!(
-        "✅ Join transform '{}' all forwarders spawned, handing receiver to user task",
-        output_key
-    );
+    let task_future: BoxFuture<'static, ()> = Box::pin(async move {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "✅ Join transform '{}' handing receiver to user task",
+            output_key_owned
+        );
 
-    handler(JoinEventRx::new(rx), producer).await;
+        handler(JoinEventRx::new(rx), producer).await;
 
-    #[cfg(feature = "tracing")]
-    tracing::warn!("🔄 Join transform '{}' user task exited", output_key);
+        #[cfg(feature = "tracing")]
+        tracing::warn!("🔄 Join transform '{}' user task exited", output_key_owned);
+    });
+
+    CollectedTransform {
+        task_future,
+        fanin_futures,
+    }
 }

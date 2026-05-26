@@ -30,7 +30,7 @@ use crate::Observable;
 #[cfg(feature = "observable")]
 pub async fn log_tap<T, R>(
     ctx: aimdb_core::RuntimeContext<R>,
-    consumer: aimdb_core::typed_api::Consumer<T, R>,
+    consumer: aimdb_core::typed_api::Consumer<T>,
     node_id: &'static str,
 ) where
     T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,
@@ -38,10 +38,7 @@ pub async fn log_tap<T, R>(
 {
     let log = ctx.log();
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error(&alloc::format!("Failed to subscribe to {} buffer", T::NAME));
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(value) = reader.recv().await {
         log.info(&value.format_log(node_id));

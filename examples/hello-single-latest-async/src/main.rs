@@ -21,7 +21,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .tap(rollout_observer);
     });
 
-    let _db = builder.build().await?;
+    let (_db, runner) = builder.build().await?;
+    // Drive the database futures concurrently with the demo's wait — without
+    // this the registered source/tap futures never run.
+    tokio::spawn(runner.run());
 
     tokio::time::sleep(Duration::from_millis(700)).await;
     println!("Done. SingleLatest keeps only the current value for each subscriber.");
@@ -29,10 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn rollout_source(
-    ctx: RuntimeContext<TokioAdapter>,
-    producer: Producer<FeatureGate, TokioAdapter>,
-) {
+async fn rollout_source(ctx: RuntimeContext<TokioAdapter>, producer: Producer<FeatureGate>) {
     let time = ctx.time();
 
     time.sleep(time.millis(50)).await;
@@ -47,22 +47,13 @@ async fn rollout_source(
     }
 }
 
-async fn publish_rollout(producer: &Producer<FeatureGate, TokioAdapter>, rollout_percent: u8) {
+async fn publish_rollout(producer: &Producer<FeatureGate>, rollout_percent: u8) {
     let gate = FeatureGate { rollout_percent };
-    match producer.produce(gate).await {
-        Ok(()) => println!("source published rollout: {rollout_percent}%"),
-        Err(err) => eprintln!("failed to publish rollout {rollout_percent}%: {err}"),
-    }
+    producer.produce(gate);
 }
 
-async fn rollout_observer(
-    ctx: RuntimeContext<TokioAdapter>,
-    consumer: Consumer<FeatureGate, TokioAdapter>,
-) {
-    let Ok(mut reader) = consumer.subscribe() else {
-        eprintln!("failed to subscribe to config.checkout_rollout");
-        return;
-    };
+async fn rollout_observer(ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<FeatureGate>) {
+    let mut reader = consumer.subscribe();
     let time = ctx.time();
 
     let mut first = true;

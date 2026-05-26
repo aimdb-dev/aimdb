@@ -10,7 +10,6 @@
 //! - Single-input: `.transform()` with `TransformBuilder`
 //! - Multi-input: `.transform_join()` with `JoinBuilder`
 
-use core::any::Any;
 use core::fmt::Debug;
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
@@ -23,26 +22,41 @@ pub mod single;
 // Public re-exports
 pub use single::{StatefulTransformBuilder, TransformBuilder, TransformPipeline};
 
-#[cfg(feature = "alloc")]
 pub use join::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 
 // ============================================================================
 // TransformDescriptor — stored per output record in TypedRecord
 // ============================================================================
 
-pub(crate) struct TransformDescriptor<T, R: aimdb_executor::Spawn + 'static>
+/// Futures contributed by a transform at build-time collection.
+///
+/// `task_future` is the transform's main event loop; `fanin_futures` is any
+/// per-input forwarder needed for multi-input joins (empty for single-input).
+pub(crate) struct CollectedTransform {
+    pub task_future: BoxFuture<'static, ()>,
+    pub fanin_futures: Vec<BoxFuture<'static, ()>>,
+}
+
+pub(crate) struct TransformDescriptor<T, R: aimdb_executor::RuntimeAdapter + 'static>
 where
     T: Send + 'static + Debug + Clone,
 {
     pub input_keys: Vec<String>,
 
+    /// Build the transform's futures.
+    ///
+    /// Receives:
+    /// - `Producer<T>` — the pre-resolved write handle for the output record.
+    /// - `Arc<AimDb<R>>` — used by input forwarders to resolve their input
+    ///   consumers at startup time.
+    /// - `Arc<R>` — the runtime adapter (e.g. for `create_join_queue`).
+    /// - `&str` — the output record's key, threaded through so the transform
+    ///   task can include it in tracing messages even though `Producer<T>` no
+    ///   longer carries a `.key()` accessor (design 029, M14). Important when
+    ///   multiple records share type `T` under different keys.
     #[allow(clippy::type_complexity)]
-    pub spawn_fn: Box<
-        dyn FnOnce(
-                crate::Producer<T, R>,
-                Arc<crate::AimDb<R>>,
-                Arc<dyn Any + Send + Sync>,
-            ) -> BoxFuture<'static, ()>
+    pub build_fn: Box<
+        dyn FnOnce(crate::Producer<T>, Arc<crate::AimDb<R>>, Arc<R>, &str) -> CollectedTransform
             + Send,
     >,
 }

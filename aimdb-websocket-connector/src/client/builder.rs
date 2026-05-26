@@ -130,9 +130,11 @@ impl WsClientConnectorBuilder {
 // ConnectorBuilder impl
 // ════════════════════════════════════════════════════════════════════
 
+type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
+
 impl<R> ConnectorBuilder<R> for WsClientConnectorBuilder
 where
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn scheme(&self) -> &str {
         "ws-client"
@@ -141,14 +143,8 @@ where
     fn build<'a>(
         &'a self,
         db: &'a aimdb_core::builder::AimDb<R>,
-    ) -> Pin<
-        Box<
-            dyn core::future::Future<
-                    Output = aimdb_core::DbResult<Arc<dyn aimdb_core::transport::Connector>>,
-                > + Send
-                + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn core::future::Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>>
+    {
         Box::pin(async move {
             // ── Inbound routes ──────────────────────────────────────
             let inbound_routes = db.collect_inbound_routes("ws-client");
@@ -194,21 +190,22 @@ where
                 subscribe_topics: topics,
             };
 
-            // ── Build the connector ─────────────────────────────────
+            // ── Build the connector (internal tasks are spawned via tokio::spawn — Group 4) ──
             let connector = WsClientConnectorImpl::connect(config, router, db)
                 .await
                 .map_err(|e| aimdb_core::DbError::RuntimeError {
                     message: format!("WS client connect failed: {}", e),
                 })?;
 
-            // ── Spawn outbound publishers ────────────────────────────
-            connector
-                .spawn_outbound_publishers(db, outbound_routes)
-                .map_err(|e| aimdb_core::DbError::RuntimeError {
-                    message: format!("WS client outbound setup failed: {}", e),
-                })?;
+            // ── Collect outbound publisher futures ───────────────────
+            let futures = connector.collect_outbound_futures(db, outbound_routes);
 
-            Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
+            // The `WsClientConnectorImpl` itself is no longer returned (the
+            // `Arc<dyn Connector>` was discarded by `AimDbBuilder` anyway).
+            // Its background tasks live on inside the tokio spawns started in
+            // `connect()`; the only futures the runner drives from this connector
+            // are the per-route publishers.
+            Ok(futures)
         })
     }
 }

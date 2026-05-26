@@ -70,12 +70,21 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
-/// Static channel for KNX commands (32 slots to match Tokio implementation)
-static KNX_COMMAND_CHANNEL: StaticCell<Channel<CriticalSectionRawMutex, KnxCommand, 32>> =
-    StaticCell::new();
+/// Capacity of the static KNX command channel.
+///
+/// Embassy requires a compile-time const generic — runtime configurability is
+/// not possible with `StaticCell<Channel<..., N>>`. Adjust this constant and
+/// recompile if your installation needs a larger buffer.
+const KNX_COMMAND_QUEUE_SIZE: usize = 32;
+
+/// Static channel for KNX commands (capacity: [`KNX_COMMAND_QUEUE_SIZE`])
+static KNX_COMMAND_CHANNEL: StaticCell<
+    Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>,
+> = StaticCell::new();
 
 /// Get or initialize the command channel
-fn get_command_channel() -> &'static Channel<CriticalSectionRawMutex, KnxCommand, 32> {
+fn get_command_channel(
+) -> &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE> {
     KNX_COMMAND_CHANNEL.init(Channel::new())
 }
 
@@ -97,21 +106,17 @@ impl KnxConnectorBuilder {
     }
 }
 
+type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
 /// Implement ConnectorBuilder trait for Embassy runtime with network stack access
 impl<R> ConnectorBuilder<R> for KnxConnectorBuilder
 where
-    R: aimdb_executor::Spawn + aimdb_embassy_adapter::EmbassyNetwork + 'static,
+    R: aimdb_executor::RuntimeAdapter + aimdb_embassy_adapter::EmbassyNetwork + 'static,
 {
     fn build<'a>(
         &'a self,
         db: &'a aimdb_core::builder::AimDb<R>,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = aimdb_core::DbResult<Arc<dyn aimdb_core::transport::Connector>>>
-                + Send
-                + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
         // Wrap in SendFutureWrapper since Embassy types aren't Send but we're single-threaded
         Box::pin(SendFutureWrapper(async move {
             // Collect inbound routes from database
@@ -132,23 +137,32 @@ where
                 router.resource_ids().len()
             );
 
-            // Build the actual connector
+            // Build connection future and channel
             let runtime_ctx = db.runtime_any();
-            let connector = KnxConnectorImpl::build_internal(
+            let (command_channel, connection_future) = KnxConnectorImpl::build_internal(
                 self.gateway_url.as_str(),
                 router,
                 db.runtime(),
-                Some(runtime_ctx),
+                Some(runtime_ctx.clone()),
             )
             .await
             .map_err(|_e| {
                 #[cfg(feature = "defmt")]
                 defmt::error!("Failed to build KNX connector");
 
-                aimdb_core::DbError::RuntimeError { _message: () }
+                #[cfg(feature = "std")]
+                {
+                    aimdb_core::DbError::RuntimeError {
+                        message: format!("Failed to build KNX connector: {}", _e),
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    aimdb_core::DbError::RuntimeError { _message: () }
+                }
             })?;
 
-            // Collect and spawn outbound publishers
+            // Collect outbound publisher futures
             let outbound_routes = db.collect_outbound_routes("knx");
 
             #[cfg(feature = "defmt")]
@@ -157,9 +171,15 @@ where
                 outbound_routes.len()
             );
 
-            connector.spawn_outbound_publishers(db, outbound_routes)?;
+            let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_routes.len());
+            futures.push(connection_future);
+            futures.extend(KnxConnectorImpl::collect_outbound_futures(
+                command_channel,
+                runtime_ctx,
+                outbound_routes,
+            ));
 
-            Ok(Arc::new(connector) as Arc<dyn aimdb_core::transport::Connector>)
+            Ok(futures)
         }))
     }
 
@@ -254,7 +274,7 @@ impl ChannelState {
 
 /// Internal KNX connector implementation
 pub struct KnxConnectorImpl {
-    command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+    command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>,
 }
 
 impl KnxConnectorImpl {
@@ -264,9 +284,15 @@ impl KnxConnectorImpl {
         router: Router,
         runtime: &R,
         runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
-    ) -> Result<Self, &'static str>
+    ) -> Result<
+        (
+            &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>,
+            BoxFuture,
+        ),
+        &'static str,
+    >
     where
-        R: aimdb_executor::Spawn + aimdb_embassy_adapter::EmbassyNetwork + 'static,
+        R: aimdb_executor::RuntimeAdapter + aimdb_embassy_adapter::EmbassyNetwork + 'static,
     {
         // Parse the gateway URL
         let connector_url = ConnectorUrl::parse(gateway_url).map_err(|_| "Invalid KNX URL")?;
@@ -290,8 +316,8 @@ impl KnxConnectorImpl {
         // Initialize command channel
         let command_channel = get_command_channel();
 
-        // Spawn KNX connection background task
-        let knx_task_future = SendFutureWrapper(async move {
+        // Build KNX connection future (returned instead of spawned)
+        let knx_task_future: BoxFuture = Box::pin(SendFutureWrapper(async move {
             #[cfg(feature = "defmt")]
             defmt::trace!("KNX background task starting for {}:{}", gateway_ip, port);
 
@@ -308,16 +334,12 @@ impl KnxConnectorImpl {
                 )
                 .await;
             }
-        });
-
-        runtime
-            .spawn(Box::pin(knx_task_future))
-            .map_err(|_| "Failed to spawn KNX connection task")?;
+        }));
 
         #[cfg(feature = "defmt")]
         defmt::trace!("KNX connector initialized");
 
-        Ok(Self { command_channel })
+        Ok((command_channel, knx_task_future))
     }
 
     /// Background task that maintains KNX connection and receives telegrams
@@ -326,7 +348,11 @@ impl KnxConnectorImpl {
         gateway_addr: Ipv4Address,
         gateway_port: u16,
         router: Arc<Router>,
-        command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        command_channel: &'static Channel<
+            CriticalSectionRawMutex,
+            KnxCommand,
+            KNX_COMMAND_QUEUE_SIZE,
+        >,
         runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
     ) {
         loop {
@@ -371,7 +397,11 @@ impl KnxConnectorImpl {
         gateway_addr: Ipv4Address,
         gateway_port: u16,
         router: &Router,
-        command_channel: &'static Channel<CriticalSectionRawMutex, KnxCommand, 32>,
+        command_channel: &'static Channel<
+            CriticalSectionRawMutex,
+            KnxCommand,
+            KNX_COMMAND_QUEUE_SIZE,
+        >,
         runtime_ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
     ) -> Result<(), &'static str> {
         // Create UDP socket with static buffers
@@ -607,7 +637,7 @@ impl KnxConnectorImpl {
                     let timed_out = state.check_ack_timeouts();
                     if !timed_out.is_empty() {
                         #[cfg(feature = "defmt")]
-                        defmt::warn!("⚠️  ACK timeouts for sequences: {:?}", timed_out);
+                        defmt::warn!("⚠️  ACK timeouts for sequences: {:?}", timed_out.as_slice());
                     }
                 }
             }
@@ -987,25 +1017,24 @@ impl KnxConnectorImpl {
     ///
     /// If a topic provider is configured, it will be called for each value to
     /// dynamically determine the KNX group address. Otherwise, the static default is used.
-    fn spawn_outbound_publishers<R>(
-        &self,
-        db: &aimdb_core::builder::AimDb<R>,
+    fn collect_outbound_futures(
+        command_channel: &'static Channel<
+            CriticalSectionRawMutex,
+            KnxCommand,
+            KNX_COMMAND_QUEUE_SIZE,
+        >,
+        runtime_ctx: Arc<dyn core::any::Any + Send + Sync>,
         outbound_routes: Vec<aimdb_core::OutboundRoute>,
-    ) -> aimdb_core::DbResult<()>
-    where
-        R: aimdb_executor::Spawn + 'static,
-    {
-        let runtime = db.runtime();
-        let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
+    ) -> Vec<BoxFuture> {
+        let mut futures = Vec::with_capacity(outbound_routes.len());
 
         for (default_group_addr_str, consumer, serializer, _config, topic_provider) in
             outbound_routes
         {
-            let command_channel = self.command_channel;
             let default_group_addr_clone = default_group_addr_str.clone();
             let runtime_ctx = runtime_ctx.clone();
 
-            runtime.spawn(Box::pin(SendFutureWrapper(async move {
+            futures.push(Box::pin(SendFutureWrapper(async move {
                 // Parse default group address using knx-pico's type-safe parser
                 let default_group_addr = match default_group_addr_clone.parse::<GroupAddress>() {
                     Ok(addr) => Some(addr),
@@ -1126,10 +1155,10 @@ impl KnxConnectorImpl {
                     "KNX outbound publisher stopped for: {}",
                     default_group_addr_clone.as_str()
                 );
-            })))?;
+            })) as BoxFuture);
         }
 
-        Ok(())
+        futures
     }
 }
 

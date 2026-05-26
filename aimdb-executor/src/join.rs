@@ -1,12 +1,12 @@
 use core::future::Future;
 
-use crate::{ExecutorResult, Spawn};
+use crate::{ExecutorResult, RuntimeAdapter};
 
 /// Runtime capability for creating join fan-in queues.
 ///
 /// Implemented by each runtime adapter. Queue capacity is an internal
 /// constant chosen per adapter (Tokio: 64, Embassy: 8, WASM: 64).
-pub trait JoinFanInRuntime: Spawn {
+pub trait JoinFanInRuntime: RuntimeAdapter {
     type JoinQueue<T: Send + 'static>: JoinQueue<T>;
 
     fn create_join_queue<T: Send + 'static>(&self) -> ExecutorResult<Self::JoinQueue<T>>;

@@ -3,6 +3,7 @@
 //! Manages the Unix domain socket server and spawns connection handlers for
 //! remote clients connecting via the AimX protocol.
 
+use crate::builder::BoxFuture;
 use crate::remote::AimxConfig;
 use crate::{AimDb, DbError, DbResult};
 
@@ -15,21 +16,20 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(feature = "std")]
 use tokio::net::UnixListener;
 
-/// Spawns the remote access supervisor task
+/// Builds the remote access supervisor future.
 ///
-/// This function spawns a background task that:
-/// 1. Binds to the Unix domain socket
-/// 2. Sets appropriate file permissions
-/// 3. Accepts incoming connections
-/// 4. Spawns a ConnectionHandler for each client
+/// Synchronously: binds the Unix domain socket and sets file permissions
+/// (so binding errors surface from `build()` rather than at task-start time).
+///
+/// The returned `BoxFuture` is appended to the `AimDbRunner` accumulator;
+/// when driven, it accepts incoming connections in a loop and uses
+/// `tokio::spawn` to dispatch a per-connection handler (bridge state per
+/// design 028 §"Remote supervisor" — future work in the AimX portability
+/// follow-up replaces this with a nested `FuturesUnordered`).
 ///
 /// # Arguments
 /// * `db` - Database instance (for introspection and subscriptions)
-/// * `runtime` - Runtime adapter (for spawning tasks)
 /// * `config` - Remote access configuration
-///
-/// # Returns
-/// `DbResult<()>` - Ok if supervisor spawned successfully
 ///
 /// # Errors
 /// Returns error if:
@@ -37,9 +37,9 @@ use tokio::net::UnixListener;
 /// - Socket binding fails
 /// - Permission setting fails
 #[cfg(feature = "std")]
-pub fn spawn_supervisor<R>(db: Arc<AimDb<R>>, runtime: Arc<R>, config: AimxConfig) -> DbResult<()>
+pub fn build_supervisor_future<R>(db: Arc<AimDb<R>>, config: AimxConfig) -> DbResult<BoxFuture>
 where
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     #[cfg(feature = "tracing")]
     tracing::info!(
@@ -104,8 +104,10 @@ where
     #[cfg(feature = "tracing")]
     tracing::info!("Socket permissions set to {:o}", permissions);
 
-    // Spawn supervisor task using runtime adapter
-    let _ = runtime.spawn(async move {
+    // The accept loop is the future the runner drives. Per-connection handlers
+    // still use `tokio::spawn` (AimX is `#[cfg(feature = "std")]`-gated — see
+    // design doc 028 §"Out of Scope" / AimX follow-up).
+    let supervisor_future: BoxFuture = Box::pin(async move {
         #[cfg(feature = "tracing")]
         tracing::info!("Remote access supervisor task started");
 
@@ -118,7 +120,6 @@ where
                     let db_clone = db.clone();
                     let config_clone = config.clone();
 
-                    // Spawn connection handler for this client
                     tokio::spawn(async move {
                         #[cfg(feature = "tracing")]
                         tracing::debug!("Connection handler spawned for client");
@@ -147,5 +148,5 @@ where
         }
     });
 
-    Ok(())
+    Ok(supervisor_future)
 }

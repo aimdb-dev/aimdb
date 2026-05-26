@@ -44,8 +44,14 @@ pub(crate) struct ServerState {
 // Server start
 // ════════════════════════════════════════════════════════════════════
 
-/// Start the WebSocket Axum server and return immediately (the server runs in
-/// a background Tokio task).
+type BoxFuture = std::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
+
+/// Builds the WebSocket Axum server future.
+///
+/// Returns a `BoxFuture` containing the `axum::serve()` accept loop. The
+/// future is appended to the `AimDbRunner` accumulator (design 028 §"Connector
+/// futures"). Per-connection handlers spawned by Axum internally continue to
+/// use `tokio::spawn` — outside the scope of issue #88.
 ///
 /// # Arguments
 ///
@@ -54,12 +60,12 @@ pub(crate) struct ServerState {
 /// * `session_ctx` — Shared session context (auth, router, client manager, …).
 /// * `additional_routes` — Optional user-supplied Axum `Router` that is merged
 ///   into the server (useful for REST + WebSocket on the same port).
-pub(crate) fn start_server(
+pub(crate) fn build_server_future(
     bind_addr: SocketAddr,
     ws_path: String,
     session_ctx: SessionContext,
     additional_routes: Option<Router>,
-) {
+) -> BoxFuture {
     let state = ServerState {
         session_ctx,
         started_at: Instant::now(),
@@ -80,7 +86,7 @@ pub(crate) fn start_server(
         ws_app
     };
 
-    tokio::spawn(async move {
+    Box::pin(async move {
         let listener = match tokio::net::TcpListener::bind(bind_addr).await {
             Ok(l) => l,
             Err(_e) => {
@@ -102,7 +108,7 @@ pub(crate) fn start_server(
             #[cfg(feature = "tracing")]
             tracing::error!("WebSocket server error: {}", _e);
         }
-    });
+    })
 }
 
 // ════════════════════════════════════════════════════════════════════

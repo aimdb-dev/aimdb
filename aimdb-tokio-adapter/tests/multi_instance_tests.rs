@@ -38,15 +38,14 @@ async fn test_multi_instance_same_type() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Produce to each record separately
     db.produce::<Temperature>("sensors.indoor", Temperature { celsius: 22.0 })
-        .await
         .unwrap();
 
     db.produce::<Temperature>("sensors.outdoor", Temperature { celsius: -5.0 })
-        .await
         .unwrap();
 
     // Verify we can resolve both keys
@@ -76,25 +75,17 @@ async fn test_producer() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
-    // Get key-bound producers
-    let producer_a = db.producer::<Temperature>("sensor.a");
-    let producer_b = db.producer::<Temperature>("sensor.b");
-
-    // Verify keys are bound correctly
-    assert_eq!(producer_a.key(), "sensor.a");
-    assert_eq!(producer_b.key(), "sensor.b");
+    // Get key-bound producers. Post-M14 these resolve the typed record up front
+    // (Producer<T> no longer carries `R` and no longer exposes `.key()`).
+    let producer_a = db.producer::<Temperature>("sensor.a").unwrap();
+    let producer_b = db.producer::<Temperature>("sensor.b").unwrap();
 
     // Produce values
-    producer_a
-        .produce(Temperature { celsius: 10.0 })
-        .await
-        .unwrap();
-    producer_b
-        .produce(Temperature { celsius: 20.0 })
-        .await
-        .unwrap();
+    producer_a.produce(Temperature { celsius: 10.0 });
+    producer_b.produce(Temperature { celsius: 20.0 });
 }
 
 /// Test: Key-based consumer works correctly
@@ -112,19 +103,17 @@ async fn test_consumer() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
-    // Get key-bound consumers
-    let consumer_north = db.consumer::<Temperature>("zone.north");
-    let consumer_south = db.consumer::<Temperature>("zone.south");
-
-    // Verify keys are bound correctly
-    assert_eq!(consumer_north.key(), "zone.north");
-    assert_eq!(consumer_south.key(), "zone.south");
+    // Get key-bound consumers. Post-M14 these resolve the typed record up front
+    // (Consumer<T> no longer carries `R` and no longer exposes `.key()`).
+    let consumer_north = db.consumer::<Temperature>("zone.north").unwrap();
+    let consumer_south = db.consumer::<Temperature>("zone.south").unwrap();
 
     // Subscribe should work
-    let _reader_north = consumer_north.subscribe().unwrap();
-    let _reader_south = consumer_south.subscribe().unwrap();
+    let _reader_north = consumer_north.subscribe();
+    let _reader_south = consumer_south.subscribe();
 }
 
 /// Test: Single instance key-based lookup works
@@ -139,11 +128,11 @@ async fn test_single_instance_key_lookup() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Key-based produce should work
     db.produce::<Temperature>("single.temp", Temperature { celsius: 30.0 })
-        .await
         .unwrap();
 
     // Key-based subscribe should work
@@ -161,12 +150,11 @@ async fn test_key_not_found_error() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Try to produce to non-existent key
-    let result = db
-        .produce::<Temperature>("nonexistent.key", Temperature { celsius: 0.0 })
-        .await;
+    let result = db.produce::<Temperature>("nonexistent.key", Temperature { celsius: 0.0 });
 
     match result {
         Err(DbError::RecordKeyNotFound { key }) => {
@@ -188,18 +176,17 @@ async fn test_type_mismatch_error() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Try to produce AppConfig to a Temperature record
-    let result = db
-        .produce::<AppConfig>(
-            "sensor.temp",
-            AppConfig {
-                debug: true,
-                name: "test".to_string(),
-            },
-        )
-        .await;
+    let result = db.produce::<AppConfig>(
+        "sensor.temp",
+        AppConfig {
+            debug: true,
+            name: "test".to_string(),
+        },
+    );
 
     match result {
         Err(DbError::TypeMismatch { record_id, .. }) => {
@@ -251,7 +238,8 @@ async fn test_record_id_stability() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // RecordIds should be assigned in registration order
     let id_first = db.resolve_key("first").unwrap();
@@ -287,7 +275,8 @@ async fn test_records_of_type_introspection() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
 
     // Should find 3 Temperature records
     let temp_ids = db.records_of_type::<Temperature>();

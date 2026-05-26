@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- `attach()` updated to destructure the `(AimDb<TokioAdapter>, AimDbRunner)` tuple returned by `AimDbBuilder::build()` after issue #88, and to drive the runner inside the runtime thread via `tokio::select!` against the shutdown signal. No public API change.
 
 ## [0.5.0] - 2026-02-21
 

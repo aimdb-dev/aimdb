@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`ConnectorBuilder::build()` now returns `Vec<BoxFuture<'static, ()>>` instead of `Arc<dyn Connector>` (Issue #88).** Both Tokio and Embassy implementations updated.
+- `spawn_connection_task()` → `build_connection_future()`; the `mpsc::channel` for outbound commands is created up front, the receiver captured by the connection future, and the sender cloned into each outbound publisher future. `spawn_outbound_publishers()` → `collect_outbound_futures()`.
+- `R: Spawn` bounds dropped in favour of `R: RuntimeAdapter`.
+- The `transport::Connector` impl on `KnxConnectorImpl` was removed alongside the discarded `Arc<dyn Connector>` return path.
+
 ## [0.4.0] - 2026-05-22
 
 ### Changed

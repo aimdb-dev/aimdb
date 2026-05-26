@@ -277,10 +277,14 @@ examples:
 	@printf "$(GREEN)Building all example projects...$(NC)\n"
 	@printf "$(YELLOW)  → Building sync-api-demo (synchronous API wrapper)$(NC)\n"
 	cargo build --package sync-api-demo
+	@printf "$(YELLOW)  → Building mqtt-connector-demo-common (shared MQTT demo code, runtime-agnostic)$(NC)\n"
+	cargo build --package mqtt-connector-demo-common
 	@printf "$(YELLOW)  → Building tokio-mqtt-connector-demo (native, tokio runtime)$(NC)\n"
 	cargo build --package tokio-mqtt-connector-demo
 	@printf "$(YELLOW)  → Building embassy-mqtt-connector-demo (embedded, embassy runtime)$(NC)\n"
 	cargo build --package embassy-mqtt-connector-demo --target thumbv7em-none-eabihf
+	@printf "$(YELLOW)  → Building knx-connector-demo-common (shared KNX demo code, runtime-agnostic)$(NC)\n"
+	cargo build --package knx-connector-demo-common
 	@printf "$(YELLOW)  → Building tokio-knx-connector-demo (native, tokio runtime)$(NC)\n"
 	cargo build --package tokio-knx-connector-demo
 	@printf "$(YELLOW)  → Building embassy-knx-connector-demo (embedded, embassy runtime)$(NC)\n"
@@ -295,6 +299,8 @@ examples:
 	cargo build --package weather-station-beta
 	@printf "$(YELLOW)  → Building weather-station-gamma (embedded, embassy runtime)$(NC)\n"
 	cargo build --package weather-station-gamma --target thumbv7em-none-eabihf
+	@printf "$(YELLOW)  → Building remote-access-demo (AimX server + client)$(NC)\n"
+	cargo build --package remote-access-demo
 	@printf "$(YELLOW)  → Building hello-mailbox (sync)$(NC)\n"
 	cargo build --package hello-mailbox
 	@printf "$(YELLOW)  → Building hello-single-latest-async$(NC)\n"

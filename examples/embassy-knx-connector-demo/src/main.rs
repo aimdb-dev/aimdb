@@ -92,7 +92,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 /// Button handler that toggles light on button press
 async fn button_handler(
     ctx: RuntimeContext<EmbassyAdapter>,
-    producer: aimdb_core::Producer<LightControl, EmbassyAdapter>,
+    producer: aimdb_core::Producer<LightControl>,
     mut button: ExtiInput<'static, embassy_stm32::mode::Async>,
 ) {
     let log = ctx.log();
@@ -115,17 +115,7 @@ async fn button_handler(
 
         let state = LightControl::new("1/0/6", light_on);
 
-        match producer.produce(state).await {
-            Ok(_) => {
-                log.info(&alloc::format!(
-                    "✅ Published to KNX: 1/0/6 = {}",
-                    if light_on { "ON ✨" } else { "OFF" }
-                ));
-            }
-            Err(e) => {
-                log.error(&alloc::format!("❌ Failed to publish: {:?}", e));
-            }
-        }
+        producer.produce(state);
 
         button.wait_for_rising_edge().await;
         time.sleep(time.millis(50)).await;
@@ -250,7 +240,7 @@ async fn main(spawner: Spawner) {
 
     info!("🔌 Initializing KNX client...");
 
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(stack));
 
     use alloc::format;
     let gateway_url = format!("knx://{}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);
@@ -355,15 +345,19 @@ async fn main(spawner: Spawner) {
     info!("Press USER button to toggle light (1/0/6)");
 
     static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
-    let _db = DB_CELL.init(builder.build().await.expect("Failed to build database"));
+    let (db, db_runner) = builder.build().await.expect("Failed to build database");
+    let _db = DB_CELL.init(db);
 
     info!("✅ Database running");
 
-    // Main loop - blink LED to show system is alive
-    loop {
-        led.set_high();
-        Timer::after(Duration::from_millis(100)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(900)).await;
-    }
+    // Drive the AimDB runner and LED blink concurrently.
+    embassy_futures::join::join(db_runner.run(), async {
+        loop {
+            led.set_high();
+            Timer::after(Duration::from_millis(100)).await;
+            led.set_low();
+            Timer::after(Duration::from_millis(900)).await;
+        }
+    })
+    .await;
 }

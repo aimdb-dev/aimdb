@@ -20,8 +20,7 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-// ToString is only needed when alloc is enabled (for record_key.to_string())
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
+#[cfg(not(feature = "std"))]
 use alloc::string::ToString;
 
 #[cfg(feature = "std")]
@@ -159,7 +158,7 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
 /// Metadata tracking for records (std only - used for remote access introspection)
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
-struct RecordMetadataTracker {
+pub(crate) struct RecordMetadataTracker {
     /// Human-readable record name (type name)
     name: String,
     /// Creation timestamp (seconds, nanoseconds since UNIX_EPOCH)
@@ -187,7 +186,7 @@ impl RecordMetadataTracker {
         }
     }
 
-    fn mark_updated(&self) {
+    pub(crate) fn mark_updated(&self) {
         use std::time::SystemTime;
 
         let duration = SystemTime::now()
@@ -215,19 +214,20 @@ pub(crate) type BoxFuture<'a, T> =
     core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
 
 /// Type alias for consumer service closure stored in TypedRecord
-/// Each consumer receives a Consumer<T, R> handle for subscribing to the buffer
+/// Each consumer receives a Consumer<T> handle for subscribing to the buffer
 /// and a runtime context (Arc<dyn Any>) for accessing runtime capabilities
-type ConsumerServiceFn<T, R> = Box<
-    dyn FnOnce(crate::Consumer<T, R>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()> + Send,
+type ConsumerServiceFn<T> = Box<
+    dyn FnOnce(crate::Consumer<T>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()> + Send,
 >;
 
 /// Type alias for producer service closure stored in TypedRecord
-/// Takes (Producer<T, R>, RuntimeContext) and returns a Future
-/// This will be auto-spawned during build()
-type ProducerServiceFn<T, R> = Box<
-    dyn FnOnce(crate::Producer<T, R>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()>
-        + Send
-        + Sync,
+/// Takes (Producer<T>, RuntimeContext) and returns a Future
+/// This will be auto-spawned during build().
+/// `Send` only — `Sync` is not required because the closure is taken out of
+/// `Mutex<Option<...>>` exactly once via `.take()`, and `Mutex<T>: Sync`
+/// already holds when `T: Send`. Matches the consumer-side `ConsumerServiceFn`.
+type ProducerServiceFn<T> = Box<
+    dyn FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()> + Send,
 >;
 
 /// Type-erased trait for records
@@ -422,7 +422,7 @@ pub trait AnyRecordExt {
     ///
     /// # Returns
     /// `Some(&TypedRecord<T, R>)` if types match, `None` otherwise
-    fn as_typed<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static>(
+    fn as_typed<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>(
         &self,
     ) -> Option<&TypedRecord<T, R>>;
 
@@ -434,53 +434,57 @@ pub trait AnyRecordExt {
     ///
     /// # Returns
     /// `Some(&mut TypedRecord<T, R>)` if types match, `None` otherwise
-    fn as_typed_mut<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static>(
+    fn as_typed_mut<
+        T: Send + 'static + Debug + Clone,
+        R: aimdb_executor::RuntimeAdapter + 'static,
+    >(
         &mut self,
     ) -> Option<&mut TypedRecord<T, R>>;
 }
 
 impl AnyRecordExt for Box<dyn AnyRecord> {
-    fn as_typed<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static>(
+    fn as_typed<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>(
         &self,
     ) -> Option<&TypedRecord<T, R>> {
         self.as_any().downcast_ref::<TypedRecord<T, R>>()
     }
 
-    fn as_typed_mut<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static>(
+    fn as_typed_mut<
+        T: Send + 'static + Debug + Clone,
+        R: aimdb_executor::RuntimeAdapter + 'static,
+    >(
         &mut self,
     ) -> Option<&mut TypedRecord<T, R>> {
         self.as_any_mut().downcast_mut::<TypedRecord<T, R>>()
     }
 }
 
-/// Helper for spawning tasks for a specific record type
+/// Helper for collecting all build-time futures for a specific record type.
 ///
-/// Captures record type `T` via PhantomData to spawn tasks without making AnyRecord non-object-safe.
-pub struct RecordSpawner<T> {
+/// Captures record type `T` via PhantomData so `AnyRecord` stays object-safe.
+/// Returns every future the record needs (producer, transform, consumers) so
+/// `AimDbBuilder::build()` can hand them to the `AimDbRunner`.
+pub struct RecordFutureCollector<T> {
     _phantom: core::marker::PhantomData<T>,
 }
 
-impl<T> RecordSpawner<T>
+impl<T> RecordFutureCollector<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
-    /// Spawns all tasks (producer, consumers, and inbound connectors) for a record
+    /// Collects all futures (producer, transform, consumers) for a record.
     ///
-    /// Downcasts type-erased AnyRecord to TypedRecord<T, R> and spawns tasks.
-    ///
-    /// # Arguments
-    /// * `record` - The type-erased record to spawn tasks for
-    /// * `runtime` - The runtime adapter for spawning tasks
-    /// * `db` - The database instance
-    /// * `record_key` - The record's key for key-based producer/consumer creation
-    pub fn spawn_all_tasks<R>(
+    /// Downcasts the type-erased `AnyRecord` to `TypedRecord<T, R>` then returns
+    /// every future the record contributes to the runner. Source/transform are
+    /// mutually exclusive — at most one will appear.
+    pub fn collect_all_futures<R>(
         record: &dyn AnyRecord,
         runtime: &Arc<R>,
         db: &Arc<crate::builder::AimDb<R>>,
         record_key: &str,
-    ) -> crate::DbResult<()>
+    ) -> crate::DbResult<Vec<BoxFuture<'static, ()>>>
     where
-        R: aimdb_executor::Spawn + 'static,
+        R: aimdb_executor::RuntimeAdapter + 'static,
     {
         use crate::DbError;
 
@@ -499,48 +503,51 @@ where
                 }
             })?;
 
-        // Spawn producer service if present (using key-based producer)
-        // Note: source and transform are mutually exclusive — only one will be present
+        let mut futures = Vec::new();
+
         if typed_record.has_producer_service() {
-            typed_record.spawn_producer_service(runtime, db, record_key)?;
+            if let Some(f) = typed_record.collect_producer_future(runtime, db, record_key)? {
+                futures.push(f);
+            }
         }
 
-        // Spawn transform task if present (mutually exclusive with source)
         if typed_record.has_transform() {
-            typed_record.spawn_transform_task(runtime, db, record_key)?;
+            futures.extend(typed_record.collect_transform_futures(runtime, db, record_key)?);
         }
 
-        // Spawn consumer tasks if present (using key-based consumer)
         if typed_record.consumer_count() > 0 {
-            typed_record.spawn_consumer_tasks(runtime, db, record_key)?;
+            futures.extend(typed_record.collect_consumer_futures(runtime, db, record_key)?);
         }
 
-        Ok(())
+        Ok(futures)
     }
 }
 
 /// Typed record storage with producer/consumer functions
 ///
 /// Stores type-safe producer and consumer functions with optional buffering for async dispatch.
-pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> {
+pub struct TypedRecord<
+    T: Send + 'static + Debug + Clone,
+    R: aimdb_executor::RuntimeAdapter + 'static,
+> {
     /// Optional producer service - a task that generates data
     /// This will be auto-spawned during build() if present
-    /// Stored as FnOnce that takes (Producer<T, R>, RuntimeContext) and returns a Future
+    /// Stored as FnOnce that takes (Producer<T>, RuntimeContext) and returns a Future
     /// Wrapped in Mutex for interior mutability (needed to take() during spawning)
     #[cfg(feature = "std")]
-    producer_service: std::sync::Mutex<Option<ProducerServiceFn<T, R>>>,
+    producer_service: std::sync::Mutex<Option<ProducerServiceFn<T>>>,
 
     #[cfg(not(feature = "std"))]
-    producer_service: spin::Mutex<Option<ProducerServiceFn<T, R>>>,
+    producer_service: spin::Mutex<Option<ProducerServiceFn<T>>>,
 
     /// List of consumer/tap tasks - wrapped in Mutex for Sync + taking out during spawn
     /// Each is spawned as an independent background task that subscribes to the buffer
     /// Using Mutex provides the Sync bound required by AnyRecord trait
     #[cfg(feature = "std")]
-    consumers: std::sync::Mutex<Vec<ConsumerServiceFn<T, R>>>,
+    consumers: std::sync::Mutex<Vec<ConsumerServiceFn<T>>>,
 
     #[cfg(not(feature = "std"))]
-    consumers: spin::Mutex<alloc::vec::Vec<ConsumerServiceFn<T, R>>>,
+    consumers: spin::Mutex<alloc::vec::Vec<ConsumerServiceFn<T>>>,
 
     /// Transform descriptor — mutually exclusive with producer_service.
     /// If set, this record is a reactive derivation from one or more input records.
@@ -552,7 +559,10 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
-    buffer: Option<Box<dyn DynBuffer<T>>>,
+    ///
+    /// Stored as `Arc` (not `Box`) so `Producer<T>` and `Consumer<T>` can hold
+    /// a pre-resolved handle to the same buffer — design 029 hot-path change.
+    buffer: Option<Arc<dyn DynBuffer<T>>>,
 
     /// Buffer configuration (cached for metadata, std only)
     #[cfg(feature = "std")]
@@ -600,7 +610,9 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spa
     latest_snapshot: Arc<spin::Mutex<Option<T>>>,
 }
 
-impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> TypedRecord<T, R> {
+impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
+    TypedRecord<T, R>
+{
     /// Creates a new empty typed record
     ///
     /// Call `.with_remote_access()` to enable JSON (std only).
@@ -660,7 +672,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// or if a `.link_from()` inbound connector is registered (all three would race on the buffer).
     pub fn set_producer_service<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(crate::Producer<T, R>, Arc<dyn Any + Send + Sync>) -> Fut + Send + Sync + 'static,
+        F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Check for existing transform (mutual exclusion)
@@ -689,7 +701,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
         // Box the future-returning function
         let boxed_fn = Box::new(
-            move |producer: crate::Producer<T, R>,
+            move |producer: crate::Producer<T>,
                   ctx: Arc<dyn Any + Send + Sync>|
                   -> BoxFuture<'static, ()> { Box::pin(f(producer, ctx)) },
         );
@@ -718,7 +730,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     ///
     /// ```rust,ignore
     /// record.add_consumer(|consumer, ctx_any| async move {
-    ///     let mut rx = consumer.subscribe().unwrap();
+    ///     let mut rx = consumer.subscribe();
     ///     while let Ok(value) = rx.recv().await {
     ///         println!("Consumer: {:?}", value);
     ///     }
@@ -726,12 +738,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// ```
     pub fn add_consumer<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(crate::Consumer<T, R>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
+        F: FnOnce(crate::Consumer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Box the future to make it trait object compatible
         let boxed = Box::new(
-            move |consumer: crate::Consumer<T, R>,
+            move |consumer: crate::Consumer<T>,
                   ctx_any: Arc<dyn Any + Send + Sync>|
                   -> BoxFuture<'static, ()> { Box::pin(f(consumer, ctx_any)) },
         );
@@ -874,23 +886,22 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         }
     }
 
-    /// Spawns the transform task for this record.
+    /// Collects the transform task future and any fan-in forwarder futures.
     ///
-    /// Takes the transform descriptor (can only spawn once) and spawns the
-    /// reactive task that subscribes to input records and produces to this record.
-    pub fn spawn_transform_task(
+    /// Single-input transforms return one future; join transforms return the
+    /// trigger-loop future plus one forwarder future per input. Returns an
+    /// empty `Vec` if no transform is registered.
+    pub fn collect_transform_futures(
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
         record_key: &str,
-    ) -> crate::DbResult<()>
+    ) -> crate::DbResult<Vec<BoxFuture<'static, ()>>>
     where
-        R: aimdb_executor::Spawn,
+        R: aimdb_executor::RuntimeAdapter,
         T: Sync,
     {
-        use crate::DbError;
-
-        // Take the transform descriptor (can only spawn once)
+        // Take the transform descriptor (can only collect once)
         let descriptor = {
             #[cfg(feature = "std")]
             {
@@ -905,27 +916,23 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         if let Some(desc) = descriptor {
             #[cfg(feature = "tracing")]
             tracing::info!(
-                "🔄 Spawning transform task for '{}' (inputs: {:?})",
+                "🔄 Collecting transform futures for '{}' (inputs: {:?})",
                 record_key,
                 desc.input_keys
             );
 
-            // Create Producer<T> bound to the specific record key
-            let producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
-            let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
+            // Create Producer<T> bound to a pre-resolved write handle for this record.
+            let producer = crate::typed_api::Producer::new(self.writer_handle());
 
-            // Call the spawn function (mirrors spawn_producer_service exactly)
-            let task_future = (desc.spawn_fn)(producer, db.clone(), ctx);
-            runtime.spawn(task_future).map_err(DbError::from)?;
+            let collected = (desc.build_fn)(producer, db.clone(), runtime.clone(), record_key);
 
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "✅ Successfully spawned transform task for record '{}'",
-                record_key
-            );
+            let mut out = Vec::with_capacity(1 + collected.fanin_futures.len());
+            out.push(collected.task_future);
+            out.extend(collected.fanin_futures);
+            Ok(out)
+        } else {
+            Ok(Vec::new())
         }
-
-        Ok(())
     }
 
     /// Sets the buffer for this record
@@ -939,7 +946,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             // We can't call cfg() on the buffer, so we'll infer from the buffer type name
             self.buffer_cfg = None; // Will be set by the caller via set_buffer_cfg
         }
-        self.buffer = Some(buffer);
+        // `Arc::from(Box<dyn _>)` reuses the existing heap allocation; the
+        // public API stays Box-flavoured to avoid churn at adapter / test call
+        // sites, while internally we share via Arc so producers/consumers can
+        // hold a pre-resolved handle.
+        self.buffer = Some(Arc::from(buffer));
     }
 
     /// Sets the buffer configuration (for metadata tracking, std only)
@@ -987,6 +998,36 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// `Some(&dyn DynBuffer<T>)` if buffer is set, `None` otherwise
     pub fn buffer(&self) -> Option<&dyn DynBuffer<T>> {
         self.buffer.as_deref()
+    }
+
+    /// Returns a fresh `Arc<dyn WriteHandle<T>>` bound to this record's buffer,
+    /// snapshot, and metadata. Used at build time by the spawn machinery to
+    /// pre-resolve `Producer<T>` handles (design 029).
+    pub(crate) fn writer_handle(&self) -> Arc<dyn crate::buffer::WriteHandle<T>>
+    where
+        T: Send + Clone + 'static,
+    {
+        #[cfg(feature = "std")]
+        {
+            Arc::new(crate::buffer::RecordWriter::new(
+                self.buffer.clone(),
+                self.latest_snapshot.clone(),
+                self.metadata.clone(),
+            ))
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            Arc::new(crate::buffer::RecordWriter::new(
+                self.buffer.clone(),
+                self.latest_snapshot.clone(),
+            ))
+        }
+    }
+
+    /// Returns a clone of the buffer `Arc` (or `None` if no buffer is
+    /// configured). Used at build time to pre-resolve `Consumer<T>` handles.
+    pub(crate) fn buffer_handle(&self) -> Option<Arc<dyn DynBuffer<T>>> {
+        self.buffer.clone()
     }
 
     /// Subscribes to the buffer for this record type
@@ -1148,25 +1189,32 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         }
     }
 
-    /// Spawns all registered consumer tasks
+    /// Collects all registered consumer (`.tap()`) futures.
     ///
-    /// Spawns `.tap()` consumers as background tasks. Called automatically by `Database::new()`.
-    /// Consumes registered consumers (FnOnce), can only be called once.
-    pub fn spawn_consumer_tasks(
+    /// Consumes registered consumers (FnOnce) — can only be called once. The returned
+    /// futures are pushed into the build-time accumulator by `RecordFutureCollector`
+    /// and driven by `AimDbRunner::run()`.
+    pub fn collect_consumer_futures(
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
         record_key: &str,
-    ) -> crate::DbResult<()>
+    ) -> crate::DbResult<Vec<BoxFuture<'static, ()>>>
     where
-        R: aimdb_executor::Spawn,
+        R: aimdb_executor::RuntimeAdapter,
         T: Sync,
     {
-        use crate::DbError;
+        // `db` carries the profiling clock; `record_key` shows up in the no-buffer
+        // error message (std only). Both are unused when their feature is off —
+        // silence them narrowly so an unused `runtime` would still warn.
+        #[cfg(not(feature = "profiling"))]
+        let _ = db;
+        #[cfg(not(feature = "std"))]
+        let _ = record_key;
 
         #[cfg(feature = "tracing")]
         tracing::debug!(
-            "Spawning {} consumer tasks for record type {}",
+            "Collecting {} consumer futures for record type {}",
             self.consumer_count(),
             core::any::type_name::<T>()
         );
@@ -1184,60 +1232,70 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
             }
         };
 
-        #[cfg(feature = "tracing")]
-        let count = consumers.len();
-
         // Invariant: taps are pushed to `profiling` in the same order consumers are
         // added (both happen in `RecordRegistrar::tap_raw`), so index `i` lines up.
         #[cfg(feature = "profiling")]
         debug_assert_eq!(self.profiling.tap_count(), consumers.len());
 
-        // Spawn each consumer as a background task
+        let mut futures = Vec::with_capacity(consumers.len());
+
+        // Pre-resolve the buffer handle once — every consumer shares the same Arc.
+        // A `.tap()` requires a buffer; surface the misconfiguration here with the
+        // record key in the message rather than panicking inside `Consumer::new`.
+        let buffer_arc = self.buffer_handle().ok_or({
+            #[cfg(feature = "std")]
+            {
+                crate::DbError::MissingConfiguration {
+                    parameter: alloc::format!(
+                        "buffer for record '{}' (required by .tap())",
+                        record_key
+                    ),
+                }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                crate::DbError::MissingConfiguration { _parameter: () }
+            }
+        })?;
+
         #[cfg_attr(not(feature = "profiling"), allow(unused_variables))]
         for (i, consumer_fn) in consumers.into_iter().enumerate() {
-            // Create a Consumer<T> handle bound to the specific record key
+            // Create a Consumer<T> bound to a pre-resolved buffer handle.
             #[allow(unused_mut)]
-            let mut consumer = crate::typed_api::Consumer::new(db.clone(), record_key.to_string());
+            let mut consumer = crate::typed_api::Consumer::new(buffer_arc.clone());
 
             #[cfg(feature = "profiling")]
             if let Some(entry) = self.profiling.tap(i) {
                 consumer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
             }
 
-            // Get runtime context as Arc<dyn Any> by cloning the Arc
+            // Type-erase the runtime for the consumer signature.
             let runtime_any: Arc<dyn Any + Send + Sync> = runtime.clone();
 
-            // Spawn the consumer task with runtime context
-            let task_future = consumer_fn(consumer, runtime_any);
-            runtime.spawn(task_future).map_err(DbError::from)?;
+            futures.push(consumer_fn(consumer, runtime_any));
         }
 
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Successfully spawned {} consumer tasks for record type {}",
-            count,
-            core::any::type_name::<T>()
-        );
-
-        Ok(())
+        Ok(futures)
     }
 
-    /// Spawns consumer tasks from a type-erased runtime
-    ///
-    /// Helper for automatic spawning system via database's spawn_task method.
-    pub fn spawn_producer_service(
+    /// Collects the producer-service future, if one is registered.
+    pub fn collect_producer_future(
         &self,
         runtime: &Arc<R>,
         db: &Arc<crate::AimDb<R>>,
         record_key: &str,
-    ) -> crate::DbResult<()>
+    ) -> crate::DbResult<Option<BoxFuture<'static, ()>>>
     where
-        R: aimdb_executor::Spawn,
+        R: aimdb_executor::RuntimeAdapter,
         T: Sync,
     {
-        use crate::DbError;
+        // `db` is only consulted under `profiling` for the clock; silence the
+        // unused-variable warning narrowly so an unused `runtime` would still warn.
+        // `record_key` is silenced inside the `if let Some(...)` branch below.
+        #[cfg(not(feature = "profiling"))]
+        let _ = db;
 
-        // Take the producer service (can only spawn once)
+        // Take the producer service (can only collect once)
         let service = {
             #[cfg(feature = "std")]
             {
@@ -1252,13 +1310,16 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
         if let Some(service_fn) = service {
             #[cfg(feature = "tracing")]
             tracing::debug!(
-                "Spawning producer service for record type {}",
+                "Collecting producer service future for record '{}' (type {})",
+                record_key,
                 core::any::type_name::<T>()
             );
+            #[cfg(not(feature = "tracing"))]
+            let _ = record_key;
 
-            // Create Producer<T> bound to the specific record key
+            // Create Producer<T> bound to a pre-resolved write handle for this record.
             #[allow(unused_mut)]
-            let mut producer = crate::typed_api::Producer::new(db.clone(), record_key.to_string());
+            let mut producer = crate::typed_api::Producer::new(self.writer_handle());
 
             #[cfg(feature = "profiling")]
             if let Some(entry) = self.profiling.source(0) {
@@ -1267,26 +1328,16 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
 
             let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
 
-            // Call the service function to get the future
-            let task_future = service_fn(producer, ctx);
-
-            // Spawn the producer service task using the typed runtime
-            runtime.spawn(task_future).map_err(DbError::from)?;
-
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "Successfully spawned producer service for record type {}",
-                core::any::type_name::<T>()
-            );
+            Ok(Some(service_fn(producer, ctx)))
+        } else {
+            Ok(None)
         }
-
-        Ok(())
     }
 
     /// Produces a value by pushing to the buffer
     ///
     /// Enqueues value for consumer tasks and updates latest snapshot.
-    pub async fn produce(&self, val: T) {
+    pub fn produce(&self, val: T) {
         // Cache snapshot for latest() API (both std and no_std)
         #[cfg(feature = "std")]
         {
@@ -1366,23 +1417,18 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Type
     /// Returns a type-erased producer that implements ProducerTrait,
     /// allowing inbound connectors to produce values without knowing the concrete type.
     ///
-    /// # Arguments
-    /// * `db` - Database reference for creating the typed producer
-    /// * `record_key` - The record key to bind the producer to
-    ///
-    /// # Returns
-    /// Box<dyn ProducerTrait> that can be used for routing
+    /// Backed by a pre-resolved `WriteHandle` (design 029) — no db / key lookup
+    /// is performed on each `produce_any` call.
     #[cfg(feature = "std")]
-    pub fn create_producer_trait(
-        &self,
-        db: Arc<crate::builder::AimDb<R>>,
-        record_key: String,
-    ) -> Box<dyn crate::connector::ProducerTrait> {
-        Box::new(crate::typed_api::Producer::<T, R>::new(db, record_key))
+    pub fn create_producer_trait(&self) -> Box<dyn crate::connector::ProducerTrait>
+    where
+        T: Send + 'static + Debug + Clone,
+    {
+        Box::new(crate::typed_api::Producer::<T>::new(self.writer_handle()))
     }
 }
 
-impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Default
+impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static> Default
     for TypedRecord<T, R>
 {
     fn default() -> Self {
@@ -1394,8 +1440,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> Defa
 // This enables safe concurrent access to records from multiple connector tasks
 // in the bidirectional routing system. The Sync bound propagates from AnyRecord
 // trait and ensures thread-safe sharing of record values.
-impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'static> AnyRecord
-    for TypedRecord<T, R>
+impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
+    AnyRecord for TypedRecord<T, R>
 {
     fn validate(&self) -> Result<(), &'static str> {
         // Producer service is optional - some records are driven by external events
@@ -1667,40 +1713,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::Spawn + 'stati
             core::any::type_name::<T>()
         );
 
-        // Check if buffer exists before trying to produce
-        if self.buffer.is_none() {
-            return Err(DbError::RuntimeError {
-                message: format!(
-                    "Record '{}' has no buffer configured. \
-                     Cannot produce value without buffer.",
-                    core::any::type_name::<T>()
-                ),
-            });
-        }
-
-        // Use the existing produce() method which handles:
-        // 1. Updating latest_snapshot
-        // 2. Pushing to buffer
-        // 3. Updating metadata timestamp (std only)
-        // This is a synchronous wrapper around the async produce()
-        {
-            #[cfg(feature = "std")]
-            {
-                *self.latest_snapshot.lock().unwrap() = Some(value.clone());
-            }
-
-            #[cfg(not(feature = "std"))]
-            {
-                *self.latest_snapshot.lock() = Some(value.clone());
-            }
-
-            if let Some(buf) = &self.buffer {
-                buf.push(value);
-
-                #[cfg(feature = "std")]
-                self.metadata.mark_updated();
-            }
-        }
+        self.produce(value);
 
         #[cfg(feature = "tracing")]
         tracing::info!(

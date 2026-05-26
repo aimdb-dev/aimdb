@@ -53,7 +53,7 @@ Portable code uses `R: Runtime` — no platform imports needed:
 
 ```rust
 /// Producer: reads a sensor and pushes typed values into AimDB.
-async fn sensor_producer<R: Runtime>(ctx: RuntimeContext<R>, producer: Producer<Temperature, R>) {
+async fn sensor_producer<R: Runtime>(ctx: RuntimeContext<R>, producer: Producer<Temperature>) {
     loop {
         let reading = read_sensor().await;
         producer.produce(Temperature {
@@ -65,7 +65,7 @@ async fn sensor_producer<R: Runtime>(ctx: RuntimeContext<R>, producer: Producer<
 }
 
 /// Consumer: subscribes to the buffer and reacts to every new value.
-async fn temp_logger<R: Runtime>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature, R>) {
+async fn temp_logger<R: Runtime>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature>) {
     let mut reader = consumer.subscribe().unwrap();
     while let Ok(temp) = reader.recv().await {
         ctx.log().info(&format!("{}: {:.1}°C", temp.sensor_id, temp.celsius));

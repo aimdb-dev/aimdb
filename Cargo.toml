@@ -75,6 +75,7 @@ tracing = { version = "0.1", default-features = false }
 
 # Async utilities
 futures = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # CLI (for aimdb-cli)
 clap = { version = "4.0", features = ["derive"] }

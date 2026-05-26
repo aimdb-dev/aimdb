@@ -20,12 +20,11 @@
 
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
-use aimdb_core::{
-    transport::{ConnectorConfig, PublishError},
-    OutboundRoute,
-};
+use aimdb_core::OutboundRoute;
 
 use crate::client_manager::ClientManager;
+
+type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
 
 /// Live WebSocket connector returned by `build()`.
 pub struct WebSocketConnectorImpl {
@@ -43,25 +42,25 @@ impl WebSocketConnectorImpl {
         }
     }
 
-    /// Spawn one Tokio task per outbound route.
+    /// Collects one outbound publisher future per route.
     ///
-    /// Each task:
+    /// Each future:
     /// 1. Calls `consumer.subscribe_any()` to get a type-erased reader.
     /// 2. Loops calling `reader.recv_any()`.
     /// 3. Runs the serializer.
     /// 4. Broadcasts the bytes via `ClientManager::broadcast()`.
-    pub(crate) fn spawn_outbound_publishers<R>(
+    pub(crate) fn collect_outbound_futures<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
         outbound_routes: Vec<OutboundRoute>,
         snapshot_map: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
-    ) -> aimdb_core::DbResult<()>
+    ) -> Vec<BoxFuture>
     where
-        R: aimdb_executor::Spawn + 'static,
+        R: aimdb_executor::RuntimeAdapter + 'static,
     {
-        let runtime = db.runtime();
         let raw_payload = self.raw_payload;
         let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
+        let mut futures: Vec<BoxFuture> = Vec::with_capacity(outbound_routes.len());
 
         for (default_topic, consumer, serializer, _config, topic_provider) in outbound_routes {
             let client_mgr = self.client_mgr.clone();
@@ -69,7 +68,7 @@ impl WebSocketConnectorImpl {
             let default_topic_clone = default_topic.clone();
             let runtime_ctx = runtime_ctx.clone();
 
-            runtime.spawn(async move {
+            futures.push(Box::pin(async move {
                 let mut reader = match consumer.subscribe_any().await {
                     Ok(r) => r,
                     Err(_e) => {
@@ -145,27 +144,9 @@ impl WebSocketConnectorImpl {
                     "WS outbound publisher stopped for topic: {}",
                     default_topic_clone
                 );
-            })?;
+            }));
         }
 
-        Ok(())
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Connector trait
-// ════════════════════════════════════════════════════════════════════
-
-impl aimdb_core::transport::Connector for WebSocketConnectorImpl {
-    /// WebSocket inbound is driven by the session receive loop, not by
-    /// `publish()`.  This implementation exists only to satisfy the trait and
-    /// will never be called in normal operation.
-    fn publish(
-        &self,
-        _destination: &str,
-        _config: &ConnectorConfig,
-        _payload: &[u8],
-    ) -> Pin<Box<dyn core::future::Future<Output = Result<(), PublishError>> + Send + '_>> {
-        Box::pin(async move { Ok(()) })
+        futures
     }
 }

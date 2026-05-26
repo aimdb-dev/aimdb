@@ -93,6 +93,26 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     fn reset_metrics(&self) {}
 }
 
+/// Write-side handle for a single record (design 029, M14).
+///
+/// `Producer<T>` holds an `Arc<dyn WriteHandle<T>>` so it can be parameterised
+/// over `T` alone — no runtime adapter `R` and no per-call record-key string
+/// lookup on the produce hot path. The implementor (`RecordWriter<T>`)
+/// pre-binds the underlying buffer, the latest-snapshot slot, and the metadata
+/// tracker at build time.
+///
+/// Crate-private on purpose. `Producer<T>::new` is the only construction path;
+/// external test code that needs a fake Producer should go through a future
+/// `Producer::for_testing(...)` helper rather than implementing `WriteHandle`
+/// directly.
+pub(crate) trait WriteHandle<T: Clone + Send + 'static>: Send + Sync {
+    /// Push a value into the buffer, update the latest-snapshot cache, and
+    /// (when a buffer is present) mark the metadata `last_update` timestamp.
+    /// Infallible — all three operations are synchronous and lock-free or
+    /// spin-locked.
+    fn push(&self, value: T);
+}
+
 /// Reader trait for consuming values from a buffer
 ///
 /// All read operations are async. Each reader is independent with its own state.

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use aimdb_core::builder::AimDbBuilder;
 use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams};
-use aimdb_executor::{Spawn, TimeOps};
+use aimdb_executor::{RuntimeAdapter, TimeOps};
 
 use crate::backend::{PersistenceBackend, QueryParams};
 
@@ -20,7 +20,7 @@ pub struct PersistenceState {
 }
 
 /// Extension trait that adds `.with_persistence()` to [`AimDbBuilder`].
-pub trait AimDbBuilderPersistExt<R: Spawn + TimeOps> {
+pub trait AimDbBuilderPersistExt<R: RuntimeAdapter + TimeOps> {
     /// Configures a persistence backend with a retention window.
     ///
     /// Stores the backend in the builder's `Extensions` TypeMap (accessible to
@@ -43,7 +43,7 @@ pub trait AimDbBuilderPersistExt<R: Spawn + TimeOps> {
 
 impl<R> AimDbBuilderPersistExt<R> for AimDbBuilder<R>
 where
-    R: Spawn + TimeOps + 'static,
+    R: RuntimeAdapter + TimeOps + 'static,
 {
     fn with_persistence(
         mut self,

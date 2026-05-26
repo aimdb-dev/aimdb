@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- Emitted task scaffolds now use `Producer<T>` / `Consumer<T>` (no `, TokioAdapter` second parameter) and emitted doc tables show the same form, matching the M14 cleanup in `aimdb-core` (Design 029). Regenerate downstream scaffolds after upgrading.
+- Emitted `configure_schema` signature changed from `<R: Spawn + 'static>` to `<R: RuntimeAdapter + 'static>`; emitted prelude now imports `aimdb_executor::RuntimeAdapter` instead of `Spawn` (Issue #88). Regenerate downstream schemas.
+
 ## [0.2.0] - 2026-05-22
 
 ### Changed

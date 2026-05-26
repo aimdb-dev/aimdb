@@ -16,7 +16,6 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
 pub mod buffer;
@@ -67,14 +66,13 @@ pub use extensions::Extensions;
 // Runtime trait re-exports from aimdb-executor
 // These traits define the platform-specific execution, timing, and logging capabilities
 pub use aimdb_executor::{
-    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, Spawn, TimeOps,
+    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, TimeOps,
 };
 
 // Database implementation exports
 pub use database::Database;
 
 // Producer-Consumer Pattern exports
-#[cfg(feature = "alloc")]
 pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
@@ -101,6 +99,5 @@ pub use record_id::{RecordId, RecordKey, StringKey};
 pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo, RecordOrigin};
 
 // Transform API exports
-#[cfg(feature = "alloc")]
 pub use transform::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 pub use transform::{TransformBuilder, TransformPipeline};

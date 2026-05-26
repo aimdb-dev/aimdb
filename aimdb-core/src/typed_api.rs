@@ -1,8 +1,8 @@
 //! Type-safe Producer-Consumer API
 //!
 //! Provides the complete typed API for producer-consumer patterns including:
-//! - `Producer<T, R>` - Type-safe value production
-//! - `Consumer<T, R>` - Type-safe value consumption
+//! - `Producer<T>` - Type-safe value production
+//! - `Consumer<T>` - Type-safe value consumption
 //! - `RecordRegistrar` - Fluent record configuration API
 //! - `RecordT` trait - Self-registering records
 //!
@@ -12,11 +12,11 @@
 //! #[service]
 //! async fn temperature_producer<R: Runtime>(
 //!     ctx: RuntimeContext<R>,
-//!     producer: Producer<Temperature, R>,
+//!     producer: Producer<Temperature>,
 //! ) {
 //!     loop {
 //!         let temp = read_sensor().await;
-//!         producer.produce(temp).await?;
+//!         producer.produce(temp);
 //!         ctx.time().sleep(ctx.time().secs(1)).await;
 //!     }
 //! }
@@ -28,9 +28,9 @@
 //! #[service]
 //! async fn temperature_monitor<R: Runtime>(
 //!     ctx: RuntimeContext<R>,
-//!     consumer: Consumer<Temperature, R>,
+//!     consumer: Consumer<Temperature>,
 //! ) {
-//!     let mut rx = consumer.subscribe()?;
+//!     let mut rx = consumer.subscribe();
 //!     while let Ok(temp) = rx.recv().await {
 //!         ctx.log().info(&format!("Temp: {:.1}°C", temp.celsius));
 //!     }
@@ -64,6 +64,7 @@ use alloc::{
     vec::Vec,
 };
 
+use crate::buffer::{DynBuffer, WriteHandle};
 use crate::typed_record::TypedRecord;
 use crate::{AimDb, DbResult};
 
@@ -73,13 +74,17 @@ use crate::{AimDb, DbResult};
 
 /// Type-safe producer for a specific record type
 ///
-/// `Producer<T, R>` provides scoped access to produce values of type `T` only.
+/// `Producer<T>` provides scoped access to produce values of type `T` only.
 /// This follows the principle of least privilege - services only get access
 /// to what they need, not the entire database.
 ///
 /// # Type Parameters
 /// * `T` - The record type this producer can emit
-/// * `R` - The runtime adapter type (e.g., TokioAdapter, EmbassyAdapter)
+///
+/// Pre-binds the record's buffer, latest-snapshot slot, and metadata tracker
+/// (via an internal `Arc<dyn WriteHandle<T>>`), so `produce()` is a single
+/// virtual call rather than a `HashMap` lookup + downcast on each invocation
+/// (design 029).
 ///
 /// # Benefits
 ///
@@ -88,28 +93,25 @@ use crate::{AimDb, DbResult};
 /// - **Clear Intent**: Function signature shows what it produces
 /// - **Decoupling**: No access to other record types
 /// - **Security**: Cannot misuse database for unintended operations
-pub struct Producer<T, R: aimdb_executor::Spawn + 'static> {
-    /// Reference to the database
-    db: Arc<AimDb<R>>,
-    /// Record key for key-based routing (required - all records have keys)
-    record_key: String,
+pub struct Producer<T> {
+    /// Pre-resolved write handle to the record's buffer/snapshot/metadata.
+    write: Arc<dyn WriteHandle<T>>,
     /// Stage profiling state (set by the spawn machinery for `.source()` stages).
     #[cfg(feature = "profiling")]
     profiling: Option<Arc<crate::profiling::ProducerProfilingState>>,
-    /// Phantom data to bind the type parameter T
-    _phantom: PhantomData<T>,
+    // `fn() -> T` carries T without forcing Producer's Send/Sync to depend on T.
+    // T is only a type-system marker here — it is never stored or referenced.
+    _phantom: PhantomData<fn() -> T>,
 }
 
-impl<T, R> Producer<T, R>
+impl<T> Producer<T>
 where
     T: Send + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
 {
-    /// Create a new producer bound to a specific record key
-    pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
+    /// Create a new producer bound to a pre-resolved write handle.
+    pub(crate) fn new(write: Arc<dyn WriteHandle<T>>) -> Self {
         Self {
-            db,
-            record_key: key,
+            write,
             #[cfg(feature = "profiling")]
             profiling: None,
             _phantom: PhantomData,
@@ -130,32 +132,23 @@ where
 
     /// Produce a value of type T
     ///
-    /// This triggers the entire pipeline for this record type:
-    /// 1. All tap observers are notified
-    /// 2. All link connectors are triggered
-    /// 3. Buffers are updated (if configured)
-    pub async fn produce(&self, value: T) -> DbResult<()> {
+    /// Push to the record's buffer, update the latest-snapshot cache, and
+    /// notify tap observers + outbound link connectors. Synchronous and
+    /// infallible — the underlying `WriteHandle::push` cannot fail.
+    ///
+    pub fn produce(&self, value: T) {
         #[cfg(feature = "profiling")]
         if let Some(state) = &self.profiling {
             state.record_produce();
         }
-        self.db.produce::<T>(&self.record_key, value).await
-    }
-
-    /// Returns the key this producer is bound to
-    pub fn key(&self) -> &str {
-        &self.record_key
+        self.write.push(value);
     }
 }
 
-impl<T, R> Clone for Producer<T, R>
-where
-    R: aimdb_executor::Spawn + 'static,
-{
+impl<T> Clone for Producer<T> {
     fn clone(&self) -> Self {
         Self {
-            db: self.db.clone(),
-            record_key: self.record_key.clone(),
+            write: self.write.clone(),
             #[cfg(feature = "profiling")]
             profiling: self.profiling.clone(),
             _phantom: PhantomData,
@@ -163,32 +156,26 @@ where
     }
 }
 
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Producer<T, R> {}
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Producer<T, R> {}
-
 // Implement ProducerTrait for type-erased routing
-impl<T, R> crate::connector::ProducerTrait for Producer<T, R>
+impl<T> crate::connector::ProducerTrait for Producer<T>
 where
     T: Send + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
 {
     fn produce_any<'a>(
         &'a self,
         value: Box<dyn core::any::Any + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            // Downcast the Box<dyn Any> to Box<T>
+            // The only fallibility left is the type-erasure downcast; the
+            // produce itself is synchronous + infallible after M14.
             let value = value.downcast::<T>().map_err(|_| {
                 format!(
                     "Failed to downcast value to type {}",
                     core::any::type_name::<T>()
                 )
             })?;
-
-            // Produce the value
-            self.produce(*value)
-                .await
-                .map_err(|e| format!("Failed to produce value: {}", e))
+            self.produce(*value);
+            Ok(())
         })
     }
 }
@@ -199,13 +186,12 @@ where
 
 /// Type-safe consumer for a specific record type
 ///
-/// `Consumer<T, R>` provides scoped access to subscribe to values of type `T` only.
+/// `Consumer<T>` provides scoped access to subscribe to values of type `T` only.
 /// This follows the principle of least privilege - services only get access
 /// to what they need, not the entire database.
 ///
 /// # Type Parameters
 /// * `T` - The record type this consumer can subscribe to
-/// * `R` - The runtime adapter type (e.g., TokioAdapter, EmbassyAdapter)
 ///
 /// # Benefits
 ///
@@ -214,29 +200,24 @@ where
 /// - **Clear Intent**: Function signature shows what it consumes
 /// - **Decoupling**: No access to other record types
 /// - **Security**: Cannot misuse database for unintended operations
-#[derive(Clone)]
-pub struct Consumer<T, R: aimdb_executor::Spawn + 'static> {
-    /// Reference to the database
-    db: Arc<AimDb<R>>,
-    /// Record key for key-based routing (required - all records have keys)
-    record_key: String,
+pub struct Consumer<T> {
+    /// Pre-resolved buffer handle to the record's buffer.
+    buffer: Arc<dyn DynBuffer<T>>,
     /// Stage profiling state (set by the spawn machinery for `.tap()` / `.link()`).
     #[cfg(feature = "profiling")]
     profiling: Option<(Arc<crate::profiling::StageMetrics>, crate::profiling::Clock)>,
-    /// Phantom data to bind the type parameter T
-    _phantom: PhantomData<T>,
+    // See Producer<T>: `fn() -> T` keeps Send/Sync independent of T.
+    _phantom: PhantomData<fn() -> T>,
 }
 
-impl<T, R> Consumer<T, R>
+impl<T> Consumer<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
 {
-    /// Create a new consumer bound to a specific record key
-    pub(crate) fn new(db: Arc<AimDb<R>>, key: String) -> Self {
+    /// Create a new consumer bound to a pre-resolved buffer handle.
+    pub(crate) fn new(buffer: Arc<dyn DynBuffer<T>>) -> Self {
         Self {
-            db,
-            record_key: key,
+            buffer,
             #[cfg(feature = "profiling")]
             profiling: None,
             _phantom: PhantomData,
@@ -253,30 +234,34 @@ where
         self.profiling = Some((metrics, clock));
     }
 
-    /// Subscribe to updates for this record type
+    /// Subscribe to updates for this record type.
     ///
-    /// Returns a reader that yields values when they are produced.
-    pub fn subscribe(&self) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
-        let reader = self.db.subscribe::<T>(&self.record_key)?;
+    /// Returns a reader that yields values as they are produced.
+    /// Infallible — the buffer is pre-resolved at `Consumer` construction.
+    pub fn subscribe(&self) -> Box<dyn crate::buffer::BufferReader<T> + Send> {
+        let reader = self.buffer.subscribe_boxed();
         #[cfg(feature = "profiling")]
         if let Some((metrics, clock)) = &self.profiling {
-            return Ok(Box::new(crate::profiling::ProfilingBufferReader::new(
+            return Box::new(crate::profiling::ProfilingBufferReader::new(
                 reader,
                 metrics.clone(),
                 clock.clone(),
-            )));
+            ));
         }
-        Ok(reader)
-    }
-
-    /// Returns the key this consumer is bound to
-    pub fn key(&self) -> &str {
-        &self.record_key
+        reader
     }
 }
 
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Send for Consumer<T, R> {}
-unsafe impl<T: Send, R: aimdb_executor::Spawn + 'static> Sync for Consumer<T, R> {}
+impl<T> Clone for Consumer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+            #[cfg(feature = "profiling")]
+            profiling: self.profiling.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
 
 // ============================================================================
 // Type-erased Consumer Trait Implementation
@@ -306,17 +291,18 @@ impl<T: Clone + Send + 'static> crate::connector::AnyReader for TypedAnyReader<T
 /// This allows connectors to subscribe to records without knowing the concrete
 /// type T at compile time. The factory pattern captures T during link_to()
 /// configuration, and this implementation provides the runtime subscription logic.
-impl<T, R> crate::connector::ConsumerTrait for Consumer<T, R>
+impl<T> crate::connector::ConsumerTrait for Consumer<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
 {
     fn subscribe_any<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn crate::connector::AnyReader>>> + Send + 'a>>
     {
         Box::pin(async move {
-            let reader = self.subscribe()?;
+            // `subscribe()` is infallible after M14; keep the `DbResult` on
+            // the trait surface so connector code stays unchanged.
+            let reader = self.subscribe();
             Ok(Box::new(TypedAnyReader::<T> { inner: reader })
                 as Box<dyn crate::connector::AnyReader>)
         })
@@ -352,7 +338,7 @@ pub enum StageKind {
 pub struct RecordRegistrar<
     'a,
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 > {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T, R>,
@@ -372,7 +358,7 @@ pub struct RecordRegistrar<
 impl<'a, T, R> RecordRegistrar<'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Returns a reference to the builder's extension storage.
     ///
@@ -416,9 +402,8 @@ where
     /// - Advanced use cases requiring direct control
     pub fn source_raw<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
-        F: FnOnce(crate::Producer<T, R>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
+        F: FnOnce(crate::Producer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
             + Send
-            + Sync
             + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
@@ -448,7 +433,7 @@ where
     /// - Advanced use cases requiring direct control
     pub fn tap_raw<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
-        F: FnOnce(crate::Consumer<T, R>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
+        F: FnOnce(crate::Consumer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
             + Send
             + 'static,
         Fut: Future<Output = ()> + Send + 'static,
@@ -563,7 +548,6 @@ where
     /// Register a multi-input join transform (low-level API).
     ///
     /// Panics if a `.source()` or another `.transform()` is already registered.
-    #[cfg(feature = "alloc")]
     pub fn transform_join_raw<F>(&'a mut self, build_fn: F) -> &'a mut Self
     where
         R: aimdb_executor::JoinFanInRuntime,
@@ -582,7 +566,6 @@ where
     /// Derives this record from multiple input records. Available on any runtime
     /// that implements `JoinFanInRuntime`. Panics if a `.source()` or another
     /// `.transform()` is already registered.
-    #[cfg(feature = "alloc")]
     pub fn transform_join<F>(&'a mut self, build_fn: F) -> &'a mut Self
     where
         R: aimdb_executor::JoinFanInRuntime,
@@ -666,7 +649,7 @@ where
 pub struct OutboundConnectorBuilder<
     'a,
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 > {
     registrar: &'a mut RecordRegistrar<'a, T, R>,
     url: String,
@@ -679,7 +662,7 @@ pub struct OutboundConnectorBuilder<
 impl<'a, T, R> OutboundConnectorBuilder<'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
@@ -863,22 +846,38 @@ where
         }
 
         // Store consumer factory that captures type T and record key
-        // This allows the connector to subscribe to values without knowing T at compile time
+        // This allows the connector to subscribe to values without knowing T at compile time.
+        //
+        // Resolves the record at link-startup time (not per-message) and constructs a
+        // `Consumer<T>` bound to a pre-resolved buffer handle — same pattern as the
+        // build-time path in `TypedRecord::collect_consumer_futures` (design 029).
         {
             let record_key = self.registrar.record_key.clone();
             link.consumer_factory = Some(Arc::new(
                 move |db_any: Arc<dyn core::any::Any + Send + Sync>| {
-                    // Downcast Arc<dyn Any> to AimDb<R>, then wrap in Arc
                     let db_ref = db_any
                         .downcast_ref::<AimDb<R>>()
                         .expect("Invalid db type in consumer factory");
-                    let db = Arc::new(db_ref.clone());
+                    let typed_rec = db_ref
+                        .inner()
+                        .get_typed_record_by_key::<T, R>(&record_key)
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "outbound connector consumer factory: record '{}' lookup failed: {:?}",
+                                record_key, e
+                            )
+                        });
+                    let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
+                        panic!(
+                            "outbound connector for '{}' requires a buffer (call .buffer(...) before .link_to(...))",
+                            record_key
+                        )
+                    });
 
-                    // Create Consumer<T, R> with captured type T and record key
                     #[allow(unused_mut)]
-                    let mut consumer = Consumer::<T, R>::new(db.clone(), record_key.clone());
+                    let mut consumer = Consumer::<T>::new(buffer);
                     #[cfg(feature = "profiling")]
-                    consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+                    consumer.set_profiling(link_metrics.clone(), db_ref.profiling_clock().clone());
                     Box::new(consumer) as Box<dyn crate::connector::ConsumerTrait>
                 },
             ));
@@ -902,7 +901,7 @@ type TypedDeserializerFn<T> = Arc<dyn Fn(&[u8]) -> Result<T, String> + Send + Sy
 pub struct InboundConnectorBuilder<
     'a,
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 > {
     registrar: &'a mut RecordRegistrar<'a, T, R>,
     url: String,
@@ -915,7 +914,7 @@ pub struct InboundConnectorBuilder<
 impl<'a, T, R> InboundConnectorBuilder<'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
@@ -1101,16 +1100,23 @@ where
         // Wire through the topic resolver
         link.topic_resolver = self.topic_resolver;
 
-        // Add producer factory callback that captures type T and record key
+        // Add producer factory callback that captures type T and record key.
         {
             let record_key = self.registrar.record_key.clone();
             link = link.with_producer_factory(move |db_any| {
-                // Downcast Arc<dyn Any> to Arc<AimDb<R>>
                 let db = db_any
                     .downcast::<crate::builder::AimDb<R>>()
                     .expect("Failed to downcast to AimDb");
-                // Create Producer<T, R> with captured type T and record key
-                Box::new(Producer::<T, R>::new(db, record_key.clone()))
+                let typed_rec = db
+                    .inner()
+                    .get_typed_record_by_key::<T, R>(&record_key)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "inbound connector producer factory: record '{}' lookup failed: {:?}",
+                            record_key, e
+                        )
+                    });
+                Box::new(Producer::<T>::new(typed_rec.writer_handle()))
                     as Box<dyn crate::connector::ProducerTrait>
             });
         }
@@ -1129,7 +1135,7 @@ where
 ///
 /// Records implementing this trait register their producer and consumer
 /// functions, encapsulating behavior with their type.
-pub trait RecordT<R: aimdb_executor::Spawn + 'static>:
+pub trait RecordT<R: aimdb_executor::RuntimeAdapter + 'static>:
     Send + Sync + 'static + Debug + Clone
 {
     /// Configuration type for this record
@@ -1180,22 +1186,12 @@ mod tests {
     // Test infrastructure for InboundConnectorBuilder deserializer tests
     // ====================================================================
 
-    /// Minimal mock runtime implementing Spawn (and Runtime for context tests)
+    /// Minimal mock runtime for context tests
     struct MockRuntime;
 
     impl aimdb_executor::RuntimeAdapter for MockRuntime {
         fn runtime_name() -> &'static str {
             "mock"
-        }
-    }
-
-    impl aimdb_executor::Spawn for MockRuntime {
-        type SpawnToken = ();
-        fn spawn<F>(&self, _future: F) -> aimdb_executor::ExecutorResult<Self::SpawnToken>
-        where
-            F: Future<Output = ()> + Send + 'static,
-        {
-            Ok(())
         }
     }
 
@@ -1254,8 +1250,14 @@ mod tests {
         fn build<'a>(
             &'a self,
             _db: &'a crate::AimDb<MockRuntime>,
-        ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn crate::transport::Connector>>> + Send + 'a>>
-        {
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
             unimplemented!("not needed for deserializer tests")
         }
         fn scheme(&self) -> &str {
@@ -1602,7 +1604,12 @@ mod tests {
     {
         crate::transform::TransformDescriptor::<TestRecord, MockRuntime> {
             input_keys: vec![],
-            spawn_fn: Box::new(|_p, _db, _ctx| Box::pin(async {})),
+            build_fn: Box::new(
+                |_p, _db, _ctx, _output_key| crate::transform::CollectedTransform {
+                    task_future: Box::pin(async {}),
+                    fanin_futures: vec![],
+                },
+            ),
         }
     }
 

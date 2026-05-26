@@ -7,7 +7,7 @@
 //! # Design Philosophy
 //!
 //! - **Runtime Agnostic**: No concrete runtime dependencies
-//! - **Simple Trait Structure**: 4 focused traits covering all runtime needs
+//! - **Simple Trait Structure**: 3 focused traits covering all runtime needs
 //! - **Platform Flexible**: Works across std and no_std environments
 //! - **Zero Dependencies**: Pure trait definitions with minimal coupling
 //!
@@ -16,7 +16,10 @@
 //! 1. **`RuntimeAdapter`** - Platform identity and metadata
 //! 2. **`TimeOps`** - Time operations (now, sleep, duration helpers)
 //! 3. **`Logger`** - Structured logging (info, debug, warn, error)
-//! 4. **`Spawn`** - Task spawning with platform-specific tokens
+//!
+//! Task execution is driven by the `AimDbRunner` returned from
+//! `AimDbBuilder::build()`, which collects every future the database needs
+//! into a single `FuturesUnordered` — no per-adapter `Spawn` impl required.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -34,14 +37,6 @@ pub type ExecutorResult<T> = Result<T, ExecutorError>;
 #[derive(Debug)]
 #[cfg_attr(feature = "std", derive(thiserror::Error))]
 pub enum ExecutorError {
-    #[cfg_attr(feature = "std", error("Spawn failed: {message}"))]
-    SpawnFailed {
-        #[cfg(feature = "std")]
-        message: String,
-        #[cfg(not(feature = "std"))]
-        message: &'static str,
-    },
-
     #[cfg_attr(feature = "std", error("Runtime unavailable: {message}"))]
     RuntimeUnavailable {
         #[cfg(feature = "std")]
@@ -105,20 +100,12 @@ pub trait Logger: RuntimeAdapter {
     fn error(&self, message: &str);
 }
 
-/// Task spawning trait - adapter-specific implementation
-pub trait Spawn: RuntimeAdapter {
-    type SpawnToken: Send + 'static;
-    fn spawn<F>(&self, future: F) -> ExecutorResult<Self::SpawnToken>
-    where
-        F: Future<Output = ()> + Send + 'static;
-}
-
 // ============================================================================
 // Convenience Trait Bundle
 // ============================================================================
 
 /// Complete runtime trait bundle
-pub trait Runtime: RuntimeAdapter + TimeOps + Logger + Spawn {
+pub trait Runtime: RuntimeAdapter + TimeOps + Logger {
     fn runtime_info(&self) -> RuntimeInfo
     where
         Self: Sized,
@@ -130,7 +117,7 @@ pub trait Runtime: RuntimeAdapter + TimeOps + Logger + Spawn {
 }
 
 // Auto-implement Runtime for any type with all traits
-impl<T> Runtime for T where T: RuntimeAdapter + TimeOps + Logger + Spawn {}
+impl<T> Runtime for T where T: RuntimeAdapter + TimeOps + Logger {}
 
 #[derive(Debug, Clone)]
 pub struct RuntimeInfo {

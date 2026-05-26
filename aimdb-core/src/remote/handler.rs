@@ -157,7 +157,7 @@ pub async fn handle_connection<R>(
     stream: UnixStream,
 ) -> DbResult<()>
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     #[cfg(feature = "tracing")]
     tracing::info!("New remote access connection established");
@@ -369,7 +369,7 @@ async fn perform_handshake<R>(
     db: &Arc<AimDb<R>>,
 ) -> DbResult<BufReader<UnixStream>>
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -555,7 +555,7 @@ async fn handle_request<R>(
     request: Request,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     #[cfg(feature = "tracing")]
     tracing::debug!(
@@ -614,7 +614,7 @@ async fn handle_record_list<R>(
     request_id: u64,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     #[cfg(feature = "tracing")]
     tracing::debug!("Listing records");
@@ -639,7 +639,7 @@ async fn handle_profiling_reset<R>(
     request_id: u64,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     if matches!(
         config.security_policy,
@@ -670,7 +670,7 @@ async fn handle_buffer_metrics_reset<R>(
     request_id: u64,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     if matches!(
         config.security_policy,
@@ -715,7 +715,7 @@ async fn handle_record_get<R>(
     params: Option<serde_json::Value>,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     // Extract record name from params
     let record_name = match params {
@@ -796,7 +796,7 @@ async fn handle_record_set<R>(
     params: Option<serde_json::Value>,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     use crate::remote::SecurityPolicy;
 
@@ -951,7 +951,7 @@ async fn handle_record_subscribe<R>(
     params: Option<serde_json::Value>,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     // Extract record name from params
     let record_name = match params {
@@ -1231,7 +1231,7 @@ async fn handle_record_drain<R>(
     params: Option<serde_json::Value>,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     // Extract record name from params
     let record_name = match params {
@@ -1403,7 +1403,7 @@ async fn handle_record_query<R>(
     params: Option<serde_json::Value>,
 ) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     // Extract the query handler from Extensions.
     let handler = match db.extensions().get::<QueryHandlerFn>() {
@@ -1473,7 +1473,7 @@ where
 #[cfg(feature = "std")]
 async fn handle_graph_nodes<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     #[cfg(feature = "tracing")]
     tracing::debug!("Getting dependency graph nodes");
@@ -1504,7 +1504,7 @@ where
 #[cfg(feature = "std")]
 async fn handle_graph_edges<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     #[cfg(feature = "tracing")]
     tracing::debug!("Getting dependency graph edges");
@@ -1536,7 +1536,7 @@ where
 #[cfg(feature = "std")]
 async fn handle_graph_topo_order<R>(db: &Arc<AimDb<R>>, request_id: u64) -> Response
 where
-    R: crate::RuntimeAdapter + crate::Spawn + 'static,
+    R: crate::RuntimeAdapter + 'static,
 {
     #[cfg(feature = "tracing")]
     tracing::debug!("Getting topological order");

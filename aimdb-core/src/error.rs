@@ -723,17 +723,6 @@ impl From<aimdb_executor::ExecutorError> for DbError {
         use aimdb_executor::ExecutorError;
 
         match err {
-            ExecutorError::SpawnFailed { message } => {
-                #[cfg(feature = "std")]
-                {
-                    DbError::RuntimeError { message }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    let _ = message; // Avoid unused warnings
-                    DbError::RuntimeError { _message: () }
-                }
-            }
             ExecutorError::RuntimeUnavailable { message } => {
                 #[cfg(feature = "std")]
                 {

@@ -25,16 +25,13 @@ use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
 ///        .finish();
 /// });
 /// ```
-pub async fn temperature_logger<R>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature, R>)
+pub async fn temperature_logger<R>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature>)
 where
     R: Runtime + Logger + Send + Sync + 'static,
 {
     let log = ctx.log();
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to temperature buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(temp) = reader.recv().await {
         log.info(&alloc::format!(
@@ -53,17 +50,14 @@ where
 /// Command consumer that logs received commands
 ///
 /// Uses the action and sensor_id from the `TemperatureCommand` data.
-pub async fn command_consumer<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureCommand, R>)
+pub async fn command_consumer<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureCommand>)
 where
     R: Runtime + Logger + Send + Sync + 'static,
 {
     let log = ctx.log();
     log.info("📨 Command consumer started\n");
 
-    let Ok(mut reader) = consumer.subscribe() else {
-        log.error("Failed to subscribe to command buffer");
-        return;
-    };
+    let mut reader = consumer.subscribe();
 
     while let Ok(cmd) = reader.recv().await {
         log.info(&alloc::format!(

@@ -98,15 +98,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     t.celsius,
                                     h.percent
                                 );
-                                if let Err(e) = producer
-                                    .produce(DewPoint {
-                                        celsius: dew_point,
-                                        timestamp,
-                                    })
-                                    .await
-                                {
-                                    tracing::warn!("DewPoint produce failed: {:?}", e);
-                                }
+                                producer.produce(DewPoint {
+                                    celsius: dew_point,
+                                    timestamp,
+                                });
                             }
                         }
                     })
@@ -119,7 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .finish();
     });
 
-    let db = builder.build().await?;
+    let (db, runner) = builder.build().await?;
+    tokio::spawn(runner.run());
 
     info!("✅ Database initialized with 3 record types");
     info!("   - Temperature: {}", temp_topic);
@@ -130,8 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Get producers
-    let temp_producer = db.producer::<Temperature>(TempKey::Alpha.as_str());
-    let humidity_producer = db.producer::<Humidity>(HumidityKey::Alpha.as_str());
+    let temp_producer = db.producer::<Temperature>(TempKey::Alpha.as_str())?;
+    let humidity_producer = db.producer::<Humidity>(HumidityKey::Alpha.as_str())?;
 
     // Spawn weather data producer
     info!("🌤️  Starting weather data producer...");
@@ -150,13 +146,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         timestamp: now,
                     };
 
-                    if let Err(e) = temp_producer.produce(temp).await {
-                        tracing::warn!("Failed to produce temperature: {:?}", e);
-                    }
+                    temp_producer.produce(temp);
 
-                    if let Err(e) = humidity_producer.produce(humidity).await {
-                        tracing::warn!("Failed to produce humidity: {:?}", e);
-                    }
+                    humidity_producer.produce(humidity);
 
                     tracing::info!(
                         "📊 Published: {:.1}°C, {:.1}%",

@@ -91,7 +91,7 @@ impl WsClientConnectorImpl {
         db: &aimdb_core::builder::AimDb<R>,
     ) -> Result<Self, String>
     where
-        R: aimdb_executor::Spawn + 'static,
+        R: aimdb_executor::RuntimeAdapter + 'static,
     {
         // Connect to the remote server
         let (ws_stream, _response) = tokio_tungstenite::connect_async(&config.url)
@@ -123,7 +123,6 @@ impl WsClientConnectorImpl {
             }
         }
 
-        // ── Spawn write loop ────────────────────────────────────────
         let reconnect_url = config.url.clone();
         let reconnect_topics = config.subscribe_topics.clone();
         let auto_reconnect = config.auto_reconnect;
@@ -131,186 +130,174 @@ impl WsClientConnectorImpl {
         let router_for_reconnect = router.clone();
         let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
-        db.runtime()
-            .spawn({
-                let state = state.clone();
-                async move {
-                    Self::run_write_loop(ws_write, write_rx).await;
+        // Write loop. Bridge state: tokio::spawn directly (see method doc).
+        tokio::spawn({
+            let state = state.clone();
+            async move {
+                Self::run_write_loop(ws_write, write_rx).await;
 
-                    // Write loop ended — connection closed
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("WS client: write loop ended");
+                #[cfg(feature = "tracing")]
+                tracing::warn!("WS client: write loop ended");
 
-                    state.lock().await.status = ConnectionStatus::Disconnected;
-                }
-            })
-            .map_err(|e| format!("Failed to spawn write loop: {e:?}"))?;
+                state.lock().await.status = ConnectionStatus::Disconnected;
+            }
+        });
 
-        // ── Spawn read loop ─────────────────────────────────────────
-        db.runtime()
-            .spawn({
-                let router = router.clone();
-                let runtime_ctx = runtime_ctx.clone();
-                async move {
-                    Self::run_read_loop(ws_read, &router, Some(&runtime_ctx)).await;
+        // Read loop.
+        tokio::spawn({
+            let router = router.clone();
+            let runtime_ctx = runtime_ctx.clone();
+            async move {
+                Self::run_read_loop(ws_read, &router, Some(&runtime_ctx)).await;
 
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("WS client: read loop ended");
-                }
-            })
-            .map_err(|e| format!("Failed to spawn read loop: {e:?}"))?;
+                #[cfg(feature = "tracing")]
+                tracing::warn!("WS client: read loop ended");
+            }
+        });
 
-        // ── Spawn keepalive ─────────────────────────────────────────
+        // Keepalive.
         if let Some(interval) = config.keepalive_interval {
             let ka_state = state.clone();
-            db.runtime()
-                .spawn(async move {
-                    Self::run_keepalive(ka_state, interval).await;
-                })
-                .map_err(|e| format!("Failed to spawn keepalive: {e:?}"))?;
+            tokio::spawn(async move {
+                Self::run_keepalive(ka_state, interval).await;
+            });
         }
 
-        // ── Spawn reconnect watcher ─────────────────────────────────
+        // Reconnect watcher (deferred to AimX follow-up — Group 4).
         if auto_reconnect {
-            db.runtime()
-                .spawn({
-                    let state = state.clone();
-                    let runtime_ctx = runtime_ctx.clone();
-                    async move {
-                        Self::run_reconnect_watcher(
-                            state,
-                            reconnect_url,
-                            reconnect_topics,
-                            router_for_reconnect,
-                            max_reconnect_attempts,
-                            Some(runtime_ctx),
-                        )
-                        .await;
-                    }
-                })
-                .map_err(|e| format!("Failed to spawn reconnect watcher: {e:?}"))?;
+            tokio::spawn({
+                let state = state.clone();
+                let runtime_ctx = runtime_ctx.clone();
+                async move {
+                    Self::run_reconnect_watcher(
+                        state,
+                        reconnect_url,
+                        reconnect_topics,
+                        router_for_reconnect,
+                        max_reconnect_attempts,
+                        Some(runtime_ctx),
+                    )
+                    .await;
+                }
+            });
         }
 
         Ok(Self { state, router })
     }
 
-    /// Spawn one Tokio task per outbound route.
+    /// Collect one outbound publisher future per route.
     ///
-    /// Each task subscribes to a local record, serializes values, and sends
-    /// `ClientMessage::Write` to the remote server.
-    pub(crate) fn spawn_outbound_publishers<R>(
+    /// Each future subscribes to a local record, serializes values, and sends
+    /// `ClientMessage::Write` to the remote server. Returned futures are appended
+    /// to the `AimDbRunner` accumulator.
+    pub(crate) fn collect_outbound_futures<R>(
         &self,
         db: &aimdb_core::builder::AimDb<R>,
         outbound_routes: Vec<OutboundRoute>,
-    ) -> Result<(), String>
+    ) -> Vec<Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>>
     where
-        R: aimdb_executor::Spawn + 'static,
+        R: aimdb_executor::RuntimeAdapter + 'static,
     {
-        let runtime = db.runtime();
         let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
+        let mut futures: Vec<Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>> =
+            Vec::with_capacity(outbound_routes.len());
 
         for (default_topic, consumer, serializer, _config, topic_provider) in outbound_routes {
             let state = self.state.clone();
             let default_topic_clone = default_topic.clone();
             let runtime_ctx = runtime_ctx.clone();
 
-            runtime
-                .spawn(async move {
-                    let mut reader = match consumer.subscribe_any().await {
-                        Ok(r) => r,
-                        Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!(
-                                "WS client outbound: subscribe failed for '{}': {:?}",
-                                default_topic_clone,
-                                _e
-                            );
-                            return;
+            futures.push(Box::pin(async move {
+                let mut reader = match consumer.subscribe_any().await {
+                    Ok(r) => r,
+                    Err(_e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!(
+                            "WS client outbound: subscribe failed for '{}': {:?}",
+                            default_topic_clone,
+                            _e
+                        );
+                        return;
+                    }
+                };
+
+                #[cfg(feature = "tracing")]
+                tracing::info!(
+                    "WS client outbound publisher started for topic: {}",
+                    default_topic_clone
+                );
+
+                while let Ok(value_any) = reader.recv_any().await {
+                    // Resolve topic (dynamic or static)
+                    let topic = topic_provider
+                        .as_ref()
+                        .and_then(|p| p.topic_any(&*value_any))
+                        .unwrap_or_else(|| default_topic_clone.clone());
+
+                    // Serialize
+                    let bytes = match &serializer {
+                        aimdb_core::connector::SerializerKind::Raw(ser) => match ser(&*value_any) {
+                            Ok(b) => b,
+                            Err(_e) => {
+                                #[cfg(feature = "tracing")]
+                                tracing::error!(
+                                    "WS client outbound: serialize error for '{}': {:?}",
+                                    topic,
+                                    _e
+                                );
+                                continue;
+                            }
+                        },
+                        aimdb_core::connector::SerializerKind::Context(ser) => {
+                            match ser(runtime_ctx.clone(), &*value_any) {
+                                Ok(b) => b,
+                                Err(_e) => {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::error!(
+                                        "WS client outbound: serialize error for '{}': {:?}",
+                                        topic,
+                                        _e
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                     };
 
-                    #[cfg(feature = "tracing")]
-                    tracing::info!(
-                        "WS client outbound publisher started for topic: {}",
-                        default_topic_clone
-                    );
-
-                    while let Ok(value_any) = reader.recv_any().await {
-                        // Resolve topic (dynamic or static)
-                        let topic = topic_provider
-                            .as_ref()
-                            .and_then(|p| p.topic_any(&*value_any))
-                            .unwrap_or_else(|| default_topic_clone.clone());
-
-                        // Serialize
-                        let bytes = match &serializer {
-                            aimdb_core::connector::SerializerKind::Raw(ser) => {
-                                match ser(&*value_any) {
-                                    Ok(b) => b,
-                                    Err(_e) => {
-                                        #[cfg(feature = "tracing")]
-                                        tracing::error!(
-                                            "WS client outbound: serialize error for '{}': {:?}",
-                                            topic,
-                                            _e
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-                            aimdb_core::connector::SerializerKind::Context(ser) => {
-                                match ser(runtime_ctx.clone(), &*value_any) {
-                                    Ok(b) => b,
-                                    Err(_e) => {
-                                        #[cfg(feature = "tracing")]
-                                        tracing::error!(
-                                            "WS client outbound: serialize error for '{}': {:?}",
-                                            topic,
-                                            _e
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-                        };
-
-                        // Build Write message
-                        let payload: serde_json::Value = match serde_json::from_slice(&bytes) {
-                            Ok(v) => v,
-                            Err(_e) => {
-                                // Fallback: wrap raw bytes as a JSON string
-                                serde_json::Value::String(
-                                    String::from_utf8_lossy(&bytes).into_owned(),
-                                )
-                            }
-                        };
-
-                        let msg = ClientMessage::Write {
-                            topic: topic.clone(),
-                            payload,
-                        };
-
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            let mut s = state.lock().await;
-                            if s.status == ConnectionStatus::Connected {
-                                let _ = s.write_tx.send(json);
-                            } else if s.pending_writes.len() < s.max_offline_queue {
-                                s.pending_writes.push_back(json);
-                            }
-                            // else: drop (overflow policy)
+                    // Build Write message
+                    let payload: serde_json::Value = match serde_json::from_slice(&bytes) {
+                        Ok(v) => v,
+                        Err(_e) => {
+                            // Fallback: wrap raw bytes as a JSON string
+                            serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
                         }
-                    }
+                    };
 
-                    #[cfg(feature = "tracing")]
-                    tracing::info!(
-                        "WS client outbound publisher stopped for topic: {}",
-                        default_topic_clone
-                    );
-                })
-                .map_err(|e| format!("Failed to spawn outbound publisher: {e:?}"))?;
+                    let msg = ClientMessage::Write {
+                        topic: topic.clone(),
+                        payload,
+                    };
+
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let mut s = state.lock().await;
+                        if s.status == ConnectionStatus::Connected {
+                            let _ = s.write_tx.send(json);
+                        } else if s.pending_writes.len() < s.max_offline_queue {
+                            s.pending_writes.push_back(json);
+                        }
+                        // else: drop (overflow policy)
+                    }
+                }
+
+                #[cfg(feature = "tracing")]
+                tracing::info!(
+                    "WS client outbound publisher stopped for topic: {}",
+                    default_topic_clone
+                );
+            }));
         }
 
-        Ok(())
+        futures
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -415,6 +402,9 @@ impl WsClientConnectorImpl {
                 ServerMessage::QueryResult { .. } => {
                     // Query results are handled by the WASM bridge; the native
                     // client connector does not issue queries (yet).
+                }
+                ServerMessage::TopicList { .. } => {
+                    // Topic list responses are not used by the native client connector.
                 }
             }
         }

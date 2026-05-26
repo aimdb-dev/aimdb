@@ -28,6 +28,9 @@ thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, default-features = false }
 embassy-executor = { workspace = true, optional = true }
 
+# FuturesUnordered (no_std + alloc compatible) — used by AimDbRunner
+futures-util = { workspace = true }
+
 # Core async types (always available)
 # Note: We use core::future::Future which is available in no_std
 

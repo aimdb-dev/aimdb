@@ -43,7 +43,7 @@ use alloc::{
 #[cfg(feature = "std")]
 use alloc::format;
 
-use crate::{builder::AimDb, transport::Connector, DbResult};
+use crate::{builder::AimDb, DbResult};
 
 /// Error that can occur during serialization
 ///
@@ -480,7 +480,6 @@ pub struct ConnectorLink {
     /// Mirrors the producer_factory pattern used for inbound connectors.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    #[cfg(feature = "alloc")]
     pub consumer_factory: Option<ConsumerFactoryFn>,
 
     /// Optional dynamic topic provider
@@ -507,10 +506,7 @@ impl Debug for ConnectorLink {
             )
             .field(
                 "consumer_factory",
-                #[cfg(feature = "alloc")]
                 &self.consumer_factory.as_ref().map(|_| "<function>"),
-                #[cfg(not(feature = "alloc"))]
-                &None::<()>,
             )
             .field(
                 "topic_provider",
@@ -527,7 +523,6 @@ impl ConnectorLink {
             url,
             config: Vec::new(),
             serializer: None,
-            #[cfg(feature = "alloc")]
             consumer_factory: None,
             topic_provider: None,
         }
@@ -547,7 +542,6 @@ impl ConnectorLink {
     /// Returns None if no factory is configured.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    #[cfg(feature = "alloc")]
     pub fn create_consumer(
         &self,
         db_any: Arc<dyn core::any::Any + Send + Sync>,
@@ -598,7 +592,6 @@ pub enum DeserializerKind {
 /// the factory in a type-erased InboundConnectorLink.
 ///
 /// Available in both `std` and `no_std + alloc` environments.
-#[cfg(feature = "alloc")]
 pub type ProducerFactoryFn =
     Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait> + Send + Sync>;
 
@@ -651,7 +644,6 @@ pub trait ProducerTrait: Send + Sync {
 /// Mirrors the ProducerFactoryFn pattern for symmetry between inbound and outbound.
 ///
 /// Available in both `std` and `no_std + alloc` environments.
-#[cfg(feature = "alloc")]
 pub type ConsumerFactoryFn =
     Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ConsumerTrait> + Send + Sync>;
 
@@ -719,7 +711,6 @@ pub struct InboundConnectorLink {
     /// Captures the record type T at link_from() call time.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    #[cfg(feature = "alloc")]
     pub producer_factory: Option<ProducerFactoryFn>,
 
     /// Optional dynamic topic resolver (late-binding)
@@ -737,7 +728,6 @@ impl Clone for InboundConnectorLink {
             url: self.url.clone(),
             config: self.config.clone(),
             deserializer: self.deserializer.clone(),
-            #[cfg(feature = "alloc")]
             producer_factory: self.producer_factory.clone(),
             topic_resolver: self.topic_resolver.clone(),
         }
@@ -765,16 +755,14 @@ impl InboundConnectorLink {
             url,
             config: Vec::new(),
             deserializer,
-            #[cfg(feature = "alloc")]
             producer_factory: None,
             topic_resolver: None,
         }
     }
 
-    /// Sets the producer factory callback (alloc feature)
+    /// Sets the producer factory callback.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    #[cfg(feature = "alloc")]
     pub fn with_producer_factory<F>(mut self, factory: F) -> Self
     where
         F: Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait>
@@ -786,10 +774,9 @@ impl InboundConnectorLink {
         self
     }
 
-    /// Creates a producer using the stored factory (alloc feature)
+    /// Creates a producer using the stored factory.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    #[cfg(feature = "alloc")]
     pub fn create_producer(
         &self,
         db_any: Arc<dyn core::any::Any + Send + Sync>,
@@ -930,7 +917,7 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 ///
 /// impl<R> ConnectorBuilder<R> for MqttConnectorBuilder
 /// where
-///     R: aimdb_executor::Spawn + 'static,
+///     R: aimdb_executor::RuntimeAdapter + 'static,
 /// {
 ///     fn build<'a>(
 ///         &'a self,
@@ -951,26 +938,32 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 /// ```
 pub trait ConnectorBuilder<R>: Send + Sync
 where
-    R: aimdb_executor::Spawn + 'static,
+    R: aimdb_executor::RuntimeAdapter + 'static,
 {
-    /// Build the connector using the database
+    /// Build the connector and return its driving futures.
     ///
-    /// This method is called during `AimDbBuilder::build()` after the database
-    /// has been constructed. The builder can use the database to:
-    /// - Collect inbound routes via `db.collect_inbound_routes()`
-    /// - Access database configuration
-    /// - Register subscriptions
+    /// Called during `AimDbBuilder::build()` after the database has been
+    /// constructed. The returned futures (infrastructure loops + per-route
+    /// publishers) are appended to the builder's accumulator and driven by
+    /// `AimDbRunner::run()`.
     ///
     /// # Arguments
     /// * `db` - The constructed database instance
     ///
     /// # Returns
-    /// An `Arc<dyn Connector>` that will be registered with the database
+    /// All `BoxFuture`s the connector needs to operate. Empty if the connector
+    /// has no work to drive.
     #[allow(clippy::type_complexity)]
     fn build<'a>(
         &'a self,
         db: &'a AimDb<R>,
-    ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn Connector>>> + Send + 'a>>;
+    ) -> Pin<
+        Box<
+            dyn Future<Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>>
+                + Send
+                + 'a,
+        >,
+    >;
 
     /// The URL scheme this connector handles
     ///
