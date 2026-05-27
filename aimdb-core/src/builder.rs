@@ -1102,8 +1102,10 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     where
         T: Send + 'static + Debug + Clone,
     {
+        // Single write path via WriteHandle (design 031). For hot paths,
+        // prefer `db.producer::<T>(key)` once and reuse the returned handle.
         let typed_rec = self.inner.get_typed_record_by_key::<T, R>(key)?;
-        typed_rec.produce(value);
+        typed_rec.writer_handle().push(value);
         Ok(())
     }
 

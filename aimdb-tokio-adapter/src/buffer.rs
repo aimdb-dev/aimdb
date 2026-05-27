@@ -81,7 +81,11 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                 let _ = tx.send(value);
             }
             TokioBufferInner::Watch { tx } => {
-                let _ = tx.send(Some(value));
+                // send_replace updates the slot unconditionally; send() would
+                // fail (and silently drop the value) when no receivers exist,
+                // which would also break peek() for producers that publish
+                // before any subscriber attaches.
+                tx.send_replace(Some(value));
             }
             TokioBufferInner::Notify { slot, notify } => {
                 *slot.lock().unwrap() = Some(value);
@@ -127,6 +131,17 @@ impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for Toki
 
     fn as_any(&self) -> &dyn core::any::Any {
         self
+    }
+
+    fn peek(&self) -> Option<T> {
+        match &*self.inner {
+            // watch::Sender::borrow() reads the slot non-destructively.
+            TokioBufferInner::Watch { tx } => tx.borrow().clone(),
+            // Same Mutex the Mailbox buffer already uses for the slot.
+            TokioBufferInner::Notify { slot, .. } => slot.lock().unwrap().clone(),
+            // broadcast has no canonical latest — see design 031 §SPMC Ring.
+            TokioBufferInner::Broadcast { .. } => None,
+        }
     }
 
     #[cfg(feature = "metrics")]
@@ -1089,6 +1104,102 @@ mod tests {
             }
         }
         assert_eq!(remaining, vec![20, 30]);
+    }
+
+    // ========================================================================
+    // peek() Tests — non-destructive buffer-native reads (design 031)
+    // ========================================================================
+
+    mod peek_tests {
+        use super::super::*;
+        use aimdb_core::buffer::DynBuffer;
+
+        #[tokio::test]
+        async fn test_peek_single_latest_empty() {
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::SingleLatest);
+            assert_eq!(buffer.peek(), None);
+        }
+
+        #[tokio::test]
+        async fn test_peek_single_latest_returns_latest() {
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::SingleLatest);
+            DynBuffer::push(&buffer, 1);
+            DynBuffer::push(&buffer, 2);
+            DynBuffer::push(&buffer, 3);
+            assert_eq!(buffer.peek(), Some(3));
+        }
+
+        #[tokio::test]
+        async fn test_peek_single_latest_is_non_destructive() {
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::SingleLatest);
+            // Subscribe BEFORE push so the receiver's version counter advances
+            // on send_replace. (Watch receivers created after a push will only
+            // wake on the *next* push — that's the gap peek() exists to fill.)
+            let mut reader = Buffer::subscribe(&buffer);
+            DynBuffer::push(&buffer, 42);
+
+            // Multiple peeks return the same value.
+            assert_eq!(buffer.peek(), Some(42));
+            assert_eq!(buffer.peek(), Some(42));
+
+            // Peek did not consume the value from the subscriber's perspective.
+            assert_eq!(reader.recv().await.unwrap(), 42);
+
+            // And peek still works after the subscriber received.
+            assert_eq!(buffer.peek(), Some(42));
+        }
+
+        #[tokio::test]
+        async fn test_peek_single_latest_works_without_subscriber() {
+            // The exact case the design 031 snapshot was originally added for:
+            // a producer pushes before anyone subscribes. peek() must see it.
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::SingleLatest);
+            DynBuffer::push(&buffer, 17);
+            assert_eq!(buffer.peek(), Some(17));
+        }
+
+        #[tokio::test]
+        async fn test_peek_mailbox_empty() {
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::Mailbox);
+            assert_eq!(buffer.peek(), None);
+        }
+
+        #[tokio::test]
+        async fn test_peek_mailbox_returns_pending() {
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::Mailbox);
+            DynBuffer::push(&buffer, 7);
+            assert_eq!(buffer.peek(), Some(7));
+        }
+
+        #[tokio::test]
+        async fn test_peek_mailbox_drained_after_recv() {
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::Mailbox);
+            DynBuffer::push(&buffer, 99);
+            assert_eq!(buffer.peek(), Some(99));
+            // Subscriber takes the slot.
+            let mut reader = Buffer::subscribe(&buffer);
+            assert_eq!(reader.recv().await.unwrap(), 99);
+            // After take(), peek sees the slot is empty.
+            assert_eq!(buffer.peek(), None);
+        }
+
+        #[tokio::test]
+        async fn test_peek_mailbox_reflects_overwrite() {
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::Mailbox);
+            DynBuffer::push(&buffer, 1);
+            DynBuffer::push(&buffer, 2);
+            assert_eq!(buffer.peek(), Some(2));
+        }
+
+        #[tokio::test]
+        async fn test_peek_spmc_ring_returns_none() {
+            // Broadcast has no canonical latest — see design 031 §SPMC Ring.
+            let buffer = TokioBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 8 });
+            assert_eq!(buffer.peek(), None);
+            DynBuffer::push(&buffer, 1);
+            DynBuffer::push(&buffer, 2);
+            assert_eq!(buffer.peek(), None);
+        }
     }
 
     // ========================================================================

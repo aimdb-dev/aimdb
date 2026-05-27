@@ -598,16 +598,6 @@ pub struct TypedRecord<
     /// Stores the deserialization logic where T: Deserialize is known at call site
     #[cfg(feature = "std")]
     json_deserializer: Option<JsonDeserializer<T>>,
-
-    /// Latest value snapshot - for latest() API
-    /// Cached atomically on every produce() call to support latest()
-    /// This provides a buffer-agnostic way to query the latest value
-    /// Available in both std and no_std environments
-    #[cfg(feature = "std")]
-    latest_snapshot: Arc<std::sync::Mutex<Option<T>>>,
-
-    #[cfg(not(feature = "std"))]
-    latest_snapshot: Arc<spin::Mutex<Option<T>>>,
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
@@ -643,10 +633,6 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
             json_serializer: None,
             #[cfg(feature = "std")]
             json_deserializer: None,
-            #[cfg(feature = "std")]
-            latest_snapshot: Arc::new(std::sync::Mutex::new(None)),
-            #[cfg(not(feature = "std"))]
-            latest_snapshot: Arc::new(spin::Mutex::new(None)),
         }
     }
 
@@ -1011,16 +997,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         {
             Arc::new(crate::buffer::RecordWriter::new(
                 self.buffer.clone(),
-                self.latest_snapshot.clone(),
                 self.metadata.clone(),
             ))
         }
         #[cfg(not(feature = "std"))]
         {
-            Arc::new(crate::buffer::RecordWriter::new(
-                self.buffer.clone(),
-                self.latest_snapshot.clone(),
-            ))
+            Arc::new(crate::buffer::RecordWriter::new(self.buffer.clone()))
         }
     }
 
@@ -1334,31 +1316,6 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         }
     }
 
-    /// Produces a value by pushing to the buffer
-    ///
-    /// Enqueues value for consumer tasks and updates latest snapshot.
-    pub fn produce(&self, val: T) {
-        // Cache snapshot for latest() API (both std and no_std)
-        #[cfg(feature = "std")]
-        {
-            *self.latest_snapshot.lock().unwrap() = Some(val.clone());
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            *self.latest_snapshot.lock() = Some(val.clone());
-        }
-
-        // Push to buffer - consumer tasks will receive it
-        if let Some(buf) = &self.buffer {
-            buf.push(val);
-
-            // Update metadata timestamp (std only)
-            #[cfg(feature = "std")]
-            self.metadata.mark_updated();
-        }
-    }
-
     /// Returns whether a producer service is registered
     pub fn has_producer_service(&self) -> bool {
         #[cfg(feature = "std")]
@@ -1399,15 +1356,15 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// }
     /// ```
     pub fn latest(&self) -> Option<RecordValue<T>> {
+        // Read buffer-native storage via peek() (design 031). Records without
+        // a buffer return None — see Breaking Changes in design 031.
+        let value = self.buffer.as_ref()?.peek()?;
         #[cfg(feature = "std")]
         {
-            let value = self.latest_snapshot.lock().unwrap().clone()?;
             Some(RecordValue::new(value, self.json_serializer.clone()))
         }
-
         #[cfg(not(feature = "std"))]
         {
-            let value = self.latest_snapshot.lock().clone()?;
             Some(RecordValue::new(value, None))
         }
     }
@@ -1596,8 +1553,11 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             core::any::type_name::<T>()
         );
 
-        // Delegate to latest() which returns RecordValue<T> with serializer attached
-        let result = self.latest().and_then(|v| v.as_json());
+        // Read buffer-native storage via peek() (design 031). Records without
+        // a buffer return None — see Breaking Changes in design doc.
+        let value = self.buffer.as_ref()?.peek()?;
+        let serializer = self.json_serializer.as_ref()?;
+        let result = serializer(&value);
 
         #[cfg(feature = "tracing")]
         tracing::debug!("Serialization result: {:?}", result.is_some());
@@ -1713,7 +1673,9 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             core::any::type_name::<T>()
         );
 
-        self.produce(value);
+        // Push through the unified write path (design 031). This also marks
+        // metadata as updated — previously skipped on this path.
+        self.writer_handle().push(value);
 
         #[cfg(feature = "tracing")]
         tracing::info!(
