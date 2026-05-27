@@ -17,8 +17,32 @@ use aimdb_core::{
     OutboundRoute,
 };
 use aimdb_ws_protocol::{ClientMessage, ServerMessage};
+use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Mutex};
+
+/// Boxed `()`-yielding future used for the connector's nested
+/// `FuturesUnordered`. Identical in shape to `aimdb_core::builder::BoxFuture`.
+type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
+
+/// Aliases for the split halves of the underlying WebSocket stream.
+/// Defined once so the reconnect-watcher's `NewLoops` payload type
+/// stays readable.
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsWriteSink =
+    futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>;
+type WsReadStream = futures_util::stream::SplitStream<WsStream>;
+
+/// Sent from the reconnect watcher to the outer connector future after a
+/// successful reconnect. The outer loop pushes one write-loop future and
+/// one read-loop future built from these halves into its
+/// `FuturesUnordered`.
+struct NewLoops {
+    write_sink: WsWriteSink,
+    read_stream: WsReadStream,
+    write_rx: mpsc::UnboundedReceiver<String>,
+}
 
 // ════════════════════════════════════════════════════════════════════
 // Configuration
@@ -84,12 +108,20 @@ pub struct WsClientConnectorImpl {
 }
 
 impl WsClientConnectorImpl {
-    /// Connect to the remote WebSocket server and spawn background tasks.
+    /// Connect to the remote WebSocket server and return a handle plus
+    /// the infrastructure future that drives the read/write/keepalive
+    /// loops and the reconnect watcher.
+    ///
+    /// The returned [`BoxFuture`] owns a [`FuturesUnordered`] holding all
+    /// background loops; dropping it (via the runner being cancelled)
+    /// terminates every loop in one step. On successful reconnect the
+    /// watcher sends a [`NewLoops`] message that the outer future
+    /// translates into two fresh futures pushed onto the set.
     pub(crate) async fn connect<R>(
         config: WsClientConfig,
         router: Arc<Router>,
         db: &aimdb_core::builder::AimDb<R>,
-    ) -> Result<Self, String>
+    ) -> Result<(Self, BoxFuture), String>
     where
         R: aimdb_executor::RuntimeAdapter + 'static,
     {
@@ -114,6 +146,9 @@ impl WsClientConnectorImpl {
         }));
 
         // ── Send subscribe message ──────────────────────────────────
+        // The mpsc buffers this until the write loop is first polled by
+        // the runner; the message is delivered as soon as the outer
+        // future starts.
         if !config.subscribe_topics.is_empty() {
             let sub_msg = ClientMessage::Subscribe {
                 topics: config.subscribe_topics.clone(),
@@ -127,62 +162,130 @@ impl WsClientConnectorImpl {
         let reconnect_topics = config.subscribe_topics.clone();
         let auto_reconnect = config.auto_reconnect;
         let max_reconnect_attempts = config.max_reconnect_attempts;
-        let router_for_reconnect = router.clone();
+        let keepalive_interval = config.keepalive_interval;
         let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
 
-        // Write loop. Bridge state: tokio::spawn directly (see method doc).
-        tokio::spawn({
-            let state = state.clone();
-            async move {
-                Self::run_write_loop(ws_write, write_rx).await;
+        // Channel from the reconnect watcher to the outer future. The
+        // watcher sends a `NewLoops` on each successful reconnect; the
+        // outer future pushes a fresh write+read future onto its set.
+        let (new_loops_tx, mut new_loops_rx) = mpsc::unbounded_channel::<NewLoops>();
 
-                #[cfg(feature = "tracing")]
-                tracing::warn!("WS client: write loop ended");
+        let state_for_future = state.clone();
+        let router_for_future = router.clone();
+        let runtime_ctx_for_future = runtime_ctx.clone();
 
-                state.lock().await.status = ConnectionStatus::Disconnected;
+        let connector_future: BoxFuture = Box::pin(async move {
+            let mut tasks: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
+
+            // Initial write loop. On exit, mark the connection as
+            // disconnected so the reconnect watcher notices.
+            {
+                let state_for_write = state_for_future.clone();
+                tasks.push(Box::pin(async move {
+                    Self::run_write_loop(ws_write, write_rx).await;
+
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("WS client: write loop ended");
+
+                    state_for_write.lock().await.status = ConnectionStatus::Disconnected;
+                }));
             }
-        });
 
-        // Read loop.
-        tokio::spawn({
-            let router = router.clone();
-            let runtime_ctx = runtime_ctx.clone();
-            async move {
-                Self::run_read_loop(ws_read, &router, Some(&runtime_ctx)).await;
+            // Initial read loop.
+            {
+                let router_for_read = router_for_future.clone();
+                let ctx_for_read = runtime_ctx_for_future.clone();
+                tasks.push(Box::pin(async move {
+                    Self::run_read_loop(ws_read, &router_for_read, Some(&ctx_for_read)).await;
 
-                #[cfg(feature = "tracing")]
-                tracing::warn!("WS client: read loop ended");
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("WS client: read loop ended");
+                }));
             }
-        });
 
-        // Keepalive.
-        if let Some(interval) = config.keepalive_interval {
-            let ka_state = state.clone();
-            tokio::spawn(async move {
-                Self::run_keepalive(ka_state, interval).await;
-            });
-        }
+            // Keepalive.
+            if let Some(interval) = keepalive_interval {
+                let ka_state = state_for_future.clone();
+                tasks.push(Box::pin(Self::run_keepalive(ka_state, interval)));
+            }
 
-        // Reconnect watcher (deferred to AimX follow-up — Group 4).
-        if auto_reconnect {
-            tokio::spawn({
-                let state = state.clone();
-                let runtime_ctx = runtime_ctx.clone();
-                async move {
-                    Self::run_reconnect_watcher(
-                        state,
-                        reconnect_url,
-                        reconnect_topics,
-                        router_for_reconnect,
-                        max_reconnect_attempts,
-                        Some(runtime_ctx),
-                    )
-                    .await;
+            // Reconnect watcher.
+            if auto_reconnect {
+                let watcher_state = state_for_future.clone();
+                let watcher_tx = new_loops_tx.clone();
+                tasks.push(Box::pin(Self::run_reconnect_watcher(
+                    watcher_state,
+                    reconnect_url,
+                    reconnect_topics,
+                    max_reconnect_attempts,
+                    watcher_tx,
+                )));
+            }
+            // Drop the watcher's sender clone we still hold so the
+            // `new_loops_rx.recv()` returns `None` once the watcher
+            // task ends, breaking the outer loop cleanly.
+            drop(new_loops_tx);
+
+            // Drive the set. `biased;` keeps reconnect handling
+            // (which churns rarely) polled ahead of the drain arm.
+            loop {
+                tokio::select! {
+                    biased;
+
+                    // Reconnect produced fresh halves — push new read +
+                    // write futures into the set.
+                    maybe_new = new_loops_rx.recv() => match maybe_new {
+                        Some(NewLoops { write_sink, read_stream, write_rx }) => {
+                            let router_for_read = router_for_future.clone();
+                            let ctx_for_read = runtime_ctx_for_future.clone();
+                            let state_for_write = state_for_future.clone();
+                            tasks.push(Box::pin(async move {
+                                Self::run_write_loop(write_sink, write_rx).await;
+
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!("WS client: (reconnect) write loop ended");
+
+                                state_for_write.lock().await.status = ConnectionStatus::Disconnected;
+                            }));
+                            tasks.push(Box::pin(async move {
+                                Self::run_read_loop(
+                                    read_stream,
+                                    &router_for_read,
+                                    Some(&ctx_for_read),
+                                )
+                                .await;
+
+                                #[cfg(feature = "tracing")]
+                                tracing::warn!("WS client: (reconnect) read loop ended");
+                            }));
+                        }
+                        None => {
+                            // Watcher gone (auto_reconnect disabled or
+                            // it gave up after max_attempts). Stop
+                            // listening for new loops; tasks continue
+                            // draining until empty.
+                            break;
+                        }
+                    },
+
+                    // Drain finished child futures. `Some(_) = next()`
+                    // (rather than `select_next_some()`) is the safe form:
+                    // an empty `FuturesUnordered` reports
+                    // `is_terminated() == true`, and `select_next_some`
+                    // panics in that state. With the pattern guard, the
+                    // arm is simply disabled when `next()` resolves to
+                    // `None`; the always-active reconnect arm keeps the
+                    // select alive.
+                    Some(_) = tasks.next() => {}
                 }
-            });
-        }
+            }
 
-        Ok(Self { state, router })
+            // After the watcher exited: drain remaining children to
+            // completion so resources release cleanly.
+            while tasks.next().await.is_some() {}
+        });
+
+        Ok((Self { state, router }, connector_future))
     }
 
     /// Collect one outbound publisher future per route.
@@ -432,14 +535,17 @@ impl WsClientConnectorImpl {
 
     /// Reconnect watcher: monitors connection status and reconnects when needed.
     ///
-    /// Uses exponential backoff: 500ms, 1s, 2s, 4s, 8s (capped).
+    /// Uses exponential backoff: 500ms, 1s, 2s, 4s, 8s (capped). On a
+    /// successful reconnect it sends a [`NewLoops`] to the outer
+    /// connector future, which translates it into a fresh write- and
+    /// read-loop future pushed onto the connector's `FuturesUnordered`.
+    /// The watcher itself never calls `tokio::spawn`.
     async fn run_reconnect_watcher(
         state: Arc<Mutex<SharedState>>,
         url: String,
         subscribe_topics: Vec<String>,
-        router: Arc<Router>,
         max_attempts: usize,
-        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
+        new_loops_tx: mpsc::UnboundedSender<NewLoops>,
     ) {
         let backoff = [500u64, 1_000, 2_000, 4_000, 8_000];
         let mut attempt = 0usize;
@@ -489,20 +595,15 @@ impl WsClientConnectorImpl {
 
                     let (ws_write, ws_read) = ws_stream.split();
 
-                    // Create new channel and swap the sender atomically
+                    // Create new channel; sender will be swapped into
+                    // shared state; receiver travels to the outer future
+                    // inside `NewLoops`.
                     let (new_write_tx, new_write_rx) = mpsc::unbounded_channel::<String>();
 
-                    tokio::spawn(Self::run_write_loop(ws_write, new_write_rx));
-
-                    // Spawn new read loop
-                    let router_clone = router.clone();
-                    let runtime_ctx_clone = runtime_ctx.clone();
-                    tokio::spawn(async move {
-                        Self::run_read_loop(ws_read, &router_clone, runtime_ctx_clone.as_ref())
-                            .await;
-                    });
-
-                    // Re-subscribe
+                    // Re-subscribe before swapping — the new sender is
+                    // still local and other producers cannot reach it
+                    // yet, so this `Subscribe` is guaranteed first in
+                    // the new write channel.
                     if !subscribe_topics.is_empty() {
                         let sub = ClientMessage::Subscribe {
                             topics: subscribe_topics.clone(),
@@ -512,9 +613,10 @@ impl WsClientConnectorImpl {
                         }
                     }
 
-                    // Swap write_tx and flush pending writes in one critical section.
-                    // All producers (outbound publishers, publish(), keepalive) will
-                    // pick up the new sender on their next lock acquisition.
+                    // Swap write_tx and flush pending writes in one
+                    // critical section. All producers (outbound
+                    // publishers, publish(), keepalive) pick up the new
+                    // sender on their next lock acquisition.
                     {
                         let mut s = state.lock().await;
                         s.write_tx = new_write_tx;
@@ -522,6 +624,26 @@ impl WsClientConnectorImpl {
                             let _ = s.write_tx.send(msg);
                         }
                         s.status = ConnectionStatus::Connected;
+                    }
+
+                    // Hand the new halves to the outer connector future,
+                    // which will push fresh read+write loop futures onto
+                    // its `FuturesUnordered`.
+                    if new_loops_tx
+                        .send(NewLoops {
+                            write_sink: ws_write,
+                            read_stream: ws_read,
+                            write_rx: new_write_rx,
+                        })
+                        .is_err()
+                    {
+                        // Outer future has gone away — nothing left to
+                        // drive the loops; give up.
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(
+                            "WS client: outer future dropped, stopping reconnect watcher"
+                        );
+                        break;
                     }
 
                     attempt = 0;

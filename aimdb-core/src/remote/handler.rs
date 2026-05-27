@@ -6,10 +6,13 @@
 //! # Architecture: Event Funnel Pattern
 //!
 //! Subscriptions use a funnel pattern for clean event delivery:
-//! - Each subscription spawns a consumer task that reads from the record buffer
-//! - Consumer tasks send events to a shared mpsc channel (the "funnel")
-//! - A single writer task drains the funnel and writes events to the UnixStream
-//! - This ensures NDJSON line integrity and prevents write interleaving
+//! - Each `record.subscribe` pushes a future onto a per-connection
+//!   [`futures_util::stream::FuturesUnordered`] that the connection's
+//!   outer `select!` loop drives.
+//! - Subscription futures send events to a shared mpsc channel (the "funnel").
+//! - The same outer loop drains the funnel and writes events to the
+//!   `UnixStream`, so NDJSON line integrity is preserved without a
+//!   dedicated writer task.
 
 use crate::remote::{
     AimxConfig, Event, HelloMessage, RecordMetadata, Request, Response, WelcomeMessage,
@@ -22,46 +25,42 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(feature = "std")]
+use futures_core::Stream;
+#[cfg(feature = "std")]
+use futures_util::stream::{FuturesUnordered, StreamExt};
+#[cfg(feature = "std")]
 use serde_json::json;
 #[cfg(feature = "std")]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(feature = "std")]
 use tokio::net::UnixStream;
 #[cfg(feature = "std")]
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
+
 #[cfg(feature = "std")]
-use tokio::sync::oneshot;
-
-/// Handle for an active subscription
-///
-/// Tracks the state needed to manage a single subscription's lifecycle.
-#[cfg(feature = "std")]
-#[allow(dead_code)] // record_name used only in tracing feature
-struct SubscriptionHandle {
-    /// Unique subscription identifier (returned to client)
-    subscription_id: String,
-
-    /// Record name being subscribed to
-    record_name: String,
-
-    /// Signal to cancel this subscription
-    /// When sent, the consumer task will terminate
-    cancel_tx: oneshot::Sender<()>,
-}
+use crate::builder::BoxFuture;
 
 /// Connection state for managing subscriptions
 ///
-/// Tracks all active subscriptions for a single client connection.
+/// Tracks all active subscriptions for a single client connection. Each
+/// subscription is identified by its `subscription_id` and carries an
+/// `Arc<Notify>` that `record.unsubscribe` fires to wake the
+/// per-subscription future, which then exits on its next poll —
+/// cancellation is immediate (no need to wait for the next stream
+/// event). Connection teardown does not need to fire the notify —
+/// dropping the per-connection `FuturesUnordered` (in
+/// [`handle_connection`]) drops every subscription future, which is the
+/// primary cancellation path.
 #[cfg(feature = "std")]
 struct ConnectionState {
-    /// Active subscriptions by subscription_id
-    subscriptions: HashMap<String, SubscriptionHandle>,
+    /// Active subscriptions by subscription_id → cancel notify.
+    subscriptions: HashMap<String, Arc<Notify>>,
 
     /// Counter for generating unique subscription IDs
     next_subscription_id: u64,
 
-    /// Event funnel: all subscription tasks send events here
-    /// This channel feeds the single writer task
+    /// Event funnel: all subscription futures send events here.
+    /// This channel feeds the connection's send loop.
     event_tx: mpsc::UnboundedSender<Event>,
 
     /// Per-record drain readers, created lazily on first record.drain call.
@@ -87,35 +86,6 @@ impl ConnectionState {
         self.next_subscription_id += 1;
         id
     }
-
-    /// Adds a subscription to the connection state
-    fn add_subscription(&mut self, handle: SubscriptionHandle) {
-        self.subscriptions
-            .insert(handle.subscription_id.clone(), handle);
-    }
-
-    /// Removes and returns a subscription by ID
-    #[allow(dead_code)]
-    fn remove_subscription(&mut self, subscription_id: &str) -> Option<SubscriptionHandle> {
-        self.subscriptions.remove(subscription_id)
-    }
-
-    /// Cancels all active subscriptions
-    ///
-    /// Sends cancel signals to all subscription tasks and clears the map.
-    /// Called when the client disconnects.
-    async fn cancel_all_subscriptions(&mut self) {
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Canceling {} active subscriptions",
-            self.subscriptions.len()
-        );
-
-        for (_id, handle) in self.subscriptions.drain() {
-            // Send cancel signal (ignore if receiver already dropped)
-            let _ = handle.cancel_tx.send(());
-        }
-    }
 }
 
 /// Handles an incoming client connection
@@ -126,22 +96,26 @@ impl ConnectionState {
 /// # Architecture
 ///
 /// ```text
-/// ┌─────────────────┐
-/// │ Subscription 1  │───┐
-/// │ Consumer Task   │   │
-/// └─────────────────┘   │
-///                       ├──► Event Funnel ───► select! loop ───► UnixStream
-/// ┌─────────────────┐   │     (mpsc)          (interleaved    
-/// │ Subscription 2  │───┘                      writes)
-/// │ Consumer Task   │
-/// └─────────────────┘
+/// ┌──────────────────────┐
+/// │ Subscription future 1│───┐
+/// │ (in FuturesUnordered)│   │
+/// └──────────────────────┘   │
+///                            ├──► Event Funnel ───► select! loop ───► UnixStream
+/// ┌──────────────────────┐   │     (mpsc)          (interleaved
+/// │ Subscription future 2│───┘                      writes)
+/// │ (in FuturesUnordered)│
+/// └──────────────────────┘
 /// ```
 ///
-/// The main loop uses `tokio::select!` to interleave:
+/// The main loop uses `tokio::select! { biased; }` to interleave:
 /// - Reading requests from the stream
 /// - Writing events from subscriptions
+/// - Draining completed subscription futures
 ///
-/// This ensures both responses and events are written without blocking.
+/// `biased;` polls the request arm first so a chatty subscription
+/// cannot starve the request path. Cancellation is by drop: when the
+/// outer loop exits, the per-connection `FuturesUnordered` is dropped
+/// and every subscription future with it.
 ///
 /// # Arguments
 /// * `db` - Database instance
@@ -175,17 +149,27 @@ where
     #[cfg(feature = "tracing")]
     tracing::info!("Handshake complete, client ready");
 
-    // Create event funnel: all subscription tasks will send events here
+    // Create event funnel: all subscription futures send events here
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
     // Initialize connection state
     let mut conn_state = ConnectionState::new(event_tx);
 
-    // Main loop: interleave reading requests and writing events
+    // Per-connection FuturesUnordered of subscription futures. Each
+    // `record.subscribe` pushes one future here; cancellation flows
+    // through `Arc<Notify>` (Unsubscribe) or by dropping `subs` when the
+    // connection ends.
+    let mut subs: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
+
+    // Main loop: interleave reading requests, writing events, and draining
+    // completed subscription futures. `biased;` keeps request reads polled
+    // first so a chatty subscription cannot starve the request path.
     loop {
         let mut line = String::new();
 
         tokio::select! {
+            biased;
+
             // Handle incoming requests
             read_result = stream.read_line(&mut line) => {
                 match read_result {
@@ -219,7 +203,14 @@ where
                         };
 
                         // Dispatch request to appropriate handler
-                        let response = handle_request(&db, &config, &mut conn_state, request).await;
+                        let response = handle_request(
+                            &db,
+                            &config,
+                            &mut conn_state,
+                            &mut subs,
+                            request,
+                        )
+                        .await;
 
                         // Send response
                         if let Err(_e) = send_response(&mut stream, &response).await {
@@ -244,11 +235,22 @@ where
                     break;
                 }
             }
+
+            // Drain finished subscription futures so `subs` does not grow
+            // unboundedly. Using `Some(_) = next()` (rather than
+            // `select_next_some()`) is the safe form: an empty
+            // `FuturesUnordered` reports `is_terminated() == true`, and
+            // `select_next_some` panics in that state. With the pattern
+            // guard the arm is simply disabled when `next()` resolves to
+            // `None`, and the always-active `read_line` arm keeps the
+            // select alive.
+            Some(_) = subs.next() => {}
         }
     }
 
-    // Cleanup: cancel all active subscriptions
-    conn_state.cancel_all_subscriptions().await;
+    // Dropping `subs` here cancels every still-running subscription future
+    // — the connection's `FuturesUnordered` is their sole owner.
+    drop(subs);
 
     #[cfg(feature = "tracing")]
     tracing::info!("Connection handler terminating");
@@ -496,7 +498,7 @@ where
         server: "aimdb".to_string(),
         permissions,
         writable_records,
-        max_subscriptions: Some(config.subscription_queue_size),
+        max_subscriptions: Some(config.max_subs_per_connection),
         authenticated: Some(authenticated),
     };
 
@@ -552,6 +554,7 @@ async fn handle_request<R>(
     db: &Arc<AimDb<R>>,
     config: &AimxConfig,
     conn_state: &mut ConnectionState,
+    subs: &mut FuturesUnordered<BoxFuture>,
     request: Request,
 ) -> Response
 where
@@ -569,7 +572,7 @@ where
         "record.get" => handle_record_get(db, config, request.id, request.params).await,
         "record.set" => handle_record_set(db, config, request.id, request.params).await,
         "record.subscribe" => {
-            handle_record_subscribe(db, config, conn_state, request.id, request.params).await
+            handle_record_subscribe(db, config, conn_state, subs, request.id, request.params).await
         }
         "record.unsubscribe" => {
             handle_record_unsubscribe(conn_state, request.id, request.params).await
@@ -928,17 +931,20 @@ where
 
 /// Handles record.subscribe method
 ///
-/// Subscribes to live updates for a record.
+/// Subscribes to live updates for a record. Pushes a per-subscription
+/// future onto the connection's [`FuturesUnordered`] (`subs`) — there is
+/// no `tokio::spawn`; the connection's outer loop drives the future.
 ///
 /// # Arguments
 /// * `db` - Database instance
 /// * `config` - Remote access configuration
 /// * `conn_state` - Connection state (for subscription tracking)
+/// * `subs` - Per-connection set of subscription futures (this fn pushes one)
 /// * `request_id` - Request ID for the response
 /// * `params` - Request parameters (must contain "name" field with record name)
 ///
 /// # Returns
-/// Success response with subscription_id and queue_size, or error if:
+/// Success response with subscription_id or error if:
 /// - Missing/invalid parameters
 /// - Record not found
 /// - Too many subscriptions
@@ -947,6 +953,7 @@ async fn handle_record_subscribe<R>(
     db: &Arc<AimDb<R>>,
     config: &AimxConfig,
     conn_state: &mut ConnectionState,
+    subs: &mut FuturesUnordered<BoxFuture>,
     request_id: u64,
     params: Option<serde_json::Value>,
 ) -> Response
@@ -991,13 +998,13 @@ where
     #[cfg(feature = "tracing")]
     tracing::debug!("Subscribing to record: {}", record_name);
 
-    // Check max subscriptions limit
-    if conn_state.subscriptions.len() >= config.subscription_queue_size {
+    // Check max subscriptions per connection.
+    if conn_state.subscriptions.len() >= config.max_subs_per_connection {
         #[cfg(feature = "tracing")]
         tracing::warn!(
             "Too many subscriptions: {} (max: {})",
             conn_state.subscriptions.len(),
-            config.subscription_queue_size
+            config.max_subs_per_connection
         );
 
         return Response::error(
@@ -1005,54 +1012,54 @@ where
             "too_many_subscriptions",
             format!(
                 "Maximum subscriptions reached: {}",
-                config.subscription_queue_size
+                config.max_subs_per_connection
             ),
         );
     }
 
-    // Generate unique subscription ID
-    let subscription_id = conn_state.generate_subscription_id();
+    // Subscribe to the record's JSON event stream
+    let value_stream = match crate::remote::stream::stream_record_updates(db, &record_name) {
+        Ok(s) => s,
+        Err(e) => {
+            // Map internal errors to appropriate response codes
+            let (code, message) = match &e {
+                crate::DbError::RecordKeyNotFound { key } => {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("Record not found: {}", key);
+                    ("not_found", format!("Record '{}' not found", key))
+                }
+                _ => {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("Failed to subscribe to record updates: {}", e);
+                    ("internal_error", format!("Failed to subscribe: {}", e))
+                }
+            };
 
-    // Subscribe to record updates via the database API (using record key)
-    let (value_rx, cancel_tx) =
-        match db.subscribe_record_updates(&record_name, config.subscription_queue_size) {
-            Ok(channels) => channels,
-            Err(e) => {
-                // Map internal errors to appropriate response codes
-                let (code, message) = match &e {
-                    crate::DbError::RecordKeyNotFound { key } => {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!("Record not found: {}", key);
-                        ("not_found", format!("Record '{}' not found", key))
-                    }
-                    _ => {
-                        #[cfg(feature = "tracing")]
-                        tracing::error!("Failed to subscribe to record updates: {}", e);
-                        ("internal_error", format!("Failed to subscribe: {}", e))
-                    }
-                };
-
-                return Response::error(request_id, code, message);
-            }
-        };
-
-    // Spawn event streaming task for this subscription
-    let event_tx = conn_state.event_tx.clone();
-    let sub_id_clone = subscription_id.clone();
-    let stream_handle = tokio::spawn(async move {
-        stream_subscription_events(sub_id_clone, value_rx, event_tx).await;
-    });
-
-    // Store subscription handle
-    let handle = SubscriptionHandle {
-        subscription_id: subscription_id.clone(),
-        record_name: record_name.clone(),
-        cancel_tx,
+            return Response::error(request_id, code, message);
+        }
     };
-    conn_state.add_subscription(handle);
 
-    // Detach the streaming task (it will run until cancelled or channel closes)
-    std::mem::drop(stream_handle);
+    // Generate unique subscription ID and cancel notify
+    let subscription_id = conn_state.generate_subscription_id();
+    let cancel = Arc::new(Notify::new());
+
+    // Push the subscription future onto the connection's set. The future
+    // exits — and is therefore dropped — when either the cancel notify
+    // fires (Unsubscribe, immediate) or the outer connection loop exits
+    // (drops `subs`, which drops the future).
+    let event_tx = conn_state.event_tx.clone();
+    let sub_id_for_future = subscription_id.clone();
+    let cancel_for_future = cancel.clone();
+    subs.push(Box::pin(run_subscription(
+        value_stream,
+        sub_id_for_future,
+        event_tx,
+        cancel_for_future,
+    )));
+
+    conn_state
+        .subscriptions
+        .insert(subscription_id.clone(), cancel);
 
     #[cfg(feature = "tracing")]
     tracing::info!(
@@ -1066,42 +1073,73 @@ where
         request_id,
         json!({
             "subscription_id": subscription_id,
-            "queue_size": config.subscription_queue_size,
         }),
     )
 }
 
-/// Streams subscription events from value channel to event channel
+/// Per-subscription future: forwards JSON values from the record stream
+/// into the connection's event funnel as `Event` messages with sequence
+/// numbers and RFC-style "secs.nanos" timestamps.
 ///
-/// Reads JSON values from the subscription's receiver and converts them
-/// into Event messages with sequence numbers and timestamps.
+/// Exits when any of:
+/// - the `cancel` notify fires (by `record.unsubscribe`) — wakes the
+///   future immediately; the in-flight `stream.next()` is cancelled by
+///   `select!` losing its arm, which drops the underlying
+///   `JsonBufferReader` even if the record is currently quiet;
+/// - the upstream stream ends (e.g. `BufferClosed`);
+/// - the event funnel is closed (connection going down).
 ///
-/// # Arguments
-/// * `subscription_id` - Unique subscription identifier
-/// * `value_rx` - Receiver for JSON values from the database
-/// * `event_tx` - Sender for Event messages to the client
+/// Connection-close cancellation does not rely on the notify — the
+/// connection's `FuturesUnordered` is the sole owner of this future and
+/// dropping the set drops the future.
 #[cfg(feature = "std")]
-async fn stream_subscription_events(
+async fn run_subscription<S>(
+    stream: S,
     subscription_id: String,
-    mut value_rx: tokio::sync::mpsc::Receiver<serde_json::Value>,
-    event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
-) {
+    event_tx: mpsc::UnboundedSender<Event>,
+    cancel: Arc<Notify>,
+) where
+    S: Stream<Item = serde_json::Value> + Send + 'static,
+{
+    futures_util::pin_mut!(stream);
     let mut sequence: u64 = 1;
 
     #[cfg(feature = "tracing")]
     tracing::debug!(
-        "Event streaming task started for subscription: {}",
+        "Subscription future started for subscription: {}",
         subscription_id
     );
 
-    while let Some(json_value) = value_rx.recv().await {
+    loop {
+        // `biased;` polls the cancel arm first so a notify issued while
+        // a value is also ready terminates the subscription rather than
+        // emitting one more event. `Notify` stores a permit if no
+        // waiter is parked, so a notify-before-first-poll is honoured
+        // on the first iteration.
+        let json_value = tokio::select! {
+            biased;
+
+            _ = cancel.notified() => {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    "Subscription {} cancelled via Unsubscribe",
+                    subscription_id
+                );
+                break;
+            }
+
+            maybe_value = stream.next() => match maybe_value {
+                Some(v) => v,
+                None => break,
+            },
+        };
+
         // Generate timestamp in "secs.nanosecs" format
         let duration = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         let timestamp = format!("{}.{:09}", duration.as_secs(), duration.subsec_nanos());
 
-        // Create event
         let event = Event {
             subscription_id: subscription_id.clone(),
             sequence,
@@ -1110,11 +1148,10 @@ async fn stream_subscription_events(
             dropped: None, // TODO: Implement dropped event tracking
         };
 
-        // Send event to the funnel
         if event_tx.send(event).is_err() {
             #[cfg(feature = "tracing")]
             tracing::debug!(
-                "Event channel closed, terminating stream for subscription: {}",
+                "Event channel closed, terminating subscription: {}",
                 subscription_id
             );
             break;
@@ -1124,10 +1161,7 @@ async fn stream_subscription_events(
     }
 
     #[cfg(feature = "tracing")]
-    tracing::debug!(
-        "Event streaming task terminated for subscription: {}",
-        subscription_id
-    );
+    tracing::debug!("Subscription future terminated: {}", subscription_id);
 }
 
 /// Handles record.unsubscribe method
@@ -1171,19 +1205,18 @@ async fn handle_record_unsubscribe(
     #[cfg(feature = "tracing")]
     tracing::debug!("Unsubscribing from subscription_id: {}", subscription_id);
 
-    // Look up and remove the subscription
+    // Look up and remove the subscription. Firing the notify wakes the
+    // per-subscription future immediately — the `biased;` cancel arm in
+    // `run_subscription`'s select! returns next, the stream-poll future
+    // is dropped (releasing the underlying `JsonBufferReader` even if
+    // the record is quiet), and the subscription future exits. It is
+    // then reaped from `subs` by the connection's outer drain loop.
     match conn_state.subscriptions.remove(&subscription_id) {
-        Some(handle) => {
-            // Send cancellation signal to the streaming task
-            // It's okay if this fails (task may have already terminated)
-            let _ = handle.cancel_tx.send(());
+        Some(cancel) => {
+            cancel.notify_one();
 
             #[cfg(feature = "tracing")]
-            tracing::debug!(
-                "Cancelled subscription {} for record {}",
-                subscription_id,
-                handle.record_name
-            );
+            tracing::debug!("Cancelled subscription {}", subscription_id);
 
             Response::success(
                 request_id,
@@ -1551,4 +1584,176 @@ where
     );
 
     Response::success(request_id, json!(topo_order))
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use futures_core::Stream;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+
+    /// A `Stream<Item = serde_json::Value>` that never yields a value but
+    /// flips a flag when dropped. Used to verify that dropping the
+    /// per-connection `FuturesUnordered` drops the per-subscription
+    /// future, which in turn drops its underlying record stream — the
+    /// invariant the AimX spawn-free refactor depends on for cancellation
+    /// on connection close.
+    struct DropTracker {
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropTracker {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl Stream for DropTracker {
+        type Item = serde_json::Value;
+        fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            // Park forever; we only care that the stream gets dropped.
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_subs_set_drops_subscription_stream() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let stream = DropTracker {
+            dropped: dropped.clone(),
+        };
+
+        let (event_tx, _event_rx) = mpsc::unbounded_channel::<Event>();
+        let cancel = Arc::new(Notify::new());
+
+        let mut subs: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
+        subs.push(Box::pin(run_subscription(
+            stream,
+            "sub-1".to_string(),
+            event_tx,
+            cancel,
+        )));
+
+        // Drive the set once so the future is actually pinned/installed.
+        tokio::task::yield_now().await;
+        let _ = futures_util::future::poll_fn(|cx| {
+            let _ = Pin::new(&mut subs).poll_next(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "drop must not have fired yet"
+        );
+
+        // Dropping the set drops every contained future, which in turn
+        // drops the stream owned by `run_subscription`.
+        drop(subs);
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "dropping the FuturesUnordered must drop the subscription stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_terminates_subscription_immediately() {
+        use futures_util::stream::unfold;
+
+        // Channel-backed stream so the future is parked on `stream.next()`
+        // with no value pending — the whole point of switching from
+        // `AtomicBool` to `Notify` is that we no longer need a second
+        // value to wake the future. The notify itself must wake it.
+        let (val_tx, val_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+        let values = unfold(
+            val_rx,
+            |mut rx| async move { rx.recv().await.map(|v| (v, rx)) },
+        );
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+        let cancel = Arc::new(Notify::new());
+
+        let cancel_for_future = cancel.clone();
+        let handle = tokio::spawn(run_subscription(
+            values,
+            "sub-1".to_string(),
+            event_tx,
+            cancel_for_future,
+        ));
+
+        // Feed one value and confirm it propagates as an Event.
+        val_tx.send(serde_json::json!({"v": 1})).unwrap();
+        let event = event_rx.recv().await.expect("expected one event");
+        assert_eq!(event.subscription_id, "sub-1");
+
+        // Fire the cancel notify WITHOUT feeding any further values.
+        // The future is parked on `stream.next()` over an empty
+        // channel; the notify must wake it via the `biased;` cancel
+        // arm of `select!`, even though the underlying stream is quiet.
+        cancel.notify_one();
+
+        // The future must complete promptly on its own — no abort,
+        // no further values needed. Timeout caps the test in case
+        // immediate cancellation is silently broken.
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("subscription future should exit promptly after notify_one()")
+            .expect("future panicked");
+
+        // And no further event should have been produced.
+        assert!(
+            event_rx.try_recv().is_err(),
+            "no further events should be sent after cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_subs_set_drops_inner_stream_state() {
+        // Stronger integration-style check: a real channel-backed stream
+        // (the same shape `stream_record_updates` returns via `unfold`)
+        // is held inside a `run_subscription` future, which is held by a
+        // `FuturesUnordered`. Dropping the set must drop the channel's
+        // receiver, which we observe by `val_tx.send(...)` failing.
+        use futures_util::stream::unfold;
+
+        let (val_tx, val_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+        let values = unfold(
+            val_rx,
+            |mut rx| async move { rx.recv().await.map(|v| (v, rx)) },
+        );
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+        let cancel = Arc::new(Notify::new());
+
+        let mut subs: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
+        subs.push(Box::pin(run_subscription(
+            values,
+            "sub-1".to_string(),
+            event_tx,
+            cancel,
+        )));
+
+        // Drive the set until the subscription is observably alive.
+        val_tx.send(serde_json::json!({"v": 1})).unwrap();
+        tokio::select! {
+            event = event_rx.recv() => {
+                assert_eq!(event.unwrap().subscription_id, "sub-1");
+            }
+            _ = subs.next() => panic!("subscription future ended unexpectedly"),
+        }
+
+        // Connection going away: drop the whole set. This must drop the
+        // boxed future, which drops the stream, which drops `val_rx`.
+        drop(subs);
+
+        assert!(
+            val_tx.send(serde_json::json!({"v": 2})).is_err(),
+            "after dropping the FuturesUnordered, the inner stream's \
+             receiver must be dropped — `send` is the observable proxy"
+        );
+    }
 }

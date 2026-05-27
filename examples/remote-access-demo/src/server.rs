@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .socket_path(socket_path)
         .security_policy(security_policy)
         .max_connections(10)
-        .subscription_queue_size(100);
+        .max_subs_per_connection(32);
 
     info!("📡 Remote access will be available at: {}", socket_path);
     info!("🔒 Security policy: ReadWrite");

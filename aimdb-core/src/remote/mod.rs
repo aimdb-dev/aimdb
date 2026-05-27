@@ -28,7 +28,7 @@
 //!             .socket_path("/var/run/aimdb/aimdb.sock")
 //!             .security_policy(SecurityPolicy::ReadOnly)
 //!             .max_connections(16)
-//!             .subscription_queue_size(100)
+//!             .max_subs_per_connection(32)
 //!     )
 //!     .build()?;
 //! ```
@@ -46,4 +46,6 @@ pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeM
 
 // Internal exports for implementation
 pub(crate) mod handler;
+#[cfg(feature = "std")]
+pub(crate) mod stream;
 pub(crate) mod supervisor;

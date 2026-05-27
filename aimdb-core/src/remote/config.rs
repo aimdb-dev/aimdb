@@ -7,7 +7,7 @@ use crate::record_id::StringKey;
 /// Configuration for AimX remote access
 ///
 /// Defines how the remote access layer behaves, including socket path,
-/// security policy, connection limits, and subscription queue sizes.
+/// security policy and connection / subscription limits.
 #[derive(Debug, Clone)]
 pub struct AimxConfig {
     /// Path to Unix domain socket
@@ -16,11 +16,17 @@ pub struct AimxConfig {
     /// Security policy (read-only or read-write)
     pub security_policy: SecurityPolicy,
 
-    /// Maximum number of concurrent connections
+    /// Maximum number of concurrent client connections accepted by the
+    /// supervisor. When the in-flight connection count reaches this
+    /// value, newly-accepted Unix sockets are closed immediately (the
+    /// client sees a closed socket on connect).
     pub max_connections: usize,
 
-    /// Subscription queue size per client per subscription
-    pub subscription_queue_size: usize,
+    /// Maximum number of concurrent subscriptions allowed per connection.
+    /// Once a connection holds this many subscriptions, further
+    /// `record.subscribe` calls receive a `too_many_subscriptions` error
+    /// until one is released via `record.unsubscribe`.
+    pub max_subs_per_connection: usize,
 
     /// Optional authentication token
     pub auth_token: Option<String>,
@@ -37,7 +43,7 @@ impl AimxConfig {
     /// - Socket path: `/tmp/aimdb.sock`
     /// - Security policy: Read-only
     /// - Max connections: 16
-    /// - Subscription queue size: 100
+    /// - Max subscriptions per connection: 32
     /// - No auth token
     /// - Socket permissions: 0o600 (owner-only)
     pub fn uds_default() -> Self {
@@ -45,7 +51,7 @@ impl AimxConfig {
             socket_path: PathBuf::from("/tmp/aimdb.sock"),
             security_policy: SecurityPolicy::ReadOnly,
             max_connections: 16,
-            subscription_queue_size: 100,
+            max_subs_per_connection: 32,
             auth_token: None,
             socket_permissions: Some(0o600),
         }
@@ -69,9 +75,9 @@ impl AimxConfig {
         self
     }
 
-    /// Sets the subscription queue size per client
-    pub fn subscription_queue_size(mut self, size: usize) -> Self {
-        self.subscription_queue_size = size;
+    /// Sets the maximum number of concurrent subscriptions per connection
+    pub fn max_subs_per_connection(mut self, max: usize) -> Self {
+        self.max_subs_per_connection = max;
         self
     }
 
@@ -206,7 +212,7 @@ mod tests {
         let config = AimxConfig::uds_default();
         assert_eq!(config.socket_path, PathBuf::from("/tmp/aimdb.sock"));
         assert_eq!(config.max_connections, 16);
-        assert_eq!(config.subscription_queue_size, 100);
+        assert_eq!(config.max_subs_per_connection, 32);
         assert!(matches!(config.security_policy, SecurityPolicy::ReadOnly));
         assert!(config.auth_token.is_none());
     }
@@ -217,13 +223,13 @@ mod tests {
         let config = AimxConfig::uds_default()
             .socket_path("/var/run/aimdb.sock")
             .max_connections(32)
-            .subscription_queue_size(200)
+            .max_subs_per_connection(8)
             .auth_token("secret-token")
             .socket_permissions(0o660);
 
         assert_eq!(config.socket_path, PathBuf::from("/var/run/aimdb.sock"));
         assert_eq!(config.max_connections, 32);
-        assert_eq!(config.subscription_queue_size, 200);
+        assert_eq!(config.max_subs_per_connection, 8);
         assert_eq!(config.auth_token, Some("secret-token".to_string()));
         assert_eq!(config.socket_permissions, Some(0o660));
     }
