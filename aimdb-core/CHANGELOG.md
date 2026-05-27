@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AimX remote-access path is now spawn-free (Issue #114, Design 030).** Every remaining `tokio::spawn` in `aimdb-core/src/remote/` was removed; the supervisor's accept loop and each connection handler now own their own `FuturesUnordered<BoxFuture>` driven by `tokio::select! { biased; }`. Cancellation collapsed to one mechanism — dropping the future.
   - New `aimdb-core/src/remote/stream.rs` exports a `pub(crate) stream_record_updates` helper that adapts a record's `JsonBufferReader` into a `Stream<Item = serde_json::Value>` via `futures_util::stream::unfold`. No task, no channel — drop the stream to cancel.
   - `AimDb::subscribe_record_updates` **deleted**. The method had no out-of-tree callers (the only caller was the AimX handler); replaced by `stream_record_updates` above.
-  - Per-subscription `oneshot::Sender<()>` cancel channels and the `SubscriptionHandle` struct **deleted**. `ConnectionState::subscriptions` is now `HashMap<String, Arc<AtomicBool>>`; `record.unsubscribe` flips the flag, which the per-sub future observes after its next stream poll.
+  - Per-subscription `oneshot::Sender<()>` cancel channels and the `SubscriptionHandle` struct **deleted**. `ConnectionState::subscriptions` is now `HashMap<String, Arc<tokio::sync::Notify>>`; `record.unsubscribe` calls `notify_one()`, waking the per-sub future immediately (even when parked on `stream.next()`).
   - The two-task chain per subscription (buffer-reader task + JSON-event forwarder task) **collapsed** into one `run_subscription` future per subscription, held in the connection's `FuturesUnordered`.
 
 ### Changed (breaking)
