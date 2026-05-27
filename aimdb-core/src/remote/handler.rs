@@ -22,8 +22,6 @@ use crate::{AimDb, DbError, DbResult};
 #[cfg(feature = "std")]
 use std::collections::HashMap;
 #[cfg(feature = "std")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "std")]
 use std::sync::Arc;
 
 #[cfg(feature = "std")]
@@ -37,7 +35,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(feature = "std")]
 use tokio::net::UnixStream;
 #[cfg(feature = "std")]
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 #[cfg(feature = "std")]
 use crate::builder::BoxFuture;
@@ -46,15 +44,17 @@ use crate::builder::BoxFuture;
 ///
 /// Tracks all active subscriptions for a single client connection. Each
 /// subscription is identified by its `subscription_id` and carries an
-/// `Arc<AtomicBool>` that the `record.unsubscribe` handler flips to signal
-/// the per-subscription future to exit on its next poll. Connection
-/// teardown does not need to flip the flag — dropping the per-connection
-/// `FuturesUnordered` (in [`handle_connection`]) drops every subscription
-/// future, which is the primary cancellation path.
+/// `Arc<Notify>` that `record.unsubscribe` fires to wake the
+/// per-subscription future, which then exits on its next poll —
+/// cancellation is immediate (no need to wait for the next stream
+/// event). Connection teardown does not need to fire the notify —
+/// dropping the per-connection `FuturesUnordered` (in
+/// [`handle_connection`]) drops every subscription future, which is the
+/// primary cancellation path.
 #[cfg(feature = "std")]
 struct ConnectionState {
-    /// Active subscriptions by subscription_id → cancel flag.
-    subscriptions: HashMap<String, Arc<AtomicBool>>,
+    /// Active subscriptions by subscription_id → cancel notify.
+    subscriptions: HashMap<String, Arc<Notify>>,
 
     /// Counter for generating unique subscription IDs
     next_subscription_id: u64,
@@ -1039,13 +1039,14 @@ where
         }
     };
 
-    // Generate unique subscription ID and cancel flag
+    // Generate unique subscription ID and cancel notify
     let subscription_id = conn_state.generate_subscription_id();
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(Notify::new());
 
     // Push the subscription future onto the connection's set. The future
-    // is dropped — and therefore cancelled — when either the cancel flag
-    // is flipped (Unsubscribe) or the outer connection loop exits.
+    // exits — and is therefore dropped — when either the cancel notify
+    // fires (Unsubscribe, immediate) or the outer connection loop exits
+    // (drops `subs`, which drops the future).
     let event_tx = conn_state.event_tx.clone();
     let sub_id_for_future = subscription_id.clone();
     let cancel_for_future = cancel.clone();
@@ -1081,12 +1082,14 @@ where
 /// numbers and RFC-style "secs.nanos" timestamps.
 ///
 /// Exits when any of:
-/// - the `cancel` flag is set (by `record.unsubscribe`) — checked after
-///   each stream poll, so cancellation has up to a one-event delay;
+/// - the `cancel` notify fires (by `record.unsubscribe`) — wakes the
+///   future immediately; the in-flight `stream.next()` is cancelled by
+///   `select!` losing its arm, which drops the underlying
+///   `JsonBufferReader` even if the record is currently quiet;
 /// - the upstream stream ends (e.g. `BufferClosed`);
 /// - the event funnel is closed (connection going down).
 ///
-/// Connection-close cancellation does not rely on the flag — the
+/// Connection-close cancellation does not rely on the notify — the
 /// connection's `FuturesUnordered` is the sole owner of this future and
 /// dropping the set drops the future.
 #[cfg(feature = "std")]
@@ -1094,7 +1097,7 @@ async fn run_subscription<S>(
     stream: S,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Event>,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<Notify>,
 ) where
     S: Stream<Item = serde_json::Value> + Send + 'static,
 {
@@ -1107,12 +1110,29 @@ async fn run_subscription<S>(
         subscription_id
     );
 
-    while let Some(json_value) = stream.next().await {
-        if cancel.load(Ordering::Relaxed) {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Subscription {} cancelled via Unsubscribe", subscription_id);
-            break;
-        }
+    loop {
+        // `biased;` polls the cancel arm first so a notify issued while
+        // a value is also ready terminates the subscription rather than
+        // emitting one more event. `Notify` stores a permit if no
+        // waiter is parked, so a notify-before-first-poll is honoured
+        // on the first iteration.
+        let json_value = tokio::select! {
+            biased;
+
+            _ = cancel.notified() => {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(
+                    "Subscription {} cancelled via Unsubscribe",
+                    subscription_id
+                );
+                break;
+            }
+
+            maybe_value = stream.next() => match maybe_value {
+                Some(v) => v,
+                None => break,
+            },
+        };
 
         // Generate timestamp in "secs.nanosecs" format
         let duration = std::time::SystemTime::now()
@@ -1185,12 +1205,15 @@ async fn handle_record_unsubscribe(
     #[cfg(feature = "tracing")]
     tracing::debug!("Unsubscribing from subscription_id: {}", subscription_id);
 
-    // Look up and remove the subscription. Setting the cancel flag tells
-    // the per-subscription future to exit on its next poll; the future
-    // itself is reaped from `subs` by the connection's outer drain loop.
+    // Look up and remove the subscription. Firing the notify wakes the
+    // per-subscription future immediately — the `biased;` cancel arm in
+    // `run_subscription`'s select! returns next, the stream-poll future
+    // is dropped (releasing the underlying `JsonBufferReader` even if
+    // the record is quiet), and the subscription future exits. It is
+    // then reaped from `subs` by the connection's outer drain loop.
     match conn_state.subscriptions.remove(&subscription_id) {
         Some(cancel) => {
-            cancel.store(true, Ordering::Relaxed);
+            cancel.notify_one();
 
             #[cfg(feature = "tracing")]
             tracing::debug!("Cancelled subscription {}", subscription_id);
@@ -1604,7 +1627,7 @@ mod tests {
         };
 
         let (event_tx, _event_rx) = mpsc::unbounded_channel::<Event>();
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(Notify::new());
 
         let mut subs: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
         subs.push(Box::pin(run_subscription(
@@ -1638,13 +1661,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsubscribe_flag_terminates_subscription_on_next_event() {
+    async fn unsubscribe_terminates_subscription_immediately() {
         use futures_util::stream::unfold;
 
-        // Channel-backed stream so we control exactly when the future
-        // advances past each `stream.next().await`. Without this, a
-        // synchronous source like `stream::iter` would race past the
-        // flag-flip before the test can observe it.
+        // Channel-backed stream so the future is parked on `stream.next()`
+        // with no value pending — the whole point of switching from
+        // `AtomicBool` to `Notify` is that we no longer need a second
+        // value to wake the future. The notify itself must wake it.
         let (val_tx, val_rx) = mpsc::unbounded_channel::<serde_json::Value>();
         let values = unfold(
             val_rx,
@@ -1652,7 +1675,7 @@ mod tests {
         );
 
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(Notify::new());
 
         let cancel_for_future = cancel.clone();
         let handle = tokio::spawn(run_subscription(
@@ -1667,19 +1690,21 @@ mod tests {
         let event = event_rx.recv().await.expect("expected one event");
         assert_eq!(event.subscription_id, "sub-1");
 
-        // Flip the cancel flag, then feed a second value to wake the
-        // stream. The future must observe the flag *after* the next
-        // `stream.next().await` returns and exit before sending the
-        // second Event.
-        cancel.store(true, Ordering::Relaxed);
-        val_tx.send(serde_json::json!({"v": 2})).unwrap();
+        // Fire the cancel notify WITHOUT feeding any further values.
+        // The future is parked on `stream.next()` over an empty
+        // channel; the notify must wake it via the `biased;` cancel
+        // arm of `select!`, even though the underlying stream is quiet.
+        cancel.notify_one();
 
-        // The future must complete on its own — no abort.
-        handle
+        // The future must complete promptly on its own — no abort,
+        // no further values needed. Timeout caps the test in case
+        // immediate cancellation is silently broken.
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
             .await
-            .expect("subscription future should exit cleanly after cancel flag");
+            .expect("subscription future should exit promptly after notify_one()")
+            .expect("future panicked");
 
-        // And the second value must not have produced an Event.
+        // And no further event should have been produced.
         assert!(
             event_rx.try_recv().is_err(),
             "no further events should be sent after cancel"
@@ -1702,7 +1727,7 @@ mod tests {
         );
 
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(Notify::new());
 
         let mut subs: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
         subs.push(Box::pin(run_subscription(
