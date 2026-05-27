@@ -157,8 +157,8 @@ where
 
     // Per-connection FuturesUnordered of subscription futures. Each
     // `record.subscribe` pushes one future here; cancellation flows
-    // through `Arc<AtomicBool>` (Unsubscribe) or by dropping `subs` when
-    // the connection ends.
+    // through `Arc<Notify>` (Unsubscribe) or by dropping `subs` when the
+    // connection ends.
     let mut subs: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
 
     // Main loop: interleave reading requests, writing events, and draining
