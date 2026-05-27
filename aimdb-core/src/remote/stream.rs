@@ -46,16 +46,23 @@ where
         .ok_or(DbError::InvalidRecordId { id: id.raw() })?;
     let reader = record.subscribe_json()?;
 
-    Ok(unfold(reader, |mut reader| async move {
+    // Pair the reader with an owned copy of the record key so lag/error
+    // logs identify which record fell behind — the previous mpsc-based
+    // path carried this via `record_metadata.name`, and dropping it
+    // hides which subscription is misbehaving in mixed-record traces.
+    let state = (reader, record_key.to_string());
+
+    Ok(unfold(state, |(mut reader, _key)| async move {
         loop {
             match reader.recv_json().await {
-                Ok(value) => return Some((value, reader)),
+                Ok(value) => return Some((value, (reader, _key))),
                 Err(DbError::BufferLagged {
                     lag_count: _lag_count,
                     ..
                 }) => {
                     #[cfg(feature = "tracing")]
                     tracing::warn!(
+                        record = %_key,
                         "stream_record_updates: subscription lagged by {} messages",
                         _lag_count
                     );
@@ -64,7 +71,11 @@ where
                 Err(DbError::BufferClosed { .. }) => return None,
                 Err(_e) => {
                     #[cfg(feature = "tracing")]
-                    tracing::error!("stream_record_updates: terminating on error: {:?}", _e);
+                    tracing::error!(
+                        record = %_key,
+                        "stream_record_updates: terminating on error: {:?}",
+                        _e
+                    );
                     return None;
                 }
             }

@@ -21,6 +21,15 @@
   16) and added a new `max_subs_per_connection: usize` (default 32).
   Non-breaking; `max_connections` is now actually enforced by the
   supervisor — previously the field existed but went unread.
+- **`subscription_queue_size` removed (breaking).** The draft kept the
+  field "for per-sub channel depth," but the per-sub mpsc that bounded
+  is gone — subscriptions are now a single future in a
+  `FuturesUnordered`. Carrying a config value that no longer maps to
+  anything was actively misleading, including in the `Welcome.max_subscriptions`
+  field and the `record.subscribe` response's `queue_size` echo. Removed
+  the field, the builder method, the `Welcome` value (now reports
+  `max_subs_per_connection`), and the `queue_size` key from the
+  `record.subscribe` result object.
 - **`async_stream` vs `stream::unfold`.** Picked `futures_util::stream::unfold`
   to avoid the new proc-macro dependency. Behaviour is identical.
 - **WS client `WsClientConnectorImpl::connect` return shape.** Implemented
@@ -474,33 +483,34 @@ specific subscription inside the set; if and when AimX un-gates from
 
 ## Bounds and Backpressure
 
-[`AimxConfig`](../../aimdb-core/src/remote/config.rs) gains two optional
-caps:
+[`AimxConfig`](../../aimdb-core/src/remote/config.rs) carries two caps:
 
 ```rust
 pub struct AimxConfig {
     // ... existing fields ...
 
-    /// Maximum concurrent client connections. `None` = unbounded (current behaviour).
-    pub max_connections: Option<usize>,
+    /// Maximum concurrent client connections (default 16).
+    pub max_connections: usize,
 
-    /// Maximum subscriptions per connection. Today: implicit via
-    /// `subscription_queue_size`; this becomes an explicit cap.
-    pub max_subs_per_connection: Option<usize>,
+    /// Maximum subscriptions per connection (default 32).
+    pub max_subs_per_connection: usize,
 }
 ```
 
-`subscription_queue_size` stays (it controls per-sub channel depth, not
-sub count). When `max_connections` is `Some(n)` and reached, the
-supervisor refuses new connects by dropping the accepted `UnixStream`
-without handshake — that maps to "connection refused" on the client
-side. When `max_subs_per_connection` is `Some(n)` and reached, the
-handler returns the existing `too_many_subscriptions` response code.
+Both are `usize` rather than `Option<usize>` — see the "Implementation
+deviations" section at the top. `max_connections` was already in the
+public builder API but went unread before this design; it is now
+actually enforced. `max_subs_per_connection` is new. The previous
+`subscription_queue_size` field has been **deleted** — it bounded a
+per-sub mpsc that the new `FuturesUnordered` design eliminated, and
+keeping a number that no longer mapped to anything was actively
+misleading.
 
-Defaults: both `None` to preserve current behaviour for in-flight
-deployments. The acceptance criterion in #114 is "pick one and document";
-this design picks **soft caps as opt-in**, documented in CHANGELOG and
-the AimX guide.
+When `max_connections` is reached, the supervisor refuses new
+connects by dropping the accepted `UnixStream` without handshake —
+that maps to "connection refused" on the client side. When
+`max_subs_per_connection` is reached, the handler returns the existing
+`too_many_subscriptions` response code.
 
 ---
 

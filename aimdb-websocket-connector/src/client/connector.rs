@@ -212,16 +212,12 @@ impl WsClientConnectorImpl {
             // Reconnect watcher.
             if auto_reconnect {
                 let watcher_state = state_for_future.clone();
-                let watcher_router = router_for_future.clone();
-                let watcher_ctx = runtime_ctx_for_future.clone();
                 let watcher_tx = new_loops_tx.clone();
                 tasks.push(Box::pin(Self::run_reconnect_watcher(
                     watcher_state,
                     reconnect_url,
                     reconnect_topics,
-                    watcher_router,
                     max_reconnect_attempts,
-                    Some(watcher_ctx),
                     watcher_tx,
                 )));
             }
@@ -544,18 +540,11 @@ impl WsClientConnectorImpl {
     /// connector future, which translates it into a fresh write- and
     /// read-loop future pushed onto the connector's `FuturesUnordered`.
     /// The watcher itself never calls `tokio::spawn`.
-    ///
-    /// `_router` and `_runtime_ctx` are retained in the signature for
-    /// symmetry with the outer connector future — they are not used by
-    /// the watcher itself in the new design (the outer future supplies
-    /// its own clones to the spawned read-loop future).
     async fn run_reconnect_watcher(
         state: Arc<Mutex<SharedState>>,
         url: String,
         subscribe_topics: Vec<String>,
-        _router: Arc<Router>,
         max_attempts: usize,
-        _runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
         new_loops_tx: mpsc::UnboundedSender<NewLoops>,
     ) {
         let backoff = [500u64, 1_000, 2_000, 4_000, 8_000];

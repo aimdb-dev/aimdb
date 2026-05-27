@@ -6,10 +6,13 @@
 //! # Architecture: Event Funnel Pattern
 //!
 //! Subscriptions use a funnel pattern for clean event delivery:
-//! - Each subscription spawns a consumer task that reads from the record buffer
-//! - Consumer tasks send events to a shared mpsc channel (the "funnel")
-//! - A single writer task drains the funnel and writes events to the UnixStream
-//! - This ensures NDJSON line integrity and prevents write interleaving
+//! - Each `record.subscribe` pushes a future onto a per-connection
+//!   [`futures_util::stream::FuturesUnordered`] that the connection's
+//!   outer `select!` loop drives.
+//! - Subscription futures send events to a shared mpsc channel (the "funnel").
+//! - The same outer loop drains the funnel and writes events to the
+//!   `UnixStream`, so NDJSON line integrity is preserved without a
+//!   dedicated writer task.
 
 use crate::remote::{
     AimxConfig, Event, HelloMessage, RecordMetadata, Request, Response, WelcomeMessage,
@@ -93,22 +96,26 @@ impl ConnectionState {
 /// # Architecture
 ///
 /// ```text
-/// ┌─────────────────┐
-/// │ Subscription 1  │───┐
-/// │ Consumer Task   │   │
-/// └─────────────────┘   │
-///                       ├──► Event Funnel ───► select! loop ───► UnixStream
-/// ┌─────────────────┐   │     (mpsc)          (interleaved    
-/// │ Subscription 2  │───┘                      writes)
-/// │ Consumer Task   │
-/// └─────────────────┘
+/// ┌──────────────────────┐
+/// │ Subscription future 1│───┐
+/// │ (in FuturesUnordered)│   │
+/// └──────────────────────┘   │
+///                            ├──► Event Funnel ───► select! loop ───► UnixStream
+/// ┌──────────────────────┐   │     (mpsc)          (interleaved
+/// │ Subscription future 2│───┘                      writes)
+/// │ (in FuturesUnordered)│
+/// └──────────────────────┘
 /// ```
 ///
-/// The main loop uses `tokio::select!` to interleave:
+/// The main loop uses `tokio::select! { biased; }` to interleave:
 /// - Reading requests from the stream
 /// - Writing events from subscriptions
+/// - Draining completed subscription futures
 ///
-/// This ensures both responses and events are written without blocking.
+/// `biased;` polls the request arm first so a chatty subscription
+/// cannot starve the request path. Cancellation is by drop: when the
+/// outer loop exits, the per-connection `FuturesUnordered` is dropped
+/// and every subscription future with it.
 ///
 /// # Arguments
 /// * `db` - Database instance
@@ -491,7 +498,7 @@ where
         server: "aimdb".to_string(),
         permissions,
         writable_records,
-        max_subscriptions: Some(config.subscription_queue_size),
+        max_subscriptions: Some(config.max_subs_per_connection),
         authenticated: Some(authenticated),
     };
 
@@ -937,7 +944,7 @@ where
 /// * `params` - Request parameters (must contain "name" field with record name)
 ///
 /// # Returns
-/// Success response with subscription_id and queue_size, or error if:
+/// Success response with subscription_id or error if:
 /// - Missing/invalid parameters
 /// - Record not found
 /// - Too many subscriptions
@@ -1065,7 +1072,6 @@ where
         request_id,
         json!({
             "subscription_id": subscription_id,
-            "queue_size": config.subscription_queue_size,
         }),
     )
 }
@@ -1633,19 +1639,21 @@ mod tests {
 
     #[tokio::test]
     async fn unsubscribe_flag_terminates_subscription_on_next_event() {
-        use futures_util::stream;
+        use futures_util::stream::unfold;
 
-        // Stream that yields one value then pends forever — lets us
-        // observe the flag check that sits *after* `stream.next().await`.
-        let values = stream::iter(vec![serde_json::json!({"v": 1})])
-            .chain(stream::pending::<serde_json::Value>());
+        // Channel-backed stream so we control exactly when the future
+        // advances past each `stream.next().await`. Without this, a
+        // synchronous source like `stream::iter` would race past the
+        // flag-flip before the test can observe it.
+        let (val_tx, val_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+        let values = unfold(
+            val_rx,
+            |mut rx| async move { rx.recv().await.map(|v| (v, rx)) },
+        );
 
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
         let cancel = Arc::new(AtomicBool::new(false));
 
-        // Pre-flip the flag so the future exits after producing one event.
-        // (We could also flip after seeing the first event; either path
-        // demonstrates that the flag is observed.)
         let cancel_for_future = cancel.clone();
         let handle = tokio::spawn(run_subscription(
             values,
@@ -1654,19 +1662,73 @@ mod tests {
             cancel_for_future,
         ));
 
-        // Consume the one event the stream produces.
+        // Feed one value and confirm it propagates as an Event.
+        val_tx.send(serde_json::json!({"v": 1})).unwrap();
         let event = event_rx.recv().await.expect("expected one event");
         assert_eq!(event.subscription_id, "sub-1");
 
-        // Now flip the cancel flag; the next stream.next() will pend
-        // forever, so the future would never exit without the flag.
-        // To observe the flag, we'd need a stream that wakes — but the
-        // semantic guarantee is that *the next event after the flag flip*
-        // exits the loop, which is what we actually need.
+        // Flip the cancel flag, then feed a second value to wake the
+        // stream. The future must observe the flag *after* the next
+        // `stream.next().await` returns and exit before sending the
+        // second Event.
         cancel.store(true, Ordering::Relaxed);
+        val_tx.send(serde_json::json!({"v": 2})).unwrap();
 
-        // Abort cleanly so the test doesn't hang on the pending stream.
-        handle.abort();
-        let _ = handle.await;
+        // The future must complete on its own — no abort.
+        handle
+            .await
+            .expect("subscription future should exit cleanly after cancel flag");
+
+        // And the second value must not have produced an Event.
+        assert!(
+            event_rx.try_recv().is_err(),
+            "no further events should be sent after cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_subs_set_drops_inner_stream_state() {
+        // Stronger integration-style check: a real channel-backed stream
+        // (the same shape `stream_record_updates` returns via `unfold`)
+        // is held inside a `run_subscription` future, which is held by a
+        // `FuturesUnordered`. Dropping the set must drop the channel's
+        // receiver, which we observe by `val_tx.send(...)` failing.
+        use futures_util::stream::unfold;
+
+        let (val_tx, val_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+        let values = unfold(
+            val_rx,
+            |mut rx| async move { rx.recv().await.map(|v| (v, rx)) },
+        );
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let mut subs: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
+        subs.push(Box::pin(run_subscription(
+            values,
+            "sub-1".to_string(),
+            event_tx,
+            cancel,
+        )));
+
+        // Drive the set until the subscription is observably alive.
+        val_tx.send(serde_json::json!({"v": 1})).unwrap();
+        tokio::select! {
+            event = event_rx.recv() => {
+                assert_eq!(event.unwrap().subscription_id, "sub-1");
+            }
+            _ = subs.next() => panic!("subscription future ended unexpectedly"),
+        }
+
+        // Connection going away: drop the whole set. This must drop the
+        // boxed future, which drops the stream, which drops `val_rx`.
+        drop(subs);
+
+        assert!(
+            val_tx.send(serde_json::json!({"v": 2})).is_err(),
+            "after dropping the FuturesUnordered, the inner stream's \
+             receiver must be dropped — `send` is the observable proxy"
+        );
     }
 }

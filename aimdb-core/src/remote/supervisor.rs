@@ -128,6 +128,15 @@ where
                         // Refuse if we are already at the connection cap.
                         // The accepted `UnixStream` is dropped, which closes
                         // the socket; the client sees a closed connection.
+                        //
+                        // `connections.len()` is conservative: a connection
+                        // future that has completed but not yet been yielded
+                        // by `connections.next()` still counts. With
+                        // `biased;` the drain arm only runs once `accept`
+                        // returns Pending, so back-to-back accepts can see
+                        // a transiently inflated count after a disconnect
+                        // burst. Erring toward refusing one extra client
+                        // is fine — the cap is a soft ceiling, not an SLA.
                         if connections.len() >= config.max_connections {
                             #[cfg(feature = "tracing")]
                             tracing::warn!(

@@ -559,8 +559,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: 13,
         method: "record.subscribe".to_string(),
         params: Some(json!({
-            "name": "server::Temperature",
-            "queue_size": 50
+            "name": "server::Temperature"
         })),
     };
 
@@ -578,9 +577,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Response::Success { id, result } => {
             println!("✅ Subscribed! (request_id: {})", id);
             let sub_id = result["subscription_id"].as_str().unwrap().to_string();
-            let queue_size = result["queue_size"].as_u64().unwrap();
             println!("   Subscription ID: {}", sub_id);
-            println!("   Queue Size: {}", queue_size);
             println!();
             println!("📊 Receiving live temperature updates (will receive 5 events)...");
             println!();
