@@ -1086,7 +1086,7 @@ Originally deferred to a follow-up; landed via
 bridge-state `tokio::spawn` sites in `aimdb-core/src/remote/` were
 replaced with nested `FuturesUnordered`; `subscribe_record_updates` was
 deleted in favour of a `Stream`-returning helper; per-subscription
-`oneshot` cancel channels were replaced with `Arc<AtomicBool>` flags.
+`oneshot` cancel channels were replaced with `Arc<Notify>` notifies for immediate unsubscribe.
 
 ### ~~WebSocket client reconnect spawn~~ (resolved by design 030)
 
