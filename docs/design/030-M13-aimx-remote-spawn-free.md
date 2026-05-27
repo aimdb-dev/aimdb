@@ -462,22 +462,21 @@ publisher futures already collected today, all appended to
 | Event | Today | After |
 |---|---|---|
 | Connection closed by client | RX drops → buffer-reader exits → forwarder drains and exits | Outer handler loop breaks; per-conn `FuturesUnordered` dropped; all subs cancelled in one step |
-| `record.unsubscribe` | `oneshot::Sender<()>::send(())` fires inner select-arm | `Arc<AtomicBool>::store(true)`; sub future exits at next `stream.next()` poll |
+| `record.unsubscribe` | `oneshot::Sender<()>::send(())` fires inner select-arm | `Arc<Notify>::notify_one()` wakes the sub future immediately (even if parked on `stream.next()`) |
 | Supervisor drop (runner shutdown) | `tokio::spawn`-ed connections orphan; runtime waits for them | Outer `FuturesUnordered` dropped → all connection futures dropped → all sub futures dropped |
 | Buffer producer closed | `BufferClosed` error → reader exits → forwarder mpsc-EOFs → exits | Stream yields `None` → sub future exits |
 
-**Unsubscribe delay.** The Arc<AtomicBool> approach yields a delay of up
-to one poll cycle: an idle subscription does not see the flag flip until
-the next buffered value arrives. For AimX semantics this is acceptable —
-`record.unsubscribe` has never been a synchronous contract. Document it
-in the AimX protocol docs.
+**Unsubscribe timing.** Using `Notify` makes Unsubscribe effectively immediate:
+the per-subscription future is woken even when it is parked on
+`stream.next()`, so a quiet record does not delay cancellation.
+This is a deliberate change from the earlier AtomicBool-based draft.
 
-**Why not `tokio::sync::Notify` or oneshot?** Both are tokio-specific
-and would re-introduce the dual-path cancellation that this design is
-trying to delete. The whole point is one mechanism: drop the future.
-`AtomicBool` is the minimum primitive that lets Unsubscribe target a
-specific subscription inside the set; if and when AimX un-gates from
-`std`, the path is already runtime-agnostic.
+**Why `tokio::sync::Notify`?** It enables targeted Unsubscribe to wake a
+quiet subscription immediately without additional tasks. Connection-close
+cancellation still collapses to one mechanism: dropping the future.
+The implementation uses `Arc<Notify>` as the unsubscribe primitive. If AimX
+is later un-gated from `std` and moved to a non-Tokio runtime, this point
+will need revisiting to keep the cancellation path runtime-agnostic.
 
 ---
 
@@ -660,10 +659,10 @@ Beyond the cancellation-on-drop test in Step 7:
 
 ## Decisions
 
-1. **Unsubscribe cancellation primitive** → **`Arc<AtomicBool>`.**
-   Honours #114's recommendation. Keeps the path runtime-agnostic for
-   the eventual `std`-gate lift. One-poll-cycle delay on idle
-   subscriptions is acceptable AimX semantics.
+1. **Unsubscribe cancellation primitive** → **`Arc<Notify>`.**
+   Enables immediate unsubscribe even when a subscription is parked on
+   `stream.next()`. The outer `FuturesUnordered` drop remains the primary
+   cancellation mechanism on connection close.
 
 2. **`stream_record_updates` visibility** → **`pub(crate)`.**
    The only caller is `handler.rs`. Promoting to `pub` would re-create
@@ -684,7 +683,7 @@ Beyond the cancellation-on-drop test in Step 7:
 
 6. **`SubscriptionHandle` retention** → **Delete.**
    `record_name` was only used in tracing; `cancel_tx` is gone.
-   Replacing with `Arc<AtomicBool>` directly in the HashMap value
+   Replacing with `Arc<Notify>` directly in the HashMap value
    is one fewer indirection.
 
 7. **WS client reconnect coordination** → **mpsc<NewLoops> from watcher to outer loop.**
