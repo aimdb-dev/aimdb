@@ -166,11 +166,14 @@ where
                     }
                 },
 
-                // Drain finished connection futures. The guard ensures the
-                // arm is disabled (not polled) when the set is empty —
-                // `FuturesUnordered::is_terminated()` returns `is_empty()`,
-                // so `select_next_some` would panic.
-                _ = connections.next(), if !connections.is_empty() => {}
+                // Drain finished connection futures. Using `Some(_) = next()`
+                // (rather than `select_next_some()`) is the safe form: an
+                // empty `FuturesUnordered` reports `is_terminated() == true`,
+                // and `select_next_some` panics in that state. With the
+                // pattern guard, the arm is simply disabled when `next()`
+                // resolves to `None`, and the always-active `accept`
+                // arm keeps the select alive.
+                Some(_) = connections.next() => {}
             }
         }
     });

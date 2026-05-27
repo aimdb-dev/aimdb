@@ -272,8 +272,15 @@ impl WsClientConnectorImpl {
                         }
                     },
 
-                    // Drain finished child futures. Dormant when empty.
-                    _ = tasks.select_next_some() => {}
+                    // Drain finished child futures. `Some(_) = next()`
+                    // (rather than `select_next_some()`) is the safe form:
+                    // an empty `FuturesUnordered` reports
+                    // `is_terminated() == true`, and `select_next_some`
+                    // panics in that state. With the pattern guard, the
+                    // arm is simply disabled when `next()` resolves to
+                    // `None`; the always-active reconnect arm keeps the
+                    // select alive.
+                    Some(_) = tasks.next() => {}
                 }
             }
 

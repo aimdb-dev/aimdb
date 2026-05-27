@@ -1,10 +1,10 @@
 # Remove `Spawn` Trait — `build()` Collects, `run()` Drives
 
-**Version:** 0.3 (implemented — `unsafe impl` outcome on Embassy corrected)
+**Version:** 0.4 (Group 4 / AimX bridge state removed by design 030)
 **Status:** ✅ Implemented
 **Issue:** [#88](https://github.com/aimdb-dev/aimdb/issues/88)
-**Follow-up issue:** [AimX remote-access portability](../issues/aimx-remote-spawn-free.md) — TBD
-**Last Updated:** May 23, 2026
+**Follow-up:** [Design 030 — AimX remote-access spawn-free](030-M13-aimx-remote-spawn-free.md) / [#114](https://github.com/aimdb-dev/aimdb/issues/114) — ✅ Implemented
+**Last Updated:** May 26, 2026
 **Milestone:** M13 — Architectural clean-up
 
 ---
@@ -216,13 +216,19 @@ join transform future itself.
 | `TokioAdapter::spawn_connectors` | `aimdb-tokio-adapter/src/connector.rs:54` | Delete. Test-only helper, no production callers. |
 | `BufferOps::spawn_dispatcher` | `aimdb-tokio-adapter/src/buffer.rs:205` | Keep (test-only utility), but mark for removal in a follow-up tidy if no external user adopts it. |
 
-**Group 4 — Runtime spawn deferred to follow-up issue (out of scope).**
+**Group 4 — Runtime spawn deferred to follow-up issue (now resolved).**
 
-| Call site | File | Reason for deferral |
+All three sites were addressed by the AimX spawn-free follow-up
+([design 030](030-M13-aimx-remote-spawn-free.md), issue
+[#114](https://github.com/aimdb-dev/aimdb/issues/114)). Each was
+converted to a nested `FuturesUnordered` driven by `tokio::select! {
+biased; }`; cancellation collapsed to dropping the future.
+
+| Call site | File | Resolution |
 |---|---|---|
-| AimX per-connection handler | `aimdb-core/src/remote/supervisor.rs:122` (bare `tokio::spawn`) | Dynamic fan-out by client count; needs nested-`FuturesUnordered` refactor — see [Out of Scope](#out-of-scope) |
-| AimX per-subscription stream | `aimdb-core/src/remote/handler.rs:1042` (bare `tokio::spawn`) + `builder.rs:1409` (`runtime.spawn` inside `subscribe_record_updates`) | Same as above; coupled to handler refactor |
-| WebSocket **client** reconnect | `aimdb-websocket-connector/src/client/connector.rs:505,510` (bare `tokio::spawn`) | Dynamic fan-out per reconnect; same nested-`FuturesUnordered` pattern as AimX. Tracked alongside follow-up. |
+| AimX per-connection handler | `aimdb-core/src/remote/supervisor.rs` | Supervisor owns a `FuturesUnordered<BoxFuture>`; accepted connections are pushed in. |
+| AimX per-subscription stream | `aimdb-core/src/remote/handler.rs` + `builder.rs` | New `stream_record_updates` helper returns a `Stream`; per-conn `FuturesUnordered` holds one future per `record.subscribe`. `subscribe_record_updates` deleted. |
+| WebSocket **client** reconnect | `aimdb-websocket-connector/src/client/connector.rs` | Six `tokio::spawn` sites collapsed into one connector future that owns a `FuturesUnordered`; reconnect watcher sends `NewLoops` over an mpsc rather than spawning. |
 
 **Group 5 — External / out-of-codebase (informational).**
 
@@ -232,12 +238,12 @@ join transform future itself.
 
 Groups 1, 2, and 3 cover **every** `runtime.spawn(...)` call within
 `aimdb-core` and every connector — once they land, the `Spawn` trait has no
-internal callers. Group 4 retains bare `tokio::spawn` calls inside
-`aimdb-core/src/remote/`, but those calls do **not** depend on the trait
-— they call Tokio directly through `#[cfg(feature = "std")]`. The trait
-can therefore be deleted in this PR without breaking the remote-access
-path; the follow-up issue removes the remaining `tokio::spawn` calls in a
-separate, focused change.
+internal callers. Group 4 retained bare `tokio::spawn` calls inside
+`aimdb-core/src/remote/` as a deliberate bridge state in this PR; those
+calls did **not** depend on the trait (they called Tokio directly through
+`#[cfg(feature = "std")]`), so the trait could be deleted cleanly. The
+follow-up ([design 030](030-M13-aimx-remote-spawn-free.md)) has since
+removed every Group 4 spawn call.
 
 ---
 
@@ -412,27 +418,20 @@ pub fn build_supervisor<R: RuntimeAdapter>(
 ) -> DbResult<BoxFuture<'static, ()>>
 ```
 
-**Bridge state inside this PR.** The supervisor body keeps two existing
-`tokio::spawn` call sites untouched: the per-connection handler at
-`supervisor.rs:122` and the per-subscription event streamer at
-`handler.rs:1042`. The internal `AimDb::subscribe_record_updates`
-([builder.rs:1409](../../aimdb-core/src/builder.rs#L1409)) — which today
-uses `runtime.spawn(...)` — is rewritten in this PR to call `tokio::spawn`
-directly, matching the rest of the AimX path. None of these depend on the
-`Spawn` trait after the rewrite, so the trait can be deleted cleanly.
+**Target state achieved.** The bridge state described in v0.3 of this
+design has been removed by the AimX spawn-free follow-up
+([design 030](030-M13-aimx-remote-spawn-free.md), issue
+[#114](https://github.com/aimdb-dev/aimdb/issues/114)). The supervisor
+now pushes per-connection handler futures onto its own
+`FuturesUnordered`; the handler does the same with per-subscription
+futures backed by a `Stream`-returning helper (`stream_record_updates`);
+`AimDb::subscribe_record_updates` is deleted. No `tokio::spawn` remains
+in `aimdb-core/src/remote/`.
 
-This is a deliberate bridge: AimX is already `#[cfg(feature = "std")]`-gated,
-so the temporary use of bare `tokio::spawn` does not regress portability.
-The handler dispatch and supervisor still drop their `R: Spawn` bound (it
-becomes `R: RuntimeAdapter`), which is the change that lets the rest of
-the type system loosen.
-
-**Target state (follow-up issue).** The bare `tokio::spawn` calls are
-replaced with nested `FuturesUnordered` driven by `select_biased!`, making
-the AimX path runtime-agnostic. This is the prerequisite for ever lifting
-the `std` gate from AimX. See
-[AimX remote-access portability](../issues/aimx-remote-spawn-free.md) for
-the full plan; not part of this PR.
+The AimX path is now runtime-agnostic in shape (still `#[cfg(feature =
+"std")]`-gated for transport reasons). Lifting the `std` gate itself
+remains a separate, larger effort; see design 030 §"Out of Scope" for
+the remaining work.
 
 ### `AimDb::spawn_task` deletion
 
@@ -1079,25 +1078,23 @@ All design questions raised during review have been resolved:
 
 The following are explicitly **not** part of this PR / issue #88:
 
-### AimX remote-access spawn-free refactor
+### ~~AimX remote-access spawn-free refactor~~ (resolved by design 030)
 
-**Tracked in:** [AimX remote-access portability](../issues/aimx-remote-spawn-free.md) (TBD on filing).
+Originally deferred to a follow-up; landed via
+[design 030](030-M13-aimx-remote-spawn-free.md) /
+[issue #114](https://github.com/aimdb-dev/aimdb/issues/114). All three
+bridge-state `tokio::spawn` sites in `aimdb-core/src/remote/` were
+replaced with nested `FuturesUnordered`; `subscribe_record_updates` was
+deleted in favour of a `Stream`-returning helper; per-subscription
+`oneshot` cancel channels were replaced with `Arc<AtomicBool>` flags.
 
-The AimX path retains three bare `tokio::spawn` (or `runtime.spawn`-via-bridge)
-calls that are not addressed here:
+### ~~WebSocket client reconnect spawn~~ (resolved by design 030)
 
-- `aimdb-core/src/remote/supervisor.rs:122` — per-connection handler spawn
-- `aimdb-core/src/remote/handler.rs:1042` — per-subscription event-stream spawn
-- The temporary `tokio::spawn` inside the rewritten `AimDb::subscribe_record_updates` (this PR replaces `runtime.spawn` with `tokio::spawn`; the follow-up replaces the whole method with a `Stream`-returning helper)
-
-The follow-up issue replaces all three with nested `FuturesUnordered` driven
-by `futures::select_biased!`, eliminates the per-subscription `oneshot`
-cancel channel (cancellation = drop the future), and is a prerequisite for
-ever lifting the `#[cfg(feature = "std")]` gate on AimX.
-
-### WebSocket client reconnect spawn
-
-The WS *client* connector's reconnect loop ([client/connector.rs:505,510](../../aimdb-websocket-connector/src/client/connector.rs#L505)) calls bare `tokio::spawn` on every reconnect. Same nested-`FuturesUnordered` pattern applies; bundled with the AimX follow-up.
+Originally deferred alongside the AimX follow-up; resolved in the same
+PR. The six `tokio::spawn` sites in
+[`aimdb-websocket-connector/src/client/connector.rs`](../../aimdb-websocket-connector/src/client/connector.rs)
+collapsed into one connector future that owns a `FuturesUnordered`; the
+reconnect watcher sends `NewLoops` over an mpsc rather than spawning.
 
 ### Removing `R` from `Producer<T, R>` and `Consumer<T, R>`
 

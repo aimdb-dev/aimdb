@@ -1,11 +1,30 @@
 # AimX Remote-Access: Spawn-Free via Nested `FuturesUnordered`
 
-**Version:** 0.1 (proposed)
-**Status:** 📝 Draft
+**Version:** 0.2 (implemented; minor deviations from draft documented below)
+**Status:** ✅ Implemented
 **Issue:** [#114](https://github.com/aimdb-dev/aimdb/issues/114)
 **Predecessor:** [Design 028 — Remove Spawn Trait](028-M13-remove-spawn-trait.md)
 **Last Updated:** May 26, 2026
 **Milestone:** M13 — Architectural clean-up (follow-up)
+
+## Implementation deviations from draft
+
+- **Select macro.** The draft specified `futures_util::select_biased!`.
+  Implementation uses `tokio::select! { biased; }` — same priority
+  semantics, no `pin_mut!` required for `!Unpin` futures (notably
+  `read_line`), and avoids adding the `async-await` feature flag on
+  `futures-util`. Inside `#[cfg(feature = "std")]`-gated code the
+  runtime-agnostic argument did not apply.
+- **`AimxConfig` bounds shape.** The draft proposed
+  `max_connections: Option<usize>`. Implementation kept the existing
+  `max_connections: usize` (already in the public builder API; default
+  16) and added a new `max_subs_per_connection: usize` (default 32).
+  Non-breaking; `max_connections` is now actually enforced by the
+  supervisor — previously the field existed but went unread.
+- **`async_stream` vs `stream::unfold`.** Picked `futures_util::stream::unfold`
+  to avoid the new proc-macro dependency. Behaviour is identical.
+- **WS client `WsClientConnectorImpl::connect` return shape.** Implemented
+  as `Result<(Self, BoxFuture), String>`, matching the draft.
 
 ---
 
