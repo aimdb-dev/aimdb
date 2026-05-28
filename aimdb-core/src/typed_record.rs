@@ -303,7 +303,7 @@ pub trait AnyRecord: Send + Sync {
     fn consumer_count(&self) -> usize;
 
     /// Returns whether a producer service is registered
-    fn has_producer_service(&self) -> bool;
+    fn has_producer(&self) -> bool;
 
     /// Returns whether a transform is registered for this record
     fn has_transform(&self) -> bool;
@@ -515,7 +515,7 @@ where
 
         let mut futures = Vec::new();
 
-        if typed_record.has_producer_service() {
+        if typed_record.has_producer() {
             if let Some(f) = typed_record.collect_producer_future(runtime, db, record_key)? {
                 futures.push(f);
             }
@@ -544,14 +544,14 @@ pub struct TypedRecord<
     /// This will be auto-spawned during build() if present
     /// Stored as FnOnce that takes (Producer<T>, RuntimeContext) and returns a Future
     /// Wrapped in Mutex for interior mutability (needed to take() during spawning)
-    producer_service: Mutex<Option<ProducerServiceFn<T>>>,
+    producer: Mutex<Option<ProducerServiceFn<T>>>,
 
     /// List of consumer/tap tasks - wrapped in Mutex for Sync + taking out during spawn
     /// Each is spawned as an independent background task that subscribes to the buffer
     /// Using Mutex provides the Sync bound required by AnyRecord trait
     consumers: Mutex<Vec<ConsumerServiceFn<T>>>,
 
-    /// Transform descriptor — mutually exclusive with producer_service.
+    /// Transform descriptor — mutually exclusive with producer.
     /// If set, this record is a reactive derivation from one or more input records.
     /// Uses the same Mutex pattern for take()-during-spawn.
     transform: Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
@@ -607,7 +607,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// Call `.with_remote_access()` to enable JSON (std only).
     pub fn new() -> Self {
         Self {
-            producer_service: Mutex::new(None),
+            producer: Mutex::new(None),
             consumers: Mutex::new(Vec::new()),
             transform: Mutex::new(None),
             buffer: None,
@@ -645,7 +645,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// # Panics
     /// Panics if producer already set (one producer per record), if a transform is registered,
     /// or if a `.link_from()` inbound connector is registered (all three would race on the buffer).
-    pub fn set_producer_service<F, Fut>(&mut self, f: F)
+    pub fn set_producer<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
@@ -660,7 +660,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         }
 
         // Check if already set
-        if lock(&self.producer_service).is_some() {
+        if lock(&self.producer).is_some() {
             panic!("This record type already has a producer service");
         }
 
@@ -672,7 +672,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         );
 
         // Store it in the mutex
-        *lock(&self.producer_service) = Some(boxed_fn);
+        *lock(&self.producer) = Some(boxed_fn);
     }
 
     /// Adds a consumer function for this record
@@ -720,7 +720,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         descriptor: crate::transform::TransformDescriptor<T, R>,
     ) {
         // Enforce mutual exclusion with .source()
-        if lock(&self.producer_service).is_some() {
+        if lock(&self.producer).is_some() {
             panic!("Record already has a .source(); cannot also have a .transform().");
         }
 
@@ -770,7 +770,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         }
 
         // Check for producer service (source)
-        if lock(&self.producer_service).is_some() {
+        if lock(&self.producer).is_some() {
             return crate::graph::RecordOrigin::Source;
         }
 
@@ -1024,7 +1024,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// All three write to the same buffer and would race as last-writer-wins.
     /// Multiple inbound connectors on the same record are permitted (fan-in).
     pub fn add_inbound_connector(&mut self, link: crate::connector::InboundConnectorLink) {
-        if lock(&self.producer_service).is_some() {
+        if lock(&self.producer).is_some() {
             panic!("Record already has a .source(); cannot also have a .link_from().");
         }
 
@@ -1140,7 +1140,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         let _ = db;
 
         // Take the producer service (can only collect once)
-        let service = lock(&self.producer_service).take();
+        let service = lock(&self.producer).take();
 
         if let Some(service_fn) = service {
             #[cfg(feature = "tracing")]
@@ -1170,8 +1170,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     }
 
     /// Returns whether a producer service is registered
-    pub fn has_producer_service(&self) -> bool {
-        lock(&self.producer_service).is_some()
+    pub fn has_producer(&self) -> bool {
+        lock(&self.producer).is_some()
     }
 
     /// Marks this record as writable for remote access (std only)
@@ -1283,8 +1283,8 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         TypedRecord::consumer_count(self)
     }
 
-    fn has_producer_service(&self) -> bool {
-        TypedRecord::has_producer_service(self)
+    fn has_producer(&self) -> bool {
+        TypedRecord::has_producer(self)
     }
 
     fn has_transform(&self) -> bool {
@@ -1347,7 +1347,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             self.record_origin(),
             buffer_type,
             buffer_capacity,
-            if self.has_producer_service() { 1 } else { 0 },
+            if self.has_producer() { 1 } else { 0 },
             self.consumer_count(),
             self.metadata
                 .writable
@@ -1452,7 +1452,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         );
 
         // SAFETY CHECK 1: Enforce "No Producer Override" rule
-        if self.has_producer_service() || self.has_transform() {
+        if self.has_producer() || self.has_transform() {
             #[cfg(feature = "tracing")]
             tracing::warn!(
                 "Rejected set_from_json for '{}': has active producer or transform",

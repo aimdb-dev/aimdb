@@ -407,7 +407,7 @@ where
             + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.rec.set_producer_service(f);
+        self.rec.set_producer(f);
         #[cfg(feature = "profiling")]
         {
             let (idx, _) = self.rec.profiling_mut().push_source();
@@ -1054,7 +1054,7 @@ where
                 self.url
             );
         }
-        if self.registrar.rec.has_producer_service() {
+        if self.registrar.rec.has_producer() {
             panic!(
                 "Record already has a .source(); cannot also have a .link_from() for {}",
                 self.url
@@ -1618,7 +1618,7 @@ mod tests {
     fn link_from_after_source_panics() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
-        rec.set_producer_service(|_p, _ctx| async move {});
+        rec.set_producer(|_p, _ctx| async move {});
 
         let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
             vec![Box::new(MockConnectorBuilder {
@@ -1671,7 +1671,7 @@ mod tests {
                 .finish();
         }
 
-        rec.set_producer_service(|_p, _ctx| async move {});
+        rec.set_producer(|_p, _ctx| async move {});
     }
 
     #[test]
