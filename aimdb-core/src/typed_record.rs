@@ -1208,6 +1208,18 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         // - Explicit consumers (tap, link)
         // - Remote access (AimX protocol)
         // - Direct producer/consumer API
+
+        // A remote-access record has no fallback storage since design 031
+        // removed latest_snapshot: reads/writes go straight to the buffer. With
+        // no buffer, `record.get`/`latest()` return not_found and `record.set`
+        // silently discards the value. Fail at build() so the buffer is added
+        // explicitly instead of surfacing as a silent runtime no-op.
+        #[cfg(feature = "json-serialize")]
+        if self.remote_codec.is_some() && !self.has_buffer() {
+            return Err("record has .with_remote_access() but no buffer; \
+                 add a buffer (e.g. .buffer(BufferCfg::SingleLatest)) so record.get/set work");
+        }
+
         Ok(())
     }
 

@@ -132,9 +132,9 @@ where
 
     /// Produce a value of type T
     ///
-    /// Push to the record's buffer, update the latest-snapshot cache, and
-    /// notify tap observers + outbound link connectors. Synchronous and
-    /// infallible — the underlying `WriteHandle::push` cannot fail.
+    /// Push to the record's buffer; consumer tasks and outbound link connectors
+    /// observe it from there. Synchronous and infallible — the underlying
+    /// `WriteHandle::push` cannot fail.
     ///
     pub fn produce(&self, value: T) {
         #[cfg(feature = "profiling")]
