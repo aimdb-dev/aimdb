@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`json-serialize` feature + `codec` module (M16, Design 032).** New `crate::codec` module with `RemoteSerialize` (capability trait, blanket-impl'd for every `serde` `Serialize + DeserializeOwned` type), the object-safe `JsonCodec<T>` storage trait, and the zero-sized `SerdeJsonCodec`. All three are re-exported from the crate root. The feature is `no_std + alloc` compatible (`serde_json` runs on `alloc`), so `RecordValue::as_json()` now works on embedded targets, not just `std`. `std` enables `json-serialize` transitively, so existing std builds are unaffected.
+- **`DynBuffer::peek(&self) -> Option<T>` (M15, Design 031).** Non-destructive, buffer-native point-in-time read; the default impl returns `None` (correct for buffers with no canonical latest, e.g. broadcast/SPMC rings). AimX `record.get` and `TypedRecord::latest()` now route through it. Adapters implement it per buffer type — see the tokio/embassy adapter changelogs.
+
 ### Internal refactors
 
 - **AimX remote-access path is now spawn-free (Issue #114, Design 030).** Every remaining `tokio::spawn` in `aimdb-core/src/remote/` was removed; the supervisor's accept loop and each connection handler now own their own `FuturesUnordered<BoxFuture>` driven by `tokio::select! { biased; }`. Cancellation collapsed to one mechanism — dropping the future.
@@ -17,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **`latest_snapshot` removed from `TypedRecord`; `latest()` / AimX `record.get` read the buffer via `peek()` (M15, Design 031).** Eliminates one snapshot-mutex lock + `Option<T>` clone per `produce()` on the hot path. Behavioural consequences:
+  - A record configured with `.with_remote_access()` but **no buffer** now fails `build()` with a clear error (previously a silent runtime no-op — reads returned `not_found`, writes were discarded). Add a buffer, e.g. `.buffer(BufferCfg::SingleLatest)`.
+  - `record.get` / `latest()` on an `SpmcRing` record now returns `not_found` / `None` — a ring keeps per-consumer history with no canonical latest. Use `record.drain` (history) or `record.subscribe` (live). `SingleLatest` and `Mailbox` are unaffected.
+  - On `no_std`/embedded, `latest()` now depends on the adapter implementing `peek()` (the Embassy adapter does — see its changelog).
+- **`with_remote_access()` is now gated on `json-serialize` and bounded on `T: codec::RemoteSerialize` (M16, Design 032).** Same effective bound as before (`Serialize + DeserializeOwned`, blanket-impl'd), but the stored serializer/deserializer closures are replaced by a single type-erased `Arc<dyn JsonCodec<T>>`. `std` enables `json-serialize`, so std callers see no change; `no_std + alloc` callers must enable the `json-serialize` feature to call it.
+- **`producer_service` renamed to `producer` (M15).** `TypedRecord::set_producer_service` → `set_producer`, and `has_producer_service` → `has_producer` (the latter also on the `AnyRecord` trait). Affects code that called these methods directly; the public `.source()` registrar API is unchanged. Also collapses the std/no_std `cfg` split on `AnyRecord::buffer_info` / `transform_input_keys` into single signatures.
 - **`AimxConfig` lost `subscription_queue_size` (Issue #114, Design 030).** The field bounded a per-subscription mpsc channel that no longer exists — subscriptions are now one future in a `FuturesUnordered`. The builder method `.subscription_queue_size(n)` is removed; replace it with `.max_subs_per_connection(n)` if you were using the value as a soft cap on subscription count, or just delete the call.
 - **AimX `Welcome.max_subscriptions` now reports the real per-connection cap.** Previously it returned `subscription_queue_size` (default 100) while the actual cap was implicit; it now returns `max_subs_per_connection` (default 32). Clients that displayed this value will see the change.
 - **AimX `record.subscribe` response no longer carries `queue_size`.** Result object is now `{ "subscription_id": "..." }` — the previous `"queue_size"` reported a number that no longer corresponded to anything in the implementation.
@@ -25,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Producer::produce` is now sync + infallible; `Consumer::subscribe` is now infallible (Design 029 follow-up, M14).** The pre-resolved `WriteHandle::push` cannot fail and the pre-resolved buffer Arc makes `subscribe()` infallible. Call sites collapse: `producer.produce(x).await?` → `producer.produce(x);` and `let Ok(reader) = consumer.subscribe() else { ... }` → `let reader = consumer.subscribe();`. The `ProducerTrait::produce_any` / `ConsumerTrait::subscribe_any` trait surfaces stay `Result`/`async` because the type-erasure downcast remains fallible.
   - `AimDb::produce<T>(key, value) -> DbResult<()>` is now sync; `.await` on the call site goes away. Only the key lookup can fail.
   - `Database::produce` likewise sync.
-  - `TypedRecord::produce` is now `pub fn produce(&self, val: T)` (was `pub async fn produce`).
+  - `TypedRecord::produce` was made sync here (was `pub async fn produce`), then **removed entirely in M15** — see _Removed (breaking)_ below.
   - `aimdb-wasm-adapter`: `bindings::poll_sync` helper deleted — no remaining callers now that `TypedRecord::produce` is sync.
   - Dead `consumer.subscribe()` error arms in `transform/single.rs` and `transform/join.rs` removed (the `Err` branch was unreachable after M14).
 
@@ -51,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unsafe `impl Send/Sync` blocks on `Producer<T, R>` / `Consumer<T, R>` deleted — they auto-derive now.
   - On the AimX remote-access path, three `runtime.spawn(...)` call sites were temporarily bridged to bare `tokio::spawn` under `#[cfg(feature = "std")]`. These have since been removed by the AimX spawn-free follow-up — see the "AimX remote-access path is now spawn-free" entry above.
 - `on_start` no_std bifurcation collapsed: a single `StartFnType<R>` alias replaces the byte-identical std/no_std pair.
+
+### Removed (breaking)
+
+- **`TypedRecord::produce` removed (M15, Design 031).** The M14 step (above) made it sync; M15 removes it entirely. All writes now go through `WriteHandle::push` via `TypedRecord::writer_handle()`. `AimDb::produce` and AimX `set_from_json` route through it; as a side effect `set_from_json` now marks record metadata as updated (previously skipped on that path). `WriteHandle` / `RecordWriter` no longer carry the snapshot mutex.
+- **`with_read_only_serialization()` removed (M16, Design 032).** A `Serialize`-only record can no longer be exposed read-only over remote access. Use `with_remote_access()`, which additionally requires `DeserializeOwned`. No in-tree callers existed.
 
 ## [1.1.0] - 2026-05-22
 

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`EmbassyBuffer::peek()` (M15, Design 031).** Non-destructive buffer-native read matching the Tokio adapter's semantics: `SingleLatest` (`Watch`) via `Watch::try_get()`, `Mailbox` (`Channel<_, T, 1>`) via `Channel::try_peek()`, `SpmcRing` (`PubSubChannel`) returns `None`. Neither path consumes a receiver slot or advances a cursor.
+- **Embassy buffer + join-queue unit tests now run in CI on the host (Issue #85).** Previously the join-queue tests sat behind `feature = "embassy-runtime"`, which transitively pulls `embassy-executor`'s `platform-cortex-m` ARM assembly and fails to compile under `cargo test` on x86_64 — so ordering / backpressure / clone-routing regressions went uncaught. The `join_queue` module is now gated on `embassy-sync` instead (the `JoinFanInRuntime for EmbassyAdapter` impl keeps its own `embassy-runtime` gate), and `make test` runs `cargo test -p aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time"` (15 unit tests + doctests). A test-only no-op `#[defmt::global_logger]` / `#[defmt::panic_handler]` and a trivial `embassy-time-driver` satisfy the host link targets that `defmt` + `defmt-timestamp-uptime` would otherwise leave undefined.
+- **`embassy-time-driver` dev-dependency** — provides the trivial host time driver above (no tick feature, so it unifies with the workspace `tick-hz-32_768` rather than forcing `mock-driver`/`std`'s conflicting rate).
+
+### Fixed
+
+- **`TypedRecord::latest()` no longer always returns `None` on Embassy (M15).** With `latest_snapshot` removed in `aimdb-core`, reads go straight to the buffer via `peek()`; the Embassy adapter now implements `peek()` (above) so `latest()` returns the current value on `SingleLatest` / `Mailbox` instead of `None`.
+- **Stale `EmbassyBuffer` doc example.** It imported the removed `BufferBackend` trait (now `Buffer` / `BufferReader`) and put a non-`const` `new_spmc()` in a `static`; it never compiled because doctests didn't build on host before. Now corrected and exercised by `cargo test`'s doctest pass.
+
+### Changed
+
+- **`buffer()` / `buffer_sized()` now record the `BufferCfg` (via `buffer_with_cfg`).** `buffer_info()` therefore reports the real buffer type and capacity in the dependency graph on `no_std` too (previously `"unknown"`), matching std behaviour. Mirrors the `aimdb-core` `impl_record_registrar_ext!` change (M15).
+
 ### Changed (breaking)
 
 - **Generated extension trait emits `Producer<T>` / `Consumer<T>`** (no `, EmbassyAdapter`) via the updated `impl_record_registrar_ext!` macro from `aimdb-core` (Design 029, M14). Embassy demo signatures collapse from `Producer<LightControl, EmbassyAdapter>` to `Producer<LightControl>`.
