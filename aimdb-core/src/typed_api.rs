@@ -470,8 +470,7 @@ where
         self
     }
 
-    /// Configures a buffer with metadata tracking (std only)
-    #[cfg(feature = "std")]
+    /// Configures a buffer with metadata tracking
     pub fn buffer_with_cfg(
         &'a mut self,
         buffer: Box<dyn crate::buffer::DynBuffer<T>>,
@@ -482,8 +481,7 @@ where
         self
     }
 
-    /// Sets the buffer configuration for metadata tracking (std only)
-    #[cfg(feature = "std")]
+    /// Sets the buffer configuration for metadata tracking
     pub fn buffer_cfg(&'a mut self, cfg: crate::buffer::BufferCfg) -> &'a mut Self {
         self.rec.set_buffer_cfg(cfg);
         self

@@ -333,7 +333,9 @@ where
         let buffer = Box::new(EmbassyBuffer::<T, CAP, CONSUMERS, PUBS, CONSUMERS>::new(
             &cfg,
         ));
-        self.buffer_raw(buffer)
+        // Record the cfg so buffer_info() reports the real buffer type/capacity
+        // for the dependency graph.
+        self.buffer_with_cfg(buffer, cfg)
     }
 
     fn source_with_context<Ctx, F, Fut>(
