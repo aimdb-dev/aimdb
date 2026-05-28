@@ -487,10 +487,12 @@ where
         self
     }
 
-    /// Enables JSON serialization for remote access (std only)
+    /// Installs the JSON codec for this record (feature `json-serialize`)
     ///
-    /// Configures this record to support the `record.get` protocol method.
-    /// Requires `T: serde::Serialize`.
+    /// Enables `record.latest()?.as_json()`, and on `std` the AimX `record.get`
+    /// / `set` / `subscribe` protocol. Requires `T: RemoteSerialize`
+    /// (blanket-impl'd for every `Serialize + DeserializeOwned` type). Works on
+    /// no_std + alloc.
     ///
     /// # Example
     /// ```rust,ignore
@@ -499,10 +501,10 @@ where
     ///        .with_remote_access();  // Enable remote queries
     /// });
     /// ```
-    #[cfg(feature = "std")]
+    #[cfg(feature = "json-serialize")]
     pub fn with_remote_access(&'a mut self) -> &'a mut Self
     where
-        T: serde::Serialize + serde::de::DeserializeOwned,
+        T: crate::codec::RemoteSerialize + 'static,
     {
         self.rec.with_remote_access();
         self

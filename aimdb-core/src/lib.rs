@@ -20,6 +20,8 @@ extern crate alloc;
 
 pub mod buffer;
 pub mod builder;
+#[cfg(feature = "json-serialize")]
+pub mod codec;
 pub mod connector;
 pub mod context;
 pub mod database;
@@ -79,6 +81,10 @@ pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
 pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT, StageKind};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
+
+// JSON codec (feature `json-serialize`, no_std + alloc compatible)
+#[cfg(feature = "json-serialize")]
+pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 
 // Stage profiling exports (feature-gated)
 #[cfg(feature = "profiling")]

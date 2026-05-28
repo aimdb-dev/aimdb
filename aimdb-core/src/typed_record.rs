@@ -50,13 +50,9 @@ fn lock<T>(m: &Mutex<T>) -> spin::MutexGuard<'_, T> {
 
 use crate::buffer::DynBuffer;
 
-/// Type alias for JSON serializer function (std only)
-#[cfg(feature = "std")]
-type JsonSerializer<T> = Arc<dyn Fn(&T) -> Option<serde_json::Value> + Send + Sync>;
-
-/// Type alias for JSON deserializer function (std only)
-#[cfg(feature = "std")]
-type JsonDeserializer<T> = Arc<dyn Fn(&serde_json::Value) -> Option<T> + Send + Sync>;
+/// Type alias for a record's type-erased JSON codec (feature `json-serialize`)
+#[cfg(feature = "json-serialize")]
+type RecordCodec<T> = Arc<dyn crate::codec::JsonCodec<T>>;
 
 /// Wrapper for a record's latest value with optional serialization
 ///
@@ -64,20 +60,20 @@ type JsonDeserializer<T> = Arc<dyn Fn(&serde_json::Value) -> Option<T> + Send + 
 /// both std and no_std. JSON serialization (`.as_json()`) requires std feature.
 pub struct RecordValue<T> {
     value: T,
-    #[cfg(feature = "std")]
-    serializer: Option<JsonSerializer<T>>,
+    #[cfg(feature = "json-serialize")]
+    codec: Option<RecordCodec<T>>,
 }
 
 impl<T> RecordValue<T> {
-    /// Create a new RecordValue with optional serializer
-    #[cfg(feature = "std")]
-    fn new(value: T, serializer: Option<JsonSerializer<T>>) -> Self {
-        Self { value, serializer }
+    /// Create a new RecordValue with optional codec
+    #[cfg(feature = "json-serialize")]
+    fn new(value: T, codec: Option<RecordCodec<T>>) -> Self {
+        Self { value, codec }
     }
 
-    /// Create a new RecordValue without serializer (no_std)
-    #[cfg(not(feature = "std"))]
-    fn new(value: T, _serializer: Option<()>) -> Self {
+    /// Create a new RecordValue without codec (codec feature off)
+    #[cfg(not(feature = "json-serialize"))]
+    fn new(value: T, _codec: Option<()>) -> Self {
         Self { value }
     }
 
@@ -91,15 +87,15 @@ impl<T> RecordValue<T> {
         self.value
     }
 
-    /// Serialize the value to JSON (std only)
+    /// Serialize the value to JSON (feature `json-serialize`)
     ///
-    /// Returns `Some(JsonValue)` if record was configured with `.with_remote_access()`,
-    /// otherwise `None`. Requires `serde_json` (std only). For no_std, use `.get()`,
+    /// Returns `Some(JsonValue)` if the record was configured with
+    /// `.with_remote_access()`, otherwise `None`. Available on no_std + alloc
+    /// when the `json-serialize` feature is enabled. Without it, use `.get()`,
     /// `.into_inner()`, or `Deref` for direct access.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "json-serialize")]
     pub fn as_json(&self) -> Option<serde_json::Value> {
-        let serializer = self.serializer.as_ref()?;
-        serializer(&self.value)
+        self.codec.as_ref()?.encode(&self.value)
     }
 }
 
@@ -131,8 +127,8 @@ impl<T> core::ops::Deref for RecordValue<T> {
 struct JsonReaderAdapter<T: Clone + Send + 'static> {
     /// The underlying typed buffer reader
     inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
-    /// JSON serializer function (from .with_remote_access())
-    serializer: JsonSerializer<T>,
+    /// JSON codec (from .with_remote_access())
+    codec: RecordCodec<T>,
 }
 
 #[cfg(feature = "std")]
@@ -151,7 +147,7 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
             let value = self.inner.recv().await?;
 
             // Serialize to JSON
-            (self.serializer)(&value).ok_or_else(|| {
+            self.codec.encode(&value).ok_or_else(|| {
                 #[cfg(feature = "std")]
                 {
                     crate::DbError::RuntimeError {
@@ -170,10 +166,12 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
         // Non-blocking receive from underlying typed buffer
         let value = self.inner.try_recv()?;
 
-        // Serialize to JSON using the configured serializer
-        (self.serializer)(&value).ok_or_else(|| crate::DbError::RuntimeError {
-            message: "Failed to serialize value to JSON".to_string(),
-        })
+        // Serialize to JSON using the configured codec
+        self.codec
+            .encode(&value)
+            .ok_or_else(|| crate::DbError::RuntimeError {
+                message: "Failed to serialize value to JSON".to_string(),
+            })
     }
 }
 
@@ -586,17 +584,14 @@ pub struct TypedRecord<
     #[cfg(feature = "std")]
     metadata: RecordMetadataTracker,
 
-    /// JSON serializer function (std only - for remote access)
-    /// When set via .with_remote_access(), automatically serializes values for record.get queries
-    /// Stores the serialization logic where T: Serialize is known at call site
-    #[cfg(feature = "std")]
-    json_serializer: Option<JsonSerializer<T>>,
-
-    /// JSON deserializer function (std only - for remote access)
-    /// When set via .with_remote_access(), automatically deserializes JSON for record.set operations
-    /// Stores the deserialization logic where T: Deserialize is known at call site
-    #[cfg(feature = "std")]
-    json_deserializer: Option<JsonDeserializer<T>>,
+    /// Type-erased JSON codec (feature `json-serialize`).
+    /// `Some` iff the record opted into JSON via `.with_remote_access()`.
+    /// `RecordValue::as_json` and — on std — the AimX read (`latest_json`),
+    /// write (`set_from_json`), and subscribe (`subscribe_json`) paths route
+    /// through it. Built from a `SerdeJsonCodec` where the `T: RemoteSerialize`
+    /// bound is known at the call site.
+    #[cfg(feature = "json-serialize")]
+    remote_codec: Option<RecordCodec<T>>,
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
@@ -618,10 +613,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
             profiling: RecordProfilingMetrics::new(),
             #[cfg(feature = "std")]
             metadata: RecordMetadataTracker::new::<T>(),
-            #[cfg(feature = "std")]
-            json_serializer: None,
-            #[cfg(feature = "std")]
-            json_deserializer: None,
+            #[cfg(feature = "json-serialize")]
+            remote_codec: None,
         }
     }
 
@@ -931,60 +924,23 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         self.outbound_connectors.push(link);
     }
 
-    /// Enables JSON serialization for remote access (std only)
+    /// Installs the JSON codec for this record (feature `json-serialize`)
     ///
-    /// Enables `record.latest()?.as_json()` and remote access `record.get` protocol.
-    /// Requires `std` feature and `T: serde::Serialize`.
-    ///
-    /// For no_std, use `record.latest()` for value access or custom serialization.
-    #[cfg(feature = "std")]
+    /// Enables `record.latest()?.as_json()` everywhere, and on `std` the AimX
+    /// remote-access protocol (`record.get` / `set` / `subscribe`). Requires the
+    /// `json-serialize` feature and `T: RemoteSerialize` (blanket-impl'd for every
+    /// `Serialize + DeserializeOwned` type). Works on no_std + alloc.
+    #[cfg(feature = "json-serialize")]
     pub fn with_remote_access(&mut self) -> &mut Self
     where
-        T: serde::Serialize + serde::de::DeserializeOwned,
+        T: crate::codec::RemoteSerialize + 'static,
     {
-        // Store serialization function where T: Serialize is known
-        self.json_serializer = Some(std::sync::Arc::new(|val: &T| {
-            serde_json::to_value(val).ok()
-        }));
-
-        // Store deserialization function where T: DeserializeOwned is known
-        self.json_deserializer = Some(std::sync::Arc::new(|json_val: &serde_json::Value| {
-            serde_json::from_value(json_val.clone()).ok()
-        }));
+        // Capture the serde-backed codec where the bound is statically known.
+        self.remote_codec = Some(Arc::new(crate::codec::SerdeJsonCodec));
 
         #[cfg(feature = "tracing")]
         tracing::info!(
             "with_remote_access() called for record type: {}",
-            core::any::type_name::<T>()
-        );
-
-        self
-    }
-
-    /// Enables JSON serialization (backward compatible, read-only)
-    ///
-    /// This version only adds serialization support (for `record.get` and `record.subscribe`).
-    /// For write support via `record.set`, use `.with_remote_access()` which requires
-    /// both `Serialize` and `DeserializeOwned` bounds.
-    ///
-    /// This method exists for backward compatibility with records that don't implement
-    /// `DeserializeOwned` but still need to be readable via remote access.
-    #[cfg(feature = "std")]
-    pub fn with_read_only_serialization(&mut self) -> &mut Self
-    where
-        T: serde::Serialize,
-    {
-        // Store only serialization function
-        self.json_serializer = Some(std::sync::Arc::new(|val: &T| {
-            serde_json::to_value(val).ok()
-        }));
-
-        // Deserialization intentionally left as None - will fail at runtime if
-        // someone tries to use record.set on this record
-
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "with_read_only_serialization() called for record type: {}",
             core::any::type_name::<T>()
         );
 
@@ -1205,11 +1161,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         // Read buffer-native storage via peek() (design 031). Records without
         // a buffer return None — see Breaking Changes in design 031.
         let value = self.buffer.as_ref()?.peek()?;
-        #[cfg(feature = "std")]
+        #[cfg(feature = "json-serialize")]
         {
-            Some(RecordValue::new(value, self.json_serializer.clone()))
+            Some(RecordValue::new(value, self.remote_codec.clone()))
         }
-        #[cfg(not(feature = "std"))]
+        #[cfg(not(feature = "json-serialize"))]
         {
             Some(RecordValue::new(value, None))
         }
@@ -1390,8 +1346,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         // Read buffer-native storage via peek() (design 031). Records without
         // a buffer return None — see Breaking Changes in design doc.
         let value = self.buffer.as_ref()?.peek()?;
-        let serializer = self.json_serializer.as_ref()?;
-        let result = serializer(&value);
+        let result = self.remote_codec.as_ref()?.encode(&value);
 
         #[cfg(feature = "tracing")]
         tracing::debug!("Serialization result: {:?}", result.is_some());
@@ -1411,8 +1366,8 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         );
 
         // 1. Check if serialization is configured
-        let serializer = self
-            .json_serializer
+        let codec = self
+            .remote_codec
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
@@ -1428,7 +1383,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         // 3. Wrap in JsonReaderAdapter
         let json_reader = JsonReaderAdapter {
             inner: reader,
-            serializer,
+            codec,
         };
 
         #[cfg(feature = "tracing")]
@@ -1469,9 +1424,9 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             });
         }
 
-        // Check if deserialization is configured (need json_deserializer)
-        let deserializer = self
-            .json_deserializer
+        // Check if the codec is configured (set by .with_remote_access())
+        let codec = self
+            .remote_codec
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
@@ -1493,13 +1448,15 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         }
 
         // Deserialize JSON -> T
-        let value: T = deserializer(&json_value).ok_or_else(|| DbError::RuntimeError {
-            message: format!(
-                "Failed to deserialize JSON to type '{}'. \
+        let value: T = codec
+            .decode(&json_value)
+            .ok_or_else(|| DbError::RuntimeError {
+                message: format!(
+                    "Failed to deserialize JSON to type '{}'. \
                  JSON structure does not match the expected schema.",
-                core::any::type_name::<T>()
-            ),
-        })?;
+                    core::any::type_name::<T>()
+                ),
+            })?;
 
         #[cfg(feature = "tracing")]
         tracing::debug!(
