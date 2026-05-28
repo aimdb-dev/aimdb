@@ -69,15 +69,15 @@ use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 /// # Example
 /// ```no_run
 /// use aimdb_embassy_adapter::EmbassyBuffer;
-/// use aimdb_core::buffer::{BufferBackend, BufferCfg};
+/// use aimdb_core::buffer::{Buffer, BufferReader};
 ///
 /// // Create an SPMC ring buffer with capacity 32, 4 subscribers, 2 publishers
 /// type MyBuffer = EmbassyBuffer<u32, 32, 4, 2, 4>;
-/// static BUFFER: MyBuffer = MyBuffer::new_spmc();
 ///
 /// # async fn example() {
-/// let mut reader = BUFFER.subscribe();
-/// BUFFER.push(42);
+/// let buffer: MyBuffer = MyBuffer::new_spmc();
+/// let mut reader = buffer.subscribe();
+/// buffer.push(42);
 /// let value = reader.recv().await.unwrap();
 /// # }
 /// ```
@@ -238,6 +238,20 @@ impl<
 
     fn as_any(&self) -> &dyn core::any::Any {
         self
+    }
+
+    fn peek(&self) -> Option<T> {
+        match &*self.inner {
+            // Watch stores the latest value natively; try_get() clones it
+            // without consuming a receiver slot or advancing any cursor.
+            EmbassyBufferInner::Watch(watch) => watch.try_get(),
+            // Channel<_, T, 1>::try_peek() clones the pending slot without
+            // removing it (the slot is drained once a consumer receives).
+            // Mirrors the Tokio Mailbox arm.
+            EmbassyBufferInner::Mailbox(channel) => channel.try_peek().ok(),
+            // PubSub has no canonical latest — see design 031 §SPMC Ring.
+            EmbassyBufferInner::SpmcRing(_) => None,
+        }
     }
 
     #[cfg(feature = "metrics")]
@@ -546,6 +560,40 @@ impl<
 mod tests {
     use super::*;
 
+    // ── Host-test scaffolding ────────────────────────────────────────────
+    // The crate links `defmt` (workspace dep) and embassy-time's
+    // `defmt-timestamp-uptime`, but on the host neither a defmt logger nor a
+    // time driver exists. Provide no-op stubs so the test binary links. Run via
+    // the `test` Make target, or directly:
+    //   cargo test -p aimdb-embassy-adapter \
+    //       --no-default-features --features "alloc,embassy-sync,embassy-time"
+    // (`embassy-runtime` would pull the cortex-m executor, which can't host-build.)
+    #[defmt::global_logger]
+    struct TestLogger;
+
+    unsafe impl defmt::Logger for TestLogger {
+        fn acquire() {}
+        unsafe fn flush() {}
+        unsafe fn release() {}
+        unsafe fn write(_bytes: &[u8]) {}
+    }
+
+    #[defmt::panic_handler]
+    fn defmt_panic() -> ! {
+        core::panic!("defmt panic in host test")
+    }
+
+    // Trivial time driver so `_embassy_time_now` resolves on the host. peek()
+    // never reads the clock; the driver only needs to exist for linking.
+    struct TestTimeDriver;
+    impl embassy_time_driver::Driver for TestTimeDriver {
+        fn now(&self) -> u64 {
+            0
+        }
+        fn schedule_wake(&self, _at: u64, _waker: &core::task::Waker) {}
+    }
+    embassy_time_driver::time_driver_impl!(static TEST_TIME_DRIVER: TestTimeDriver = TestTimeDriver);
+
     // Note: Embassy tests typically run on actual embedded targets or with embassy-executor
     // For now, these are basic compilation tests. Integration tests would need embassy-executor.
 
@@ -570,5 +618,76 @@ mod tests {
 
         let cfg3 = BufferCfg::Mailbox;
         let _buf3: TestBuffer = Buffer::new(&cfg3);
+    }
+
+    // ========================================================================
+    // peek() Tests — non-destructive buffer-native reads (design 031)
+    //
+    // push()/peek() are synchronous and lock a CriticalSectionRawMutex; the
+    // `critical-section` std impl in dev-dependencies provides the host-side
+    // implementation, so these run without an embassy executor. Run with:
+    //   cargo test -p aimdb-embassy-adapter \
+    //       --no-default-features --features "alloc,embassy-sync,embassy-time"
+    // ========================================================================
+
+    use aimdb_core::buffer::DynBuffer;
+
+    type PeekBuffer = EmbassyBuffer<i32, 8, 4, 2, 4>;
+
+    #[test]
+    fn test_peek_single_latest_empty() {
+        let buffer: PeekBuffer = PeekBuffer::new_watch();
+        assert_eq!(DynBuffer::peek(&buffer), None);
+    }
+
+    #[test]
+    fn test_peek_single_latest_returns_latest() {
+        let buffer: PeekBuffer = PeekBuffer::new_watch();
+        DynBuffer::push(&buffer, 1);
+        DynBuffer::push(&buffer, 2);
+        DynBuffer::push(&buffer, 3);
+        assert_eq!(DynBuffer::peek(&buffer), Some(3));
+    }
+
+    #[test]
+    fn test_peek_single_latest_is_non_destructive() {
+        let buffer: PeekBuffer = PeekBuffer::new_watch();
+        DynBuffer::push(&buffer, 42);
+        // Multiple peeks return the same value.
+        assert_eq!(DynBuffer::peek(&buffer), Some(42));
+        assert_eq!(DynBuffer::peek(&buffer), Some(42));
+    }
+
+    #[test]
+    fn test_peek_mailbox_empty() {
+        let buffer: PeekBuffer = PeekBuffer::new_mailbox();
+        assert_eq!(DynBuffer::peek(&buffer), None);
+    }
+
+    #[test]
+    fn test_peek_mailbox_returns_pending() {
+        let buffer: PeekBuffer = PeekBuffer::new_mailbox();
+        DynBuffer::push(&buffer, 7);
+        assert_eq!(DynBuffer::peek(&buffer), Some(7));
+        // Peek is non-destructive: the slot is still occupied.
+        assert_eq!(DynBuffer::peek(&buffer), Some(7));
+    }
+
+    #[test]
+    fn test_peek_mailbox_reflects_overwrite() {
+        let buffer: PeekBuffer = PeekBuffer::new_mailbox();
+        DynBuffer::push(&buffer, 1);
+        DynBuffer::push(&buffer, 2);
+        assert_eq!(DynBuffer::peek(&buffer), Some(2));
+    }
+
+    #[test]
+    fn test_peek_spmc_ring_returns_none() {
+        // PubSub has no canonical latest — see design 031 §SPMC Ring.
+        let buffer: PeekBuffer = PeekBuffer::new_spmc();
+        assert_eq!(DynBuffer::peek(&buffer), None);
+        DynBuffer::push(&buffer, 1);
+        DynBuffer::push(&buffer, 2);
+        assert_eq!(DynBuffer::peek(&buffer), None);
     }
 }

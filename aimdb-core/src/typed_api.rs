@@ -132,9 +132,9 @@ where
 
     /// Produce a value of type T
     ///
-    /// Push to the record's buffer, update the latest-snapshot cache, and
-    /// notify tap observers + outbound link connectors. Synchronous and
-    /// infallible — the underlying `WriteHandle::push` cannot fail.
+    /// Push to the record's buffer; consumer tasks and outbound link connectors
+    /// observe it from there. Synchronous and infallible — the underlying
+    /// `WriteHandle::push` cannot fail.
     ///
     pub fn produce(&self, value: T) {
         #[cfg(feature = "profiling")]
@@ -407,7 +407,7 @@ where
             + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.rec.set_producer_service(f);
+        self.rec.set_producer(f);
         #[cfg(feature = "profiling")]
         {
             let (idx, _) = self.rec.profiling_mut().push_source();
@@ -470,8 +470,7 @@ where
         self
     }
 
-    /// Configures a buffer with metadata tracking (std only)
-    #[cfg(feature = "std")]
+    /// Configures a buffer with metadata tracking
     pub fn buffer_with_cfg(
         &'a mut self,
         buffer: Box<dyn crate::buffer::DynBuffer<T>>,
@@ -482,17 +481,18 @@ where
         self
     }
 
-    /// Sets the buffer configuration for metadata tracking (std only)
-    #[cfg(feature = "std")]
+    /// Sets the buffer configuration for metadata tracking
     pub fn buffer_cfg(&'a mut self, cfg: crate::buffer::BufferCfg) -> &'a mut Self {
         self.rec.set_buffer_cfg(cfg);
         self
     }
 
-    /// Enables JSON serialization for remote access (std only)
+    /// Installs the JSON codec for this record (feature `json-serialize`)
     ///
-    /// Configures this record to support the `record.get` protocol method.
-    /// Requires `T: serde::Serialize`.
+    /// Enables `record.latest()?.as_json()`, and on `std` the AimX `record.get`
+    /// / `set` / `subscribe` protocol. Requires `T: RemoteSerialize`
+    /// (blanket-impl'd for every `Serialize + DeserializeOwned` type). Works on
+    /// no_std + alloc.
     ///
     /// # Example
     /// ```rust,ignore
@@ -501,10 +501,10 @@ where
     ///        .with_remote_access();  // Enable remote queries
     /// });
     /// ```
-    #[cfg(feature = "std")]
+    #[cfg(feature = "json-serialize")]
     pub fn with_remote_access(&'a mut self) -> &'a mut Self
     where
-        T: serde::Serialize + serde::de::DeserializeOwned,
+        T: crate::codec::RemoteSerialize + 'static,
     {
         self.rec.with_remote_access();
         self
@@ -1056,7 +1056,7 @@ where
                 self.url
             );
         }
-        if self.registrar.rec.has_producer_service() {
+        if self.registrar.rec.has_producer() {
             panic!(
                 "Record already has a .source(); cannot also have a .link_from() for {}",
                 self.url
@@ -1620,7 +1620,7 @@ mod tests {
     fn link_from_after_source_panics() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
-        rec.set_producer_service(|_p, _ctx| async move {});
+        rec.set_producer(|_p, _ctx| async move {});
 
         let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
             vec![Box::new(MockConnectorBuilder {
@@ -1673,7 +1673,7 @@ mod tests {
                 .finish();
         }
 
-        rec.set_producer_service(|_p, _ctx| async move {});
+        rec.set_producer(|_p, _ctx| async move {});
     }
 
     #[test]

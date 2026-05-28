@@ -545,12 +545,10 @@ where
     let val: T = serde_wasm_bindgen::from_value(value)
         .map_err(|e| JsError::new(&format!("Contract violation: {e}")))?;
 
-    let inner = db.inner();
-    let typed = inner
-        .get_typed_record_by_key::<T, WasmAdapter>(key)
-        .map_err(|e| JsError::new(&format!("{e:?}")))?;
-
-    typed.produce(val);
+    // Single write path via Producer<T> (design 031).
+    db.producer::<T>(key)
+        .map_err(|e| JsError::new(&format!("{e:?}")))?
+        .produce(val);
     Ok(())
 }
 

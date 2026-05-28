@@ -66,7 +66,7 @@ extern crate alloc;
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
 pub mod buffer;
 
-#[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]
+#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
 pub mod join_queue;
 
 #[cfg(not(feature = "std"))]
@@ -333,7 +333,9 @@ where
         let buffer = Box::new(EmbassyBuffer::<T, CAP, CONSUMERS, PUBS, CONSUMERS>::new(
             &cfg,
         ));
-        self.buffer_raw(buffer)
+        // Record the cfg so buffer_info() reports the real buffer type/capacity
+        // for the dependency graph.
+        self.buffer_with_cfg(buffer, cfg)
     }
 
     fn source_with_context<Ctx, F, Fut>(

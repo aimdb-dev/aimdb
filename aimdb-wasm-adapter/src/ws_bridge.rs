@@ -754,15 +754,15 @@ where
 {
     match serde_json::from_value::<T>(json) {
         Ok(val) => {
-            let inner = db.inner();
-            match inner.get_typed_record_by_key::<T, WasmAdapter>(key) {
-                Ok(typed) => {
-                    typed.produce(val);
+            // Single write path via Producer<T> (design 031).
+            match db.producer::<T>(key) {
+                Ok(producer) => {
+                    producer.produce(val);
                 }
                 Err(e) => {
                     web_sys::console::warn_1(
                         &format!(
-                            "[WsBridge] get_typed_record_by_key failed for key='{}': {:?}",
+                            "[WsBridge] producer lookup failed for key='{}': {:?}",
                             key, e
                         )
                         .into(),

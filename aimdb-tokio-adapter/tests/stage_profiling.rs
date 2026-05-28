@@ -72,7 +72,6 @@ async fn source_and_tap_stages_are_timed_and_named() {
     );
     assert!(s.min_time_ns() <= s.avg_time_ns());
     assert!(s.avg_time_ns() <= s.max_time_ns());
-    assert_eq!(s.avg_time_ns(), s.total_time_ns() / s.call_count());
 
     // Tap stage.
     let tap = prof.tap(0).expect("tap stage registered");

@@ -139,64 +139,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
-    // Test record.get for Temperature
-    println!("📤 Requesting Temperature value...");
+    // ── Point-in-time reads: record.get ──────────────────────────────────
+    // record.get serves a single "current value", so it only works on buffers
+    // that have a canonical latest. SingleLatest (Config/AppSettings, below)
+    // does. SpmcRing does NOT: a ring keeps a *history* for independent
+    // consumers, so there is no one "latest" to return — record.get answers
+    // not_found by design. Read rings with record.drain (history) or
+    // record.subscribe (live), both demonstrated further down.
+
+    println!("📤 record.get on Temperature (SpmcRing — expecting not_found)...");
     let get_request = Request {
         id: 2,
         method: "record.get".to_string(),
         params: Some(json!({"record": "server::Temperature"})),
     };
 
-    let get_request_json = serde_json::to_string(&get_request)?;
-    writeln!(stream, "{}", get_request_json)?;
+    writeln!(stream, "{}", serde_json::to_string(&get_request)?)?;
     stream.flush()?;
 
-    // Read response
     let mut get_response_line = String::new();
     reader.read_line(&mut get_response_line)?;
-
     let get_response: Response = serde_json::from_str(&get_response_line)?;
 
     match get_response {
-        Response::Success { id, result } => {
-            println!("✅ Success! (request_id: {})", id);
-            println!();
-            println!("🌡️  Current Temperature:");
-            println!("{}", serde_json::to_string_pretty(&result)?);
+        Response::Error { id, error } if error.code == "not_found" => {
+            println!("✅ Expected not_found (request_id: {}): {}", id, error.message);
+            println!(
+                "   ℹ️  Rings have no point-in-time latest — use record.drain / record.subscribe (below)."
+            );
         }
-        Response::Error { id, error } => {
-            println!("❌ Error! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-            if let Some(details) = error.details {
-                println!("   Details: {}", details);
-            }
-        }
-    }
-
-    println!();
-
-    // Test record.get for SystemStatus
-    println!("📤 Requesting SystemStatus value...");
-    let status_request = Request {
-        id: 3,
-        method: "record.get".to_string(),
-        params: Some(json!({"record": "server::SystemStatus"})),
-    };
-
-    let status_request_json = serde_json::to_string(&status_request)?;
-    writeln!(stream, "{}", status_request_json)?;
-    stream.flush()?;
-
-    let mut status_response_line = String::new();
-    reader.read_line(&mut status_response_line)?;
-    let status_response: Response = serde_json::from_str(&status_response_line)?;
-
-    match status_response {
         Response::Success { id, result } => {
-            println!("✅ Success! (request_id: {})", id);
-            println!();
-            println!("💻 Current System Status:");
+            println!("⚠️  Unexpected success (request_id: {}):", id);
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Response::Error { id, error } => {
@@ -209,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Test record.get for Config
-    println!("📤 Requesting Config value...");
+    println!("📤 record.get on Config (SingleLatest — point-in-time read)...");
     let config_request = Request {
         id: 4,
         method: "record.get".to_string(),

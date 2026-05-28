@@ -104,6 +104,8 @@ test:
 	cargo test --package aimdb-core --no-default-features --features "alloc,profiling"
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + metrics)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features "alloc,metrics"
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + json-serialize)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features --features "alloc,json-serialize"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
@@ -112,6 +114,8 @@ test:
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
 	@printf "$(YELLOW)  → Testing tokio adapter (with profiling)$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
+	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, doctests)$(NC)\n"
+	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time"
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
@@ -167,6 +171,8 @@ clippy:
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + json-serialize)$(NC)\n"
+	cargo clippy --package aimdb-core --no-default-features --features "alloc,json-serialize" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
 	cargo clippy --package aimdb-core --features "std,tracing,metrics" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
@@ -253,6 +259,8 @@ test-embedded:
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features alloc
+	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + json-serialize) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features "alloc,json-serialize"
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"

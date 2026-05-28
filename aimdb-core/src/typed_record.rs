@@ -18,7 +18,7 @@ use core::fmt::Debug;
 extern crate alloc;
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 #[cfg(not(feature = "std"))]
 use alloc::string::ToString;
@@ -26,15 +26,33 @@ use alloc::string::ToString;
 #[cfg(feature = "std")]
 use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
+#[cfg(feature = "profiling")]
+use crate::profiling::RecordProfilingMetrics;
+
+#[cfg(feature = "std")]
+type Mutex<T> = std::sync::Mutex<T>;
+#[cfg(not(feature = "std"))]
+type Mutex<T> = spin::Mutex<T>;
+
+/// Locks one of the `TypedRecord` field mutexes, hiding the std/spin API
+/// difference (`std::sync::Mutex::lock` returns a `LockResult`; `spin` returns
+/// the guard directly). A poisoned std mutex is unrecoverable in this code, so
+/// `.unwrap()` is the correct response. The returned guard derefs to `T` on
+/// both sides, so call sites are identical.
+#[cfg(feature = "std")]
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap()
+}
+#[cfg(not(feature = "std"))]
+fn lock<T>(m: &Mutex<T>) -> spin::MutexGuard<'_, T> {
+    m.lock()
+}
+
 use crate::buffer::DynBuffer;
 
-/// Type alias for JSON serializer function (std only)
-#[cfg(feature = "std")]
-type JsonSerializer<T> = Arc<dyn Fn(&T) -> Option<serde_json::Value> + Send + Sync>;
-
-/// Type alias for JSON deserializer function (std only)
-#[cfg(feature = "std")]
-type JsonDeserializer<T> = Arc<dyn Fn(&serde_json::Value) -> Option<T> + Send + Sync>;
+/// Type alias for a record's type-erased JSON codec (feature `json-serialize`)
+#[cfg(feature = "json-serialize")]
+type RecordCodec<T> = Arc<dyn crate::codec::JsonCodec<T>>;
 
 /// Wrapper for a record's latest value with optional serialization
 ///
@@ -42,20 +60,20 @@ type JsonDeserializer<T> = Arc<dyn Fn(&serde_json::Value) -> Option<T> + Send + 
 /// both std and no_std. JSON serialization (`.as_json()`) requires std feature.
 pub struct RecordValue<T> {
     value: T,
-    #[cfg(feature = "std")]
-    serializer: Option<JsonSerializer<T>>,
+    #[cfg(feature = "json-serialize")]
+    codec: Option<RecordCodec<T>>,
 }
 
 impl<T> RecordValue<T> {
-    /// Create a new RecordValue with optional serializer
-    #[cfg(feature = "std")]
-    fn new(value: T, serializer: Option<JsonSerializer<T>>) -> Self {
-        Self { value, serializer }
+    /// Create a new RecordValue with optional codec
+    #[cfg(feature = "json-serialize")]
+    fn new(value: T, codec: Option<RecordCodec<T>>) -> Self {
+        Self { value, codec }
     }
 
-    /// Create a new RecordValue without serializer (no_std)
-    #[cfg(not(feature = "std"))]
-    fn new(value: T, _serializer: Option<()>) -> Self {
+    /// Create a new RecordValue without codec (codec feature off)
+    #[cfg(not(feature = "json-serialize"))]
+    fn new(value: T, _codec: Option<()>) -> Self {
         Self { value }
     }
 
@@ -69,15 +87,15 @@ impl<T> RecordValue<T> {
         self.value
     }
 
-    /// Serialize the value to JSON (std only)
+    /// Serialize the value to JSON (feature `json-serialize`)
     ///
-    /// Returns `Some(JsonValue)` if record was configured with `.with_remote_access()`,
-    /// otherwise `None`. Requires `serde_json` (std only). For no_std, use `.get()`,
+    /// Returns `Some(JsonValue)` if the record was configured with
+    /// `.with_remote_access()`, otherwise `None`. Available on no_std + alloc
+    /// when the `json-serialize` feature is enabled. Without it, use `.get()`,
     /// `.into_inner()`, or `Deref` for direct access.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "json-serialize")]
     pub fn as_json(&self) -> Option<serde_json::Value> {
-        let serializer = self.serializer.as_ref()?;
-        serializer(&self.value)
+        self.codec.as_ref()?.encode(&self.value)
     }
 }
 
@@ -109,8 +127,8 @@ impl<T> core::ops::Deref for RecordValue<T> {
 struct JsonReaderAdapter<T: Clone + Send + 'static> {
     /// The underlying typed buffer reader
     inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
-    /// JSON serializer function (from .with_remote_access())
-    serializer: JsonSerializer<T>,
+    /// JSON codec (from .with_remote_access())
+    codec: RecordCodec<T>,
 }
 
 #[cfg(feature = "std")]
@@ -129,7 +147,7 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
             let value = self.inner.recv().await?;
 
             // Serialize to JSON
-            (self.serializer)(&value).ok_or_else(|| {
+            self.codec.encode(&value).ok_or_else(|| {
                 #[cfg(feature = "std")]
                 {
                     crate::DbError::RuntimeError {
@@ -148,10 +166,12 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
         // Non-blocking receive from underlying typed buffer
         let value = self.inner.try_recv()?;
 
-        // Serialize to JSON using the configured serializer
-        (self.serializer)(&value).ok_or_else(|| crate::DbError::RuntimeError {
-            message: "Failed to serialize value to JSON".to_string(),
-        })
+        // Serialize to JSON using the configured codec
+        self.codec
+            .encode(&value)
+            .ok_or_else(|| crate::DbError::RuntimeError {
+                message: "Failed to serialize value to JSON".to_string(),
+            })
     }
 }
 
@@ -281,7 +301,7 @@ pub trait AnyRecord: Send + Sync {
     fn consumer_count(&self) -> usize;
 
     /// Returns whether a producer service is registered
-    fn has_producer_service(&self) -> bool;
+    fn has_producer(&self) -> bool;
 
     /// Returns whether a transform is registered for this record
     fn has_transform(&self) -> bool;
@@ -292,22 +312,10 @@ pub trait AnyRecord: Send + Sync {
     /// Returns the buffer type name and capacity (for dependency graph)
     ///
     /// Returns (buffer_type_name, optional_capacity).
-    #[cfg(feature = "std")]
     fn buffer_info(&self) -> (String, Option<usize>);
 
-    /// Returns the buffer type name and capacity (for dependency graph)
-    ///
-    /// Returns (buffer_type_name, optional_capacity).
-    #[cfg(not(feature = "std"))]
-    fn buffer_info(&self) -> (alloc::string::String, Option<usize>);
-
     /// Returns the transform input keys (if a transform is registered)
-    #[cfg(feature = "std")]
     fn transform_input_keys(&self) -> Option<Vec<String>>;
-
-    /// Returns the transform input keys (if a transform is registered)
-    #[cfg(not(feature = "std"))]
-    fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>>;
 
     /// Sets the writable flag for this record (type-erased)
     ///
@@ -505,7 +513,7 @@ where
 
         let mut futures = Vec::new();
 
-        if typed_record.has_producer_service() {
+        if typed_record.has_producer() {
             if let Some(f) = typed_record.collect_producer_future(runtime, db, record_key)? {
                 futures.push(f);
             }
@@ -534,28 +542,17 @@ pub struct TypedRecord<
     /// This will be auto-spawned during build() if present
     /// Stored as FnOnce that takes (Producer<T>, RuntimeContext) and returns a Future
     /// Wrapped in Mutex for interior mutability (needed to take() during spawning)
-    #[cfg(feature = "std")]
-    producer_service: std::sync::Mutex<Option<ProducerServiceFn<T>>>,
-
-    #[cfg(not(feature = "std"))]
-    producer_service: spin::Mutex<Option<ProducerServiceFn<T>>>,
+    producer: Mutex<Option<ProducerServiceFn<T>>>,
 
     /// List of consumer/tap tasks - wrapped in Mutex for Sync + taking out during spawn
     /// Each is spawned as an independent background task that subscribes to the buffer
     /// Using Mutex provides the Sync bound required by AnyRecord trait
-    #[cfg(feature = "std")]
-    consumers: std::sync::Mutex<Vec<ConsumerServiceFn<T>>>,
+    consumers: Mutex<Vec<ConsumerServiceFn<T>>>,
 
-    #[cfg(not(feature = "std"))]
-    consumers: spin::Mutex<alloc::vec::Vec<ConsumerServiceFn<T>>>,
-
-    /// Transform descriptor — mutually exclusive with producer_service.
+    /// Transform descriptor — mutually exclusive with producer.
     /// If set, this record is a reactive derivation from one or more input records.
     /// Uses the same Mutex pattern for take()-during-spawn.
-    #[cfg(feature = "std")]
-    transform: std::sync::Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
-    #[cfg(not(feature = "std"))]
-    transform: spin::Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
+    transform: Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
@@ -564,8 +561,8 @@ pub struct TypedRecord<
     /// a pre-resolved handle to the same buffer — design 029 hot-path change.
     buffer: Option<Arc<dyn DynBuffer<T>>>,
 
-    /// Buffer configuration (cached for metadata, std only)
-    #[cfg(feature = "std")]
+    /// Buffer configuration cached for metadata / dependency-graph reporting.
+    /// Set via `set_buffer_cfg()` after `set_buffer()`.
     buffer_cfg: Option<crate::buffer::BufferCfg>,
 
     /// List of outbound connector links (AimDB → External)
@@ -581,33 +578,20 @@ pub struct TypedRecord<
     /// Stages are appended here in the same order they are registered on the
     /// `RecordRegistrar`, which matches the order the spawn machinery iterates them.
     #[cfg(feature = "profiling")]
-    profiling: crate::profiling::RecordProfilingMetrics,
+    profiling: RecordProfilingMetrics,
 
     /// Metadata tracking (std only - for remote access)
     #[cfg(feature = "std")]
     metadata: RecordMetadataTracker,
 
-    /// JSON serializer function (std only - for remote access)
-    /// When set via .with_remote_access(), automatically serializes values for record.get queries
-    /// Stores the serialization logic where T: Serialize is known at call site
-    #[cfg(feature = "std")]
-    json_serializer: Option<JsonSerializer<T>>,
-
-    /// JSON deserializer function (std only - for remote access)
-    /// When set via .with_remote_access(), automatically deserializes JSON for record.set operations
-    /// Stores the deserialization logic where T: Deserialize is known at call site
-    #[cfg(feature = "std")]
-    json_deserializer: Option<JsonDeserializer<T>>,
-
-    /// Latest value snapshot - for latest() API
-    /// Cached atomically on every produce() call to support latest()
-    /// This provides a buffer-agnostic way to query the latest value
-    /// Available in both std and no_std environments
-    #[cfg(feature = "std")]
-    latest_snapshot: Arc<std::sync::Mutex<Option<T>>>,
-
-    #[cfg(not(feature = "std"))]
-    latest_snapshot: Arc<spin::Mutex<Option<T>>>,
+    /// Type-erased JSON codec (feature `json-serialize`).
+    /// `Some` iff the record opted into JSON via `.with_remote_access()`.
+    /// `RecordValue::as_json` and — on std — the AimX read (`latest_json`),
+    /// write (`set_from_json`), and subscribe (`subscribe_json`) paths route
+    /// through it. Built from a `SerdeJsonCodec` where the `T: RemoteSerialize`
+    /// bound is known at the call site.
+    #[cfg(feature = "json-serialize")]
+    remote_codec: Option<RecordCodec<T>>,
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
@@ -618,48 +602,32 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// Call `.with_remote_access()` to enable JSON (std only).
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "std")]
-            producer_service: std::sync::Mutex::new(None),
-            #[cfg(not(feature = "std"))]
-            producer_service: spin::Mutex::new(None),
-            #[cfg(feature = "std")]
-            consumers: std::sync::Mutex::new(Vec::new()),
-            #[cfg(not(feature = "std"))]
-            consumers: spin::Mutex::new(alloc::vec::Vec::new()),
-            #[cfg(feature = "std")]
-            transform: std::sync::Mutex::new(None),
-            #[cfg(not(feature = "std"))]
-            transform: spin::Mutex::new(None),
+            producer: Mutex::new(None),
+            consumers: Mutex::new(Vec::new()),
+            transform: Mutex::new(None),
             buffer: None,
-            #[cfg(feature = "std")]
             buffer_cfg: None,
             outbound_connectors: Vec::new(),
             inbound_connectors: Vec::new(),
             #[cfg(feature = "profiling")]
-            profiling: crate::profiling::RecordProfilingMetrics::new(),
+            profiling: RecordProfilingMetrics::new(),
             #[cfg(feature = "std")]
             metadata: RecordMetadataTracker::new::<T>(),
-            #[cfg(feature = "std")]
-            json_serializer: None,
-            #[cfg(feature = "std")]
-            json_deserializer: None,
-            #[cfg(feature = "std")]
-            latest_snapshot: Arc::new(std::sync::Mutex::new(None)),
-            #[cfg(not(feature = "std"))]
-            latest_snapshot: Arc::new(spin::Mutex::new(None)),
+            #[cfg(feature = "json-serialize")]
+            remote_codec: None,
         }
     }
 
     /// Stage profiling metrics for this record (feature `profiling`).
     #[cfg(feature = "profiling")]
-    pub fn profiling(&self) -> &crate::profiling::RecordProfilingMetrics {
+    pub fn profiling(&self) -> &RecordProfilingMetrics {
         &self.profiling
     }
 
     /// Mutable access to the stage profiling metrics — used during registration
     /// to append per-stage entries and assign names.
     #[cfg(feature = "profiling")]
-    pub(crate) fn profiling_mut(&mut self) -> &mut crate::profiling::RecordProfilingMetrics {
+    pub(crate) fn profiling_mut(&mut self) -> &mut RecordProfilingMetrics {
         &mut self.profiling
     }
 
@@ -670,18 +638,13 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// # Panics
     /// Panics if producer already set (one producer per record), if a transform is registered,
     /// or if a `.link_from()` inbound connector is registered (all three would race on the buffer).
-    pub fn set_producer_service<F, Fut>(&mut self, f: F)
+    pub fn set_producer<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Check for existing transform (mutual exclusion)
-        #[cfg(feature = "std")]
-        let has_transform = self.transform.lock().unwrap().is_some();
-        #[cfg(not(feature = "std"))]
-        let has_transform = self.transform.lock().is_some();
-
-        if has_transform {
+        if lock(&self.transform).is_some() {
             panic!("Record already has a .transform(); cannot also have a .source().");
         }
 
@@ -690,12 +653,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         }
 
         // Check if already set
-        #[cfg(feature = "std")]
-        let already_set = self.producer_service.lock().unwrap().is_some();
-        #[cfg(not(feature = "std"))]
-        let already_set = self.producer_service.lock().is_some();
-
-        if already_set {
+        if lock(&self.producer).is_some() {
             panic!("This record type already has a producer service");
         }
 
@@ -707,14 +665,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         );
 
         // Store it in the mutex
-        #[cfg(feature = "std")]
-        {
-            *self.producer_service.lock().unwrap() = Some(boxed_fn);
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            *self.producer_service.lock() = Some(boxed_fn);
-        }
+        *lock(&self.producer) = Some(boxed_fn);
     }
 
     /// Adds a consumer function for this record
@@ -748,15 +699,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
                   -> BoxFuture<'static, ()> { Box::pin(f(consumer, ctx_any)) },
         );
 
-        #[cfg(feature = "std")]
-        {
-            self.consumers.lock().unwrap().push(boxed);
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            self.consumers.lock().push(boxed);
-        }
+        lock(&self.consumers).push(boxed);
     }
 
     /// Sets the transform descriptor for this record.
@@ -770,12 +713,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         descriptor: crate::transform::TransformDescriptor<T, R>,
     ) {
         // Enforce mutual exclusion with .source()
-        #[cfg(feature = "std")]
-        let has_source = self.producer_service.lock().unwrap().is_some();
-        #[cfg(not(feature = "std"))]
-        let has_source = self.producer_service.lock().is_some();
-
-        if has_source {
+        if lock(&self.producer).is_some() {
             panic!("Record already has a .source(); cannot also have a .transform().");
         }
 
@@ -783,11 +721,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
             panic!("Record already has a .link_from(); cannot also have a .transform().");
         }
 
-        #[cfg(feature = "std")]
-        let mut slot = self.transform.lock().unwrap();
-        #[cfg(not(feature = "std"))]
-        let mut slot = self.transform.lock();
-
+        let mut slot = lock(&self.transform);
         if slot.is_some() {
             panic!("Record already has a .transform(); only one is allowed.");
         }
@@ -796,14 +730,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
 
     /// Returns whether a transform is registered for this record.
     pub fn has_transform(&self) -> bool {
-        #[cfg(feature = "std")]
-        {
-            self.transform.lock().unwrap().is_some()
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            self.transform.lock().is_some()
-        }
+        lock(&self.transform).is_some()
     }
 
     /// Returns how this record gets its values.
@@ -815,15 +742,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// - `Passive` otherwise
     pub fn record_origin(&self) -> crate::graph::RecordOrigin {
         // Check for transform first (most specific)
-        #[cfg(feature = "std")]
-        let transform_keys = self
-            .transform
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|t| t.input_keys.clone());
-        #[cfg(not(feature = "std"))]
-        let transform_keys = self.transform.lock().as_ref().map(|t| t.input_keys.clone());
+        let transform_keys = lock(&self.transform).as_ref().map(|t| t.input_keys.clone());
 
         if let Some(input_keys) = transform_keys {
             if input_keys.len() == 1 {
@@ -844,12 +763,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         }
 
         // Check for producer service (source)
-        #[cfg(feature = "std")]
-        let has_producer = self.producer_service.lock().unwrap().is_some();
-        #[cfg(not(feature = "std"))]
-        let has_producer = self.producer_service.lock().is_some();
-
-        if has_producer {
+        if lock(&self.producer).is_some() {
             return crate::graph::RecordOrigin::Source;
         }
 
@@ -860,30 +774,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// Returns the input keys for the registered transform (if any).
     ///
     /// Used during build-time validation to check that all input records exist.
-    #[cfg(feature = "std")]
     pub fn transform_input_keys(&self) -> Option<Vec<String>> {
-        #[cfg(feature = "std")]
-        let guard = self.transform.lock().unwrap();
-        #[cfg(not(feature = "std"))]
-        let guard = self.transform.lock();
-
-        guard.as_ref().map(|t| t.input_keys.clone())
-    }
-
-    #[cfg(not(feature = "std"))]
-    pub fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>> {
-        #[cfg(feature = "std")]
-        {
-            self.transform
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|d| d.input_keys.clone())
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            self.transform.lock().as_ref().map(|d| d.input_keys.clone())
-        }
+        lock(&self.transform).as_ref().map(|t| t.input_keys.clone())
     }
 
     /// Collects the transform task future and any fan-in forwarder futures.
@@ -902,16 +794,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         T: Sync,
     {
         // Take the transform descriptor (can only collect once)
-        let descriptor = {
-            #[cfg(feature = "std")]
-            {
-                self.transform.lock().unwrap().take()
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                self.transform.lock().take()
-            }
-        };
+        let descriptor = lock(&self.transform).take();
 
         if let Some(desc) = descriptor {
             #[cfg(feature = "tracing")]
@@ -939,13 +822,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     ///
     /// When set, `produce()` enqueues values for async dispatch to consumers.
     pub fn set_buffer(&mut self, buffer: Box<dyn DynBuffer<T>>) {
-        // Cache buffer configuration for metadata (std only)
-        #[cfg(feature = "std")]
-        {
-            // Store a simplified version of the config for metadata
-            // We can't call cfg() on the buffer, so we'll infer from the buffer type name
-            self.buffer_cfg = None; // Will be set by the caller via set_buffer_cfg
-        }
+        // The buffer trait object hides the original BufferCfg, so callers must
+        // supply it via set_buffer_cfg() if they want accurate buffer_info().
+        self.buffer_cfg = None;
         // `Arc::from(Box<dyn _>)` reuses the existing heap allocation; the
         // public API stays Box-flavoured to avoid churn at adapter / test call
         // sites, while internally we share via Arc so producers/consumers can
@@ -953,14 +832,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         self.buffer = Some(Arc::from(buffer));
     }
 
-    /// Sets the buffer configuration (for metadata tracking, std only)
-    #[cfg(feature = "std")]
+    /// Sets the buffer configuration (for metadata tracking)
     pub fn set_buffer_cfg(&mut self, cfg: crate::buffer::BufferCfg) {
         self.buffer_cfg = Some(cfg);
     }
 
     /// Returns buffer type name and capacity (for dependency graph)
-    #[cfg(feature = "std")]
     pub fn buffer_info(&self) -> (String, Option<usize>) {
         if let Some(cfg) = &self.buffer_cfg {
             let cap = match cfg {
@@ -968,19 +845,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
                 _ => None,
             };
             (cfg.name().to_string(), cap)
+        } else if self.buffer.is_some() {
+            // Buffer set via buffer_raw() without a recorded cfg.
+            ("unknown".to_string(), None)
         } else {
             ("none".to_string(), None)
-        }
-    }
-
-    /// Returns buffer type name and capacity (for dependency graph)
-    #[cfg(not(feature = "std"))]
-    pub fn buffer_info(&self) -> (alloc::string::String, Option<usize>) {
-        // No buffer_cfg in no_std, so we just report based on buffer presence
-        if self.buffer.is_some() {
-            ("unknown".into(), None)
-        } else {
-            ("none".into(), None)
         }
     }
 
@@ -1011,16 +880,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         {
             Arc::new(crate::buffer::RecordWriter::new(
                 self.buffer.clone(),
-                self.latest_snapshot.clone(),
                 self.metadata.clone(),
             ))
         }
         #[cfg(not(feature = "std"))]
         {
-            Arc::new(crate::buffer::RecordWriter::new(
-                self.buffer.clone(),
-                self.latest_snapshot.clone(),
-            ))
+            Arc::new(crate::buffer::RecordWriter::new(self.buffer.clone()))
         }
     }
 
@@ -1059,60 +924,23 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         self.outbound_connectors.push(link);
     }
 
-    /// Enables JSON serialization for remote access (std only)
+    /// Installs the JSON codec for this record (feature `json-serialize`)
     ///
-    /// Enables `record.latest()?.as_json()` and remote access `record.get` protocol.
-    /// Requires `std` feature and `T: serde::Serialize`.
-    ///
-    /// For no_std, use `record.latest()` for value access or custom serialization.
-    #[cfg(feature = "std")]
+    /// Enables `record.latest()?.as_json()` everywhere, and on `std` the AimX
+    /// remote-access protocol (`record.get` / `set` / `subscribe`). Requires the
+    /// `json-serialize` feature and `T: RemoteSerialize` (blanket-impl'd for every
+    /// `Serialize + DeserializeOwned` type). Works on no_std + alloc.
+    #[cfg(feature = "json-serialize")]
     pub fn with_remote_access(&mut self) -> &mut Self
     where
-        T: serde::Serialize + serde::de::DeserializeOwned,
+        T: crate::codec::RemoteSerialize + 'static,
     {
-        // Store serialization function where T: Serialize is known
-        self.json_serializer = Some(std::sync::Arc::new(|val: &T| {
-            serde_json::to_value(val).ok()
-        }));
-
-        // Store deserialization function where T: DeserializeOwned is known
-        self.json_deserializer = Some(std::sync::Arc::new(|json_val: &serde_json::Value| {
-            serde_json::from_value(json_val.clone()).ok()
-        }));
+        // Capture the serde-backed codec where the bound is statically known.
+        self.remote_codec = Some(Arc::new(crate::codec::SerdeJsonCodec));
 
         #[cfg(feature = "tracing")]
         tracing::info!(
             "with_remote_access() called for record type: {}",
-            core::any::type_name::<T>()
-        );
-
-        self
-    }
-
-    /// Enables JSON serialization (backward compatible, read-only)
-    ///
-    /// This version only adds serialization support (for `record.get` and `record.subscribe`).
-    /// For write support via `record.set`, use `.with_remote_access()` which requires
-    /// both `Serialize` and `DeserializeOwned` bounds.
-    ///
-    /// This method exists for backward compatibility with records that don't implement
-    /// `DeserializeOwned` but still need to be readable via remote access.
-    #[cfg(feature = "std")]
-    pub fn with_read_only_serialization(&mut self) -> &mut Self
-    where
-        T: serde::Serialize,
-    {
-        // Store only serialization function
-        self.json_serializer = Some(std::sync::Arc::new(|val: &T| {
-            serde_json::to_value(val).ok()
-        }));
-
-        // Deserialization intentionally left as None - will fail at runtime if
-        // someone tries to use record.set on this record
-
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "with_read_only_serialization() called for record type: {}",
             core::any::type_name::<T>()
         );
 
@@ -1152,21 +980,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// All three write to the same buffer and would race as last-writer-wins.
     /// Multiple inbound connectors on the same record are permitted (fan-in).
     pub fn add_inbound_connector(&mut self, link: crate::connector::InboundConnectorLink) {
-        #[cfg(feature = "std")]
-        let has_source = self.producer_service.lock().unwrap().is_some();
-        #[cfg(not(feature = "std"))]
-        let has_source = self.producer_service.lock().is_some();
-
-        if has_source {
+        if lock(&self.producer).is_some() {
             panic!("Record already has a .source(); cannot also have a .link_from().");
         }
 
-        #[cfg(feature = "std")]
-        let has_transform = self.transform.lock().unwrap().is_some();
-        #[cfg(not(feature = "std"))]
-        let has_transform = self.transform.lock().is_some();
-
-        if has_transform {
+        if lock(&self.transform).is_some() {
             panic!("Record already has a .transform(); cannot also have a .link_from().");
         }
 
@@ -1178,15 +996,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// # Returns
     /// The count of consumers
     pub fn consumer_count(&self) -> usize {
-        #[cfg(feature = "std")]
-        {
-            self.consumers.lock().unwrap().len()
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            self.consumers.lock().len()
-        }
+        lock(&self.consumers).len()
     }
 
     /// Collects all registered consumer (`.tap()`) futures.
@@ -1220,17 +1030,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         );
 
         // Take all consumers from the Mutex
-        let consumers = {
-            #[cfg(feature = "std")]
-            {
-                core::mem::take(&mut *self.consumers.lock().unwrap())
-            }
-
-            #[cfg(not(feature = "std"))]
-            {
-                core::mem::take(&mut *self.consumers.lock())
-            }
-        };
+        let consumers = core::mem::take(&mut *lock(&self.consumers));
 
         // Invariant: taps are pushed to `profiling` in the same order consumers are
         // added (both happen in `RecordRegistrar::tap_raw`), so index `i` lines up.
@@ -1296,16 +1096,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         let _ = db;
 
         // Take the producer service (can only collect once)
-        let service = {
-            #[cfg(feature = "std")]
-            {
-                self.producer_service.lock().unwrap().take()
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                self.producer_service.lock().take()
-            }
-        };
+        let service = lock(&self.producer).take();
 
         if let Some(service_fn) = service {
             #[cfg(feature = "tracing")]
@@ -1334,41 +1125,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         }
     }
 
-    /// Produces a value by pushing to the buffer
-    ///
-    /// Enqueues value for consumer tasks and updates latest snapshot.
-    pub fn produce(&self, val: T) {
-        // Cache snapshot for latest() API (both std and no_std)
-        #[cfg(feature = "std")]
-        {
-            *self.latest_snapshot.lock().unwrap() = Some(val.clone());
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            *self.latest_snapshot.lock() = Some(val.clone());
-        }
-
-        // Push to buffer - consumer tasks will receive it
-        if let Some(buf) = &self.buffer {
-            buf.push(val);
-
-            // Update metadata timestamp (std only)
-            #[cfg(feature = "std")]
-            self.metadata.mark_updated();
-        }
-    }
-
     /// Returns whether a producer service is registered
-    pub fn has_producer_service(&self) -> bool {
-        #[cfg(feature = "std")]
-        {
-            self.producer_service.lock().unwrap().is_some()
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            self.producer_service.lock().is_some()
-        }
+    pub fn has_producer(&self) -> bool {
+        lock(&self.producer).is_some()
     }
 
     /// Marks this record as writable for remote access (std only)
@@ -1399,15 +1158,15 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// }
     /// ```
     pub fn latest(&self) -> Option<RecordValue<T>> {
-        #[cfg(feature = "std")]
+        // Read buffer-native storage via peek() (design 031). Records without
+        // a buffer return None — see Breaking Changes in design 031.
+        let value = self.buffer.as_ref()?.peek()?;
+        #[cfg(feature = "json-serialize")]
         {
-            let value = self.latest_snapshot.lock().unwrap().clone()?;
-            Some(RecordValue::new(value, self.json_serializer.clone()))
+            Some(RecordValue::new(value, self.remote_codec.clone()))
         }
-
-        #[cfg(not(feature = "std"))]
+        #[cfg(not(feature = "json-serialize"))]
         {
-            let value = self.latest_snapshot.lock().clone()?;
             Some(RecordValue::new(value, None))
         }
     }
@@ -1449,6 +1208,18 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         // - Explicit consumers (tap, link)
         // - Remote access (AimX protocol)
         // - Direct producer/consumer API
+
+        // A remote-access record has no fallback storage since design 031
+        // removed latest_snapshot: reads/writes go straight to the buffer. With
+        // no buffer, `record.get`/`latest()` return not_found and `record.set`
+        // silently discards the value. Fail at build() so the buffer is added
+        // explicitly instead of surfacing as a silent runtime no-op.
+        #[cfg(feature = "json-serialize")]
+        if self.remote_codec.is_some() && !self.has_buffer() {
+            return Err("record has .with_remote_access() but no buffer; \
+                 add a buffer (e.g. .buffer(BufferCfg::SingleLatest)) so record.get/set work");
+        }
+
         Ok(())
     }
 
@@ -1480,8 +1251,8 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         TypedRecord::consumer_count(self)
     }
 
-    fn has_producer_service(&self) -> bool {
-        TypedRecord::has_producer_service(self)
+    fn has_producer(&self) -> bool {
+        TypedRecord::has_producer(self)
     }
 
     fn has_transform(&self) -> bool {
@@ -1492,23 +1263,11 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         TypedRecord::record_origin(self)
     }
 
-    #[cfg(feature = "std")]
     fn buffer_info(&self) -> (String, Option<usize>) {
         TypedRecord::buffer_info(self)
     }
 
-    #[cfg(not(feature = "std"))]
-    fn buffer_info(&self) -> (alloc::string::String, Option<usize>) {
-        TypedRecord::buffer_info(self)
-    }
-
-    #[cfg(feature = "std")]
     fn transform_input_keys(&self) -> Option<Vec<String>> {
-        TypedRecord::transform_input_keys(self)
-    }
-
-    #[cfg(not(feature = "std"))]
-    fn transform_input_keys(&self) -> Option<Vec<alloc::string::String>> {
         TypedRecord::transform_input_keys(self)
     }
 
@@ -1556,7 +1315,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             self.record_origin(),
             buffer_type,
             buffer_capacity,
-            if self.has_producer_service() { 1 } else { 0 },
+            if self.has_producer() { 1 } else { 0 },
             self.consumer_count(),
             self.metadata
                 .writable
@@ -1596,8 +1355,10 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             core::any::type_name::<T>()
         );
 
-        // Delegate to latest() which returns RecordValue<T> with serializer attached
-        let result = self.latest().and_then(|v| v.as_json());
+        // Read buffer-native storage via peek() (design 031). Records without
+        // a buffer return None — see Breaking Changes in design doc.
+        let value = self.buffer.as_ref()?.peek()?;
+        let result = self.remote_codec.as_ref()?.encode(&value);
 
         #[cfg(feature = "tracing")]
         tracing::debug!("Serialization result: {:?}", result.is_some());
@@ -1617,8 +1378,8 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         );
 
         // 1. Check if serialization is configured
-        let serializer = self
-            .json_serializer
+        let codec = self
+            .remote_codec
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
@@ -1634,7 +1395,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         // 3. Wrap in JsonReaderAdapter
         let json_reader = JsonReaderAdapter {
             inner: reader,
-            serializer,
+            codec,
         };
 
         #[cfg(feature = "tracing")]
@@ -1658,7 +1419,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         );
 
         // SAFETY CHECK 1: Enforce "No Producer Override" rule
-        if self.has_producer_service() || self.has_transform() {
+        if self.has_producer() || self.has_transform() {
             #[cfg(feature = "tracing")]
             tracing::warn!(
                 "Rejected set_from_json for '{}': has active producer or transform",
@@ -1675,9 +1436,9 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             });
         }
 
-        // Check if deserialization is configured (need json_deserializer)
-        let deserializer = self
-            .json_deserializer
+        // Check if the codec is configured (set by .with_remote_access())
+        let codec = self
+            .remote_codec
             .clone()
             .ok_or_else(|| DbError::RuntimeError {
                 message: format!(
@@ -1699,13 +1460,15 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         }
 
         // Deserialize JSON -> T
-        let value: T = deserializer(&json_value).ok_or_else(|| DbError::RuntimeError {
-            message: format!(
-                "Failed to deserialize JSON to type '{}'. \
+        let value: T = codec
+            .decode(&json_value)
+            .ok_or_else(|| DbError::RuntimeError {
+                message: format!(
+                    "Failed to deserialize JSON to type '{}'. \
                  JSON structure does not match the expected schema.",
-                core::any::type_name::<T>()
-            ),
-        })?;
+                    core::any::type_name::<T>()
+                ),
+            })?;
 
         #[cfg(feature = "tracing")]
         tracing::debug!(
@@ -1713,7 +1476,9 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             core::any::type_name::<T>()
         );
 
-        self.produce(value);
+        // Push through the unified write path (design 031). This also marks
+        // metadata as updated — previously skipped on this path.
+        self.writer_handle().push(value);
 
         #[cfg(feature = "tracing")]
         tracing::info!(

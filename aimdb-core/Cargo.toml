@@ -23,13 +23,18 @@ std = [
     "serde",
     "thiserror",
     "anyhow",
-    "serde_json",
+    "json-serialize",
     "tokio",
     "aimdb-executor/std",
 ]
 
 # Heap allocation in no_std environments
 alloc = ["serde"] # Enable heap in no_std
+
+# JSON codec (`crate::codec`): serde_json-backed `RemoteSerialize` / `JsonCodec`.
+# no_std-compatible (serde_json runs on alloc); opt in on embedded targets to
+# get `record.latest()?.as_json()` without std/AimX. `std` enables it for AimX.
+json-serialize = ["alloc", "serde_json"]
 
 # Observability features (available on both std/no_std)
 tracing = ["dep:tracing"]        # Works in both std and no_std environments

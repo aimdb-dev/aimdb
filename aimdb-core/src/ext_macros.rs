@@ -116,18 +116,11 @@ macro_rules! impl_record_registrar_ext {
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime> {
                 use $crate::buffer::Buffer;
 
-                #[cfg(feature = "std")]
-                {
-                    let buffer = Box::new($buffer_new(&cfg));
-                    self.buffer_with_cfg(buffer, cfg)
-                }
-
-                #[cfg(not(feature = "std"))]
-                {
-                    extern crate alloc;
-                    let buffer = alloc::boxed::Box::new($buffer_new(&cfg));
-                    self.buffer_raw(buffer)
-                }
+                extern crate alloc;
+                let buffer = alloc::boxed::Box::new($buffer_new(&cfg));
+                // Record the cfg so buffer_info() reports the real buffer
+                // type/capacity for the dependency graph (std and no_std).
+                self.buffer_with_cfg(buffer, cfg)
             }
 
             fn source<F, Fut>(
@@ -250,18 +243,11 @@ macro_rules! impl_record_registrar_ext {
             ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime> {
                 use $crate::buffer::Buffer;
 
-                #[cfg(feature = "std")]
-                {
-                    let buffer = Box::new($buffer_new(&cfg));
-                    self.buffer_with_cfg(buffer, cfg)
-                }
-
-                #[cfg(not(feature = "std"))]
-                {
-                    extern crate alloc;
-                    let buffer = alloc::boxed::Box::new($buffer_new(&cfg));
-                    self.buffer_raw(buffer)
-                }
+                extern crate alloc;
+                let buffer = alloc::boxed::Box::new($buffer_new(&cfg));
+                // Record the cfg so buffer_info() reports the real buffer
+                // type/capacity for the dependency graph (std and no_std).
+                self.buffer_with_cfg(buffer, cfg)
             }
 
             fn source<F, Fut>(

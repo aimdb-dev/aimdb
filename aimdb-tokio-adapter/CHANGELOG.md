@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`TokioBuffer::peek()` (M15, Design 031).** Non-destructive buffer-native read backing AimX `record.get` / `TypedRecord::latest()`: `SingleLatest` (`Watch`) reads via `watch::Sender::borrow()`, `Mailbox` (`Notify`) clones the slot mutex, `SpmcRing` (`Broadcast`) returns `None` (no canonical latest). Unit tests cover all three buffer types (empty, populated, non-destructive, overwrite, drained).
+- **`tests/remote_access_validation.rs` integration test.** Asserts that a `.with_remote_access()` record with no buffer fails `build()`, and that the same record with a `SingleLatest` buffer builds — locking in the new build-time guard from `aimdb-core` (M15).
+
+### Fixed
+
+- **`SingleLatest` no longer drops a value produced before any subscriber attached (M15).** The `Watch` push path now uses `watch::Sender::send_replace` instead of `send`. `send` returns `Err` and discards the value when there are zero receivers; `send_replace` always updates the slot, so the value is visible to `peek()` and to later subscribers reading the slot.
+
 ### Changed (breaking)
 
 - **Generated extension trait emits `Producer<T>` / `Consumer<T>`** (no `, TokioAdapter`) via the updated `impl_record_registrar_ext!` macro from `aimdb-core` (Design 029, M14). User-side `.source(|ctx, producer| ...)` / `.tap(|ctx, consumer| ...)` callbacks now receive the simpler types.
@@ -19,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - `BufferOps::spawn_dispatcher` (a test-only utility) is unchanged — it calls `tokio::spawn` directly and does not depend on the deleted `Spawn` trait.
+- `tests/stage_profiling.rs` dropped the `avg == total / call_count` assertion: it is a tautology (`avg_time_ns()` is *defined* as that quotient) and racy while the source task is still producing. No coverage lost.
 
 ## [0.6.0] - 2026-05-22
 

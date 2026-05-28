@@ -75,6 +75,22 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     /// Returns self as Any for downcasting to concrete buffer types
     fn as_any(&self) -> &dyn core::any::Any;
 
+    /// Non-destructive read of the buffer's current value.
+    ///
+    /// Returns `Some(T)` if the buffer holds a current value that can be read
+    /// without affecting any consumer's position. Returns `None` if the buffer
+    /// type has no canonical "current value" concept (e.g., SPMC Ring) or if
+    /// no value has been produced yet.
+    ///
+    /// This is the buffer-native point-in-time read used by AimX `record.get`
+    /// (design 031). Implementations must not advance any reader position.
+    ///
+    /// The default returns `None`, which is the correct behaviour for buffers
+    /// without a canonical latest value.
+    fn peek(&self) -> Option<T> {
+        None
+    }
+
     /// Get buffer metrics snapshot (metrics feature only)
     ///
     /// Returns `Some(snapshot)` if the buffer implementation supports metrics,
