@@ -102,23 +102,18 @@ impl JoinFanInRuntime for EmbassyAdapter {
 // These tests cover: roundtrip ordering, bounded backpressure, and sender cloning.
 // Embassy channels do not close — there are no QueueClosed scenarios to test.
 //
-// NOTE: the tests themselves only depend on `embassy_sync::Channel` and
-// `futures::executor::block_on`, both of which are host-portable. The
-// `critical-section` dev-dep with `std` feature is provided so the
-// `CriticalSectionRawMutex` link target is satisfied on host.
-//
-// However, the tests live in a module gated on `feature = "embassy-runtime"`,
-// which transitively pulls in `embassy-executor`'s `platform-cortex-m` (ARM
-// assembly) and so does not compile under `cargo test` on x86_64. As a result
-// they are NOT exercised by `make check` / `make all` today — only by
-// `cargo check --target thumbv7em-none-eabihf --features embassy-runtime`,
-// which type-checks but does not execute them. Run them manually on an
-// Embassy-capable board or ARM simulator, or via a host-side harness that
-// builds the queue module without the executor.
+// They run on the host: the queue types depend only on `embassy_sync::Channel`
+// and `futures::executor::block_on` (the runtime-specific `JoinFanInRuntime`
+// impl above carries its own `embassy-runtime` gate), so this module is gated on
+// `embassy-sync` rather than `embassy-runtime` and never pulls embassy-executor's
+// cortex-m assembly into the host test build. `make test` exercises them via:
+//   cargo test -p aimdb-embassy-adapter \
+//       --no-default-features --features "alloc,embassy-sync,embassy-time"
+// (the `critical-section/std` dev-dep satisfies the `CriticalSectionRawMutex`
+// link target; defmt/time-driver stubs live in `buffer.rs`'s test module).
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aimdb_executor::{JoinQueue as _, JoinReceiver as _, JoinSender as _};
     use futures::executor::block_on;
 
     fn make_channel() -> &'static EmbassyChan<u32> {

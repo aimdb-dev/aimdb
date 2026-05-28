@@ -114,6 +114,8 @@ test:
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
 	@printf "$(YELLOW)  → Testing tokio adapter (with profiling)$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
+	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, doctests)$(NC)\n"
+	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time"
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"

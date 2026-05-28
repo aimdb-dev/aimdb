@@ -78,6 +78,12 @@ futures = "0.3"
 # Provides critical-section impl for host-side tests (embassy_sync channels need it)
 critical-section = { version = "1.1", features = ["std"] }
 
+# Lets host tests register a trivial time driver (defines `_embassy_time_now`),
+# pulled in by embassy-time's `defmt-timestamp-uptime`. No tick feature here so
+# it unifies with the workspace's `tick-hz-32_768` (mock-driver/std would force
+# a conflicting tick rate).
+embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+
 # For tracing tests
 tracing-test = "0.2"
 
