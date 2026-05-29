@@ -14,7 +14,7 @@ use aimdb_client::AimxConnection;
 use aimdb_core::session::aimx::{AimxCodec, UdsConnection};
 use aimdb_core::session::{
     serve, AuthError, BoxFut, BoxStream, Connection, Dispatch, Listener, Payload, PeerInfo,
-    RpcError, SessionConfig, SessionCtx, TransportError, TransportResult,
+    RpcError, Session, SessionConfig, SessionCtx, TransportError, TransportResult,
 };
 use serde_json::json;
 use tokio::net::UnixListener;
@@ -59,9 +59,21 @@ impl Dispatch for TestDispatch {
         Box::pin(async { Ok(SessionCtx::default()) })
     }
 
+    fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
+        Box::new(TestSession {
+            writes: self.writes.clone(),
+        })
+    }
+}
+
+/// Per-connection session for the test dispatch.
+struct TestSession {
+    writes: WriteLog,
+}
+
+impl Session for TestSession {
     fn call<'a>(
-        &'a self,
-        _ctx: &'a SessionCtx,
+        &'a mut self,
         method: &'a str,
         params: Payload,
     ) -> BoxFut<'a, Result<Payload, RpcError>> {
@@ -91,11 +103,7 @@ impl Dispatch for TestDispatch {
         })
     }
 
-    fn subscribe(
-        &self,
-        _ctx: &SessionCtx,
-        topic: &str,
-    ) -> Result<BoxStream<'static, Payload>, RpcError> {
+    fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
         // Three synthetic updates derived from the topic, then end.
         let items: Vec<Payload> = (1..=3)
             .map(|i| payload(json!({ "topic": topic, "n": i })))
@@ -104,8 +112,7 @@ impl Dispatch for TestDispatch {
     }
 
     fn write<'a>(
-        &'a self,
-        _ctx: &'a SessionCtx,
+        &'a mut self,
         topic: &'a str,
         payload: Payload,
     ) -> BoxFut<'a, Result<(), RpcError>> {

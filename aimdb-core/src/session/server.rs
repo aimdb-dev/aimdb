@@ -79,6 +79,11 @@ pub async fn run_session<C, D>(
         }
     };
 
+    // Open the per-connection session once. It owns the connection's mutable
+    // dispatch state (e.g. `record.drain` cursors); the loop below threads
+    // `&mut` into its `call` / `subscribe` / `write`.
+    let mut session = dispatch.open(&ctx);
+
     // Event funnel: every per-subscription pump sends its updates here; the main
     // loop is the sole writer to the connection.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SubEvent>();
@@ -107,7 +112,7 @@ pub async fn run_session<C, D>(
                 };
                 match msg {
                     Inbound::Request { id, method, params } => {
-                        let result = dispatch.call(&ctx, &method, params).await;
+                        let result = session.call(&method, params).await;
                         out.clear();
                         if codec.encode(Outbound::Reply { id, result }, &mut out).is_err() {
                             continue;
@@ -124,7 +129,7 @@ pub async fn run_session<C, D>(
                             send_reply_err(&mut conn, codec, &mut out, id, RpcError::Denied).await;
                             continue;
                         }
-                        match dispatch.subscribe(&ctx, &topic) {
+                        match session.subscribe(&topic) {
                             Ok(stream) => {
                                 let (cancel_tx, cancel_rx) = oneshot::channel();
                                 cancels.insert(sub_id.clone(), cancel_tx);
@@ -145,8 +150,8 @@ pub async fn run_session<C, D>(
                         cancels.remove(&sub);
                     }
                     Inbound::Write { topic, payload } => {
-                        // Fire-and-forget; routes through Dispatch (single-writer-per-key intact).
-                        let _ = dispatch.write(&ctx, &topic, payload).await;
+                        // Fire-and-forget; routes through the session (single-writer-per-key intact).
+                        let _ = session.write(&topic, payload).await;
                     }
                     Inbound::Ping => {
                         out.clear();
@@ -208,7 +213,7 @@ async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
     }
 }
 
-/// Pump one `Dispatch::subscribe` stream into the connection's event funnel,
+/// Pump one `Session::subscribe` stream into the connection's event funnel,
 /// tagging each update with a monotonic `seq`. Ends when the stream finishes or
 /// the cancel handle is dropped/fired (Unsubscribe or connection teardown).
 async fn pump_subscription(

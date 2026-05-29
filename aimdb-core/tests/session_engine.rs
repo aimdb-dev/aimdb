@@ -18,7 +18,7 @@ use futures::StreamExt;
 
 use aimdb_core::session::{
     run_client, serve, AuthError, BoxFut, BoxStream, ClientConfig, CodecError, Connection, Dialer,
-    Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError,
+    Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, Session,
     SessionConfig, SessionCtx, TransportError, TransportResult,
 };
 
@@ -257,9 +257,22 @@ impl Dispatch for EchoDispatch {
         Box::pin(async { Ok(SessionCtx::default()) })
     }
 
+    fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
+        Box::new(EchoSession {
+            writes: self.writes.clone(),
+        })
+    }
+}
+
+/// Per-connection echo session — the shared `EchoDispatch` clones its write log
+/// into each one at `open` time.
+struct EchoSession {
+    writes: WriteLog,
+}
+
+impl Session for EchoSession {
     fn call<'a>(
-        &'a self,
-        _ctx: &'a SessionCtx,
+        &'a mut self,
         _method: &'a str,
         params: Payload,
     ) -> BoxFut<'a, Result<Payload, RpcError>> {
@@ -267,11 +280,7 @@ impl Dispatch for EchoDispatch {
         Box::pin(async move { Ok(params) })
     }
 
-    fn subscribe(
-        &self,
-        _ctx: &SessionCtx,
-        topic: &str,
-    ) -> Result<BoxStream<'static, Payload>, RpcError> {
+    fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
         // Three synthetic updates derived from the topic, then end.
         let items: Vec<Payload> = (1..=3)
             .map(|i| payload_from(&format!("{topic}#{i}")))
@@ -280,8 +289,7 @@ impl Dispatch for EchoDispatch {
     }
 
     fn write<'a>(
-        &'a self,
-        _ctx: &'a SessionCtx,
+        &'a mut self,
         topic: &'a str,
         payload: Payload,
     ) -> BoxFut<'a, Result<(), RpcError>> {

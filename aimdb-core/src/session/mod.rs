@@ -260,12 +260,24 @@ pub trait Dialer: Send {
 
 // ===========================================================================
 // Layer 3 — dispatch (the semantics). Doc 034 § Layer 3 + § EnvelopeCodec.
-// RPC and streaming unify in ONE trait (Decision 2): three reply cardinalities
-// — `call` (one) / `subscribe` (many) / `write` (none).
+// RPC and streaming unify in ONE per-connection role (Decision 2): three reply
+// cardinalities — `call` (one) / `subscribe` (many) / `write` (none).
+//
+// The role is split across two traits so the shared, immutable half (one
+// `Arc<dyn Dispatch>` per server) and the per-connection mutable half (one
+// `Box<dyn Session>` per accepted connection) each own what they need:
+//
+// - [`Dispatch`] — `Send + Sync`, shared: `authenticate` + an `open` factory.
+// - [`Session`]  — `Send`, per-connection: `call` / `subscribe` / `write` on
+//   `&mut self`, so a connection can hold mutable state (e.g. `record.drain`'s
+//   lazy per-record cursors — the one seam the AimX wire reshape did not
+//   dissolve) without a lock. See doc 037 (the additive server-port refinement,
+//   mirroring the Phase-2 `encode_inbound`/`decode_outbound` precedent).
 // ===========================================================================
 
-/// The application dispatch: authenticate a session, then serve calls,
-/// subscriptions, and writes against a [`SessionCtx`].
+/// The shared application dispatch: authenticate a connection, then open a
+/// per-connection [`Session`]. One `Arc<dyn Dispatch>` is shared across every
+/// connection a server accepts, so it stays `Sync` and behind `&self`.
 pub trait Dispatch: Send + Sync {
     /// Resolve a [`SessionCtx`] from peer metadata and/or the first frame
     /// (WS supplies pre-resolved identity via [`PeerInfo`]; UDS reads a Hello).
@@ -275,28 +287,42 @@ pub trait Dispatch: Send + Sync {
         first: Option<&'a [u8]>,
     ) -> BoxFut<'a, Result<SessionCtx, AuthError>>;
 
+    /// Open the per-connection [`Session`] once, after [`authenticate`]. The
+    /// returned session owns the connection's mutable dispatch state (drain
+    /// cursors today, per-session auth identity in Phase 4) that the shared
+    /// `Arc<Self>` cannot hold behind `&self`; the engine threads `&mut` into it.
+    fn open(&self, ctx: &SessionCtx) -> Box<dyn Session>;
+}
+
+/// The per-connection session: serves calls, subscriptions, and writes for one
+/// accepted [`Connection`]. The engine ([`run_session`]) owns the
+/// `Box<dyn Session>` and threads `&mut self` into each method, so a session can
+/// hold per-connection mutable state without a lock — while the shared,
+/// immutable role stays on [`Dispatch`].
+pub trait Session: Send {
     /// One-shot RPC: one request → one reply.
     fn call<'a>(
-        &'a self,
-        ctx: &'a SessionCtx,
+        &'a mut self,
         method: &'a str,
         params: Payload,
     ) -> BoxFut<'a, Result<Payload, RpcError>>;
 
     /// Streaming: open a subscription that yields many payloads. The stream is
-    /// `'static` so it can hold its own buffer reader inside the engine's
-    /// `FuturesUnordered` (doc 034 risk list).
-    fn subscribe(
-        &self,
-        ctx: &SessionCtx,
-        topic: &str,
-    ) -> Result<BoxStream<'static, Payload>, RpcError>;
+    /// `'static` (it captures cloned handles), so it outlives the `&mut` borrow
+    /// and lives in the engine's `FuturesUnordered` (doc 034 risk list).
+    ///
+    /// Defaulted to [`RpcError::NotFound`] so a dispatch with no streaming
+    /// surface need not implement it (doc 037 § the server-port refinement —
+    /// the stream is side-neutral, so it is defaulted here for symmetry).
+    fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
+        let _ = topic;
+        Err(RpcError::NotFound)
+    }
 
     /// Fire-and-forget write: no reply. Routes through the existing
     /// producer/arbiter path (single-writer-per-key stays intact).
     fn write<'a>(
-        &'a self,
-        ctx: &'a SessionCtx,
+        &'a mut self,
         topic: &'a str,
         payload: Payload,
     ) -> BoxFut<'a, Result<(), RpcError>>;
@@ -368,12 +394,13 @@ pub trait Source: Send {
 // `Box<dyn Trait>` from a mock per the acceptance criteria.
 // ===========================================================================
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn _assert_object_safe(
     _connection: &dyn Connection,
     _listener: &dyn Listener,
     _dialer: &dyn Dialer,
     _dispatch: &dyn Dispatch,
+    _session: &dyn Session,
     _codec: &dyn EnvelopeCodec,
     _sink: &dyn Sink,
     _source: &dyn Source,
@@ -420,24 +447,25 @@ mod tests {
         ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
             unimplemented!()
         }
+        fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
+            unimplemented!()
+        }
+    }
+
+    struct MockSession;
+    impl Session for MockSession {
         fn call<'a>(
-            &'a self,
-            _ctx: &'a SessionCtx,
+            &'a mut self,
             _method: &'a str,
             _params: Payload,
         ) -> BoxFut<'a, Result<Payload, RpcError>> {
             unimplemented!()
         }
-        fn subscribe(
-            &self,
-            _ctx: &SessionCtx,
-            _topic: &str,
-        ) -> Result<BoxStream<'static, Payload>, RpcError> {
+        fn subscribe(&mut self, _topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
             unimplemented!()
         }
         fn write<'a>(
-            &'a self,
-            _ctx: &'a SessionCtx,
+            &'a mut self,
             _topic: &'a str,
             _payload: Payload,
         ) -> BoxFut<'a, Result<(), RpcError>> {
@@ -487,6 +515,7 @@ mod tests {
         let _listener: Box<dyn Listener> = Box::new(MockListener);
         let _dialer: Box<dyn Dialer> = Box::new(MockDialer);
         let _dispatch: Box<dyn Dispatch> = Box::new(MockDispatch);
+        let _session: Box<dyn Session> = Box::new(MockSession);
         let _codec: Box<dyn EnvelopeCodec> = Box::new(MockCodec);
         let _sink: Box<dyn Sink> = Box::new(MockSink);
         let _source: Box<dyn Source> = Box::new(MockSource);
