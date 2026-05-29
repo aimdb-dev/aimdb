@@ -6,10 +6,12 @@
 //! and the accepting transport ([`UdsListener`]) + server [`AimxDispatch`] that
 //! [`build_aimx_server`] drives via `serve`.
 
+mod client_connector;
 mod codec;
 mod dispatch;
 mod transport;
 
+pub use client_connector::AimxClientConnector;
 pub use codec::AimxCodec;
 pub use dispatch::{build_aimx_server, AimxDispatch};
 pub use transport::{UdsConnection, UdsDialer, UdsListener};

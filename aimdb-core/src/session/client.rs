@@ -16,6 +16,7 @@
 //! it never spawns.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -23,6 +24,9 @@ use tokio::sync::{mpsc, oneshot};
 use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
 };
+use crate::connector::SerializerKind;
+use crate::router::RouterBuilder;
+use crate::{AimDb, RuntimeAdapter};
 
 /// Client engine knobs.
 #[derive(Debug, Clone)]
@@ -239,6 +243,15 @@ where
                     Ok(Outbound::Reply { id, result }) => {
                         if let Some(tx) = pending.remove(&id) {
                             let _ = tx.send(result);
+                        } else if result.is_err() {
+                            // Subscribe-ack contract: a successful subscribe is
+                            // acknowledged implicitly by its events flowing; the
+                            // server replies only on *failure* (unknown record,
+                            // sub cap). Such a Reply carries the subscribe `id`,
+                            // which was never registered as a pending call — so
+                            // drop the matching event sink to end the stream
+                            // (`None`) instead of leaving it hanging forever.
+                            subs.remove(&id.to_string());
                         }
                     }
                     Ok(Outbound::Event { sub, seq: _, data }) => {
@@ -310,4 +323,88 @@ where
             }
         }
     }
+}
+
+/// Mirror records between a local [`AimDb`] and a remote peer over a running
+/// [`run_client`] engine — the connector-link half of the client capability.
+///
+/// For the given connector `scheme` (e.g. `"aimx"`):
+/// - **outbound** routes (`db.collect_outbound_routes`) stream local record
+///   updates to the remote via [`ClientHandle::write`];
+/// - **inbound** routes (`db.collect_inbound_routes`) subscribe to the remote and
+///   produce each update into the local record through the producer/arbiter path
+///   — single-writer-per-key stays intact (a mirrored-in record is produced
+///   through its inbound producer, never a direct co-writer).
+///
+/// Returns one spawn-free pump future per route for the runner to drive
+/// (mirroring the `ConnectorBuilder::build -> Vec<BoxFuture>` spine); it drives
+/// the **same** engine as [`run_client`], never a second one.
+pub fn pump_client<R>(
+    db: &AimDb<R>,
+    scheme: &str,
+    handle: &ClientHandle,
+) -> Vec<BoxFut<'static, ()>>
+where
+    R: RuntimeAdapter + 'static,
+{
+    use futures_util::StreamExt;
+
+    // The type-erased runtime context for context-aware (de)serializers.
+    let ctx = db.runtime_any();
+    let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();
+
+    // --- outbound: local record updates -> remote `write` ------------------
+    for (destination, consumer, serializer, _config, topic_provider) in
+        db.collect_outbound_routes(scheme)
+    {
+        let handle = handle.clone();
+        let ctx = ctx.clone();
+        pumps.push(Box::pin(async move {
+            let mut reader = match consumer.subscribe_any().await {
+                Ok(r) => r,
+                Err(_e) => return,
+            };
+            while let Ok(value) = reader.recv_any().await {
+                // Dynamic destination (topic provider) or the static link target.
+                let dest = topic_provider
+                    .as_ref()
+                    .and_then(|p| p.topic_any(&*value))
+                    .unwrap_or_else(|| destination.clone());
+                let bytes = match &serializer {
+                    SerializerKind::Raw(ser) => match ser(&*value) {
+                        Ok(b) => b,
+                        Err(_e) => continue,
+                    },
+                    SerializerKind::Context(ser) => match ser(ctx.clone(), &*value) {
+                        Ok(b) => b,
+                        Err(_e) => continue,
+                    },
+                };
+                if handle.write(dest, Payload::from(bytes.as_slice())).is_err() {
+                    break; // engine stopped — all handles dropped
+                }
+            }
+        }));
+    }
+
+    // --- inbound: remote events -> local producer (via the Router) ---------
+    // The Router applies each route's deserializer and produces the value; one
+    // subscription per unique remote topic feeds it.
+    let router = Arc::new(RouterBuilder::from_routes(db.collect_inbound_routes(scheme)).build());
+    for id in router.resource_ids() {
+        let handle = handle.clone();
+        let router = router.clone();
+        let ctx = ctx.clone();
+        pumps.push(Box::pin(async move {
+            let mut stream = match handle.subscribe(id.as_ref()) {
+                Ok(s) => s,
+                Err(_e) => return,
+            };
+            while let Some(payload) = stream.next().await {
+                let _ = router.route(id.as_ref(), &payload, Some(&ctx)).await;
+            }
+        }));
+    }
+
+    pumps
 }

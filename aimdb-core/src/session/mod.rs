@@ -46,7 +46,7 @@ mod server;
 pub mod aimx;
 
 #[cfg(feature = "std")]
-pub use client::{run_client, ClientConfig, ClientHandle};
+pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "std")]
 pub use server::{run_session, serve, SessionConfig};
 

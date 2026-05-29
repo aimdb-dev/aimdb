@@ -281,6 +281,10 @@ impl Session for EchoSession {
     }
 
     fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
+        // Sentinel: let a known topic fail so the subscribe-ack path is testable.
+        if topic == "bad" {
+            return Err(RpcError::NotFound);
+        }
         // Three synthetic updates derived from the topic, then end.
         let items: Vec<Payload> = (1..=3)
             .map(|i| payload_from(&format!("{topic}#{i}")))
@@ -367,5 +371,44 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
     client
         .await
         .expect("client engine should stop cleanly when handles drop");
+    server.abort();
+}
+
+/// Subscribe-ack: a subscribe the server rejects must surface as a stream that
+/// *ends* (`None`) rather than one that hangs forever (the pre-fix behavior).
+#[tokio::test]
+async fn failed_subscribe_ends_stream_via_ack() {
+    let (listener, dialer) = transport_pair();
+    let dispatch = Arc::new(EchoDispatch {
+        writes: Arc::new(Mutex::new(Vec::new())),
+    });
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        dispatch,
+        SessionConfig::default(),
+    ));
+    let (handle, client_fut) = run_client(
+        dialer,
+        LineCodec,
+        ClientConfig {
+            reconnect: false,
+            reconnect_delay: Duration::from_millis(10),
+            sends_hello: false,
+        },
+    );
+    let client = tokio::spawn(client_fut);
+
+    // The "bad" topic is rejected server-side; the failure Reply must close the
+    // stream. A generous timeout guards against the old hang-forever behavior.
+    let mut stream = handle.subscribe("bad").unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("failed subscribe must end the stream, not hang");
+    assert!(ended.is_none(), "rejected subscribe should yield no events");
+
+    drop(handle);
+    drop(stream);
+    let _ = client.await;
     server.abort();
 }
