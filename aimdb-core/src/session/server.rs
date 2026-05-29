@@ -1,0 +1,285 @@
+//! Phase 2 **server** engine — the reactive half of the shared session
+//! substrate (doc 034 § Layer 2). Written once here, std-only; it generalizes
+//! the two hand-rolled loops it will replace in Phases 3–4:
+//!
+//! - [`run_session`] = `remote/handler.rs`'s biased `select!` per-connection loop
+//!   (RPC + streaming + writes over one [`Connection`]), transport-erased.
+//! - [`serve`] = `remote/supervisor.rs`'s accept loop, generalized over
+//!   [`Listener`] and honoring [`SessionLimits::max_connections`].
+//!
+//! Spawn-free: every per-connection and per-subscription task lives in a
+//! [`FuturesUnordered`] owned by the engine future the runner drives — no
+//! `tokio::spawn`.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
+use tokio::sync::{mpsc, oneshot};
+
+use super::{
+    BoxFut, BoxStream, Connection, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload,
+    RpcError, SessionLimits,
+};
+
+/// Per-session engine knobs.
+#[derive(Debug, Clone, Default)]
+pub struct SessionConfig {
+    /// Bounds for one session (connection cap is consulted by [`serve`];
+    /// per-connection subscription cap by [`run_session`]).
+    pub limits: SessionLimits,
+    /// How identity is resolved:
+    /// - `true` (UDS-style) — read one frame before authenticating and pass it
+    ///   to [`Dispatch::authenticate`] as the in-band Hello.
+    /// - `false` (WS-style, the default) — authenticate from
+    ///   [`PeerInfo`](super::PeerInfo) alone (identity pre-resolved at the HTTP
+    ///   upgrade), no frame consumed.
+    pub reads_hello: bool,
+}
+
+/// One subscription update on its way back to the connection's send half.
+struct SubEvent {
+    sub: String,
+    seq: u64,
+    data: Payload,
+}
+
+/// Drive one accepted [`Connection`] until it closes.
+///
+/// Authenticates once, then interleaves — `biased`, request-read first so a
+/// chatty subscription cannot starve the RPC path — incoming requests, outgoing
+/// subscription events funneled from the per-subscription pumps, and draining of
+/// finished subscription futures. Dropping the engine (runner cancelled) drops
+/// `subs`, cancelling every live subscription.
+pub async fn run_session<C, D>(
+    mut conn: Box<dyn Connection>,
+    codec: &C,
+    dispatch: &D,
+    config: &SessionConfig,
+) where
+    C: EnvelopeCodec + ?Sized,
+    D: Dispatch + ?Sized,
+{
+    // Resolve the session context (Hello-frame or peer-only — see `reads_hello`).
+    let first = if config.reads_hello {
+        match conn.recv().await {
+            Ok(Some(frame)) => Some(frame),
+            // Peer closed or errored before sending the Hello — nothing to serve.
+            _ => return,
+        }
+    } else {
+        None
+    };
+    let ctx = match dispatch.authenticate(conn.peer(), first.as_deref()).await {
+        Ok(ctx) => ctx,
+        Err(_e) => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("session authenticate rejected: {:?}", _e);
+            return;
+        }
+    };
+
+    // Event funnel: every per-subscription pump sends its updates here; the main
+    // loop is the sole writer to the connection.
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SubEvent>();
+    // Per-connection subscription pumps; the engine future is their sole owner.
+    let mut subs: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
+    // sub-id → cancel handle (dropping/sending the oneshot cancels the pump,
+    // race-free unlike a bare `Notify`).
+    let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+    // Reused encode scratch buffer.
+    let mut out = Vec::new();
+
+    loop {
+        tokio::select! {
+            biased;
+
+            // ---- inbound: one logical frame from the peer ------------------
+            recv = conn.recv() => {
+                let frame = match recv {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => break,          // peer closed
+                    Err(_e) => break,           // transport error
+                };
+                let msg = match codec.decode(&frame) {
+                    Ok(msg) => msg,
+                    Err(_e) => continue,        // skip a malformed frame, keep the session
+                };
+                match msg {
+                    Inbound::Request { id, method, params } => {
+                        let result = dispatch.call(&ctx, &method, params).await;
+                        out.clear();
+                        if codec.encode(Outbound::Reply { id, result }, &mut out).is_err() {
+                            continue;
+                        }
+                        if conn.send(&out).await.is_err() {
+                            break;
+                        }
+                    }
+                    Inbound::Subscribe { id, topic } => {
+                        // The request id that opened the subscription is its
+                        // routing key; events carry it back as `Outbound::Event.sub`.
+                        let sub_id = id.to_string();
+                        if cancels.len() >= config.limits.max_subs_per_connection {
+                            send_reply_err(&mut conn, codec, &mut out, id, RpcError::Denied).await;
+                            continue;
+                        }
+                        match dispatch.subscribe(&ctx, &topic) {
+                            Ok(stream) => {
+                                let (cancel_tx, cancel_rx) = oneshot::channel();
+                                cancels.insert(sub_id.clone(), cancel_tx);
+                                subs.push(Box::pin(pump_subscription(
+                                    sub_id,
+                                    stream,
+                                    event_tx.clone(),
+                                    cancel_rx,
+                                )));
+                            }
+                            Err(e) => {
+                                send_reply_err(&mut conn, codec, &mut out, id, e).await;
+                            }
+                        }
+                    }
+                    Inbound::Unsubscribe { sub } => {
+                        // Dropping the sender resolves the pump's cancel future.
+                        cancels.remove(&sub);
+                    }
+                    Inbound::Write { topic, payload } => {
+                        // Fire-and-forget; routes through Dispatch (single-writer-per-key intact).
+                        let _ = dispatch.write(&ctx, &topic, payload).await;
+                    }
+                    Inbound::Ping => {
+                        out.clear();
+                        if codec.encode(Outbound::Pong, &mut out).is_ok()
+                            && conn.send(&out).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // ---- outbound: a subscription update to forward ----------------
+            Some(ev) = event_rx.recv() => {
+                out.clear();
+                let encoded = codec
+                    .encode(Outbound::Event { sub: &ev.sub, seq: ev.seq, data: ev.data }, &mut out)
+                    .is_ok();
+                if encoded && conn.send(&out).await.is_err() {
+                    break;
+                }
+            }
+
+            // ---- drain finished subscription pumps -------------------------
+            // `Some(_) =` guards against the empty-`FuturesUnordered` panic
+            // (it reports `is_terminated()`); the always-active `recv` arm
+            // keeps the select alive.
+            Some(()) = subs.next() => {}
+        }
+    }
+
+    // Sole owner of `subs` and `cancels` drops here → every live subscription
+    // pump is cancelled.
+    drop(subs);
+}
+
+/// Encode + send a `Reply` carrying an [`RpcError`]; best-effort (a send/encode
+/// failure just ends this attempt — the caller's loop handles a dead connection
+/// on its next `send`).
+async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
+    conn: &mut Box<dyn Connection>,
+    codec: &C,
+    out: &mut Vec<u8>,
+    id: u64,
+    err: RpcError,
+) {
+    out.clear();
+    if codec
+        .encode(
+            Outbound::Reply {
+                id,
+                result: Err(err),
+            },
+            out,
+        )
+        .is_ok()
+    {
+        let _ = conn.send(out).await;
+    }
+}
+
+/// Pump one `Dispatch::subscribe` stream into the connection's event funnel,
+/// tagging each update with a monotonic `seq`. Ends when the stream finishes or
+/// the cancel handle is dropped/fired (Unsubscribe or connection teardown).
+async fn pump_subscription(
+    sub_id: String,
+    mut stream: BoxStream<'static, Payload>,
+    tx: mpsc::UnboundedSender<SubEvent>,
+    mut cancel: oneshot::Receiver<()>,
+) {
+    let mut seq: u64 = 0;
+    loop {
+        tokio::select! {
+            biased;
+            // Resolves on explicit Unsubscribe (send) or on sender drop.
+            _ = &mut cancel => break,
+            next = stream.next() => match next {
+                Some(data) => {
+                    seq += 1;
+                    if tx.send(SubEvent { sub: sub_id.clone(), seq, data }).is_err() {
+                        break; // funnel closed → connection gone
+                    }
+                }
+                None => break, // stream exhausted
+            }
+        }
+    }
+}
+
+/// Accept connections from `listener` and serve each with [`run_session`],
+/// bounded by [`SessionLimits::max_connections`]. The accept loop and all
+/// per-connection futures share one [`FuturesUnordered`] — spawn-free, mirroring
+/// `remote/supervisor.rs`.
+pub async fn serve<L, C, D>(mut listener: L, codec: Arc<C>, dispatch: Arc<D>, config: SessionConfig)
+where
+    L: Listener,
+    C: EnvelopeCodec + 'static,
+    D: Dispatch + 'static,
+{
+    let mut conns: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
+
+    loop {
+        tokio::select! {
+            biased;
+
+            accept = listener.accept() => match accept {
+                Ok(conn) => {
+                    // Soft cap; `len()` is conservative (a completed-but-undrained
+                    // future still counts), which only ever refuses one extra.
+                    if conns.len() >= config.limits.max_connections {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(
+                            "max_connections={} reached, refusing client",
+                            config.limits.max_connections
+                        );
+                        drop(conn);
+                        continue;
+                    }
+                    let codec = codec.clone();
+                    let dispatch = dispatch.clone();
+                    let cfg = config.clone();
+                    conns.push(Box::pin(async move {
+                        run_session(conn, codec.as_ref(), dispatch.as_ref(), &cfg).await;
+                    }));
+                }
+                Err(_e) => {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("accept failed: {:?}", _e);
+                    // Keep serving existing connections despite a transient accept error.
+                }
+            },
+
+            Some(()) = conns.next() => {}
+        }
+    }
+}

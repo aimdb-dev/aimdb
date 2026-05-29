@@ -63,6 +63,10 @@ build:
 	cargo build --package aimdb-core --features "std,tracing,profiling"
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + metrics)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features "alloc,metrics"
+	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + connector-session contracts)$(NC)\n"
+	cargo build --package aimdb-core --no-default-features --features "alloc,connector-session"
+	@printf "$(YELLOW)  → Building aimdb-core (std + connector-session engines)$(NC)\n"
+	cargo build --package aimdb-core --features "std,connector-session"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
 	@printf "$(YELLOW)  → Building tokio adapter (with profiling)$(NC)\n"
@@ -108,6 +112,10 @@ test:
 	cargo test --package aimdb-core --no-default-features --features "alloc,json-serialize"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
+	@printf "$(YELLOW)  → Testing aimdb-core connector-session (contracts object-safety)$(NC)\n"
+	cargo test --package aimdb-core --lib --features "std,connector-session" session::
+	@printf "$(YELLOW)  → Testing aimdb-core connector-session engines (session_engine)$(NC)\n"
+	cargo test --package aimdb-core --features "std,connector-session" --test session_engine
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"

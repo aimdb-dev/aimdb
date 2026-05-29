@@ -36,6 +36,12 @@ alloc = ["serde"] # Enable heap in no_std
 # get `record.latest()?.as_json()` without std/AimX. `std` enables it for AimX.
 json-serialize = ["alloc", "serde_json"]
 
+# Phase 0 connector-session contracts (`crate::session`): the frozen, dyn-safe
+# trait skeletons for the connector capability model — Connection/Listener/Dialer,
+# Dispatch/EnvelopeCodec, Sink/Source + shared types. Contracts only, no engine
+# logic; compiles on `no_std + alloc`. See docs/design/detailed/037-phase0-contracts.md.
+connector-session = ["alloc"]
+
 # Observability features (available on both std/no_std)
 tracing = ["dep:tracing"]        # Works in both std and no_std environments
 defmt = ["dep:defmt"]            # Embedded logging via probe (no_std)

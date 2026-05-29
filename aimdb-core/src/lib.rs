@@ -35,6 +35,8 @@ pub mod record_id;
 #[cfg(feature = "std")]
 pub mod remote;
 pub mod router;
+#[cfg(feature = "connector-session")]
+pub mod session;
 pub mod time;
 pub mod transform;
 pub mod transport;
@@ -85,6 +87,16 @@ pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 // JSON codec (feature `json-serialize`, no_std + alloc compatible)
 #[cfg(feature = "json-serialize")]
 pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
+
+// Phase 0 connector-session contracts (feature `connector-session`, no_std +
+// alloc compatible). Frozen trait skeletons only — see
+// docs/design/detailed/037-phase0-contracts.md.
+#[cfg(feature = "connector-session")]
+pub use session::{
+    AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound,
+    Listener, Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Sink, Source,
+    TransportError, TransportResult,
+};
 
 // Stage profiling exports (feature-gated)
 #[cfg(feature = "profiling")]
