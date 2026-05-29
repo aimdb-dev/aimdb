@@ -35,12 +35,16 @@
 
 pub mod connection;
 pub mod discovery;
+pub mod engine;
 pub mod error;
 pub mod protocol;
 
 // Re-export main types for convenience
 pub use connection::{AimxClient, DrainResponse};
+// Engine-based client (Phase 3) — the shared-session-engine replacement for the
+// synchronous `AimxClient`. Both coexist until the server port retires the old one.
 pub use discovery::{discover_instances, find_instance, InstanceInfo};
+pub use engine::AimxConnection;
 pub use error::{ClientError, ClientResult};
 pub use protocol::{
     cli_hello, parse_message, serialize_message, Event, EventMessage, RecordMetadata, Request,

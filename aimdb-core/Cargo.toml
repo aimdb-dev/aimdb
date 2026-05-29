@@ -80,7 +80,11 @@ serde = { workspace = true, optional = true }
 # Error handling - only for std environments
 thiserror = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+# `raw_value` lets the connector-session `EnvelopeCodec` splice an already-
+# serialized record-value `Payload` into a JSON envelope without re-escaping
+# (037 Decision 1). Only compiled when `serde_json` is pulled in (std /
+# json-serialize); the no_std `connector-session` contracts build never sees it.
+serde_json = { workspace = true, optional = true, features = ["raw_value"] }
 
 # Async runtime - only for std environments with remote access
 tokio = { workspace = true, features = [

@@ -14,8 +14,13 @@ metrics = ["aimdb-core/metrics"]
 profiling = ["aimdb-core/profiling"]
 
 [dependencies]
-# Core dependencies - protocol types from aimdb-core
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = ["std"] }
+# Core dependencies - protocol types from aimdb-core. `connector-session`
+# exposes the shared session engine (`run_client`/`ClientHandle`) plus the AimX
+# UDS transport + codec that the engine-based client (`crate::engine`) builds on.
+aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
+    "std",
+    "connector-session",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +28,7 @@ serde_json = "1"
 
 # Async runtime (must match AimDB runtime)
 tokio = { version = "1", features = ["net", "io-util", "macros", "fs"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # Error handling
 anyhow = "1"

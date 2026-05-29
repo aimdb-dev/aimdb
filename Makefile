@@ -116,6 +116,8 @@ test:
 	cargo test --package aimdb-core --lib --features "std,connector-session" session::
 	@printf "$(YELLOW)  → Testing aimdb-core connector-session engines (session_engine)$(NC)\n"
 	cargo test --package aimdb-core --features "std,connector-session" --test session_engine
+	@printf "$(YELLOW)  → Testing aimdb-client (engine-based AimX client + UDS round-trip)$(NC)\n"
+	cargo test --package aimdb-client
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"

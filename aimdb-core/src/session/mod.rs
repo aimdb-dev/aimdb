@@ -40,6 +40,11 @@ mod client;
 #[cfg(feature = "std")]
 mod server;
 
+// Concrete AimX-v2 substrate (UDS transport + NDJSON codec), std-only. Phase 3
+// client-first: the dialing half + symmetric codec that `run_client` drives.
+#[cfg(feature = "std")]
+pub mod aimx;
+
 #[cfg(feature = "std")]
 pub use client::{run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "std")]

@@ -50,6 +50,7 @@ version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "anyhow",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",
