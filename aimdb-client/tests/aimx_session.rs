@@ -115,6 +115,21 @@ async fn aimx_roundtrip_over_uds_production_server() {
         assert!(ev.get("n").is_some(), "event carries a Reading: {ev}");
     }
 
+    // Graph introspection wrappers.
+    let nodes = conn.graph_nodes().await.expect("graph nodes");
+    assert!(
+        nodes.len() >= 2,
+        "configured records should appear as nodes"
+    );
+    let _edges = conn.graph_edges().await.expect("graph edges");
+    let topo = conn.graph_topo_order().await.expect("topo order");
+    assert!(!topo.is_empty(), "topo order should list the records");
+
+    // Drain wrapper: cold-start creates the per-connection cursor; the response
+    // echoes the record name.
+    let drained = conn.drain_record("events").await.expect("drain events");
+    assert_eq!(drained.record_name, "events");
+
     // Fire-and-forget write, then a follow-up RPC. FIFO over the single
     // connection guarantees the write is processed before the reply returns.
     conn.write_record("setting", json!({ "level": 9 }))
