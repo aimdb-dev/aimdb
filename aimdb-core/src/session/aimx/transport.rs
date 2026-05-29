@@ -1,18 +1,20 @@
 //! AimX UDS transport (Phase 3, std-only) — a [`Connection`] over a Unix-domain
 //! socket with NDJSON framing in the transport: one line == one logical frame.
 //!
-//! Client-first scope: this ships the dialing half ([`UdsDialer`] +
-//! [`UdsConnection`]) that the proactive `run_client` engine drives. The
-//! accepting half (`UdsListener`) lands with the server port — the substrate is
-//! role-neutral, so the same [`UdsConnection`] will serve both sides.
+//! Both transport roles ride the same role-neutral [`UdsConnection`]: the
+//! dialing half ([`UdsDialer`]) that the proactive `run_client` engine drives,
+//! and the accepting half ([`UdsListener`]) that the reactive `serve` engine
+//! drives (added with the server port).
 
 use std::path::PathBuf;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UnixStream;
+use tokio::net::{UnixListener, UnixStream};
 
-use crate::session::{BoxFut, Connection, Dialer, PeerInfo, TransportError, TransportResult};
+use crate::session::{
+    BoxFut, Connection, Dialer, Listener, PeerInfo, TransportError, TransportResult,
+};
 
 /// A framed bidirectional pipe over a Unix-domain socket. Framing lives in the
 /// transport: [`recv`](Connection::recv) returns one newline-delimited frame
@@ -99,6 +101,31 @@ impl Dialer for UdsDialer {
             let stream = UnixStream::connect(&self.socket_path)
                 .await
                 .map_err(|_| TransportError::Io)?;
+            Ok(Box::new(UdsConnection::new(stream)) as Box<dyn Connection>)
+        })
+    }
+}
+
+/// The accepting (server) side: wraps an already-bound [`UnixListener`] and
+/// yields a [`UdsConnection`] per accepted client. The dual of [`UdsDialer`];
+/// `serve` drives it. Socket setup (remove-stale / `bind` / `set_permissions`)
+/// happens once in [`build_aimx_server`](super::build_aimx_server) before the
+/// listener is handed here, mirroring the legacy supervisor's synchronous bind.
+pub struct UdsListener {
+    inner: UnixListener,
+}
+
+impl UdsListener {
+    /// Wrap an already-bound [`UnixListener`].
+    pub fn new(inner: UnixListener) -> Self {
+        Self { inner }
+    }
+}
+
+impl Listener for UdsListener {
+    fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        Box::pin(async move {
+            let (stream, _addr) = self.inner.accept().await.map_err(|_| TransportError::Io)?;
             Ok(Box::new(UdsConnection::new(stream)) as Box<dyn Connection>)
         })
     }

@@ -38,3 +38,7 @@ thiserror = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
 tokio-test = "0.4"
 tempfile = "3"
+# The aimx_session exit test stands up a real AimDb + production AimX server
+# (`build_aimx_server`) and drives it with the engine-based `AimxConnection`.
+aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter" }
+serde = { version = "1", features = ["derive"] }

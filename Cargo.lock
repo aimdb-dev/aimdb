@@ -49,6 +49,7 @@ name = "aimdb-client"
 version = "0.6.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-tokio-adapter",
  "anyhow",
  "futures",
  "serde",

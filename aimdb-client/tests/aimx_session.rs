@@ -1,197 +1,126 @@
-//! Phase 3 client-first exit criterion: the engine-based [`AimxConnection`]
-//! round-trips the AimX-v2 wire — `hello` handshake, RPC (`record.get`/`set`),
-//! a streaming subscription, and a fire-and-forget write — against a `serve`
-//! engine test-server over a **real Unix-domain socket**.
+//! Phase 3 **server-port** exit criterion: the engine-based [`AimxConnection`]
+//! round-trips the reshaped AimX-v2 wire — `hello` handshake, RPC
+//! (`record.get`/`record.set`), a streaming subscription, and a
+//! fire-and-forget write — against the **production** server
+//! ([`build_aimx_server`] → `serve`/`run_session` + `AimxDispatch`) over a real
+//! Unix-domain socket.
 //!
-//! The server side uses the production [`AimxCodec`] + [`UdsConnection`]; the
-//! only test-local pieces are a `UdsListener` (the accepting transport half,
-//! deferred from core to the server port) and a small echo-ish `Dispatch`. This
-//! proves the reshaped wire end-to-end before the real server `Dispatch` exists.
+//! This swaps the client-half milestone's test-local `UdsListener` +
+//! `TestDispatch` for real server code standing up an actual `AimDb`, proving
+//! the reshaped wire end-to-end through the shared session engine.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
 use aimdb_client::AimxConnection;
-use aimdb_core::session::aimx::{AimxCodec, UdsConnection};
-use aimdb_core::session::{
-    serve, AuthError, BoxFut, BoxStream, Connection, Dispatch, Listener, Payload, PeerInfo,
-    RpcError, Session, SessionConfig, SessionCtx, TransportError, TransportResult,
-};
+use aimdb_core::buffer::BufferCfg;
+use aimdb_core::remote::{AimxConfig, SecurityPolicy};
+use aimdb_core::session::aimx::build_aimx_server;
+use aimdb_core::AimDbBuilder;
+use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::net::UnixListener;
 
-// ---------------------------------------------------------------------------
-// Test-local accepting transport (the `UdsListener` core gains in the server port)
-// ---------------------------------------------------------------------------
-
-struct TestUdsListener {
-    inner: UnixListener,
+/// A writable config-style record (SingleLatest, no producer → remotely settable).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct Setting {
+    level: u64,
 }
 
-impl Listener for TestUdsListener {
-    fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
-        Box::pin(async move {
-            let (stream, _addr) = self.inner.accept().await.map_err(|_| TransportError::Io)?;
-            Ok(Box::new(UdsConnection::new(stream)) as Box<dyn Connection>)
-        })
-    }
+/// A streamed record (SpmcRing) fed by a producer in the test.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Reading {
+    n: u64,
 }
-
-// ---------------------------------------------------------------------------
-// Minimal AimX dispatch (stand-in for the real server `Dispatch`, server port)
-// ---------------------------------------------------------------------------
-
-type WriteLog = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
-
-struct TestDispatch {
-    writes: WriteLog,
-}
-
-fn payload(v: serde_json::Value) -> Payload {
-    Payload::from(serde_json::to_vec(&v).unwrap().as_slice())
-}
-
-impl Dispatch for TestDispatch {
-    fn authenticate<'a>(
-        &'a self,
-        _peer: &'a PeerInfo,
-        _first: Option<&'a [u8]>,
-    ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
-        Box::pin(async { Ok(SessionCtx::default()) })
-    }
-
-    fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
-        Box::new(TestSession {
-            writes: self.writes.clone(),
-        })
-    }
-}
-
-/// Per-connection session for the test dispatch.
-struct TestSession {
-    writes: WriteLog,
-}
-
-impl Session for TestSession {
-    fn call<'a>(
-        &'a mut self,
-        method: &'a str,
-        params: Payload,
-    ) -> BoxFut<'a, Result<Payload, RpcError>> {
-        let method = method.to_string();
-        Box::pin(async move {
-            match method.as_str() {
-                "hello" => Ok(payload(json!({
-                    "version": "2.0",
-                    "server": "test",
-                    "permissions": ["read", "write"],
-                    "writable_records": ["temp"],
-                }))),
-                "record.list" => Ok(payload(json!([{ "name": "temp", "writable": true }]))),
-                "record.get" => {
-                    // Echo the requested name back as a fixed value.
-                    let v: serde_json::Value = serde_json::from_slice(&params).unwrap_or_default();
-                    let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    if name == "temp" {
-                        Ok(payload(json!(42)))
-                    } else {
-                        Err(RpcError::NotFound)
-                    }
-                }
-                "record.set" => Ok(payload(json!({ "ok": true }))),
-                _ => Err(RpcError::NotFound),
-            }
-        })
-    }
-
-    fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
-        // Three synthetic updates derived from the topic, then end.
-        let items: Vec<Payload> = (1..=3)
-            .map(|i| payload(json!({ "topic": topic, "n": i })))
-            .collect();
-        Ok(Box::pin(futures::stream::iter(items)))
-    }
-
-    fn write<'a>(
-        &'a mut self,
-        topic: &'a str,
-        payload: Payload,
-    ) -> BoxFut<'a, Result<(), RpcError>> {
-        let writes = self.writes.clone();
-        let topic = topic.to_string();
-        Box::pin(async move {
-            writes.lock().unwrap().push((topic, payload.to_vec()));
-            Ok(())
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The exit-criterion test
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn aimx_client_roundtrip_over_uds() {
-    use futures::StreamExt;
-
+async fn aimx_roundtrip_over_uds_production_server() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
-    // Bind before connecting so the client's dial always finds the socket.
-    let listener = TestUdsListener {
-        inner: UnixListener::bind(&sock).unwrap(),
-    };
-    let writes: WriteLog = Arc::new(Mutex::new(Vec::new()));
-    let dispatch = Arc::new(TestDispatch {
-        writes: writes.clone(),
+    // Build a real AimDb with two remote-accessible records.
+    let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
+    builder.configure::<Setting>("setting", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    let server = tokio::spawn(serve(
-        listener,
-        Arc::new(AimxCodec),
-        dispatch,
-        SessionConfig::default(),
-    ));
+    builder.configure::<Reading>("events", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+            .with_remote_access();
+    });
+    let (db, runner) = builder.build().await.expect("build db");
+    let db = Arc::new(db);
+    tokio::spawn(runner.run());
 
-    // Connect: this performs the `hello` handshake and captures the Welcome.
+    // Seed the writable record before connecting so `record.get` has a value.
+    db.set_record_from_json("setting", json!({ "level": 1 }))
+        .expect("seed setting");
+
+    // ReadWrite policy with `setting` writable; `events` stays read-only.
+    let mut policy = SecurityPolicy::read_write();
+    policy.allow_write_key("setting");
+    let config = AimxConfig::uds_default()
+        .socket_path(&sock)
+        .security_policy(policy)
+        .max_connections(8)
+        .max_subs_per_connection(8);
+
+    // Production server future, driven on a task (the engine itself is spawn-free).
+    let server = tokio::spawn(build_aimx_server(db.clone(), config).expect("bind server"));
+
+    // Connect: performs the `hello` handshake and captures the Welcome.
     let conn = AimxConnection::connect(&sock).await.expect("connect");
-    assert_eq!(conn.server_info().server, "test");
+    assert_eq!(conn.server_info().server, "aimdb");
     assert!(conn
         .server_info()
         .permissions
         .contains(&"write".to_string()));
+    assert!(conn
+        .server_info()
+        .writable_records
+        .contains(&"setting".to_string()));
 
-    // RPC: record.get
-    let temp = conn.get_record("temp").await.expect("get temp");
-    assert_eq!(temp, json!(42));
+    // RPC: record.get on the seeded record.
+    let got = conn.get_record("setting").await.expect("get setting");
+    assert_eq!(got, json!({ "level": 1 }));
 
     // RPC: record.get on a missing record maps to a server error.
     assert!(conn.get_record("missing").await.is_err());
 
-    // RPC: record.set
-    let set = conn.set_record("temp", json!(7)).await.expect("set temp");
-    assert_eq!(set, json!({ "ok": true }));
+    // RPC: record.set (permission-checked) echoes the new value.
+    let set = conn
+        .set_record("setting", json!({ "level": 7 }))
+        .await
+        .expect("set setting");
+    assert_eq!(set.get("value").unwrap(), &json!({ "level": 7 }));
+    assert_eq!(
+        conn.get_record("setting").await.unwrap(),
+        json!({ "level": 7 })
+    );
 
-    // Streaming subscription: three events routed back by the engine-owned id.
-    let mut stream = conn.subscribe("temp").expect("subscribe");
-    for n in 1..=3 {
-        let ev = stream.next().await.expect("event");
-        assert_eq!(ev, json!({ "topic": "temp", "n": n }));
+    // Streaming: a producer feeds `events`; the subscription routes updates back.
+    let producer = db.producer::<Reading>("events").expect("producer");
+    tokio::spawn(async move {
+        for n in 1..=50 {
+            producer.produce(Reading { n });
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let mut stream = conn.subscribe("events").expect("subscribe");
+    for _ in 0..3 {
+        let ev = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("event within timeout")
+            .expect("event");
+        assert!(ev.get("n").is_some(), "event carries a Reading: {ev}");
     }
 
     // Fire-and-forget write, then a follow-up RPC. FIFO over the single
     // connection guarantees the write is processed before the reply returns.
-    conn.write_record("temp", json!("on")).expect("write");
-    let _ = conn.get_record("temp").await.expect("get after write");
-    let got = writes.lock().unwrap().clone();
-    assert_eq!(
-        got.len(),
-        1,
-        "server should have received exactly one write"
-    );
-    assert_eq!(got[0].0, "temp");
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&got[0].1).unwrap(),
-        json!({ "value": "on" })
-    );
+    conn.write_record("setting", json!({ "level": 9 }))
+        .expect("write");
+    let after = conn.get_record("setting").await.expect("get after write");
+    assert_eq!(after, json!({ "level": 9 }));
 
     drop(conn); // stops the client engine
     server.abort();
