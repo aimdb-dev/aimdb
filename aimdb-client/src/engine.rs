@@ -16,7 +16,7 @@
 use std::path::Path;
 
 use futures::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::task::JoinHandle;
 
@@ -25,6 +25,18 @@ use aimdb_core::session::{run_client, BoxStream, ClientConfig, ClientHandle, Pay
 
 use crate::error::{ClientError, ClientResult};
 use crate::protocol::{RecordMetadata, WelcomeMessage};
+
+/// Response from a `record.drain` call: the values accumulated since the
+/// previous drain for this connection's per-record cursor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrainResponse {
+    /// Echo of the queried record name.
+    pub record_name: String,
+    /// Chronologically ordered values (raw JSON, as written by the producer).
+    pub values: Vec<serde_json::Value>,
+    /// Number of values returned.
+    pub count: usize,
+}
 
 /// A live connection to an AimDB instance over the shared session engine.
 ///
@@ -130,6 +142,68 @@ impl AimxConnection {
         self.handle
             .write(name, to_payload(&json!({ "value": value }))?)
             .map_err(rpc_err)
+    }
+
+    /// Drain all values accumulated since the previous drain of `name` (a
+    /// destructive read against this connection's per-record cursor).
+    pub async fn drain_record(&self, name: &str) -> ClientResult<DrainResponse> {
+        let reply = self
+            .call("record.drain", to_payload(&json!({ "name": name }))?)
+            .await?;
+        Ok(serde_json::from_slice(&reply)?)
+    }
+
+    /// Drain at most `limit` values from `name`.
+    pub async fn drain_record_with_limit(
+        &self,
+        name: &str,
+        limit: u32,
+    ) -> ClientResult<DrainResponse> {
+        let reply = self
+            .call(
+                "record.drain",
+                to_payload(&json!({ "name": name, "limit": limit }))?,
+            )
+            .await?;
+        Ok(serde_json::from_slice(&reply)?)
+    }
+
+    /// Run a persistence query (requires the server's `with_persistence()`).
+    pub async fn query(&self, params: serde_json::Value) -> ClientResult<serde_json::Value> {
+        let reply = self.call("record.query", to_payload(&params)?).await?;
+        Ok(serde_json::from_slice(&reply)?)
+    }
+
+    /// All nodes in the dependency graph.
+    pub async fn graph_nodes(&self) -> ClientResult<Vec<serde_json::Value>> {
+        let reply = self.call("graph.nodes", null_payload()).await?;
+        Ok(serde_json::from_slice(&reply)?)
+    }
+
+    /// All edges in the dependency graph.
+    pub async fn graph_edges(&self) -> ClientResult<Vec<serde_json::Value>> {
+        let reply = self.call("graph.edges", null_payload()).await?;
+        Ok(serde_json::from_slice(&reply)?)
+    }
+
+    /// Record keys in topological order.
+    pub async fn graph_topo_order(&self) -> ClientResult<Vec<String>> {
+        let reply = self.call("graph.topo_order", null_payload()).await?;
+        Ok(serde_json::from_slice(&reply)?)
+    }
+
+    /// Reset stage-profiling counters (server built with `profiling`; needs write
+    /// permission).
+    pub async fn reset_stage_profiling(&self) -> ClientResult<serde_json::Value> {
+        let reply = self.call("profiling.reset", null_payload()).await?;
+        Ok(serde_json::from_slice(&reply)?)
+    }
+
+    /// Reset buffer-metrics counters (server built with `metrics`; needs write
+    /// permission).
+    pub async fn reset_buffer_metrics(&self) -> ClientResult<serde_json::Value> {
+        let reply = self.call("buffer_metrics.reset", null_payload()).await?;
+        Ok(serde_json::from_slice(&reply)?)
     }
 
     /// Issue a raw RPC and map a transport/engine failure to [`ClientError`].
