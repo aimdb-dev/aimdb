@@ -78,26 +78,37 @@ type BoxFuture = std::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send 
 /// * `session_ctx` — Shared session context (auth, router, client manager, …).
 /// * `additional_routes` — Optional user-supplied Axum `Router` that is merged
 ///   into the server (useful for REST + WebSocket on the same port).
+/// Build the axum application (WS upgrade + health, plus any extra routes).
+///
+/// Extracted so tests can serve the **real** app on a known ephemeral port
+/// (`build_server_future` binds internally and does not surface the port).
+pub(crate) fn build_app(
+    ws_path: &str,
+    state: ServerState,
+    additional_routes: Option<Router>,
+) -> Router {
+    // Apply state first so the router becomes `Router<()>`, which can then be
+    // merged with user-supplied `additional_routes: Router<()>` without a
+    // type-parameter mismatch.
+    let ws_app = Router::new()
+        .route(ws_path, get(ws_upgrade_handler))
+        .route("/health", get(health_handler))
+        .with_state(state)
+        .layer(CorsLayer::permissive());
+
+    match additional_routes {
+        Some(extra) => ws_app.merge(extra),
+        None => ws_app,
+    }
+}
+
 pub(crate) fn build_server_future(
     bind_addr: SocketAddr,
     ws_path: String,
     state: ServerState,
     additional_routes: Option<Router>,
 ) -> BoxFuture {
-    // Apply state first so the router becomes `Router<()>`, which can then be
-    // merged with user-supplied `additional_routes: Router<()>` without a
-    // type-parameter mismatch.
-    let ws_app = Router::new()
-        .route(&ws_path, get(ws_upgrade_handler))
-        .route("/health", get(health_handler))
-        .with_state(state)
-        .layer(CorsLayer::permissive());
-
-    let app = if let Some(extra) = additional_routes {
-        ws_app.merge(extra)
-    } else {
-        ws_app
-    };
+    let app = build_app(&ws_path, state, additional_routes);
 
     Box::pin(async move {
         let listener = match tokio::net::TcpListener::bind(bind_addr).await {

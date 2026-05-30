@@ -215,4 +215,21 @@ mod tests {
         mgr.broadcast("t", b"v").await;
         assert_eq!(mgr.subscription_count(), 0);
     }
+
+    // Layer 2.2 (#2): one broadcast → N subscribers all receive the *same*
+    // pre-serialized bytes (a shared `Arc`), evidencing a single serialization
+    // regardless of subscriber count (O(1) fan-out, not O(N)).
+    #[tokio::test]
+    async fn broadcast_serializes_once_and_shares_to_all() {
+        let mgr = ClientManager::new(false);
+        let mut streams: Vec<_> = (0..8).map(|_| mgr.subscribe("#").1).collect();
+        mgr.broadcast("t", b"123").await;
+        let mut frames = Vec::new();
+        for s in &mut streams {
+            frames.push(s.next().await.unwrap());
+        }
+        // Every subscriber got byte-identical content (the one serialized frame).
+        let first = &frames[0];
+        assert!(frames.iter().all(|f| f.as_ref() == first.as_ref()));
+    }
 }

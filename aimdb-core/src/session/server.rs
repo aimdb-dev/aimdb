@@ -43,6 +43,11 @@ pub struct SessionConfig {
     pub acks_subscribe: bool,
 }
 
+/// Bound for the per-connection event funnel — caps how many pending outbound
+/// updates a single connection may buffer before pumps start dropping (matches
+/// the hand-rolled WS server's default per-client channel capacity).
+const EVENT_BUFFER: usize = 256;
+
 /// One subscription update on its way back to the connection's send half.
 struct SubEvent {
     sub: String,
@@ -91,8 +96,12 @@ pub async fn run_session<C, D>(
     let mut session = dispatch.open(&ctx);
 
     // Event funnel: every per-subscription pump sends its updates here; the main
-    // loop is the sole writer to the connection.
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<SubEvent>();
+    // loop is the sole writer to the connection. **Bounded** so a slow client
+    // (one whose socket is backpressured, stalling the main loop) cannot grow the
+    // funnel without limit — the pumps drop on overflow rather than accumulate
+    // (events carry a monotonic `seq`, so a client can detect the gap). This
+    // restores the bounded-buffer slow-client protection the hand-rolled loops had.
+    let (event_tx, mut event_rx) = mpsc::channel::<SubEvent>(EVENT_BUFFER);
     // Per-connection subscription pumps; the engine future is their sole owner.
     let mut subs: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
     // sub-id → cancel handle (dropping/sending the oneshot cancels the pump,
@@ -248,9 +257,10 @@ async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
 async fn pump_subscription(
     sub_id: String,
     mut stream: BoxStream<'static, Payload>,
-    tx: mpsc::UnboundedSender<SubEvent>,
+    tx: mpsc::Sender<SubEvent>,
     mut cancel: oneshot::Receiver<()>,
 ) {
+    use tokio::sync::mpsc::error::TrySendError;
     let mut seq: u64 = 0;
     loop {
         tokio::select! {
@@ -260,8 +270,12 @@ async fn pump_subscription(
             next = stream.next() => match next {
                 Some(data) => {
                     seq += 1;
-                    if tx.send(SubEvent { sub: sub_id.clone(), seq, data }).is_err() {
-                        break; // funnel closed → connection gone
+                    // `try_send` keeps the pump non-blocking: a backpressured
+                    // funnel drops this update (slow-client protection) rather
+                    // than stalling the bus; only a closed funnel ends the pump.
+                    match tx.try_send(SubEvent { sub: sub_id.clone(), seq, data }) {
+                        Ok(()) | Err(TrySendError::Full(_)) => {}
+                        Err(TrySendError::Closed(_)) => break, // connection gone
                     }
                 }
                 None => break, // stream exhausted

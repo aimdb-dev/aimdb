@@ -424,6 +424,27 @@ mod tests {
         }
     }
 
+    // Layer 2.3 (#1): decoding many *distinct*-topic Data frames must not
+    // accumulate any process-lifetime state (the old `leak_topic` interner would
+    // have grown one `&'static str` per topic here). The borrow is zero-copy.
+    #[test]
+    fn decode_outbound_high_cardinality_no_static_growth() {
+        let codec = WsCodec::new();
+        for i in 0..10_000 {
+            let topic = format!("sensors/dev-{i}");
+            let frame = serde_json::to_vec(&ServerMessage::Data {
+                topic: topic.clone(),
+                payload: Some(serde_json::json!(i)),
+                ts: 0,
+            })
+            .unwrap();
+            match codec.decode_outbound(&frame).unwrap() {
+                Outbound::Event { sub, .. } => assert_eq!(sub, topic),
+                _ => panic!("expected Event"),
+            }
+        }
+    }
+
     #[test]
     fn write_carries_payload() {
         let codec = WsCodec::new();

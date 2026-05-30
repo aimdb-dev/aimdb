@@ -304,6 +304,7 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-executor",
+ "aimdb-tokio-adapter",
  "aimdb-ws-protocol",
  "axum",
  "dashmap",

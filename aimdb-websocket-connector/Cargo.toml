@@ -71,3 +71,4 @@ tracing = { version = "0.1", optional = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-tungstenite = "0.26"
+aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter" }
