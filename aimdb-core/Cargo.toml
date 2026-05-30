@@ -26,6 +26,9 @@ std = [
     "json-serialize",
     "tokio",
     "aimdb-executor/std",
+    # AimX remote access now rides the shared session engine: `with_remote_access`
+    # builds the `session::aimx` server, so std pulls in the connector-session module.
+    "connector-session",
 ]
 
 # Heap allocation in no_std environments

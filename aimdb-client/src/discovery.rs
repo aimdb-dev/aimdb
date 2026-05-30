@@ -2,7 +2,7 @@
 //!
 //! Scans known directories for running AimDB instances.
 
-use crate::connection::AimxClient;
+use crate::engine::AimxConnection;
 use crate::error::{ClientError, ClientResult};
 use crate::protocol::WelcomeMessage;
 use std::path::PathBuf;
@@ -78,7 +78,7 @@ async fn probe_instance(socket_path: &PathBuf) -> ClientResult<InstanceInfo> {
     // Try to connect with a short timeout
     let connect_timeout = Duration::from_millis(500);
 
-    let client = tokio::time::timeout(connect_timeout, AimxClient::connect(socket_path))
+    let client = tokio::time::timeout(connect_timeout, AimxConnection::connect(socket_path))
         .await
         .map_err(|_| {
             ClientError::connection_failed(

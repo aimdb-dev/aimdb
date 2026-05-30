@@ -2,8 +2,8 @@
 
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
-use aimdb_client::connection::AimxClient;
 use aimdb_client::discovery::find_instance;
+use aimdb_client::AimxConnection;
 use clap::Args;
 
 /// Record management commands
@@ -89,7 +89,7 @@ async fn list_records(
     writable_only: bool,
 ) -> CliResult<()> {
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let client = AimxConnection::connect(&instance.socket_path).await?;
 
     let mut records = client.list_records().await?;
 
@@ -113,7 +113,7 @@ async fn list_records(
 
 async fn get_record(name: &str, socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let client = AimxConnection::connect(&instance.socket_path).await?;
 
     let value = client.get_record(name).await?;
 
@@ -151,7 +151,7 @@ async fn set_record(
     }
 
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let client = AimxConnection::connect(&instance.socket_path).await?;
 
     let result = client.set_record(name, value).await?;
 

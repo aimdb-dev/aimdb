@@ -1,77 +1,42 @@
 //! Live Output Formatting (for watch command)
 
-use aimdb_client::protocol::Event;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use colored::Colorize;
 
-/// Format an event for live display
-pub fn format_event(event: &Event, show_full: bool) -> String {
-    let mut output = String::new();
-
-    // Parse timestamp
-    let timestamp = parse_timestamp(&event.timestamp);
-    let time_str = timestamp
+/// Format a subscription update for live display.
+///
+/// The reshaped AimX-v2 wire drops the server-minted `timestamp`/`dropped`
+/// fields, so the watcher stamps the receipt time locally and tracks its own
+/// sequence counter; `data` is the decoded record value.
+pub fn format_event(seq: u64, data: &serde_json::Value, show_full: bool) -> String {
+    let time_str = Utc::now()
         .format("%Y-%m-%d %H:%M:%S%.3f")
         .to_string()
         .dimmed();
+    let seq_str = format!("seq:{seq}").cyan();
 
-    // Format sequence
-    let seq_str = format!("seq:{}", event.sequence).cyan();
-
-    // Build status line
-    output.push_str(&format!("{} | {} | ", time_str, seq_str));
-
-    // Show dropped events warning if any
-    if let Some(dropped) = event.dropped {
-        let warning = format!("⚠️  {} events dropped | ", dropped).yellow();
-        output.push_str(&warning.to_string());
-    }
-
-    // Format data
+    let mut output = format!("{time_str} | {seq_str} | ");
     if show_full {
-        // Pretty print full JSON
-        if let Ok(formatted) = serde_json::to_string_pretty(&event.data) {
+        if let Ok(formatted) = serde_json::to_string_pretty(data) {
             output.push('\n');
             output.push_str(&formatted);
         } else {
-            output.push_str(&format!("{}", event.data));
+            output.push_str(&format!("{data}"));
         }
     } else {
-        // Compact single-line JSON
-        output.push_str(&format!("{}", event.data));
+        output.push_str(&format!("{data}"));
     }
-
     output
 }
 
-/// Parse timestamp string to DateTime
-/// Expects format: seconds.nanoseconds (e.g., "1730379296.123456789")
-fn parse_timestamp(timestamp_str: &str) -> DateTime<Utc> {
-    // Try parsing as floating point (seconds.nanoseconds)
-    if let Ok(secs_f64) = timestamp_str.parse::<f64>() {
-        let secs = secs_f64.trunc() as i64;
-        let nsec = ((secs_f64.fract() * 1_000_000_000.0).round()) as u32;
-        if let Some(dt) = DateTime::from_timestamp(secs, nsec) {
-            return dt;
-        }
-    }
-
-    // Fallback to now if parsing fails
-    Utc::now()
-}
-
-/// Print a live event to stdout
-pub fn print_event(event: &Event, show_full: bool) {
-    println!("{}", format_event(event, show_full));
+/// Print a live update to stdout.
+pub fn print_event(seq: u64, data: &serde_json::Value, show_full: bool) {
+    println!("{}", format_event(seq, data, show_full));
 }
 
 /// Print subscription start message
-pub fn print_watch_start(record_name: &str, subscription_id: &str) {
-    println!(
-        "📡 Watching record: {} (subscription: {})",
-        record_name.bold(),
-        subscription_id.dimmed()
-    );
+pub fn print_watch_start(record_name: &str) {
+    println!("📡 Watching record: {}", record_name.bold());
     println!("{}", "Press Ctrl+C to stop".dimmed());
     println!();
 }
@@ -89,30 +54,19 @@ mod tests {
 
     #[test]
     fn test_format_event() {
-        let event = Event {
-            subscription_id: "sub123".to_string(),
-            sequence: 42,
-            timestamp: "1730379296".to_string(),
-            data: json!({"temperature": 23.5}),
-            dropped: None,
-        };
-
-        let formatted = format_event(&event, false);
+        let data = json!({"temperature": 23.5});
+        let formatted = format_event(42, &data, false);
         assert!(formatted.contains("seq:42"));
         assert!(formatted.contains("temperature"));
     }
 
     #[test]
     fn test_format_event_with_dropped() {
-        let event = Event {
-            subscription_id: "sub123".to_string(),
-            sequence: 42,
-            timestamp: "1730379296".to_string(),
-            data: json!({"value": 1}),
-            dropped: Some(5),
-        };
-
-        let formatted = format_event(&event, false);
-        assert!(formatted.contains("5 events dropped"));
+        // AimX-v2 wire does not carry dropped counts; format_event receives
+        // only the decoded value. Verify data is still rendered correctly.
+        let data = json!({"value": 1});
+        let formatted = format_event(42, &data, false);
+        assert!(formatted.contains("seq:42"));
+        assert!(formatted.contains("value"));
     }
 }

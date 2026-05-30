@@ -37,15 +37,14 @@ mod config;
 mod error;
 mod metadata;
 mod protocol;
+mod query;
 
 pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
-pub use handler::{QueryHandlerFn, QueryHandlerParams};
 pub use metadata::RecordMetadata;
 pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage};
+pub use query::{QueryHandlerFn, QueryHandlerParams};
 
 // Internal exports for implementation
-pub(crate) mod handler;
 #[cfg(feature = "std")]
 pub(crate) mod stream;
-pub(crate) mod supervisor;

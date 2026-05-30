@@ -6,7 +6,7 @@
 //! on the server).
 
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxClient;
+use aimdb_client::AimxConnection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::debug;
@@ -24,13 +24,13 @@ struct ResetBufferMetricsParams {
     socket_path: Option<String>,
 }
 
-async fn connect(socket_path: &str) -> McpResult<AimxClient> {
+async fn connect(socket_path: &str) -> McpResult<AimxConnection> {
     if let Some(pool) = super::connection_pool() {
         pool.get_connection(socket_path)
             .await
             .map_err(McpError::Client)
     } else {
-        AimxClient::connect(socket_path)
+        AimxConnection::connect(socket_path)
             .await
             .map_err(McpError::Client)
     }
@@ -45,7 +45,7 @@ pub async fn get_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
         .map_err(|e| McpError::InvalidParams(format!("get_buffer_metrics: {e}")))?;
     let socket_path = super::resolve_socket_path(params.socket_path)?;
 
-    let mut client = connect(&socket_path).await?;
+    let client = connect(&socket_path).await?;
     let raw = client.list_records().await.map_err(McpError::Client)?;
 
     let matching: Vec<_> = raw
@@ -75,7 +75,7 @@ pub async fn reset_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
         .map_err(|e| McpError::InvalidParams(format!("reset_buffer_metrics: {e}")))?;
     let socket_path = super::resolve_socket_path(params.socket_path)?;
 
-    let mut client = connect(&socket_path).await?;
+    let client = connect(&socket_path).await?;
     match client.reset_buffer_metrics().await {
         Ok(_) => Ok(json!({
             "reset": true,

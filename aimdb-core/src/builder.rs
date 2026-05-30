@@ -876,16 +876,19 @@ where
         #[cfg(feature = "tracing")]
         tracing::info!("Record future collection complete");
 
-        // Collect the remote-access supervisor future, if configured (std only).
+        // Collect the AimX remote-access server future, if configured (std only).
+        // The server now rides the shared session engine (`session::aimx`),
+        // replacing the hand-rolled supervisor/handler loops.
         #[cfg(feature = "std")]
         if let Some(remote_cfg) = self.remote_config {
             #[cfg(feature = "tracing")]
             tracing::info!(
-                "Building remote access supervisor for socket: {}",
+                "Building AimX remote-access server for socket: {}",
                 remote_cfg.socket_path.display()
             );
 
-            // Apply security policy to mark writable records
+            // Apply security policy to mark writable records (so `record.list`
+            // reports the `writable` flag; the server also enforces the policy).
             let writable_keys = remote_cfg.security_policy.writable_records();
             for key_str in writable_keys {
                 if let Some(id) = inner.resolve_str(&key_str) {
@@ -896,12 +899,11 @@ where
                 }
             }
 
-            let supervisor_future =
-                crate::remote::supervisor::build_supervisor_future(db.clone(), remote_cfg)?;
-            futures_acc.push(supervisor_future);
+            let server_future = crate::session::aimx::build_aimx_server(db.clone(), remote_cfg)?;
+            futures_acc.push(server_future);
 
             #[cfg(feature = "tracing")]
-            tracing::info!("Remote access supervisor future collected");
+            tracing::info!("AimX remote-access server future collected");
         }
 
         // Collect connector futures. After issue #88 connector builders return

@@ -27,6 +27,7 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
 ] }
 aimdb-client = { path = "../../aimdb-client" }
 tokio = { version = "1.48", features = ["full"] }
+futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1.0", features = ["derive"] }
