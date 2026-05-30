@@ -76,9 +76,6 @@ type BoxFuture = std::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send 
 /// * `bind_addr` — TCP address to listen on.
 /// * `ws_path` — URL path for the WebSocket endpoint (e.g., `"/ws"`).
 /// * `session_ctx` — Shared session context (auth, router, client manager, …).
-/// * `additional_routes` — Optional user-supplied Axum `Router` that is merged
-///   into the server (useful for REST + WebSocket on the same port).
-/// Build the axum application (WS upgrade + health, plus any extra routes).
 ///
 /// Extracted so tests can serve the **real** app on a known ephemeral port
 /// (`build_server_future` binds internally and does not surface the port).

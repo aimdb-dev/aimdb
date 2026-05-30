@@ -224,7 +224,7 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on WS protocol$(NC)\n"
 	cargo clippy --package aimdb-ws-protocol --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
-	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime" --all-targets -- -D warnings
+	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 
