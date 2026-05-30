@@ -142,7 +142,9 @@ impl WsDialer {
 
 #[cfg(feature = "client")]
 impl aimdb_core::Dialer for WsDialer {
-    fn connect(&self) -> aimdb_core::BoxFut<'_, aimdb_core::TransportResult<Box<dyn aimdb_core::Connection>>> {
+    fn connect(
+        &self,
+    ) -> aimdb_core::BoxFut<'_, aimdb_core::TransportResult<Box<dyn aimdb_core::Connection>>> {
         Box::pin(async move {
             let (ws, _resp) = tokio_tungstenite::connect_async(&self.url)
                 .await

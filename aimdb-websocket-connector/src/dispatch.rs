@@ -119,11 +119,7 @@ impl Session for WsSession {
                     .handle_query(&pattern, from, to, limit)
                     .await
                 {
-                    Ok((records, total)) => ServerMessage::QueryResult {
-                        id,
-                        records,
-                        total,
-                    },
+                    Ok((records, total)) => ServerMessage::QueryResult { id, records, total },
                     Err(message) => ServerMessage::Error {
                         code: ErrorCode::ServerError,
                         topic: None,
@@ -192,8 +188,8 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    use aimdb_core::session::{run_session, SessionConfig};
     use aimdb_core::router::RouterBuilder;
+    use aimdb_core::session::{run_session, SessionConfig};
     use aimdb_core::{Connection, SessionLimits, TransportResult};
     use tokio::sync::mpsc;
 
@@ -266,8 +262,10 @@ mod tests {
     // snapshot, then a bus broadcast fans out as a Data frame.
     #[tokio::test]
     async fn subscribe_ack_snapshot_and_fanout() {
-        let dispatch =
-            dispatch_with(Arc::new(OneSnap("sensors/temp".into(), b"\"last\"".to_vec())));
+        let dispatch = dispatch_with(Arc::new(OneSnap(
+            "sensors/temp".into(),
+            b"\"last\"".to_vec(),
+        )));
         let mgr = dispatch.client_mgr.clone();
 
         let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -303,8 +301,12 @@ mod tests {
 
         // Ack + snapshot should have been emitted, in order.
         let msgs = parse(&out);
-        assert!(matches!(&msgs[0], ServerMessage::Subscribed { topics } if topics == &vec!["sensors/temp".to_string()]));
-        assert!(matches!(&msgs[1], ServerMessage::Snapshot { topic, .. } if topic == "sensors/temp"));
+        assert!(
+            matches!(&msgs[0], ServerMessage::Subscribed { topics } if topics == &vec!["sensors/temp".to_string()])
+        );
+        assert!(
+            matches!(&msgs[1], ServerMessage::Snapshot { topic, .. } if topic == "sensors/temp")
+        );
 
         // A bus broadcast now fans out to this subscription as a Data frame.
         mgr.broadcast("sensors/temp", b"\"22.5\"").await;
@@ -313,7 +315,9 @@ mod tests {
         let data = msgs
             .iter()
             .find_map(|m| match m {
-                ServerMessage::Data { topic, payload, .. } => Some((topic.clone(), payload.clone())),
+                ServerMessage::Data { topic, payload, .. } => {
+                    Some((topic.clone(), payload.clone()))
+                }
                 _ => None,
             })
             .expect("a Data frame");

@@ -171,11 +171,8 @@ where
             // Mirrors `AimxClientConnector`: `run_client` owns demux/reconnect/
             // keepalive over the WS `Dialer` + per-connection `WsCodec`;
             // `pump_client` wires `link_to`/`link_from` routes to the handle.
-            let (handle, engine_fut) = run_client(
-                WsDialer::new(self.url.clone()),
-                WsCodec::new(),
-                config,
-            );
+            let (handle, engine_fut) =
+                run_client(WsDialer::new(self.url.clone()), WsCodec::new(), config);
             let mut futures = pump_client(db, "ws-client", &handle);
             futures.push(engine_fut);
             Ok(futures)

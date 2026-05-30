@@ -126,7 +126,8 @@ impl aimdb_core::EnvelopeCodec for WsCodec {
     // ---- server direction: read a ClientMessage, write a ServerMessage ------
 
     fn decode(&self, frame: &[u8]) -> Result<Inbound, CodecError> {
-        let msg: ClientMessage = serde_json::from_slice(frame).map_err(|_| CodecError::Malformed)?;
+        let msg: ClientMessage =
+            serde_json::from_slice(frame).map_err(|_| CodecError::Malformed)?;
         let mut st = self.state.lock().unwrap();
         match msg {
             // The transport splits multi-topic frames, so exactly one topic here.
@@ -190,7 +191,12 @@ impl aimdb_core::EnvelopeCodec for WsCodec {
                     .unwrap()
                     .topic_of(sub)
                     .ok_or(CodecError::Malformed)?;
-                write_server(out, &ServerMessage::Subscribed { topics: vec![topic] })
+                write_server(
+                    out,
+                    &ServerMessage::Subscribed {
+                        topics: vec![topic],
+                    },
+                )
             }
             Outbound::Pong => write_server(out, &ServerMessage::Pong),
             // `Reply::Ok` payloads are already a complete `ServerMessage` JSON
@@ -388,10 +394,20 @@ mod tests {
         let id = sub(&codec, "a/b");
         let mut out = Vec::new();
         codec
-            .encode(Outbound::Subscribed { sub: &id.to_string() }, &mut out)
+            .encode(
+                Outbound::Subscribed {
+                    sub: &id.to_string(),
+                },
+                &mut out,
+            )
             .unwrap();
         let v: ServerMessage = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v, ServerMessage::Subscribed { topics: vec!["a/b".into()] });
+        assert_eq!(
+            v,
+            ServerMessage::Subscribed {
+                topics: vec!["a/b".into()]
+            }
+        );
     }
 
     #[test]
