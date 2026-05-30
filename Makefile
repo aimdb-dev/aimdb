@@ -93,8 +93,8 @@ build:
 	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Building WS protocol$(NC)\n"
 	cargo build --package aimdb-ws-protocol
-	@printf "$(YELLOW)  → Building WebSocket connector$(NC)\n"
-	cargo build --package aimdb-websocket-connector --features "tokio-runtime"
+	@printf "$(YELLOW)  → Building WebSocket connector (server + client)$(NC)\n"
+	cargo build --package aimdb-websocket-connector --features "server,client"
 	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
 	cargo build --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
 
@@ -150,8 +150,10 @@ test:
 	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Testing WS protocol$(NC)\n"
 	cargo test --package aimdb-ws-protocol
-	@printf "$(YELLOW)  → Testing WebSocket connector$(NC)\n"
-	cargo test --package aimdb-websocket-connector --features "tokio-runtime"
+	@printf "$(YELLOW)  → Testing WebSocket connector (server + client: unit, real-socket e2e, AimDB round-trip)$(NC)\n"
+	cargo test --package aimdb-websocket-connector --features "server,client"
+	@printf "$(YELLOW)  → Testing WebSocket connector client-only build$(NC)\n"
+	cargo test --package aimdb-websocket-connector --no-default-features --features "client" --lib
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"

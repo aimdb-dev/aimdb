@@ -446,7 +446,10 @@ async fn many_clients_fanout_and_resource_cleanup() {
             },
         )
         .await;
-        assert!(matches!(ws_recv(&mut c).await, ServerMessage::Subscribed { .. }));
+        assert!(matches!(
+            ws_recv(&mut c).await,
+            ServerMessage::Subscribed { .. }
+        ));
         clients.push(c);
     }
     wait_until(|| bus.subscription_count() == 20, "20 subscriptions").await;
@@ -491,7 +494,10 @@ async fn stalled_client_does_not_block_a_healthy_one() {
         },
     )
     .await;
-    assert!(matches!(ws_recv(&mut healthy).await, ServerMessage::Subscribed { .. }));
+    assert!(matches!(
+        ws_recv(&mut healthy).await,
+        ServerMessage::Subscribed { .. }
+    ));
     wait_until(|| bus.subscription_count() == 2, "2 subscriptions").await;
 
     // Flood well past the bounded funnel (256). The stalled client's pump drops
@@ -551,8 +557,14 @@ async fn golden_wire_frames() {
         },
     )
     .await;
-    assert_eq!(recv_value(&mut c).await, json!({"type": "subscribed", "topics": ["t"]}));
-    assert_eq!(recv_value(&mut c).await, json!({"type": "snapshot", "topic": "t", "payload": 5}));
+    assert_eq!(
+        recv_value(&mut c).await,
+        json!({"type": "subscribed", "topics": ["t"]})
+    );
+    assert_eq!(
+        recv_value(&mut c).await,
+        json!({"type": "snapshot", "topic": "t", "payload": 5})
+    );
 
     bus.broadcast("t", b"42").await;
     assert_eq!(
@@ -600,7 +612,12 @@ async fn async_authorize_subscribe_gates_despite_allow_all_permissions() {
         },
     )
     .await;
-    assert!(matches!(ws_recv(&mut c).await, ServerMessage::Subscribed { .. }));
+    assert!(matches!(
+        ws_recv(&mut c).await,
+        ServerMessage::Subscribed { .. }
+    ));
     bus.broadcast("public/x", b"1").await;
-    assert!(matches!(ws_recv(&mut c).await, ServerMessage::Data { topic, .. } if topic == "public/x"));
+    assert!(
+        matches!(ws_recv(&mut c).await, ServerMessage::Data { topic, .. } if topic == "public/x")
+    );
 }
