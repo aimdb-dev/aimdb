@@ -80,22 +80,78 @@ pub type TransportResult<T> = Result<T, TransportError>;
 // Supporting types (stubs — sufficient for the signatures to compile)
 // ===========================================================================
 
-/// Remote-peer metadata carried by a [`Connection`] (remote addr, headers,
-/// pre-resolved auth).
+/// Remote-peer metadata carried by a [`Connection`] (remote addr, pre-resolved
+/// auth).
 ///
-/// Opaque placeholder. The concrete fields — and whether one shape carries both
-/// AimX `SecurityPolicy` and WS `Permissions` — are **deferred to Phase 4**.
-#[derive(Debug, Clone, Default)]
+/// **Phase 4 (resolved — doc 037 auth-context gate).** One shape serves both
+/// connectors: a neutral [`peer_addr`](Self::peer_addr) plus a type-erased
+/// [`ext`](Self::ext) slot the connector fills with its own resolved identity
+/// (WS stuffs `ClientInfo`/`Permissions` at the HTTP upgrade; AimX stuffs its
+/// `SecurityPolicy`). Core stays connector-agnostic; each side downcasts `ext`.
+#[derive(Clone, Default)]
 #[non_exhaustive]
-pub struct PeerInfo {}
+pub struct PeerInfo {
+    /// Remote address, if the transport exposes one.
+    pub peer_addr: Option<String>,
+    /// Connector-resolved identity, type-erased so core need not know the
+    /// connector's auth types. Downcast with [`ext_as`](Self::ext_as).
+    pub ext: Option<Arc<dyn core::any::Any + Send + Sync>>,
+}
+
+impl PeerInfo {
+    /// Attach a connector-resolved identity (consumed by [`Dispatch::authenticate`]).
+    pub fn with_ext(mut self, ext: Arc<dyn core::any::Any + Send + Sync>) -> Self {
+        self.ext = Some(ext);
+        self
+    }
+
+    /// Downcast the [`ext`](Self::ext) identity to a concrete connector type.
+    pub fn ext_as<T: core::any::Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.ext.clone()?.downcast::<T>().ok()
+    }
+}
+
+impl core::fmt::Debug for PeerInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PeerInfo")
+            .field("peer_addr", &self.peer_addr)
+            .field("ext", &self.ext.as_ref().map(|_| "<opaque>"))
+            .finish()
+    }
+}
 
 /// The authenticated session context threaded through [`Dispatch`] calls.
 ///
-/// Minimal/opaque placeholder. Auth fields are **deferred to Phase 4**
-/// (the auth-context shape gate).
-#[derive(Debug, Clone, Default)]
+/// **Phase 4 (resolved — doc 037 auth-context gate).** Carries the resolved
+/// principal as a type-erased [`ext`](Self::ext) that [`Dispatch::open`] threads
+/// into the per-connection [`Session`] for per-operation authorization
+/// (`authorize_subscribe`/`authorize_write`). AimX leaves it `None`.
+#[derive(Clone, Default)]
 #[non_exhaustive]
-pub struct SessionCtx {}
+pub struct SessionCtx {
+    /// The resolved principal, type-erased. Downcast with [`ext_as`](Self::ext_as).
+    pub ext: Option<Arc<dyn core::any::Any + Send + Sync>>,
+}
+
+impl SessionCtx {
+    /// Build a context carrying a connector-resolved principal.
+    pub fn with_ext(ext: Arc<dyn core::any::Any + Send + Sync>) -> Self {
+        Self { ext: Some(ext) }
+    }
+
+    /// Downcast the [`ext`](Self::ext) principal to a concrete connector type.
+    pub fn ext_as<T: core::any::Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.ext.clone()?.downcast::<T>().ok()
+    }
+}
+
+impl core::fmt::Debug for SessionCtx {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SessionCtx")
+            .field("ext", &self.ext.as_ref().map(|_| "<opaque>"))
+            .finish()
+    }
+}
 
 /// Engine-local bounds for a session (consumed by the Phase 2 engines, not by
 /// the contracts here).
@@ -222,6 +278,16 @@ pub enum Outbound<'a> {
         /// Unparsed record value.
         data: Payload,
     },
+    /// An explicit acknowledgement that a subscription opened. Emitted by
+    /// [`run_session`](super::server::run_session) only when
+    /// [`SessionConfig::acks_subscribe`](super::server::SessionConfig) is set
+    /// (WS needs it; AimX's ack is implicit, so it leaves the flag off and never
+    /// emits this). The `sub` is the subscription's routing id — the same value
+    /// that tags its [`Event`](Outbound::Event)s.
+    Subscribed {
+        /// Subscription id that was opened.
+        sub: &'a str,
+    },
     /// Keepalive response.
     Pong,
 }
@@ -314,9 +380,25 @@ pub trait Session: Send {
     /// Defaulted to [`RpcError::NotFound`] so a dispatch with no streaming
     /// surface need not implement it (doc 037 § the server-port refinement —
     /// the stream is side-neutral, so it is defaulted here for symmetry).
-    fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
+    ///
+    /// Async (Phase 4): opening a subscription may need to *await* per-operation
+    /// authorization (e.g. WS `authorize_subscribe`); the engine awaits it.
+    fn subscribe<'a>(
+        &'a mut self,
+        topic: &'a str,
+    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
         let _ = topic;
-        Err(RpcError::NotFound)
+        Box::pin(async { Err(RpcError::NotFound) })
+    }
+
+    /// Late-join snapshot: the current value for `topic`, emitted by
+    /// [`run_session`](super::server::run_session) as an [`Outbound::Snapshot`]
+    /// right after a successful [`subscribe`](Session::subscribe) and before the
+    /// first event. Defaulted to `None` (no snapshot) — AimX inherits this; WS
+    /// overrides it from its `SnapshotProvider`.
+    fn snapshot(&mut self, topic: &str) -> Option<Payload> {
+        let _ = topic;
+        None
     }
 
     /// Fire-and-forget write: no reply. Routes through the existing
@@ -461,7 +543,10 @@ mod tests {
         ) -> BoxFut<'a, Result<Payload, RpcError>> {
             unimplemented!()
         }
-        fn subscribe(&mut self, _topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
+        fn subscribe<'a>(
+            &'a mut self,
+            _topic: &'a str,
+        ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
             unimplemented!()
         }
         fn write<'a>(

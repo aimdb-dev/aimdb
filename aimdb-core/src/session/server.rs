@@ -35,6 +35,12 @@ pub struct SessionConfig {
     ///   [`PeerInfo`](super::PeerInfo) alone (identity pre-resolved at the HTTP
     ///   upgrade), no frame consumed.
     pub reads_hello: bool,
+    /// Emit an explicit [`Outbound::Subscribed`] ack when a subscription opens.
+    /// - `false` (default, AimX-style) — the ack is implicit; events flow and
+    ///   carry the subscription id back, no ack frame.
+    /// - `true` (WS-style) — `run_session` emits `Subscribed { sub }` before the
+    ///   first event, restoring the explicit ack WS clients wait on.
+    pub acks_subscribe: bool,
 }
 
 /// One subscription update on its way back to the connection's send half.
@@ -129,8 +135,31 @@ pub async fn run_session<C, D>(
                             send_reply_err(&mut conn, codec, &mut out, id, RpcError::Denied).await;
                             continue;
                         }
-                        match session.subscribe(&topic) {
+                        match session.subscribe(&topic).await {
                             Ok(stream) => {
+                                // Optional explicit ack (WS-style); AimX leaves
+                                // `acks_subscribe` off so its ack stays implicit.
+                                if config.acks_subscribe {
+                                    out.clear();
+                                    if codec
+                                        .encode(Outbound::Subscribed { sub: &sub_id }, &mut out)
+                                        .is_ok()
+                                        && conn.send(&out).await.is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                // Optional late-join snapshot, before the first event.
+                                if let Some(data) = session.snapshot(&topic) {
+                                    out.clear();
+                                    if codec
+                                        .encode(Outbound::Snapshot { topic: &topic, data }, &mut out)
+                                        .is_ok()
+                                        && conn.send(&out).await.is_err()
+                                    {
+                                        break;
+                                    }
+                                }
                                 let (cancel_tx, cancel_rx) = oneshot::channel();
                                 cancels.insert(sub_id.clone(), cancel_tx);
                                 subs.push(Box::pin(pump_subscription(

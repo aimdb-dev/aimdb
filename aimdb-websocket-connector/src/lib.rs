@@ -82,6 +82,8 @@ pub mod client_manager;
 #[cfg(feature = "server")]
 pub mod connector;
 #[cfg(feature = "server")]
+pub(crate) mod dispatch;
+#[cfg(feature = "server")]
 pub(crate) mod registry;
 #[cfg(feature = "server")]
 pub(crate) mod server;
@@ -94,6 +96,20 @@ pub(crate) mod session;
 
 #[cfg(feature = "client")]
 pub mod client;
+
+// ════════════════════════════════════════════════════════════════════
+// Shared session-engine glue (Phase 4 — server and/or client)
+// ════════════════════════════════════════════════════════════════════
+
+/// Per-connection WS-JSON [`EnvelopeCodec`](aimdb_core::EnvelopeCodec) shared by
+/// the server (`run_session`) and client (`run_client`) ports.
+#[cfg(any(feature = "server", feature = "client"))]
+pub mod codec;
+
+/// WS transport adapters ([`Connection`](aimdb_core::Connection)/`Dialer`) over a
+/// real WebSocket.
+#[cfg(any(feature = "server", feature = "client"))]
+pub mod transport;
 
 // ════════════════════════════════════════════════════════════════════
 // Protocol (always available)

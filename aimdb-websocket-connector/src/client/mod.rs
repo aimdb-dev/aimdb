@@ -23,7 +23,5 @@
 //! ```
 
 mod builder;
-mod connector;
 
 pub use builder::WsClientConnectorBuilder;
-pub use connector::WsClientConnectorImpl;

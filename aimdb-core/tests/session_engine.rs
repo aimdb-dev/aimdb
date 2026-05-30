@@ -178,6 +178,7 @@ impl EnvelopeCodec for LineCodec {
             }
             Outbound::Snapshot { topic, data } => format!("SNAP\n{}\n{}", topic, utf8(&data)?),
             Outbound::Pong => "PONG".to_string(),
+            Outbound::Subscribed { sub } => format!("SUBSCRIBED\n{}", sub),
         };
         out.extend_from_slice(s.as_bytes());
         Ok(())
@@ -280,16 +281,22 @@ impl Session for EchoSession {
         Box::pin(async move { Ok(params) })
     }
 
-    fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
-        // Sentinel: let a known topic fail so the subscribe-ack path is testable.
-        if topic == "bad" {
-            return Err(RpcError::NotFound);
-        }
-        // Three synthetic updates derived from the topic, then end.
-        let items: Vec<Payload> = (1..=3)
-            .map(|i| payload_from(&format!("{topic}#{i}")))
-            .collect();
-        Ok(Box::pin(futures::stream::iter(items)))
+    fn subscribe<'a>(
+        &'a mut self,
+        topic: &'a str,
+    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
+        let topic = topic.to_string();
+        Box::pin(async move {
+            // Sentinel: let a known topic fail so the subscribe-ack path is testable.
+            if topic == "bad" {
+                return Err(RpcError::NotFound);
+            }
+            // Three synthetic updates derived from the topic, then end.
+            let items: Vec<Payload> = (1..=3)
+                .map(|i| payload_from(&format!("{topic}#{i}")))
+                .collect();
+            Ok(Box::pin(futures::stream::iter(items)) as BoxStream<'static, Payload>)
+        })
     }
 
     fn write<'a>(
@@ -334,6 +341,11 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
         ClientConfig {
             reconnect: false,
             reconnect_delay: Duration::from_millis(10),
+            max_reconnect_delay: Duration::from_millis(10),
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: usize::MAX,
+            topic_routed_subs: false,
             sends_hello: true,
         },
     );
@@ -394,6 +406,11 @@ async fn failed_subscribe_ends_stream_via_ack() {
         ClientConfig {
             reconnect: false,
             reconnect_delay: Duration::from_millis(10),
+            max_reconnect_delay: Duration::from_millis(10),
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: usize::MAX,
+            topic_routed_subs: false,
             sends_hello: false,
         },
     );

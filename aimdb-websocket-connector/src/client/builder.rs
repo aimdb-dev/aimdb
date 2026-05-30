@@ -17,11 +17,13 @@
 //!        └─ return Vec<BoxFuture> (drained by AimDbRunner)
 //! ```
 
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, time::Duration};
 
-use aimdb_core::{router::RouterBuilder, ConnectorBuilder};
+use aimdb_core::session::{pump_client, run_client, ClientConfig};
+use aimdb_core::ConnectorBuilder;
 
-use super::connector::WsClientConnectorImpl;
+use crate::codec::WsCodec;
+use crate::transport::WsDialer;
 
 // ════════════════════════════════════════════════════════════════════
 // Builder
@@ -146,40 +148,14 @@ where
     ) -> Pin<Box<dyn core::future::Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>>
     {
         Box::pin(async move {
-            // ── Inbound routes ──────────────────────────────────────
-            let inbound_routes = db.collect_inbound_routes("ws-client");
-
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "WS client: {} inbound routes collected",
-                inbound_routes.len()
-            );
-
-            let router = Arc::new(RouterBuilder::from_routes(inbound_routes).build());
-
-            // ── Outbound routes ──────────────────────────────────────
-            let outbound_routes = db.collect_outbound_routes("ws-client");
-
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "WS client: {} outbound routes collected",
-                outbound_routes.len()
-            );
-
-            // ── Resolve subscribe topics ─────────────────────────────
-            // Merge explicit subscribe_topics with topics derived from inbound routes
-            let mut topics: Vec<String> = self.subscribe_topics.clone();
-            for resource_id in router.resource_ids() {
-                let topic = resource_id.to_string();
-                if !topics.contains(&topic) {
-                    topics.push(topic);
-                }
-            }
-
-            // ── Build client config ─────────────────────────────────
-            let config = super::connector::WsClientConfig {
-                url: self.url.clone(),
-                auto_reconnect: self.auto_reconnect,
+            // ── Engine config from the WS-specific knobs (doc 039 § 5) ──
+            // Reconnect/keepalive/offline-queue are now `ClientConfig`/engine
+            // concerns; `topic_routed_subs` keys the demux by topic (the WS wire
+            // pushes `Data{topic}` with no id).
+            let config = ClientConfig {
+                reconnect: self.auto_reconnect,
+                reconnect_delay: Duration::from_millis(200),
+                max_reconnect_delay: Duration::from_secs(30),
                 max_reconnect_attempts: self.max_reconnect_attempts,
                 keepalive_interval: if self.keepalive_ms > 0 {
                     Some(Duration::from_millis(self.keepalive_ms))
@@ -187,27 +163,21 @@ where
                     None
                 },
                 max_offline_queue: self.max_offline_queue,
-                subscribe_topics: topics,
+                topic_routed_subs: true,
+                sends_hello: false,
             };
 
-            // ── Build the connector and collect its infrastructure future ──
-            // The connector future owns a `FuturesUnordered` driving the
-            // write/read/keepalive loops and reconnect watcher; no
-            // `tokio::spawn` is involved.
-            let (connector, connector_future) = WsClientConnectorImpl::connect(config, router, db)
-                .await
-                .map_err(|e| aimdb_core::DbError::RuntimeError {
-                    message: format!("WS client connect failed: {}", e),
-                })?;
-
-            // ── Collect outbound publisher futures ───────────────────
-            let mut futures = connector.collect_outbound_futures(db, outbound_routes);
-
-            // Prepend the connector's infrastructure future so it gets
-            // driven alongside the per-route publishers. Order does not
-            // matter to `FuturesUnordered`, but front-loading the long-
-            // running infra future keeps logs readable.
-            futures.insert(0, connector_future);
+            // ── Drive the shared client engine + record-mirroring pumps ──
+            // Mirrors `AimxClientConnector`: `run_client` owns demux/reconnect/
+            // keepalive over the WS `Dialer` + per-connection `WsCodec`;
+            // `pump_client` wires `link_to`/`link_from` routes to the handle.
+            let (handle, engine_fut) = run_client(
+                WsDialer::new(self.url.clone()),
+                WsCodec::new(),
+                config,
+            );
+            let mut futures = pump_client(db, "ws-client", &handle);
+            futures.push(engine_fut);
             Ok(futures)
         })
     }

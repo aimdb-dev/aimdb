@@ -26,20 +26,16 @@ use crate::client_manager::ClientManager;
 
 type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
 
-/// Live WebSocket connector returned by `build()`.
+/// Live WebSocket connector returned by `build()` — owns the outbound publisher
+/// tasks that feed the [`ClientManager`] bus. (Envelope vs raw-payload framing is
+/// now the per-connection [`WsCodec`](crate::codec)'s job, not the broadcaster's.)
 pub struct WebSocketConnectorImpl {
     pub(crate) client_mgr: ClientManager,
-    /// When `true`, outbound data bypasses the `ServerMessage::Data` envelope
-    /// and sends the serializer bytes directly as a WebSocket text frame.
-    pub(crate) raw_payload: bool,
 }
 
 impl WebSocketConnectorImpl {
-    pub(crate) fn new(client_mgr: ClientManager, raw_payload: bool) -> Self {
-        Self {
-            client_mgr,
-            raw_payload,
-        }
+    pub(crate) fn new(client_mgr: ClientManager) -> Self {
+        Self { client_mgr }
     }
 
     /// Collects one outbound publisher future per route.
@@ -58,7 +54,6 @@ impl WebSocketConnectorImpl {
     where
         R: aimdb_executor::RuntimeAdapter + 'static,
     {
-        let raw_payload = self.raw_payload;
         let runtime_ctx: Arc<dyn core::any::Any + Send + Sync> = db.runtime_any();
         let mut futures: Vec<BoxFuture> = Vec::with_capacity(outbound_routes.len());
 
@@ -131,12 +126,10 @@ impl WebSocketConnectorImpl {
                         map.insert(topic.clone(), bytes.clone());
                     }
 
-                    // Fan-out to subscribed clients
-                    if raw_payload {
-                        client_mgr.broadcast_raw(&topic, &bytes).await;
-                    } else {
-                        client_mgr.broadcast(&topic, &bytes).await;
-                    }
+                    // Fan-out to subscribed clients via the bus. The per-connection
+                    // `WsCodec` applies the `Data` envelope (or, in raw mode, sends
+                    // the bytes verbatim) — so the bus always carries raw bytes.
+                    client_mgr.broadcast(&topic, &bytes).await;
                 }
 
                 #[cfg(feature = "tracing")]

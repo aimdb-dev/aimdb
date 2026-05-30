@@ -11,8 +11,12 @@
 //! { "status": "ok", "clients": 3, "uptime_secs": 120 }
 //! ```
 
-use std::{collections::HashMap, net::SocketAddr, time::Instant};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
+use aimdb_core::{
+    session::{run_session, SessionConfig},
+    Connection, Dispatch, PeerInfo, SessionLimits,
+};
 use axum::{
     extract::{
         ws::{WebSocket, WebSocketUpgrade},
@@ -26,17 +30,31 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    auth::{AuthError, AuthRequest, ClientInfo},
-    session::{run_session, SessionContext},
+    auth::{AuthError, AuthRequest, ClientInfo, DynAuthHandler},
+    client_manager::ClientManager,
+    codec::WsCodec,
+    transport::WsServerConnection,
 };
 
 // ════════════════════════════════════════════════════════════════════
 // Shared server state
 // ════════════════════════════════════════════════════════════════════
 
+/// State shared across upgrade/health handlers. The per-connection session engine
+/// (`run_session`) is driven from [`ws_upgrade_handler`]; only the *accept* loop
+/// stays axum's (Option A, doc 039 § 6).
 #[derive(Clone)]
 pub(crate) struct ServerState {
-    pub session_ctx: SessionContext,
+    /// Shared application dispatch (one `Arc<dyn Dispatch>` per server).
+    pub dispatch: Arc<dyn Dispatch>,
+    /// HTTP-upgrade authenticator (resolves identity before the engine runs).
+    pub auth: DynAuthHandler,
+    /// Bus + connection counter (for client-id allocation and `/health`).
+    pub client_mgr: ClientManager,
+    /// Patterns to auto-subscribe each client to on connect.
+    pub auto_subscribe: Arc<Vec<String>>,
+    /// Per-connection subscription cap.
+    pub max_subs_per_connection: usize,
     pub started_at: Instant,
 }
 
@@ -63,14 +81,9 @@ type BoxFuture = std::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send 
 pub(crate) fn build_server_future(
     bind_addr: SocketAddr,
     ws_path: String,
-    session_ctx: SessionContext,
+    state: ServerState,
     additional_routes: Option<Router>,
 ) -> BoxFuture {
-    let state = ServerState {
-        session_ctx,
-        started_at: Instant::now(),
-    };
-
     // Apply state first so the router becomes `Router<()>`, which can then be
     // merged with user-supplied `additional_routes: Router<()>` without a
     // type-parameter mismatch.
@@ -132,8 +145,8 @@ async fn ws_upgrade_handler(
         remote_addr,
     };
 
-    // Authenticate — returns permissions or rejects
-    let permissions = match state.session_ctx.auth.authenticate(&auth_req).await {
+    // Authenticate at the HTTP upgrade — returns permissions or rejects (401).
+    let permissions = match state.auth.authenticate(&auth_req).await {
         Ok(p) => p,
         Err(AuthError { message }) => {
             #[cfg(feature = "tracing")]
@@ -142,8 +155,9 @@ async fn ws_upgrade_handler(
         }
     };
 
-    // Allocate a client id before upgrading so it's available synchronously
-    let id = state.session_ctx.client_mgr.next_client_id();
+    // Resolve identity synchronously, before the upgrade, and carry it into the
+    // engine via `PeerInfo::ext` (WS-style `reads_hello:false`, doc 039 § 4).
+    let id = state.client_mgr.next_client_id();
     let info = ClientInfo {
         id,
         remote_addr,
@@ -157,16 +171,32 @@ async fn ws_upgrade_handler(
         remote_addr
     );
 
-    let ctx = state.session_ctx.clone();
+    let dispatch = state.dispatch.clone();
+    let auto_subscribe = state.auto_subscribe.clone();
+    let config = SessionConfig {
+        limits: SessionLimits {
+            max_connections: usize::MAX, // axum owns the accept loop (Option A)
+            max_subs_per_connection: state.max_subs_per_connection,
+        },
+        reads_hello: false,
+        acks_subscribe: true,
+    };
 
-    ws.on_upgrade(move |socket: WebSocket| run_session(socket, info, ctx))
-        .into_response()
+    ws.on_upgrade(move |socket: WebSocket| async move {
+        let peer = PeerInfo::default().with_ext(Arc::new(info));
+        let conn: Box<dyn Connection> =
+            Box::new(WsServerConnection::new(socket, peer, &auto_subscribe));
+        let codec = WsCodec::new();
+        // Per-connection codec + run_session drive this socket (doc 039 § 6).
+        run_session(conn, &codec, dispatch.as_ref(), &config).await;
+    })
+    .into_response()
 }
 
 /// Health check endpoint.
 async fn health_handler(State(state): State<ServerState>) -> impl IntoResponse {
     let uptime_secs = state.started_at.elapsed().as_secs();
-    let clients = state.session_ctx.client_mgr.client_count();
+    let clients = state.client_mgr.client_count();
 
     Json(serde_json::json!({
         "status": "ok",

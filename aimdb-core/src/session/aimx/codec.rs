@@ -176,6 +176,11 @@ impl EnvelopeCodec for AimxCodec {
                 write_frame(out, &frame)
             }
             Outbound::Pong => write_frame(out, &Frame::tagged("pong")),
+            // AimX has no explicit subscribe ack (the client owns the id; events
+            // carry it back). `run_session` only emits this when `acks_subscribe`
+            // is set, which the AimX server leaves off — so this is unreachable on
+            // the AimX wire.
+            Outbound::Subscribed { .. } => Err(CodecError::Malformed),
         }
     }
 

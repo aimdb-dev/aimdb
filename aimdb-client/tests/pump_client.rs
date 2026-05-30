@@ -79,6 +79,11 @@ async fn pump_client_mirrors_record_both_directions() {
         .with_connector(AimxClientConnector::new(&sock).with_config(ClientConfig {
             reconnect: true,
             reconnect_delay: Duration::from_millis(50),
+            max_reconnect_delay: Duration::from_millis(50),
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: usize::MAX,
+            topic_routed_subs: false,
             sends_hello: false,
         }));
     cb.configure::<Msg>("cfg", |reg| {

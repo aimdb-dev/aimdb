@@ -33,8 +33,29 @@ use crate::{AimDb, RuntimeAdapter};
 pub struct ClientConfig {
     /// Redial after a dropped/failed connection instead of ending the engine.
     pub reconnect: bool,
-    /// Delay before each redial when `reconnect` is set.
+    /// Base delay before the first redial when `reconnect` is set. Subsequent
+    /// redials grow this exponentially, capped at [`max_reconnect_delay`](Self::max_reconnect_delay).
     pub reconnect_delay: Duration,
+    /// Upper bound for the exponential reconnect backoff. Defaults to
+    /// [`reconnect_delay`](Self::reconnect_delay) (i.e. no escalation — a fixed
+    /// delay, preserving the pre-Phase-4 behavior).
+    pub max_reconnect_delay: Duration,
+    /// Maximum redial attempts before the engine gives up. `0` = unlimited
+    /// (the default).
+    pub max_reconnect_attempts: usize,
+    /// If set, send a keepalive `Ping` on this interval while a connection is
+    /// idle. `None` (default) disables keepalive.
+    pub keepalive_interval: Option<Duration>,
+    /// Cap on caller commands buffered while disconnected; the oldest are dropped
+    /// past this bound. Defaults to `usize::MAX` (effectively unbounded — the
+    /// pre-Phase-4 behavior).
+    pub max_offline_queue: usize,
+    /// Key the subscription demux by **topic** instead of the engine request id.
+    /// `false` (default, AimX-style) — events carry the request id back, demux by
+    /// id. `true` (WS-style) — the wire pushes data keyed by topic with no id, so
+    /// the codec's `decode_outbound` returns the topic as `Event.sub` and the
+    /// engine routes by topic.
+    pub topic_routed_subs: bool,
     /// Send a Ping handshake on connect and wait for the Pong before accepting
     /// caller commands (the proactive "handshake-as-caller"). Mirrors the
     /// server's `reads_hello`; a real protocol swaps Ping/Pong for its Hello.
@@ -46,9 +67,29 @@ impl Default for ClientConfig {
         Self {
             reconnect: true,
             reconnect_delay: Duration::from_millis(200),
+            max_reconnect_delay: Duration::from_millis(200),
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: usize::MAX,
+            topic_routed_subs: false,
             sends_hello: false,
         }
     }
+}
+
+/// Exponential backoff for the `attempt`-th redial (1-based), capped at
+/// [`ClientConfig::max_reconnect_delay`]. Defaults collapse this to a fixed
+/// `reconnect_delay` (max == base), preserving pre-Phase-4 behavior.
+fn backoff_delay(config: &ClientConfig, attempt: usize) -> Duration {
+    let base = config.reconnect_delay;
+    let cap = config.max_reconnect_delay.max(base);
+    let shift = attempt.saturating_sub(1).min(16) as u32;
+    base.saturating_mul(1u32 << shift).min(cap)
+}
+
+/// Bound the offline backlog: drop the oldest buffered commands beyond `cap`.
+fn bound_offline_queue(cmd_rx: &mut mpsc::UnboundedReceiver<ClientCmd>, cap: usize) {
+    while cmd_rx.len() > cap && cmd_rx.try_recv().is_ok() {}
 }
 
 /// A cheap-clone handle to a running [`run_client`] engine — the caller-facing
@@ -165,31 +206,60 @@ async fn client_loop<D, C>(
     D: Dialer,
     C: EnvelopeCodec,
 {
+    // Consecutive failed attempts since the last successful connection; drives
+    // exponential backoff and the optional attempt cap.
+    let mut attempt: usize = 0;
     loop {
         let conn = match dialer.connect().await {
-            Ok(conn) => conn,
+            Ok(conn) => {
+                attempt = 0;
+                conn
+            }
             Err(_e) => {
                 #[cfg(feature = "tracing")]
                 tracing::warn!("client dial failed: {:?}", _e);
-                if config.reconnect {
-                    tokio::time::sleep(config.reconnect_delay).await;
-                    continue;
+                match reconnect_after(&mut attempt, &config, &mut cmd_rx).await {
+                    true => continue,
+                    false => return,
                 }
-                return;
             }
         };
 
         match drive_connection(conn, &codec, &mut cmd_rx, &config).await {
             Ended::HandlesDropped => return,
             Ended::Disconnected => {
-                if config.reconnect {
-                    tokio::time::sleep(config.reconnect_delay).await;
-                    continue;
+                match reconnect_after(&mut attempt, &config, &mut cmd_rx).await {
+                    true => continue,
+                    false => return,
                 }
-                return;
             }
         }
     }
+}
+
+/// Decide whether to redial: honor `reconnect`, the attempt cap, the offline-queue
+/// bound, and the exponential backoff sleep. Returns `true` to retry, `false` to
+/// stop the engine.
+async fn reconnect_after(
+    attempt: &mut usize,
+    config: &ClientConfig,
+    cmd_rx: &mut mpsc::UnboundedReceiver<ClientCmd>,
+) -> bool {
+    if !config.reconnect {
+        return false;
+    }
+    *attempt += 1;
+    if config.max_reconnect_attempts != 0 && *attempt >= config.max_reconnect_attempts {
+        #[cfg(feature = "tracing")]
+        tracing::warn!(
+            "client giving up after {} reconnect attempts",
+            config.max_reconnect_attempts
+        );
+        return false;
+    }
+    bound_offline_queue(cmd_rx, config.max_offline_queue);
+    tokio::time::sleep(backoff_delay(config, *attempt)).await;
+    true
 }
 
 /// Drive one dialed [`Connection`]: optional handshake, then `biased` demux of
@@ -228,6 +298,9 @@ where
             _ => return Ended::Disconnected,
         }
     }
+
+    // Optional keepalive ticker — `None` parks the arm forever (see below).
+    let mut keepalive = config.keepalive_interval.map(tokio::time::interval);
 
     loop {
         tokio::select! {
@@ -269,7 +342,28 @@ where
                         }
                     }
                     Ok(Outbound::Pong) => {}
+                    // Explicit subscribe ack (WS). Informational — the local
+                    // event sink already exists from the Subscribe command, so
+                    // there is nothing to route; just confirm liveness.
+                    Ok(Outbound::Subscribed { .. }) => {}
                     Err(_e) => continue, // skip a malformed frame, keep the connection
+                }
+            }
+
+            // ---- keepalive: send a Ping when the ticker fires --------------
+            // With no interval configured the arm parks on `pending()` forever,
+            // so it never wins the `select!`.
+            _ = async {
+                match keepalive.as_mut() {
+                    Some(i) => { i.tick().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                out.clear();
+                if codec.encode_inbound(Inbound::Ping, &mut out).is_ok()
+                    && conn.send(&out).await.is_err()
+                {
+                    return Ended::Disconnected;
                 }
             }
 
@@ -299,7 +393,14 @@ where
                     ClientCmd::Subscribe { topic, events } => {
                         let id = next_id;
                         next_id += 1;
-                        subs.insert(id.to_string(), events);
+                        // Topic-routed (WS): the wire pushes data keyed by topic,
+                        // so demux by topic; id-routed (AimX): events echo the id.
+                        let key = if config.topic_routed_subs {
+                            topic.clone()
+                        } else {
+                            id.to_string()
+                        };
+                        subs.insert(key, events);
                         out.clear();
                         let sent = codec
                             .encode_inbound(Inbound::Subscribe { id, topic }, &mut out)

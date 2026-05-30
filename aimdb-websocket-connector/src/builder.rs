@@ -19,20 +19,22 @@ use std::{
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use aimdb_data_contracts::Streamable;
 
-use aimdb_core::{router::RouterBuilder, ConnectorBuilder};
+use aimdb_core::{router::RouterBuilder, ConnectorBuilder, Dispatch};
 use axum::Router as AxumRouter;
 
 use crate::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
     client_manager::ClientManager,
     connector::WebSocketConnectorImpl,
+    dispatch::WsDispatch,
     registry::StreamableRegistry,
-    server::build_server_future,
-    session::{NoQuery, NoSnapshot, QueryHandler, SessionContext, SnapshotProvider},
+    server::{build_server_future, ServerState},
+    session::{NoQuery, NoSnapshot, QueryHandler, SnapshotProvider},
 };
 use aimdb_ws_protocol::TopicInfo;
 
@@ -312,7 +314,7 @@ where
                 Arc::new(Mutex::new(HashMap::new()));
 
             // ── Client manager ────────────────────────────────────
-            let client_mgr = ClientManager::new();
+            let client_mgr = ClientManager::new(self.raw_payload);
 
             // ── Build snapshot provider ──────────────────────────
             let snapshot_provider: Arc<dyn SnapshotProvider> = if self.late_join {
@@ -343,33 +345,35 @@ where
                 })
                 .collect();
 
-            // ── Session context ───────────────────────────────────
-            let session_ctx = SessionContext {
+            // ── Shared dispatch (one Arc<dyn Dispatch> per server) ───
+            let dispatch: Arc<dyn Dispatch> = Arc::new(WsDispatch {
                 client_mgr: client_mgr.clone(),
-                router: router.clone(),
-                auth: self.auth.clone(),
-                channel_capacity: self.channel_capacity,
-                late_join: self.late_join,
                 snapshot_provider,
-                auto_subscribe_topics: self.auto_subscribe_topics.clone(),
                 query_handler: self.query_handler.clone(),
-                known_topics,
+                router: router.clone(),
+                known_topics: Arc::new(known_topics),
+                auth: self.auth.clone(),
+                late_join: self.late_join,
                 runtime_ctx: Some(db.runtime_any()),
-            };
+            });
 
             // ── Build connector & collect outbound publishers ───────────────
-            let connector = WebSocketConnectorImpl::new(client_mgr, self.raw_payload);
+            let connector = WebSocketConnectorImpl::new(client_mgr.clone());
             let outbound_futures =
                 connector.collect_outbound_futures(db, outbound_routes, snapshot_map);
 
             // ── Build Axum server future ──────────────────────────
+            let state = ServerState {
+                dispatch,
+                auth: self.auth.clone(),
+                client_mgr,
+                auto_subscribe: Arc::new(self.auto_subscribe_topics.clone()),
+                max_subs_per_connection: self.max_clients.max(1),
+                started_at: Instant::now(),
+            };
             let additional = self.additional_routes.clone();
-            let server_future = build_server_future(
-                self.bind_addr,
-                self.ws_path.clone(),
-                session_ctx,
-                additional,
-            );
+            let server_future =
+                build_server_future(self.bind_addr, self.ws_path.clone(), state, additional);
 
             let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_futures.len());
             futures.push(server_future);

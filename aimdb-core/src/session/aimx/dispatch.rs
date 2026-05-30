@@ -102,13 +102,19 @@ where
         })
     }
 
-    fn subscribe(&mut self, topic: &str) -> Result<BoxStream<'static, Payload>, RpcError> {
+    fn subscribe<'a>(
+        &'a mut self,
+        topic: &'a str,
+    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
         // The engine owns the subscription lifecycle (keyed by request id) and
         // the per-connection cap (SessionLimits); no `generate_subscription_id`
-        // / `max_subs` bookkeeping here.
-        let stream =
-            crate::remote::stream::stream_record_updates(&self.db, topic).map_err(map_db_err)?;
-        Ok(Box::pin(stream.map(|v| to_payload(&v))))
+        // / `max_subs` bookkeeping here. AimX has no async authorization, so this
+        // is a trivial wrapper.
+        Box::pin(async move {
+            let stream = crate::remote::stream::stream_record_updates(&self.db, topic)
+                .map_err(map_db_err)?;
+            Ok(Box::pin(stream.map(|v| to_payload(&v))) as BoxStream<'static, Payload>)
+        })
     }
 
     fn write<'a>(
@@ -410,6 +416,8 @@ where
             max_subs_per_connection: config.max_subs_per_connection,
         },
         reads_hello: false,
+        // AimX's subscribe ack stays implicit (events flow); no explicit ack frame.
+        acks_subscribe: false,
     };
     let dispatch = Arc::new(AimxDispatch::new(db, config));
     let listener = UdsListener::new(listener);

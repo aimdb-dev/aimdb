@@ -1,382 +1,218 @@
-//! Shared client registry and topic-based fan-out.
+//! Shared per-topic broadcast bus (Phase 4 — doc 039 § 3).
 //!
-//! [`ClientManager`] tracks all connected WebSocket clients and their topic
-//! subscriptions.  When an outbound publisher task receives a new value it calls
-//! [`ClientManager::broadcast`] which serializes the payload once and delivers it
-//! to every client that has a matching subscription pattern.
+//! [`ClientManager`] is the **fan-out bridge** behind `Dispatch::subscribe`: one
+//! record update reaches every matching subscription. Each `WsSession::subscribe`
+//! registers a per-subscription channel and gets back a [`BoxStream`] of raw
+//! record-value [`Payload`]s; the per-connection [`WsCodec`](crate::codec) wraps
+//! each into a `ServerMessage::Data` on encode. The outbound record→broadcast
+//! tasks ([`crate::connector`]) feed [`broadcast`](ClientManager::broadcast).
+//!
+//! This replaces the pre-Phase-4 model where the manager owned per-client
+//! `mpsc::Sender<Message>` channels and formatted `ServerMessage`s itself — that
+//! formatting now lives in the codec, and the per-connection send half is owned
+//! by `run_session`.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
-use axum::extract::ws::Message;
+use aimdb_core::{BoxStream, Payload};
 use dashmap::DashMap;
-use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::{
-    auth::{ClientId, ClientInfo},
-    protocol::{topic_matches, ErrorCode, ServerMessage},
+    auth::ClientId,
+    codec::parse_payload,
+    protocol::{now_ms, topic_matches, ServerMessage},
 };
 
-// ════════════════════════════════════════════════════════════════════
-// Per-client state
-// ════════════════════════════════════════════════════════════════════
-
-/// State tracked for each connected WebSocket client.
-pub(crate) struct ClientState {
-    pub info: ClientInfo,
-    /// Channel used to push messages to the client's send loop.
-    pub sender: mpsc::Sender<Message>,
-    /// Topic patterns this client has subscribed to.
-    pub subscriptions: Vec<String>,
+/// One live subscription: a wildcard pattern + the channel feeding its stream.
+struct SubEntry {
+    pattern: String,
+    tx: mpsc::UnboundedSender<Payload>,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// ClientManager
-// ════════════════════════════════════════════════════════════════════
-
-/// Shared registry of connected clients with subscription-based fan-out.
-///
-/// Cloning this type is cheap — all instances share the same underlying data.
+/// Shared per-topic broadcast bus. Cloning is cheap (all clones share state).
 #[derive(Clone)]
 pub struct ClientManager {
-    /// Map from ClientId → per-client state.
-    ///
-    /// `DashMap` is used instead of `RwLock<HashMap>` to minimise lock contention
-    /// when many publisher tasks are broadcasting concurrently.
-    clients: Arc<DashMap<u64, ClientState>>,
-    /// Monotonically-increasing counter for generating unique `ClientId`s.
-    next_id: Arc<AtomicU64>,
+    /// sub-id → subscription entry.
+    subs: Arc<DashMap<u64, SubEntry>>,
+    /// Allocator for subscription ids.
+    next_sub: Arc<AtomicU64>,
+    /// Allocator for client ids (assigned at the HTTP upgrade).
+    next_client: Arc<AtomicU64>,
+    /// Live connection count (for the health endpoint).
+    connections: Arc<AtomicU64>,
+    /// Mirrors the builder's `with_raw_payload`: when set, `broadcast` ships the
+    /// serializer bytes verbatim instead of wrapping them in a `Data` envelope.
+    raw_payload: bool,
 }
 
 impl ClientManager {
-    /// Create a new, empty client registry.
-    pub fn new() -> Self {
+    /// Create a new, empty bus. `raw_payload` mirrors the builder flag.
+    pub fn new(raw_payload: bool) -> Self {
         Self {
-            clients: Arc::new(DashMap::new()),
-            next_id: Arc::new(AtomicU64::new(1)),
+            subs: Arc::new(DashMap::new()),
+            next_sub: Arc::new(AtomicU64::new(1)),
+            next_client: Arc::new(AtomicU64::new(1)),
+            connections: Arc::new(AtomicU64::new(0)),
+            raw_payload,
         }
     }
 
-    /// Register a new client and return its id together with the message receiver.
-    ///
-    /// The caller (session task) owns the `mpsc::Receiver` and drives the
-    /// WebSocket send loop.
-    pub fn register(
-        &self,
-        info: ClientInfo,
-        channel_capacity: usize,
-    ) -> (ClientId, mpsc::Receiver<Message>) {
-        let (tx, rx) = mpsc::channel(channel_capacity);
-        let state = ClientState {
-            info,
-            sender: tx,
-            subscriptions: Vec::new(),
-        };
-        let raw_id = state.info.id.0;
-        self.clients.insert(raw_id, state);
-        (ClientId(raw_id), rx)
-    }
-
-    /// Remove a client from the registry (called when the connection closes).
-    pub fn unregister(&self, id: ClientId) {
-        self.clients.remove(&id.0);
-    }
-
-    /// Return the number of currently connected clients.
-    pub fn client_count(&self) -> usize {
-        self.clients.len()
-    }
-
-    /// Allocate a new unique `ClientId`.
+    /// Allocate a new unique [`ClientId`] (called at the HTTP upgrade).
     pub fn next_client_id(&self) -> ClientId {
-        ClientId(self.next_id.fetch_add(1, Ordering::Relaxed))
+        ClientId(self.next_client.fetch_add(1, Ordering::Relaxed))
     }
 
-    // ────────────────────────────────────────────────────────────────
-    // Subscription management (called from session recv loop)
-    // ────────────────────────────────────────────────────────────────
-
-    /// Add subscription patterns for the given client.
-    ///
-    /// Returns only the patterns that were actually new (duplicates are skipped).
-    pub fn subscribe(&self, id: ClientId, patterns: &[String]) -> Vec<String> {
-        let mut added = Vec::new();
-        if let Some(mut entry) = self.clients.get_mut(&id.0) {
-            for pat in patterns {
-                if !entry.subscriptions.contains(pat) {
-                    entry.subscriptions.push(pat.clone());
-                    added.push(pat.clone());
-                }
-            }
-        }
-        added
+    /// Number of live connections (informational, for `/health`).
+    pub fn client_count(&self) -> usize {
+        self.connections.load(Ordering::Relaxed) as usize
     }
 
-    /// Remove subscription patterns for the given client.
-    pub fn unsubscribe(&self, id: ClientId, patterns: &[String]) {
-        if let Some(mut entry) = self.clients.get_mut(&id.0) {
-            entry.subscriptions.retain(|s| !patterns.contains(s));
+    /// RAII guard: increments the connection count now, decrements on drop.
+    pub(crate) fn connection_guard(&self) -> ConnectionGuard {
+        self.connections.fetch_add(1, Ordering::Relaxed);
+        ConnectionGuard {
+            connections: self.connections.clone(),
         }
     }
 
-    /// Returns `true` if the client has at least one matching subscription for `topic`.
-    pub fn is_subscribed(&self, id: ClientId, topic: &str) -> bool {
-        self.clients
-            .get(&id.0)
-            .map(|e| e.subscriptions.iter().any(|p| topic_matches(p, topic)))
-            .unwrap_or(false)
+    /// Register a subscription for `pattern`; returns its id and the stream of
+    /// matching record-value payloads. Dropping the stream ends the subscription
+    /// (the next [`broadcast`](Self::broadcast) prunes the dead entry).
+    pub fn subscribe(&self, pattern: &str) -> (u64, BoxStream<'static, Payload>) {
+        let id = self.next_sub.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::unbounded_channel::<Payload>();
+        self.subs.insert(
+            id,
+            SubEntry {
+                pattern: pattern.to_string(),
+                tx,
+            },
+        );
+        let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        (id, Box::pin(stream))
     }
 
-    // ────────────────────────────────────────────────────────────────
-    // Fan-out
-    // ────────────────────────────────────────────────────────────────
+    /// Explicitly drop a subscription (on `Unsubscribe`).
+    pub fn unsubscribe(&self, sub_id: u64) {
+        self.subs.remove(&sub_id);
+    }
 
-    /// Broadcast a serialized `data` payload to all clients subscribed to `topic`.
-    ///
-    /// The payload bytes (from the record serializer) are parsed as JSON once;
-    /// if parsing fails the raw bytes are embedded as a JSON string.
+    /// Fan a serialized record-value out to every subscription whose pattern
+    /// matches `topic`. Dead subscriptions (dropped streams) are pruned.
     pub async fn broadcast(&self, topic: &str, payload_bytes: &[u8]) {
-        let payload = parse_payload(payload_bytes);
-        let ts = crate::protocol::now_ms();
-
-        let msg = ServerMessage::Data {
-            topic: topic.to_string(),
-            payload: Some(payload),
-            ts,
-        };
-
-        let text = match serde_json::to_string(&msg) {
-            Ok(t) => t,
-            Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!(
-                    "Failed to serialize data message for topic '{}': {}",
-                    topic,
-                    _e
-                );
-                return;
+        // Serialize the complete wire frame **once** here — the bus is the only
+        // place the real topic + value meet, and doing it once (vs once per
+        // subscriber in the codec) keeps fan-out O(1). The codec writes the
+        // result verbatim. The same finished bytes are `Arc`-shared to every
+        // matching subscription (a refcount bump, no per-subscriber copy).
+        let frame = if self.raw_payload {
+            payload_bytes.to_vec()
+        } else {
+            match serde_json::to_vec(&ServerMessage::Data {
+                topic: topic.to_string(),
+                payload: Some(parse_payload(payload_bytes)),
+                ts: now_ms(),
+            }) {
+                Ok(f) => f,
+                Err(_) => return,
             }
         };
-
-        let ws_msg = Message::Text(text.into());
-
-        // Iterate clients without holding a write lock
-        let ids: Vec<u64> = self
-            .clients
-            .iter()
-            .filter_map(|entry| {
-                if entry.subscriptions.iter().any(|p| topic_matches(p, topic)) {
-                    Some(*entry.key())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for raw_id in ids {
-            if let Some(entry) = self.clients.get(&raw_id) {
-                let _ = entry.sender.try_send(ws_msg.clone());
+        let payload = Payload::from(frame.as_slice());
+        let mut dead: Vec<u64> = Vec::new();
+        for entry in self.subs.iter() {
+            if topic_matches(&entry.pattern, topic) && entry.tx.send(payload.clone()).is_err() {
+                dead.push(*entry.key());
             }
+        }
+        for id in dead {
+            self.subs.remove(&id);
         }
     }
 
-    /// Broadcast raw payload bytes directly to all subscribed clients as a
-    /// WebSocket text frame — **no `ServerMessage` envelope**.
-    ///
-    /// Use this (with `raw_payload = true` on the connector builder) when the
-    /// serializer already produces the complete JSON the client expects.
-    pub async fn broadcast_raw(&self, topic: &str, payload_bytes: &[u8]) {
-        let text = match std::str::from_utf8(payload_bytes) {
-            Ok(s) => s.to_string(),
-            Err(_) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("broadcast_raw: payload for '{}' is not valid UTF-8", topic);
-                return;
-            }
-        };
-
-        let ws_msg = Message::Text(text.into());
-
-        let ids: Vec<u64> = self
-            .clients
-            .iter()
-            .filter_map(|entry| {
-                if entry.subscriptions.iter().any(|p| topic_matches(p, topic)) {
-                    Some(*entry.key())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for raw_id in ids {
-            if let Some(entry) = self.clients.get(&raw_id) {
-                let _ = entry.sender.try_send(ws_msg.clone());
-            }
-        }
-    }
-
-    /// Send a snapshot (late-join current value) to a single client.
-    pub async fn send_snapshot(&self, id: ClientId, topic: &str, payload_bytes: &[u8]) {
-        let payload = parse_payload(payload_bytes);
-        let msg = ServerMessage::Snapshot {
-            topic: topic.to_string(),
-            payload: Some(payload),
-        };
-
-        self.send_to(id, &msg).await;
-    }
-
-    /// Send an error message to a single client.
-    pub async fn send_error(
-        &self,
-        id: ClientId,
-        code: ErrorCode,
-        topic: Option<String>,
-        message: impl Into<String>,
-    ) {
-        let msg = ServerMessage::Error {
-            code,
-            topic,
-            message: message.into(),
-        };
-        self.send_to(id, &msg).await;
-    }
-
-    /// Send a `subscribed` acknowledgement to a single client.
-    pub async fn send_subscribed(&self, id: ClientId, topics: Vec<String>) {
-        let msg = ServerMessage::Subscribed { topics };
-        self.send_to(id, &msg).await;
-    }
-
-    /// Send a `pong` to a single client.
-    pub async fn send_pong(&self, id: ClientId) {
-        self.send_to(id, &ServerMessage::Pong).await;
-    }
-
-    /// Send an arbitrary [`ServerMessage`] to a single client.
-    ///
-    /// Used by the query handler to deliver `QueryResult` responses.
-    pub async fn send_to_client(&self, id: ClientId, msg: &ServerMessage) {
-        self.send_to(id, msg).await;
-    }
-
-    // ────────────────────────────────────────────────────────────────
-    // Helpers
-    // ────────────────────────────────────────────────────────────────
-
-    async fn send_to(&self, id: ClientId, msg: &ServerMessage) {
-        let text = match serde_json::to_string(msg) {
-            Ok(t) => t,
-            Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("Failed to serialize message: {}", _e);
-                return;
-            }
-        };
-
-        if let Some(entry) = self.clients.get(&id.0) {
-            let _ = entry.sender.try_send(Message::Text(text.into()));
-        }
-    }
-
-    /// Return the `ClientInfo` for the given id, if still connected.
-    pub fn client_info(&self, id: ClientId) -> Option<ClientInfo> {
-        self.clients.get(&id.0).map(|e| e.info.clone())
-    }
-
-    /// Returns a snapshot of (topic, subscribed-client-count) pairs for monitoring.
-    pub fn subscription_stats(&self) -> HashMap<String, usize> {
-        let mut stats: HashMap<String, usize> = HashMap::new();
-        for entry in self.clients.iter() {
-            for pat in &entry.subscriptions {
-                *stats.entry(pat.clone()).or_insert(0) += 1;
-            }
-        }
-        stats
+    /// Number of live subscriptions (for monitoring/tests).
+    pub fn subscription_count(&self) -> usize {
+        self.subs.len()
     }
 }
 
 impl Default for ClientManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Helpers
-// ════════════════════════════════════════════════════════════════════
-
-/// Parse raw bytes as JSON, falling back to a JSON string if parsing fails.
-fn parse_payload(bytes: &[u8]) -> Value {
-    serde_json::from_slice(bytes)
-        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(bytes).into_owned()))
+/// Decrements the connection count when dropped (held by `WsSession`).
+pub(crate) struct ConnectionGuard {
+    connections: Arc<AtomicU64>,
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Tests
-// ════════════════════════════════════════════════════════════════════
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.connections.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Permissions;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use futures_util::StreamExt;
 
-    fn dummy_info(id: u64) -> ClientInfo {
-        ClientInfo {
-            id: ClientId(id),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234),
-            permissions: Permissions::allow_all(),
+    #[tokio::test]
+    async fn broadcast_reaches_matching_subscriptions() {
+        let mgr = ClientManager::new(false);
+        let (_id, mut stream) = mgr.subscribe("sensors/#");
+
+        mgr.broadcast("sensors/temp/vienna", b"22.5").await;
+
+        // Delivery is the complete, pre-serialized `Data` frame (built once in
+        // broadcast) carrying the real topic — even for the wildcard sub.
+        let payload = stream.next().await.expect("should receive");
+        match serde_json::from_slice::<ServerMessage>(&payload).unwrap() {
+            ServerMessage::Data { topic, payload, .. } => {
+                assert_eq!(topic, "sensors/temp/vienna");
+                assert_eq!(payload, Some(serde_json::json!(22.5)));
+            }
+            _ => panic!("expected Data"),
         }
     }
 
     #[tokio::test]
-    async fn register_and_unregister() {
-        let mgr = ClientManager::new();
-        let info = dummy_info(1);
-        let (id, _rx) = mgr.register(info, 16);
-        assert_eq!(mgr.client_count(), 1);
-        mgr.unregister(id);
-        assert_eq!(mgr.client_count(), 0);
+    async fn non_matching_topic_is_not_delivered() {
+        use futures_util::FutureExt;
+        let mgr = ClientManager::new(false);
+        let (_id, mut stream) = mgr.subscribe("commands/#");
+        mgr.broadcast("sensors/temp", b"22.5").await;
+        // Nothing queued: the next() future is not ready.
+        assert!(stream.next().now_or_never().is_none());
     }
 
     #[tokio::test]
-    async fn subscribe_and_broadcast() {
-        let mgr = ClientManager::new();
-        let info = dummy_info(42);
-        let (id, mut rx) = mgr.register(info, 16);
-        mgr.subscribe(id, &["sensors/#".to_string()]);
-
-        mgr.broadcast("sensors/temperature/vienna", b"22.5").await;
-
-        let msg = rx.recv().await.expect("should receive message");
-        if let Message::Text(text) = msg {
-            let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-            assert_eq!(v["type"], "data");
-            assert_eq!(v["topic"], "sensors/temperature/vienna");
-        } else {
-            panic!("expected text message");
+    async fn fan_out_to_n_subscribers() {
+        let mgr = ClientManager::new(false);
+        let mut streams: Vec<_> = (0..5).map(|_| mgr.subscribe("#").1).collect();
+        mgr.broadcast("any/topic", b"\"v\"").await;
+        for s in &mut streams {
+            let frame = s.next().await.unwrap();
+            assert!(matches!(
+                serde_json::from_slice::<ServerMessage>(&frame).unwrap(),
+                ServerMessage::Data { topic, .. } if topic == "any/topic"
+            ));
         }
     }
 
     #[tokio::test]
-    async fn no_broadcast_when_not_subscribed() {
-        let mgr = ClientManager::new();
-        let info = dummy_info(7);
-        let (id, mut rx) = mgr.register(info, 16);
-        mgr.subscribe(id, &["commands/#".to_string()]);
-
-        // Broadcast to a topic the client is NOT subscribed to
-        mgr.broadcast("sensors/temperature/vienna", b"22.5").await;
-
-        // Channel should be empty
-        assert!(rx.try_recv().is_err());
+    async fn dropped_stream_is_pruned() {
+        let mgr = ClientManager::new(false);
+        let (_id, stream) = mgr.subscribe("#");
+        assert_eq!(mgr.subscription_count(), 1);
+        drop(stream);
+        mgr.broadcast("t", b"v").await;
+        assert_eq!(mgr.subscription_count(), 0);
     }
 }
