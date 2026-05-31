@@ -19,7 +19,7 @@ use futures::StreamExt;
 use aimdb_core::session::{
     run_client, serve, AuthError, BoxFut, BoxStream, ClientConfig, CodecError, Connection, Dialer,
     Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, Session,
-    SessionConfig, SessionCtx, TransportError, TransportResult,
+    SessionConfig, SessionCtx, SessionLimits, TransportError, TransportResult,
 };
 
 /// Minimal [`TimeOps`](aimdb_executor::TimeOps) clock for the engine tests
@@ -468,6 +468,93 @@ async fn failed_subscribe_ends_stream_via_ack() {
 
     drop(handle);
     drop(stream);
+    let _ = client.await;
+    server.abort();
+}
+
+/// A subscription whose source stream *ends on its own* (the echo yields three
+/// updates, then completes) must free its slot against
+/// `max_subs_per_connection` once its pump drains. Regression for the bug where
+/// `run_session` pruned `cancels` only on an explicit Unsubscribe, so a
+/// naturally-ended subscription lingered in the map — leaking memory and, worse,
+/// permanently counting against the per-connection cap until a long-lived
+/// connection that churned subscriptions could open no more.
+#[tokio::test]
+async fn ended_subscription_frees_its_cap_slot() {
+    let (listener, dialer) = transport_pair();
+    let dispatch = Arc::new(EchoDispatch {
+        writes: Arc::new(Mutex::new(Vec::new())),
+    });
+    // Cap of 2: with the leak, the third subscribe is refused even though the
+    // first two have already ended.
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        dispatch,
+        SessionConfig {
+            limits: SessionLimits {
+                max_connections: 16,
+                max_subs_per_connection: 2,
+            },
+            reads_hello: false,
+            acks_subscribe: false,
+        },
+    ));
+    let (handle, client_fut) = run_client(
+        dialer,
+        LineCodec,
+        ClientConfig {
+            reconnect: false,
+            reconnect_delay: 10,
+            max_reconnect_delay: 10,
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: usize::MAX,
+            topic_routed_subs: false,
+            sends_hello: false,
+        },
+        Arc::new(TestClock),
+    );
+    let client = tokio::spawn(client_fut);
+
+    // Drain a subscription's three echo updates; the server-side stream then
+    // ends, so its pump finishes and is reaped.
+    async fn drain_three(stream: &mut BoxStream<'static, Payload>, topic: &str) {
+        for i in 1..=3 {
+            let ev = tokio::time::timeout(Duration::from_secs(2), stream.next())
+                .await
+                .expect("event should arrive")
+                .expect("an accepted subscription must yield its events");
+            assert_eq!(&*ev, format!("{topic}#{i}").as_bytes());
+        }
+    }
+
+    // Open and fully consume two subscriptions (both fit under the cap of 2).
+    let mut a = handle.subscribe("a").unwrap();
+    drain_three(&mut a, "a").await;
+    let mut b = handle.subscribe("b").unwrap();
+    drain_three(&mut b, "b").await;
+
+    // Let the server forward the last events and reap both finished pumps.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // A third subscribe must still be accepted — the two ended subs freed their
+    // slots. Pre-fix their `cancels` entries lingered, the cap stayed full, and
+    // this subscribe was refused (surfacing as an immediately-ended stream).
+    let mut c = handle.subscribe("c").unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(2), c.next())
+        .await
+        .expect("third subscribe must not hang");
+    assert_eq!(
+        first.as_deref(),
+        Some(&b"c#1"[..]),
+        "an ended subscription must free its cap slot; the third subscribe was refused"
+    );
+
+    drop(handle);
+    drop(a);
+    drop(b);
+    drop(c);
     let _ = client.await;
     server.abort();
 }

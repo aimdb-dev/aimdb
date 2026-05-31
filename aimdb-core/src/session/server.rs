@@ -81,8 +81,9 @@ enum Step {
     Closed,
     /// A subscription update to encode and forward to the peer.
     Event(SubEvent),
-    /// A subscription pump finished — nothing to do but reap it.
-    SubDrained,
+    /// A subscription pump finished on its own (stream exhausted) — reap it and
+    /// prune its `cancels` entry by the carried sub id.
+    SubDrained(String),
 }
 
 /// Drive one accepted [`Connection`] until it closes.
@@ -133,7 +134,10 @@ pub async fn run_session<C, D>(
     // restores the bounded-buffer slow-client protection the hand-rolled loops had.
     let (event_tx, event_rx) = async_channel::bounded::<SubEvent>(EVENT_BUFFER);
     // Per-connection subscription pumps; the engine future is their sole owner.
-    let mut subs: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
+    // Each pump resolves to its own sub id on completion, so the loop can prune
+    // the matching `cancels` entry (a pump ended via Unsubscribe was already
+    // pruned, making the redundant remove a harmless no-op).
+    let mut subs: FuturesUnordered<BoxFut<'static, String>> = FuturesUnordered::new();
     // sub-id → cancel handle (dropping/sending the oneshot cancels the pump,
     // race-free unlike a bare `Notify`).
     let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
@@ -162,16 +166,24 @@ pub async fn run_session<C, D>(
                 // ---- outbound: a subscription update to forward ------------
                 ev = event => match ev {
                     Ok(ev) => Step::Event(ev),
-                    Err(_) => Step::SubDrained, // funnel closed (tx held, so unreachable)
+                    // Funnel closed — only if every sender dropped, which can't
+                    // happen while the loop holds `event_tx`, so this is
+                    // unreachable; end the session defensively if it ever does.
+                    Err(_) => Step::Closed,
                 },
                 // ---- drain finished subscription pumps ---------------------
-                () = subs.select_next_some() => Step::SubDrained,
+                sub_id = subs.select_next_some() => Step::SubDrained(sub_id),
             }
         };
 
         match step {
             Step::Closed => break,
-            Step::SubDrained => {}
+            // A pump finished on its own (stream exhausted), not via Unsubscribe;
+            // drop its cancel handle so the ended subscription neither leaks nor
+            // keeps counting against `max_subs_per_connection`.
+            Step::SubDrained(sub_id) => {
+                cancels.remove(&sub_id);
+            }
 
             Step::Event(ev) => {
                 out.clear();
@@ -316,12 +328,16 @@ async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
 /// Pump one `Session::subscribe` stream into the connection's event funnel,
 /// tagging each update with a monotonic `seq`. Ends when the stream finishes or
 /// the cancel handle is dropped/fired (Unsubscribe or connection teardown).
+///
+/// Returns its `sub_id` so [`run_session`] can prune the `cancels` entry for a
+/// pump that ended on its own; the Unsubscribe path already removed it, so that
+/// later prune is a no-op.
 async fn pump_subscription(
     sub_id: String,
     mut stream: BoxStream<'static, Payload>,
     tx: Sender<SubEvent>,
     cancel: oneshot::Receiver<()>,
-) {
+) -> String {
     // `oneshot::Receiver` reports `is_terminated() == true` once its sender drops
     // (the cancel signal!), and `select_biased!` *skips* terminated arms — so a
     // bare `cancel` arm would never fire on Unsubscribe. Fuse it once: `Fuse`'s
@@ -355,6 +371,7 @@ async fn pump_subscription(
             Err(_) => break,            // funnel disconnected — connection gone
         }
     }
+    sub_id
 }
 
 /// Accept connections from `listener` and serve each with [`run_session`],
