@@ -26,18 +26,18 @@ use futures_core::Stream;
 use crate::transport::{ConnectorConfig, PublishError};
 
 // ---------------------------------------------------------------------------
-// Phase 2 engines (std-only). The frozen contracts above stay `no_std + alloc`;
-// the reactive `serve`/`run_session` (server) and proactive `run_client`/
-// `pump_client` (client) engines need `tokio` and therefore gate on `std`. This
-// keeps the Phase 0 acceptance criterion intact: `--features connector-session`
-// still cross-compiles to `thumbv7em` because the no_std build sees only the
-// contracts, never the engines. Phase 5 is where the engines themselves go
-// `no_std` (Embassy/heapless). See docs/design/detailed/036/037.
+// Phase 2 engines. **Phase 5 made these runtime-neutral** (`futures` channels +
+// `select_biased!` + the adapter's `TimeOps` clock — no `tokio`/`embassy-*`), so
+// they now gate on `connector-session` (`alloc`) rather than `std` and
+// cross-compile to `thumbv7em-none-eabihf`. The frozen contracts above stay
+// `no_std + alloc` as before. Only the concrete AimX substrate below (UDS +
+// NDJSON) is still std-only until its embedded transport lands in Phase 6.
+// See docs/design/detailed/036/037/040.
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "std")]
+#[cfg(feature = "connector-session")]
 mod client;
-#[cfg(feature = "std")]
+#[cfg(feature = "connector-session")]
 mod server;
 
 // Concrete AimX-v2 substrate (UDS transport + NDJSON codec), std-only. Phase 3
@@ -45,9 +45,9 @@ mod server;
 #[cfg(feature = "std")]
 pub mod aimx;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "connector-session")]
 pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
-#[cfg(feature = "std")]
+#[cfg(feature = "connector-session")]
 pub use server::{run_session, serve, SessionConfig};
 
 // ===========================================================================

@@ -1249,6 +1249,15 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         &self.runtime
     }
 
+    /// Returns an owned `Arc` handle to the runtime adapter.
+    ///
+    /// Connectors that hand the runtime to a `'static` engine future (e.g. the
+    /// session client engine, which needs the adapter's [`TimeOps`](aimdb_executor::TimeOps)
+    /// clock for reconnect backoff/keepalive) clone it through here.
+    pub fn runtime_arc(&self) -> Arc<R> {
+        self.runtime.clone()
+    }
+
     /// Returns the runtime as a type-erased `Arc<dyn Any + Send + Sync>`
     ///
     /// Used by connectors to provide `RuntimeContext` to context-aware

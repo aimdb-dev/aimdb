@@ -17,7 +17,7 @@
 //!        └─ return Vec<BoxFuture> (drained by AimDbRunner)
 //! ```
 
-use std::{pin::Pin, time::Duration};
+use std::pin::Pin;
 
 use aimdb_core::session::{pump_client, run_client, ClientConfig};
 use aimdb_core::ConnectorBuilder;
@@ -136,7 +136,7 @@ type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>
 
 impl<R> ConnectorBuilder<R> for WsClientConnectorBuilder
 where
-    R: aimdb_executor::RuntimeAdapter + 'static,
+    R: aimdb_executor::TimeOps + 'static,
 {
     fn scheme(&self) -> &str {
         "ws-client"
@@ -154,11 +154,11 @@ where
             // pushes `Data{topic}` with no id).
             let config = ClientConfig {
                 reconnect: self.auto_reconnect,
-                reconnect_delay: Duration::from_millis(200),
-                max_reconnect_delay: Duration::from_secs(30),
+                reconnect_delay: 200,
+                max_reconnect_delay: 30_000,
                 max_reconnect_attempts: self.max_reconnect_attempts,
                 keepalive_interval: if self.keepalive_ms > 0 {
-                    Some(Duration::from_millis(self.keepalive_ms))
+                    Some(self.keepalive_ms)
                 } else {
                     None
                 },
@@ -171,8 +171,13 @@ where
             // Mirrors `AimxClientConnector`: `run_client` owns demux/reconnect/
             // keepalive over the WS `Dialer` + per-connection `WsCodec`;
             // `pump_client` wires `link_to`/`link_from` routes to the handle.
-            let (handle, engine_fut) =
-                run_client(WsDialer::new(self.url.clone()), WsCodec::new(), config);
+            // The runtime's `TimeOps` clock drives reconnect backoff/keepalive.
+            let (handle, engine_fut) = run_client(
+                WsDialer::new(self.url.clone()),
+                WsCodec::new(),
+                config,
+                db.runtime_arc(),
+            );
             let mut futures = pump_client(db, "ws-client", &handle);
             futures.push(engine_fut);
             Ok(futures)

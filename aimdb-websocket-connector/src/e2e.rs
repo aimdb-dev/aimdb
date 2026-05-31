@@ -386,6 +386,7 @@ async fn client_engine_receives_broadcast_over_real_socket() {
         WsDialer::new(format!("ws://{addr}/ws")),
         WsCodec::new(),
         config,
+        Arc::new(aimdb_tokio_adapter::TokioAdapter),
     );
     let driver = tokio::spawn(engine);
 

@@ -12,10 +12,12 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 
+use aimdb_executor::TimeOps;
+
 use crate::builder::AimDb;
 use crate::connector::ConnectorBuilder;
 use crate::session::{pump_client, run_client, ClientConfig};
-use crate::{DbResult, RuntimeAdapter};
+use crate::DbResult;
 
 use super::{AimxCodec, UdsDialer};
 
@@ -48,7 +50,7 @@ impl AimxClientConnector {
 
 impl<R> ConnectorBuilder<R> for AimxClientConnector
 where
-    R: RuntimeAdapter + 'static,
+    R: TimeOps + 'static,
 {
     fn build<'a>(
         &'a self,
@@ -59,6 +61,7 @@ where
                 UdsDialer::new(self.socket_path.clone()),
                 AimxCodec,
                 self.config.clone(),
+                db.runtime_arc(),
             );
             // One pump future per route; they hold `ClientHandle` clones, so the
             // engine stays alive as long as any mirror runs. `handle` drops here.

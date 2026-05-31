@@ -22,6 +22,46 @@ use aimdb_core::session::{
     SessionConfig, SessionCtx, TransportError, TransportResult,
 };
 
+/// Minimal [`TimeOps`](aimdb_executor::TimeOps) clock for the engine tests
+/// (aimdb-core can't depend on a runtime adapter — that would be a cycle).
+/// Backs the reconnect/keepalive seam with `tokio::time`; these tests run with
+/// `reconnect: false` and no keepalive, so it is never actually awaited.
+#[derive(Clone, Copy)]
+struct TestClock;
+
+impl aimdb_executor::RuntimeAdapter for TestClock {
+    fn runtime_name() -> &'static str {
+        "test-clock"
+    }
+}
+
+impl aimdb_executor::TimeOps for TestClock {
+    type Instant = std::time::Instant;
+    type Duration = Duration;
+
+    fn now(&self) -> Self::Instant {
+        std::time::Instant::now()
+    }
+    fn duration_since(&self, later: Self::Instant, earlier: Self::Instant) -> Option<Duration> {
+        later.checked_duration_since(earlier)
+    }
+    fn millis(&self, ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+    fn secs(&self, secs: u64) -> Duration {
+        Duration::from_secs(secs)
+    }
+    fn micros(&self, micros: u64) -> Duration {
+        Duration::from_micros(micros)
+    }
+    fn sleep(&self, duration: Duration) -> impl core::future::Future<Output = ()> + Send {
+        tokio::time::sleep(duration)
+    }
+    fn duration_as_nanos(&self, duration: Duration) -> u64 {
+        duration.as_nanos().min(u64::MAX as u128) as u64
+    }
+}
+
 // ===========================================================================
 // Channel-backed transport (Layer 1)
 // ===========================================================================
@@ -340,14 +380,15 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
         LineCodec,
         ClientConfig {
             reconnect: false,
-            reconnect_delay: Duration::from_millis(10),
-            max_reconnect_delay: Duration::from_millis(10),
+            reconnect_delay: 10,
+            max_reconnect_delay: 10,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
             topic_routed_subs: false,
             sends_hello: true,
         },
+        Arc::new(TestClock),
     );
     let client = tokio::spawn(client_fut);
 
@@ -405,14 +446,15 @@ async fn failed_subscribe_ends_stream_via_ack() {
         LineCodec,
         ClientConfig {
             reconnect: false,
-            reconnect_delay: Duration::from_millis(10),
-            max_reconnect_delay: Duration::from_millis(10),
+            reconnect_delay: 10,
+            max_reconnect_delay: 10,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
             topic_routed_subs: false,
             sends_hello: false,
         },
+        Arc::new(TestClock),
     );
     let client = tokio::spawn(client_fut);
 

@@ -20,8 +20,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::task::JoinHandle;
 
+use std::sync::Arc;
+
 use aimdb_core::session::aimx::{AimxCodec, UdsDialer};
 use aimdb_core::session::{run_client, BoxStream, ClientConfig, ClientHandle, Payload, RpcError};
+use aimdb_tokio_adapter::TokioAdapter;
 
 use crate::error::{ClientError, ClientResult};
 use crate::protocol::{RecordMetadata, WelcomeMessage};
@@ -63,7 +66,7 @@ impl AimxConnection {
             sends_hello: false,
             ..ClientConfig::default()
         };
-        let (handle, engine_fut) = run_client(dialer, AimxCodec, config);
+        let (handle, engine_fut) = run_client(dialer, AimxCodec, config, Arc::new(TokioAdapter));
         let engine = tokio::spawn(engine_fut);
 
         // Handshake-as-RPC: the server replies with its Welcome.

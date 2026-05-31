@@ -285,6 +285,8 @@ test-embedded:
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + json-serialize) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,json-serialize"
+	@printf "$(YELLOW)  → Checking aimdb-core session engines (no_std + connector-session) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session"
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"

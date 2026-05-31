@@ -1,6 +1,6 @@
 //! Phase 2 **client** engine — the proactive half of the shared session
 //! substrate (doc 034 § "shared with a client engine"; doc 035 Client
-//! capability). Std-only, the dual of [`server`](super::server): it *dials* a
+//! capability). The dual of [`server`](super::server): it *dials* a
 //! [`Connection`] via a [`Dialer`] instead of accepting one, *sends* [`Inbound`]
 //! and *receives* [`Outbound`] (roles swapped vs the server), and demultiplexes
 //! replies by `id`.
@@ -14,12 +14,28 @@
 //!
 //! Spawn-free: [`run_client`] returns the engine future for the runner to drive;
 //! it never spawns.
+//!
+//! **Runtime-neutral (Phase 5).** The only runtime-specific primitive this engine
+//! touches is *time* (reconnect backoff + keepalive), so it is parametrized over
+//! the adapter's [`TimeOps`] clock; everything else is `futures` channels +
+//! `select_biased!`. No `tokio`/`embassy-*` here — the runtime split lives in the
+//! adapter crates' `TimeOps` impls.
+//!
+//! Like the server, the demux loop uses an **extract-then-act** shape: the
+//! `select_biased!` block only computes a small [`ClientStep`] (it must not touch
+//! `conn` while a sibling arm's future still borrows it), then the loop acts on
+//! it once the borrows release.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
-use tokio::sync::{mpsc, oneshot};
+use aimdb_executor::TimeOps;
+use async_channel::{Receiver, Sender};
+use futures_channel::oneshot;
+use futures_util::{select_biased, FutureExt, StreamExt};
+use hashbrown::HashMap;
 
 use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
@@ -28,24 +44,28 @@ use crate::connector::SerializerKind;
 use crate::router::RouterBuilder;
 use crate::{AimDb, RuntimeAdapter};
 
-/// Client engine knobs.
+/// Client engine knobs. Durations are **milliseconds** (`u64`) rather than
+/// `std::time::Duration` so the engine stays `no_std`-clean and runtime-neutral —
+/// the adapter's [`TimeOps`] turns them into its native `Duration` at the call.
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     /// Redial after a dropped/failed connection instead of ending the engine.
     pub reconnect: bool,
-    /// Base delay before the first redial when `reconnect` is set. Subsequent
+    /// Base delay (ms) before the first redial when `reconnect` is set. Subsequent
     /// redials grow this exponentially, capped at [`max_reconnect_delay`](Self::max_reconnect_delay).
-    pub reconnect_delay: Duration,
-    /// Upper bound for the exponential reconnect backoff. Defaults to
+    pub reconnect_delay: u64,
+    /// Upper bound (ms) for the exponential reconnect backoff. Defaults to
     /// [`reconnect_delay`](Self::reconnect_delay) (i.e. no escalation — a fixed
     /// delay, preserving the pre-Phase-4 behavior).
-    pub max_reconnect_delay: Duration,
+    pub max_reconnect_delay: u64,
     /// Maximum redial attempts before the engine gives up. `0` = unlimited
     /// (the default).
     pub max_reconnect_attempts: usize,
-    /// If set, send a keepalive `Ping` on this interval while a connection is
-    /// idle. `None` (default) disables keepalive.
-    pub keepalive_interval: Option<Duration>,
+    /// If set, send a keepalive `Ping` after this many milliseconds of an
+    /// otherwise-idle connection. `None` (default) disables keepalive. (Phase 5:
+    /// the timer re-arms each loop iteration, so this is an *idle* keepalive —
+    /// inbound/outbound traffic resets it, which only suppresses redundant pings.)
+    pub keepalive_interval: Option<u64>,
     /// Cap on caller commands buffered while disconnected; the oldest are dropped
     /// past this bound. Defaults to `usize::MAX` (effectively unbounded — the
     /// pre-Phase-4 behavior).
@@ -66,8 +86,8 @@ impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             reconnect: true,
-            reconnect_delay: Duration::from_millis(200),
-            max_reconnect_delay: Duration::from_millis(200),
+            reconnect_delay: 200,
+            max_reconnect_delay: 200,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
@@ -77,18 +97,18 @@ impl Default for ClientConfig {
     }
 }
 
-/// Exponential backoff for the `attempt`-th redial (1-based), capped at
+/// Exponential backoff (ms) for the `attempt`-th redial (1-based), capped at
 /// [`ClientConfig::max_reconnect_delay`]. Defaults collapse this to a fixed
 /// `reconnect_delay` (max == base), preserving pre-Phase-4 behavior.
-fn backoff_delay(config: &ClientConfig, attempt: usize) -> Duration {
+fn backoff_delay(config: &ClientConfig, attempt: usize) -> u64 {
     let base = config.reconnect_delay;
     let cap = config.max_reconnect_delay.max(base);
     let shift = attempt.saturating_sub(1).min(16) as u32;
-    base.saturating_mul(1u32 << shift).min(cap)
+    base.saturating_mul(1u64 << shift).min(cap)
 }
 
 /// Bound the offline backlog: drop the oldest buffered commands beyond `cap`.
-fn bound_offline_queue(cmd_rx: &mut mpsc::UnboundedReceiver<ClientCmd>, cap: usize) {
+fn bound_offline_queue(cmd_rx: &Receiver<ClientCmd>, cap: usize) {
     while cmd_rx.len() > cap && cmd_rx.try_recv().is_ok() {}
 }
 
@@ -97,7 +117,7 @@ fn bound_offline_queue(cmd_rx: &mut mpsc::UnboundedReceiver<ClientCmd>, cap: usi
 /// pending-call map and the wire.
 #[derive(Clone)]
 pub struct ClientHandle {
-    cmd_tx: mpsc::UnboundedSender<ClientCmd>,
+    cmd_tx: Sender<ClientCmd>,
 }
 
 /// Commands the [`ClientHandle`] funnels to the engine (the engine assigns the
@@ -110,7 +130,7 @@ enum ClientCmd {
     },
     Subscribe {
         topic: String,
-        events: mpsc::UnboundedSender<Payload>,
+        events: Sender<Payload>,
     },
     Write {
         topic: String,
@@ -119,6 +139,12 @@ enum ClientCmd {
 }
 
 impl ClientHandle {
+    /// Funnel a command to the engine. The channel is unbounded, so `try_send`
+    /// never blocks and only fails once the engine has stopped (receiver closed).
+    fn enqueue(&self, cmd: ClientCmd) -> Result<(), RpcError> {
+        self.cmd_tx.try_send(cmd).map_err(|_| RpcError::Internal)
+    }
+
     /// One-shot RPC: send a request and await its single reply. Returns
     /// [`RpcError::Internal`] if the engine has stopped or the connection drops
     /// before the reply arrives.
@@ -128,13 +154,11 @@ impl ClientHandle {
         params: Payload,
     ) -> Result<Payload, RpcError> {
         let (reply, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(ClientCmd::Call {
-                method: method.into(),
-                params,
-                reply,
-            })
-            .map_err(|_| RpcError::Internal)?;
+        self.enqueue(ClientCmd::Call {
+            method: method.into(),
+            params,
+            reply,
+        })?;
         rx.await.map_err(|_| RpcError::Internal)?
     }
 
@@ -146,27 +170,21 @@ impl ClientHandle {
         &self,
         topic: impl Into<String>,
     ) -> Result<BoxStream<'static, Payload>, RpcError> {
-        let (events, rx) = mpsc::unbounded_channel::<Payload>();
-        self.cmd_tx
-            .send(ClientCmd::Subscribe {
-                topic: topic.into(),
-                events,
-            })
-            .map_err(|_| RpcError::Internal)?;
-        let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
-        });
-        Ok(Box::pin(stream))
+        let (events, rx) = async_channel::unbounded::<Payload>();
+        self.enqueue(ClientCmd::Subscribe {
+            topic: topic.into(),
+            events,
+        })?;
+        // The receiver is itself a `Stream<Item = Payload>`.
+        Ok(Box::pin(rx))
     }
 
     /// Fire-and-forget write to a remote topic (no reply).
     pub fn write(&self, topic: impl Into<String>, payload: Payload) -> Result<(), RpcError> {
-        self.cmd_tx
-            .send(ClientCmd::Write {
-                topic: topic.into(),
-                payload,
-            })
-            .map_err(|_| RpcError::Internal)
+        self.enqueue(ClientCmd::Write {
+            topic: topic.into(),
+            payload,
+        })
     }
 }
 
@@ -174,18 +192,24 @@ impl ClientHandle {
 /// engine future to drive on the runner (spawn-free). The future runs until all
 /// `ClientHandle` clones are dropped (graceful stop) — or, with
 /// [`ClientConfig::reconnect`] off, until the first disconnect.
-pub fn run_client<D, C>(
+///
+/// `clock` is the adapter's [`TimeOps`] runtime (e.g. `db.runtime_arc()`); the
+/// engine uses it for the reconnect backoff and keepalive — the *only* runtime
+/// dependency, so the rest of the engine is runtime-neutral.
+pub fn run_client<D, C, R>(
     dialer: D,
     codec: C,
     config: ClientConfig,
+    clock: Arc<R>,
 ) -> (ClientHandle, BoxFut<'static, ()>)
 where
     D: Dialer + 'static,
     C: EnvelopeCodec + 'static,
+    R: TimeOps + 'static,
 {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = async_channel::unbounded();
     let handle = ClientHandle { cmd_tx };
-    let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx));
+    let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx, clock));
     (handle, fut)
 }
 
@@ -197,14 +221,28 @@ enum Ended {
     HandlesDropped,
 }
 
-async fn client_loop<D, C>(
+/// What [`drive_connection`]'s `select_biased!` decided this iteration. Extracted
+/// so the connection work runs *after* the select's arm futures (and their borrow
+/// of `conn`) are dropped — see the module note.
+enum ClientStep {
+    /// A frame (or close/error) arrived from the server.
+    Inbound(super::TransportResult<Option<Vec<u8>>>),
+    /// The keepalive timer fired — send a `Ping`.
+    Keepalive,
+    /// A caller command (or `None` = all handles dropped).
+    Cmd(Option<ClientCmd>),
+}
+
+async fn client_loop<D, C, R>(
     dialer: D,
     codec: C,
     config: ClientConfig,
-    mut cmd_rx: mpsc::UnboundedReceiver<ClientCmd>,
+    cmd_rx: Receiver<ClientCmd>,
+    clock: Arc<R>,
 ) where
     D: Dialer,
     C: EnvelopeCodec,
+    R: TimeOps,
 {
     // Consecutive failed attempts since the last successful connection; drives
     // exponential backoff and the optional attempt cap.
@@ -218,17 +256,17 @@ async fn client_loop<D, C>(
             Err(_e) => {
                 #[cfg(feature = "tracing")]
                 tracing::warn!("client dial failed: {:?}", _e);
-                match reconnect_after(&mut attempt, &config, &mut cmd_rx).await {
+                match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
                     true => continue,
                     false => return,
                 }
             }
         };
 
-        match drive_connection(conn, &codec, &mut cmd_rx, &config).await {
+        match drive_connection(conn, &codec, &cmd_rx, &config, &*clock).await {
             Ended::HandlesDropped => return,
             Ended::Disconnected => {
-                match reconnect_after(&mut attempt, &config, &mut cmd_rx).await {
+                match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
                     true => continue,
                     false => return,
                 }
@@ -238,12 +276,13 @@ async fn client_loop<D, C>(
 }
 
 /// Decide whether to redial: honor `reconnect`, the attempt cap, the offline-queue
-/// bound, and the exponential backoff sleep. Returns `true` to retry, `false` to
-/// stop the engine.
-async fn reconnect_after(
+/// bound, and the exponential backoff sleep (via the runtime clock). Returns
+/// `true` to retry, `false` to stop the engine.
+async fn reconnect_after<R: TimeOps>(
     attempt: &mut usize,
     config: &ClientConfig,
-    cmd_rx: &mut mpsc::UnboundedReceiver<ClientCmd>,
+    cmd_rx: &Receiver<ClientCmd>,
+    clock: &R,
 ) -> bool {
     if !config.reconnect {
         return false;
@@ -258,7 +297,9 @@ async fn reconnect_after(
         return false;
     }
     bound_offline_queue(cmd_rx, config.max_offline_queue);
-    tokio::time::sleep(backoff_delay(config, *attempt)).await;
+    clock
+        .sleep(clock.millis(backoff_delay(config, *attempt)))
+        .await;
     true
 }
 
@@ -267,21 +308,24 @@ async fn reconnect_after(
 /// subscription channels) interleaved with caller commands. Pending state is
 /// per-connection: a disconnect fails outstanding calls (their `oneshot`
 /// senders drop → callers see [`RpcError::Internal`]).
-async fn drive_connection<C>(
+async fn drive_connection<C, R>(
     mut conn: Box<dyn Connection>,
     codec: &C,
-    cmd_rx: &mut mpsc::UnboundedReceiver<ClientCmd>,
+    cmd_rx: &Receiver<ClientCmd>,
     config: &ClientConfig,
+    clock: &R,
 ) -> Ended
 where
     C: EnvelopeCodec + ?Sized,
+    R: TimeOps,
 {
     let mut next_id: u64 = 1;
     let mut pending: HashMap<u64, oneshot::Sender<Result<Payload, RpcError>>> = HashMap::new();
     // sub-id → event sink. The sub-id is `id.to_string()` of the opening
     // request, matching the server's derivation so `Event.sub` routes back.
-    let mut subs: HashMap<String, mpsc::UnboundedSender<Payload>> = HashMap::new();
+    let mut subs: HashMap<String, Sender<Payload>> = HashMap::new();
     let mut out = Vec::new();
+    let keepalive_ms = config.keepalive_interval;
 
     // Handshake-as-caller: prove the link with Ping/Pong before serving commands.
     if config.sends_hello {
@@ -299,15 +343,37 @@ where
         }
     }
 
-    // Optional keepalive ticker — `None` parks the arm forever (see below).
-    let mut keepalive = config.keepalive_interval.map(tokio::time::interval);
-
     loop {
-        tokio::select! {
-            biased;
+        // `biased`, server-read first. The select only *decides* the next step;
+        // it must not touch `conn` while the `recv` arm still borrows it.
+        let step = {
+            let mut recv = conn.recv().fuse();
+            // Idle keepalive: re-armed each iteration. With no interval configured
+            // the arm parks on `pending()` forever, so it never wins the select.
+            // The async block is `!Unpin`, so pin it for the select arm.
+            let mut keepalive = core::pin::pin!(async {
+                match keepalive_ms {
+                    Some(ms) => clock.sleep(clock.millis(ms)).await,
+                    None => core::future::pending::<()>().await,
+                }
+            }
+            .fuse());
+            // async-channel's `recv()` is `!Unpin` (holds a pinned listener), so
+            // pin it in place for the arm.
+            let mut cmd = core::pin::pin!(cmd_rx.recv().fuse());
+            select_biased! {
+                // ---- inbound from server: Reply / Event / Snapshot / Pong --
+                r = recv => ClientStep::Inbound(r),
+                // ---- keepalive: send a Ping when the idle timer fires ------
+                _ = keepalive => ClientStep::Keepalive,
+                // ---- caller commands from ClientHandle ---------------------
+                // `recv()` errors only when every `ClientHandle` is dropped → `None`.
+                c = cmd => ClientStep::Cmd(c.ok()),
+            }
+        };
 
-            // ---- inbound from server: Reply / Event / Snapshot / Pong ------
-            recv = conn.recv() => {
+        match step {
+            ClientStep::Inbound(recv) => {
                 let frame = match recv {
                     Ok(Some(frame)) => frame,
                     Ok(None) | Err(_) => return Ended::Disconnected,
@@ -329,7 +395,7 @@ where
                     }
                     Ok(Outbound::Event { sub, seq: _, data }) => {
                         let dead = match subs.get(sub) {
-                            Some(tx) => tx.send(data).is_err(),
+                            Some(tx) => tx.try_send(data).is_err(),
                             None => false, // late event for a dropped sub — ignore
                         };
                         if dead {
@@ -338,7 +404,7 @@ where
                     }
                     Ok(Outbound::Snapshot { topic, data }) => {
                         if let Some(tx) = subs.get(topic) {
-                            let _ = tx.send(data);
+                            let _ = tx.try_send(data);
                         }
                     }
                     Ok(Outbound::Pong) => {}
@@ -350,15 +416,7 @@ where
                 }
             }
 
-            // ---- keepalive: send a Ping when the ticker fires --------------
-            // With no interval configured the arm parks on `pending()` forever,
-            // so it never wins the `select!`.
-            _ = async {
-                match keepalive.as_mut() {
-                    Some(i) => { i.tick().await; }
-                    None => std::future::pending::<()>().await,
-                }
-            } => {
+            ClientStep::Keepalive => {
                 out.clear();
                 if codec.encode_inbound(Inbound::Ping, &mut out).is_ok()
                     && conn.send(&out).await.is_err()
@@ -367,14 +425,17 @@ where
                 }
             }
 
-            // ---- caller commands from ClientHandle -------------------------
-            cmd = cmd_rx.recv() => {
+            ClientStep::Cmd(cmd) => {
                 let cmd = match cmd {
                     Some(cmd) => cmd,
                     None => return Ended::HandlesDropped, // all handles dropped
                 };
                 match cmd {
-                    ClientCmd::Call { method, params, reply } => {
+                    ClientCmd::Call {
+                        method,
+                        params,
+                        reply,
+                    } => {
                         let id = next_id;
                         next_id += 1;
                         pending.insert(id, reply);
@@ -448,8 +509,6 @@ pub fn pump_client<R>(
 where
     R: RuntimeAdapter + 'static,
 {
-    use futures_util::StreamExt;
-
     // The type-erased runtime context for context-aware (de)serializers.
     let ctx = db.runtime_any();
     let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();

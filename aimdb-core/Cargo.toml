@@ -73,9 +73,25 @@ aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-featur
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
+# `async-await-macro` enables the `select_biased!` macro the runtime-neutral
+# session engines use (Phase 5; it pulls in `futures-macro` + `async-await`);
+# `alloc` covers the combinators (`fuse`, `select_next_some`). All no_std-
+# compatible — no `std`/`tokio` enters the engine compile path.
 futures-util = { version = "0.3", default-features = false, features = [
     "alloc",
+    "async-await-macro",
 ] }
+# Runtime-neutral `oneshot` for the session engines (alloc-backed, no_std-ready).
+# `futures-channel`'s `mpsc` is std-only, so the engines use `async-channel` for
+# that (below); only its `oneshot` is used here.
+futures-channel = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
+# Runtime-neutral mpsc (bounded + unbounded) for the session engines — one
+# alloc-backed implementation for every runtime (tokio + Embassy). Owned,
+# cloneable `Arc`-based senders (so the `'static` per-connection/-subscription
+# pump futures can hold them) and a `Receiver: Stream` with `len()`. no_std + alloc.
+async-channel = { version = "2", default-features = false }
 
 # Serialization (optional)
 serde = { workspace = true, optional = true }

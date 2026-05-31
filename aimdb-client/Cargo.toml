@@ -29,6 +29,9 @@ serde_json = "1"
 # Async runtime (must match AimDB runtime)
 tokio = { version = "1", features = ["net", "io-util", "macros", "fs"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
+# Supplies the `TimeOps` clock the engine-based client hands to `run_client`
+# (reconnect backoff / keepalive). This client always drives the engine on tokio.
+aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter" }
 
 # Error handling
 anyhow = "1"

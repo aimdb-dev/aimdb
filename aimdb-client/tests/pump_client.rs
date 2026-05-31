@@ -78,8 +78,8 @@ async fn pump_client_mirrors_record_both_directions() {
         .runtime(Arc::new(TokioAdapter))
         .with_connector(AimxClientConnector::new(&sock).with_config(ClientConfig {
             reconnect: true,
-            reconnect_delay: Duration::from_millis(50),
-            max_reconnect_delay: Duration::from_millis(50),
+            reconnect_delay: 50,
+            max_reconnect_delay: 50,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
