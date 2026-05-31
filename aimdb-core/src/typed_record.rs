@@ -540,7 +540,7 @@ pub struct TypedRecord<
 > {
     /// Optional producer service - a task that generates data
     /// This will be auto-spawned during build() if present
-    /// Stored as FnOnce that takes (Producer<T>, RuntimeContext) and returns a Future
+    /// Stored as `FnOnce` that takes (`Producer<T>`, `RuntimeContext`) and returns a `Future`
     /// Wrapped in Mutex for interior mutability (needed to take() during spawning)
     producer: Mutex<Option<ProducerServiceFn<T>>>,
 

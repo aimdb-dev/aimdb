@@ -1,26 +1,19 @@
-//! Phase 2 **server** engine — the reactive half of the shared session
-//! substrate (doc 034 § Layer 2). Written once here; it generalizes the two
-//! hand-rolled loops it will replace in Phases 3–4:
+//! The reactive **server** engine of the session substrate.
 //!
-//! - [`run_session`] = `remote/handler.rs`'s biased `select!` per-connection loop
-//!   (RPC + streaming + writes over one [`Connection`]), transport-erased.
-//! - [`serve`] = `remote/supervisor.rs`'s accept loop, generalized over
-//!   [`Listener`] and honoring [`SessionLimits::max_connections`].
+//! - [`run_session`] drives one accepted [`Connection`]: a biased `select_biased!`
+//!   loop interleaving inbound requests (RPC + subscribe + write) with outbound
+//!   subscription events.
+//! - [`serve`] is the accept loop over a [`Listener`], honoring
+//!   [`SessionLimits::max_connections`].
 //!
-//! Spawn-free: every per-connection and per-subscription task lives in a
-//! [`FuturesUnordered`] owned by the engine future the runner drives — no
-//! `tokio::spawn`.
-//!
-//! **Runtime-neutral (Phase 5).** This engine is purely reactive — it touches no
-//! timer — so it carries *zero* runtime knowledge: `futures` channels + a
-//! `select_biased!` over the wire, the event funnel, and the subscription task
-//! set. No `tokio`/`embassy-*` here; it runs unchanged on both via the adapters.
+//! Spawn-free (every per-connection/-subscription task lives in a
+//! [`FuturesUnordered`] the runner drives) and runtime-neutral (purely reactive,
+//! so no timer and no `tokio`/`embassy-*`).
 //!
 //! The loops use an **extract-then-act** shape: `select_biased!` only computes a
-//! small [`Step`]/action value (it must not touch `conn`/`subs` while a sibling
-//! arm's future still borrows them — unlike `tokio::select!`, `futures`' macro
-//! keeps the non-selected futures alive across the handler), then the loop acts
-//! on that value once the borrows release.
+//! small [`Step`], then the loop acts on it once the arm futures (and their
+//! borrows of `conn`/`subs`) drop — `futures`' macro, unlike `tokio::select!`,
+//! keeps non-selected futures alive across the handler.
 
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
@@ -41,27 +34,21 @@ use super::{
 /// Per-session engine knobs.
 #[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
-    /// Bounds for one session (connection cap is consulted by [`serve`];
-    /// per-connection subscription cap by [`run_session`]).
+    /// Connection cap (consulted by [`serve`]) and per-connection subscription
+    /// cap (by [`run_session`]).
     pub limits: SessionLimits,
-    /// How identity is resolved:
-    /// - `true` (UDS-style) — read one frame before authenticating and pass it
-    ///   to [`Dispatch::authenticate`] as the in-band Hello.
-    /// - `false` (WS-style, the default) — authenticate from
-    ///   [`PeerInfo`](super::PeerInfo) alone (identity pre-resolved at the HTTP
-    ///   upgrade), no frame consumed.
+    /// If `true`, read one frame before authenticating and pass it to
+    /// [`Dispatch::authenticate`] as an in-band Hello. If `false` (default),
+    /// authenticate from [`PeerInfo`](super::PeerInfo) alone.
     pub reads_hello: bool,
-    /// Emit an explicit [`Outbound::Subscribed`] ack when a subscription opens.
-    /// - `false` (default, AimX-style) — the ack is implicit; events flow and
-    ///   carry the subscription id back, no ack frame.
-    /// - `true` (WS-style) — `run_session` emits `Subscribed { sub }` before the
-    ///   first event, restoring the explicit ack WS clients wait on.
+    /// If `true`, emit an explicit [`Outbound::Subscribed`] ack before the first
+    /// event. If `false` (default) the ack is implicit (events carry the
+    /// subscription id back).
     pub acks_subscribe: bool,
 }
 
-/// Bound for the per-connection event funnel — caps how many pending outbound
-/// updates a single connection may buffer before pumps start dropping (matches
-/// the hand-rolled WS server's default per-client channel capacity).
+/// Bound for the per-connection event funnel: pending outbound updates a
+/// connection may buffer before pumps start dropping.
 const EVENT_BUFFER: usize = 256;
 
 /// One subscription update on its way back to the connection's send half.
@@ -71,9 +58,8 @@ struct SubEvent {
     data: Payload,
 }
 
-/// What [`run_session`]'s `select_biased!` decided this iteration. Extracted so
-/// the connection/subscription work runs *after* the select's arm futures (and
-/// their borrows of `conn`/`subs`) are dropped — see the module note.
+/// What [`run_session`]'s `select_biased!` decided this iteration — extracted so
+/// the work runs after the arm futures' borrows of `conn`/`subs` release.
 enum Step {
     /// A logical frame arrived from the peer (decode + dispatch).
     Frame(Vec<u8>),
@@ -88,11 +74,10 @@ enum Step {
 
 /// Drive one accepted [`Connection`] until it closes.
 ///
-/// Authenticates once, then interleaves — `biased`, request-read first so a
-/// chatty subscription cannot starve the RPC path — incoming requests, outgoing
-/// subscription events funneled from the per-subscription pumps, and draining of
-/// finished subscription futures. Dropping the engine (runner cancelled) drops
-/// `subs`, cancelling every live subscription.
+/// Authenticates once, then interleaves (biased toward inbound reads, so a chatty
+/// subscription cannot starve the RPC path) incoming requests, outgoing
+/// subscription events, and reaping of finished subscription pumps. Dropping the
+/// engine cancels every live subscription.
 pub async fn run_session<C, D>(
     mut conn: Box<dyn Connection>,
     codec: &C,
@@ -121,40 +106,29 @@ pub async fn run_session<C, D>(
         }
     };
 
-    // Open the per-connection session once. It owns the connection's mutable
-    // dispatch state (e.g. `record.drain` cursors); the loop below threads
-    // `&mut` into its `call` / `subscribe` / `write`.
+    // Open the per-connection session once; the loop threads `&mut` into it.
     let mut session = dispatch.open(&ctx);
 
-    // Event funnel: every per-subscription pump sends its updates here; the main
-    // loop is the sole writer to the connection. **Bounded** so a slow client
-    // (one whose socket is backpressured, stalling the main loop) cannot grow the
-    // funnel without limit — the pumps drop on overflow rather than accumulate
-    // (events carry a monotonic `seq`, so a client can detect the gap). This
-    // restores the bounded-buffer slow-client protection the hand-rolled loops had.
+    // Event funnel: every per-subscription pump sends updates here; the main loop
+    // is the sole writer to the connection. Bounded, so a slow client cannot grow
+    // it without limit — pumps drop on overflow (events carry a monotonic `seq`).
     let (event_tx, event_rx) = async_channel::bounded::<SubEvent>(EVENT_BUFFER);
     // Per-connection subscription pumps; the engine future is their sole owner.
-    // Each pump resolves to its own sub id on completion, so the loop can prune
-    // the matching `cancels` entry (a pump ended via Unsubscribe was already
-    // pruned, making the redundant remove a harmless no-op).
+    // Each resolves to its own sub id, so the loop can prune the matching
+    // `cancels` entry (a no-op if Unsubscribe already removed it).
     let mut subs: FuturesUnordered<BoxFut<'static, String>> = FuturesUnordered::new();
-    // sub-id → cancel handle (dropping/sending the oneshot cancels the pump,
-    // race-free unlike a bare `Notify`).
+    // sub-id → cancel handle; dropping/firing the oneshot cancels the pump.
     let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
     // Reused encode scratch buffer.
     let mut out = Vec::new();
 
     loop {
-        // `biased`, request-read first so a chatty subscription cannot starve the
-        // RPC path. The `select_biased!` block only *decides* the next step — it
-        // must not touch `conn`/`subs` while a sibling arm's future still borrows
-        // them; the work happens after, in the `match`.
+        // Biased toward inbound reads. The select only decides the next step; the
+        // work happens after, in the `match`, once the arm borrows release.
         let step = {
-            // Per-iteration futures, fused for the `select_biased!` arms. The
-            // channel `recv()` is `!Unpin` (async-channel holds a pinned
-            // listener), so it is pinned in place; `subs` is a `FuturesUnordered`
-            // (`Unpin` + `FusedStream`), so `select_next_some` parks on the empty
-            // set and the always-active `recv` arm keeps the select alive.
+            // Per-iteration futures, fused for the select. `event_rx.recv()` is
+            // `!Unpin`, so pin it; `subs` (a `FusedStream`) parks on the empty set
+            // while the always-active `recv` arm keeps the select alive.
             let mut recv = conn.recv().fuse();
             let mut event = core::pin::pin!(event_rx.recv().fuse());
             select_biased! {
@@ -222,8 +196,8 @@ pub async fn run_session<C, D>(
                         }
                     }
                     Inbound::Subscribe { id, topic } => {
-                        // The request id that opened the subscription is its
-                        // routing key; events carry it back as `Outbound::Event.sub`.
+                        // The opening request id is the subscription's routing key;
+                        // events carry it back as `Outbound::Event.sub`.
                         let sub_id = id.to_string();
                         if cancels.len() >= config.limits.max_subs_per_connection {
                             send_reply_err(&mut conn, codec, &mut out, id, RpcError::Denied).await;
@@ -231,8 +205,7 @@ pub async fn run_session<C, D>(
                         }
                         match session.subscribe(&topic).await {
                             Ok(stream) => {
-                                // Optional explicit ack (WS-style); AimX leaves
-                                // `acks_subscribe` off so its ack stays implicit.
+                                // Optional explicit ack (see `acks_subscribe`).
                                 if config.acks_subscribe {
                                     out.clear();
                                     if codec
@@ -279,7 +252,7 @@ pub async fn run_session<C, D>(
                         cancels.remove(&sub);
                     }
                     Inbound::Write { topic, payload } => {
-                        // Fire-and-forget; routes through the session (single-writer-per-key intact).
+                        // Fire-and-forget; single-writer-per-key stays intact.
                         let _ = session.write(&topic, payload).await;
                     }
                     Inbound::Ping => {
@@ -295,8 +268,7 @@ pub async fn run_session<C, D>(
         }
     }
 
-    // Sole owner of `subs` and `cancels` drops here → every live subscription
-    // pump is cancelled.
+    // Dropping `subs` here cancels every live subscription pump.
     drop(subs);
 }
 
@@ -338,16 +310,14 @@ async fn pump_subscription(
     tx: Sender<SubEvent>,
     cancel: oneshot::Receiver<()>,
 ) -> String {
-    // `oneshot::Receiver` reports `is_terminated() == true` once its sender drops
-    // (the cancel signal!), and `select_biased!` *skips* terminated arms — so a
-    // bare `cancel` arm would never fire on Unsubscribe. Fuse it once: `Fuse`'s
-    // `is_terminated` stays false until the fused future itself yields `Ready`, so
-    // the arm is polled and the cancellation is observed.
+    // Fuse the cancel receiver: a bare `oneshot::Receiver` reports
+    // `is_terminated()` once its sender drops, and `select_biased!` skips
+    // terminated arms — so the cancel would never fire. `Fuse` keeps the arm
+    // polled until it actually resolves.
     let mut cancel = cancel.fuse();
     let mut seq: u64 = 0;
     loop {
-        // `cancel` and `stream` are independent, and neither handler touches the
-        // other's borrow, so this stays a direct `select_biased!`.
+        // Independent arms, so a direct `select_biased!` is fine here.
         let data = select_biased! {
             // Resolves on explicit Unsubscribe (send) or on sender drop.
             _ = cancel => break,
@@ -358,9 +328,8 @@ async fn pump_subscription(
             },
         };
         seq += 1;
-        // `try_send` keeps the pump non-blocking: a backpressured funnel drops
-        // this update (slow-client protection) rather than stalling the bus; only
-        // a disconnected funnel ends the pump.
+        // Non-blocking: drop on a full funnel (slow-client protection); only a
+        // disconnected funnel ends the pump.
         match tx.try_send(SubEvent {
             sub: sub_id.clone(),
             seq,
@@ -376,36 +345,31 @@ async fn pump_subscription(
 
 /// Accept connections from `listener` and serve each with [`run_session`],
 /// bounded by [`SessionLimits::max_connections`]. The accept loop and all
-/// per-connection futures share one [`FuturesUnordered`] — spawn-free, mirroring
-/// `remote/supervisor.rs`.
+/// per-connection futures share one [`FuturesUnordered`] — spawn-free.
 pub async fn serve<L, C, D>(mut listener: L, codec: Arc<C>, dispatch: Arc<D>, config: SessionConfig)
 where
     L: Listener,
     C: EnvelopeCodec + 'static,
-    // `?Sized` so a caller can serve an `Arc<dyn Dispatch>` (the generic
-    // `SessionServerConnector` does, to stay protocol-agnostic). `run_session`
-    // already accepts `?Sized`; `serve` only uses `dispatch` via `clone`/`as_ref`.
+    // `?Sized` so a caller can serve an `Arc<dyn Dispatch>`.
     D: Dispatch + 'static + ?Sized,
 {
     let mut conns: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
 
     loop {
-        // Extract the accept result first (the accept future borrows `listener`,
-        // and pushing/reaping borrows `conns` — keep them apart), then act.
+        // Extract the accept result first, then act (keeps the `listener` and
+        // `conns` borrows apart).
         let accept = {
             let mut accept = listener.accept().fuse();
             select_biased! {
                 a = accept => a,
-                // `select_next_some` parks on the empty-`FuturesUnordered` case,
-                // so the accept arm keeps the select alive without a guard.
+                // Parks on the empty set, so the accept arm keeps the select alive.
                 () = conns.select_next_some() => continue,
             }
         };
 
         match accept {
             Ok(conn) => {
-                // Soft cap; `len()` is conservative (a completed-but-undrained
-                // future still counts), which only ever refuses one extra.
+                // Soft cap; `len()` is conservative (counts not-yet-reaped futures).
                 if conns.len() >= config.limits.max_connections {
                     #[cfg(feature = "tracing")]
                     tracing::warn!(

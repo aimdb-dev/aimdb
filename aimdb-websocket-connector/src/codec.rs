@@ -1,26 +1,19 @@
-//! Per-connection WS-JSON [`EnvelopeCodec`] (Phase 4 — doc 039 § 2).
+//! Per-connection WS-JSON `EnvelopeCodec`.
 //!
 //! Maps the WS wire ([`ClientMessage`]/[`ServerMessage`]) onto the engine's
-//! [`Inbound`]/[`Outbound`] so `run_session` ([`aimdb_core::session::run_session`])
-//! can drive a WebSocket exactly as it drives AimX.
+//! `Inbound`/`Outbound` so `run_session` drives a WebSocket exactly as it
+//! drives AimX.
 //!
-//! **Why per-connection (not the shared `Arc<C>` that `serve` uses).** `decode`
-//! is **1→1**, so it cannot fan a multi-topic `Subscribe` into N
-//! `Inbound::Subscribe` — the transport splits the frame instead (see
-//! [`crate::transport`]) and the codec synthesizes a `u64` id per topic, which the
-//! `Subscribed` ack and `Unsubscribe` map back to a topic. That `id↔topic`
-//! bookkeeping is per-connection state a shared `Arc<C>` cannot hold. Option A
-//! calls `run_session(conn, &codec, …)` directly (only `serve` shares `Arc<C>`),
-//! so each upgrade builds its own `WsCodec` holding the maps behind a `Mutex` (it
-//! stays `Send + Sync`; encode/decode take `&self`).
+//! Per-connection (not the shared `Arc<C>` that `serve` uses) because the codec
+//! holds `id↔topic` bookkeeping: `decode` is 1→1, so the transport splits a
+//! multi-topic `Subscribe` (see [`crate::transport`]) and the codec synthesizes a
+//! `u64` id per topic that the `Subscribed` ack and `Unsubscribe` map back. The
+//! maps sit behind a `Mutex` so the codec stays `Send + Sync` with `&self` methods.
 //!
-//! **Data frames are pre-serialized by the bus.** The hot fan-out path does *not*
-//! pass through the id maps: [`ClientManager::broadcast`](crate::client_manager)
-//! serializes the complete `Data` frame **once** (it owns the real topic) and the
-//! codec writes it verbatim — O(1) in subscribers. The explicit `Subscribed` ack
-//! and late-join `Snapshot` are engine emissions (`Outbound::Subscribed` +
-//! `Session::snapshot`, gated by `SessionConfig::acks_subscribe`); the codec maps
-//! those to wire frames.
+//! The hot fan-out path skips the maps: [`ClientManager::broadcast`](crate::client_manager)
+//! serializes the complete `Data` frame once (it owns the topic) and the codec
+//! writes it verbatim — O(1) in subscribers. The `Subscribed` ack and late-join
+//! `Snapshot` are engine emissions the codec maps to wire frames.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -30,8 +23,8 @@ use serde_json::Value;
 
 use crate::protocol::{ClientMessage, ErrorCode, ServerMessage};
 
-/// Per-connection id bookkeeping (doc 039 § 2). Lives behind a `Mutex` so the
-/// `&self` codec methods can mutate it.
+/// Per-connection id bookkeeping, behind a `Mutex` so the `&self` codec methods
+/// can mutate it.
 #[derive(Default)]
 struct WsCodecState {
     /// Monotonic id allocator for engine `Subscribe`/`Request` correlation. The
@@ -169,10 +162,8 @@ impl aimdb_core::EnvelopeCodec for WsCodec {
 
     fn encode(&self, msg: Outbound<'_>, out: &mut Vec<u8>) -> Result<(), CodecError> {
         match msg {
-            // The bus pre-serializes the complete `Data` frame **once** per
-            // broadcast (it knows the real topic + raw-payload mode), so fan-out
-            // is O(1) in subscribers, not O(N) re-serializations — see
-            // `ClientManager::broadcast`. The codec just writes it verbatim.
+            // The bus pre-serializes the complete `Data` frame once per broadcast,
+            // so fan-out is O(1) — the codec writes it verbatim.
             Outbound::Event { data, .. } => {
                 out.extend_from_slice(&data);
                 Ok(())
@@ -220,8 +211,8 @@ impl aimdb_core::EnvelopeCodec for WsCodec {
     }
 
     // ---- client direction: write a ClientMessage, read a ServerMessage ------
-    // Used by the WS client port (`run_client`, Workstream D). The client engine
-    // is configured topic-routed, so `Event.sub` carries the topic.
+    // Used by the WS client port; the client engine is topic-routed, so
+    // `Event.sub` carries the topic.
 
     fn encode_inbound(&self, msg: Inbound, out: &mut Vec<u8>) -> Result<(), CodecError> {
         let client_msg = match msg {
@@ -264,11 +255,9 @@ impl aimdb_core::EnvelopeCodec for WsCodec {
     }
 
     fn decode_outbound<'a>(&self, frame: &'a [u8]) -> Result<Outbound<'a>, CodecError> {
-        // `Outbound::Event`/`Snapshot` borrow `topic` as `&'a str` from the frame.
-        // serde's internally-tagged enums can't borrow (they buffer), so we peek
-        // the `type` tag, then deserialize the matching struct that borrows the
-        // topic slice **zero-copy** (no interning, no leak). Topics are record
-        // keys without JSON escapes, so the borrow always succeeds.
+        // `Event`/`Snapshot` borrow `topic` zero-copy from the frame. serde's
+        // internally-tagged enums can't borrow, so peek the `type` tag, then
+        // deserialize a struct that borrows the topic slice.
         let tag: TagOnly = serde_json::from_slice(frame).map_err(|_| CodecError::Malformed)?;
         match tag.ty {
             "data" => {
@@ -288,13 +277,11 @@ impl aimdb_core::EnvelopeCodec for WsCodec {
                     data: value_to_payload(d.payload),
                 })
             }
-            // Informational on the client; the engine ignores `Subscribed`, so the
-            // `sub` value is irrelevant — hand back an empty borrow (no leak).
+            // Informational; the engine ignores `Subscribed`, so `sub` is irrelevant.
             "subscribed" => Ok(Outbound::Subscribed { sub: "" }),
             "pong" => Ok(Outbound::Pong),
-            // Query/list responses + errors are RPC replies; the caller-RPC path
-            // is not wired on the WS client (records mirror via Data/Snapshot),
-            // so map them to a benign Pong.
+            // Query/list/error replies aren't wired on the WS client (records
+            // mirror via Data/Snapshot), so map them to a benign Pong.
             _ => Ok(Outbound::Pong),
         }
     }
@@ -424,9 +411,8 @@ mod tests {
         }
     }
 
-    // Layer 2.3 (#1): decoding many *distinct*-topic Data frames must not
-    // accumulate any process-lifetime state (the old `leak_topic` interner would
-    // have grown one `&'static str` per topic here). The borrow is zero-copy.
+    // Decoding many distinct-topic Data frames must not accumulate any
+    // process-lifetime state; the borrow is zero-copy.
     #[test]
     fn decode_outbound_high_cardinality_no_static_growth() {
         let codec = WsCodec::new();

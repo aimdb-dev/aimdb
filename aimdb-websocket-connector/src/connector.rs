@@ -13,7 +13,7 @@
 //!
 //! # Inbound routing
 //!
-//! Inbound writes from WebSocket clients go through the shared [`Router`]
+//! Inbound writes from WebSocket clients go through the shared `Router`
 //! (same infrastructure as MQTT).  The `Connector::publish()` impl is a
 //! no-op because WebSocket inbound happens via the session receive loop instead
 //! of the standard publish path.

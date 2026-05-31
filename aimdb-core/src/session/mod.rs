@@ -1,19 +1,16 @@
-//! Frozen Phase 0 connector-session contracts (trait skeletons only).
+//! Connector-session substrate — the shared machinery for transport-based
+//! remote access.
 //!
-//! This module locks the cross-cutting trait **signatures** that every later
-//! phase of the connector-convergence initiative (issue #39 — embedded remote
-//! access) depends on. It ships **contracts, not behavior**: every method body
-//! is `unimplemented!()`. The engines (`run_session` / `serve` / `run_client`),
-//! the pump helpers, and the transport/dispatch impls all arrive in Phases 1–6.
+//! Three layers: transport ([`Connection`]/[`Listener`]/[`Dialer`]), codec
+//! ([`EnvelopeCodec`]), and dispatch ([`Dispatch`]/[`Session`]), over a
+//! role-neutral [`Inbound`]/[`Outbound`] message set shared by the reactive
+//! server engine (`serve`/`run_session`) and the proactive client engine
+//! (`run_client`/`pump_client`). Data-plane connectors use `pump_sink`/
+//! `pump_source` over the [`Source`] / [`Connector`](crate::transport::Connector)
+//! capabilities.
 //!
-//! See [`docs/design/remote-access-via-connectors.md`] for the design — the
-//! decisions, the three-layer substrate (transport + [`EnvelopeCodec`] +
-//! [`Dispatch`]), and the capability model. `Sink` is now the canonical
-//! [`Connector`](crate::transport::Connector); [`Source`] / [`Dialer`] are here.
-//!
-//! Everything here is `dyn`-safe and compiles on `std` **and** `no_std + alloc`
-//! (boxed-future pattern throughout, no `std`/`tokio`/`serde_json` at the
-//! contract level).
+//! All contracts are `dyn`-safe and compile on `std` and `no_std + alloc`. See
+//! `docs/design/remote-access-via-connectors.md` for the design.
 
 extern crate alloc;
 
@@ -23,16 +20,8 @@ use core::pin::Pin;
 
 use futures_core::Stream;
 
-// ---------------------------------------------------------------------------
-// Phase 2 engines. **Phase 5 made these runtime-neutral** (`futures` channels +
-// `select_biased!` + the adapter's `TimeOps` clock — no `tokio`/`embassy-*`), so
-// they now gate on `connector-session` (`alloc`) rather than `std` and
-// cross-compile to `thumbv7em-none-eabihf`. The frozen contracts above stay
-// `no_std + alloc` as before. Only the concrete AimX substrate below (UDS +
-// NDJSON) is still std-only until its embedded transport lands in Phase 6.
-// See docs/design/remote-access-via-connectors.md (Phases 0/2/5).
-// ---------------------------------------------------------------------------
-
+// The engines are runtime-neutral (`futures` channels + the adapter's `TimeOps`
+// clock, no `tokio`/`embassy-*`), so they cross-compile to `no_std + alloc`.
 #[cfg(feature = "connector-session")]
 mod client;
 #[cfg(feature = "connector-session")]
@@ -42,12 +31,10 @@ mod pump;
 #[cfg(feature = "connector-session")]
 mod server;
 
-// Concrete AimX-v2 protocol substrate (NDJSON codec + server dispatch). The
-// codec is `no_std + alloc` (the embedded *client* rides it over a real
-// transport); the dispatch stays `std`-gated inside the module until its own
-// no_std port. The transport itself is no longer here — it is a swappable
-// connector crate (`aimdb-uds-connector`); core keeps the protocol + the
-// generic [`SessionClientConnector`] / [`SessionServerConnector`] spine.
+// Concrete AimX protocol substrate. The codec is `no_std + alloc`; the server
+// dispatch is `std`-gated. The transport lives in a separate connector crate
+// (`aimdb-uds-connector`) — core keeps the protocol plus the generic
+// [`SessionClientConnector`] / [`SessionServerConnector`] spine.
 #[cfg(all(feature = "connector-session", feature = "json-serialize"))]
 pub mod aimx;
 
@@ -64,23 +51,17 @@ pub use server::{run_session, serve, SessionConfig};
 // Shared aliases
 // ===========================================================================
 
-/// Boxed, `Send` future — the object-safe async return shape used by every
-/// trait here, matching the existing `Connector` / `ProducerTrait` pattern.
+/// Boxed, `Send` future — the object-safe async return shape used throughout.
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Boxed, `Send` stream — the reply shape of a subscription
-/// ([`Dispatch::subscribe`]).
+/// Boxed, `Send` stream — the reply shape of a subscription ([`Session::subscribe`]).
 pub type BoxStream<'a, T> = Pin<Box<dyn Stream<Item = T> + Send + 'a>>;
 
-/// The record-value seam between the outer [`EnvelopeCodec`] and the inner M16
-/// record-value `JsonCodec` (Decision 1: **raw bytes**).
+/// A serialized record value, carried opaquely through the codec.
 ///
-/// Opaque serialized bytes; cheap-clone (refcount bump) for WS fan-out,
-/// `no_std + alloc`-native, no new dependency. Bytes flow opaque through the hot
-/// paths; typed/structured conversion happens only at the ends that need it
-/// (`serde_json::Value` materializes only inside RPC handlers that inspect
-/// structure). `bytes::Bytes` is reserved for a later need (cheap sub-slicing /
-/// zero-copy binary framing).
+/// `Arc<[u8]>` so fan-out is a cheap refcount bump; bytes stay opaque on the hot
+/// path, with structured (`serde_json::Value`) conversion only where a handler
+/// inspects them.
 pub type Payload = Arc<[u8]>;
 
 /// Result of a transport-layer operation.
@@ -90,14 +71,12 @@ pub type TransportResult<T> = Result<T, TransportError>;
 // Supporting types (stubs — sufficient for the signatures to compile)
 // ===========================================================================
 
-/// Remote-peer metadata carried by a [`Connection`] (remote addr, pre-resolved
-/// auth).
+/// Remote-peer metadata carried by a [`Connection`].
 ///
-/// **Phase 4 (resolved — doc 037 auth-context gate).** One shape serves both
-/// connectors: a neutral [`peer_addr`](Self::peer_addr) plus a type-erased
-/// [`ext`](Self::ext) slot the connector fills with its own resolved identity
-/// (WS stuffs `ClientInfo`/`Permissions` at the HTTP upgrade; AimX stuffs its
-/// `SecurityPolicy`). Core stays connector-agnostic; each side downcasts `ext`.
+/// A neutral [`peer_addr`](Self::peer_addr) plus a type-erased
+/// [`ext`](Self::ext) slot a connector fills with its own resolved identity
+/// (e.g. WS attaches `ClientInfo` at the HTTP upgrade), keeping core
+/// connector-agnostic. Downcast `ext` with [`ext_as`](Self::ext_as).
 #[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct PeerInfo {
@@ -130,12 +109,12 @@ impl core::fmt::Debug for PeerInfo {
     }
 }
 
-/// The authenticated session context threaded through [`Dispatch`] calls.
+/// The authenticated session context produced by [`Dispatch::authenticate`] and
+/// threaded into [`Dispatch::open`].
 ///
-/// **Phase 4 (resolved — doc 037 auth-context gate).** Carries the resolved
-/// principal as a type-erased [`ext`](Self::ext) that [`Dispatch::open`] threads
-/// into the per-connection [`Session`] for per-operation authorization
-/// (`authorize_subscribe`/`authorize_write`). AimX leaves it `None`.
+/// Carries the resolved principal as a type-erased [`ext`](Self::ext) for
+/// per-operation authorization in the [`Session`]; downcast with
+/// [`ext_as`](Self::ext_as). Connectors that don't authenticate leave it `None`.
 #[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct SessionCtx {
@@ -163,11 +142,7 @@ impl core::fmt::Debug for SessionCtx {
     }
 }
 
-/// Engine-local bounds for a session (consumed by the Phase 2 engines, not by
-/// the contracts here).
-///
-/// Whether these become `heapless`/const-generic vs runtime config is
-/// **deferred to Phase 5** (bounded-resource policy).
+/// Per-session resource bounds consumed by the engines.
 #[derive(Debug, Clone)]
 pub struct SessionLimits {
     /// Maximum concurrently served connections.
@@ -224,9 +199,8 @@ pub enum AuthError {
 }
 
 // ===========================================================================
-// Logical message set (role-neutral; the server's `Inbound` is the client's
-// out-bound and vice versa — doc 034 § The substrate is shared with a client
-// engine). Field types align with the existing AimX wire (`remote::protocol`).
+// Logical message set — role-neutral: the server's `Inbound` is the client's
+// outbound and vice versa.
 // ===========================================================================
 
 /// A logical request arriving over a [`Connection`] (what the server receives).
@@ -289,11 +263,9 @@ pub enum Outbound<'a> {
         data: Payload,
     },
     /// An explicit acknowledgement that a subscription opened. Emitted by
-    /// [`run_session`](super::server::run_session) only when
-    /// [`SessionConfig::acks_subscribe`](super::server::SessionConfig) is set
-    /// (WS needs it; AimX's ack is implicit, so it leaves the flag off and never
-    /// emits this). The `sub` is the subscription's routing id — the same value
-    /// that tags its [`Event`](Outbound::Event)s.
+    /// [`run_session`] only when [`SessionConfig::acks_subscribe`] is set.
+    /// The `sub` is the subscription's routing id — the same value that tags its
+    /// [`Event`](Outbound::Event)s.
     Subscribed {
         /// Subscription id that was opened.
         sub: &'a str,
@@ -303,9 +275,8 @@ pub enum Outbound<'a> {
 }
 
 // ===========================================================================
-// Layer 1 — transport (the std / Embassy seam). Doc 034 § Layer 1; `Dialer`
-// from doc 035 § The toolkit (the dual of `Listener`). Framing lives *in* the
-// transport: `recv` returns one logical frame.
+// Layer 1 — transport. Framing lives in the transport: `recv` returns one
+// logical frame. `Dialer` is the client-side dual of `Listener`.
 // ===========================================================================
 
 /// A framed, bidirectional pipe — role-neutral (yielded by either
@@ -335,46 +306,35 @@ pub trait Dialer: Send {
 }
 
 // ===========================================================================
-// Layer 3 — dispatch (the semantics). Doc 034 § Layer 3 + § EnvelopeCodec.
-// RPC and streaming unify in ONE per-connection role (Decision 2): three reply
-// cardinalities — `call` (one) / `subscribe` (many) / `write` (none).
-//
-// The role is split across two traits so the shared, immutable half (one
-// `Arc<dyn Dispatch>` per server) and the per-connection mutable half (one
-// `Box<dyn Session>` per accepted connection) each own what they need:
-//
-// - [`Dispatch`] — `Send + Sync`, shared: `authenticate` + an `open` factory.
-// - [`Session`]  — `Send`, per-connection: `call` / `subscribe` / `write` on
-//   `&mut self`, so a connection can hold mutable state (e.g. `record.drain`'s
-//   lazy per-record cursors — the one seam the AimX wire reshape did not
-//   dissolve) without a lock. See doc 037 (the additive server-port refinement,
-//   mirroring the Phase-2 `encode_inbound`/`decode_outbound` precedent).
+// Layer 3 — dispatch. RPC and streaming unify in one per-connection role with
+// three reply cardinalities: `call` (one) / `subscribe` (many) / `write` (none).
+// Split across two traits: the shared, immutable [`Dispatch`] (one
+// `Arc<dyn Dispatch>` per server) and the per-connection, `&mut`-threaded
+// [`Session`] that can hold mutable state without a lock.
 // ===========================================================================
 
 /// The shared application dispatch: authenticate a connection, then open a
 /// per-connection [`Session`]. One `Arc<dyn Dispatch>` is shared across every
-/// connection a server accepts, so it stays `Sync` and behind `&self`.
+/// accepted connection, so it stays `Send + Sync` and behind `&self`.
 pub trait Dispatch: Send + Sync {
     /// Resolve a [`SessionCtx`] from peer metadata and/or the first frame
-    /// (WS supplies pre-resolved identity via [`PeerInfo`]; UDS reads a Hello).
+    /// (a pre-resolved identity in [`PeerInfo`], or an in-band Hello in `first`).
     fn authenticate<'a>(
         &'a self,
         peer: &'a PeerInfo,
         first: Option<&'a [u8]>,
     ) -> BoxFut<'a, Result<SessionCtx, AuthError>>;
 
-    /// Open the per-connection [`Session`] once, after [`authenticate`]. The
-    /// returned session owns the connection's mutable dispatch state (drain
-    /// cursors today, per-session auth identity in Phase 4) that the shared
-    /// `Arc<Self>` cannot hold behind `&self`; the engine threads `&mut` into it.
+    /// Open the per-connection [`Session`] once, after [`authenticate`](Self::authenticate). It owns
+    /// the connection's mutable dispatch state that the shared `Arc<Self>` cannot
+    /// hold behind `&self`; the engine threads `&mut` into it.
     fn open(&self, ctx: &SessionCtx) -> Box<dyn Session>;
 }
 
 /// The per-connection session: serves calls, subscriptions, and writes for one
-/// accepted [`Connection`]. The engine ([`run_session`]) owns the
-/// `Box<dyn Session>` and threads `&mut self` into each method, so a session can
-/// hold per-connection mutable state without a lock — while the shared,
-/// immutable role stays on [`Dispatch`].
+/// accepted [`Connection`]. The engine owns the `Box<dyn Session>` and threads
+/// `&mut self` into each method, so it can hold per-connection state without a
+/// lock; the shared, immutable role stays on [`Dispatch`].
 pub trait Session: Send {
     /// One-shot RPC: one request → one reply.
     fn call<'a>(
@@ -383,16 +343,10 @@ pub trait Session: Send {
         params: Payload,
     ) -> BoxFut<'a, Result<Payload, RpcError>>;
 
-    /// Streaming: open a subscription that yields many payloads. The stream is
-    /// `'static` (it captures cloned handles), so it outlives the `&mut` borrow
-    /// and lives in the engine's `FuturesUnordered` (doc 034 risk list).
-    ///
-    /// Defaulted to [`RpcError::NotFound`] so a dispatch with no streaming
-    /// surface need not implement it (doc 037 § the server-port refinement —
-    /// the stream is side-neutral, so it is defaulted here for symmetry).
-    ///
-    /// Async (Phase 4): opening a subscription may need to *await* per-operation
-    /// authorization (e.g. WS `authorize_subscribe`); the engine awaits it.
+    /// Open a subscription yielding many payloads. The stream is `'static` (it
+    /// captures cloned handles) so it outlives the `&mut` borrow and lives in the
+    /// engine. Async so a connector can await per-operation authorization.
+    /// Defaulted to [`RpcError::NotFound`] for dispatches with no streaming.
     fn subscribe<'a>(
         &'a mut self,
         topic: &'a str,
@@ -401,18 +355,17 @@ pub trait Session: Send {
         Box::pin(async { Err(RpcError::NotFound) })
     }
 
-    /// Late-join snapshot: the current value for `topic`, emitted by
-    /// [`run_session`](super::server::run_session) as an [`Outbound::Snapshot`]
-    /// right after a successful [`subscribe`](Session::subscribe) and before the
-    /// first event. Defaulted to `None` (no snapshot) — AimX inherits this; WS
-    /// overrides it from its `SnapshotProvider`.
+    /// Late-join snapshot: the current value for `topic`, emitted as an
+    /// [`Outbound::Snapshot`] right after a successful
+    /// [`subscribe`](Session::subscribe) and before the first event. Defaulted to
+    /// `None` (no snapshot).
     fn snapshot(&mut self, topic: &str) -> Option<Payload> {
         let _ = topic;
         None
     }
 
-    /// Fire-and-forget write: no reply. Routes through the existing
-    /// producer/arbiter path (single-writer-per-key stays intact).
+    /// Fire-and-forget write: no reply. Routes through the producer/arbiter path,
+    /// so single-writer-per-key stays intact.
     fn write<'a>(
         &'a mut self,
         topic: &'a str,
@@ -420,21 +373,15 @@ pub trait Session: Send {
     ) -> BoxFut<'a, Result<(), RpcError>>;
 }
 
-/// The protocol-envelope codec: frame bytes ↔ one logical message set. Distinct
-/// from, and layered above, the M16 record-value `JsonCodec` it nests; the wire
-/// format (NDJSON / WS-JSON / `serde-json-core`) stays pluggable.
+/// The protocol-envelope codec: frame bytes ↔ the logical message set. Layered
+/// above (and nesting) the record-value `JsonCodec`, so the wire format stays
+/// pluggable; `decode`/`encode` keep the record value as an opaque [`Payload`]
+/// sliced from / spliced into the frame.
 ///
-/// Per Decision 1, `decode` yields `params`/`data` as an *unparsed* [`Payload`]
-/// (a slice of the frame) and `encode` splices a [`Payload`] in verbatim.
-///
-/// **Symmetric (both engines, one codec).** The first pair below is the
-/// *server* direction (read requests / write replies), frozen in Phase 0. The
+/// Symmetric, so one codec object serves both engines: `decode`/`encode` are the
+/// server direction (read requests / write replies) and
 /// [`encode_inbound`](EnvelopeCodec::encode_inbound) /
-/// [`decode_outbound`](EnvelopeCodec::decode_outbound) pair is the *client*
-/// direction (write requests / read replies), added in Phase 2 so `run_client`
-/// reuses the **same** codec object rather than a per-role copy — the
-/// role-neutral-substrate invariant (doc 036). The two frozen signatures are
-/// unchanged; this is purely additive.
+/// [`decode_outbound`](EnvelopeCodec::decode_outbound) the client direction.
 pub trait EnvelopeCodec: Send + Sync {
     /// Decode one frame into a logical [`Inbound`] message (server reads a request).
     fn decode(&self, frame: &[u8]) -> Result<Inbound, CodecError>;
@@ -454,26 +401,21 @@ pub trait EnvelopeCodec: Send + Sync {
 }
 
 // ===========================================================================
-// Data-plane capabilities (doc 035 § The toolkit). Connectionless: an external
-// library owns any session.
+// Data-plane capabilities — connectionless (an external library owns any
+// session). The outbound `Sink` is the canonical
+// [`Connector`](crate::transport::Connector); the inbound `Source` is below.
 // ===========================================================================
 
-// AimDB → external data-plane (the `Sink` capability) is the canonical
-// [`Connector`](crate::transport::Connector) trait verbatim — Phase 1 collapsed
-// the Phase-0 `Sink` skeleton onto it. `pump_sink` takes `Arc<dyn Connector>`.
-
-/// External → AimDB data-plane — a stream of inbound frames (the one genuinely
-/// new data-plane trait; replaces the hand-rolled read loop).
+/// External → AimDB data-plane: a stream of inbound frames, drained by
+/// `pump_source`.
 pub trait Source: Send {
     /// Yield the next `(topic, payload)`, or `None` when the source is done.
     fn next(&mut self) -> BoxFut<'_, Option<(String, Payload)>>;
 }
 
 // ===========================================================================
-// Object-safety: referencing each trait as `&dyn Trait` in non-test code forces
-// the dyn-compatibility check on *all* targets (std and `no_std + alloc`), not
-// just under `cargo test`. The `#[cfg(test)]` block below additionally builds a
-// `Box<dyn Trait>` from a mock per the acceptance criteria.
+// Object-safety: taking each trait as `&dyn Trait` forces the dyn-compatibility
+// check on all targets, not just under `cargo test`.
 // ===========================================================================
 
 #[allow(dead_code, clippy::too_many_arguments)]
@@ -580,7 +522,7 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion: every frozen trait is `dyn`-usable.
+    /// Every trait is `dyn`-usable.
     #[test]
     fn traits_are_object_safe() {
         let _connection: Box<dyn Connection> = Box::new(MockConnection);

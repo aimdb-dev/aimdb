@@ -1,17 +1,14 @@
-//! WS server [`Dispatch`] + [`Session`] (Phase 4 — doc 039 § 3).
+//! WS server [`Dispatch`] + [`Session`].
 //!
 //! [`WsDispatch`] is the shared half (one `Arc<dyn Dispatch>` per server):
-//! `authenticate` reads the identity pre-resolved at the HTTP upgrade (carried in
-//! [`PeerInfo`]`::ext`), `open` mints a per-connection [`WsSession`]. The session
-//! threads `&mut self` from `run_session` and homes the application surface — the
-//! [`ClientManager`] bus handle, the auth principal, the query handler — exactly
-//! as `AimxSession` homes `drain_readers`.
+//! `authenticate` reads the identity pre-resolved at the HTTP upgrade (in
+//! [`PeerInfo`]`::ext`), `open` mints a per-connection [`WsSession`] homing the
+//! application surface (the [`ClientManager`] bus handle, auth principal, query
+//! handler).
 //!
-//! The id↔topic bookkeeping does **not** live here — it lives in the
-//! per-connection [`WsCodec`](crate::codec) (doc 039 § 2). The explicit
-//! `Subscribed` ack and late-join `Snapshot` are engine emissions
-//! (`acks_subscribe` + `Session::snapshot`); this session only supplies the
-//! snapshot bytes and the filtered subscription stream.
+//! The id↔topic bookkeeping lives in the per-connection [`WsCodec`](crate::codec),
+//! not here. The `Subscribed` ack and late-join `Snapshot` are engine emissions;
+//! this session only supplies the snapshot bytes and the subscription stream.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -45,8 +42,7 @@ impl Dispatch for WsDispatch {
         peer: &'a PeerInfo,
         _first: Option<&'a [u8]>,
     ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
-        // Identity is pre-resolved at the HTTP upgrade and carried in `PeerInfo`
-        // as a `ClientInfo` (WS-style `reads_hello:false`, doc 039 § 4).
+        // Identity is pre-resolved at the HTTP upgrade and carried in `PeerInfo`.
         let info = peer.ext_as::<ClientInfo>();
         Box::pin(async move {
             match info {
@@ -132,7 +128,7 @@ impl Session for WsSession {
                 },
                 _ => return Err(RpcError::NotFound),
             };
-            // The codec writes this complete `ServerMessage` verbatim (doc 039 § 2).
+            // The codec writes this complete `ServerMessage` verbatim.
             let bytes = serde_json::to_vec(&response).map_err(|_| RpcError::Internal)?;
             Ok(Payload::from(bytes.as_slice()))
         })
@@ -143,14 +139,11 @@ impl Session for WsSession {
         topic: &'a str,
     ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
         Box::pin(async move {
-            // Per-operation authorization — the full async `AuthHandler` hook, so
-            // a custom `authorize_subscribe` (per-topic ACL, token introspection)
-            // is honored, not just the static permission set.
+            // Per-operation authorization via the async `AuthHandler` hook.
             if !self.auth.authorize_subscribe(&self.info, topic).await {
                 return Err(RpcError::Denied);
             }
-            // Register on the shared bus; the engine owns the returned stream and
-            // drops it on Unsubscribe/teardown (the bus prunes the dead entry).
+            // Register on the shared bus; the engine owns and drops the stream.
             let (_sub_id, stream) = self.client_mgr.subscribe(topic);
             Ok(stream)
         })

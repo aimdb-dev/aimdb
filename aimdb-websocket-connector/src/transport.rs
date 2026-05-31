@@ -1,13 +1,9 @@
-//! WS transport adapters — [`Connection`](aimdb_core::Connection) (and, for the
-//! client, `Dialer`) over a real WebSocket so the shared session engines drive it
-//! (Phase 4 — doc 039 § 6).
+//! WS transport adapters — `Connection` (and, for the client, `Dialer`) over a
+//! real WebSocket, so the shared session engines drive it.
 //!
-//! The **server** side ([`WsServerConnection`]) wraps axum's upgraded
-//! [`WebSocket`]; the upgrade handler hands it to `run_session`
-//! ([`aimdb_core::session::run_session`]). It also performs the **multi-topic
-//! split** (doc 039 § 2 / issue.md § 1a): a `Subscribe`/`Unsubscribe` frame
-//! carrying N topics is yielded as N single-topic logical frames so the codec's
-//! `decode` stays 1→1.
+//! The **server** side (`WsServerConnection`) wraps axum's upgraded `WebSocket`
+//! and performs the **multi-topic split**: a `Subscribe`/`Unsubscribe` carrying N
+//! topics is yielded as N single-topic frames, so the codec's `decode` stays 1→1.
 
 #[cfg(feature = "server")]
 use std::collections::VecDeque;
@@ -35,8 +31,8 @@ impl WsServerConnection {
     /// Wrap an upgraded socket with its pre-resolved peer identity.
     ///
     /// `auto_subscribe` seeds synthetic single-topic `Subscribe` frames so the
-    /// engine subscribes the client to those patterns on connect (replacing the
-    /// legacy `ClientManager::subscribe`-on-connect path) without a client message.
+    /// engine subscribes the client to those patterns on connect, without a
+    /// client message.
     pub fn new(ws: WebSocket, peer: PeerInfo, auto_subscribe: &[String]) -> Self {
         let pending = auto_subscribe
             .iter()

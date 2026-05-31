@@ -1,25 +1,20 @@
-//! AimX-v2 NDJSON envelope codec (`no_std + alloc`, feature `connector-session`
+//! AimX-v2 NDJSON envelope codec (`no_std + alloc`, features `connector-session`
 //! + `json-serialize`).
 //!
-//! The reshaped AimX wire: one JSON object per line, tagged by a `"t"` field,
-//! mapping verbatim onto the engine's role-neutral [`Inbound`]/[`Outbound`]
-//! message set. This is **not** backward-compatible with the legacy AimX wire —
-//! the no-compat decision lets the wire follow the engine's clean model instead
-//! of the engine bending to preserve the old framing (see
-//! `docs/design/remote-access-via-connectors.md`, Phase 3):
+//! One JSON object per line, tagged by a `"t"` field, mapping onto the engine's
+//! role-neutral [`Inbound`]/[`Outbound`] message set. This is **not**
+//! backward-compatible with the legacy AimX wire:
 //!
-//! - `record.subscribe` is an engine-native [`Inbound::Subscribe`] keyed by the
-//!   request `id`; there is **no** `{"subscription_id":"sub-N"}` ack and events
-//!   carry that `id` back as [`Outbound::Event::sub`] — the client owns the id.
-//! - events carry only `{sub, seq, data}`; the legacy server-side `timestamp` /
-//!   `dropped` fields are gone (a client stamps on receipt if it cares).
-//! - the Hello/Welcome handshake is a normal `call("hello", …)` over the client
-//!   handle, so `authenticate` stays peer-only — no privileged handshake frame.
+//! - `record.subscribe` is an [`Inbound::Subscribe`] keyed by the request `id`;
+//!   there is no `subscription_id` ack — events carry the `id` back as
+//!   [`Outbound::Event::sub`].
+//! - events carry only `{sub, seq, data}` (no server-side `timestamp`/`dropped`).
+//! - the Hello/Welcome handshake is a normal `call("hello", …)`, so
+//!   `authenticate` stays peer-only.
 //!
-//! Per [the design](../../../../docs/design/remote-access-via-connectors.md)
-//! decision 1 the record-value `Payload` is spliced into / sliced out of the
-//! textual envelope verbatim via [`serde_json::value::RawValue`] — no
-//! intermediate `Value` tree, no re-escaping, one serde pass.
+//! The record-value `Payload` is spliced into / sliced out of the envelope
+//! verbatim via [`serde_json::value::RawValue`] — no intermediate `Value` tree,
+//! no re-escaping.
 
 use alloc::sync::Arc;
 
@@ -178,10 +173,8 @@ impl EnvelopeCodec for AimxCodec {
                 write_frame(out, &frame)
             }
             Outbound::Pong => write_frame(out, &Frame::tagged("pong")),
-            // AimX has no explicit subscribe ack (the client owns the id; events
-            // carry it back). `run_session` only emits this when `acks_subscribe`
-            // is set, which the AimX server leaves off — so this is unreachable on
-            // the AimX wire.
+            // AimX has no explicit subscribe ack; `run_session` only emits this
+            // when `acks_subscribe` is set, which the AimX server leaves off.
             Outbound::Subscribed { .. } => Err(CodecError::Malformed),
         }
     }

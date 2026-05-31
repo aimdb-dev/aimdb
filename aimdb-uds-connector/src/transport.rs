@@ -1,15 +1,9 @@
 //! AimX UDS transport — a [`Connection`] over a Unix-domain socket with NDJSON
 //! framing in the transport: one line == one logical frame.
 //!
-//! Relocated out of `aimdb-core` in Phase 6: a transport is a swappable
-//! connector crate that contributes only the [`Dialer`]/[`Listener`]/
-//! [`Connection`] triple (doc 037 Layer 1). The engine, codec, and dispatch are
-//! reused verbatim from core.
-//!
-//! Both transport roles ride the same role-neutral [`UdsConnection`]: the
-//! dialing half ([`UdsDialer`]) that the proactive `run_client` engine drives,
-//! and the accepting half ([`UdsListener`]) that the reactive `serve` engine
-//! drives.
+//! Both roles ride the same role-neutral [`UdsConnection`]: the dialing half
+//! ([`UdsDialer`], driven by `run_client`) and the accepting half
+//! ([`UdsListener`], driven by `serve`).
 
 use std::path::PathBuf;
 

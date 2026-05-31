@@ -1,24 +1,18 @@
-//! AimX server dispatch (std-only) — the method semantics of AimX remote access,
-//! ported off the hand-rolled `remote/handler.rs` loop onto the shared session
-//! engine (`serve`/`run_session`).
+//! AimX server dispatch (`std`-only) — the method semantics of AimX remote
+//! access, served on the shared session engine (`serve`/`run_session`).
 //!
-//! Still `std`-gated: the dispatch reaches into core's `record.list`/JSON API
-//! (the `AnyRecord` JSON + metadata methods), which remain `#[cfg(std)]` until
-//! their own no_std port. A transport (UDS today) pairs this dispatch with the
+//! `std`-gated because it reaches into core's `record.list` / JSON API (the
+//! `AnyRecord` JSON + metadata methods). A transport pairs this dispatch with the
 //! generic [`SessionServerConnector`](crate::session::SessionServerConnector) —
 //! see `aimdb-uds-connector`'s `UdsServer`.
 //!
-//! The dispatch role is split per the Phase-3 server-port refinement (doc 037):
-//! - [`AimxDispatch`] is the **shared** half (one `Arc` per server): peer-only
+//! The role is split in two:
+//! - [`AimxDispatch`] — the shared half (one `Arc` per server): peer-only
 //!   `authenticate` + an `open` factory.
-//! - [`AimxSession`] is the **per-connection** half the engine owns by value, so
-//!   `record.drain`'s lazy per-record cursors live in it (`drain_readers`) — the
-//!   one seam the AimX wire reshape did not dissolve.
+//! - `AimxSession` — the per-connection half the engine owns by value, homing
+//!   `record.drain`'s lazy per-record cursors (`drain_readers`).
 //!
-//! Method bodies are ported verbatim from `remote/handler.rs`, reusing the same
-//! db introspection helpers; only the reply shape changes (the reshaped AimX-v2
-//! wire's `Result<Payload, RpcError>` instead of the legacy rich `Response`).
-//! Param shapes follow the v2 client ([`aimdb_client::AimxConnection`]):
+//! Param shapes follow the client ([`aimdb_client::AimxConnection`]):
 //! `record.get`/`record.set` take `{name[, value]}`, `write` takes `{value}`.
 
 use std::collections::HashMap;
@@ -34,7 +28,7 @@ use crate::session::{
 };
 use crate::{AimDb, DbError, RuntimeAdapter};
 
-/// The shared AimX dispatch — `authenticate` (peer-only) + the [`AimxSession`]
+/// The shared AimX dispatch — `authenticate` (peer-only) + the `AimxSession`
 /// factory. One `Arc<AimxDispatch>` is shared across every accepted connection.
 pub struct AimxDispatch<R: RuntimeAdapter> {
     db: Arc<AimDb<R>>,
@@ -61,9 +55,8 @@ where
         _first: Option<&'a [u8]>,
     ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
         // Peer-only: AimX over UDS relies on socket file permissions for access
-        // control; the `auth_token` identity is not yet threaded into per-call
-        // checks (Phase 4 — the auth-context-shape gate). Permission *policy*
-        // (ReadOnly / writable_records) is enforced per-call from the config.
+        // control. Permission policy (ReadOnly / writable_records) is enforced
+        // per-call from the config.
         Box::pin(async { Ok(SessionCtx::default()) })
     }
 
@@ -107,10 +100,8 @@ where
         &'a mut self,
         topic: &'a str,
     ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
-        // The engine owns the subscription lifecycle (keyed by request id) and
-        // the per-connection cap (SessionLimits); no `generate_subscription_id`
-        // / `max_subs` bookkeeping here. AimX has no async authorization, so this
-        // is a trivial wrapper.
+        // The engine owns the subscription lifecycle and the per-connection cap;
+        // AimX has no async authorization, so this is a trivial wrapper.
         Box::pin(async move {
             let stream = crate::remote::stream::stream_record_updates(&self.db, topic)
                 .map_err(map_db_err)?;
@@ -276,10 +267,8 @@ where
 
     /// Build the `Welcome` from the security policy + writable records.
     ///
-    /// `writable_records` is derived from the policy directly (not the per-record
-    /// `writable` marking the builder applies) so the server is self-contained
-    /// when `build_aimx_server` is used standalone; it is intersected with the
-    /// records that actually exist so the server never advertises a phantom key.
+    /// `writable_records` is derived from the policy directly and intersected with
+    /// the records that actually exist, so the server never advertises a phantom key.
     fn welcome(&self) -> Value {
         let (permissions, writable_records) = match &self.config.security_policy {
             SecurityPolicy::ReadOnly => (vec!["read".to_string()], Vec::new()),

@@ -1,8 +1,7 @@
-//! Data-plane pump helpers (doc 035 § The toolkit, masterplan 036 Phase 1).
+//! Data-plane pump helpers.
 //!
-//! Two free functions that own the boilerplate every data-plane connector used
-//! to hand-roll, layered on top of the [`ConnectorBuilder::build -> Vec<BoxFuture>`]
-//! spine. A connector author writes only the pure I/O adapter — a
+//! Two free functions that own the boilerplate a data-plane connector used to
+//! hand-roll. The author writes only the pure I/O adapter — a
 //! [`Connector`](crate::transport::Connector) (outbound) and a [`Source`]
 //! (inbound) — and composes the helpers in `build()`:
 //!
@@ -12,10 +11,7 @@
 //! Ok(f)
 //! ```
 //!
-//! Both helpers are `no_std + alloc`-native (boxed futures, no `tokio`) and gate
-//! on `connector-session` alongside the session engines, so they cross-compile to
-//! `thumbv7em-none-eabihf`. The spine stays the universal contract and escape
-//! hatch — a connector that fits no helper still implements `build()` directly.
+//! Both are `no_std + alloc`-native (boxed futures, no `tokio`).
 
 extern crate alloc;
 
@@ -133,14 +129,13 @@ where
 
 /// Inbound pump: a single multiplexed reader future for `scheme`.
 ///
-/// Drives one [`Source`] — never one task per topic (doc 035 Decision 2) — fanning
-/// each `(topic, payload)` out to the matching producers via a [`Router`] built
-/// from [`collect_inbound_routes`](AimDb::collect_inbound_routes). Replaces the
-/// hand-rolled read+route loop.
+/// Drives one [`Source`] (never one task per topic), fanning each
+/// `(topic, payload)` out to the matching producers via a [`Router`] built from
+/// [`collect_inbound_routes`](AimDb::collect_inbound_routes).
 ///
-/// Backpressure (doc 035 Decision 3): [`Router::route`] drops + logs on a full
-/// producer buffer rather than blocking, so one slow record never stalls the
-/// shared source. Route errors are non-fatal and never propagate.
+/// Backpressure: [`Router::route`] drops + logs on a full producer buffer rather
+/// than blocking, so one slow record never stalls the shared source. Route errors
+/// are non-fatal.
 ///
 /// [`Router`]: crate::router::Router
 /// [`Router::route`]: crate::router::Router::route

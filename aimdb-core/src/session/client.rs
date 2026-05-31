@@ -1,30 +1,16 @@
-//! Phase 2 **client** engine — the proactive half of the shared session
-//! substrate (doc 034 § "shared with a client engine"; doc 035 Client
-//! capability). The dual of [`server`](super::server): it *dials* a
-//! [`Connection`] via a [`Dialer`] instead of accepting one, *sends* [`Inbound`]
-//! and *receives* [`Outbound`] (roles swapped vs the server), and demultiplexes
-//! replies by `id`.
+//! The proactive **client** engine of the session substrate — the dual of the
+//! [`server`](super::server): it *dials* a [`Connection`] via a [`Dialer`],
+//! *sends* [`Inbound`] / *receives* [`Outbound`], and demultiplexes replies by `id`.
 //!
-//! Per the Phase 2 client-surface gate (resolved: **one engine, both
-//! surfaces**), [`run_client`] owns the demux-by-`id` core and returns a
-//! [`ClientHandle`] exposing caller-initiated RPC (`call`/`subscribe`/`write`).
-//! Record *mirroring* (`pump_client(db, scheme, …)`) is a thin wrapper that
-//! lands in **Phase 3** alongside the AimX route collection it needs — it will
-//! drive this same engine, not a second one.
+//! [`run_client`] owns the demux core and returns a [`ClientHandle`] for
+//! caller-initiated RPC (`call`/`subscribe`/`write`) plus the engine future for
+//! the runner to drive (spawn-free). [`pump_client`] is a thin wrapper that
+//! mirrors records over the same engine.
 //!
-//! Spawn-free: [`run_client`] returns the engine future for the runner to drive;
-//! it never spawns.
-//!
-//! **Runtime-neutral (Phase 5).** The only runtime-specific primitive this engine
-//! touches is *time* (reconnect backoff + keepalive), so it is parametrized over
-//! the adapter's [`TimeOps`] clock; everything else is `futures` channels +
-//! `select_biased!`. No `tokio`/`embassy-*` here — the runtime split lives in the
-//! adapter crates' `TimeOps` impls.
-//!
-//! Like the server, the demux loop uses an **extract-then-act** shape: the
-//! `select_biased!` block only computes a small [`ClientStep`] (it must not touch
-//! `conn` while a sibling arm's future still borrows it), then the loop acts on
-//! it once the borrows release.
+//! Runtime-neutral: the only runtime-specific primitive is *time* (reconnect
+//! backoff + keepalive), via the adapter's [`TimeOps`] clock; everything else is
+//! `futures` channels. The demux loop uses the same **extract-then-act** shape as
+//! the server (compute a [`ClientStep`], then act once the arm borrows release).
 
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
@@ -44,41 +30,32 @@ use crate::connector::SerializerKind;
 use crate::router::RouterBuilder;
 use crate::{AimDb, RuntimeAdapter};
 
-/// Client engine knobs. Durations are **milliseconds** (`u64`) rather than
-/// `std::time::Duration` so the engine stays `no_std`-clean and runtime-neutral —
-/// the adapter's [`TimeOps`] turns them into its native `Duration` at the call.
+/// Client engine knobs. Durations are in **milliseconds** so the engine stays
+/// `no_std`-clean; the adapter's [`TimeOps`] turns them into its native `Duration`.
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     /// Redial after a dropped/failed connection instead of ending the engine.
     pub reconnect: bool,
-    /// Base delay (ms) before the first redial when `reconnect` is set. Subsequent
-    /// redials grow this exponentially, capped at [`max_reconnect_delay`](Self::max_reconnect_delay).
+    /// Base delay (ms) before the first redial; subsequent redials grow
+    /// exponentially, capped at [`max_reconnect_delay`](Self::max_reconnect_delay).
     pub reconnect_delay: u64,
-    /// Upper bound (ms) for the exponential reconnect backoff. Defaults to
-    /// [`reconnect_delay`](Self::reconnect_delay) (i.e. no escalation — a fixed
-    /// delay, preserving the pre-Phase-4 behavior).
+    /// Upper bound (ms) for the reconnect backoff. Defaults to
+    /// [`reconnect_delay`](Self::reconnect_delay) (a fixed delay).
     pub max_reconnect_delay: u64,
-    /// Maximum redial attempts before the engine gives up. `0` = unlimited
-    /// (the default).
+    /// Maximum redial attempts before giving up. `0` = unlimited (default).
     pub max_reconnect_attempts: usize,
-    /// If set, send a keepalive `Ping` after this many milliseconds of an
-    /// otherwise-idle connection. `None` (default) disables keepalive. (Phase 5:
-    /// the timer re-arms each loop iteration, so this is an *idle* keepalive —
-    /// inbound/outbound traffic resets it, which only suppresses redundant pings.)
+    /// Send a keepalive `Ping` after this many ms of an idle connection; the timer
+    /// re-arms each iteration, so traffic resets it. `None` (default) disables it.
     pub keepalive_interval: Option<u64>,
-    /// Cap on caller commands buffered while disconnected; the oldest are dropped
-    /// past this bound. Defaults to `usize::MAX` (effectively unbounded — the
-    /// pre-Phase-4 behavior).
+    /// Cap on caller commands buffered while disconnected (oldest dropped past it).
+    /// Defaults to `usize::MAX` (unbounded).
     pub max_offline_queue: usize,
-    /// Key the subscription demux by **topic** instead of the engine request id.
-    /// `false` (default, AimX-style) — events carry the request id back, demux by
-    /// id. `true` (WS-style) — the wire pushes data keyed by topic with no id, so
-    /// the codec's `decode_outbound` returns the topic as `Event.sub` and the
-    /// engine routes by topic.
+    /// Key the subscription demux by **topic** instead of the request `id`.
+    /// `false` (default): events echo the id. `true`: the wire pushes data keyed
+    /// by topic, so `decode_outbound` returns the topic as `Event.sub`.
     pub topic_routed_subs: bool,
-    /// Send a Ping handshake on connect and wait for the Pong before accepting
-    /// caller commands (the proactive "handshake-as-caller"). Mirrors the
-    /// server's `reads_hello`; a real protocol swaps Ping/Pong for its Hello.
+    /// Send a Ping handshake on connect and await the Pong before serving caller
+    /// commands. A real protocol swaps Ping/Pong for its Hello.
     pub sends_hello: bool,
 }
 
@@ -98,8 +75,7 @@ impl Default for ClientConfig {
 }
 
 /// Exponential backoff (ms) for the `attempt`-th redial (1-based), capped at
-/// [`ClientConfig::max_reconnect_delay`]. Defaults collapse this to a fixed
-/// `reconnect_delay` (max == base), preserving pre-Phase-4 behavior.
+/// [`ClientConfig::max_reconnect_delay`].
 fn backoff_delay(config: &ClientConfig, attempt: usize) -> u64 {
     let base = config.reconnect_delay;
     let cap = config.max_reconnect_delay.max(base);
@@ -162,10 +138,9 @@ impl ClientHandle {
         rx.await.map_err(|_| RpcError::Internal)?
     }
 
-    /// Open a subscription; returns a stream of updates immediately (the
-    /// `Subscribe` request is sent to the server asynchronously by the engine).
-    /// Dropping the stream stops local delivery; an explicit remote Unsubscribe
-    /// is left to Phase 3 (the connector mirroring path).
+    /// Open a subscription; returns the stream of updates immediately (the engine
+    /// sends the `Subscribe` request asynchronously). Dropping the stream stops
+    /// local delivery.
     pub fn subscribe(
         &self,
         topic: impl Into<String>,
@@ -221,16 +196,13 @@ enum Ended {
     HandlesDropped,
 }
 
-/// On engine exit (any path), **close and drain** the command channel so buffered
-/// or in-flight caller commands are dropped — each `ClientCmd::Call` drops with
-/// its `reply` oneshot sender, so a waiting [`ClientHandle::call`] resolves with
-/// [`RpcError::Internal`] instead of hanging forever.
+/// On engine exit, close and drain the command channel so buffered/in-flight
+/// commands are dropped — each `ClientCmd::Call` drops its `reply` sender, so a
+/// waiting [`ClientHandle::call`] resolves with [`RpcError::Internal`] instead of
+/// hanging.
 ///
-/// This is required because `async-channel` keeps buffered items alive as long as
-/// *any* `Sender` exists (a live `ClientHandle` does), and a dropped `Receiver`
-/// only *closes* the queue without draining it — unlike `tokio::mpsc`, whose
-/// receiver-drop discarded the backlog. `close()` first stops new sends; the
-/// drain then releases the backlog.
+/// Needed because `async-channel` keeps buffered items alive while any `Sender`
+/// exists, and dropping the `Receiver` only closes the queue without draining it.
 struct DrainOnExit<'a>(&'a Receiver<ClientCmd>);
 
 impl Drop for DrainOnExit<'_> {
@@ -240,9 +212,8 @@ impl Drop for DrainOnExit<'_> {
     }
 }
 
-/// What [`drive_connection`]'s `select_biased!` decided this iteration. Extracted
-/// so the connection work runs *after* the select's arm futures (and their borrow
-/// of `conn`) are dropped — see the module note.
+/// What [`drive_connection`]'s `select_biased!` decided this iteration — extracted
+/// so the work runs after the arm futures' borrow of `conn` releases.
 enum ClientStep {
     /// A frame (or close/error) arrived from the server.
     Inbound(super::TransportResult<Option<Vec<u8>>>),
@@ -265,8 +236,7 @@ async fn client_loop<D, C, R>(
 {
     // Whenever the engine returns, fail any buffered/in-flight calls (see guard).
     let _drain = DrainOnExit(&cmd_rx);
-    // Consecutive failed attempts since the last successful connection; drives
-    // exponential backoff and the optional attempt cap.
+    // Consecutive failed attempts; drives backoff and the attempt cap.
     let mut attempt: usize = 0;
     loop {
         let conn = match dialer.connect().await {
@@ -365,13 +335,11 @@ where
     }
 
     loop {
-        // `biased`, server-read first. The select only *decides* the next step;
-        // it must not touch `conn` while the `recv` arm still borrows it.
+        // Biased toward the server read. The select only decides the next step.
         let step = {
             let mut recv = conn.recv().fuse();
-            // Idle keepalive: re-armed each iteration. With no interval configured
-            // the arm parks on `pending()` forever, so it never wins the select.
-            // The async block is `!Unpin`, so pin it for the select arm.
+            // Idle keepalive, re-armed each iteration; with no interval it parks on
+            // `pending()` forever. `!Unpin`, so pin it for the arm.
             let mut keepalive = core::pin::pin!(async {
                 match keepalive_ms {
                     Some(ms) => clock.sleep(clock.millis(ms)).await,
@@ -379,8 +347,7 @@ where
                 }
             }
             .fuse());
-            // async-channel's `recv()` is `!Unpin` (holds a pinned listener), so
-            // pin it in place for the arm.
+            // `recv()` is `!Unpin`, so pin it for the arm.
             let mut cmd = core::pin::pin!(cmd_rx.recv().fuse());
             select_biased! {
                 // ---- inbound from server: Reply / Event / Snapshot / Pong --
@@ -404,13 +371,10 @@ where
                         if let Some(tx) = pending.remove(&id) {
                             let _ = tx.send(result);
                         } else if result.is_err() {
-                            // Subscribe-ack contract: a successful subscribe is
-                            // acknowledged implicitly by its events flowing; the
-                            // server replies only on *failure* (unknown record,
-                            // sub cap). Such a Reply carries the subscribe `id`,
-                            // which was never registered as a pending call — so
-                            // drop the matching event sink to end the stream
-                            // (`None`) instead of leaving it hanging forever.
+                            // A subscribe is acked implicitly by its events; the
+                            // server replies only on failure, carrying the subscribe
+                            // `id` (never a pending call). Drop the event sink so the
+                            // stream ends instead of hanging.
                             subs.remove(&id.to_string());
                         }
                     }
@@ -429,9 +393,7 @@ where
                         }
                     }
                     Ok(Outbound::Pong) => {}
-                    // Explicit subscribe ack (WS). Informational — the local
-                    // event sink already exists from the Subscribe command, so
-                    // there is nothing to route; just confirm liveness.
+                    // Explicit subscribe ack — informational; the sink already exists.
                     Ok(Outbound::Subscribed { .. }) => {}
                     Err(_e) => continue, // skip a malformed frame, keep the connection
                 }
@@ -475,8 +437,7 @@ where
                     ClientCmd::Subscribe { topic, events } => {
                         let id = next_id;
                         next_id += 1;
-                        // Topic-routed (WS): the wire pushes data keyed by topic,
-                        // so demux by topic; id-routed (AimX): events echo the id.
+                        // Demux key: topic (topic-routed) or the request id.
                         let key = if config.topic_routed_subs {
                             topic.clone()
                         } else {

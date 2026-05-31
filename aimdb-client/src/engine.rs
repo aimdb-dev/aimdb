@@ -4,9 +4,9 @@
 //! symmetric [`AimxCodec`] drive [`run_client`], which owns the wire, the
 //! request-id demux, and (optionally) reconnect. The public surface is the
 //! cheap-clone [`ClientHandle`] plus typed convenience wrappers and
-//! per-subscription [`futures::Stream`]s — a deliberate **break** from the old
-//! synchronous [`crate::connection::AimxClient`] (`&mut self`, single global
-//! `receive_event()` queue), which stays until the server port retires it.
+//! per-subscription [`futures::Stream`]s — a deliberate **break** from the
+//! retired synchronous `AimxClient` (`&mut self`, single global
+//! `receive_event()` queue).
 //!
 //! `run_client` is itself spawn-free (it returns a future for a runner to
 //! drive); this convenience layer is a *client application*, so it drives the

@@ -38,7 +38,7 @@ pub struct Route {
     ///
     /// Examples: MQTT topic, Kafka topic, HTTP path, DDS topic, shmem segment
     ///
-    /// Uses Arc<str> instead of &'static str to avoid memory leaks from Box::leak().
+    /// Uses `Arc<str>` instead of `&'static str` to avoid memory leaks from `Box::leak()`.
     /// This adds ~8 bytes overhead per route (Arc control block) but enables proper cleanup.
     pub resource_id: Arc<str>,
 
@@ -262,7 +262,7 @@ impl RouterBuilder {
     ///
     /// This is a convenience method for automatic router construction from
     /// `AimDb::collect_inbound_routes()`. The resource_ids are converted to
-    /// Arc<str> for proper memory management.
+    /// `Arc<str>` for proper memory management.
     ///
     /// # Arguments
     /// * `routes` - Vector of (resource_id, producer, deserializer) tuples
@@ -286,13 +286,13 @@ impl RouterBuilder {
     /// Add a route to the router
     ///
     /// # Arguments
-    /// * `resource_id` - Resource identifier to match (as Arc<str>)
+    /// * `resource_id` - Resource identifier to match (as `Arc<str>`)
     /// * `producer` - Producer that implements ProducerTrait
     /// * `deserializer` - Deserializer variant (raw or context-aware)
     ///
     /// # Resource ID Memory Management
-    /// The resource_id is stored as Arc<str> for proper reference counting and cleanup.
-    /// You can create an Arc<str> from:
+    /// The resource_id is stored as `Arc<str>` for proper reference counting and cleanup.
+    /// You can create an `Arc<str>` from:
     /// - String literal: `Arc::from("sensors/temperature")`
     /// - Owned String: `Arc::from(string.as_str())`
     pub fn add_route(

@@ -67,7 +67,7 @@
 //!
 //! ## Authentication (server only)
 //!
-//! See [`auth`] for the [`AuthHandler`][auth::AuthHandler] trait.
+//! See [`auth`] for the [`AuthHandler`] trait.
 
 // ════════════════════════════════════════════════════════════════════
 // Server modules (feature = "server")
@@ -101,13 +101,12 @@ pub mod client;
 // Shared session-engine glue (Phase 4 — server and/or client)
 // ════════════════════════════════════════════════════════════════════
 
-/// Per-connection WS-JSON [`EnvelopeCodec`](aimdb_core::EnvelopeCodec) shared by
-/// the server (`run_session`) and client (`run_client`) ports.
+/// Per-connection WS-JSON `EnvelopeCodec` shared by the server (`run_session`)
+/// and client (`run_client`) ports.
 #[cfg(any(feature = "server", feature = "client"))]
 pub mod codec;
 
-/// WS transport adapters ([`Connection`](aimdb_core::Connection)/`Dialer`) over a
-/// real WebSocket.
+/// WS transport adapters (`Connection`/`Dialer`) over a real WebSocket.
 #[cfg(any(feature = "server", feature = "client"))]
 pub mod transport;
 

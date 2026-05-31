@@ -1,17 +1,16 @@
 //! Unix-domain-socket transport connector for AimDB remote access.
 //!
-//! A transport is a thin, swappable connector crate (doc 041): it contributes
-//! only the [`Dialer`]/[`Listener`]/[`Connection`] triple ([`UdsConnection`] /
+//! A thin, swappable transport crate: it contributes only the
+//! `Dialer`/`Listener`/`Connection` triple ([`UdsConnection`] /
 //! [`UdsDialer`] / [`UdsListener`]); the AimX codec + dispatch and the engine
-//! wiring are reused verbatim from `aimdb-core`. Two ergonomic constructors wrap
-//! the generic core connectors:
+//! wiring are reused from `aimdb-core`. Two ergonomic constructors wrap the
+//! generic core connectors:
 //!
 //! - [`UdsClient`] — dials a peer over UDS and mirrors records under a scheme
-//!   (`"remote"` by default). It uses `link_to`/`link_from` like any data-plane
+//!   (`"remote"` by default), using `link_to`/`link_from` like any data-plane
 //!   connector. Sugar over [`SessionClientConnector`]`<UdsDialer, AimxCodec>`.
-//! - [`UdsServer`] — *accepts* connections and serves the AimX toolset over UDS.
-//!   Register it with `with_connector` to stand up remote access (this replaces
-//!   the old `AimDbBuilder::with_remote_access(config)`). Sugar over
+//! - [`UdsServer`] — accepts connections and serves the AimX toolset over UDS;
+//!   register it with `with_connector` to stand up remote access. Sugar over
 //!   [`SessionServerConnector`].
 //!
 //! ```rust,ignore
@@ -99,8 +98,8 @@ impl UdsServer {
         }
     }
 
-    /// Build from a full [`AimxConfig`] — the one-line migration for code that
-    /// used the old `AimDbBuilder::with_remote_access(config)`.
+    /// Build from a full [`AimxConfig`] (the one-line migration from the former
+    /// `AimDbBuilder::with_remote_access`).
     pub fn from_config(config: AimxConfig) -> Self {
         Self {
             config,
@@ -183,8 +182,7 @@ where
 // ===========================================================================
 
 /// Bind the Unix-domain socket synchronously (remove a stale socket file,
-/// `bind`, `set_permissions`) so bind errors surface from `build`. Relocated out
-/// of core's `build_aimx_server`.
+/// `bind`, `set_permissions`) so bind errors surface from `build`.
 fn bind_uds_listener(config: &AimxConfig) -> DbResult<UdsListener> {
     #[cfg(feature = "tracing")]
     tracing::info!(

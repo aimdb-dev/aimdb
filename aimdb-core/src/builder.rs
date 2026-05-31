@@ -327,7 +327,7 @@ pub struct AimDbBuilder<R = NoRuntime> {
     spawn_fns: Vec<(StringKey, Box<dyn core::any::Any + Send>)>,
 
     /// Startup tasks registered via on_start() — spawned after build() completes.
-    /// Stored type-erased (Box<Box<dyn FnOnce(Arc<R>) -> BoxFuture<…>>>) to allow
+    /// Stored type-erased (`Box<Box<dyn FnOnce(Arc<R>) -> BoxFuture<…>>>`) to allow
     /// the field to exist on the unparameterised NoRuntime builder too.
     start_fns: Vec<Box<dyn core::any::Any + Send>>,
 
@@ -451,7 +451,7 @@ where
     /// driven the same way:
     ///
     /// 1. **Data-plane links** (MQTT / KNX / WebSocket): a record opts in with
-    ///    `link_to(\"<scheme>://<topic>\")` / `link_from(...)`, and the connector
+    ///    `link_to("<scheme>://<topic>")` / `link_from(...)`, and the connector
     ///    mirrors that record to/from the external topic. The connector's
     ///    [`scheme`](crate::connector::ConnectorBuilder::scheme) is what those
     ///    links match against.
@@ -459,7 +459,7 @@ where
     ///    AimDB itself over a transport so peers can introspect/subscribe/write.
     ///    - The **client** half (e.g. `UdsClient`) dials a peer and *does* use
     ///      `link_to`/`link_from` under its scheme — just like (1), the scheme is
-    ///      `\"remote\"` by default instead of `\"mqtt\"`.
+    ///      `"remote"` by default instead of `"mqtt"`.
     ///    - The **server** half (e.g. `UdsServer`) *accepts* connections and takes
     ///      **no links** — registering it is how a server stands up remote access
     ///      (this replaces the old `with_remote_access(config)`).
@@ -469,8 +469,8 @@ where
     /// ```rust,ignore
     /// // (1) data-plane link to an MQTT topic
     /// AimDbBuilder::new().runtime(rt)
-    ///     .with_connector(MqttConnector::new(\"mqtt://broker.local:1883\"))
-    ///     .configure::<Temperature>(|r| { r.link_from(\"mqtt://commands/temp\")...; })
+    ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"))
+    ///     .configure::<Temperature>(|r| { r.link_from("mqtt://commands/temp"); })
     ///     .build().await?;
     ///
     /// // (2a) remote-access SERVER — no links, just expose this db over UDS
@@ -480,8 +480,8 @@ where
     ///
     /// // (2b) remote-access CLIENT — mirror a record to a peer over UDS
     /// AimDbBuilder::new().runtime(rt)
-    ///     .with_connector(UdsClient::new(\"/run/aimdb.sock\"))
-    ///     .configure::<Temp>(|r| { r.with_remote_access().link_to(\"remote://temp\")...; })
+    ///     .with_connector(UdsClient::new("/run/aimdb.sock"))
+    ///     .configure::<Temp>(|r| { r.with_remote_access().link_to("remote://temp"); })
     ///     .build().await?;
     /// ```
     pub fn with_connector(
