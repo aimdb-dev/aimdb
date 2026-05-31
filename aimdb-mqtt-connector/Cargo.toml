@@ -12,7 +12,9 @@ categories = ["network-programming", "embedded", "asynchronous"]
 
 [features]
 default = ["aimdb-core/alloc"]
-std = ["aimdb-core/std", "aimdb-core/alloc", "thiserror"]
+# `aimdb-core/connector-session` provides the data-plane `pump_sink`/`pump_source`
+# helpers the tokio client builds on (re-exported there; `std` implies it too).
+std = ["aimdb-core/std", "aimdb-core/alloc", "aimdb-core/connector-session", "thiserror"]
 tokio-runtime = [
     "std",
     "tokio",

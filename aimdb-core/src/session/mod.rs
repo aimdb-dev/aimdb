@@ -6,10 +6,10 @@
 //! is `unimplemented!()`. The engines (`run_session` / `serve` / `run_client`),
 //! the pump helpers, and the transport/dispatch impls all arrive in Phases 1–6.
 //!
-//! See [`docs/design/detailed/037-phase0-contracts.md`] for the decision record,
-//! and the canonical signature sketches this module copies verbatim:
-//! - transport + [`EnvelopeCodec`] + [`Dispatch`]: doc 034 (§ The three layers)
-//! - [`Sink`] / [`Source`] / [`Dialer`]: doc 035 (§ The toolkit)
+//! See [`docs/design/remote-access-via-connectors.md`] for the design — the
+//! decisions, the three-layer substrate (transport + [`EnvelopeCodec`] +
+//! [`Dispatch`]), and the capability model. `Sink` is now the canonical
+//! [`Connector`](crate::transport::Connector); [`Source`] / [`Dialer`] are here.
 //!
 //! Everything here is `dyn`-safe and compiles on `std` **and** `no_std + alloc`
 //! (boxed-future pattern throughout, no `std`/`tokio`/`serde_json` at the
@@ -23,8 +23,6 @@ use core::pin::Pin;
 
 use futures_core::Stream;
 
-use crate::transport::{ConnectorConfig, PublishError};
-
 // ---------------------------------------------------------------------------
 // Phase 2 engines. **Phase 5 made these runtime-neutral** (`futures` channels +
 // `select_biased!` + the adapter's `TimeOps` clock — no `tokio`/`embassy-*`), so
@@ -32,13 +30,15 @@ use crate::transport::{ConnectorConfig, PublishError};
 // cross-compile to `thumbv7em-none-eabihf`. The frozen contracts above stay
 // `no_std + alloc` as before. Only the concrete AimX substrate below (UDS +
 // NDJSON) is still std-only until its embedded transport lands in Phase 6.
-// See docs/design/detailed/036/037/040.
+// See docs/design/remote-access-via-connectors.md (Phases 0/2/5).
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "connector-session")]
 mod client;
 #[cfg(feature = "connector-session")]
 mod connector;
+#[cfg(feature = "connector-session")]
+mod pump;
 #[cfg(feature = "connector-session")]
 mod server;
 
@@ -55,6 +55,8 @@ pub mod aimx;
 pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
 pub use connector::{SessionClientConnector, SessionServerConnector};
+#[cfg(feature = "connector-session")]
+pub use pump::{pump_sink, pump_source};
 #[cfg(feature = "connector-session")]
 pub use server::{run_session, serve, SessionConfig};
 
@@ -456,19 +458,9 @@ pub trait EnvelopeCodec: Send + Sync {
 // library owns any session.
 // ===========================================================================
 
-/// AimDB → external data-plane (Decision 3: `publish` stays a **sibling**
-/// capability). This is today's [`Connector`](crate::transport::Connector)
-/// contract verbatim — no rename or migration here; reconciling the two names
-/// is Phase 1.
-pub trait Sink: Send + Sync {
-    /// Publish a serialized record value to a protocol-specific destination.
-    fn publish(
-        &self,
-        dest: &str,
-        cfg: &ConnectorConfig,
-        bytes: &[u8],
-    ) -> BoxFut<'_, Result<(), PublishError>>;
-}
+// AimDB → external data-plane (the `Sink` capability) is the canonical
+// [`Connector`](crate::transport::Connector) trait verbatim — Phase 1 collapsed
+// the Phase-0 `Sink` skeleton onto it. `pump_sink` takes `Arc<dyn Connector>`.
 
 /// External → AimDB data-plane — a stream of inbound frames (the one genuinely
 /// new data-plane trait; replaces the hand-rolled read loop).
@@ -492,7 +484,6 @@ fn _assert_object_safe(
     _dispatch: &dyn Dispatch,
     _session: &dyn Session,
     _codec: &dyn EnvelopeCodec,
-    _sink: &dyn Sink,
     _source: &dyn Source,
 ) {
 }
@@ -582,18 +573,6 @@ mod tests {
         }
     }
 
-    struct MockSink;
-    impl Sink for MockSink {
-        fn publish(
-            &self,
-            _dest: &str,
-            _cfg: &ConnectorConfig,
-            _bytes: &[u8],
-        ) -> BoxFut<'_, Result<(), PublishError>> {
-            unimplemented!()
-        }
-    }
-
     struct MockSource;
     impl Source for MockSource {
         fn next(&mut self) -> BoxFut<'_, Option<(String, Payload)>> {
@@ -610,7 +589,6 @@ mod tests {
         let _dispatch: Box<dyn Dispatch> = Box::new(MockDispatch);
         let _session: Box<dyn Session> = Box::new(MockSession);
         let _codec: Box<dyn EnvelopeCodec> = Box::new(MockCodec);
-        let _sink: Box<dyn Sink> = Box::new(MockSink);
         let _source: Box<dyn Source> = Box::new(MockSource);
     }
 }

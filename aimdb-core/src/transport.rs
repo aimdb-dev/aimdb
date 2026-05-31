@@ -55,6 +55,39 @@ impl Default for ConnectorConfig {
     }
 }
 
+impl ConnectorConfig {
+    /// Build a config from a route's URL-query key/value pairs.
+    ///
+    /// This is the shared seam the data-plane `pump_sink` helper uses to thread
+    /// per-route configuration through to [`Connector::publish`] without changing
+    /// the `publish` signature.
+    ///
+    /// Only the protocol-agnostic `timeout_ms` is lifted into a typed field. The
+    /// `qos`/`retain` *meaning* differs per protocol (an MQTT QoS level vs. a
+    /// Kafka `acks` setting vs. an HTTP retry count — see the type docs), and a
+    /// `u8`/`bool` field cannot represent "unspecified", so these — and every
+    /// other key — are passed through verbatim in [`protocol_options`] for the
+    /// connector to interpret with its own defaults. The typed `qos`/`retain`
+    /// fields therefore keep their [`Default`] values here; they remain available
+    /// for callers that construct a [`ConnectorConfig`] directly.
+    ///
+    /// [`protocol_options`]: ConnectorConfig::protocol_options
+    pub fn from_query(query: &[(String, String)]) -> ConnectorConfig {
+        let mut cfg = ConnectorConfig::default();
+        for (k, v) in query {
+            match k.as_str() {
+                "timeout_ms" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        cfg.timeout_ms = Some(n);
+                    }
+                }
+                _ => cfg.protocol_options.push((k.clone(), v.clone())),
+            }
+        }
+        cfg
+    }
+}
+
 /// Error that can occur during connector publishing
 ///
 /// Uses an enum instead of String for better performance in `no_std` environments

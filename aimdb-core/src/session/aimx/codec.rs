@@ -6,7 +6,7 @@
 //! message set. This is **not** backward-compatible with the legacy AimX wire —
 //! the no-compat decision lets the wire follow the engine's clean model instead
 //! of the engine bending to preserve the old framing (see
-//! `docs/design/detailed/038-phase3-aimx-client.md`):
+//! `docs/design/remote-access-via-connectors.md`, Phase 3):
 //!
 //! - `record.subscribe` is an engine-native [`Inbound::Subscribe`] keyed by the
 //!   request `id`; there is **no** `{"subscription_id":"sub-N"}` ack and events
@@ -16,8 +16,8 @@
 //! - the Hello/Welcome handshake is a normal `call("hello", …)` over the client
 //!   handle, so `authenticate` stays peer-only — no privileged handshake frame.
 //!
-//! Per [037](../../../../docs/design/detailed/037-phase0-contracts.md)
-//! Decision 1 the record-value `Payload` is spliced into / sliced out of the
+//! Per [the design](../../../../docs/design/remote-access-via-connectors.md)
+//! decision 1 the record-value `Payload` is spliced into / sliced out of the
 //! textual envelope verbatim via [`serde_json::value::RawValue`] — no
 //! intermediate `Value` tree, no re-escaping, one serde pass.
 

@@ -90,12 +90,12 @@ pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 
 // Phase 0 connector-session contracts (feature `connector-session`, no_std +
 // alloc compatible). Frozen trait skeletons only — see
-// docs/design/detailed/037-phase0-contracts.md.
+// docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
-    AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound,
-    Listener, Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Sink, Source,
-    TransportError, TransportResult,
+    pump_sink, pump_source, AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch,
+    EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, SessionCtx,
+    SessionLimits, Source, TransportError, TransportResult,
 };
 
 // Stage profiling exports (feature-gated)
