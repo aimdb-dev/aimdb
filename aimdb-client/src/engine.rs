@@ -23,9 +23,10 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use aimdb_core::session::aimx::{AimxCodec, UdsDialer};
+use aimdb_core::session::aimx::AimxCodec;
 use aimdb_core::session::{run_client, BoxStream, ClientConfig, ClientHandle, Payload, RpcError};
 use aimdb_tokio_adapter::TokioAdapter;
+use aimdb_uds_connector::UdsDialer;
 
 use crate::error::{ClientError, ClientResult};
 use crate::protocol::{RecordMetadata, WelcomeMessage};

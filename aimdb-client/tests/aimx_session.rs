@@ -8,6 +8,11 @@
 //! This swaps the client-half milestone's test-local `UdsListener` +
 //! `TestDispatch` for real server code standing up an actual `AimDb`, proving
 //! the reshaped wire end-to-end through the shared session engine.
+//!
+//! Exercises the back-compat `build_aimx_server` alias (relocated to
+//! `aimdb-uds-connector` in Phase 6); hence the crate-level `allow(deprecated)`.
+
+#![allow(deprecated)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,9 +20,9 @@ use std::time::Duration;
 use aimdb_client::AimxConnection;
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
-use aimdb_core::session::aimx::build_aimx_server;
 use aimdb_core::AimDbBuilder;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use aimdb_uds_connector::build_aimx_server;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

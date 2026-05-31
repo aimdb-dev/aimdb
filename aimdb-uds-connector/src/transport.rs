@@ -1,10 +1,15 @@
-//! AimX UDS transport (Phase 3, std-only) — a [`Connection`] over a Unix-domain
-//! socket with NDJSON framing in the transport: one line == one logical frame.
+//! AimX UDS transport — a [`Connection`] over a Unix-domain socket with NDJSON
+//! framing in the transport: one line == one logical frame.
+//!
+//! Relocated out of `aimdb-core` in Phase 6: a transport is a swappable
+//! connector crate that contributes only the [`Dialer`]/[`Listener`]/
+//! [`Connection`] triple (doc 037 Layer 1). The engine, codec, and dispatch are
+//! reused verbatim from core.
 //!
 //! Both transport roles ride the same role-neutral [`UdsConnection`]: the
 //! dialing half ([`UdsDialer`]) that the proactive `run_client` engine drives,
 //! and the accepting half ([`UdsListener`]) that the reactive `serve` engine
-//! drives (added with the server port).
+//! drives.
 
 use std::path::PathBuf;
 
@@ -12,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::session::{
+use aimdb_core::session::{
     BoxFut, Connection, Dialer, Listener, PeerInfo, TransportError, TransportResult,
 };
 
@@ -26,8 +31,8 @@ pub struct UdsConnection {
 }
 
 impl UdsConnection {
-    /// Wrap an already-connected [`UnixStream`] (used by both the dialer here and
-    /// the future server-side listener).
+    /// Wrap an already-connected [`UnixStream`] (used by both the dialer and the
+    /// server-side listener).
     pub fn new(stream: UnixStream) -> Self {
         let (read_half, write_half) = stream.into_split();
         Self {
@@ -80,8 +85,9 @@ impl Connection for UdsConnection {
 }
 
 /// The initiating (client) side: dials a Unix-domain socket and yields a
-/// [`UdsConnection`]. Cheap to clone the path, so `run_client` can redial on
-/// reconnect.
+/// [`UdsConnection`]. Cheap to clone (just the path), so `run_client` can redial
+/// on reconnect and the generic `SessionClientConnector` can hold it.
+#[derive(Clone)]
 pub struct UdsDialer {
     socket_path: PathBuf,
 }
@@ -109,8 +115,8 @@ impl Dialer for UdsDialer {
 /// The accepting (server) side: wraps an already-bound [`UnixListener`] and
 /// yields a [`UdsConnection`] per accepted client. The dual of [`UdsDialer`];
 /// `serve` drives it. Socket setup (remove-stale / `bind` / `set_permissions`)
-/// happens once in [`build_aimx_server`](super::build_aimx_server) before the
-/// listener is handed here, mirroring the legacy supervisor's synchronous bind.
+/// happens once in [`UdsServer`](crate::UdsServer)'s bind step before the
+/// listener is handed here.
 pub struct UdsListener {
     inner: UnixListener,
 }

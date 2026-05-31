@@ -365,7 +365,10 @@ pub async fn serve<L, C, D>(mut listener: L, codec: Arc<C>, dispatch: Arc<D>, co
 where
     L: Listener,
     C: EnvelopeCodec + 'static,
-    D: Dispatch + 'static,
+    // `?Sized` so a caller can serve an `Arc<dyn Dispatch>` (the generic
+    // `SessionServerConnector` does, to stay protocol-agnostic). `run_session`
+    // already accepts `?Sized`; `serve` only uses `dispatch` via `clone`/`as_ref`.
+    D: Dispatch + 'static + ?Sized,
 {
     let mut conns: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
 

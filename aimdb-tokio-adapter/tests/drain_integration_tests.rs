@@ -14,6 +14,7 @@ use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::AimDbBuilder;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use aimdb_uds_connector::UdsServer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -52,7 +53,7 @@ async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb<TokioAdapter>
 
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
-        .with_remote_access(remote_config);
+        .with_connector(UdsServer::from_config(remote_config));
 
     // SpmcRing for drain testing (capacity 20)
     builder.configure::<Temperature>("test::Temperature", |reg| {
@@ -83,7 +84,7 @@ async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb<TokioAd
 
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
-        .with_remote_access(remote_config);
+        .with_connector(UdsServer::from_config(remote_config));
 
     builder.configure::<Counter>("test::Counter", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 4 })
@@ -108,7 +109,7 @@ async fn setup_no_remote_access_server(socket_path: &str) -> aimdb_core::AimDb<T
 
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
-        .with_remote_access(remote_config);
+        .with_connector(UdsServer::from_config(remote_config));
 
     // Register WITHOUT .with_remote_access()
     builder.configure::<Counter>("test::Counter", |reg| {

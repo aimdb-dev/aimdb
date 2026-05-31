@@ -26,6 +26,7 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "metrics",
 ] }
 aimdb-client = { path = "../../aimdb-client" }
+aimdb-uds-connector = { path = "../../aimdb-uds-connector" }
 tokio = { version = "1.48", features = ["full"] }
 futures = "0.3"
 tracing = "0.1"

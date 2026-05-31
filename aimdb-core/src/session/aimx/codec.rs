@@ -1,4 +1,5 @@
-//! AimX-v2 NDJSON envelope codec (Phase 3, std-only).
+//! AimX-v2 NDJSON envelope codec (`no_std + alloc`, feature `connector-session`
+//! + `json-serialize`).
 //!
 //! The reshaped AimX wire: one JSON object per line, tagged by a `"t"` field,
 //! mapping verbatim onto the engine's role-neutral [`Inbound`]/[`Outbound`]
@@ -28,6 +29,7 @@ use serde_json::value::RawValue;
 use crate::session::{CodecError, EnvelopeCodec, Inbound, Outbound, Payload, RpcError};
 
 /// The zero-sized AimX-v2 NDJSON codec.
+#[derive(Clone, Copy, Default)]
 pub struct AimxCodec;
 
 /// One wire frame. A single flat, all-optional struct (rather than an internally

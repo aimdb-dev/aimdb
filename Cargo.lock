@@ -51,6 +51,7 @@ version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
+ "aimdb-uds-connector",
  "anyhow",
  "futures",
  "serde",
@@ -271,11 +272,23 @@ dependencies = [
  "aimdb-client",
  "aimdb-core",
  "aimdb-executor",
+ "aimdb-uds-connector",
  "futures",
  "serde",
  "serde_json",
  "tokio",
  "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "aimdb-uds-connector"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
+ "aimdb-tokio-adapter",
+ "tokio",
  "tracing",
 ]
 
@@ -2608,6 +2621,7 @@ dependencies = [
  "aimdb-client",
  "aimdb-core",
  "aimdb-tokio-adapter",
+ "aimdb-uds-connector",
  "futures",
  "serde",
  "serde_json",

@@ -1,0 +1,32 @@
+[package]
+name = "aimdb-uds-connector"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Unix-domain-socket transport connector for AimDB remote access (AimX over UDS)"
+keywords = ["aimdb", "connector", "uds", "unix-socket", "remote"]
+categories = ["network-programming", "database"]
+
+[features]
+default = []
+tracing = ["dep:tracing", "aimdb-core/tracing"]
+
+[dependencies]
+# AimX protocol (codec + dispatch) and the generic session connectors live in
+# core; this crate contributes only the UDS transport triple + sugar. UDS is
+# Linux/std-only, so there is no Embassy half.
+aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
+    "std",
+    "connector-session",
+] }
+aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
+
+tokio = { version = "1", features = ["net", "io-util"] }
+
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

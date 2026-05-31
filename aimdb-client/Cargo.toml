@@ -16,11 +16,15 @@ profiling = ["aimdb-core/profiling"]
 [dependencies]
 # Core dependencies - protocol types from aimdb-core. `connector-session`
 # exposes the shared session engine (`run_client`/`ClientHandle`) plus the AimX
-# UDS transport + codec that the engine-based client (`crate::engine`) builds on.
+# codec that the engine-based client (`crate::engine`) builds on.
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
     "std",
     "connector-session",
 ] }
+
+# The UDS transport (`UdsDialer`) relocated out of core in Phase 6; the
+# engine-based client dials over it.
+aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

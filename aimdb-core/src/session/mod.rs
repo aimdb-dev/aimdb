@@ -38,15 +38,23 @@ use crate::transport::{ConnectorConfig, PublishError};
 #[cfg(feature = "connector-session")]
 mod client;
 #[cfg(feature = "connector-session")]
+mod connector;
+#[cfg(feature = "connector-session")]
 mod server;
 
-// Concrete AimX-v2 substrate (UDS transport + NDJSON codec), std-only. Phase 3
-// client-first: the dialing half + symmetric codec that `run_client` drives.
-#[cfg(feature = "std")]
+// Concrete AimX-v2 protocol substrate (NDJSON codec + server dispatch). The
+// codec is `no_std + alloc` (the embedded *client* rides it over a real
+// transport); the dispatch stays `std`-gated inside the module until its own
+// no_std port. The transport itself is no longer here — it is a swappable
+// connector crate (`aimdb-uds-connector`); core keeps the protocol + the
+// generic [`SessionClientConnector`] / [`SessionServerConnector`] spine.
+#[cfg(all(feature = "connector-session", feature = "json-serialize"))]
 pub mod aimx;
 
 #[cfg(feature = "connector-session")]
 pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
+#[cfg(feature = "connector-session")]
+pub use connector::{SessionClientConnector, SessionServerConnector};
 #[cfg(feature = "connector-session")]
 pub use server::{run_session, serve, SessionConfig};
 

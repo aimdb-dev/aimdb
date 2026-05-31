@@ -91,7 +91,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("📤 Verifying update...");
     match conn.get_record("server::AppSettings").await {
-        Ok(v) => println!("✔️  AppSettings after update:\n{}\n", serde_json::to_string_pretty(&v)?),
+        Ok(v) => println!(
+            "✔️  AppSettings after update:\n{}\n",
+            serde_json::to_string_pretty(&v)?
+        ),
         Err(e) => println!("❌ Error: {e}"),
     }
 

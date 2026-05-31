@@ -10,16 +10,21 @@
 //!   server via `ClientHandle::write` → the server's `record.set` path.
 //! - **server → client**: updating the server's `tele` record streams it back
 //!   through a subscription → the client's inbound producer (arbiter path).
+//!
+//! Exercises the back-compat `build_aimx_server`/`AimxClientConnector` aliases
+//! (relocated to `aimdb-uds-connector` in Phase 6); hence `allow(deprecated)`.
+
+#![allow(deprecated)]
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
-use aimdb_core::session::aimx::{build_aimx_server, AimxClientConnector};
 use aimdb_core::session::ClientConfig;
 use aimdb_core::{AimDb, AimDbBuilder};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use aimdb_uds_connector::{build_aimx_server, AimxClientConnector};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

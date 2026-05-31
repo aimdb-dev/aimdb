@@ -100,6 +100,8 @@ build:
 	cargo build --package aimdb-ws-protocol
 	@printf "$(YELLOW)  → Building WebSocket connector (server + client)$(NC)\n"
 	cargo build --package aimdb-websocket-connector --features "server,client"
+	@printf "$(YELLOW)  → Building UDS connector$(NC)\n"
+	cargo build --package aimdb-uds-connector
 	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
 	cargo build --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
 
@@ -159,6 +161,8 @@ test:
 	cargo test --package aimdb-websocket-connector --features "server,client"
 	@printf "$(YELLOW)  → Testing WebSocket connector client-only build$(NC)\n"
 	cargo test --package aimdb-websocket-connector --no-default-features --features "client" --lib
+	@printf "$(YELLOW)  → Testing UDS connector$(NC)\n"
+	cargo test --package aimdb-uds-connector
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
@@ -230,6 +234,8 @@ clippy:
 	cargo clippy --package aimdb-ws-protocol --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
 	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on UDS connector$(NC)\n"
+	cargo clippy --package aimdb-uds-connector --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 
@@ -292,6 +298,8 @@ test-embedded:
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,json-serialize"
 	@printf "$(YELLOW)  → Checking aimdb-core session engines (no_std + connector-session) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session"
+	@printf "$(YELLOW)  → Checking aimdb-core AimX codec (no_std + connector-session + json-serialize) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,json-serialize"
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"

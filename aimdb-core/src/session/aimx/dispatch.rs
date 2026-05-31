@@ -1,6 +1,12 @@
-//! AimX server dispatch (Phase 3 server port, std-only) — the method semantics
-//! of AimX remote access, ported off the hand-rolled `remote/handler.rs` loop
-//! onto the shared session engine ([`serve`]/[`run_session`]).
+//! AimX server dispatch (std-only) — the method semantics of AimX remote access,
+//! ported off the hand-rolled `remote/handler.rs` loop onto the shared session
+//! engine (`serve`/`run_session`).
+//!
+//! Still `std`-gated: the dispatch reaches into core's `record.list`/JSON API
+//! (the `AnyRecord` JSON + metadata methods), which remain `#[cfg(std)]` until
+//! their own no_std port. A transport (UDS today) pairs this dispatch with the
+//! generic [`SessionServerConnector`](crate::session::SessionServerConnector) —
+//! see `aimdb-uds-connector`'s `UdsServer`.
 //!
 //! The dispatch role is split per the Phase-3 server-port refinement (doc 037):
 //! - [`AimxDispatch`] is the **shared** half (one `Arc` per server): peer-only
@@ -16,22 +22,17 @@
 //! `record.get`/`record.set` take `{name[, value]}`, `write` takes `{value}`.
 
 use std::collections::HashMap;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use tokio::net::UnixListener;
 
 use crate::buffer::JsonBufferReader;
-use crate::builder::BoxFuture;
 use crate::remote::{AimxConfig, RecordMetadata, SecurityPolicy, WelcomeMessage};
-use crate::session::aimx::{AimxCodec, UdsListener};
 use crate::session::{
-    serve, AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, Session,
-    SessionConfig, SessionCtx, SessionLimits,
+    AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, Session, SessionCtx,
 };
-use crate::{AimDb, DbError, DbResult, RuntimeAdapter};
+use crate::{AimDb, DbError, RuntimeAdapter};
 
 /// The shared AimX dispatch — `authenticate` (peer-only) + the [`AimxSession`]
 /// factory. One `Arc<AimxDispatch>` is shared across every accepted connection.
@@ -346,86 +347,4 @@ fn map_db_err(e: DbError) -> RpcError {
         DbError::PermissionDenied { .. } => RpcError::Denied,
         _ => RpcError::Internal,
     }
-}
-
-/// Build the AimX **server** future: bind the Unix-domain socket (remove a stale
-/// socket file, `bind`, `set_permissions`) — synchronously, so bind errors
-/// surface from `build()` — then return the spawn-free [`serve`] engine driving
-/// [`AimxDispatch`] over [`AimxCodec`]. Replaces the legacy
-/// `remote/supervisor.rs` accept loop; the `max_connections` cap moves into
-/// [`SessionLimits`].
-pub fn build_aimx_server<R>(db: Arc<AimDb<R>>, config: AimxConfig) -> DbResult<BoxFuture>
-where
-    R: RuntimeAdapter + 'static,
-{
-    #[cfg(feature = "tracing")]
-    tracing::info!(
-        "Initializing AimX server on socket: {}",
-        config.socket_path.display()
-    );
-
-    // Remove an existing socket file if present.
-    if config.socket_path.exists() {
-        std::fs::remove_file(&config.socket_path).map_err(|e| DbError::IoWithContext {
-            context: format!(
-                "Failed to remove existing socket file {}",
-                config.socket_path.display()
-            ),
-            source: e,
-        })?;
-    }
-
-    let listener = UnixListener::bind(&config.socket_path).map_err(|e| DbError::IoWithContext {
-        context: format!(
-            "Failed to bind Unix socket at {}",
-            config.socket_path.display()
-        ),
-        source: e,
-    })?;
-
-    // Set socket file permissions.
-    let permissions = config.socket_permissions.unwrap_or(0o600);
-    let mut perms = std::fs::metadata(&config.socket_path)
-        .map_err(|e| DbError::IoWithContext {
-            context: format!(
-                "Failed to read socket metadata for {}",
-                config.socket_path.display()
-            ),
-            source: e,
-        })?
-        .permissions();
-    perms.set_mode(permissions);
-    std::fs::set_permissions(&config.socket_path, perms).map_err(|e| DbError::IoWithContext {
-        context: format!(
-            "Failed to set socket permissions for {}",
-            config.socket_path.display()
-        ),
-        source: e,
-    })?;
-
-    #[cfg(feature = "tracing")]
-    tracing::info!(
-        "AimX socket bound at {} (mode {:o})",
-        config.socket_path.display(),
-        permissions
-    );
-
-    let session_config = SessionConfig {
-        limits: SessionLimits {
-            max_connections: config.max_connections,
-            max_subs_per_connection: config.max_subs_per_connection,
-        },
-        reads_hello: false,
-        // AimX's subscribe ack stays implicit (events flow); no explicit ack frame.
-        acks_subscribe: false,
-    };
-    let dispatch = Arc::new(AimxDispatch::new(db, config));
-    let listener = UdsListener::new(listener);
-
-    Ok(Box::pin(serve(
-        listener,
-        Arc::new(AimxCodec),
-        dispatch,
-        session_config,
-    )))
 }
