@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- **Migrated to the engine-based `aimdb-client::AimxConnection` (Issue #39).** All commands (`watch`, `record`, `graph`) now use `AimxConnection` instead of the retired `AimxClient`, speaking the reshaped **AimX-v2** protocol. `aimdb watch` subscribes via the engine, which streams updates routed by request id — there is no server-allocated subscription id to display, and `--queue-size` is accepted for compatibility but no longer meaningful (queue sizing is now an engine concern).
 
 ## [0.6.0] - 2026-03-11
 

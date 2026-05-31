@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
+- **Drain integration tests now stand up the AimX server via `aimdb-uds-connector::UdsServer`** (new dev-dependency) instead of the removed `AimDbBuilder::with_remote_access(config)`, and connect with the engine-based `aimdb-client::AimxConnection` (Issue #39). Test-only; no production change.
 - `BufferOps::spawn_dispatcher` (a test-only utility) is unchanged — it calls `tokio::spawn` directly and does not depend on the deleted `Spawn` trait.
 - `tests/stage_profiling.rs` dropped the `avg == total / call_count` assertion: it is a tautology (`avg_time_ns()` is *defined* as that quotient) and racy while the source task is still producing. No coverage lost.
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated to the engine-based `aimdb-client::AimxConnection` (Issue #39).** The connection pool and every tool now use `AimxConnection` instead of the retired `AimxClient`, speaking the reshaped **AimX-v2** protocol. Internal-only; no tool surface or behavior change (drain clients are still pooled per socket behind an `Arc<Mutex<AimxConnection>>`).
+
 ## [0.8.0] - 2026-05-22
 
 ### Added
