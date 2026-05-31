@@ -221,6 +221,25 @@ enum Ended {
     HandlesDropped,
 }
 
+/// On engine exit (any path), **close and drain** the command channel so buffered
+/// or in-flight caller commands are dropped — each `ClientCmd::Call` drops with
+/// its `reply` oneshot sender, so a waiting [`ClientHandle::call`] resolves with
+/// [`RpcError::Internal`] instead of hanging forever.
+///
+/// This is required because `async-channel` keeps buffered items alive as long as
+/// *any* `Sender` exists (a live `ClientHandle` does), and a dropped `Receiver`
+/// only *closes* the queue without draining it — unlike `tokio::mpsc`, whose
+/// receiver-drop discarded the backlog. `close()` first stops new sends; the
+/// drain then releases the backlog.
+struct DrainOnExit<'a>(&'a Receiver<ClientCmd>);
+
+impl Drop for DrainOnExit<'_> {
+    fn drop(&mut self) {
+        self.0.close();
+        while self.0.try_recv().is_ok() {}
+    }
+}
+
 /// What [`drive_connection`]'s `select_biased!` decided this iteration. Extracted
 /// so the connection work runs *after* the select's arm futures (and their borrow
 /// of `conn`) are dropped — see the module note.
@@ -244,6 +263,8 @@ async fn client_loop<D, C, R>(
     C: EnvelopeCodec,
     R: TimeOps,
 {
+    // Whenever the engine returns, fail any buffered/in-flight calls (see guard).
+    let _drain = DrainOnExit(&cmd_rx);
     // Consecutive failed attempts since the last successful connection; drives
     // exponential backoff and the optional attempt cap.
     let mut attempt: usize = 0;

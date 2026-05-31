@@ -10,6 +10,11 @@
 # `make clean-embedded`.
 EMBEDDED_CHECK_TARGET_DIR := target/embedded-check
 
+# Disable incremental compilation to avoid "Stale file handle" linker errors
+# on Docker overlay filesystems when many cargo invocations run in sequence
+# with different feature sets (as the test/check targets do).
+export CARGO_INCREMENTAL := 0
+
 # Colors for output
 GREEN := \033[0;32m
 YELLOW := \033[0;33m

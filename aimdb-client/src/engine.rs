@@ -14,13 +14,14 @@
 //! connection drops the handle, which stops the engine gracefully.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::task::JoinHandle;
-
-use std::sync::Arc;
+use tokio::time::timeout;
 
 use aimdb_core::session::aimx::{AimxCodec, UdsDialer};
 use aimdb_core::session::{run_client, BoxStream, ClientConfig, ClientHandle, Payload, RpcError};
@@ -28,6 +29,11 @@ use aimdb_tokio_adapter::TokioAdapter;
 
 use crate::error::{ClientError, ClientResult};
 use crate::protocol::{RecordMetadata, WelcomeMessage};
+
+/// Default deadline for the connect handshake (dial + `hello`/Welcome). Bounds
+/// the case where a peer accepts the socket but never replies — the engine has
+/// no handshake timeout of its own, so the wait would otherwise be unbounded.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Response from a `record.drain` call: the values accumulated since the
 /// previous drain for this connection's per-record cursor.
@@ -53,14 +59,30 @@ pub struct AimxConnection {
 }
 
 impl AimxConnection {
-    /// Dial `socket_path`, start the engine, and complete the `hello` handshake.
+    /// Dial `socket_path`, start the engine, and complete the `hello` handshake,
+    /// bounded by [`DEFAULT_CONNECT_TIMEOUT`].
     ///
     /// The handshake is a normal RPC (`call("hello", …) -> Welcome`) rather than
     /// a privileged frame — the reshaped wire's deliberate simplification. A dial
     /// failure surfaces here as the `hello` call failing (the engine runs with
-    /// reconnect off so connect-time errors are prompt).
+    /// reconnect off so connect-time errors are prompt); a peer that accepts but
+    /// never replies surfaces as a timeout (see [`connect_with_timeout`](Self::connect_with_timeout)).
     pub async fn connect(socket_path: impl AsRef<Path>) -> ClientResult<Self> {
-        let dialer = UdsDialer::new(socket_path.as_ref());
+        Self::connect_with_timeout(socket_path, DEFAULT_CONNECT_TIMEOUT).await
+    }
+
+    /// Like [`connect`](Self::connect), but with an explicit handshake deadline.
+    ///
+    /// The deadline covers the whole handshake — dial *and* the `hello`/Welcome
+    /// exchange — so a silent or unresponsive peer cannot block the caller
+    /// indefinitely. On timeout (or any failure) the engine task is aborted so it
+    /// does not linger blocked on a stalled connection.
+    pub async fn connect_with_timeout(
+        socket_path: impl AsRef<Path>,
+        connect_timeout: Duration,
+    ) -> ClientResult<Self> {
+        let path = socket_path.as_ref();
+        let dialer = UdsDialer::new(path);
         let config = ClientConfig {
             reconnect: false,
             sends_hello: false,
@@ -69,24 +91,40 @@ impl AimxConnection {
         let (handle, engine_fut) = run_client(dialer, AimxCodec, config, Arc::new(TokioAdapter));
         let engine = tokio::spawn(engine_fut);
 
-        // Handshake-as-RPC: the server replies with its Welcome.
-        let hello = json!({ "client": "aimdb-client" });
-        let reply = handle
-            .call("hello", to_payload(&hello)?)
-            .await
-            .map_err(|_| {
-                ClientError::connection_failed(
-                    socket_path.as_ref().display().to_string(),
-                    "handshake failed (engine could not reach server)",
-                )
-            })?;
-        let server_info: WelcomeMessage = from_payload(&reply)?;
+        // Handshake-as-RPC: the server replies with its Welcome. Bounded so an
+        // accepted-but-silent peer times out instead of hanging forever.
+        let server_info = async {
+            let hello = json!({ "client": "aimdb-client" });
+            let reply = timeout(connect_timeout, handle.call("hello", to_payload(&hello)?))
+                .await
+                .map_err(|_| {
+                    ClientError::connection_failed(
+                        path.display().to_string(),
+                        "handshake timed out",
+                    )
+                })?
+                .map_err(|_| {
+                    ClientError::connection_failed(
+                        path.display().to_string(),
+                        "handshake failed (engine could not reach server)",
+                    )
+                })?;
+            from_payload::<WelcomeMessage>(&reply)
+        }
+        .await;
 
-        Ok(Self {
-            handle,
-            engine,
-            server_info,
-        })
+        match server_info {
+            Ok(server_info) => Ok(Self {
+                handle,
+                engine,
+                server_info,
+            }),
+            Err(e) => {
+                // Don't leave the engine task blocked on a stalled dial/connection.
+                engine.abort();
+                Err(e)
+            }
+        }
     }
 
     /// The raw engine handle — `call` / `subscribe` / `write` for methods the
