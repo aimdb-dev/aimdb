@@ -1,9 +1,8 @@
-//! Reusable handler traits for the WebSocket dispatch (Phase 4).
+//! Reusable handler traits for the WebSocket dispatch.
 //!
-//! The hand-rolled per-connection recv/send loops that used to live here were
-//! retired in Phase 4 — the WS server now rides `run_session`
-//! ([`aimdb_core::session::run_session`]) via [`crate::dispatch`]. What survives
-//! is the pluggable application surface the dispatch consumes:
+//! The WS server rides `run_session` ([`aimdb_core::session::run_session`]) via
+//! [`crate::dispatch`]; what lives here is the pluggable application surface the
+//! dispatch consumes:
 //!
 //! - [`QueryHandler`] — answers client `query` messages from a persistence backend;
 //! - [`SnapshotProvider`] — supplies the late-join current value for a topic.

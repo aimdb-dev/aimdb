@@ -259,7 +259,7 @@ where
 // ===========================================================================
 
 /// Deprecated alias for [`UdsClient`] that defaults the scheme to `"aimx"`
-/// (preserving the pre-Phase-6 behavior of `AimxClientConnector`).
+/// (preserving the legacy `AimxClientConnector` behavior).
 #[deprecated(
     since = "0.1.0",
     note = "use `UdsClient::new(path)` (scheme defaults to \"remote\"); pass `.scheme(\"aimx\")` for the old scheme"

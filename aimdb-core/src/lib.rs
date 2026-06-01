@@ -88,9 +88,8 @@ pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 #[cfg(feature = "json-serialize")]
 pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 
-// Phase 0 connector-session contracts (feature `connector-session`, no_std +
-// alloc compatible). Frozen trait skeletons only — see
-// docs/design/remote-access-via-connectors.md.
+// connector-session contracts (feature `connector-session`, no_std + alloc
+// compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
     pump_sink, pump_source, AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch,

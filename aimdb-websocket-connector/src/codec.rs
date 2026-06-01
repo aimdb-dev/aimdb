@@ -193,19 +193,24 @@ impl aimdb_core::EnvelopeCodec for WsCodec {
             // `Reply::Ok` payloads are already a complete `ServerMessage` JSON
             // (`QueryResult`/`TopicList`/`Error`) built by the dispatch with the
             // client's `String` id spliced in — write them verbatim.
-            Outbound::Reply { result, .. } => match result {
+            Outbound::Reply { id, result } => match result {
                 Ok(payload) => {
                     out.extend_from_slice(&payload);
                     Ok(())
                 }
-                Err(e) => write_server(
-                    out,
-                    &ServerMessage::Error {
-                        code: rpc_to_code(&e),
-                        topic: None,
-                        message: format!("{e:?}"),
-                    },
-                ),
+                Err(e) => {
+                    // Restore the topic for subscribe/cap denials from the id↔topic
+                    // map; Query/ListTopics use a bare id, so it stays `None`.
+                    let topic = self.state.lock().unwrap().id_to_topic.get(&id).cloned();
+                    write_server(
+                        out,
+                        &ServerMessage::Error {
+                            code: rpc_to_code(&e),
+                            topic,
+                            message: format!("{e:?}"),
+                        },
+                    )
+                }
             },
         }
     }

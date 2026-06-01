@@ -35,6 +35,9 @@ use crate::{AimDb, RuntimeAdapter};
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     /// Redial after a dropped/failed connection instead of ending the engine.
+    /// Replays outbound traffic only: pending calls fail and open subscriptions
+    /// are not re-issued (so `pump_client` inbound mirroring stops after the first
+    /// disconnect; outbound survives).
     pub reconnect: bool,
     /// Base delay (ms) before the first redial; subsequent redials grow
     /// exponentially, capped at [`max_reconnect_delay`](Self::max_reconnect_delay).
@@ -140,7 +143,8 @@ impl ClientHandle {
 
     /// Open a subscription; returns the stream of updates immediately (the engine
     /// sends the `Subscribe` request asynchronously). Dropping the stream stops
-    /// local delivery.
+    /// local delivery. The stream ends on disconnect and is not re-subscribed on
+    /// reconnect (see [`ClientConfig::reconnect`]) — re-call to resume.
     pub fn subscribe(
         &self,
         topic: impl Into<String>,
@@ -483,6 +487,9 @@ where
 /// Returns one spawn-free pump future per route for the runner to drive
 /// (mirroring the `ConnectorBuilder::build -> Vec<BoxFuture>` spine); it drives
 /// the **same** engine as [`run_client`], never a second one.
+///
+/// Reconnect caveat: inbound pumps subscribe once and are not replayed across a
+/// reconnect (see [`ClientConfig::reconnect`]); outbound mirroring is unaffected.
 pub fn pump_client<R>(
     db: &AimDb<R>,
     scheme: &str,

@@ -1,6 +1,5 @@
-//! Phase 3 server-port exit criterion (§4): `pump_client` mirrors a record
-//! **both directions** between a local AimDb and a remote AimDb over the shared
-//! session engine.
+//! `pump_client` mirrors a record **both directions** between a local AimDb and
+//! a remote AimDb over the shared session engine.
 //!
 //! Topology: a server `AimDb` (served by `build_aimx_server`) and a client
 //! `AimDb` whose records carry `aimx://` connector links. `run_client` opens the
@@ -12,7 +11,7 @@
 //!   through a subscription → the client's inbound producer (arbiter path).
 //!
 //! Exercises the back-compat `build_aimx_server`/`AimxClientConnector` aliases
-//! (relocated to `aimdb-uds-connector` in Phase 6); hence `allow(deprecated)`.
+//! (in `aimdb-uds-connector`); hence `allow(deprecated)`.
 
 #![allow(deprecated)]
 

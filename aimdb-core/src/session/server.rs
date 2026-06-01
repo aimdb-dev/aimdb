@@ -369,7 +369,9 @@ where
 
         match accept {
             Ok(conn) => {
-                // Soft cap; `len()` is conservative (counts not-yet-reaped futures).
+                // Soft cap; `len()` counts finished-but-not-yet-reaped futures, so
+                // under an accept flood (the biased `accept` arm starves the reap
+                // arm) it may read high transiently — acceptable for a soft cap.
                 if conns.len() >= config.limits.max_connections {
                     #[cfg(feature = "tracing")]
                     tracing::warn!(

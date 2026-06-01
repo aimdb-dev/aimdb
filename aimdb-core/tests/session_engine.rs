@@ -1,13 +1,14 @@
-//! Phase 2 exit criterion (doc 036 / issue.md): a `serve` server and a
-//! `run_client` client engine, talking over a throwaway in-memory pipe,
-//! round-trip **RPC + a streaming subscription + a fire-and-forget write** in
-//! both directions — proving the shared substrate (`Connection` /
-//! `EnvelopeCodec` / `Inbound`/`Outbound`) is genuinely role-neutral.
+//! A `serve` server and a `run_client` client engine, talking over a throwaway
+//! in-memory pipe, round-trip **RPC + a streaming subscription + a
+//! fire-and-forget write** in both directions — proving the shared substrate
+//! (`Connection` / `EnvelopeCodec` / `Inbound`/`Outbound`) is genuinely
+//! role-neutral.
 //!
 //! The substrate here is deliberately throwaway: a channel-backed `Connection`
 //! (framing-in-transport: one `Vec<u8>` per logical frame), a `Listener`/
 //! `Dialer` pair over a connect channel, a tiny line-oriented `EnvelopeCodec`,
-//! and an echo `Dispatch`. The real UDS/NDJSON/AimX impls land in Phase 3.
+//! and an echo `Dispatch`. The real UDS/NDJSON/AimX impls live in
+//! `aimdb-uds-connector` and `aimdb-core::session::aimx`.
 
 #![cfg(feature = "connector-session")]
 
@@ -224,7 +225,7 @@ impl EnvelopeCodec for LineCodec {
         Ok(())
     }
 
-    // --- client direction (Phase 2 dual) -----------------------------------
+    // --- client direction (dual) -------------------------------------------
     fn encode_inbound(&self, msg: Inbound, out: &mut Vec<u8>) -> Result<(), CodecError> {
         let s = match msg {
             Inbound::Request { id, method, params } => {

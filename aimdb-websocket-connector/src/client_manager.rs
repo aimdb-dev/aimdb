@@ -1,4 +1,4 @@
-//! Shared per-topic broadcast bus (Phase 4 — doc 039 § 3).
+//! Shared per-topic broadcast bus.
 //!
 //! [`ClientManager`] is the **fan-out bridge** behind `Dispatch::subscribe`: one
 //! record update reaches every matching subscription. Each `WsSession::subscribe`
@@ -7,10 +7,8 @@
 //! each into a `ServerMessage::Data` on encode. The outbound record→broadcast
 //! tasks ([`crate::connector`]) feed [`broadcast`](ClientManager::broadcast).
 //!
-//! This replaces the pre-Phase-4 model where the manager owned per-client
-//! `mpsc::Sender<Message>` channels and formatted `ServerMessage`s itself — that
-//! formatting now lives in the codec, and the per-connection send half is owned
-//! by `run_session`.
+//! Frame formatting lives in the codec; the per-connection send half is owned by
+//! `run_session`.
 
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -30,7 +28,8 @@ use crate::{
 /// One live subscription: a wildcard pattern + the channel feeding its stream.
 struct SubEntry {
     pattern: String,
-    tx: mpsc::UnboundedSender<Payload>,
+    /// Bounded; `broadcast` drops on a full channel (slow-client protection).
+    tx: mpsc::Sender<Payload>,
 }
 
 /// Shared per-topic broadcast bus. Cloning is cheap (all clones share state).
@@ -44,19 +43,23 @@ pub struct ClientManager {
     next_client: Arc<AtomicU64>,
     /// Live connection count (for the health endpoint).
     connections: Arc<AtomicU64>,
+    /// Per-subscription channel bound (the builder's `with_channel_capacity`).
+    sub_capacity: usize,
     /// Mirrors the builder's `with_raw_payload`: when set, `broadcast` ships the
     /// serializer bytes verbatim instead of wrapping them in a `Data` envelope.
     raw_payload: bool,
 }
 
 impl ClientManager {
-    /// Create a new, empty bus. `raw_payload` mirrors the builder flag.
-    pub fn new(raw_payload: bool) -> Self {
+    /// Create a new, empty bus. `raw_payload` mirrors the builder flag;
+    /// `sub_capacity` bounds each subscription's queue.
+    pub fn new(raw_payload: bool, sub_capacity: usize) -> Self {
         Self {
             subs: Arc::new(DashMap::new()),
             next_sub: Arc::new(AtomicU64::new(1)),
             next_client: Arc::new(AtomicU64::new(1)),
             connections: Arc::new(AtomicU64::new(0)),
+            sub_capacity: sub_capacity.max(1),
             raw_payload,
         }
     }
@@ -80,11 +83,11 @@ impl ClientManager {
     }
 
     /// Register a subscription for `pattern`; returns its id and the stream of
-    /// matching record-value payloads. Dropping the stream ends the subscription
-    /// (the next [`broadcast`](Self::broadcast) prunes the dead entry).
+    /// matching record-value payloads. Dropping the stream ends the subscription;
+    /// the next matching [`broadcast`](Self::broadcast) lazily prunes the entry.
     pub fn subscribe(&self, pattern: &str) -> (u64, BoxStream<'static, Payload>) {
         let id = self.next_sub.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = mpsc::unbounded_channel::<Payload>();
+        let (tx, rx) = mpsc::channel::<Payload>(self.sub_capacity);
         self.subs.insert(
             id,
             SubEntry {
@@ -98,7 +101,9 @@ impl ClientManager {
         (id, Box::pin(stream))
     }
 
-    /// Explicitly drop a subscription (on `Unsubscribe`).
+    /// Explicitly drop a subscription by id. Unused by the WS
+    /// [`Dispatch`](crate::dispatch) path (it tears down via dropped streams,
+    /// pruned lazily); kept for direct bus users.
     pub fn unsubscribe(&self, sub_id: u64) {
         self.subs.remove(&sub_id);
     }
@@ -126,7 +131,12 @@ impl ClientManager {
         let payload = Payload::from(frame.as_slice());
         let mut dead: Vec<u64> = Vec::new();
         for entry in self.subs.iter() {
-            if topic_matches(&entry.pattern, topic) && entry.tx.send(payload.clone()).is_err() {
+            if !topic_matches(&entry.pattern, topic) {
+                continue;
+            }
+            // Bounded: drop on a full queue (slow-client protection), prune only
+            // when the receiver is gone (stream dropped).
+            if let Err(mpsc::error::TrySendError::Closed(_)) = entry.tx.try_send(payload.clone()) {
                 dead.push(*entry.key());
             }
         }
@@ -143,7 +153,7 @@ impl ClientManager {
 
 impl Default for ClientManager {
     fn default() -> Self {
-        Self::new(false)
+        Self::new(false, 256)
     }
 }
 
@@ -165,7 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn broadcast_reaches_matching_subscriptions() {
-        let mgr = ClientManager::new(false);
+        let mgr = ClientManager::new(false, 256);
         let (_id, mut stream) = mgr.subscribe("sensors/#");
 
         mgr.broadcast("sensors/temp/vienna", b"22.5").await;
@@ -185,7 +195,7 @@ mod tests {
     #[tokio::test]
     async fn non_matching_topic_is_not_delivered() {
         use futures_util::FutureExt;
-        let mgr = ClientManager::new(false);
+        let mgr = ClientManager::new(false, 256);
         let (_id, mut stream) = mgr.subscribe("commands/#");
         mgr.broadcast("sensors/temp", b"22.5").await;
         // Nothing queued: the next() future is not ready.
@@ -194,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn fan_out_to_n_subscribers() {
-        let mgr = ClientManager::new(false);
+        let mgr = ClientManager::new(false, 256);
         let mut streams: Vec<_> = (0..5).map(|_| mgr.subscribe("#").1).collect();
         mgr.broadcast("any/topic", b"\"v\"").await;
         for s in &mut streams {
@@ -208,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_stream_is_pruned() {
-        let mgr = ClientManager::new(false);
+        let mgr = ClientManager::new(false, 256);
         let (_id, stream) = mgr.subscribe("#");
         assert_eq!(mgr.subscription_count(), 1);
         drop(stream);
@@ -221,7 +231,7 @@ mod tests {
     // regardless of subscriber count (O(1) fan-out, not O(N)).
     #[tokio::test]
     async fn broadcast_serializes_once_and_shares_to_all() {
-        let mgr = ClientManager::new(false);
+        let mgr = ClientManager::new(false, 256);
         let mut streams: Vec<_> = (0..8).map(|_| mgr.subscribe("#").1).collect();
         mgr.broadcast("t", b"123").await;
         let mut frames = Vec::new();

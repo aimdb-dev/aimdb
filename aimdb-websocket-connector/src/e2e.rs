@@ -116,7 +116,7 @@ impl Default for Opts {
 /// Bring up the real axum server on an ephemeral port; return its address and the
 /// shared bus (so the test can `broadcast`, simulating an outbound record update).
 async fn spawn(opts: Opts) -> (SocketAddr, ClientManager) {
-    let client_mgr = ClientManager::new(false);
+    let client_mgr = ClientManager::new(false, 256);
     let dispatch: Arc<dyn Dispatch> = Arc::new(WsDispatch {
         client_mgr: client_mgr.clone(),
         snapshot_provider: opts.snapshot,

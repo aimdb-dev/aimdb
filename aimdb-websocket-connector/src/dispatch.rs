@@ -224,7 +224,7 @@ mod tests {
 
     fn dispatch_with(snapshot: Arc<dyn SnapshotProvider>) -> Arc<WsDispatch> {
         Arc::new(WsDispatch {
-            client_mgr: ClientManager::new(false),
+            client_mgr: ClientManager::new(false, 256),
             snapshot_provider: snapshot,
             query_handler: Arc::new(NoQuery),
             router: Arc::new(RouterBuilder::from_routes(Vec::new()).build()),

@@ -492,16 +492,14 @@ where
         self
     }
 
-    // NOTE: the former `with_remote_access(config: AimxConfig)` builder method was
-    // removed in the Phase-6 connector convergence. A remote-access **server** is
-    // now registered like any other connector:
+    // NOTE: a remote-access **server** is registered like any other connector —
+    // there is no dedicated builder method:
     //
     //     .with_connector(aimdb_uds_connector::UdsServer::from_config(config))
     //
-    // This unifies the server onto the `with_connector` spine (see its docs) and
-    // lets the transport be swapped (UDS / serial / TCP) without touching the
-    // builder. The per-record `TypedRecord::with_remote_access()` is unrelated and
-    // unchanged.
+    // This rides the `with_connector` spine (see its docs) and lets the transport
+    // be swapped (UDS / serial / TCP) without touching the builder. The per-record
+    // `TypedRecord::with_remote_access()` is unrelated.
 
     /// Configures a record type manually with a unique key
     ///

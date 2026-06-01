@@ -1,16 +1,12 @@
-//! Phase 3 **server-port** exit criterion: the engine-based [`AimxConnection`]
-//! round-trips the reshaped AimX-v2 wire — `hello` handshake, RPC
-//! (`record.get`/`record.set`), a streaming subscription, and a
+//! The engine-based [`AimxConnection`] round-trips the AimX-v2 wire — `hello`
+//! handshake, RPC (`record.get`/`record.set`), a streaming subscription, and a
 //! fire-and-forget write — against the **production** server
 //! ([`build_aimx_server`] → `serve`/`run_session` + `AimxDispatch`) over a real
-//! Unix-domain socket.
+//! Unix-domain socket, standing up an actual `AimDb` and proving the wire
+//! end-to-end through the shared session engine.
 //!
-//! This swaps the client-half milestone's test-local `UdsListener` +
-//! `TestDispatch` for real server code standing up an actual `AimDb`, proving
-//! the reshaped wire end-to-end through the shared session engine.
-//!
-//! Exercises the back-compat `build_aimx_server` alias (relocated to
-//! `aimdb-uds-connector` in Phase 6); hence the crate-level `allow(deprecated)`.
+//! Exercises the back-compat `build_aimx_server` alias (in
+//! `aimdb-uds-connector`); hence the crate-level `allow(deprecated)`.
 
 #![allow(deprecated)]
 

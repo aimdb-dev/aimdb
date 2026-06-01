@@ -163,9 +163,11 @@ impl WebSocketConnectorBuilder {
         self
     }
 
-    /// Set the maximum number of concurrent WebSocket clients (default: 1 024).
+    /// Set the per-connection subscription ceiling (default: 1 024).
     ///
-    /// Currently informational — used for pre-allocating the client map.
+    /// Despite the name, this bounds live subscriptions per connection
+    /// (`max_subs_per_connection`), not the client count — connection count is the
+    /// axum accept loop's concern, not enforced here.
     pub fn with_max_clients(mut self, max: usize) -> Self {
         self.max_clients = max;
         self
@@ -314,7 +316,7 @@ where
                 Arc::new(Mutex::new(HashMap::new()));
 
             // ── Client manager ────────────────────────────────────
-            let client_mgr = ClientManager::new(self.raw_payload);
+            let client_mgr = ClientManager::new(self.raw_payload, self.channel_capacity.max(1));
 
             // ── Build snapshot provider ──────────────────────────
             let snapshot_provider: Arc<dyn SnapshotProvider> = if self.late_join {
@@ -368,6 +370,8 @@ where
                 auth: self.auth.clone(),
                 client_mgr,
                 auto_subscribe: Arc::new(self.auto_subscribe_topics.clone()),
+                // `max_clients` now supplies the per-connection subscription cap;
+                // connection count stays axum's concern (see `with_max_clients`).
                 max_subs_per_connection: self.max_clients.max(1),
                 started_at: Instant::now(),
             };
