@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Unix-domain-socket transport connector for AimDB remote access (AimX over UDS)"
+description = "Unix-domain-socket transport connector for AimDB: record mirroring and remote access (AimX over UDS)"
 keywords = ["aimdb", "connector", "uds", "unix-socket", "remote"]
 categories = ["network-programming", "database"]
 

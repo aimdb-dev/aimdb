@@ -1,4 +1,5 @@
-//! Unix-domain-socket transport connector for AimDB remote access.
+//! Unix-domain-socket transport connector for AimDB — record mirroring and
+//! remote access over a local socket.
 //!
 //! A thin, swappable transport crate: it contributes only the
 //! `Dialer`/`Listener`/`Connection` triple ([`UdsConnection`] /
@@ -7,7 +8,7 @@
 //! generic core connectors:
 //!
 //! - [`UdsClient`] — dials a peer over UDS and mirrors records under a scheme
-//!   (`"remote"` by default), using `link_to`/`link_from` like any data-plane
+//!   (`"uds"` by default), using `link_to`/`link_from` like any data-plane
 //!   connector. Sugar over [`SessionClientConnector`]`<UdsDialer, AimxCodec>`.
 //! - [`UdsServer`] — accepts connections and serves the AimX toolset over UDS;
 //!   register it with `with_connector` to stand up remote access. Sugar over
@@ -24,7 +25,7 @@
 //! // client: mirror a record to a peer over the socket
 //! AimDbBuilder::new().runtime(rt)
 //!     .with_connector(UdsClient::new("/run/aimdb.sock"))
-//!     .configure::<Temp>("temp", |r| { r.with_remote_access().link_to("remote://temp")...; })
+//!     .configure::<Temp>("temp", |r| { r.with_remote_access().link_to("uds://temp")...; })
 //!     .build().await?;
 //! ```
 
@@ -50,7 +51,11 @@ type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + Send + 'a>>;
 
 /// The default scheme `UdsClient`/`UdsServer` register when none is given.
-pub const DEFAULT_SCHEME: &str = "remote";
+///
+/// Transport-matched (like MQTT's `"mqtt"`), so `link_to("uds://<record>")` reads
+/// at the call site. Override with `.scheme(...)` when running more than one
+/// remote connector.
+pub const DEFAULT_SCHEME: &str = "uds";
 
 // ===========================================================================
 // Client sugar
@@ -67,7 +72,7 @@ impl UdsClient {
     // Sugar constructor: intentionally returns the generic connector, not `Self`.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(socket_path: impl Into<PathBuf>) -> SessionClientConnector<UdsDialer, AimxCodec> {
-        SessionClientConnector::new(UdsDialer::new(socket_path), AimxCodec)
+        SessionClientConnector::new(UdsDialer::new(socket_path), AimxCodec).scheme(DEFAULT_SCHEME)
     }
 }
 
@@ -262,7 +267,7 @@ where
 /// (preserving the legacy `AimxClientConnector` behavior).
 #[deprecated(
     since = "0.1.0",
-    note = "use `UdsClient::new(path)` (scheme defaults to \"remote\"); pass `.scheme(\"aimx\")` for the old scheme"
+    note = "use `UdsClient::new(path)` (scheme defaults to \"uds\"); pass `.scheme(\"aimx\")` for the old scheme"
 )]
 pub struct AimxClientConnector;
 

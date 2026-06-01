@@ -459,7 +459,7 @@ where
     ///    AimDB itself over a transport so peers can introspect/subscribe/write.
     ///    - The **client** half (e.g. `UdsClient`) dials a peer and *does* use
     ///      `link_to`/`link_from` under its scheme — just like (1), the scheme is
-    ///      `"remote"` by default instead of `"mqtt"`.
+    ///      `"uds"` by default instead of `"mqtt"`.
     ///    - The **server** half (e.g. `UdsServer`) *accepts* connections and takes
     ///      **no links** — registering it is how a server stands up remote access
     ///      (this replaces the old `with_remote_access(config)`).
@@ -481,7 +481,7 @@ where
     /// // (2b) remote-access CLIENT — mirror a record to a peer over UDS
     /// AimDbBuilder::new().runtime(rt)
     ///     .with_connector(UdsClient::new("/run/aimdb.sock"))
-    ///     .configure::<Temp>(|r| { r.with_remote_access().link_to("remote://temp"); })
+    ///     .configure::<Temp>(|r| { r.with_remote_access().link_to("uds://temp"); })
     ///     .build().await?;
     /// ```
     pub fn with_connector(
