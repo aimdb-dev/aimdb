@@ -1,14 +1,9 @@
 //! The engine-based [`AimxConnection`] round-trips the AimX-v2 wire — `hello`
 //! handshake, RPC (`record.get`/`record.set`), a streaming subscription, and a
-//! fire-and-forget write — against the **production** server
-//! ([`build_aimx_server`] → `serve`/`run_session` + `AimxDispatch`) over a real
-//! Unix-domain socket, standing up an actual `AimDb` and proving the wire
-//! end-to-end through the shared session engine.
-//!
-//! Exercises the back-compat `build_aimx_server` alias (in
-//! `aimdb-uds-connector`); hence the crate-level `allow(deprecated)`.
-
-#![allow(deprecated)]
+//! fire-and-forget write — against the **production** server (`UdsServer` →
+//! `serve`/`run_session` + `AimxDispatch`) over a real Unix-domain socket,
+//! standing up an actual `AimDb` and proving the wire end-to-end through the
+//! shared session engine.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +13,7 @@ use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::AimDbBuilder;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use aimdb_uds_connector::build_aimx_server;
+use aimdb_uds_connector::UdsServer;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -40,23 +35,6 @@ async fn aimx_roundtrip_over_uds_production_server() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
-    // Build a real AimDb with two remote-accessible records.
-    let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Setting>("setting", |reg| {
-        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
-    });
-    builder.configure::<Reading>("events", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
-            .with_remote_access();
-    });
-    let (db, runner) = builder.build().await.expect("build db");
-    let db = Arc::new(db);
-    tokio::spawn(runner.run());
-
-    // Seed the writable record before connecting so `record.get` has a value.
-    db.set_record_from_json("setting", json!({ "level": 1 }))
-        .expect("seed setting");
-
     // ReadWrite policy with `setting` writable; `events` stays read-only.
     let mut policy = SecurityPolicy::read_write();
     policy.allow_write_key("setting");
@@ -66,8 +44,26 @@ async fn aimx_roundtrip_over_uds_production_server() {
         .max_connections(8)
         .max_subs_per_connection(8);
 
-    // Production server future, driven on a task (the engine itself is spawn-free).
-    let server = tokio::spawn(build_aimx_server(db.clone(), config).expect("bind server"));
+    // Build a real AimDb with two remote-accessible records, served over UDS via
+    // the production `UdsServer` connector (binds during `build()`).
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    builder.configure::<Setting>("setting", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    builder.configure::<Reading>("events", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+            .with_remote_access();
+    });
+    let (db, runner) = builder.build().await.expect("build db");
+    let db = Arc::new(db);
+    // The runner drives both the records and the UDS serve loop (spawn-free).
+    tokio::spawn(runner.run());
+
+    // Seed the writable record before connecting so `record.get` has a value.
+    db.set_record_from_json("setting", json!({ "level": 1 }))
+        .expect("seed setting");
 
     // Connect: performs the `hello` handshake and captures the Welcome.
     let conn = AimxConnection::connect(&sock).await.expect("connect");
@@ -139,5 +135,4 @@ async fn aimx_roundtrip_over_uds_production_server() {
     assert_eq!(after, json!({ "level": 9 }));
 
     drop(conn); // stops the client engine
-    server.abort();
 }

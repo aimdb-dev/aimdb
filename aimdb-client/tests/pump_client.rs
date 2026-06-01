@@ -1,19 +1,13 @@
 //! `pump_client` mirrors a record **both directions** between a local AimDb and
 //! a remote AimDb over the shared session engine.
 //!
-//! Topology: a server `AimDb` (served by `build_aimx_server`) and a client
-//! `AimDb` whose records carry `aimx://` connector links. `run_client` opens the
-//! connection; `pump_client` wires the client's outbound/inbound routes to the
-//! `ClientHandle`:
+//! Topology: a server `AimDb` (served by `UdsServer`) and a client `AimDb` whose
+//! records carry `uds://` connector links. `run_client` opens the connection;
+//! `pump_client` wires the client's outbound/inbound routes to the `ClientHandle`:
 //! - **client → server**: producing the client's `cfg` record streams it to the
 //!   server via `ClientHandle::write` → the server's `record.set` path.
 //! - **server → client**: updating the server's `tele` record streams it back
 //!   through a subscription → the client's inbound producer (arbiter path).
-//!
-//! Exercises the back-compat `build_aimx_server`/`AimxClientConnector` aliases
-//! (in `aimdb-uds-connector`); hence `allow(deprecated)`.
-
-#![allow(deprecated)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +17,7 @@ use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::ClientConfig;
 use aimdb_core::{AimDb, AimDbBuilder};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use aimdb_uds_connector::{build_aimx_server, AimxClientConnector};
+use aimdb_uds_connector::{UdsClient, UdsServer};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -57,7 +51,15 @@ async fn pump_client_mirrors_record_both_directions() {
     let sock = dir.path().join("aimdb.sock");
 
     // --- server: cfg (writable target) + tele (streamed source) ------------
-    let mut sb = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
+    let mut policy = SecurityPolicy::read_write();
+    policy.allow_write_key("cfg");
+    let config = AimxConfig::uds_default()
+        .socket_path(&sock)
+        .security_policy(policy);
+
+    let mut sb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
     sb.configure::<Msg>("cfg", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
@@ -66,21 +68,15 @@ async fn pump_client_mirrors_record_both_directions() {
     });
     let (server_db, server_runner) = sb.build().await.expect("build server db");
     let server_db = Arc::new(server_db);
+    // The runner drives both the records and the UDS serve loop.
     tokio::spawn(server_runner.run());
 
-    let mut policy = SecurityPolicy::read_write();
-    policy.allow_write_key("cfg");
-    let config = AimxConfig::uds_default()
-        .socket_path(&sock)
-        .security_policy(policy);
-    let server = tokio::spawn(build_aimx_server(server_db.clone(), config).expect("bind server"));
-
     // --- client: cfg links *to* the server, tele links *from* it -----------
-    // The AimxClientConnector registers the `aimx://` scheme (so the links
-    // validate) and, on build, dials the server + drives the mirroring pumps.
+    // UdsClient registers the `uds://` scheme (so the links validate) and, on
+    // build, dials the server + drives the mirroring pumps.
     let mut cb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
-        .with_connector(AimxClientConnector::new(&sock).with_config(ClientConfig {
+        .with_connector(UdsClient::new(&sock).with_config(ClientConfig {
             reconnect: true,
             reconnect_delay: 50,
             max_reconnect_delay: 50,
@@ -93,14 +89,14 @@ async fn pump_client_mirrors_record_both_directions() {
     cb.configure::<Msg>("cfg", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .link_to("aimx://cfg")
+            .link_to("uds://cfg")
             .with_serializer_raw(|m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
             .finish();
     });
     cb.configure::<Msg>("tele", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .link_from("aimx://tele")
+            .link_from("uds://tele")
             .with_deserializer_raw(|d: &[u8]| {
                 serde_json::from_slice::<Msg>(d).map_err(|e| e.to_string())
             })
@@ -134,6 +130,4 @@ async fn pump_client_mirrors_record_both_directions() {
     })
     .await;
     assert!(mirrored_in, "server→client mirror did not reach the client");
-
-    server.abort();
 }

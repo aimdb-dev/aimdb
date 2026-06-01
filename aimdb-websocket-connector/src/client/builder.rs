@@ -168,9 +168,9 @@ where
             };
 
             // ── Drive the shared client engine + record-mirroring pumps ──
-            // Mirrors `AimxClientConnector`: `run_client` owns demux/reconnect/
-            // keepalive over the WS `Dialer` + per-connection `WsCodec`;
-            // `pump_client` wires `link_to`/`link_from` routes to the handle.
+            // Like `UdsClient`: `run_client` owns demux/reconnect/keepalive over
+            // the WS `Dialer` + per-connection `WsCodec`; `pump_client` wires
+            // `link_to`/`link_from` routes to the handle.
             // The runtime's `TimeOps` clock drives reconnect backoff/keepalive.
             let (handle, engine_fut) = run_client(
                 WsDialer::new(self.url.clone()),

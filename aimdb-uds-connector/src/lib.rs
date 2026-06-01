@@ -43,7 +43,7 @@ use aimdb_core::connector::ConnectorBuilder;
 use aimdb_core::remote::AimxConfig;
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
-    serve, Dispatch, SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector,
+    Dispatch, SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector,
 };
 use aimdb_core::{AimDb, DbError, DbResult, RuntimeAdapter};
 
@@ -257,55 +257,4 @@ where
             }
         }
     }
-}
-
-// ===========================================================================
-// Deprecated back-compat aliases (the types relocated here from core).
-// ===========================================================================
-
-/// Deprecated alias for [`UdsClient`] that defaults the scheme to `"aimx"`
-/// (preserving the legacy `AimxClientConnector` behavior).
-#[deprecated(
-    since = "0.1.0",
-    note = "use `UdsClient::new(path)` (scheme defaults to \"uds\"); pass `.scheme(\"aimx\")` for the old scheme"
-)]
-pub struct AimxClientConnector;
-
-#[allow(deprecated)]
-impl AimxClientConnector {
-    /// Mirror records over the AimX peer at `socket_path`, under scheme `"aimx"`.
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(socket_path: impl Into<PathBuf>) -> SessionClientConnector<UdsDialer, AimxCodec> {
-        SessionClientConnector::new(UdsDialer::new(socket_path), AimxCodec).scheme("aimx")
-    }
-}
-
-/// Deprecated free-standing AimX server builder. Prefer registering
-/// [`UdsServer::from_config`] via `with_connector`; this returns the single
-/// `serve` future directly for callers that spawn it by hand.
-#[deprecated(
-    since = "0.1.0",
-    note = "register `UdsServer::from_config(config)` via `with_connector` instead"
-)]
-pub fn build_aimx_server<R>(db: Arc<AimDb<R>>, config: AimxConfig) -> DbResult<BoxFuture>
-where
-    R: RuntimeAdapter + 'static,
-{
-    let listener = bind_uds_listener(&config)?;
-    apply_writable(&db, &config);
-    let session_config = SessionConfig {
-        limits: SessionLimits {
-            max_connections: config.max_connections,
-            max_subs_per_connection: config.max_subs_per_connection,
-        },
-        reads_hello: false,
-        acks_subscribe: false,
-    };
-    let dispatch = Arc::new(AimxDispatch::new(db, config));
-    Ok(Box::pin(serve(
-        listener,
-        Arc::new(AimxCodec),
-        dispatch,
-        session_config,
-    )))
 }
