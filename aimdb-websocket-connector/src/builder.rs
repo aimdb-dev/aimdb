@@ -8,10 +8,10 @@
 //! ```text
 //! AimDbBuilder::build()
 //!   └─ WebSocketConnectorBuilder::build(&db)
-//!        ├─ db.collect_inbound_routes("ws")   → Router
-//!        ├─ db.collect_outbound_routes("ws")   → outbound tasks
-//!        ├─ start Axum / WebSocket server
-//!        └─ return Arc<WebSocketConnectorImpl>
+//!        ├─ inbound Router (client writes → producers, via the session Dispatch)
+//!        ├─ outbound `pump_sink` over the `WsBusSink` (records → broadcast bus)
+//!        ├─ start Axum / WebSocket server (per-connection `run_session`)
+//!        └─ return the server + pump futures
 //! ```
 
 use std::{
@@ -24,13 +24,13 @@ use std::{
 
 use aimdb_data_contracts::Streamable;
 
-use aimdb_core::{router::RouterBuilder, ConnectorBuilder, Dispatch};
+use aimdb_core::{pump_sink, router::RouterBuilder, ConnectorBuilder, Dispatch};
 use axum::Router as AxumRouter;
 
 use crate::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
     client_manager::ClientManager,
-    connector::WebSocketConnectorImpl,
+    connector::{SnapshotCache, WsBusSink},
     dispatch::WsDispatch,
     registry::StreamableRegistry,
     server::{build_server_future, ServerState},
@@ -302,39 +302,29 @@ where
 
             let router = Arc::new(RouterBuilder::from_routes(inbound_routes).build());
 
-            // ── Outbound routes ──────────────────────────────────────
-            let outbound_routes = db.collect_outbound_routes("ws");
-
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "WS connector: {} outbound routes collected",
-                outbound_routes.len()
-            );
-
-            // ── Shared snapshot cache (for late-join) ─────────────
-            let snapshot_map: Arc<Mutex<HashMap<String, Vec<u8>>>> =
-                Arc::new(Mutex::new(HashMap::new()));
+            // ── Late-join snapshot cache (only when enabled) ──────
+            let snapshot_map: Option<SnapshotCache> =
+                self.late_join.then(|| Arc::new(Mutex::new(HashMap::new())));
 
             // ── Client manager ────────────────────────────────────
             let client_mgr = ClientManager::new(self.raw_payload, self.channel_capacity.max(1));
 
             // ── Build snapshot provider ──────────────────────────
-            let snapshot_provider: Arc<dyn SnapshotProvider> = if self.late_join {
-                let snap = snapshot_map.clone();
-                Arc::new(DynMapSnapshot(snap))
-            } else {
-                Arc::new(NoSnapshot)
+            let snapshot_provider: Arc<dyn SnapshotProvider> = match &snapshot_map {
+                Some(map) => Arc::new(DynMapSnapshot(map.clone())),
+                None => Arc::new(NoSnapshot),
             };
 
             // ── Known topics (for list_topics responses) ──────────
             // Use the registered streamable types to resolve TypeId → schema name.
-            let type_id_map = &self.streamable_registry.type_id_to_name;
-
             let topic_type_ids = db.collect_outbound_topic_type_ids("ws");
             let known_topics: Vec<TopicInfo> = topic_type_ids
                 .into_iter()
                 .map(|(topic, type_id)| {
-                    let schema_type = type_id_map.get(&type_id).map(|s| s.to_string());
+                    let schema_type = self
+                        .streamable_registry
+                        .resolve_name(&type_id)
+                        .map(|s| s.to_string());
                     // Extract entity from topic name: "temp.vienna" → "vienna".
                     // The server owns the naming convention — clients receive
                     // the entity as a first-class field and never parse topics.
@@ -359,10 +349,16 @@ where
                 runtime_ctx: Some(db.runtime_any()),
             });
 
-            // ── Build connector & collect outbound publishers ───────────────
-            let connector = WebSocketConnectorImpl::new(client_mgr.clone());
-            let outbound_futures =
-                connector.collect_outbound_futures(db, outbound_routes, snapshot_map);
+            // ── Outbound: the shared `pump_sink` drives records → bus ───────
+            // (same helper MQTT uses; the `WsBusSink` just broadcasts + caches).
+            let outbound_futures = pump_sink(
+                db,
+                "ws",
+                Arc::new(WsBusSink {
+                    client_mgr: client_mgr.clone(),
+                    snapshot: snapshot_map,
+                }),
+            );
 
             // ── Build Axum server future ──────────────────────────
             let state = ServerState {
@@ -391,7 +387,7 @@ where
 // Dynamic snapshot provider backed by the shared Mutex<HashMap>
 // ════════════════════════════════════════════════════════════════════
 
-struct DynMapSnapshot(Arc<Mutex<HashMap<String, Vec<u8>>>>);
+struct DynMapSnapshot(SnapshotCache);
 
 impl SnapshotProvider for DynMapSnapshot {
     fn snapshot(&self, topic: &str) -> Option<Vec<u8>> {
