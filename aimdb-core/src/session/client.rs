@@ -513,7 +513,14 @@ where
                 Ok(r) => r,
                 Err(_e) => return,
             };
-            while let Ok(value) = reader.recv_any().await {
+            loop {
+                let value = match reader.recv_any().await {
+                    Ok(v) => v,
+                    // Lagged (ring overflow) — skip the gap, keep mirroring.
+                    Err(crate::DbError::BufferLagged { .. }) => continue,
+                    // Buffer closed — the record is gone; end this mirror.
+                    Err(_) => break,
+                };
                 // Dynamic destination (topic provider) or the static link target.
                 let dest = topic_provider
                     .as_ref()

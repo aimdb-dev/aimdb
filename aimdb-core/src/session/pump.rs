@@ -71,7 +71,29 @@ where
                 default_topic
             );
 
-            while let Ok(value_any) = reader.recv_any().await {
+            loop {
+                let value_any = match reader.recv_any().await {
+                    Ok(v) => v,
+                    // SPMC-ring overflow: messages were missed, but the reader
+                    // recovers (cursor resets to the oldest live value). Skip the
+                    // gap and keep pumping — a transient lag must not permanently
+                    // kill the publisher.
+                    Err(crate::DbError::BufferLagged { .. }) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!("pump_sink: consumer lagged for '{}'", default_topic);
+                        continue;
+                    }
+                    // Buffer closed / fatal — the record is gone; end the publisher.
+                    Err(_e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::info!(
+                            "pump_sink: publisher stopping for '{}': {:?}",
+                            default_topic,
+                            _e
+                        );
+                        break;
+                    }
+                };
                 // Resolve destination: dynamic (from provider) or default (from URL).
                 let dest = topic_provider
                     .as_ref()

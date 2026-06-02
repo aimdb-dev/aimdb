@@ -110,9 +110,7 @@ pub mod codec;
 #[cfg(any(feature = "server", feature = "client"))]
 pub mod transport;
 
-/// Layer 1 real-socket integration tests (doc 039-validation) — needs both halves.
-#[cfg(all(test, feature = "server", feature = "client"))]
-mod e2e;
+// Real-socket integration tests live in `tests/e2e.rs` (black-box, public API).
 
 // ════════════════════════════════════════════════════════════════════
 // Protocol (always available)
@@ -144,4 +142,4 @@ pub type WsClientConnector = client::WsClientConnectorBuilder;
 pub use protocol::{ClientMessage, ErrorCode, QueryRecord, ServerMessage};
 
 #[cfg(feature = "server")]
-pub use session::{NoQuery, QueryHandler};
+pub use session::{NoQuery, QueryFuture, QueryHandler};
