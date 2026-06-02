@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 
-use crate::client_manager::ClientManager;
+use super::client_manager::ClientManager;
 
 /// Shared late-join cache: topic → last serialized bytes.
 pub(crate) type SnapshotCache = Arc<Mutex<HashMap<String, Vec<u8>>>>;

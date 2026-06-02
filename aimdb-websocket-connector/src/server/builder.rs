@@ -27,13 +27,13 @@ use aimdb_data_contracts::Streamable;
 use aimdb_core::{pump_sink, router::RouterBuilder, ConnectorBuilder, Dispatch};
 use axum::Router as AxumRouter;
 
-use crate::{
+use super::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
     client_manager::ClientManager,
     connector::{SnapshotCache, WsBusSink},
     dispatch::WsDispatch,
+    http::{build_server_future, ServerState},
     registry::StreamableRegistry,
-    server::{build_server_future, ServerState},
     session::{NoQuery, NoSnapshot, QueryHandler, SnapshotProvider},
 };
 use aimdb_ws_protocol::TopicInfo;

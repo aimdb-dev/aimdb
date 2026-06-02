@@ -5,7 +5,7 @@
 //! registers a per-subscription channel and gets back a [`BoxStream`] of raw
 //! record-value [`Payload`]s; the per-connection [`WsCodec`](crate::codec) wraps
 //! each into a `ServerMessage::Data` on encode. The outbound record→broadcast
-//! tasks ([`crate::connector`]) feed [`broadcast`](ClientManager::broadcast).
+//! tasks ([`super::connector`]) feed [`broadcast`](ClientManager::broadcast).
 //!
 //! Frame formatting lives in the codec; the per-connection send half is owned by
 //! `run_session`.
@@ -20,10 +20,11 @@ use dashmap::DashMap;
 use tokio::sync::mpsc;
 
 use crate::{
-    auth::ClientId,
     codec::parse_payload,
     protocol::{now_ms, topic_matches, ServerMessage},
 };
+
+use super::auth::ClientId;
 
 /// One live subscription: a wildcard pattern + the channel feeding its stream.
 struct SubEntry {
@@ -99,13 +100,6 @@ impl ClientManager {
             rx.recv().await.map(|item| (item, rx))
         });
         (id, Box::pin(stream))
-    }
-
-    /// Explicitly drop a subscription by id. Unused by the WS
-    /// [`Dispatch`](crate::dispatch) path (it tears down via dropped streams,
-    /// pruned lazily); kept for direct bus users.
-    pub fn unsubscribe(&self, sub_id: u64) {
-        self.subs.remove(&sub_id);
     }
 
     /// Fan a serialized record-value out to every subscription whose pattern

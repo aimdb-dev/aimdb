@@ -74,21 +74,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "server")]
-pub mod auth;
-#[cfg(feature = "server")]
-pub mod builder;
-#[cfg(feature = "server")]
-pub mod client_manager;
-#[cfg(feature = "server")]
-pub mod connector;
-#[cfg(feature = "server")]
-pub(crate) mod dispatch;
-#[cfg(feature = "server")]
-pub(crate) mod registry;
-#[cfg(feature = "server")]
-pub(crate) mod server;
-#[cfg(feature = "server")]
-pub(crate) mod session;
+pub mod server;
 
 // ════════════════════════════════════════════════════════════════════
 // Client module (feature = "client")
@@ -124,14 +110,16 @@ pub mod protocol;
 
 /// The primary entry point for a WebSocket **server** connector.
 ///
-/// This is a type alias for [`builder::WebSocketConnectorBuilder`].
+/// This is a type alias for [`server::builder::WebSocketConnectorBuilder`].
 #[cfg(feature = "server")]
-pub type WebSocketConnector = builder::WebSocketConnectorBuilder;
+pub type WebSocketConnector = server::builder::WebSocketConnectorBuilder;
 
 #[cfg(feature = "server")]
-pub use auth::{AuthError, AuthHandler, AuthRequest, ClientId, ClientInfo, NoAuth, Permissions};
+pub use server::auth::{
+    AuthError, AuthHandler, AuthRequest, ClientId, ClientInfo, NoAuth, Permissions,
+};
 #[cfg(feature = "server")]
-pub use client_manager::ClientManager;
+pub use server::client_manager::ClientManager;
 
 /// The primary entry point for a WebSocket **client** connector.
 ///
@@ -142,4 +130,4 @@ pub type WsClientConnector = client::WsClientConnectorBuilder;
 pub use protocol::{ClientMessage, ErrorCode, QueryRecord, ServerMessage};
 
 #[cfg(feature = "server")]
-pub use session::{NoQuery, QueryFuture, QueryHandler};
+pub use server::session::{NoQuery, QueryFuture, QueryHandler};

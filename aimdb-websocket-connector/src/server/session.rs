@@ -1,7 +1,7 @@
 //! Reusable handler traits for the WebSocket dispatch.
 //!
 //! The WS server rides `run_session` ([`aimdb_core::session::run_session`]) via
-//! [`crate::dispatch`]; what lives here is the pluggable application surface the
+//! [`super::dispatch`]; what lives here is the pluggable application surface the
 //! dispatch consumes:
 //!
 //! - [`QueryHandler`] — answers client `query` messages from a persistence backend;

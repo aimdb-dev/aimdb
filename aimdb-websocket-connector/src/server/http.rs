@@ -29,11 +29,11 @@ use axum::{
 };
 use tower_http::cors::CorsLayer;
 
-use crate::{
+use crate::{codec::WsCodec, transport::WsServerConnection};
+
+use super::{
     auth::{AuthError, AuthRequest, ClientInfo, DynAuthHandler},
     client_manager::ClientManager,
-    codec::WsCodec,
-    transport::WsServerConnection,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -64,26 +64,9 @@ pub(crate) struct ServerState {
 
 type BoxFuture = std::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
 
-/// Builds the WebSocket Axum server future.
-///
-/// Returns a `BoxFuture` containing the `axum::serve()` accept loop. The
-/// future is appended to the `AimDbRunner` accumulator (design 028 §"Connector
-/// futures"). Per-connection handlers spawned by Axum internally continue to
-/// use `tokio::spawn` — outside the scope of issue #88.
-///
-/// # Arguments
-///
-/// * `bind_addr` — TCP address to listen on.
-/// * `ws_path` — URL path for the WebSocket endpoint (e.g., `"/ws"`).
-/// * `session_ctx` — Shared session context (auth, router, client manager, …).
-///
-/// Extracted so tests can serve the **real** app on a known ephemeral port
-/// (`build_server_future` binds internally and does not surface the port).
-pub(crate) fn build_app(
-    ws_path: &str,
-    state: ServerState,
-    additional_routes: Option<Router>,
-) -> Router {
+/// Assemble the axum `Router`: the WS endpoint + `/health`, with the shared
+/// [`ServerState`] and any user-supplied extra routes merged in.
+fn build_app(ws_path: &str, state: ServerState, additional_routes: Option<Router>) -> Router {
     // Apply state first so the router becomes `Router<()>`, which can then be
     // merged with user-supplied `additional_routes: Router<()>` without a
     // type-parameter mismatch.
@@ -99,6 +82,8 @@ pub(crate) fn build_app(
     }
 }
 
+/// Bind `bind_addr` and serve [`build_app`] as the connector's runner future
+/// (the axum accept loop). Each upgraded socket is driven by `run_session`.
 pub(crate) fn build_server_future(
     bind_addr: SocketAddr,
     ws_path: String,

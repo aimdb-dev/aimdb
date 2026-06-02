@@ -10,7 +10,7 @@
 //! `u64` id per topic that the `Subscribed` ack and `Unsubscribe` map back. The
 //! maps sit behind a `Mutex` so the codec stays `Send + Sync` with `&self` methods.
 //!
-//! The hot fan-out path skips the maps: [`ClientManager::broadcast`](crate::client_manager)
+//! The hot fan-out path skips the maps: [`ClientManager::broadcast`](crate::server::client_manager)
 //! serializes the complete `Data` frame once (it owns the topic) and the codec
 //! writes it verbatim — O(1) in subscribers. The `Subscribed` ack and late-join
 //! `Snapshot` are engine emissions the codec maps to wire frames.
