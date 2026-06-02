@@ -1273,7 +1273,12 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// * `record_name` - The full Rust type name (e.g., "server::Temperature")
     ///
     /// # Returns
-    /// `Some(JsonValue)` with current value, or `None` if unavailable
+    /// `Some(JsonValue)` with the current value, or `None` if the record has no
+    /// value yet, no buffer, or a buffer with **no canonical latest** — i.e.
+    /// [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing). A ring is a stream/backlog
+    /// with no single "current value"; read it via a subscriber or `record.drain`,
+    /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
+    /// for state you want to read latest-value style.
     #[cfg(feature = "std")]
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)

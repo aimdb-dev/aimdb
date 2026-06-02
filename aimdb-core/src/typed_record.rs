@@ -1138,8 +1138,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
 
     /// Returns the latest produced value
     ///
-    /// Returns most recent value wrapped in `RecordValue<T>`, updated atomically on each `produce()`.
-    /// Non-blocking and buffer-agnostic.
+    /// Returns the most recent value wrapped in `RecordValue<T>`, or `None` if no
+    /// value has been produced yet, the record has no buffer, or the buffer has
+    /// **no canonical latest** — i.e. [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)
+    /// (a ring is a stream/backlog; read it via a subscriber/drain instead).
+    /// Non-blocking.
     ///
     /// **Both std and no_std**: Direct access via `Deref`, `.get()`, `.into_inner()`
     ///
