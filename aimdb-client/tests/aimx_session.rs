@@ -136,3 +136,45 @@ async fn aimx_roundtrip_over_uds_production_server() {
 
     drop(conn); // stops the client engine
 }
+
+/// `record.get` on a ring (`SpmcRing`) record has no canonical latest, so it
+/// falls back to draining the connection's cursor for the most-recent value.
+#[tokio::test]
+async fn record_get_on_ring_falls_back_to_drain() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+
+    let config = AimxConfig::uds_default().socket_path(&sock);
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    builder.configure::<Reading>("stream", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+            .with_remote_access();
+    });
+    let (db, runner) = builder.build().await.expect("build db");
+    let db = Arc::new(db);
+    tokio::spawn(runner.run());
+
+    let conn = AimxConnection::connect(&sock).await.expect("connect");
+    let producer = db.producer::<Reading>("stream").expect("producer");
+
+    // First get opens the cursor; a fresh broadcast reader starts at the tail, so
+    // it sees nothing until a value is produced afterwards.
+    assert!(conn.get_record("stream").await.is_err());
+
+    // Produce after the cursor is open; get now returns the most-recent value.
+    let mut got = None;
+    for n in 1..=50u64 {
+        producer.produce(Reading { n });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if let Ok(v) = conn.get_record("stream").await {
+            got = Some(v);
+            break;
+        }
+    }
+    let got = got.expect("ring get returns a value after producing");
+    assert!(got.get("n").is_some(), "ring get yields a Reading: {got}");
+
+    drop(conn);
+}

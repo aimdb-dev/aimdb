@@ -144,6 +144,13 @@ impl AimxConnection {
     }
 
     /// Get a record's current value.
+    ///
+    /// For a `SingleLatest`/state record this is a non-destructive read. A ring
+    /// (`SpmcRing`) has no canonical latest, so the server returns the most recent
+    /// value from this connection's drain cursor — which **advances that cursor**
+    /// (interleaving with [`drain_record`](Self::drain_record)) and is empty until
+    /// the ring produces a value after the connection first reads it. Prefer
+    /// [`drain_record`](Self::drain_record) for ring/history records.
     pub async fn get_record(&self, name: &str) -> ClientResult<serde_json::Value> {
         let reply = self
             .call("record.get", to_payload(&json!({ "name": name }))?)

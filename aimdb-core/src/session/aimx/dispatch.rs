@@ -140,7 +140,7 @@ where
             "record.list" => Ok(json!(self.db.list_records())),
             "record.get" => {
                 let name = str_field(&params, "name").ok_or(RpcError::NotFound)?;
-                self.db.try_latest_as_json(&name).ok_or(RpcError::NotFound)
+                self.record_get(&name)
             }
             "record.set" => self.record_set(params),
             "record.drain" => self.record_drain(params),
@@ -182,9 +182,29 @@ where
         })
     }
 
-    /// `record.drain`: lazily create a per-record cursor on first call, then
-    /// return everything accumulated since the previous drain (capped by an
-    /// optional `limit`).
+    /// `record.get`: the record's current value.
+    ///
+    /// A `SingleLatest`/state record exposes a non-destructive canonical latest
+    /// ([`try_latest_as_json`](crate::AimDb::try_latest_as_json)). A ring
+    /// ([`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)) has none, so we fall back
+    /// to the connection's drain cursor and return the **most recent** available
+    /// value. Two consequences of that fallback: it *advances the shared drain
+    /// cursor* (so `record.get` and `record.drain` interleave on one connection),
+    /// and it yields `NotFound` until the ring produces a value *after* the cursor
+    /// is first opened (a fresh broadcast reader starts at the tail). Use
+    /// `record.drain` for a ring's full backlog.
+    fn record_get(&mut self, name: &str) -> Result<Value, RpcError> {
+        if let Some(v) = self.db.try_latest_as_json(name) {
+            return Ok(v);
+        }
+        // Ring fallback: drain to the newest currently-available value (or NotFound).
+        self.drain_values(name, usize::MAX)?
+            .pop()
+            .ok_or(RpcError::NotFound)
+    }
+
+    /// `record.drain`: return everything accumulated since the previous drain
+    /// (capped by an optional `limit`), via the per-connection cursor.
     fn record_drain(&mut self, params: Value) -> Result<Value, RpcError> {
         let name = str_field(&params, "name").ok_or(RpcError::Internal)?;
         let limit = params
@@ -192,34 +212,41 @@ where
             .and_then(|v| v.as_u64())
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
             .unwrap_or(usize::MAX);
+        let values = self.drain_values(&name, limit)?;
+        let count = values.len();
+        Ok(json!({ "record_name": name, "values": values, "count": count }))
+    }
 
-        if !self.drain_readers.contains_key(&name) {
+    /// Lazily open (on first call) the per-record drain cursor and read up to
+    /// `limit` values accumulated since the previous read (oldest-first). Shared
+    /// by [`record.drain`](Self::record_drain) and [`record.get`](Self::record_get)'s
+    /// ring fallback, so both read from the same per-connection cursor.
+    fn drain_values(&mut self, name: &str, limit: usize) -> Result<Vec<Value>, RpcError> {
+        if !self.drain_readers.contains_key(name) {
             let id = self
                 .db
                 .inner()
-                .resolve_str(&name)
+                .resolve_str(name)
                 .ok_or(RpcError::NotFound)?;
             let record = self.db.inner().storage(id).ok_or(RpcError::NotFound)?;
             // `subscribe_json` fails if the record was not configured with
             // `.with_remote_access()`.
             let reader = record.subscribe_json().map_err(map_db_err)?;
-            self.drain_readers.insert(name.clone(), reader);
+            self.drain_readers.insert(name.to_string(), reader);
         }
 
-        let reader = self.drain_readers.get_mut(&name).expect("inserted above");
+        let reader = self.drain_readers.get_mut(name).expect("inserted above");
         let mut values = Vec::new();
         while values.len() < limit {
             match reader.try_recv_json() {
                 Ok(val) => values.push(val),
                 Err(DbError::BufferEmpty) => break,
-                // Ring overflowed since the last drain — cursor resets; keep going.
+                // Ring overflowed since the last read — cursor resets; keep going.
                 Err(DbError::BufferLagged { .. }) => continue,
                 Err(_) => break,
             }
         }
-
-        let count = values.len();
-        Ok(json!({ "record_name": name, "values": values, "count": count }))
+        Ok(values)
     }
 
     /// `record.query`: resolve the persistence query handler registered in the

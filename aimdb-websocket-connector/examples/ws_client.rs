@@ -71,8 +71,11 @@ async fn main() {
     let mut tick = 0u64;
     loop {
         tick += 1;
-        db.set_record_from_json("echo", json!({ "msg": format!("hello #{tick} from ws_client") }))
-            .ok();
+        db.set_record_from_json(
+            "echo",
+            json!({ "msg": format!("hello #{tick} from ws_client") }),
+        )
+        .ok();
 
         if let Some(v) = db.try_latest_as_json("counter") {
             if last.as_ref() != Some(&v) {
