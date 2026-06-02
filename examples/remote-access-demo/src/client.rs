@@ -42,22 +42,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // ── Point-in-time reads: record.get ──────────────────────────────────
-    // A SpmcRing keeps a *history* for independent consumers, so there is no one
-    // "latest" — record.get answers not_found by design. Read rings with
-    // record.drain (history) or record.subscribe (live), both shown below.
-    println!("📤 record.get on Temperature (SpmcRing — expecting an error)...");
-    match conn.get_record("server::Temperature").await {
-        Ok(v) => println!("⚠️  Unexpected success: {v}"),
-        Err(_) => println!(
-            "✅ Expected error — rings have no point-in-time latest; use drain / subscribe."
-        ),
-    }
-    println!();
-
+    // `record.get` is a point-in-time read. For a SingleLatest/state record it
+    // returns the canonical latest, non-destructively.
     println!("📤 record.get on Config (SingleLatest — point-in-time read)...");
     match conn.get_record("server::Config").await {
         Ok(v) => println!("⚙️  Current Config:\n{}", serde_json::to_string_pretty(&v)?),
         Err(e) => println!("❌ Error: {e}"),
+    }
+    println!();
+
+    // A ring (SpmcRing) has no canonical latest, so the server falls back to
+    // *draining* this connection's cursor and returning the most recent value. A
+    // fresh cursor starts at the ring tail, so the first read is empty until a new
+    // value arrives — we retry over a couple of ticks. (This opens the *same*
+    // cursor `record.drain` uses below.)
+    println!("📤 record.get on Temperature (SpmcRing — drains the cursor for the latest)...");
+    let mut latest = None;
+    for _ in 0..10 {
+        if let Ok(v) = conn.get_record("server::Temperature").await {
+            latest = Some(v);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    match latest {
+        Some(v) => println!(
+            "🌡️  Most recent Temperature (via drain fallback):\n{}",
+            serde_json::to_string_pretty(&v)?
+        ),
+        None => println!("ℹ️  No reading yet — the ring cursor was still empty."),
     }
     println!();
 
@@ -119,9 +132,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🧪 Record History (record.drain)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("📤 Drain #1: cold start (creates the cursor, returns empty)...");
+    // `record.get` above already opened this connection's Temperature cursor, so
+    // this drain returns only what's accrued since (they share one cursor).
+    println!("📤 Drain #1: history since the (already-open) cursor...");
     let d1 = conn.drain_record("server::Temperature").await?;
-    println!("   Values: {} (expected 0 on cold start)\n", d1.count);
+    println!("   Values: {} (cursor shared with the record.get above)\n", d1.count);
 
     println!("⏳ Waiting 7s for temperature readings to accumulate...");
     tokio::time::sleep(Duration::from_secs(7)).await;
