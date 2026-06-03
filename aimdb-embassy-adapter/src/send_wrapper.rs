@@ -20,8 +20,8 @@ use core::task::{Context, Poll};
 pub struct SendFutureWrapper<F>(pub F);
 
 // SAFETY: Embassy executors run cooperatively on a single core with no preemption or
-/// thread migration, so the wrapped value is never actually moved across threads.
-/// Only wrap futures that are polled solely by an Embassy executor.
+// thread migration, so the wrapped value is never actually moved across threads.
+// Only wrap futures that are polled solely by an Embassy executor.
 unsafe impl<F> Send for SendFutureWrapper<F> {}
 
 impl<F: Future> Future for SendFutureWrapper<F> {

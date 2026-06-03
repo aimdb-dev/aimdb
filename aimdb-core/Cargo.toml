@@ -39,10 +39,14 @@ alloc = ["serde"] # Enable heap in no_std
 # get `record.latest()?.as_json()` without std/AimX. `std` enables it for AimX.
 json-serialize = ["alloc", "serde_json"]
 
-# Phase 0 connector-session contracts (`crate::session`): the frozen, dyn-safe
-# trait skeletons for the connector capability model — Connection/Listener/Dialer,
-# Dispatch/EnvelopeCodec, Sink/Source + shared types. Contracts only, no engine
-# logic; compiles on `no_std + alloc`. See docs/design/detailed/037-phase0-contracts.md.
+# The connector-session substrate (`crate::session`): the dyn-safe trait set
+# (Connection/Listener/Dialer, Dispatch/EnvelopeCodec, Source + shared types) and
+# the runtime-neutral engines built on it — the reactive server (`serve`/
+# `run_session`), the proactive client (`run_client`/`pump_client`), the
+# `pump_sink`/`pump_source` data plane, and the generic session connectors. Engine
+# logic included; all compiles on `no_std + alloc`. The AimX protocol port
+# (`session::aimx`) additionally needs `json-serialize`. See the design doc:
+# docs/design/remote-access-via-connectors.md.
 connector-session = ["alloc"]
 
 # Observability features (available on both std/no_std)
