@@ -78,9 +78,16 @@ mod runtime;
 #[cfg(all(not(feature = "std"), feature = "embassy-time"))]
 pub mod time;
 
+// Force-`Send` helper for Embassy data-plane connectors (see module docs).
+#[cfg(not(feature = "std"))]
+pub mod send_wrapper;
+
 // Error handling exports
 #[cfg(not(feature = "std"))]
 pub use error::EmbassyErrorSupport;
+
+#[cfg(not(feature = "std"))]
+pub use send_wrapper::SendFutureWrapper;
 
 // Runtime exports
 #[cfg(not(feature = "std"))]

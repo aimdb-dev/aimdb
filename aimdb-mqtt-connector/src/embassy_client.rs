@@ -53,6 +53,7 @@ use core::net::Ipv4Addr;
 use core::pin::Pin;
 use core::str::FromStr;
 
+use aimdb_embassy_adapter::SendFutureWrapper;
 use embassy_net::Ipv4Address;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, Sender};
@@ -594,7 +595,22 @@ impl MqttConnectorImpl {
                     default_topic_clone.as_str()
                 );
 
-                while let Ok(value_any) = reader.recv_any().await {
+                loop {
+                    let value_any = match reader.recv_any().await {
+                        Ok(v) => v,
+                        // Lagged (ring overflow) — skip the gap, keep publishing
+                        // rather than letting a transient overrun kill the publisher.
+                        Err(aimdb_core::DbError::BufferLagged { .. }) => {
+                            #[cfg(feature = "defmt")]
+                            defmt::warn!(
+                                "MQTT outbound: consumer lagged for '{}'",
+                                default_topic_clone.as_str()
+                            );
+                            continue;
+                        }
+                        // Buffer closed — stop the publisher.
+                        Err(_e) => break,
+                    };
                     // Determine topic: dynamic (from provider) or default (from URL)
                     let topic = topic_provider
                         .as_ref()
@@ -661,27 +677,6 @@ impl MqttConnectorImpl {
             2 => QualityOfService::Qos1, // Downgrade to QoS 1
             _ => QualityOfService::Qos0, // Default to QoS 0
         }
-    }
-}
-
-// Helper wrapper to make futures Send for Embassy's single-threaded environment
-//
-// SAFETY: Embassy is single-threaded, so we can safely implement Send
-// even though some Embassy types don't implement it. Embassy executors run
-// cooperatively on a single core with no preemption or thread migration.
-struct SendFutureWrapper<F>(F);
-
-unsafe impl<F> Send for SendFutureWrapper<F> {}
-
-impl<F: core::future::Future> core::future::Future for SendFutureWrapper<F> {
-    type Output = F::Output;
-
-    fn poll(
-        self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        // SAFETY: We're just forwarding the poll call
-        unsafe { self.map_unchecked_mut(|s| &mut s.0).poll(cx) }
     }
 }
 
