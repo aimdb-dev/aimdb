@@ -17,7 +17,7 @@ pub enum CliError {
     ConnectionFailed { socket: String, reason: String },
 
     /// No running AimDB instances found
-    #[error("No AimDB instances found\n  Searched: /tmp, /var/run/aimdb\n  Hint: Start an AimDB application with .with_remote_access()")]
+    #[error("No AimDB instances found\n  Searched: /tmp, /var/run/aimdb\n  Hint: Start an AimDB application that registers a remote-access server (e.g. UdsServer via .with_connector(...))")]
     NoInstancesFound,
 
     /// Requested record does not exist

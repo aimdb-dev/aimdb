@@ -131,7 +131,7 @@ type JoinInputFactory<R> = Box<
 /// loop) is created by the runtime adapter at database startup — capacity is an
 /// internal constant chosen per adapter (Tokio: 64, Embassy: 8, WASM: 64).
 ///
-/// Obtain via [`RecordRegistrar::transform_join`].
+/// Obtain via [`RecordRegistrar::transform_join`](crate::RecordRegistrar::transform_join).
 pub struct JoinBuilder<O, R: JoinFanInRuntime + 'static> {
     inputs: Vec<(String, JoinInputFactory<R>)>,
     _phantom: PhantomData<(O, R)>,
@@ -241,7 +241,7 @@ where
 /// Completed multi-input join pipeline, ready to be registered on a record.
 ///
 /// Produced by [`JoinBuilder::on_triggers`] and consumed by
-/// [`RecordRegistrar::transform_join`]. Not normally constructed directly.
+/// [`RecordRegistrar::transform_join`](crate::RecordRegistrar::transform_join). Not normally constructed directly.
 pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static, R: JoinFanInRuntime + 'static> {
     pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O, R> + Send>,
 }

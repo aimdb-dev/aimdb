@@ -18,7 +18,7 @@ use crate::architecture::{
     write_state_locked, Proposal, ProposalResolution, ProposedChange,
 };
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxClient;
+use aimdb_client::AimxConnection;
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::debug;
@@ -803,7 +803,7 @@ pub async fn validate_against_instance(args: Option<Value>) -> McpResult<Value> 
         })?;
 
     // Connect and list live records
-    let mut client = AimxClient::connect(&socket_path)
+    let client = AimxConnection::connect(&socket_path)
         .await
         .map_err(McpError::Client)?;
 

@@ -67,26 +67,14 @@
 //!
 //! ## Authentication (server only)
 //!
-//! See [`auth`] for the [`AuthHandler`][auth::AuthHandler] trait.
+//! See [`auth`] for the [`AuthHandler`] trait.
 
 // ════════════════════════════════════════════════════════════════════
 // Server modules (feature = "server")
 // ════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "server")]
-pub mod auth;
-#[cfg(feature = "server")]
-pub mod builder;
-#[cfg(feature = "server")]
-pub mod client_manager;
-#[cfg(feature = "server")]
-pub mod connector;
-#[cfg(feature = "server")]
-pub(crate) mod registry;
-#[cfg(feature = "server")]
-pub(crate) mod server;
-#[cfg(feature = "server")]
-pub(crate) mod session;
+pub mod server;
 
 // ════════════════════════════════════════════════════════════════════
 // Client module (feature = "client")
@@ -94,6 +82,21 @@ pub(crate) mod session;
 
 #[cfg(feature = "client")]
 pub mod client;
+
+// ════════════════════════════════════════════════════════════════════
+// Shared session-engine glue (server and/or client)
+// ════════════════════════════════════════════════════════════════════
+
+/// Per-connection WS-JSON `EnvelopeCodec` shared by the server (`run_session`)
+/// and client (`run_client`) ports.
+#[cfg(any(feature = "server", feature = "client"))]
+pub mod codec;
+
+/// WS transport adapters (`Connection`/`Dialer`) over a real WebSocket.
+#[cfg(any(feature = "server", feature = "client"))]
+pub mod transport;
+
+// Real-socket integration tests live in `tests/e2e.rs` (black-box, public API).
 
 // ════════════════════════════════════════════════════════════════════
 // Protocol (always available)
@@ -107,14 +110,16 @@ pub mod protocol;
 
 /// The primary entry point for a WebSocket **server** connector.
 ///
-/// This is a type alias for [`builder::WebSocketConnectorBuilder`].
+/// This is a type alias for [`server::builder::WebSocketConnectorBuilder`].
 #[cfg(feature = "server")]
-pub type WebSocketConnector = builder::WebSocketConnectorBuilder;
+pub type WebSocketConnector = server::builder::WebSocketConnectorBuilder;
 
 #[cfg(feature = "server")]
-pub use auth::{AuthError, AuthHandler, AuthRequest, ClientId, ClientInfo, NoAuth, Permissions};
+pub use server::auth::{
+    AuthError, AuthHandler, AuthRequest, ClientId, ClientInfo, NoAuth, Permissions,
+};
 #[cfg(feature = "server")]
-pub use client_manager::ClientManager;
+pub use server::client_manager::ClientManager;
 
 /// The primary entry point for a WebSocket **client** connector.
 ///
@@ -125,4 +130,4 @@ pub type WsClientConnector = client::WsClientConnectorBuilder;
 pub use protocol::{ClientMessage, ErrorCode, QueryRecord, ServerMessage};
 
 #[cfg(feature = "server")]
-pub use session::{NoQuery, QueryHandler};
+pub use server::session::{NoQuery, QueryFuture, QueryHandler};

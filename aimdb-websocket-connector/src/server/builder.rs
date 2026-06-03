@@ -8,10 +8,10 @@
 //! ```text
 //! AimDbBuilder::build()
 //!   └─ WebSocketConnectorBuilder::build(&db)
-//!        ├─ db.collect_inbound_routes("ws")   → Router
-//!        ├─ db.collect_outbound_routes("ws")   → outbound tasks
-//!        ├─ start Axum / WebSocket server
-//!        └─ return Arc<WebSocketConnectorImpl>
+//!        ├─ inbound Router (client writes → producers, via the session Dispatch)
+//!        ├─ outbound `pump_sink` over the `WsBusSink` (records → broadcast bus)
+//!        ├─ start Axum / WebSocket server (per-connection `run_session`)
+//!        └─ return the server + pump futures
 //! ```
 
 use std::{
@@ -19,20 +19,22 @@ use std::{
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use aimdb_data_contracts::Streamable;
 
-use aimdb_core::{router::RouterBuilder, ConnectorBuilder};
+use aimdb_core::{pump_sink, router::RouterBuilder, ConnectorBuilder, Dispatch};
 use axum::Router as AxumRouter;
 
-use crate::{
+use super::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
     client_manager::ClientManager,
-    connector::WebSocketConnectorImpl,
+    connector::{SnapshotCache, WsBusSink},
+    dispatch::WsDispatch,
+    http::{build_server_future, ServerState},
     registry::StreamableRegistry,
-    server::build_server_future,
-    session::{NoQuery, NoSnapshot, QueryHandler, SessionContext, SnapshotProvider},
+    session::{NoQuery, NoSnapshot, QueryHandler, SnapshotProvider},
 };
 use aimdb_ws_protocol::TopicInfo;
 
@@ -161,9 +163,11 @@ impl WebSocketConnectorBuilder {
         self
     }
 
-    /// Set the maximum number of concurrent WebSocket clients (default: 1 024).
+    /// Set the per-connection subscription ceiling (default: 1 024).
     ///
-    /// Currently informational — used for pre-allocating the client map.
+    /// Despite the name, this bounds live subscriptions per connection
+    /// (`max_subs_per_connection`), not the client count — connection count is the
+    /// axum accept loop's concern, not enforced here.
     pub fn with_max_clients(mut self, max: usize) -> Self {
         self.max_clients = max;
         self
@@ -298,39 +302,29 @@ where
 
             let router = Arc::new(RouterBuilder::from_routes(inbound_routes).build());
 
-            // ── Outbound routes ──────────────────────────────────────
-            let outbound_routes = db.collect_outbound_routes("ws");
-
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "WS connector: {} outbound routes collected",
-                outbound_routes.len()
-            );
-
-            // ── Shared snapshot cache (for late-join) ─────────────
-            let snapshot_map: Arc<Mutex<HashMap<String, Vec<u8>>>> =
-                Arc::new(Mutex::new(HashMap::new()));
+            // ── Late-join snapshot cache (only when enabled) ──────
+            let snapshot_map: Option<SnapshotCache> =
+                self.late_join.then(|| Arc::new(Mutex::new(HashMap::new())));
 
             // ── Client manager ────────────────────────────────────
-            let client_mgr = ClientManager::new();
+            let client_mgr = ClientManager::new(self.raw_payload, self.channel_capacity.max(1));
 
             // ── Build snapshot provider ──────────────────────────
-            let snapshot_provider: Arc<dyn SnapshotProvider> = if self.late_join {
-                let snap = snapshot_map.clone();
-                Arc::new(DynMapSnapshot(snap))
-            } else {
-                Arc::new(NoSnapshot)
+            let snapshot_provider: Arc<dyn SnapshotProvider> = match &snapshot_map {
+                Some(map) => Arc::new(DynMapSnapshot(map.clone())),
+                None => Arc::new(NoSnapshot),
             };
 
             // ── Known topics (for list_topics responses) ──────────
             // Use the registered streamable types to resolve TypeId → schema name.
-            let type_id_map = &self.streamable_registry.type_id_to_name;
-
             let topic_type_ids = db.collect_outbound_topic_type_ids("ws");
             let known_topics: Vec<TopicInfo> = topic_type_ids
                 .into_iter()
                 .map(|(topic, type_id)| {
-                    let schema_type = type_id_map.get(&type_id).map(|s| s.to_string());
+                    let schema_type = self
+                        .streamable_registry
+                        .resolve_name(&type_id)
+                        .map(|s| s.to_string());
                     // Extract entity from topic name: "temp.vienna" → "vienna".
                     // The server owns the naming convention — clients receive
                     // the entity as a first-class field and never parse topics.
@@ -343,33 +337,43 @@ where
                 })
                 .collect();
 
-            // ── Session context ───────────────────────────────────
-            let session_ctx = SessionContext {
+            // ── Shared dispatch (one Arc<dyn Dispatch> per server) ───
+            let dispatch: Arc<dyn Dispatch> = Arc::new(WsDispatch {
                 client_mgr: client_mgr.clone(),
-                router: router.clone(),
-                auth: self.auth.clone(),
-                channel_capacity: self.channel_capacity,
-                late_join: self.late_join,
                 snapshot_provider,
-                auto_subscribe_topics: self.auto_subscribe_topics.clone(),
                 query_handler: self.query_handler.clone(),
-                known_topics,
+                router: router.clone(),
+                known_topics: Arc::new(known_topics),
+                auth: self.auth.clone(),
+                late_join: self.late_join,
                 runtime_ctx: Some(db.runtime_any()),
-            };
+            });
 
-            // ── Build connector & collect outbound publishers ───────────────
-            let connector = WebSocketConnectorImpl::new(client_mgr, self.raw_payload);
-            let outbound_futures =
-                connector.collect_outbound_futures(db, outbound_routes, snapshot_map);
+            // ── Outbound: the shared `pump_sink` drives records → bus ───────
+            // (same helper MQTT uses; the `WsBusSink` just broadcasts + caches).
+            let outbound_futures = pump_sink(
+                db,
+                "ws",
+                Arc::new(WsBusSink {
+                    client_mgr: client_mgr.clone(),
+                    snapshot: snapshot_map,
+                }),
+            );
 
             // ── Build Axum server future ──────────────────────────
+            let state = ServerState {
+                dispatch,
+                auth: self.auth.clone(),
+                client_mgr,
+                auto_subscribe: Arc::new(self.auto_subscribe_topics.clone()),
+                // `max_clients` now supplies the per-connection subscription cap;
+                // connection count stays axum's concern (see `with_max_clients`).
+                max_subs_per_connection: self.max_clients.max(1),
+                started_at: Instant::now(),
+            };
             let additional = self.additional_routes.clone();
-            let server_future = build_server_future(
-                self.bind_addr,
-                self.ws_path.clone(),
-                session_ctx,
-                additional,
-            );
+            let server_future =
+                build_server_future(self.bind_addr, self.ws_path.clone(), state, additional);
 
             let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_futures.len());
             futures.push(server_future);
@@ -383,7 +387,7 @@ where
 // Dynamic snapshot provider backed by the shared Mutex<HashMap>
 // ════════════════════════════════════════════════════════════════════
 
-struct DynMapSnapshot(Arc<Mutex<HashMap<String, Vec<u8>>>>);
+struct DynMapSnapshot(SnapshotCache);
 
 impl SnapshotProvider for DynMapSnapshot {
     fn snapshot(&self, topic: &str) -> Option<Vec<u8>> {

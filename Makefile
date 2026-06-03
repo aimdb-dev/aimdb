@@ -1,8 +1,19 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check
 .DEFAULT_GOAL := help
+
+# Separate target dir for embedded checks so an interrupted example build
+# (cargo build --target thumbv7em-none-eabihf) cannot leave corrupted .rmeta
+# files that break the next cargo check run (E0786).  Clean it with
+# `make clean-embedded`.
+EMBEDDED_CHECK_TARGET_DIR := target/embedded-check
+
+# Disable incremental compilation to avoid "Stale file handle" linker errors
+# on Docker overlay filesystems when many cargo invocations run in sequence
+# with different feature sets (as the test/check targets do).
+export CARGO_INCREMENTAL := 0
 
 # Colors for output
 GREEN := \033[0;32m
@@ -63,6 +74,10 @@ build:
 	cargo build --package aimdb-core --features "std,tracing,profiling"
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + metrics)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features "alloc,metrics"
+	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + connector-session contracts)$(NC)\n"
+	cargo build --package aimdb-core --no-default-features --features "alloc,connector-session"
+	@printf "$(YELLOW)  → Building aimdb-core (std + connector-session engines)$(NC)\n"
+	cargo build --package aimdb-core --features "std,connector-session"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
 	@printf "$(YELLOW)  → Building tokio adapter (with profiling)$(NC)\n"
@@ -83,8 +98,10 @@ build:
 	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Building WS protocol$(NC)\n"
 	cargo build --package aimdb-ws-protocol
-	@printf "$(YELLOW)  → Building WebSocket connector$(NC)\n"
-	cargo build --package aimdb-websocket-connector --features "tokio-runtime"
+	@printf "$(YELLOW)  → Building WebSocket connector (server + client)$(NC)\n"
+	cargo build --package aimdb-websocket-connector --features "server,client"
+	@printf "$(YELLOW)  → Building UDS connector$(NC)\n"
+	cargo build --package aimdb-uds-connector
 	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
 	cargo build --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
 
@@ -108,6 +125,12 @@ test:
 	cargo test --package aimdb-core --no-default-features --features "alloc,json-serialize"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
+	@printf "$(YELLOW)  → Testing aimdb-core connector-session (contracts object-safety)$(NC)\n"
+	cargo test --package aimdb-core --lib --features "std,connector-session" session::
+	@printf "$(YELLOW)  → Testing aimdb-core connector-session engines (session_engine)$(NC)\n"
+	cargo test --package aimdb-core --features "std,connector-session" --test session_engine
+	@printf "$(YELLOW)  → Testing aimdb-client (engine-based AimX client + UDS round-trip)$(NC)\n"
+	cargo test --package aimdb-client
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"
@@ -134,8 +157,12 @@ test:
 	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Testing WS protocol$(NC)\n"
 	cargo test --package aimdb-ws-protocol
-	@printf "$(YELLOW)  → Testing WebSocket connector$(NC)\n"
-	cargo test --package aimdb-websocket-connector --features "tokio-runtime"
+	@printf "$(YELLOW)  → Testing WebSocket connector (server + client: unit, real-socket e2e, AimDB round-trip)$(NC)\n"
+	cargo test --package aimdb-websocket-connector --features "server,client"
+	@printf "$(YELLOW)  → Testing WebSocket connector client-only build$(NC)\n"
+	cargo test --package aimdb-websocket-connector --no-default-features --features "client" --lib
+	@printf "$(YELLOW)  → Testing UDS connector$(NC)\n"
+	cargo test --package aimdb-uds-connector
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
@@ -206,7 +233,9 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on WS protocol$(NC)\n"
 	cargo clippy --package aimdb-ws-protocol --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
-	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime" --all-targets -- -D warnings
+	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on UDS connector$(NC)\n"
+	cargo clippy --package aimdb-uds-connector --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 
@@ -245,6 +274,12 @@ doc:
 clean:
 	@printf "$(GREEN)Cleaning...$(NC)\n"
 	cargo clean
+	@rm -rf $(EMBEDDED_CHECK_TARGET_DIR)
+
+clean-embedded:
+	@printf "$(GREEN)Cleaning embedded check artifacts...$(NC)\n"
+	@rm -rf $(EMBEDDED_CHECK_TARGET_DIR)
+	cargo clean --target thumbv7em-none-eabihf
 
 ## Testing commands
 test-wasm:
@@ -256,29 +291,33 @@ test-wasm:
 test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --no-default-features --features alloc
+	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features alloc
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + json-serialize) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features "alloc,json-serialize"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,json-serialize"
+	@printf "$(YELLOW)  → Checking aimdb-core session engines (no_std + connector-session) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session"
+	@printf "$(YELLOW)  → Checking aimdb-core AimX codec (no_std + connector-session + json-serialize) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,json-serialize"
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features alloc
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with network support on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-net-support"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,embassy-net-support"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with profiling on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,profiling"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,profiling"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with metrics on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,metrics"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,metrics"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime"
+	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt"
+	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
 
 ## Example projects
 examples:

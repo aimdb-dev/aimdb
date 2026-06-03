@@ -2,17 +2,19 @@
 //!
 //! Tests the full record history drain pipeline:
 //! - AimDB server with remote access enabled
-//! - AimxClient connecting via Unix domain socket
+//! - AimxConnection connecting via Unix domain socket
 //! - record.drain protocol method (cold start, accumulation, limits, overflow)
 //!
 //! These tests exercise: handler.rs dispatch → ConnectionState.drain_readers →
 //! JsonReaderAdapter.try_recv_json() → TokioBufferReader.try_recv()
 
-use aimdb_client::{AimxClient, DrainResponse};
+use aimdb_client::AimxConnection;
+use aimdb_client::DrainResponse;
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::AimDbBuilder;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use aimdb_uds_connector::UdsServer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -51,7 +53,7 @@ async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb<TokioAdapter>
 
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
-        .with_remote_access(remote_config);
+        .with_connector(UdsServer::from_config(remote_config));
 
     // SpmcRing for drain testing (capacity 20)
     builder.configure::<Temperature>("test::Temperature", |reg| {
@@ -82,7 +84,7 @@ async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb<TokioAd
 
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
-        .with_remote_access(remote_config);
+        .with_connector(UdsServer::from_config(remote_config));
 
     builder.configure::<Counter>("test::Counter", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 4 })
@@ -107,7 +109,7 @@ async fn setup_no_remote_access_server(socket_path: &str) -> aimdb_core::AimDb<T
 
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
-        .with_remote_access(remote_config);
+        .with_connector(UdsServer::from_config(remote_config));
 
     // Register WITHOUT .with_remote_access()
     builder.configure::<Counter>("test::Counter", |reg| {
@@ -142,7 +144,7 @@ async fn test_drain_cold_start_returns_empty() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Connect client
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // First drain creates the reader — returns empty (cold start)
     let response = client.drain_record("test::Temperature").await.unwrap();
@@ -169,7 +171,7 @@ async fn test_drain_returns_accumulated_values() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // First drain — cold start
     let response = client.drain_record("test::Temperature").await.unwrap();
@@ -223,7 +225,7 @@ async fn test_drain_sequential_only_new_values() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start
     let _ = client.drain_record("test::Temperature").await.unwrap();
@@ -293,7 +295,7 @@ async fn test_drain_with_limit() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start
     let _ = client.drain_record("test::Temperature").await.unwrap();
@@ -358,7 +360,7 @@ async fn test_drain_single_latest_at_most_one() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start
     let _ = client.drain_record("test::Counter").await.unwrap();
@@ -399,7 +401,7 @@ async fn test_drain_nonexistent_record_error() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Drain a record that doesn't exist
     let result = client.drain_record("test::DoesNotExist").await;
@@ -421,7 +423,7 @@ async fn test_drain_requires_remote_access() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Drain a record that exists but lacks .with_remote_access()
     let result = client.drain_record("test::Counter").await;
@@ -446,7 +448,7 @@ async fn test_drain_with_ring_overflow() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start — creates the drain reader
     let _ = client.drain_record("test::Counter").await.unwrap();
@@ -494,7 +496,7 @@ async fn test_drain_multiple_records_independent() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start both records
     let _ = client.drain_record("test::Temperature").await.unwrap();
@@ -545,7 +547,7 @@ async fn test_drain_response_structure() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start
     let _ = client.drain_record("test::Temperature").await.unwrap();
@@ -590,7 +592,7 @@ async fn test_drain_with_zero_limit() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start
     let _ = client.drain_record("test::Temperature").await.unwrap();
@@ -635,7 +637,7 @@ async fn test_drain_independent_of_other_consumers() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut client = AimxClient::connect(&socket_path).await.unwrap();
+    let client = AimxConnection::connect(&socket_path).await.unwrap();
 
     // Cold start the drain reader
     let _ = client.drain_record("test::Temperature").await.unwrap();

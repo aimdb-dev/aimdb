@@ -336,9 +336,9 @@ async fn main(spawner: Spawner) {
                                 let sign = if neg { "-" } else { "" };
                                 info!("📊 DewPoint: {}{}.{}°C", sign, whole, frac);
                                 producer.produce(DewPoint {
-                                        celsius: dew_point,
-                                        timestamp,
-                                    });
+                                    celsius: dew_point,
+                                    timestamp,
+                                });
                             }
                         }
                     })

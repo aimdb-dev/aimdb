@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`AimxClient` → `AimxConnection`, rebuilt on the shared session engine (Issue #39, [design doc](../docs/design/remote-access-via-connectors.md)).** The synchronous `connection::AimxClient` is retired; the new `engine::AimxConnection` drives `aimdb-core`'s `run_client` engine over `aimdb-uds-connector`'s `UdsDialer` and speaks the reshaped **AimX-v2** protocol. Both the type and the module are re-exported from the crate root (`aimdb_client::AimxConnection`); the `connection` module is replaced by `engine`. `connect()` performs the `hello` handshake, and the full tool surface (list/get/set/subscribe/drain/graph/query) is available.
+  - `subscribe(record_name)` now returns a `Stream` of updates directly — the engine routes events back by request id, so there is **no** server-allocated subscription id to track (the old `(subscription_id, queue_size)` handshake is gone).
+  - New `connect_with_timeout(path, timeout)` bounds the whole dial + handshake (used by discovery probing).
+  - New dependencies: `aimdb-uds-connector` (the UDS transport), `aimdb-tokio-adapter` (the `TimeOps` clock handed to `run_client`), and `futures`. `aimdb-core` is now pulled in with the `connector-session` feature.
+
 ## [0.6.0] - 2026-05-22
 
 ### Added

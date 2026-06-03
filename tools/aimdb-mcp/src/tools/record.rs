@@ -1,9 +1,10 @@
 //! Record-related tools (list_records, get_record, set_record)
 
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxClient;
+use aimdb_client::{AimxConnection, ClientError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
 /// Parameters for list_records tool
@@ -95,13 +96,13 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
     debug!("🔌 Connecting to {}", socket_path);
 
     // Get or create connection from pool (if available)
-    let mut client = if let Some(pool) = super::connection_pool() {
+    let client = if let Some(pool) = super::connection_pool() {
         pool.get_connection(&socket_path)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&socket_path)
+        AimxConnection::connect(&socket_path)
             .await
             .map_err(McpError::Client)?
     };
@@ -158,27 +159,59 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
         socket_path, params.record_name
     );
 
-    // Get or create connection from pool (if available)
-    let mut client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&socket_path)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&socket_path)
-            .await
-            .map_err(McpError::Client)?
-    };
+    // Reuse the *persistent* connection (the same pool `drain_record` uses) rather
+    // than a throwaway one. For ring buffers (`SpmcRing`, which has no canonical
+    // latest), the server's `record.get` falls back to *this connection's* drain
+    // cursor (see `aimdb_core::session::aimx::dispatch`'s `record_get`). A fresh
+    // connection per call opens a new cursor at the ring tail every time and always
+    // reads empty → `not_found`; the persistent connection lets that cursor
+    // accumulate. The get→drain fallback already lives server-side, so nothing is
+    // duplicated here — we just stop discarding the connection.
+    let pool = super::connection_pool()
+        .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
 
-    // Get record value
-    let value = client
-        .get_record(&params.record_name)
+    let client_arc = pool
+        .get_drain_client(&socket_path)
         .await
         .map_err(McpError::Client)?;
 
-    debug!("✅ Retrieved record '{}'", params.record_name);
+    let client = client_arc.lock().await;
 
-    Ok(value)
+    // A ring's drain cursor opens at the tail, so the first read is empty until a
+    // value is produced after it opened. Briefly retry on `not_found` so a one-shot
+    // `get_record` on a ring returns the latest value instead of failing. This adds
+    // no latency for `single_latest` records (they return immediately via the
+    // server's canonical-latest path) nor for an already-warm ring cursor. Note: a
+    // record that simply doesn't exist also reports `not_found`, so a bad name
+    // costs the full window before erroring.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let err = match client.get_record(&params.record_name).await {
+            Ok(value) => {
+                debug!("✅ Retrieved record '{}'", params.record_name);
+                return Ok(value);
+            }
+            Err(e) => e,
+        };
+
+        let cursor_warming =
+            matches!(&err, ClientError::ServerError { code, .. } if code == "not_found");
+
+        if cursor_warming && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+
+        // A genuine connection/protocol error (not a warming ring cursor) means the
+        // persistent client is unhealthy — drop it so the next call reconnects.
+        if !cursor_warming {
+            let socket = socket_path.clone();
+            let pool = pool.clone();
+            tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
+        }
+
+        return Err(McpError::Client(err));
+    }
 }
 
 /// Set the value of a writable record
@@ -206,13 +239,13 @@ pub async fn set_record(args: Option<Value>) -> McpResult<Value> {
     );
 
     // Get or create connection from pool (if available)
-    let mut client = if let Some(pool) = super::connection_pool() {
+    let client = if let Some(pool) = super::connection_pool() {
         pool.get_connection(&socket_path)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&socket_path)
+        AimxConnection::connect(&socket_path)
             .await
             .map_err(McpError::Client)?
     };
@@ -264,7 +297,7 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
         .await
         .map_err(McpError::Client)?;
 
-    let mut client = client_arc.lock().await;
+    let client = client_arc.lock().await;
 
     // Drain record values
     let response = match params.limit {
@@ -325,7 +358,7 @@ mod tests {
 
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("Failed to connect") || err.message().contains("No such file")
+            err.message().contains("Connection failed") || err.message().contains("No such file")
         );
     }
 

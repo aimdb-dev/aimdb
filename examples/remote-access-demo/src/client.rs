@@ -1,658 +1,187 @@
 //! Remote Access Demo - Client
 //!
-//! Simple client that connects to the demo server and calls record.list
+//! Connects to the demo server over the engine-based [`AimxConnection`] (the
+//! shared session engine + reshaped AimX-v2 wire) and walks through the AimX
+//! surface: list / get / set, the producer-override safety check, `record.drain`
+//! history, and a live subscription.
 //!
 //! Run with:
 //! ```
 //! cargo run --bin client
 //! ```
 
-use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+use aimdb_client::AimxConnection;
+use futures::StreamExt;
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 
-#[derive(Debug, Serialize)]
-struct Request {
-    id: u64,
-    method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    params: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum Response {
-    Success { id: u64, result: serde_json::Value },
-    Error { id: u64, error: ErrorObject },
-}
-
-#[derive(Debug, Deserialize)]
-struct EventMessage {
-    event: Event,
-}
-
-#[derive(Debug, Deserialize)]
-struct Event {
-    subscription_id: String,
-    sequence: u64,
-    timestamp: String,
-    data: serde_json::Value,
-    #[serde(default)]
-    dropped: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ErrorObject {
-    code: String,
-    message: String,
-    #[serde(default)]
-    details: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WelcomeMessage {
-    version: String,
-    server: String,
-    permissions: Vec<String>,
-    writable_records: Vec<String>,
-    #[serde(default)]
-    max_subscriptions: Option<usize>,
-    #[serde(default)]
-    #[allow(dead_code)] // Parsed from JSON but not used in demo
-    authenticated: Option<bool>,
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔌 Connecting to AimDB server...");
-
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = "/tmp/aimdb-demo.sock";
-    let mut stream = UnixStream::connect(socket_path).map_err(|e| {
-        format!(
-            "Failed to connect to {}: {}\nMake sure the server is running!",
-            socket_path, e
-        )
+    println!("🔌 Connecting to AimDB server at {socket_path} ...");
+
+    let conn = AimxConnection::connect(socket_path).await.map_err(|e| {
+        format!("Failed to connect to {socket_path}: {e}\nMake sure the server is running!")
     })?;
 
-    let mut reader = BufReader::new(stream.try_clone()?);
-
-    println!("✅ Connected!");
-    println!();
-
-    // Send Hello message
-    println!("📤 Sending handshake...");
-    let hello = json!({
-        "version": "1.0",
-        "client": "aimdb-demo-client",
-        "capabilities": [],
-    });
-
-    writeln!(stream, "{}", hello)?;
-    stream.flush()?;
-
-    // Read Welcome message
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-
-    let welcome: WelcomeMessage = serde_json::from_str(&line)?;
-    println!("📥 Received welcome from server: {}", welcome.server);
+    let welcome = conn.server_info();
+    println!("✅ Connected! Welcome from server: {}", welcome.server);
     println!("   Version: {}", welcome.version);
     println!("   Permissions: {:?}", welcome.permissions);
     println!("   Writable records: {:?}", welcome.writable_records);
-    println!("   Max subscriptions: {:?}", welcome.max_subscriptions);
     println!();
 
-    // Send record.list request
+    // ── record.list ──────────────────────────────────────────────────────
     println!("📤 Requesting record list...");
-    let request = Request {
-        id: 1,
-        method: "record.list".to_string(),
-        params: None,
-    };
-
-    let request_json = serde_json::to_string(&request)?;
-    writeln!(stream, "{}", request_json)?;
-    stream.flush()?;
-
-    // Read response
-    let mut response_line = String::new();
-    reader.read_line(&mut response_line)?;
-
-    let response: Response = serde_json::from_str(&response_line)?;
-
-    match response {
-        Response::Success { id, result } => {
-            println!("✅ Success! (request_id: {})", id);
-            println!();
-            println!("📋 Registered Records:");
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        Response::Error { id, error } => {
-            println!("❌ Error! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-            if let Some(details) = error.details {
-                println!("   Details: {}", details);
-            }
-        }
+    let records = conn.list_records().await?;
+    println!("📋 {} registered records:", records.len());
+    for r in &records {
+        println!("   • {} ({})", r.record_key, r.name);
     }
-
     println!();
 
     // ── Point-in-time reads: record.get ──────────────────────────────────
-    // record.get serves a single "current value", so it only works on buffers
-    // that have a canonical latest. SingleLatest (Config/AppSettings, below)
-    // does. SpmcRing does NOT: a ring keeps a *history* for independent
-    // consumers, so there is no one "latest" to return — record.get answers
-    // not_found by design. Read rings with record.drain (history) or
-    // record.subscribe (live), both demonstrated further down.
-
-    println!("📤 record.get on Temperature (SpmcRing — expecting not_found)...");
-    let get_request = Request {
-        id: 2,
-        method: "record.get".to_string(),
-        params: Some(json!({"record": "server::Temperature"})),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&get_request)?)?;
-    stream.flush()?;
-
-    let mut get_response_line = String::new();
-    reader.read_line(&mut get_response_line)?;
-    let get_response: Response = serde_json::from_str(&get_response_line)?;
-
-    match get_response {
-        Response::Error { id, error } if error.code == "not_found" => {
-            println!("✅ Expected not_found (request_id: {}): {}", id, error.message);
-            println!(
-                "   ℹ️  Rings have no point-in-time latest — use record.drain / record.subscribe (below)."
-            );
-        }
-        Response::Success { id, result } => {
-            println!("⚠️  Unexpected success (request_id: {}):", id);
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        Response::Error { id, error } => {
-            println!("❌ Error! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
-    }
-
-    println!();
-
-    // Test record.get for Config
+    // `record.get` is a point-in-time read. For a SingleLatest/state record it
+    // returns the canonical latest, non-destructively.
     println!("📤 record.get on Config (SingleLatest — point-in-time read)...");
-    let config_request = Request {
-        id: 4,
-        method: "record.get".to_string(),
-        params: Some(json!({"record": "server::Config"})),
-    };
-
-    let config_request_json = serde_json::to_string(&config_request)?;
-    writeln!(stream, "{}", config_request_json)?;
-    stream.flush()?;
-
-    let mut config_response_line = String::new();
-    reader.read_line(&mut config_response_line)?;
-    let config_response: Response = serde_json::from_str(&config_response_line)?;
-
-    match config_response {
-        Response::Success { id, result } => {
-            println!("✅ Success! (request_id: {})", id);
-            println!();
-            println!("⚙️  Current Config:");
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        Response::Error { id, error } => {
-            println!("❌ Error! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
+    match conn.get_record("server::Config").await {
+        Ok(v) => println!("⚙️  Current Config:\n{}", serde_json::to_string_pretty(&v)?),
+        Err(e) => println!("❌ Error: {e}"),
     }
-
     println!();
 
+    // A ring (SpmcRing) has no canonical latest, so the server falls back to
+    // *draining* this connection's cursor and returning the most recent value. A
+    // fresh cursor starts at the ring tail, so the first read is empty until a new
+    // value arrives — we retry over a couple of ticks. (This opens the *same*
+    // cursor `record.drain` uses below.)
+    println!("📤 record.get on Temperature (SpmcRing — drains the cursor for the latest)...");
+    let mut latest = None;
+    for _ in 0..10 {
+        if let Ok(v) = conn.get_record("server::Temperature").await {
+            latest = Some(v);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    match latest {
+        Some(v) => println!(
+            "🌡️  Most recent Temperature (via drain fallback):\n{}",
+            serde_json::to_string_pretty(&v)?
+        ),
+        None => println!("ℹ️  No reading yet — the ring cursor was still empty."),
+    }
+    println!();
+
+    // ── record.set (write operations) ────────────────────────────────────
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("✍️  Testing record.set (Write Operations)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // Test 1: Get current AppSettings
-    println!("📤 Getting current AppSettings...");
-    let get_settings_request = Request {
-        id: 5,
-        method: "record.get".to_string(),
-        params: Some(json!({"record": "server::AppSettings"})),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&get_settings_request)?)?;
-    stream.flush()?;
-
-    let mut settings_response_line = String::new();
-    reader.read_line(&mut settings_response_line)?;
-    let settings_response: Response = serde_json::from_str(&settings_response_line)?;
-
-    match settings_response {
-        Response::Success { id, result } => {
-            println!("✅ Success! (request_id: {})", id);
-            println!();
-            println!("⚙️  Original AppSettings:");
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            println!();
-        }
-        Response::Error { id, error } => {
-            println!("❌ Error! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
+    println!("📤 Current AppSettings:");
+    match conn.get_record("server::AppSettings").await {
+        Ok(v) => println!("{}\n", serde_json::to_string_pretty(&v)?),
+        Err(e) => {
+            println!("❌ Error: {e}");
             return Ok(());
         }
-    };
+    }
 
-    // Test 2: Modify and set new AppSettings
     println!("📤 Updating AppSettings (enabling feature_flag_alpha)...");
     let new_settings = json!({
         "log_level": "debug",
         "max_connections": 200,
         "feature_flag_alpha": true
     });
-
-    let set_request = Request {
-        id: 6,
-        method: "record.set".to_string(),
-        params: Some(json!({
-            "name": "server::AppSettings",
-            "value": new_settings
-        })),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&set_request)?)?;
-    stream.flush()?;
-
-    let mut set_response_line = String::new();
-    reader.read_line(&mut set_response_line)?;
-    let set_response: Response = serde_json::from_str(&set_response_line)?;
-
-    match set_response {
-        Response::Success { id, result } => {
-            println!("✅ Success! record.set completed (request_id: {})", id);
-            println!();
-            println!("✨ Updated AppSettings:");
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            println!();
-        }
-        Response::Error { id, error } => {
-            println!("❌ Error! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-            if let Some(details) = error.details {
-                println!("   Details: {}", details);
-            }
+    match conn.set_record("server::AppSettings", new_settings).await {
+        Ok(v) => println!("✅ record.set ok:\n{}\n", serde_json::to_string_pretty(&v)?),
+        Err(e) => {
+            println!("❌ Error: {e}");
             return Ok(());
         }
     }
 
-    // Test 3: Verify the change by getting again
-    println!("📤 Verifying update by getting AppSettings again...");
-    let verify_request = Request {
-        id: 7,
-        method: "record.get".to_string(),
-        params: Some(json!({"record": "server::AppSettings"})),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&verify_request)?)?;
-    stream.flush()?;
-
-    let mut verify_response_line = String::new();
-    reader.read_line(&mut verify_response_line)?;
-    let verify_response: Response = serde_json::from_str(&verify_response_line)?;
-
-    match verify_response {
-        Response::Success { id, result } => {
-            println!("✅ Success! (request_id: {})", id);
-            println!();
-            println!("✔️  Verified - AppSettings after update:");
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            println!();
-        }
-        Response::Error { id, error } => {
-            println!("❌ Error! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
+    println!("📤 Verifying update...");
+    match conn.get_record("server::AppSettings").await {
+        Ok(v) => println!(
+            "✔️  AppSettings after update:\n{}\n",
+            serde_json::to_string_pretty(&v)?
+        ),
+        Err(e) => println!("❌ Error: {e}"),
     }
 
-    // Test 4: Try to set Temperature (should fail - has producer)
+    // ── Safety: overriding a record with a producer must be denied ────────
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("🛡️  Testing Safety: Try to override Temperature (has producer)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
-
+    println!("🛡️  Safety: try to override Temperature (has producer)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     println!("📤 Attempting to set Temperature (SHOULD FAIL)...");
-    let bad_set_request = Request {
-        id: 8,
-        method: "record.set".to_string(),
-        params: Some(json!({
-            "name": "server::Temperature",
-            "value": {
-                "sensor_id": "hacked-sensor",
-                "celsius": 999.9,
-                "timestamp": 0
-            }
-        })),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&bad_set_request)?)?;
-    stream.flush()?;
-
-    let mut bad_set_response_line = String::new();
-    reader.read_line(&mut bad_set_response_line)?;
-    let bad_set_response: Response = serde_json::from_str(&bad_set_response_line)?;
-
-    match bad_set_response {
-        Response::Success { id, result } => {
-            println!("❌ UNEXPECTED! record.set succeeded when it should have failed!");
-            println!("   Request ID: {}", id);
-            println!("   Result: {}", result);
-            println!("   ⚠️  This is a security issue - producer protection not working!");
-        }
-        Response::Error { id, error } => {
-            println!(
-                "✅ EXPECTED FAILURE! Safety check worked (request_id: {})",
-                id
-            );
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-            println!("   🛡️  Protection confirmed: Cannot override records with producers");
-            if let Some(details) = error.details {
-                println!("   Details: {}", details);
-            }
-        }
+    match conn
+        .set_record(
+            "server::Temperature",
+            json!({ "sensor_id": "hacked", "celsius": 999.9, "timestamp": 0.0 }),
+        )
+        .await
+    {
+        Ok(v) => println!("❌ UNEXPECTED success — producer protection failed: {v}"),
+        Err(_) => println!("✅ Expected failure — cannot override a record with a producer.\n"),
     }
 
+    // ── record.drain (history) ───────────────────────────────────────────
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("🧪 Record History (record.drain)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    // `record.get` above already opened this connection's Temperature cursor, so
+    // this drain returns only what's accrued since (they share one cursor).
+    println!("📤 Drain #1: history since the (already-open) cursor...");
+    let d1 = conn.drain_record("server::Temperature").await?;
+    println!("   Values: {} (cursor shared with the record.get above)\n", d1.count);
+
+    println!("⏳ Waiting 7s for temperature readings to accumulate...");
+    tokio::time::sleep(Duration::from_secs(7)).await;
+
+    println!("📤 Drain #2: accumulated history...");
+    let d2 = conn.drain_record("server::Temperature").await?;
+    println!("   Values: {} (expected ~3)", d2.count);
+    for (i, v) in d2.values.iter().enumerate() {
+        let celsius = v["celsius"].as_f64().unwrap_or(0.0);
+        let sensor = v["sensor_id"].as_str().unwrap_or("?");
+        println!("   📊 [{i}] {celsius:.1} °C from {sensor}");
+    }
     println!();
 
+    println!("📤 Drain #3: immediate re-drain (should be empty)...");
+    let d3 = conn.drain_record("server::Temperature").await?;
+    println!("   Values: {} (expected 0)\n", d3.count);
+
+    println!("⏳ Waiting 5s, then draining with limit=2...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let d4 = conn
+        .drain_record_with_limit("server::Temperature", 2)
+        .await?;
+    println!("   Values: {} (limit was 2)\n", d4.count);
+
+    // ── Subscriptions ────────────────────────────────────────────────────
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("🧪 Testing Record History (record.drain)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
+    println!("📡 Subscriptions");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // Drain #1: Cold start — creates the drain reader, returns empty
-    println!("📤 Drain #1: Creating drain reader for Temperature (cold start)...");
-    let drain1_request = Request {
-        id: 9,
-        method: "record.drain".to_string(),
-        params: Some(json!({"name": "server::Temperature"})),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&drain1_request)?)?;
-    stream.flush()?;
-
-    let mut drain1_line = String::new();
-    reader.read_line(&mut drain1_line)?;
-    let drain1_response: Response = serde_json::from_str(&drain1_line)?;
-
-    match &drain1_response {
-        Response::Success { id, result } => {
-            let count = result["count"].as_u64().unwrap_or(0);
-            println!("✅ Drain #1 response (request_id: {})", id);
-            println!("   Values returned: {} (expected 0 on cold start)", count);
-            println!();
-        }
-        Response::Error { id, error } => {
-            println!("❌ Drain #1 failed! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
-    }
-
-    // Wait for values to accumulate (server produces every 2s)
-    println!("⏳ Waiting 7 seconds for temperature readings to accumulate...");
-    std::thread::sleep(std::time::Duration::from_secs(7));
-
-    // Drain #2: Should return accumulated values (~3 readings at 2s interval)
-    println!("📤 Drain #2: Fetching accumulated Temperature history...");
-    let drain2_request = Request {
-        id: 10,
-        method: "record.drain".to_string(),
-        params: Some(json!({"name": "server::Temperature"})),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&drain2_request)?)?;
-    stream.flush()?;
-
-    let mut drain2_line = String::new();
-    reader.read_line(&mut drain2_line)?;
-    let drain2_response: Response = serde_json::from_str(&drain2_line)?;
-
-    match &drain2_response {
-        Response::Success { id, result } => {
-            let count = result["count"].as_u64().unwrap_or(0);
-            let values = result["values"].as_array();
-            println!("✅ Drain #2 response (request_id: {})", id);
-            println!("   Values returned: {} (expected ~3)", count);
-            if let Some(vals) = values {
-                for (i, val) in vals.iter().enumerate() {
-                    let celsius = val["celsius"].as_f64().unwrap_or(0.0);
-                    let sensor = val["sensor_id"].as_str().unwrap_or("?");
-                    println!("   📊 [{}] {:.1} °C from {}", i, celsius, sensor);
-                }
-            }
-            println!();
-        }
-        Response::Error { id, error } => {
-            println!("❌ Drain #2 failed! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
-    }
-
-    // Drain #3: Immediately after — should be empty (nothing new since last drain)
-    println!("📤 Drain #3: Immediate re-drain (should be empty)...");
-    let drain3_request = Request {
-        id: 11,
-        method: "record.drain".to_string(),
-        params: Some(json!({"name": "server::Temperature"})),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&drain3_request)?)?;
-    stream.flush()?;
-
-    let mut drain3_line = String::new();
-    reader.read_line(&mut drain3_line)?;
-    let drain3_response: Response = serde_json::from_str(&drain3_line)?;
-
-    match &drain3_response {
-        Response::Success { id, result } => {
-            let count = result["count"].as_u64().unwrap_or(0);
-            println!("✅ Drain #3 response (request_id: {})", id);
-            println!(
-                "   Values returned: {} (expected 0 — nothing new since last drain)",
-                count
-            );
-            println!();
-        }
-        Response::Error { id, error } => {
-            println!("❌ Drain #3 failed! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
-    }
-
-    // Drain #4: Test with limit parameter
-    println!("⏳ Waiting 5 seconds, then draining with limit=2...");
-    std::thread::sleep(std::time::Duration::from_secs(5));
-
-    let drain4_request = Request {
-        id: 12,
-        method: "record.drain".to_string(),
-        params: Some(json!({
-            "name": "server::Temperature",
-            "limit": 2
-        })),
-    };
-
-    writeln!(stream, "{}", serde_json::to_string(&drain4_request)?)?;
-    stream.flush()?;
-
-    let mut drain4_line = String::new();
-    reader.read_line(&mut drain4_line)?;
-    let drain4_response: Response = serde_json::from_str(&drain4_line)?;
-
-    match &drain4_response {
-        Response::Success { id, result } => {
-            let count = result["count"].as_u64().unwrap_or(0);
-            let values = result["values"].as_array();
-            println!("✅ Drain #4 response (request_id: {})", id);
-            println!("   Values returned: {} (limit was 2)", count);
-            if let Some(vals) = values {
-                for (i, val) in vals.iter().enumerate() {
-                    let celsius = val["celsius"].as_f64().unwrap_or(0.0);
-                    let sensor = val["sensor_id"].as_str().unwrap_or("?");
-                    println!("   📊 [{}] {:.1} °C from {}", i, celsius, sensor);
-                }
-            }
-            println!();
-        }
-        Response::Error { id, error } => {
-            println!("❌ Drain #4 failed! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
-    }
-
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("📡 Testing Subscriptions");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
-
-    // Subscribe to Temperature updates
-    println!("📤 Subscribing to Temperature updates...");
-    let subscribe_request = Request {
-        id: 13,
-        method: "record.subscribe".to_string(),
-        params: Some(json!({
-            "name": "server::Temperature"
-        })),
-    };
-
-    let subscribe_json = serde_json::to_string(&subscribe_request)?;
-    writeln!(stream, "{}", subscribe_json)?;
-    stream.flush()?;
-
-    // Read subscription response
-    let mut subscribe_response_line = String::new();
-    reader.read_line(&mut subscribe_response_line)?;
-
-    let subscribe_response: Response = serde_json::from_str(&subscribe_response_line)?;
-
-    let subscription_id = match subscribe_response {
-        Response::Success { id, result } => {
-            println!("✅ Subscribed! (request_id: {})", id);
-            let sub_id = result["subscription_id"].as_str().unwrap().to_string();
-            println!("   Subscription ID: {}", sub_id);
-            println!();
-            println!("📊 Receiving live temperature updates (will receive 5 events)...");
-            println!();
-            sub_id
-        }
-        Response::Error { id, error } => {
-            println!("❌ Subscription failed! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-            return Ok(());
-        }
-    };
-
-    // Receive 5 events
+    println!("📤 Subscribing to Temperature (will receive 5 events)...");
+    let mut stream = conn.subscribe("server::Temperature")?;
     for i in 1..=5 {
-        let mut event_line = String::new();
-        reader.read_line(&mut event_line)?;
-
-        // Try to parse as EventMessage
-        if let Ok(event_msg) = serde_json::from_str::<EventMessage>(&event_line) {
-            let event = event_msg.event;
-            println!("📨 Event #{} (seq: {})", i, event.sequence);
-            println!("   Subscription: {}", event.subscription_id);
-            println!("   Timestamp: {}", event.timestamp);
-            if let Some(dropped) = event.dropped {
-                println!("   ⚠️  Dropped events: {}", dropped);
-            }
-            println!("   Data: {}", serde_json::to_string_pretty(&event.data)?);
-            println!();
-        } else {
-            println!("⚠️  Received unexpected message: {}", event_line.trim());
-        }
-
-        // Small delay to show streaming behavior
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-
-    // Unsubscribe
-    println!("📤 Unsubscribing from Temperature...");
-    let unsubscribe_request = Request {
-        id: 14,
-        method: "record.unsubscribe".to_string(),
-        params: Some(json!({
-            "subscription_id": subscription_id
-        })),
-    };
-
-    let unsubscribe_json = serde_json::to_string(&unsubscribe_request)?;
-    writeln!(stream, "{}", unsubscribe_json)?;
-    stream.flush()?;
-
-    // Read unsubscribe response
-    let mut unsubscribe_response_line = String::new();
-    reader.read_line(&mut unsubscribe_response_line)?;
-
-    // Parse response - filter out any stray events
-    let unsubscribe_response: Result<Response, _> =
-        serde_json::from_str(&unsubscribe_response_line);
-
-    match unsubscribe_response {
-        Ok(Response::Success { id, result }) => {
-            println!("✅ Unsubscribed! (request_id: {})", id);
-            println!(
-                "   Status: {}",
-                result["status"].as_str().unwrap_or("unknown")
-            );
-            println!();
-        }
-        Ok(Response::Error { id, error }) => {
-            println!("❌ Unsubscribe failed! (request_id: {})", id);
-            println!("   Code: {}", error.code);
-            println!("   Message: {}", error.message);
-        }
-        Err(_) => {
-            // Might be a stray event, try reading next line
-            println!("⚠️  Received unexpected message, retrying...");
-            let mut retry_line = String::new();
-            reader.read_line(&mut retry_line)?;
-            match serde_json::from_str::<Response>(&retry_line) {
-                Ok(Response::Success { id, result }) => {
-                    println!("✅ Unsubscribed! (request_id: {})", id);
-                    println!(
-                        "   Status: {}",
-                        result["status"].as_str().unwrap_or("unknown")
-                    );
-                    println!();
-                }
-                Ok(Response::Error { id, error }) => {
-                    println!("❌ Unsubscribe failed! (request_id: {})", id);
-                    println!("   Code: {}", error.code);
-                    println!("   Message: {}", error.message);
-                }
-                Err(e) => {
-                    println!("⚠️  Failed to parse unsubscribe response: {}", e);
-                }
+        match stream.next().await {
+            Some(v) => println!("📨 Event #{i}: {}", serde_json::to_string(&v)?),
+            None => {
+                println!("⚠️  Stream ended early");
+                break;
             }
         }
     }
+    // Dropping the stream stops local delivery (no explicit unsubscribe needed).
+    drop(stream);
 
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
+    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("👋 Disconnecting...");
-
     Ok(())
 }

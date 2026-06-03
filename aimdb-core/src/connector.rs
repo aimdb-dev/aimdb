@@ -473,7 +473,7 @@ pub struct ConnectorLink {
 
     /// Consumer factory callback (alloc feature)
     ///
-    /// Creates ConsumerTrait from Arc<AimDb<R>> to enable type-safe subscription.
+    /// Creates `ConsumerTrait` from `Arc<AimDb<R>>` to enable type-safe subscription.
     /// The factory captures the record type T at link_to() configuration time,
     /// allowing the connector to subscribe without knowing T at compile time.
     ///
@@ -536,7 +536,7 @@ impl ConnectorLink {
 
     /// Creates a consumer using the stored factory (alloc feature)
     ///
-    /// Takes an Arc<dyn Any> (which should contain Arc<AimDb<R>>) and invokes
+    /// Takes an `Arc<dyn Any>` (which should contain `Arc<AimDb<R>>`) and invokes
     /// the consumer factory to create a ConsumerTrait instance.
     ///
     /// Returns None if no factory is configured.
@@ -587,7 +587,7 @@ pub enum DeserializerKind {
 
 /// Type alias for producer factory callback (alloc feature)
 ///
-/// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ProducerTrait.
+/// Takes `Arc<dyn Any>` (which contains `AimDb<R>`) and returns a boxed `ProducerTrait`.
 /// This allows capturing the record type T at link_from() time while storing
 /// the factory in a type-erased InboundConnectorLink.
 ///
@@ -616,7 +616,7 @@ pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 /// Type-erased producer trait for MQTT router
 ///
 /// Allows the router to call produce() on different record types without knowing
-/// the concrete type at compile time. The value is passed as Box<dyn Any> and
+/// the concrete type at compile time. The value is passed as `Box<dyn Any>` and
 /// downcast to the correct type inside the implementation.
 ///
 /// # Implementation Note
@@ -627,7 +627,7 @@ pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 pub trait ProducerTrait: Send + Sync {
     /// Produce a value into the record's buffer
     ///
-    /// The value must be passed as Box<dyn Any> and will be downcast to the correct type.
+    /// The value must be passed as `Box<dyn Any>` and will be downcast to the correct type.
     /// Returns an error if the downcast fails or if production fails.
     fn produce_any<'a>(
         &'a self,
@@ -637,7 +637,7 @@ pub trait ProducerTrait: Send + Sync {
 
 /// Type alias for consumer factory callback (alloc feature)
 ///
-/// Takes Arc<dyn Any> (which contains AimDb<R>) and returns a boxed ConsumerTrait.
+/// Takes `Arc<dyn Any>` (which contains `AimDb<R>`) and returns a boxed `ConsumerTrait`.
 /// This allows capturing the record type T at link_to() time while storing
 /// the factory in a type-erased ConnectorLink.
 ///
@@ -659,7 +659,7 @@ pub type ConsumerFactoryFn =
 pub trait ConsumerTrait: Send + Sync {
     /// Subscribe to typed values from this record
     ///
-    /// Returns a type-erased reader that can be polled for Box<dyn Any> values.
+    /// Returns a type-erased reader that can be polled for `Box<dyn Any>` values.
     /// The connector will downcast to the expected type after deserialization.
     fn subscribe_any<'a>(&'a self) -> SubscribeAnyFuture<'a>;
 }
@@ -675,11 +675,11 @@ type RecvAnyFuture<'a> =
 /// Helper trait for type-erased reading
 ///
 /// Allows reading values from a buffer without knowing the concrete type at compile time.
-/// The value is returned as Box<dyn Any> and must be downcast by the caller.
+/// The value is returned as `Box<dyn Any>` and must be downcast by the caller.
 pub trait AnyReader: Send {
     /// Receive a type-erased value from the buffer
     ///
-    /// Returns Box<dyn Any> which must be downcast to the concrete type.
+    /// Returns `Box<dyn Any>` which must be downcast to the concrete type.
     /// Returns an error if the buffer is closed or an I/O error occurs.
     fn recv_any<'a>(&'a mut self) -> RecvAnyFuture<'a>;
 }
@@ -707,7 +707,7 @@ pub struct InboundConnectorLink {
 
     /// Producer creation callback (alloc feature)
     ///
-    /// Takes Arc<AimDb<R>> and returns Box<dyn ProducerTrait>.
+    /// Takes `Arc<AimDb<R>>` and returns `Box<dyn ProducerTrait>`.
     /// Captures the record type T at link_from() call time.
     ///
     /// Available in both `std` and `no_std + alloc` environments.

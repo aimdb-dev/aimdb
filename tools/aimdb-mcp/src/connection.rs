@@ -3,7 +3,7 @@
 //! Manages persistent connections to AimDB instances to avoid
 //! reconnecting on every tool call. Includes auto-reconnect logic.
 
-use aimdb_client::connection::AimxClient;
+use aimdb_client::AimxConnection;
 use aimdb_client::ClientError;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,8 +23,8 @@ pub struct ConnectionPool {
     /// Track which connections we've attempted (for logging/metrics)
     connections: Arc<Mutex<HashMap<String, ConnectionEntry>>>,
     /// Persistent drain clients — kept alive so drain readers accumulate values
-    /// Key: socket_path, Value: shared AimxClient
-    drain_clients: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<AimxClient>>>>>,
+    /// Key: socket_path, Value: shared AimxConnection
+    drain_clients: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<AimxConnection>>>>>,
 }
 
 impl std::fmt::Debug for ConnectionPool {
@@ -47,11 +47,11 @@ impl ConnectionPool {
 
     /// Get or create a connection to an AimDB instance
     ///
-    /// Note: Since AimxClient doesn't implement Clone, we create a fresh
+    /// Note: Since AimxConnection doesn't implement Clone, we create a fresh
     /// connection each time. The pool tracks connection metadata for
     /// monitoring and future optimization (e.g., persistent connections
-    /// via Arc<Mutex<AimxClient>> if AimxClient becomes Sync).
-    pub async fn get_connection(&self, socket_path: &str) -> Result<AimxClient, ClientError> {
+    /// via Arc<Mutex<AimxConnection>> if AimxConnection becomes Sync).
+    pub async fn get_connection(&self, socket_path: &str) -> Result<AimxConnection, ClientError> {
         let mut pool = self.connections.lock().await;
 
         // Update or insert connection metadata
@@ -68,9 +68,9 @@ impl ConnectionPool {
             pool.insert(socket_path.to_string(), ConnectionEntry { last_used: now });
         }
 
-        // Always create a new connection (until AimxClient supports cloning/sharing)
+        // Always create a new connection (until AimxConnection supports cloning/sharing)
         drop(pool); // Release lock before async operation
-        AimxClient::connect(socket_path).await
+        AimxConnection::connect(socket_path).await
     }
 
     /// Remove a connection from the pool (called when operations fail)
@@ -90,7 +90,7 @@ impl ConnectionPool {
     pub async fn get_drain_client(
         &self,
         socket_path: &str,
-    ) -> Result<Arc<tokio::sync::Mutex<AimxClient>>, ClientError> {
+    ) -> Result<Arc<tokio::sync::Mutex<AimxConnection>>, ClientError> {
         let drain_map = self.drain_clients.lock().await;
 
         if let Some(client) = drain_map.get(socket_path) {
@@ -103,7 +103,7 @@ impl ConnectionPool {
         // Drop lock before async connect
         drop(drain_map);
 
-        let client = AimxClient::connect(socket_path).await?;
+        let client = AimxConnection::connect(socket_path).await?;
         let shared = Arc::new(tokio::sync::Mutex::new(client));
 
         let mut drain_map = self.drain_clients.lock().await;

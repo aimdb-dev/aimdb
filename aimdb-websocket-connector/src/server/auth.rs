@@ -140,8 +140,8 @@ impl AuthError {
 pub trait AuthHandler: Send + Sync + 'static {
     /// Called during WebSocket upgrade to authenticate the client.
     ///
-    /// Return [`Ok(Permissions)`] to accept the connection with the assigned
-    /// permissions, or [`Err(AuthError)`] to reject it (HTTP 401).
+    /// Return `Ok(Permissions)` to accept the connection with the assigned
+    /// permissions, or `Err(AuthError)` to reject it (HTTP 401).
     fn authenticate<'a>(
         &'a self,
         request: &'a AuthRequest,

@@ -15,6 +15,7 @@
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, Consumer, Producer, RuntimeContext};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use aimdb_uds_connector::UdsServer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::info;
@@ -90,10 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🔒 Security policy: ReadWrite");
     info!("✍️  Writable records: AppSettings");
 
-    // Build database with remote access enabled
+    // Build database with remote access enabled. Remote access is now just a
+    // connector: register the UDS *server* via `with_connector` (the client
+    // side, by contrast, uses `UdsClient` + `link_to`/`link_from`).
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
-        .with_remote_access(remote_config);
+        .with_connector(UdsServer::from_config(remote_config));
 
     // Configure records
     // Use SpmcRing for Temperature and SystemStatus to support record.drain history.

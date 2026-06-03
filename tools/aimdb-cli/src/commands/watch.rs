@@ -2,9 +2,10 @@
 
 use crate::error::CliResult;
 use crate::output::live;
-use aimdb_client::connection::AimxClient;
 use aimdb_client::discovery::find_instance;
+use aimdb_client::AimxConnection;
 use clap::Args;
+use futures::StreamExt;
 use tokio::signal;
 
 /// Watch a record for live updates
@@ -50,54 +51,48 @@ async fn watch_record(
     max_count: usize,
     show_full: bool,
 ) -> CliResult<()> {
+    let _ = queue_size; // queue sizing is now an engine concern; kept as a CLI flag
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let conn = AimxConnection::connect(&instance.socket_path).await?;
 
-    // Subscribe to record
-    let subscription_id = client.subscribe(record_name, queue_size).await?;
+    // Subscribe to the record (the engine routes updates back by request id; no
+    // server-allocated subscription id to track).
+    let mut stream = conn.subscribe(record_name)?;
 
-    // Print start message
-    live::print_watch_start(record_name, &subscription_id);
+    live::print_watch_start(record_name);
 
     // Set up Ctrl+C handler
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-
     tokio::spawn(async move {
         if signal::ctrl_c().await.is_ok() {
             let _ = cancel_tx.send(());
         }
     });
 
-    // Receive events
-    let mut count = 0;
+    // Receive updates. The reshaped wire carries no server sequence, so the
+    // watcher counts locally.
+    let mut count: u64 = 0;
     let unlimited = max_count == 0;
 
     loop {
         tokio::select! {
-            event = client.receive_event() => {
-                let event = event?;
-
-                // Only show events for this subscription
-                if event.subscription_id == subscription_id {
-                    live::print_event(&event, show_full);
-
-                    count += 1;
-                    if !unlimited && count >= max_count {
-                        break;
+            next = stream.next() => {
+                match next {
+                    Some(data) => {
+                        count += 1;
+                        live::print_event(count, &data, show_full);
+                        if !unlimited && count >= max_count as u64 {
+                            break;
+                        }
                     }
+                    None => break, // stream ended (record closed or subscribe rejected)
                 }
             }
-            _ = &mut cancel_rx => {
-                // User pressed Ctrl+C
-                break;
-            }
+            _ = &mut cancel_rx => break, // Ctrl+C
         }
     }
 
-    // Unsubscribe cleanly
-    client.unsubscribe(&subscription_id).await?;
-
+    // Dropping the stream stops local delivery (no explicit unsubscribe needed).
     live::print_watch_stop();
-
     Ok(())
 }

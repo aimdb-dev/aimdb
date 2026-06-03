@@ -2,7 +2,7 @@
 //!
 //! Scans known directories for running AimDB instances.
 
-use crate::connection::AimxClient;
+use crate::engine::AimxConnection;
 use crate::error::{ClientError, ClientResult};
 use crate::protocol::WelcomeMessage;
 use std::path::PathBuf;
@@ -75,17 +75,11 @@ async fn scan_directory(mut entries: tokio::fs::ReadDir) -> Vec<InstanceInfo> {
 
 /// Try to connect to a socket and get instance information
 async fn probe_instance(socket_path: &PathBuf) -> ClientResult<InstanceInfo> {
-    // Try to connect with a short timeout
+    // `connect_with_timeout` bounds the whole handshake (dial + hello), so a stale
+    // socket whose peer accepts but never replies fails fast instead of hanging —
+    // no need to wrap a second timeout around `connect`.
     let connect_timeout = Duration::from_millis(500);
-
-    let client = tokio::time::timeout(connect_timeout, AimxClient::connect(socket_path))
-        .await
-        .map_err(|_| {
-            ClientError::connection_failed(
-                socket_path.display().to_string(),
-                "timeout during discovery probe",
-            )
-        })??;
+    let client = AimxConnection::connect_with_timeout(socket_path, connect_timeout).await?;
 
     let welcome = client.server_info().clone();
 

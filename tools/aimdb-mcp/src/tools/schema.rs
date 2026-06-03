@@ -1,7 +1,7 @@
 //! Schema query tool - infers JSON Schema from record values
 
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxClient;
+use aimdb_client::AimxConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::debug;
@@ -117,13 +117,13 @@ pub async fn query_schema(args: Option<Value>) -> McpResult<Value> {
     );
 
     // Get or create connection from pool (if available)
-    let mut client = if let Some(pool) = super::connection_pool() {
+    let client = if let Some(pool) = super::connection_pool() {
         pool.get_connection(&socket_path)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&socket_path)
+        AimxConnection::connect(&socket_path)
             .await
             .map_err(McpError::Client)?
     };

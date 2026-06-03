@@ -1,4 +1,4 @@
-//! Generic extension storage for [`AimDbBuilder`] and [`AimDb`].
+//! Generic extension storage for [`AimDbBuilder`](crate::AimDbBuilder) and [`AimDb`](crate::AimDb).
 //!
 //! External crates store typed state here during builder configuration
 //! and retrieve it during record setup or at query time. This is the

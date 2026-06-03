@@ -175,7 +175,7 @@ async fn server_room_temp_producer(
 // ============================================================================
 
 /// MQTT broker IP address (modify for your network)
-const MQTT_BROKER_IP: &str = "192.168.1.3";
+const MQTT_BROKER_IP: &str = "192.168.1.10";
 
 /// MQTT broker port
 const MQTT_BROKER_PORT: u16 = 1883;

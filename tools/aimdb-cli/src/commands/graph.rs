@@ -4,8 +4,8 @@
 
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
-use aimdb_client::connection::AimxClient;
 use aimdb_client::discovery::find_instance;
+use aimdb_client::AimxConnection;
 use clap::Args;
 use serde_json::Value;
 
@@ -79,7 +79,7 @@ impl GraphCommand {
 
 async fn list_nodes(socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let client = AimxConnection::connect(&instance.socket_path).await?;
 
     let nodes = client.graph_nodes().await?;
 
@@ -98,7 +98,7 @@ async fn list_nodes(socket: Option<&str>, format: OutputFormat) -> CliResult<()>
 
 async fn list_edges(socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let client = AimxConnection::connect(&instance.socket_path).await?;
 
     let edges = client.graph_edges().await?;
 
@@ -117,7 +117,7 @@ async fn list_edges(socket: Option<&str>, format: OutputFormat) -> CliResult<()>
 
 async fn show_topo_order(socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let client = AimxConnection::connect(&instance.socket_path).await?;
 
     let order = client.graph_topo_order().await?;
 
@@ -136,7 +136,7 @@ async fn show_topo_order(socket: Option<&str>, format: OutputFormat) -> CliResul
 
 async fn export_dot(socket: Option<&str>, name: &str) -> CliResult<()> {
     let instance = find_instance(socket).await?;
-    let mut client = AimxClient::connect(&instance.socket_path).await?;
+    let client = AimxConnection::connect(&instance.socket_path).await?;
 
     let nodes = client.graph_nodes().await?;
     let edges = client.graph_edges().await?;

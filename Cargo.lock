@@ -34,6 +34,7 @@ dependencies = [
  "chrono",
  "clap",
  "colored",
+ "futures",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -49,7 +50,10 @@ name = "aimdb-client"
 version = "0.6.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-tokio-adapter",
+ "aimdb-uds-connector",
  "anyhow",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",
@@ -77,8 +81,10 @@ dependencies = [
  "aimdb-derive",
  "aimdb-executor",
  "anyhow",
+ "async-channel",
  "defmt 1.0.1",
  "futures",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "hashbrown 0.15.5",
@@ -266,11 +272,23 @@ dependencies = [
  "aimdb-client",
  "aimdb-core",
  "aimdb-executor",
+ "aimdb-uds-connector",
  "futures",
  "serde",
  "serde_json",
  "tokio",
  "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "aimdb-uds-connector"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-executor",
+ "aimdb-tokio-adapter",
+ "tokio",
  "tracing",
 ]
 
@@ -301,6 +319,7 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-executor",
+ "aimdb-tokio-adapter",
  "aimdb-ws-protocol",
  "axum",
  "dashmap",
@@ -402,6 +421,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "516b6b4f0e40d50dcda9365d53964ec74560ad4284da2e7fc97122cd83174516"
 dependencies = [
  "stable_deref_trait",
+]
+
+[[package]]
+name = "async-channel"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "924ed96dd52d1b75e9c1a3e6275715fd320f5f9439fb5a4a11fa51f4221158d2"
+dependencies = [
+ "concurrent-queue",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -673,6 +704,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "concurrent-queue"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -1340,6 +1380,26 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "event-listener"
+version = "5.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+dependencies = [
+ "concurrent-queue",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "event-listener-strategy"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
+dependencies = [
+ "event-listener",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -2561,6 +2621,8 @@ dependencies = [
  "aimdb-client",
  "aimdb-core",
  "aimdb-tokio-adapter",
+ "aimdb-uds-connector",
+ "futures",
  "serde",
  "serde_json",
  "tokio",
@@ -3035,7 +3097,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-6d108b6d3695cafd30923b033bc82291da5859a7#afce0040f03f376ad34e62e78e201fbfe275a0a1"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-7aaa9af0001abcfb01c01e1a9b048697a82b7d57#f4d6b404521840db5ffd97712d29a557a22cbfa4"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

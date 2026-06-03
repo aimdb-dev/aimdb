@@ -1,7 +1,7 @@
 //! Instance-related tools (discover_instances, get_instance_info)
 
 use crate::error::McpResult;
-use aimdb_client::{self, connection::AimxClient};
+use aimdb_client::{self, AimxConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
@@ -103,7 +103,7 @@ pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
         pool.get_connection(&socket_path).await?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxClient::connect(&socket_path).await?
+        AimxConnection::connect(&socket_path).await?
     };
 
     // Get server info from the welcome message

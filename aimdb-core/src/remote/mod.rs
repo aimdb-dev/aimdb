@@ -18,18 +18,23 @@
 //!
 //! # Usage
 //!
+//! Remote access is registered like any other connector — via `with_connector`
+//! using `aimdb_uds_connector::UdsServer` (this replaced the former
+//! `AimDbBuilder::with_remote_access(config)`):
+//!
 //! ```rust,ignore
 //! use aimdb_core::remote::{AimxConfig, SecurityPolicy};
+//! use aimdb_uds_connector::UdsServer;
+//!
+//! let config = AimxConfig::uds_default()
+//!     .socket_path("/var/run/aimdb/aimdb.sock")
+//!     .security_policy(SecurityPolicy::ReadOnly)
+//!     .max_connections(16)
+//!     .max_subs_per_connection(32);
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(tokio_adapter)
-//!     .with_remote_access(
-//!         AimxConfig::uds_default()
-//!             .socket_path("/var/run/aimdb/aimdb.sock")
-//!             .security_policy(SecurityPolicy::ReadOnly)
-//!             .max_connections(16)
-//!             .max_subs_per_connection(32)
-//!     )
+//!     .with_connector(UdsServer::from_config(config))
 //!     .build()?;
 //! ```
 
@@ -37,15 +42,14 @@ mod config;
 mod error;
 mod metadata;
 mod protocol;
+mod query;
 
 pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
-pub use handler::{QueryHandlerFn, QueryHandlerParams};
 pub use metadata::RecordMetadata;
 pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage};
+pub use query::{QueryHandlerFn, QueryHandlerParams};
 
 // Internal exports for implementation
-pub(crate) mod handler;
 #[cfg(feature = "std")]
 pub(crate) mod stream;
-pub(crate) mod supervisor;

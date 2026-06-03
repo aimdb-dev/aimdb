@@ -1,46 +1,48 @@
 //! AimDB Client Library
 //!
-//! This library provides a client implementation for the AimX v1 remote access protocol,
-//! enabling connections to running AimDB instances via Unix domain sockets.
+//! This library provides a client implementation for the AimX remote access
+//! protocol, enabling connections to running AimDB instances via Unix domain
+//! sockets.
 //!
 //! ## Overview
 //!
 //! The client library offers:
-//! - **Connection Management**: Async client for Unix domain socket communication
-//! - **Protocol Implementation**: AimX v1 handshake and message handling
+//! - **Connection Management**: [`AimxConnection`] over the shared session engine
+//! - **Protocol Implementation**: the reshaped AimX-v2 handshake + RPC/streaming
 //! - **Instance Discovery**: Automatic detection of running AimDB instances
-//! - **Record Operations**: List, get, set, subscribe to records
+//! - **Record Operations**: list, get, set, subscribe, drain, graph, query
 //!
 //! ## Usage
 //!
 //! ```no_run
-//! use aimdb_client::AimxClient;
+//! use aimdb_client::AimxConnection;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Connect to an AimDB instance
-//!     let mut client = AimxClient::connect("/tmp/aimdb.sock").await?;
-//!     
+//!     // Connect to an AimDB instance (performs the `hello` handshake).
+//!     let conn = AimxConnection::connect("/tmp/aimdb.sock").await?;
+//!
 //!     // List all records
-//!     let records = client.list_records().await?;
+//!     let records = conn.list_records().await?;
 //!     println!("Found {} records", records.len());
-//!     
+//!
 //!     // Get a specific record
-//!     let value = client.get_record("server::Temperature").await?;
+//!     let value = conn.get_record("server::Temperature").await?;
 //!     println!("Temperature: {:?}", value);
-//!     
+//!
 //!     Ok(())
 //! }
 //! ```
 
-pub mod connection;
 pub mod discovery;
+pub mod engine;
 pub mod error;
 pub mod protocol;
 
-// Re-export main types for convenience
-pub use connection::{AimxClient, DrainResponse};
+// Re-export main types for convenience. `AimxConnection` is the engine-based
+// client (the synchronous `AimxClient` was retired with the AimX server port).
 pub use discovery::{discover_instances, find_instance, InstanceInfo};
+pub use engine::{AimxConnection, DrainResponse};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{
     cli_hello, parse_message, serialize_message, Event, EventMessage, RecordMetadata, Request,

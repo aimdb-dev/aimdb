@@ -127,7 +127,7 @@ async fn button_handler(
 // ============================================================================
 
 /// KNX/IP gateway IP address (modify for your network)
-const KNX_GATEWAY_IP: &str = "192.168.1.19";
+const KNX_GATEWAY_IP: &str = "192.168.1.4";
 
 /// KNX/IP gateway port (default: 3671)
 const KNX_GATEWAY_PORT: u16 = 3671;

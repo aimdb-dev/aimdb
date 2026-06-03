@@ -34,6 +34,7 @@ use crate::GroupAddress;
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::router::{Router, RouterBuilder};
 use aimdb_core::ConnectorBuilder;
+use aimdb_embassy_adapter::SendFutureWrapper;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::sync::Arc;
@@ -1072,7 +1073,21 @@ impl KnxConnectorImpl {
                     default_group_addr_clone.as_str()
                 );
 
-                while let Ok(value_any) = reader.recv_any().await {
+                loop {
+                    let value_any = match reader.recv_any().await {
+                        Ok(v) => v,
+                        // SPMC-ring overflow — skip the gap, keep publishing.
+                        Err(aimdb_core::DbError::BufferLagged { .. }) => {
+                            #[cfg(feature = "defmt")]
+                            defmt::warn!(
+                                "KNX outbound: consumer lagged for '{}'",
+                                default_group_addr_clone.as_str()
+                            );
+                            continue;
+                        }
+                        // Buffer closed — stop the publisher.
+                        Err(_) => break,
+                    };
                     // Determine group address: dynamic (from provider) or default (from URL)
                     let group_addr_str = topic_provider
                         .as_ref()
@@ -1202,24 +1217,5 @@ impl aimdb_core::transport::Connector for KnxConnectorImpl {
 
             Ok(())
         })
-    }
-}
-
-// SAFETY: Embassy is single-threaded, so we can safely implement Send
-// even though some Embassy types don't implement it. Embassy executors run
-// cooperatively on a single core with no preemption or thread migration.
-struct SendFutureWrapper<F>(F);
-
-unsafe impl<F> Send for SendFutureWrapper<F> {}
-
-impl<F: core::future::Future> core::future::Future for SendFutureWrapper<F> {
-    type Output = F::Output;
-
-    fn poll(
-        self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        // SAFETY: We're just forwarding the poll call
-        unsafe { self.map_unchecked_mut(|s| &mut s.0).poll(cx) }
     }
 }

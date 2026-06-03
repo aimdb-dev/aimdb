@@ -83,7 +83,7 @@ async fn main() -> DbResult<()> {
     println!("⚠️  Update gateway URL and group addresses to match your setup!\n");
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::new("knx://192.168.1.19:3671"),
+        aimdb_knx_connector::KnxConnector::new("knx://192.168.1.4:3671"),
     );
 
     // Temperature sensors (inbound) - using link_address() from key metadata

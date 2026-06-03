@@ -327,17 +327,13 @@ pub struct AimDbBuilder<R = NoRuntime> {
     spawn_fns: Vec<(StringKey, Box<dyn core::any::Any + Send>)>,
 
     /// Startup tasks registered via on_start() — spawned after build() completes.
-    /// Stored type-erased (Box<Box<dyn FnOnce(Arc<R>) -> BoxFuture<…>>>) to allow
+    /// Stored type-erased (`Box<Box<dyn FnOnce(Arc<R>) -> BoxFuture<…>>>`) to allow
     /// the field to exist on the unparameterised NoRuntime builder too.
     start_fns: Vec<Box<dyn core::any::Any + Send>>,
 
     /// Generic extension storage for external crates (e.g., persistence, metrics).
     /// Moved into AimDbInner during build() so it can be read on the live AimDb handle.
     extensions: Extensions,
-
-    /// Remote access configuration (std only)
-    #[cfg(feature = "std")]
-    remote_config: Option<crate::remote::AimxConfig>,
 
     /// PhantomData to track the runtime type parameter
     _phantom: PhantomData<R>,
@@ -355,8 +351,6 @@ impl AimDbBuilder<NoRuntime> {
             spawn_fns: Vec::new(),
             start_fns: Vec::new(),
             extensions: Extensions::new(),
-            #[cfg(feature = "std")]
-            remote_config: None,
             _phantom: PhantomData,
         }
     }
@@ -384,8 +378,8 @@ impl AimDbBuilder<NoRuntime> {
     ///     .with_connector(connector)  // ← Now available
     /// ```
     ///
-    /// The `records` and `remote_config` are preserved across the transition since they
-    /// are not parameterized by the runtime type.
+    /// The `records` are preserved across the transition since they are not
+    /// parameterized by the runtime type.
     pub fn runtime<R>(self, rt: Arc<R>) -> AimDbBuilder<R>
     where
         R: aimdb_executor::RuntimeAdapter + 'static,
@@ -397,8 +391,6 @@ impl AimDbBuilder<NoRuntime> {
             spawn_fns: Vec::new(),
             start_fns: self.start_fns,
             extensions: self.extensions,
-            #[cfg(feature = "std")]
-            remote_config: self.remote_config,
             _phantom: PhantomData,
         }
     }
@@ -452,25 +444,44 @@ where
         self
     }
 
-    /// Registers a connector builder that will be invoked during `build()`
+    /// Registers a connector builder, invoked during [`build`](Self::build).
     ///
-    /// The connector builder will be called after the database is constructed,
-    /// allowing it to collect routes and initialize the connector properly.
+    /// This single entry point registers **two kinds** of connector — both
+    /// implement [`ConnectorBuilder`](crate::connector::ConnectorBuilder) and are
+    /// driven the same way:
     ///
-    /// # Arguments
-    /// * `builder` - A connector builder that implements `ConnectorBuilder<R>`
+    /// 1. **Data-plane links** (MQTT / KNX / WebSocket): a record opts in with
+    ///    `link_to("<scheme>://<topic>")` / `link_from(...)`, and the connector
+    ///    mirrors that record to/from the external topic. The connector's
+    ///    [`scheme`](crate::connector::ConnectorBuilder::scheme) is what those
+    ///    links match against.
+    /// 2. **Remote-access session connectors** (UDS / serial / TCP): these expose
+    ///    AimDB itself over a transport so peers can introspect/subscribe/write.
+    ///    - The **client** half (e.g. `UdsClient`) dials a peer and *does* use
+    ///      `link_to`/`link_from` under its scheme — just like (1), the scheme is
+    ///      `"uds"` by default instead of `"mqtt"`.
+    ///    - The **server** half (e.g. `UdsServer`) *accepts* connections and takes
+    ///      **no links** — registering it is how a server stands up remote access
+    ///      (this replaces the old `with_remote_access(config)`).
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```rust,ignore
-    /// use aimdb_mqtt_connector::MqttConnector;
-    ///
-    /// let db = AimDbBuilder::new()
-    ///     .runtime(runtime)
+    /// // (1) data-plane link to an MQTT topic
+    /// AimDbBuilder::new().runtime(rt)
     ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"))
-    ///     .configure::<Temperature>(|reg| {
-    ///         reg.link_from("mqtt://commands/temp")...
-    ///     })
+    ///     .configure::<Temperature>(|r| { r.link_from("mqtt://commands/temp"); })
+    ///     .build().await?;
+    ///
+    /// // (2a) remote-access SERVER — no links, just expose this db over UDS
+    /// AimDbBuilder::new().runtime(rt)
+    ///     .with_connector(UdsServer::from_config(remote_config))
+    ///     .build().await?;
+    ///
+    /// // (2b) remote-access CLIENT — mirror a record to a peer over UDS
+    /// AimDbBuilder::new().runtime(rt)
+    ///     .with_connector(UdsClient::new("/run/aimdb.sock"))
+    ///     .configure::<Temp>(|r| { r.with_remote_access().link_to("uds://temp"); })
     ///     .build().await?;
     /// ```
     pub fn with_connector(
@@ -481,35 +492,14 @@ where
         self
     }
 
-    /// Enables remote access via AimX protocol (std only)
-    ///
-    /// Configures the database to accept remote connections over a Unix domain socket,
-    /// allowing external clients to introspect records, subscribe to updates, and
-    /// (optionally) write data.
-    ///
-    /// The remote access supervisor will be spawned automatically during `build()`.
-    ///
-    /// # Arguments
-    /// * `config` - Remote access configuration (socket path, security policy, etc.)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_core::remote::{AimxConfig, SecurityPolicy};
-    ///
-    /// let config = AimxConfig::new("/tmp/aimdb.sock")
-    ///     .with_security(SecurityPolicy::read_only());
-    ///
-    /// let db = AimDbBuilder::new()
-    ///     .runtime(runtime)
-    ///     .with_remote_access(config)
-    ///     .build()?;
-    /// ```
-    #[cfg(feature = "std")]
-    pub fn with_remote_access(mut self, config: crate::remote::AimxConfig) -> Self {
-        self.remote_config = Some(config);
-        self
-    }
+    // NOTE: a remote-access **server** is registered like any other connector —
+    // there is no dedicated builder method:
+    //
+    //     .with_connector(aimdb_uds_connector::UdsServer::from_config(config))
+    //
+    // This rides the `with_connector` spine (see its docs) and lets the transport
+    // be swapped (UDS / serial / TCP) without touching the builder. The per-record
+    // `TypedRecord::with_remote_access()` is unrelated.
 
     /// Configures a record type manually with a unique key
     ///
@@ -876,33 +866,11 @@ where
         #[cfg(feature = "tracing")]
         tracing::info!("Record future collection complete");
 
-        // Collect the remote-access supervisor future, if configured (std only).
-        #[cfg(feature = "std")]
-        if let Some(remote_cfg) = self.remote_config {
-            #[cfg(feature = "tracing")]
-            tracing::info!(
-                "Building remote access supervisor for socket: {}",
-                remote_cfg.socket_path.display()
-            );
-
-            // Apply security policy to mark writable records
-            let writable_keys = remote_cfg.security_policy.writable_records();
-            for key_str in writable_keys {
-                if let Some(id) = inner.resolve_str(&key_str) {
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("Marking record '{}' as writable", key_str);
-
-                    inner.storages[id.index()].set_writable_erased(true);
-                }
-            }
-
-            let supervisor_future =
-                crate::remote::supervisor::build_supervisor_future(db.clone(), remote_cfg)?;
-            futures_acc.push(supervisor_future);
-
-            #[cfg(feature = "tracing")]
-            tracing::info!("Remote access supervisor future collected");
-        }
+        // AimX remote-access servers are no longer stood up here: register a
+        // session connector (`UdsServer::from_config(...)`) via `with_connector`
+        // instead — it collects below like any other connector, binds its
+        // transport, applies the security policy's writable marking, and drives
+        // the shared session engine. See `with_connector`'s docs.
 
         // Collect connector futures. After issue #88 connector builders return
         // a `Vec<BoxFuture>` instead of an `Arc<dyn Connector>` (which previously
@@ -915,10 +883,12 @@ where
             tracing::debug!("Building connector for scheme: {}", scheme);
 
             let connector_futures = builder.build(&db).await?;
+            #[cfg(feature = "tracing")]
+            let n_futures = connector_futures.len();
             futures_acc.extend(connector_futures);
 
             #[cfg(feature = "tracing")]
-            tracing::info!("Connector '{}' contributed {} future(s)", scheme, "n");
+            tracing::info!("Connector '{}' contributed {} future(s)", scheme, n_futures);
         }
 
         // Collect on_start futures (registered by external crates like aimdb-persistence).
@@ -1247,6 +1217,15 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         &self.runtime
     }
 
+    /// Returns an owned `Arc` handle to the runtime adapter.
+    ///
+    /// Connectors that hand the runtime to a `'static` engine future (e.g. the
+    /// session client engine, which needs the adapter's [`TimeOps`](aimdb_executor::TimeOps)
+    /// clock for reconnect backoff/keepalive) clone it through here.
+    pub fn runtime_arc(&self) -> Arc<R> {
+        self.runtime.clone()
+    }
+
     /// Returns the runtime as a type-erased `Arc<dyn Any + Send + Sync>`
     ///
     /// Used by connectors to provide `RuntimeContext` to context-aware
@@ -1296,7 +1275,12 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// * `record_name` - The full Rust type name (e.g., "server::Temperature")
     ///
     /// # Returns
-    /// `Some(JsonValue)` with current value, or `None` if unavailable
+    /// `Some(JsonValue)` with the current value, or `None` if the record has no
+    /// value yet, no buffer, or a buffer with **no canonical latest** — i.e.
+    /// [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing). A ring is a stream/backlog
+    /// with no single "current value"; read it via a subscriber or `record.drain`,
+    /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
+    /// for state you want to read latest-value style.
     #[cfg(feature = "std")]
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)

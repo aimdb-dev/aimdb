@@ -14,8 +14,17 @@ metrics = ["aimdb-core/metrics"]
 profiling = ["aimdb-core/profiling"]
 
 [dependencies]
-# Core dependencies - protocol types from aimdb-core
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = ["std"] }
+# Core dependencies - protocol types from aimdb-core. `connector-session`
+# exposes the shared session engine (`run_client`/`ClientHandle`) plus the AimX
+# codec that the engine-based client (`crate::engine`) builds on.
+aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
+    "std",
+    "connector-session",
+] }
+
+# The UDS transport (`UdsDialer`) relocated out of core in Phase 6; the
+# engine-based client dials over it.
+aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +32,10 @@ serde_json = "1"
 
 # Async runtime (must match AimDB runtime)
 tokio = { version = "1", features = ["net", "io-util", "macros", "fs"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+# Supplies the `TimeOps` clock the engine-based client hands to `run_client`
+# (reconnect backoff / keepalive). This client always drives the engine on tokio.
+aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter" }
 
 # Error handling
 anyhow = "1"

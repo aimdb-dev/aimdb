@@ -5,7 +5,7 @@
 
 use crate::error::{McpError, McpResult};
 use crate::protocol::{Resource, ResourceContent, ResourceReadResult};
-use aimdb_client::AimxClient;
+use aimdb_client::AimxConnection;
 use serde_json::json;
 use std::path::Path;
 use tracing::debug;
@@ -82,7 +82,7 @@ pub async fn read_records_resource(socket_path: &str) -> McpResult<ResourceReadR
     }
 
     // Connect to the instance
-    let mut client = AimxClient::connect(socket_path).await?;
+    let client = AimxConnection::connect(socket_path).await?;
 
     // List records
     let records = client.list_records().await?;
