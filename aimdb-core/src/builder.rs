@@ -883,10 +883,12 @@ where
             tracing::debug!("Building connector for scheme: {}", scheme);
 
             let connector_futures = builder.build(&db).await?;
+            #[cfg(feature = "tracing")]
+            let n_futures = connector_futures.len();
             futures_acc.extend(connector_futures);
 
             #[cfg(feature = "tracing")]
-            tracing::info!("Connector '{}' contributed {} future(s)", scheme, "n");
+            tracing::info!("Connector '{}' contributed {} future(s)", scheme, n_futures);
         }
 
         // Collect on_start futures (registered by external crates like aimdb-persistence).
