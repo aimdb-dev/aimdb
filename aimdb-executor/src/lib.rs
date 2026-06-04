@@ -90,6 +90,21 @@ pub trait TimeOps: RuntimeAdapter {
     /// representation of an elapsed [`Self::Duration`]. Implementations should saturate
     /// rather than overflow for durations larger than `u64::MAX` nanoseconds.
     fn duration_as_nanos(&self, duration: Self::Duration) -> u64;
+
+    /// Wall-clock time as `(seconds, nanoseconds)` since the Unix epoch, if the
+    /// runtime has a real-time clock.
+    ///
+    /// Unlike [`now`](Self::now) (a monotonic instant for measuring durations),
+    /// this is an *absolute* time suitable for human/remote display — e.g. AimX
+    /// `record.list` metadata timestamps.
+    ///
+    /// Returns `None` on platforms without a wall clock (a bare MCU with no RTC),
+    /// where only monotonic time is available. The default implementation returns
+    /// `None`; runtimes backed by an OS clock (or an MCU with a configured RTC)
+    /// should override it.
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        None
+    }
 }
 
 /// Logging trait - enables ctx.log() accessor

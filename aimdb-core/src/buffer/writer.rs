@@ -1,8 +1,7 @@
 //! `RecordWriter<T>` — the sole implementor of `WriteHandle<T>` (design 029).
 //!
-//! Pre-binds the buffer and (std-only) metadata tracker so `Producer<T>` can
-//! push values without holding a `Arc<AimDb<R>>` or running a `HashMap`
-//! lookup per call.
+//! Pre-binds the buffer so `Producer<T>` can push values without holding an
+//! `Arc<AimDb<R>>` or running a `HashMap` lookup per call.
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -18,23 +17,9 @@ use super::traits::{DynBuffer, WriteHandle};
 pub(crate) struct RecordWriter<T: Clone + Send + 'static> {
     /// `None` for records without a configured buffer.
     buffer: Option<Arc<dyn DynBuffer<T>>>,
-
-    /// Metadata tracker (already `Clone` with shared inner `Arc<Mutex>` /
-    /// `Arc<AtomicBool>`). std-only.
-    #[cfg(feature = "std")]
-    metadata: crate::typed_record::RecordMetadataTracker,
 }
 
 impl<T: Clone + Send + 'static> RecordWriter<T> {
-    #[cfg(feature = "std")]
-    pub(crate) fn new(
-        buffer: Option<Arc<dyn DynBuffer<T>>>,
-        metadata: crate::typed_record::RecordMetadataTracker,
-    ) -> Self {
-        Self { buffer, metadata }
-    }
-
-    #[cfg(not(feature = "std"))]
     pub(crate) fn new(buffer: Option<Arc<dyn DynBuffer<T>>>) -> Self {
         Self { buffer }
     }
@@ -44,8 +29,6 @@ impl<T: Clone + Send + 'static> WriteHandle<T> for RecordWriter<T> {
     fn push(&self, value: T) {
         if let Some(buf) = &self.buffer {
             buf.push(value);
-            #[cfg(feature = "std")]
-            self.metadata.mark_updated();
         }
     }
 }

@@ -2,9 +2,10 @@
 //!
 //! Defines request, response, and event types for the remote access protocol.
 
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::{string::String, vec::Vec};
 
 // Allow dead code for now - these are part of the public API for future implementation
 #[allow(dead_code)]
@@ -242,6 +243,7 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn test_hello_serialization() {

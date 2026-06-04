@@ -70,8 +70,8 @@ pub use traits::{Buffer, BufferReader, DynBuffer};
 pub(crate) use traits::WriteHandle;
 pub(crate) use writer::RecordWriter;
 
-// JSON streaming support (std only)
-#[cfg(feature = "std")]
+// JSON streaming support
+#[cfg(feature = "remote-access")]
 pub use traits::JsonBufferReader;
 
 // Buffer metrics (feature-gated; works in no_std with portable-atomic)

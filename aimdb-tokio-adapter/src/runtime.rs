@@ -178,6 +178,15 @@ impl TimeOps for TokioAdapter {
     fn duration_as_nanos(&self, duration: Self::Duration) -> u64 {
         duration.as_nanos().min(u64::MAX as u128) as u64
     }
+
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        // The OS wall clock. `now()` is monotonic (for durations); this is the
+        // absolute time AimX metadata timestamps report.
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .ok()
+            .map(|d| (d.as_secs(), d.subsec_nanos()))
+    }
 }
 
 #[cfg(feature = "tokio-runtime")]

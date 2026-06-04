@@ -5,6 +5,9 @@
 //! database's `Extensions` TypeMap by `aimdb_persistence::with_persistence()`,
 //! and invoked by the AimX server dispatch when a client calls `record.query`.
 
+use alloc::boxed::Box;
+use alloc::string::String;
+
 /// Type-erased query handler registered by `aimdb-persistence` via Extensions.
 ///
 /// A boxed async function that accepts query parameters (record pattern, limit,

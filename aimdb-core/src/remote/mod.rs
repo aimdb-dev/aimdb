@@ -51,5 +51,5 @@ pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeM
 pub use query::{QueryHandlerFn, QueryHandlerParams};
 
 // Internal exports for implementation
-#[cfg(feature = "std")]
+#[cfg(feature = "connector-session")]
 pub(crate) mod stream;

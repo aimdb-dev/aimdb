@@ -39,7 +39,7 @@ async fn aimx_roundtrip_over_uds_production_server() {
     let mut policy = SecurityPolicy::read_write();
     policy.allow_write_key("setting");
     let config = AimxConfig::uds_default()
-        .socket_path(&sock)
+        .socket_path(sock.to_str().unwrap())
         .security_policy(policy)
         .max_connections(8)
         .max_subs_per_connection(8);
@@ -144,7 +144,7 @@ async fn record_get_on_ring_falls_back_to_drain() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
-    let config = AimxConfig::uds_default().socket_path(&sock);
+    let config = AimxConfig::uds_default().socket_path(sock.to_str().unwrap());
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));

@@ -31,9 +31,8 @@ mod pump;
 #[cfg(feature = "connector-session")]
 mod server;
 
-// Concrete AimX protocol substrate. The codec is `no_std + alloc`; the server
-// dispatch is `std`-gated. The transport lives in a separate connector crate
-// (`aimdb-uds-connector`) — core keeps the protocol plus the generic
+// Concrete AimX protocol substrate. The transport lives in a separate connector
+// crate (`aimdb-uds-connector`) — core keeps the protocol plus the generic
 // [`SessionClientConnector`] / [`SessionServerConnector`] spine.
 #[cfg(all(feature = "connector-session", feature = "json-serialize"))]
 pub mod aimx;

@@ -159,7 +159,7 @@ pub trait BufferReader<T: Clone + Send>: Send {
     fn try_recv(&mut self) -> Result<T, DbError>;
 }
 
-/// Reader trait for consuming JSON-serialized values from a buffer (std only)
+/// Reader trait for consuming JSON-serialized values from a buffer
 ///
 /// Type-erased reader that subscribes to a typed buffer and emits values as
 /// `serde_json::Value`. Used by remote access protocol for subscriptions.
@@ -169,7 +169,7 @@ pub trait BufferReader<T: Clone + Send>: Send {
 ///
 /// # Requirements
 /// - Record must be configured with `.with_remote_access()`
-/// - Only available with `std` feature (requires serde_json)
+/// - Only available with the `remote-access` feature (requires serde_json)
 ///
 /// # Example
 /// ```rust,ignore
@@ -179,7 +179,7 @@ pub trait BufferReader<T: Clone + Send>: Send {
 ///     // Forward JSON value to remote client...
 /// }
 /// ```
-#[cfg(feature = "std")]
+#[cfg(feature = "remote-access")]
 pub trait JsonBufferReader: Send {
     /// Receive the next value as JSON (async)
     ///

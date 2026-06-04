@@ -96,7 +96,7 @@ pub struct UdsServer {
 
 impl UdsServer {
     /// Serve AimX over the socket at `socket_path`, with default limits/policy.
-    pub fn new(socket_path: impl Into<PathBuf>) -> Self {
+    pub fn new(socket_path: impl Into<String>) -> Self {
         Self {
             config: AimxConfig::uds_default().socket_path(socket_path),
             scheme: DEFAULT_SCHEME.to_string(),
@@ -189,55 +189,41 @@ where
 /// Bind the Unix-domain socket synchronously (remove a stale socket file,
 /// `bind`, `set_permissions`) so bind errors surface from `build`.
 fn bind_uds_listener(config: &AimxConfig) -> DbResult<UdsListener> {
-    #[cfg(feature = "tracing")]
-    tracing::info!(
-        "Initializing AimX UDS server on socket: {}",
-        config.socket_path.display()
-    );
+    let socket_path = &config.socket_path;
 
-    if config.socket_path.exists() {
-        std::fs::remove_file(&config.socket_path).map_err(|e| DbError::IoWithContext {
-            context: format!(
-                "Failed to remove existing socket file {}",
-                config.socket_path.display()
-            ),
+    #[cfg(feature = "tracing")]
+    tracing::info!("Initializing AimX UDS server on socket: {}", socket_path);
+
+    if std::path::Path::new(socket_path).exists() {
+        std::fs::remove_file(socket_path).map_err(|e| DbError::IoWithContext {
+            context: format!("Failed to remove existing socket file {}", socket_path),
             source: e,
         })?;
     }
 
-    let listener = tokio::net::UnixListener::bind(&config.socket_path).map_err(|e| {
-        DbError::IoWithContext {
-            context: format!(
-                "Failed to bind Unix socket at {}",
-                config.socket_path.display()
-            ),
+    let listener =
+        tokio::net::UnixListener::bind(socket_path).map_err(|e| DbError::IoWithContext {
+            context: format!("Failed to bind Unix socket at {}", socket_path),
             source: e,
-        }
-    })?;
+        })?;
 
     let permissions = config.socket_permissions.unwrap_or(0o600);
-    let mut perms = std::fs::metadata(&config.socket_path)
+    let mut perms = std::fs::metadata(socket_path)
         .map_err(|e| DbError::IoWithContext {
-            context: format!(
-                "Failed to read socket metadata for {}",
-                config.socket_path.display()
-            ),
+            context: format!("Failed to read socket metadata for {}", socket_path),
             source: e,
         })?
         .permissions();
     perms.set_mode(permissions);
-    std::fs::set_permissions(&config.socket_path, perms).map_err(|e| DbError::IoWithContext {
-        context: format!(
-            "Failed to set socket permissions for {}",
-            config.socket_path.display()
-        ),
+    std::fs::set_permissions(socket_path, perms).map_err(|e| DbError::IoWithContext {
+        context: format!("Failed to set socket permissions for {}", socket_path),
         source: e,
     })?;
 
     #[cfg(feature = "tracing")]
     tracing::info!(
         "AimX socket bound at {} (mode {:o})",
-        config.socket_path.display(),
+        socket_path,
         permissions
     );
 

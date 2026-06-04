@@ -54,7 +54,7 @@ async fn pump_client_mirrors_record_both_directions() {
     let mut policy = SecurityPolicy::read_write();
     policy.allow_write_key("cfg");
     let config = AimxConfig::uds_default()
-        .socket_path(&sock)
+        .socket_path(sock.to_str().unwrap())
         .security_policy(policy);
 
     let mut sb = AimDbBuilder::new()
