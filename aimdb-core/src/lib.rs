@@ -32,7 +32,7 @@ pub mod graph;
 #[cfg(feature = "profiling")]
 pub mod profiling;
 pub mod record_id;
-#[cfg(feature = "std")]
+#[cfg(feature = "remote-access")]
 pub mod remote;
 pub mod router;
 #[cfg(feature = "connector-session")]
@@ -44,7 +44,8 @@ pub mod typed_api;
 pub mod typed_record;
 
 /// Marker trait used to add a `TimeOps` requirement to runtime-agnostic builder
-/// methods *only* when the `profiling` feature is enabled.
+/// methods *only* when the `profiling` feature is enabled (stage-duration timing
+/// needs the runtime clock).
 ///
 /// When `profiling` is off this is a blanket no-op (every `R` implements it), so
 /// the public API is unchanged. When `profiling` is on it requires

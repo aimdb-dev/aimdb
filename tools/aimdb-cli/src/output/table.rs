@@ -252,7 +252,6 @@ mod tests {
                 1,
                 2,
                 false,
-                "2025-11-02T00:00:00Z".to_string(),
                 0,
             ),
             RecordMetadata::new(
@@ -266,7 +265,6 @@ mod tests {
                 0,
                 3,
                 true,
-                "2025-11-02T00:00:00Z".to_string(),
                 1,
             ),
         ];

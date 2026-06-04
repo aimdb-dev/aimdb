@@ -4,11 +4,17 @@
 //!
 //! # Feature Support
 //!
-//! **Both std and no_std**: Core API (`TypedRecord`, `latest()`, `RecordValue`, producer/consumer)
+//! All layers below work on both `std` and `no_std + alloc`; they are gated by
+//! capability feature, not by `std`:
 //!
-//! **std only**: JSON serialization (`.with_remote_access()`, `.as_json()`), remote access, metadata
+//! - **always**: Core API (`TypedRecord`, `latest()`, `RecordValue`, producer/consumer).
+//! - **`json-serialize`**: the JSON value codec — `.with_remote_access()` installs it
+//!   and `record.latest()?.as_json()` reads it.
+//! - **`remote-access`**: record metadata (`collect_metadata` → `RecordMetadata`,
+//!   the `writable` flag) plus the type-erased JSON read/write/subscribe methods
+//!   (`latest_json` / `set_from_json` / `subscribe_json`) used by the AimX server.
 //!
-//! **no_std**: Use `record.latest()` for value access and `Deref` for fields. JSON requires std;
+//! Without `json-serialize`, use `record.latest()` + `Deref` for value access and
 //! implement custom serialization for embedded protocols (CBOR, MessagePack, etc.).
 
 use core::any::Any;
@@ -123,7 +129,7 @@ impl<T> core::ops::Deref for RecordValue<T> {
 /// 3. Returns the JSON value
 ///
 /// Used internally by `TypedRecord::subscribe_json()`.
-#[cfg(feature = "std")]
+#[cfg(feature = "remote-access")]
 struct JsonReaderAdapter<T: Clone + Send + 'static> {
     /// The underlying typed buffer reader
     inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
@@ -131,7 +137,7 @@ struct JsonReaderAdapter<T: Clone + Send + 'static> {
     codec: RecordCodec<T>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote-access")]
 impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAdapter<T> {
     fn recv_json(
         &mut self,
@@ -147,18 +153,9 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
             let value = self.inner.recv().await?;
 
             // Serialize to JSON
-            self.codec.encode(&value).ok_or_else(|| {
-                #[cfg(feature = "std")]
-                {
-                    crate::DbError::RuntimeError {
-                        message: "Failed to serialize value to JSON".to_string(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    crate::DbError::RuntimeError { _message: () }
-                }
-            })
+            self.codec
+                .encode(&value)
+                .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
         })
     }
 
@@ -169,63 +166,7 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
         // Serialize to JSON using the configured codec
         self.codec
             .encode(&value)
-            .ok_or_else(|| crate::DbError::RuntimeError {
-                message: "Failed to serialize value to JSON".to_string(),
-            })
-    }
-}
-
-/// Metadata tracking for records (std only - used for remote access introspection)
-#[cfg(feature = "std")]
-#[derive(Debug, Clone)]
-pub(crate) struct RecordMetadataTracker {
-    /// Human-readable record name (type name)
-    name: String,
-    /// Creation timestamp (seconds, nanoseconds since UNIX_EPOCH)
-    created_at: (u64, u32),
-    /// Last update timestamp (seconds, nanoseconds since UNIX_EPOCH, None if never updated)
-    last_update: std::sync::Arc<std::sync::Mutex<Option<(u64, u32)>>>,
-    /// Whether this record allows writes via remote access (using interior mutability)
-    writable: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-#[cfg(feature = "std")]
-impl RecordMetadataTracker {
-    fn new<T: 'static>() -> Self {
-        use std::time::SystemTime;
-
-        let duration = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-
-        Self {
-            name: core::any::type_name::<T>().to_string(),
-            created_at: (duration.as_secs(), duration.subsec_nanos()),
-            last_update: Arc::new(std::sync::Mutex::new(None)),
-            writable: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
-
-    pub(crate) fn mark_updated(&self) {
-        use std::time::SystemTime;
-
-        let duration = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-
-        if let Ok(mut last) = self.last_update.lock() {
-            *last = Some((duration.as_secs(), duration.subsec_nanos()));
-        }
-    }
-
-    fn set_writable(&self, writable: bool) {
-        self.writable
-            .store(writable, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Formats a Unix timestamp as "secs.nanosecs" string
-    fn format_timestamp(timestamp: (u64, u32)) -> String {
-        format!("{}.{:09}", timestamp.0, timestamp.1)
+            .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
     }
 }
 
@@ -322,8 +263,8 @@ pub trait AnyRecord: Send + Sync {
     /// Used internally by the builder to apply security policy to records.
     fn set_writable_erased(&self, writable: bool);
 
-    /// Collects metadata for this record (std only)
-    #[cfg(feature = "std")]
+    /// Collects metadata for this record
+    #[cfg(feature = "remote-access")]
     fn collect_metadata(
         &self,
         type_id: core::any::TypeId,
@@ -331,14 +272,14 @@ pub trait AnyRecord: Send + Sync {
         id: crate::record_id::RecordId,
     ) -> crate::remote::RecordMetadata;
 
-    /// Internal: Returns JSON for type-erased remote access (std only)
+    /// Internal: Returns JSON for type-erased remote access
     ///
     /// Used internally by remote access protocol. **Users should use `record.latest()?.as_json()`.**
     #[doc(hidden)]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     fn latest_json(&self) -> Option<serde_json::Value>;
 
-    /// Subscribe to record updates as JSON stream (std only)
+    /// Subscribe to record updates as JSON stream
     ///
     /// Creates a type-erased subscription that emits `serde_json::Value` instead of
     /// the concrete type `T`. This enables subscribing to a record without knowing
@@ -366,10 +307,10 @@ pub trait AnyRecord: Send + Sync {
     /// }
     /// ```
     #[doc(hidden)]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>>;
 
-    /// Sets a record value from JSON (std only)
+    /// Sets a record value from JSON
     ///
     /// Deserializes JSON and produces the value to the record's buffer.
     ///
@@ -401,7 +342,7 @@ pub trait AnyRecord: Send + Sync {
     /// record.set_from_json(json_val)?; // Only works if producer_count == 0
     /// ```
     #[doc(hidden)]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
 
     /// Get the inbound connector links for this record
@@ -580,16 +521,18 @@ pub struct TypedRecord<
     #[cfg(feature = "profiling")]
     profiling: RecordProfilingMetrics,
 
-    /// Metadata tracking (std only - for remote access)
-    #[cfg(feature = "std")]
-    metadata: RecordMetadataTracker,
+    /// Whether this record allows writes via remote access (feature
+    /// `remote-access`). Interior-mutable so the security policy can mark it after
+    /// `build()`; read by `collect_metadata` into `RecordMetadata.writable`.
+    #[cfg(feature = "remote-access")]
+    writable: portable_atomic::AtomicBool,
 
-    /// Type-erased JSON codec (feature `json-serialize`).
+    /// Type-erased JSON value codec (feature `json-serialize`).
     /// `Some` iff the record opted into JSON via `.with_remote_access()`.
-    /// `RecordValue::as_json` and — on std — the AimX read (`latest_json`),
-    /// write (`set_from_json`), and subscribe (`subscribe_json`) paths route
-    /// through it. Built from a `SerdeJsonCodec` where the `T: RemoteSerialize`
-    /// bound is known at the call site.
+    /// `RecordValue::as_json` and — under `remote-access` — the AimX read
+    /// (`latest_json`), write (`set_from_json`), and subscribe (`subscribe_json`)
+    /// paths route through it. Built from a `SerdeJsonCodec` where the
+    /// `T: RemoteSerialize` bound is known at the call site.
     #[cfg(feature = "json-serialize")]
     remote_codec: Option<RecordCodec<T>>,
 }
@@ -611,8 +554,8 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
             inbound_connectors: Vec::new(),
             #[cfg(feature = "profiling")]
             profiling: RecordProfilingMetrics::new(),
-            #[cfg(feature = "std")]
-            metadata: RecordMetadataTracker::new::<T>(),
+            #[cfg(feature = "remote-access")]
+            writable: portable_atomic::AtomicBool::new(false),
             #[cfg(feature = "json-serialize")]
             remote_codec: None,
         }
@@ -869,24 +812,14 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         self.buffer.as_deref()
     }
 
-    /// Returns a fresh `Arc<dyn WriteHandle<T>>` bound to this record's buffer,
-    /// snapshot, and metadata. Used at build time by the spawn machinery to
-    /// pre-resolve `Producer<T>` handles (design 029).
+    /// Returns a fresh `Arc<dyn WriteHandle<T>>` bound to this record's buffer.
+    /// Used at build time by the spawn machinery to pre-resolve `Producer<T>`
+    /// handles (design 029).
     pub(crate) fn writer_handle(&self) -> Arc<dyn crate::buffer::WriteHandle<T>>
     where
         T: Send + Clone + 'static,
     {
-        #[cfg(feature = "std")]
-        {
-            Arc::new(crate::buffer::RecordWriter::new(
-                self.buffer.clone(),
-                self.metadata.clone(),
-            ))
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            Arc::new(crate::buffer::RecordWriter::new(self.buffer.clone()))
-        }
+        Arc::new(crate::buffer::RecordWriter::new(self.buffer.clone()))
     }
 
     /// Returns a clone of the buffer `Arc` (or `None` if no buffer is
@@ -924,12 +857,13 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         self.outbound_connectors.push(link);
     }
 
-    /// Installs the JSON codec for this record (feature `json-serialize`)
+    /// Installs the JSON value codec for this record (feature `json-serialize`)
     ///
-    /// Enables `record.latest()?.as_json()` everywhere, and on `std` the AimX
-    /// remote-access protocol (`record.get` / `set` / `subscribe`). Requires the
-    /// `json-serialize` feature and `T: RemoteSerialize` (blanket-impl'd for every
-    /// `Serialize + DeserializeOwned` type). Works on no_std + alloc.
+    /// Enables `record.latest()?.as_json()` everywhere, and — under the
+    /// `remote-access` feature — the AimX protocol (`record.get` / `set` /
+    /// `subscribe`). Requires `json-serialize` and `T: RemoteSerialize`
+    /// (blanket-impl'd for every `Serialize + DeserializeOwned` type). Works on
+    /// no_std + alloc.
     #[cfg(feature = "json-serialize")]
     pub fn with_remote_access(&mut self) -> &mut Self
     where
@@ -1130,10 +1064,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         lock(&self.producer).is_some()
     }
 
-    /// Marks this record as writable for remote access (std only)
-    #[cfg(feature = "std")]
+    /// Marks this record as writable for remote access
+    #[cfg(feature = "remote-access")]
     pub fn set_writable(&self, writable: bool) {
-        self.metadata.set_writable(writable);
+        self.writable
+            .store(writable, portable_atomic::Ordering::SeqCst);
     }
 
     /// Returns the latest produced value
@@ -1275,17 +1210,18 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     }
 
     fn set_writable_erased(&self, writable: bool) {
-        #[cfg(feature = "std")]
+        #[cfg(feature = "remote-access")]
         {
-            self.metadata.set_writable(writable);
+            self.writable
+                .store(writable, portable_atomic::Ordering::SeqCst);
         }
-        #[cfg(not(feature = "std"))]
+        #[cfg(not(feature = "remote-access"))]
         {
             let _ = writable; // Suppress unused warning
         }
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     fn collect_metadata(
         &self,
         type_id: core::any::TypeId,
@@ -1302,31 +1238,21 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             ("none".to_string(), None)
         };
 
-        let last_update = self
-            .metadata
-            .last_update
-            .lock()
-            .ok()
-            .and_then(|guard| *guard)
-            .map(RecordMetadataTracker::format_timestamp);
-
+        // Computed on demand from the record's static structure; core keeps no
+        // per-record metadata state (no created_at/last_update tracking).
         let metadata = crate::remote::RecordMetadata::new(
             id,
             key,
             type_id,
-            self.metadata.name.clone(),
+            core::any::type_name::<T>().to_string(),
             self.record_origin(),
             buffer_type,
             buffer_capacity,
             if self.has_producer() { 1 } else { 0 },
             self.consumer_count(),
-            self.metadata
-                .writable
-                .load(std::sync::atomic::Ordering::SeqCst),
-            RecordMetadataTracker::format_timestamp(self.metadata.created_at),
+            self.writable.load(portable_atomic::Ordering::SeqCst),
             self.outbound_connector_count(),
-        )
-        .with_last_update_opt(last_update);
+        );
 
         // Add buffer metrics if available
         #[cfg(feature = "metrics")]
@@ -1350,7 +1276,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     }
 
     #[doc(hidden)]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     fn latest_json(&self) -> Option<serde_json::Value> {
         #[cfg(feature = "tracing")]
         tracing::debug!(
@@ -1370,7 +1296,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     }
 
     #[doc(hidden)]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>> {
         use crate::DbError;
 
@@ -1381,16 +1307,13 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         );
 
         // 1. Check if serialization is configured
-        let codec = self
-            .remote_codec
-            .clone()
-            .ok_or_else(|| DbError::RuntimeError {
-                message: format!(
-                    "Record '{}' not configured with .with_remote_access(). \
-                     Cannot subscribe to JSON stream.",
-                    core::any::type_name::<T>()
-                ),
-            })?;
+        let codec = self.remote_codec.clone().ok_or_else(|| {
+            DbError::runtime_error(alloc::format!(
+                "Record '{}' not configured with .with_remote_access(). \
+                 Cannot subscribe to JSON stream.",
+                core::any::type_name::<T>()
+            ))
+        })?;
 
         // 2. Subscribe to the buffer (get Box<dyn BufferReader<T>>)
         let reader = self.subscribe()?;
@@ -1411,7 +1334,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     }
 
     #[doc(hidden)]
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()> {
         use crate::DbError;
 
@@ -1429,49 +1352,40 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
                 core::any::type_name::<T>()
             );
 
-            return Err(DbError::PermissionDenied {
-                operation: format!(
-                    "Cannot set record '{}' - has active producer or transform. \
-                     Use internal application logic instead. \
-                     Remote access can only set configuration records without producers.",
-                    core::any::type_name::<T>()
-                ),
-            });
+            return Err(DbError::permission_denied(alloc::format!(
+                "Cannot set record '{}' - has active producer or transform. \
+                 Use internal application logic instead. \
+                 Remote access can only set configuration records without producers.",
+                core::any::type_name::<T>()
+            )));
         }
 
         // Check if the codec is configured (set by .with_remote_access())
-        let codec = self
-            .remote_codec
-            .clone()
-            .ok_or_else(|| DbError::RuntimeError {
-                message: format!(
-                    "Record '{}' not configured with .with_remote_access(). \
-                     Cannot deserialize from JSON.",
-                    core::any::type_name::<T>()
-                ),
-            })?;
+        let codec = self.remote_codec.clone().ok_or_else(|| {
+            DbError::runtime_error(alloc::format!(
+                "Record '{}' not configured with .with_remote_access(). \
+                 Cannot deserialize from JSON.",
+                core::any::type_name::<T>()
+            ))
+        })?;
 
         // Check if buffer exists
         if self.buffer.is_none() {
-            return Err(DbError::RuntimeError {
-                message: format!(
-                    "Record '{}' has no buffer configured. \
-                     Cannot produce value without buffer.",
-                    core::any::type_name::<T>()
-                ),
-            });
+            return Err(DbError::runtime_error(alloc::format!(
+                "Record '{}' has no buffer configured. \
+                 Cannot produce value without buffer.",
+                core::any::type_name::<T>()
+            )));
         }
 
         // Deserialize JSON -> T
-        let value: T = codec
-            .decode(&json_value)
-            .ok_or_else(|| DbError::RuntimeError {
-                message: format!(
-                    "Failed to deserialize JSON to type '{}'. \
+        let value: T = codec.decode(&json_value).ok_or_else(|| {
+            DbError::runtime_error(alloc::format!(
+                "Failed to deserialize JSON to type '{}'. \
                  JSON structure does not match the expected schema.",
-                    core::any::type_name::<T>()
-                ),
-            })?;
+                core::any::type_name::<T>()
+            ))
+        })?;
 
         #[cfg(feature = "tracing")]
         tracing::debug!(

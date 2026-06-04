@@ -245,11 +245,11 @@ impl AimDbInner {
         Ok(typed_record)
     }
 
-    /// Collects metadata for all registered records (std only)
+    /// Collects metadata for all registered records
     ///
-    /// Returns a vector of `RecordMetadata` for remote access introspection.
-    /// Available only when the `std` feature is enabled.
-    #[cfg(feature = "std")]
+    /// Returns a vector of `RecordMetadata` for remote introspection.
+    /// Available only when the `remote-access` feature is enabled.
+    #[cfg(feature = "remote-access")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.storages
             .iter()
@@ -263,7 +263,7 @@ impl AimDbInner {
             .collect()
     }
 
-    /// Try to get record's latest value as JSON by record key (std only)
+    /// Try to get record's latest value as JSON by record key
     ///
     /// O(1) lookup using the key-based index.
     ///
@@ -272,7 +272,7 @@ impl AimDbInner {
     ///
     /// # Returns
     /// `Some(JsonValue)` with the current record value, or `None`
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     pub fn try_latest_as_json(&self, record_key: &str) -> Option<serde_json::Value> {
         let id = self.resolve_str(record_key)?;
         self.storages.get(id.index())?.latest_json()
@@ -293,7 +293,7 @@ impl AimDbInner {
     /// # Returns
     /// - `Ok(())` - Successfully set the value
     /// - `Err(DbError)` - If record not found, has producers, or deserialization fails
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     pub fn set_record_from_json(
         &self,
         record_key: &str,
@@ -301,9 +301,7 @@ impl AimDbInner {
     ) -> DbResult<()> {
         let id = self
             .resolve_str(record_key)
-            .ok_or_else(|| DbError::RecordKeyNotFound {
-                key: record_key.to_string(),
-            })?;
+            .ok_or_else(|| DbError::record_key_not_found(record_key.to_string()))?;
 
         self.storages[id.index()].set_from_json(json_value)
     }
@@ -1246,7 +1244,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     ///     println!("Record: {} ({})", record.name, record.type_id);
     /// }
     /// ```
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.inner.list_records()
     }
@@ -1267,7 +1265,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         }
     }
 
-    /// Try to get record's latest value as JSON by name (std only)
+    /// Try to get record's latest value as JSON by name
     ///
     /// Convenience wrapper around `AimDbInner::try_latest_as_json()`.
     ///
@@ -1281,7 +1279,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// with no single "current value"; read it via a subscriber or `record.drain`,
     /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
     /// for state you want to read latest-value style.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)
     }
@@ -1304,7 +1302,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     /// ```rust,ignore
     /// db.set_record_from_json("AppConfig", json!({"debug": true}))?;
     /// ```
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote-access")]
     pub fn set_record_from_json(
         &self,
         record_name: &str,

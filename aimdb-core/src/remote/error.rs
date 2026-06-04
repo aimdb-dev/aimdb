@@ -1,6 +1,7 @@
 //! Error types for AimX remote access protocol
 
-use std::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use thiserror::Error;
 
 /// Error type for remote access operations
@@ -96,26 +97,22 @@ pub type RemoteResult<T> = Result<T, RemoteError>;
 impl From<crate::DbError> for RemoteError {
     fn from(err: crate::DbError) -> Self {
         use crate::DbError;
+        let message = err.to_string();
         match err {
-            DbError::RecordNotFound { record_name } => RemoteError::NotFound {
-                resource: format!("record '{}'", record_name),
-            },
-            DbError::InvalidOperation { operation, reason } => RemoteError::ValidationError {
-                message: format!("{}: {}", operation, reason),
-            },
-            DbError::BufferFull { buffer_name, .. } => RemoteError::QueueFull {
-                queue_name: buffer_name,
-            },
-            DbError::PermissionDenied { operation } => {
-                RemoteError::PermissionDenied { reason: operation }
+            DbError::RecordNotFound { .. } | DbError::RecordKeyNotFound { .. } => {
+                RemoteError::NotFound { resource: message }
             }
-            _ => RemoteError::InternalError {
-                message: err.to_string(),
+            DbError::InvalidOperation { .. } => RemoteError::ValidationError { message },
+            DbError::BufferFull { .. } => RemoteError::QueueFull {
+                queue_name: message,
             },
+            DbError::PermissionDenied { .. } => RemoteError::PermissionDenied { reason: message },
+            _ => RemoteError::InternalError { message },
         }
     }
 }
 
+#[cfg(feature = "std")]
 impl From<std::io::Error> for RemoteError {
     fn from(err: std::io::Error) -> Self {
         RemoteError::InternalError {

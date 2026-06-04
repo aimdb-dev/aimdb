@@ -7,12 +7,11 @@
 //! connection's `FuturesUnordered` is the sole owner of the subscription's
 //! lifecycle.
 
-#[cfg(feature = "std")]
+use alloc::string::ToString;
+
 use crate::{AimDb, DbError, DbResult};
 
-#[cfg(feature = "std")]
 use futures_core::Stream;
-#[cfg(feature = "std")]
 use futures_util::stream::unfold;
 
 /// Subscribe to a record and yield each update as a JSON value.
@@ -27,7 +26,6 @@ use futures_util::stream::unfold;
 /// - [`DbError::InvalidRecordId`] if the resolved id has no storage.
 /// - Any error returned by `subscribe_json()` (e.g. the record was not
 ///   configured with `.with_remote_access()`).
-#[cfg(feature = "std")]
 pub(crate) fn stream_record_updates<R>(
     db: &AimDb<R>,
     record_key: &str,
@@ -38,9 +36,7 @@ where
     let inner = db.inner();
     let id = inner
         .resolve_str(record_key)
-        .ok_or_else(|| DbError::RecordKeyNotFound {
-            key: record_key.to_string(),
-        })?;
+        .ok_or_else(|| DbError::record_key_not_found(record_key.to_string()))?;
     let record = inner
         .storage(id)
         .ok_or(DbError::InvalidRecordId { id: id.raw() })?;

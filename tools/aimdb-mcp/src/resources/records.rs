@@ -101,8 +101,6 @@ pub async fn read_records_resource(socket_path: &str) -> McpResult<ResourceReadR
                 "producer_count": r.producer_count,
                 "consumer_count": r.consumer_count,
                 "writable": r.writable,
-                "created_at": r.created_at,
-                "last_update": r.last_update,
                 "outbound_connector_count": r.outbound_connector_count,
             })
         })

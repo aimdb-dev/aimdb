@@ -120,6 +120,22 @@ impl EmbassyAdapter {
             network: Some(network),
         }
     }
+
+    /// Anchors wall-clock time so [`TimeOps::unix_time`](aimdb_executor::TimeOps::unix_time)
+    /// can derive absolute timestamps from Embassy's monotonic uptime.
+    ///
+    /// Embassy has no real-time clock, so `unix_time` returns `None` until this is
+    /// called — typically once, after the device learns the real time (NTP / GPS /
+    /// a host handshake). `now_unix_secs` is the current Unix time in **seconds**;
+    /// the anchor is at second granularity (sub-second precision then comes from
+    /// uptime). The anchor is process-global (shared by all adapter clones).
+    #[cfg(feature = "embassy-time")]
+    pub fn set_unix_time(now_unix_secs: u64) {
+        use core::sync::atomic::Ordering;
+        let uptime_secs = embassy_time::Instant::now().as_secs();
+        let boot = now_unix_secs.saturating_sub(uptime_secs) as u32;
+        BOOT_UNIX_SECS.store(boot, Ordering::Relaxed);
+    }
 }
 
 impl Default for EmbassyAdapter {
@@ -135,6 +151,15 @@ impl RuntimeAdapter for EmbassyAdapter {
         "embassy"
     }
 }
+
+/// Wall-clock anchor for [`TimeOps::unix_time`](aimdb_executor::TimeOps::unix_time):
+/// Unix **seconds** at Embassy uptime 0 (boot). `0` = unset (Embassy has no RTC),
+/// so `unix_time` returns `None` until [`EmbassyAdapter::set_unix_time`] is called.
+/// A `u32` keeps the anchor in a natively-atomic word on Cortex-M (no
+/// `portable-atomic` / critical-section needed); sub-second precision comes from
+/// uptime.
+#[cfg(feature = "embassy-time")]
+static BOOT_UNIX_SECS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 // Implement TimeOps trait for time operations
 #[cfg(feature = "embassy-time")]
@@ -178,6 +203,22 @@ impl aimdb_executor::TimeOps for EmbassyAdapter {
         // `embassy_time::Duration` resolution depends on the configured tick rate;
         // microsecond granularity is the portable lower bound.
         duration.as_micros().saturating_mul(1_000)
+    }
+
+    /// Wall-clock time, derived from the [`set_unix_time`](EmbassyAdapter::set_unix_time)
+    /// anchor plus monotonic uptime. `None` until the anchor is set (Embassy has
+    /// no RTC). Sub-second precision is taken from uptime, so it carries a
+    /// sub-second phase offset from the true wall clock — fine for timestamps.
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        use core::sync::atomic::Ordering;
+        let boot = BOOT_UNIX_SECS.load(Ordering::Relaxed);
+        if boot == 0 {
+            return None;
+        }
+        let now = embassy_time::Instant::now();
+        let secs = boot as u64 + now.as_secs();
+        let sub_nanos = ((now.as_micros() % 1_000_000) as u32).saturating_mul(1_000);
+        Some((secs, sub_nanos))
     }
 }
 

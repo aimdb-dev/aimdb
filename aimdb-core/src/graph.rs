@@ -22,8 +22,8 @@ use alloc::{
 
 /// How a record gets its values — part of the dependency graph.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "std", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum RecordOrigin {
     /// Autonomous producer via `.source()`
     Source,
@@ -43,7 +43,7 @@ pub enum RecordOrigin {
 
 /// Metadata for one node in the dependency graph.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "std", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GraphNode {
     /// Record key (e.g. "temp.vienna")
     pub key: String,
@@ -65,7 +65,7 @@ pub struct GraphNode {
 
 /// One directed edge in the dependency graph.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "std", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GraphEdge {
     /// Source record key (None for external origins like source/link)
     pub from: Option<String>,
@@ -77,8 +77,8 @@ pub struct GraphEdge {
 
 /// Classification of a dependency graph edge.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "std", derive(serde::Serialize))]
-#[cfg_attr(feature = "std", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum EdgeType {
     Source,
     Link { protocol: String },

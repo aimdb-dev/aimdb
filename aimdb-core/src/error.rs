@@ -379,6 +379,44 @@ impl DbError {
         }
     }
 
+    /// Builds a [`RuntimeError`](DbError::RuntimeError). The message is carried
+    /// on `std` and dropped on `no_std` (where the variant holds a unit
+    /// placeholder); lets callers write one expression across both targets.
+    /// Gated on `remote-access` — its only callers are the JSON/remote paths.
+    #[cfg(feature = "remote-access")]
+    pub(crate) fn runtime_error(_message: impl Into<alloc::string::String>) -> Self {
+        DbError::RuntimeError {
+            #[cfg(feature = "std")]
+            message: _message.into(),
+            #[cfg(not(feature = "std"))]
+            _message: (),
+        }
+    }
+
+    /// Builds a [`PermissionDenied`](DbError::PermissionDenied). The operation
+    /// detail is carried on `std` and dropped on `no_std`.
+    #[cfg(feature = "remote-access")]
+    pub(crate) fn permission_denied(_operation: impl Into<alloc::string::String>) -> Self {
+        DbError::PermissionDenied {
+            #[cfg(feature = "std")]
+            operation: _operation.into(),
+            #[cfg(not(feature = "std"))]
+            _operation: (),
+        }
+    }
+
+    /// Builds a [`RecordKeyNotFound`](DbError::RecordKeyNotFound). The key is
+    /// carried on `std` and dropped on `no_std`.
+    #[cfg(feature = "remote-access")]
+    pub(crate) fn record_key_not_found(_key: impl Into<alloc::string::String>) -> Self {
+        DbError::RecordKeyNotFound {
+            #[cfg(feature = "std")]
+            key: _key.into(),
+            #[cfg(not(feature = "std"))]
+            _key: (),
+        }
+    }
+
     /// Returns true if this is a network-related error
     pub fn is_network_error(&self) -> bool {
         matches!(self, DbError::ConnectionFailed { .. })

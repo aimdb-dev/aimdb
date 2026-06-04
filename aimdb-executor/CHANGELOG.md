@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`TimeOps::unix_time(&self) -> Option<(u64, u32)>` (Issue #120).** Absolute wall-clock time — `(seconds, nanoseconds)` since the Unix epoch — distinct from the monotonic `now()` used to measure durations. Intended for human / remote display (e.g. AimX `record.list` metadata). The default impl returns `None` for platforms without a real-time clock (a bare MCU); runtimes backed by an OS clock (or an MCU with a configured RTC) override it. Default-method, so existing `TimeOps` impls need no change.
 - `futures-util` (alloc-only) as a regular dependency — provides `FuturesUnordered` used by `aimdb-core`'s `AimDbRunner`.
 
 ## [0.2.0] - 2026-05-22

@@ -1,6 +1,8 @@
 //! Configuration types for AimX remote access
 
-use std::{collections::HashSet, path::PathBuf, string::String, vec::Vec};
+use alloc::string::String;
+use alloc::vec::Vec;
+use hashbrown::HashSet;
 
 use crate::record_id::StringKey;
 
@@ -11,7 +13,7 @@ use crate::record_id::StringKey;
 #[derive(Debug, Clone)]
 pub struct AimxConfig {
     /// Path to Unix domain socket
-    pub socket_path: PathBuf,
+    pub socket_path: String,
 
     /// Security policy (read-only or read-write)
     pub security_policy: SecurityPolicy,
@@ -48,7 +50,7 @@ impl AimxConfig {
     /// - Socket permissions: 0o600 (owner-only)
     pub fn uds_default() -> Self {
         Self {
-            socket_path: PathBuf::from("/tmp/aimdb.sock"),
+            socket_path: String::from("/tmp/aimdb.sock"),
             security_policy: SecurityPolicy::ReadOnly,
             max_connections: 16,
             max_subs_per_connection: 32,
@@ -58,7 +60,7 @@ impl AimxConfig {
     }
 
     /// Sets the socket path
-    pub fn socket_path(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn socket_path(mut self, path: impl Into<String>) -> Self {
         self.socket_path = path.into();
         self
     }
@@ -210,7 +212,7 @@ mod tests {
     #[cfg(feature = "std")]
     fn test_default_config() {
         let config = AimxConfig::uds_default();
-        assert_eq!(config.socket_path, PathBuf::from("/tmp/aimdb.sock"));
+        assert_eq!(config.socket_path, "/tmp/aimdb.sock");
         assert_eq!(config.max_connections, 16);
         assert_eq!(config.max_subs_per_connection, 32);
         assert!(matches!(config.security_policy, SecurityPolicy::ReadOnly));
@@ -227,7 +229,7 @@ mod tests {
             .auth_token("secret-token")
             .socket_permissions(0o660);
 
-        assert_eq!(config.socket_path, PathBuf::from("/var/run/aimdb.sock"));
+        assert_eq!(config.socket_path, "/var/run/aimdb.sock");
         assert_eq!(config.max_connections, 32);
         assert_eq!(config.max_subs_per_connection, 8);
         assert_eq!(config.auth_token, Some("secret-token".to_string()));

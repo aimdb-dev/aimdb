@@ -1,8 +1,17 @@
-//! Record metadata types for remote introspection
+//! Record metadata types for remote introspection (feature `remote-access`).
+//!
+//! [`RecordMetadata`] describes a registered record's runtime state — buffer
+//! configuration, producer/consumer counts, the `writable` flag, and
+//! (feature-gated) buffer metrics / stage profiling — for the AimX `record.list`
+//! response. Computed on demand from a record's static structure; core keeps no
+//! per-record metadata state.
 
+use alloc::format;
+use alloc::string::{String, ToString};
+#[cfg(feature = "profiling")]
+use alloc::vec::Vec;
 use core::any::TypeId;
 use serde::{Deserialize, Serialize};
-use std::string::String;
 
 use crate::graph::RecordOrigin;
 use crate::record_id::{RecordId, RecordKey};
@@ -10,7 +19,7 @@ use crate::record_id::{RecordId, RecordKey};
 /// Metadata about a registered record type
 ///
 /// Provides information for remote introspection, including buffer
-/// configuration, producer/consumer counts, and timestamps.
+/// configuration and producer/consumer counts.
 ///
 /// When the `metrics` feature is enabled, additional fields are included
 /// for buffer-level statistics (produced_count, consumed_count, etc.).
@@ -47,13 +56,6 @@ pub struct RecordMetadata {
     /// Whether write operations are permitted for this record
     pub writable: bool,
 
-    /// When the record was registered (ISO 8601)
-    pub created_at: String,
-
-    /// Last update timestamp (ISO 8601), None if never updated
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_update: Option<String>,
-
     /// Number of outbound connector links registered
     pub outbound_connector_count: usize,
 
@@ -83,7 +85,7 @@ pub struct RecordMetadata {
     /// `profiling` feature is enabled and any stage has been registered.
     #[cfg(feature = "profiling")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stage_profiling: Option<std::vec::Vec<crate::profiling::StageProfilingInfo>>,
+    pub stage_profiling: Option<Vec<crate::profiling::StageProfilingInfo>>,
 }
 
 impl RecordMetadata {
@@ -100,7 +102,6 @@ impl RecordMetadata {
     /// * `producer_count` - Number of producers
     /// * `consumer_count` - Number of consumers
     /// * `writable` - Whether writes are permitted
-    /// * `created_at` - Creation timestamp (ISO 8601)
     /// * `outbound_connector_count` - Number of outbound connectors
     #[allow(clippy::too_many_arguments)]
     pub fn new<K: RecordKey>(
@@ -114,7 +115,6 @@ impl RecordMetadata {
         producer_count: usize,
         consumer_count: usize,
         writable: bool,
-        created_at: String,
         outbound_connector_count: usize,
     ) -> Self {
         Self {
@@ -128,8 +128,6 @@ impl RecordMetadata {
             producer_count,
             consumer_count,
             writable,
-            created_at,
-            last_update: None,
             outbound_connector_count,
             #[cfg(feature = "metrics")]
             produced_count: None,
@@ -142,18 +140,6 @@ impl RecordMetadata {
             #[cfg(feature = "profiling")]
             stage_profiling: None,
         }
-    }
-
-    /// Sets the last update timestamp
-    pub fn with_last_update(mut self, timestamp: String) -> Self {
-        self.last_update = Some(timestamp);
-        self
-    }
-
-    /// Sets the last update timestamp from an Option
-    pub fn with_last_update_opt(mut self, timestamp: Option<String>) -> Self {
-        self.last_update = timestamp;
-        self
     }
 
     /// Sets buffer metrics from a snapshot (metrics feature only)
@@ -176,7 +162,7 @@ impl RecordMetadata {
     #[cfg(feature = "profiling")]
     pub fn with_stage_profiling(
         mut self,
-        stages: std::vec::Vec<crate::profiling::StageProfilingInfo>,
+        stages: Vec<crate::profiling::StageProfilingInfo>,
     ) -> Self {
         if !stages.is_empty() {
             self.stage_profiling = Some(stages);
@@ -204,7 +190,6 @@ mod tests {
             1,
             2,
             false,
-            "2025-10-31T10:00:00.000Z".to_string(),
             0,
         );
 
@@ -234,10 +219,8 @@ mod tests {
             1,
             1,
             true,
-            "2025-10-31T10:00:00.000Z".to_string(),
             2,
-        )
-        .with_last_update("2025-10-31T12:00:00.000Z".to_string());
+        );
 
         let json = serde_json::to_string(&metadata).unwrap();
         assert!(json.contains("\"record_id\":1"));

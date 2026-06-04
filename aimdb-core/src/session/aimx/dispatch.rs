@@ -1,10 +1,13 @@
-//! AimX server dispatch (`std`-only) — the method semantics of AimX remote
-//! access, served on the shared session engine (`serve`/`run_session`).
+//! AimX server dispatch (`no_std + alloc`; features `connector-session` +
+//! `remote-access`) — the method semantics of AimX remote access, served on the
+//! shared session engine (`serve`/`run_session`).
 //!
-//! `std`-gated because it reaches into core's `record.list` / JSON API (the
-//! `AnyRecord` JSON + metadata methods). A transport pairs this dispatch with the
-//! generic [`SessionServerConnector`](crate::session::SessionServerConnector) —
-//! see `aimdb-uds-connector`'s `UdsServer`.
+//! Reaches into core's `record.list` / JSON API (the `AnyRecord` JSON + metadata
+//! methods), which are gated on `remote-access` and de-std'd alongside this
+//! dispatch, so a board can serve a host over serial. A transport pairs this
+//! dispatch with the generic
+//! [`SessionServerConnector`](crate::session::SessionServerConnector) — see
+//! `aimdb-uds-connector`'s `UdsServer`.
 //!
 //! The role is split in two:
 //! - [`AimxDispatch`] — the shared half (one `Arc` per server): peer-only
@@ -15,8 +18,12 @@
 //! Param shapes follow the client ([`aimdb_client::AimxConnection`]):
 //! `record.get`/`record.set` take `{name[, value]}`, `write` takes `{value}`.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use hashbrown::HashMap;
 
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -300,7 +307,7 @@ where
         let (permissions, writable_records) = match &self.config.security_policy {
             SecurityPolicy::ReadOnly => (vec!["read".to_string()], Vec::new()),
             SecurityPolicy::ReadWrite { writable_records } => {
-                let existing: std::collections::HashSet<String> = self
+                let existing: hashbrown::HashSet<String> = self
                     .db
                     .list_records()
                     .into_iter()

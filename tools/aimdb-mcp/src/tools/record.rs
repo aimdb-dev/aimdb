@@ -66,11 +66,6 @@ struct RecordInfo {
     consumer_count: usize,
     /// Whether write operations are permitted
     writable: bool,
-    /// Creation timestamp (ISO 8601)
-    created_at: String,
-    /// Last update timestamp (ISO 8601)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_update: Option<String>,
     /// Number of outbound connector links
     outbound_connector_count: usize,
 }
@@ -124,8 +119,6 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
             producer_count: r.producer_count,
             consumer_count: r.consumer_count,
             writable: r.writable,
-            created_at: r.created_at,
-            last_update: r.last_update,
             outbound_connector_count: r.outbound_connector_count,
         })
         .collect();
