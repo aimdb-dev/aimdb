@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`list_records`, the `records` resource, and `query_schema` no longer emit `created_at` / `last_update` (Issue #120).** `aimdb-core` dropped per-record timestamp tracking from `RecordMetadata` (it kept no wall-clock state for the `no_std` AimX server), so the AimX `record.list` payload — and these MCP outputs derived from it — no longer carry those two fields. The `RecordInfo` struct drops them too. Every other record-metadata field is unchanged.
 - **Migrated to the engine-based `aimdb-client::AimxConnection` (Issue #39).** The connection pool and every tool now use `AimxConnection` instead of the retired `AimxClient`, speaking the reshaped **AimX-v2** protocol. Internal-only; no tool surface or behavior change (drain clients are still pooled per socket behind an `Arc<Mutex<AimxConnection>>`).
 
 ## [0.8.0] - 2026-05-22
