@@ -15,6 +15,7 @@ members = [
     "aimdb-knx-connector",
     "aimdb-websocket-connector",
     "aimdb-uds-connector",
+    "aimdb-serial-connector",
     "aimdb-ws-protocol",
     "aimdb-wasm-adapter",
     "tools/aimdb-cli",
@@ -25,6 +26,7 @@ members = [
     "examples/tokio-knx-connector-demo",
     "examples/embassy-mqtt-connector-demo",
     "examples/embassy-knx-connector-demo",
+    "examples/embassy-serial-connector-demo",
     "examples/sync-api-demo",
     "examples/remote-access-demo",
     "examples/weather-mesh-demo/weather-mesh-common",
@@ -71,12 +73,21 @@ anyhow = "1.0"
 # Serialization - extend with error handling
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
+# COBS framing for the serial connector (no_std; self-synchronizing 0x00-delimited
+# frames over a lossy/unframed byte medium).
+cobs = { version = "0.5.1", default-features = false }
+
+# Serial/UART transport for the tokio half of the serial connector (std only).
+tokio-serial = "5.4.5"
+
 # Basic observability
 tracing = { version = "0.1", default-features = false }
 
 # Async utilities
 futures = "0.3"
-futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "alloc",
+] }
 
 # CLI (for aimdb-cli)
 clap = { version = "4.0", features = ["derive"] }
@@ -127,7 +138,7 @@ embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 embedded-hal-bus = { version = "0.2", features = ["async"] }
 embedded-io = { version = "0.6.0" }
-embedded-io-async = { version = "0.6.1" }
+embedded-io-async = { version = "0.7.0" }
 embedded-nal-async = "0.8.0"
 embedded-storage = "0.3.1"
 
