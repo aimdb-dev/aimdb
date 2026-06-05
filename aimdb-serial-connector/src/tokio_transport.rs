@@ -125,6 +125,13 @@ impl Dialer for SerialDialer {
             let stream = tokio_serial::new(&self.path, self.baud)
                 .open_native_async()
                 .map_err(|_| TransportError::Io)?;
+            // Discard any bytes left in the OS input buffer by a previous session
+            // (e.g. a half-read reply from a killed client). Otherwise the first
+            // frame is a stale leftover that fails to decode and desyncs the stream
+            // until the next COBS sentinel — a transient `Internal` on the first
+            // call or two.
+            use tokio_serial::SerialPort;
+            let _ = stream.clear(tokio_serial::ClearBuffer::Input);
             Ok(Box::new(TokioSerialConnection::new(stream)) as Box<dyn Connection>)
         })
     }

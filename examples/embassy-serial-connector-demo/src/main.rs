@@ -31,6 +31,7 @@
 
 extern crate alloc;
 
+use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, Producer};
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_serial_connector::embassy_transport::SerialServer;
@@ -50,10 +51,16 @@ bind_interrupts!(struct Irqs {
     USART3 => usart::BufferedInterruptHandler<peripherals::USART3>;
 });
 
-/// The record the board exposes over serial.
+/// A read-only record the board produces (incrementing counter).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Counter {
     value: u64,
+}
+
+/// A writable config-style record (no producer → remotely settable via `record.set`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Setting {
+    level: u64,
 }
 
 /// Drive a value into `counter` once per second.
@@ -130,12 +137,20 @@ async fn main(spawner: Spawner) {
     .unwrap();
     let (tx, rx) = uart.split();
 
-    // Build the db: one remotely-readable `counter` record, served over the UART.
+    // Build the db: a read-only `counter` and a writable `setting`, served over the
+    // UART. The ReadWrite policy makes `setting` settable via `record.set`.
+    let mut policy = SecurityPolicy::read_write();
+    policy.allow_write_key("setting");
     let runtime = alloc::sync::Arc::new(EmbassyAdapter::default());
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector(SerialServer::new(rx, tx));
+        .with_connector(SerialServer::new(rx, tx).security_policy(policy));
     builder.configure::<Counter>("counter", |reg| {
+        reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<Setting>("setting", |reg| {
+        // No producer → remotely writable.
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access();
     });
@@ -147,6 +162,8 @@ async fn main(spawner: Spawner) {
     let producer = db.producer::<Counter>("counter").expect("producer");
     spawner.spawn(unwrap!(counter_task(producer)));
 
-    info!("serving AimX over USART3 / ST-LINK VCP (record: counter) — connect the host now");
+    info!(
+        "serving AimX over USART3 / ST-LINK VCP (records: counter, setting) — connect the host now"
+    );
     db_runner.run().await;
 }

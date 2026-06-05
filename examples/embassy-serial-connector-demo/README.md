@@ -68,6 +68,21 @@ over serial:
 ...
 ```
 
+**4. Write a record** over the line (`record.set`). The board exposes a writable
+`setting` record (no producer, ReadWrite policy); this sets it and reads it back:
+
+```bash
+cargo run -p aimdb-serial-connector --example serial_demo \
+    --features _test-tokio -- set /dev/cu.usbmodem14303 115200
+```
+
+```
+[set] record.set setting={"level":1} -> {"value":{"level":1}}
+[set] record.get setting    -> {"level":1}
+[set] record.set setting={"level":2} -> {"value":{"level":2}}
+...
+```
+
 ## No board? Smoke it over a PTY pair
 
 The host example is dual-mode, so two host processes can talk over a virtual serial
