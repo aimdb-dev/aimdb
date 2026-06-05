@@ -102,8 +102,14 @@ where
         // satisfy the `Send` `BoxFut` return type.
         Box::pin(SendFutureWrapper(async move {
             loop {
-                if let Some(frame) = self.acc.next_frame() {
-                    return Ok(Some(frame.map_err(|_| TransportError::Io)?));
+                // COBS is self-synchronizing: a chunk that fails to decode is line
+                // noise or a mid-stream join, not a fatal transport error. The
+                // accumulator has already consumed it, so skip it and resync on the
+                // next sentinel rather than tearing down the session.
+                match self.acc.next_frame() {
+                    Some(Ok(frame)) => return Ok(Some(frame)),
+                    Some(Err(_)) => continue,
+                    None => {}
                 }
                 let mut chunk = [0u8; READ_CHUNK];
                 match self.rx.read(&mut chunk).await {
@@ -356,7 +362,7 @@ where
 
             // Apply the security policy's writable marking so `record.list` reports
             // the `writable` flag (the dispatch also enforces it).
-            apply_writable(db, &self.config);
+            crate::apply_writable(db, &self.config);
 
             let session_config = SessionConfig {
                 limits: SessionLimits {
@@ -397,20 +403,5 @@ fn connector_consumed() -> DbError {
         parameter: String::from("serial connector already built"),
         #[cfg(not(feature = "std"))]
         _parameter: (),
-    }
-}
-
-/// Mark each record named in the policy's writable set as writable, so
-/// `record.list` advertises the `writable` flag. (Mirrors the UDS connector.)
-fn apply_writable<R>(db: &AimDb<R>, config: &AimxConfig)
-where
-    R: RuntimeAdapter + 'static,
-{
-    for key in config.security_policy.writable_records() {
-        if let Some(id) = db.inner().resolve_str(&key) {
-            if let Some(storage) = db.inner().storage(id) {
-                storage.set_writable_erased(true);
-            }
-        }
     }
 }

@@ -129,3 +129,28 @@ async fn aimx_roundtrips_over_the_serial_transport() {
         "record.list returns the configured records: {records}"
     );
 }
+
+/// A chunk that fails to COBS-decode (line noise, or bytes from a session we
+/// joined mid-stream) must not kill the connection: `recv` drops it and resyncs on
+/// the next sentinel, yielding the following good frame instead of erroring.
+#[tokio::test]
+async fn recv_resyncs_past_a_corrupt_frame() {
+    use aimdb_serial_connector::framing::{encode_frame, DELIM};
+    use tokio::io::AsyncWriteExt;
+
+    let (mut peer, conn_end) = tokio::io::duplex(1024);
+    let mut conn = TokioSerialConnection::new(conn_end);
+
+    // `0x05` is a COBS code byte promising four more bytes that never arrive, so the
+    // delimited chunk fails to decode; follow it with a valid frame.
+    let mut wire = vec![0x05, DELIM];
+    encode_frame(b"after-noise", &mut wire);
+    peer.write_all(&wire).await.expect("write wire");
+
+    let frame = conn
+        .recv()
+        .await
+        .expect("recv must not error on a bad frame")
+        .expect("a frame after the noise");
+    assert_eq!(frame, b"after-noise");
+}

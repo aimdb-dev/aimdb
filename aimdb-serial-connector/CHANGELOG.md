@@ -22,11 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a single write larger than its TX ring), so a frame bigger than the buffer —
   e.g. a `record.list` reply — would otherwise fail the whole send and drop the
   session. Chunking sends a frame of any length given a TX buffer ≥ 64 bytes.
+- **An undecodable frame is skipped, not fatal.** `recv` drops a chunk that fails
+  to COBS-decode (line noise, or bytes from a session joined mid-stream) and
+  resyncs on the next sentinel rather than returning a transport error — so
+  transient corruption costs one frame, not the whole session. This matters most on
+  Embassy, where the default `reconnect: false` over a moved-in UART means a fatal
+  read error could never recover.
 - **The tokio `SerialDialer` flushes the OS input buffer on connect.** A real serial
   port retains bytes across opens, so a half-read reply left by a previous (killed)
   session would otherwise be read as a stale first frame — failing to decode and
-  desyncing the stream until the next COBS sentinel (a transient error on the first
-  call or two). Flushing on connect gives every session a clean start.
+  desyncing the stream until the next COBS sentinel (a skipped frame or two of
+  churn, per the resync above). Flushing on connect avoids even that, giving every
+  session a clean start.
 - **Validated end-to-end on an STM32H563ZI Nucleo** over the ST-LINK VCP:
   `record.list` / `record.get` / `record.set` and streaming subscriptions all
   round-trip MCU↔host.

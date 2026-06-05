@@ -9,7 +9,7 @@ the real Embassy serial transport (COBS framing over `embedded-io-async`).
 ┌────────────────────────────┐         USART3 (PD8/PD9)          ┌──────────────────────┐
 │ STM32H563ZI (this firmware)│  ⇄  ST-LINK Virtual COM Port  ⇄   │ host: serial_demo    │
 │ SerialServer + AimxDispatch│        = /dev/ttyACM0             │ AimX client (RPC)    │
-│ record: `counter` (++/sec) │                                   │ record.list/get loop │
+│ records: counter + setting │                                   │ record.list/get loop │
 └────────────────────────────┘                                   └──────────────────────┘
 ```
 
@@ -44,7 +44,7 @@ cargo build            # → ../../target/thumbv8m.main-none-eabihf/debug/embass
 
 ```bash
 ./flash.sh             # = probe-rs run --chip STM32H563ZITx <binary>
-# RTT shows: "serving AimX over USART3 / ST-LINK VCP (record: counter) — connect the host now"
+# RTT shows: "serving AimX over USART3 / ST-LINK VCP (records: counter, setting) — connect the host now"
 ```
 
 **3. Query it from the host** over the VCP (run from the **workspace root** — the
@@ -61,7 +61,7 @@ Expected output — the `counter` values are produced **on the MCU** and read ba
 over serial:
 
 ```
-[client] record.list = [{"buffer_type":"single_latest",...,"record_key":"counter","type_id":"TypeId(0x…)","writable":false}]
+[client] record.list = [{...,"record_key":"counter","writable":false},{...,"record_key":"setting","writable":true}]
 [client] counter = {"value":173}
 [client] counter = {"value":174}
 [client] counter = {"value":175}

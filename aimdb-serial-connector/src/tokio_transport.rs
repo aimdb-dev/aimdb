@@ -63,8 +63,14 @@ where
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
         Box::pin(async move {
             loop {
-                if let Some(frame) = self.acc.next_frame() {
-                    return Ok(Some(frame.map_err(|_| TransportError::Io)?));
+                // COBS is self-synchronizing: a chunk that fails to decode is line
+                // noise or a mid-stream join, not a fatal transport error. The
+                // accumulator has already consumed it, so skip it and resync on the
+                // next sentinel rather than tearing down the session.
+                match self.acc.next_frame() {
+                    Some(Ok(frame)) => return Ok(Some(frame)),
+                    Some(Err(_)) => continue,
+                    None => {}
                 }
                 let mut chunk = [0u8; READ_CHUNK];
                 match self.stream.read(&mut chunk).await {
@@ -268,7 +274,7 @@ where
                 move |db: &AimDb<R>| -> Arc<dyn Dispatch> {
                     // Apply the security policy's writable marking so `record.list`
                     // reports the `writable` flag (the dispatch also enforces it).
-                    apply_writable(db, &dispatch_config);
+                    crate::apply_writable(db, &dispatch_config);
                     Arc::new(AimxDispatch::new(
                         Arc::new(db.clone()),
                         dispatch_config.clone(),
@@ -306,19 +312,4 @@ fn open_serial_listener(path: &str, baud: u32) -> DbResult<SerialListener> {
             source: std::io::Error::other(e),
         })?;
     Ok(SerialListener::new(stream))
-}
-
-/// Mark each record named in the policy's writable set as writable, so
-/// `record.list` advertises the `writable` flag. (Mirrors the UDS connector.)
-fn apply_writable<R>(db: &AimDb<R>, config: &AimxConfig)
-where
-    R: RuntimeAdapter + 'static,
-{
-    for key in config.security_policy.writable_records() {
-        if let Some(id) = db.inner().resolve_str(&key) {
-            if let Some(storage) = db.inner().storage(id) {
-                storage.set_writable_erased(true);
-            }
-        }
-    }
 }
