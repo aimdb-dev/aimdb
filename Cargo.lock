@@ -266,7 +266,6 @@ dependencies = [
  "embassy-time-driver",
  "embedded-io-async 0.7.0",
  "futures",
- "futures-util",
  "serde",
  "serde_json",
  "thiserror 2.0.17",

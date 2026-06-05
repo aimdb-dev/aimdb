@@ -4,7 +4,7 @@
 //! Transport-agnostic: exercises only [`framing`](aimdb_serial_connector::framing),
 //! so it runs under the crate's default features (no runtime needed).
 
-use aimdb_serial_connector::framing::{encode_frame, FrameAccumulator, DELIM};
+use aimdb_serial_connector::framing::{encode_frame, FrameAccumulator, FrameError, DELIM};
 
 /// Encode several payloads into one byte stream, then feed that stream to a fresh
 /// accumulator in `chunk`-sized slices and collect every frame it yields.
@@ -71,6 +71,50 @@ fn encoded_frame_never_contains_the_sentinel_except_the_terminator() {
         0,
         "the COBS body is free of the sentinel byte"
     );
+}
+
+#[test]
+fn caps_buffered_bytes_and_resyncs_after_overflow() {
+    // A stream that never delimits must not buffer without bound (an OOM on a small
+    // embedded heap): once an un-delimited run exceeds the cap, the accumulator
+    // drops it (one `FrameError`) and resyncs on the next sentinel.
+    let mut acc = FrameAccumulator::with_max_frame(16);
+
+    // 40 bytes of sentinel-free noise — no frame boundary in sight.
+    acc.push_bytes(&[0x42; 40]);
+    assert_eq!(
+        acc.next_frame(),
+        Some(Err(FrameError)),
+        "overflow is reported"
+    );
+    // The oversized run was dropped, not retained for a retry.
+    assert!(acc.next_frame().is_none());
+
+    // The tail of the abandoned frame (more noise, then its terminating sentinel) is
+    // skipped, and the next whole frame is recovered intact.
+    acc.push_bytes(&[0x42; 5]);
+    acc.push_bytes(&[DELIM]);
+    let mut wire = Vec::new();
+    encode_frame(b"recovered", &mut wire);
+    acc.push_bytes(&wire);
+    assert_eq!(
+        acc.next_frame().expect("frame").expect("valid"),
+        b"recovered"
+    );
+    assert!(acc.next_frame().is_none());
+}
+
+#[test]
+fn frames_up_to_the_cap_still_pass() {
+    // The cap only fires on an *un-delimited* run; a delimited frame at the cap size
+    // round-trips normally.
+    let mut acc = FrameAccumulator::with_max_frame(4096);
+    let payload = vec![0x41u8; 512];
+    let mut wire = Vec::new();
+    encode_frame(&payload, &mut wire);
+    acc.push_bytes(&wire);
+    assert_eq!(acc.next_frame().expect("frame").expect("valid"), payload);
+    assert!(acc.next_frame().is_none());
 }
 
 #[test]

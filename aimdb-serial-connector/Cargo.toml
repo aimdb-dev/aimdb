@@ -28,7 +28,6 @@ tokio-runtime = [
     "aimdb-core/remote-access",
     "dep:tokio",
     "dep:tokio-serial",
-    "dep:futures-util",
 ]
 
 # Embedded half: `no_std + alloc`, generic over `embedded-io-async` UART halves.
@@ -69,9 +68,6 @@ cobs = { workspace = true, features = ["alloc"] }
 # --- tokio half (std) ---
 tokio = { workspace = true, optional = true, features = ["io-util"] }
 tokio-serial = { workspace = true, optional = true }
-futures-util = { version = "0.3", optional = true, default-features = false, features = [
-    "alloc",
-] }
 thiserror = { workspace = true, optional = true }
 
 # --- embassy half (no_std) ---
