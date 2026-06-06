@@ -360,6 +360,8 @@ examples:
 	cargo build --package tokio-knx-connector-demo
 	@printf "$(YELLOW)  → Building embassy-knx-connector-demo (embedded, embassy runtime)$(NC)\n"
 	cargo build --package embassy-knx-connector-demo --target thumbv7em-none-eabihf
+	@printf "$(YELLOW)  → Building embassy-serial-connector-demo (embedded, embassy runtime)$(NC)\n"
+	cargo build --package embassy-serial-connector-demo --target thumbv7em-none-eabihf
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-mesh-common$(NC)\n"
 	cargo build --package weather-mesh-common
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-hub (cloud aggregator)$(NC)\n"
