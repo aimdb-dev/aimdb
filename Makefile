@@ -102,6 +102,8 @@ build:
 	cargo build --package aimdb-websocket-connector --features "server,client"
 	@printf "$(YELLOW)  → Building UDS connector$(NC)\n"
 	cargo build --package aimdb-uds-connector
+	@printf "$(YELLOW)  → Building serial connector (tokio)$(NC)\n"
+	cargo build --package aimdb-serial-connector --no-default-features --features "tokio-runtime"
 	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
 	cargo build --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
 
@@ -165,10 +167,14 @@ test:
 	cargo test --package aimdb-websocket-connector --no-default-features --features "client" --lib
 	@printf "$(YELLOW)  → Testing UDS connector$(NC)\n"
 	cargo test --package aimdb-uds-connector
+	@printf "$(YELLOW)  → Testing serial connector (tokio: COBS framing + AimX round-trip over a duplex)$(NC)\n"
+	cargo test --package aimdb-serial-connector --no-default-features --features "_test-tokio"
+	@printf "$(YELLOW)  → Testing serial connector (embassy: COBS framing + client-engine smoke on the EmbassyAdapter clock)$(NC)\n"
+	cargo test --package aimdb-serial-connector --no-default-features --features "embassy-runtime"
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-single-latest-async; do \
+	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-single-latest-async; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -177,7 +183,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-single-latest-async; do \
+	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-single-latest-async; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -240,6 +246,12 @@ clippy:
 	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on UDS connector$(NC)\n"
 	cargo clippy --package aimdb-uds-connector --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on serial connector (tokio)$(NC)\n"
+	cargo clippy --package aimdb-serial-connector --no-default-features --features "_test-tokio" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on serial connector (embassy)$(NC)\n"
+	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on serial connector (embassy + defmt)$(NC)\n"
+	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 
@@ -326,6 +338,10 @@ test-embedded:
 	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
+	@printf "$(YELLOW)  → Checking aimdb-serial-connector (Embassy: full no_std AimX serial client+server) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-serial-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
+	@printf "$(YELLOW)  → Checking aimdb-serial-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-serial-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
 
 ## Example projects
 examples:
@@ -344,6 +360,8 @@ examples:
 	cargo build --package tokio-knx-connector-demo
 	@printf "$(YELLOW)  → Building embassy-knx-connector-demo (embedded, embassy runtime)$(NC)\n"
 	cargo build --package embassy-knx-connector-demo --target thumbv7em-none-eabihf
+	@printf "$(YELLOW)  → Building embassy-serial-connector-demo (embedded, embassy runtime)$(NC)\n"
+	cargo build --package embassy-serial-connector-demo --target thumbv7em-none-eabihf
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-mesh-common$(NC)\n"
 	cargo build --package weather-mesh-common
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-hub (cloud aggregator)$(NC)\n"

@@ -1,0 +1,104 @@
+[package]
+name = "aimdb-serial-connector"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "COBS-framed serial/UART transport connector for AimDB: record mirroring and remote access (AimX over serial), tokio + Embassy"
+keywords = ["aimdb", "connector", "serial", "uart", "embedded"]
+categories = ["embedded", "network-programming", "no-std"]
+
+[features]
+default = ["aimdb-core/alloc"]
+
+# std build (host). Pulls the tokio half's std bits.
+std = [
+    "aimdb-core/std",
+    "aimdb-core/alloc",
+    "aimdb-core/connector-session",
+    "thiserror",
+]
+
+# Host / gateway half: real serial via `tokio-serial`, riding the generic
+# `SessionClientConnector`/`SessionServerConnector` from core.
+tokio-runtime = [
+    "std",
+    "aimdb-core/connector-session",
+    "aimdb-core/remote-access",
+    "dep:tokio",
+    "dep:tokio-serial",
+]
+
+# Embedded half: `no_std + alloc`, generic over `embedded-io-async` UART halves.
+# Hand-rolls the `ConnectorBuilder` and force-`Send`s the engine futures via
+# `aimdb-embassy-adapter`'s `SendFutureWrapper`.
+embassy-runtime = [
+    "aimdb-core/alloc",
+    "aimdb-core/connector-session",
+    "aimdb-core/remote-access",
+    "dep:aimdb-embassy-adapter",
+    # `SendFutureWrapper` (force-`Send`) is always available on the no_std adapter;
+    # `embassy-time`/`-sync` give the `EmbassyAdapter` clock the smoke test runs on.
+    "aimdb-embassy-adapter/embassy-time",
+    "aimdb-embassy-adapter/embassy-sync",
+    "dep:embedded-io-async",
+]
+
+tracing = ["dep:tracing", "aimdb-core/tracing"]
+defmt = ["dep:defmt", "aimdb-core/defmt"]
+
+# Internal: host tokio integration tests need a concrete adapter. Kept off the
+# public `tokio-runtime` feature (a connector shouldn't pull an adapter in
+# production) and out of `[dev-dependencies]` (an unconditional tokio adapter
+# would force `aimdb-core/std` into the no_std `embassy-runtime` test build, where
+# the no_std `aimdb-embassy-adapter` can't compile against it). Run the tokio
+# tests with `--features _test-tokio`.
+_test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
+
+[dependencies]
+# AimX protocol (codec + dispatch) and the generic session connectors live in
+# core; this crate contributes only the serial transport triple + sugar.
+aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
+aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
+
+# Shared framing (no_std). `alloc` enables the `encode_vec`/`decode_vec` helpers.
+cobs = { workspace = true, features = ["alloc"] }
+
+# --- tokio half (std) ---
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+tokio-serial = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+# --- embassy half (no_std) ---
+aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+embedded-io-async = { workspace = true, optional = true }
+
+# --- test-only (see the `_test-tokio` feature) ---
+aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
+
+# --- logging ---
+tracing = { version = "0.1", optional = true }
+defmt = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Trivial host time driver so `embassy-time` links in the embassy smoke test.
+# (`aimdb-embassy-adapter` itself is the regular `embassy-runtime` optional dep —
+# keeping it out of dev-deps avoids a std/no_std unification clash with the tokio
+# tests, where it would otherwise compile against a std `aimdb-core`.)
+embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "io-util",
+] }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# The real-serial host demo needs a concrete adapter (and tokio-serial); gate it on
+# the internal test feature so it doesn't pull an adapter into the embassy build.
+[[example]]
+name = "serial_demo"
+required-features = ["_test-tokio"]

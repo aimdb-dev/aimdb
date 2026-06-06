@@ -1,0 +1,72 @@
+[package]
+edition = "2024"
+name = "embassy-serial-connector-demo"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "AimDB example: an STM32H563 serves AimX over a serial UART (ST-LINK VCP) via the serial connector + Embassy"
+
+[features]
+default = ["embassy-runtime"]
+embassy-runtime = []
+
+[dependencies]
+# AimDB
+aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
+    "derive",
+] }
+aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
+    "embassy-runtime",
+] }
+aimdb-executor = { path = "../../aimdb-executor", default-features = false, features = [
+    "embassy-types",
+] }
+aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-features = false, features = [
+    "embassy-runtime",
+    "defmt",
+] }
+
+# Embassy ecosystem - STM32H563ZI
+embassy-stm32 = { workspace = true, features = [
+    "defmt",
+    "stm32h563zi",
+    "memory-x",
+    "time-driver-any",
+    "unstable-pac",
+] }
+embassy-sync = { workspace = true, features = ["defmt"] }
+embassy-executor = { workspace = true, features = [
+    "platform-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-time = { workspace = true, features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+    "tick-hz-32_768",
+    "generic-queue-16",
+] }
+embassy-futures = { workspace = true }
+
+# Serde for the record type (RemoteSerialize = Serialize + DeserializeOwned)
+serde = { workspace = true }
+
+# Embedded debugging and logging
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+
+# Cortex-M runtime
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+critical-section = { workspace = true }
+static_cell = { workspace = true }
+
+# Embedded HAL / heap
+embedded-io-async = { workspace = true }
+embedded-alloc = { version = "0.6", features = ["llff"] }
+
+[package.metadata.embassy]
+build = [
+    { target = "thumbv8m.main-none-eabihf", artifact-dir = "out/examples/stm32h5" },
+]
