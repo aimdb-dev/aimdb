@@ -4,7 +4,7 @@ Command-line interface for introspecting and managing running AimDB instances.
 
 ## Overview
 
-The AimDB CLI is a thin client over the AimX v1 remote access protocol, providing intuitive commands for:
+The AimDB CLI is a thin client over the AimX v2 remote access protocol, providing intuitive commands for:
 - Discovering running AimDB instances
 - Listing and inspecting records
 - Getting current record values
@@ -96,6 +96,11 @@ aimdb record set server::Config '{"log_level":"debug","max_connections":100}'
 
 ## Command Reference
 
+All commands accept a global `--connect <ENDPOINT>` flag to choose the target
+instance (see [Connecting to an Instance](#connecting-to-an-instance)). When
+omitted, the CLI reads the `AIMDB_CONNECT` env var, then falls back to UDS
+auto-discovery. `instance list` is discovery-only and ignores `--connect`.
+
 ### Instance Commands
 
 #### `instance list`
@@ -109,20 +114,18 @@ Options:
 - `-f, --format <FORMAT>`: Output format (table, json, json-compact, yaml)
 
 #### `instance info`
-Show detailed information about a specific instance.
+Show detailed information about a specific instance. Works over any endpoint, not
+just discovered sockets.
 
 ```bash
-aimdb instance info [--socket <PATH>]
+aimdb [--connect <ENDPOINT>] instance info
 ```
-
-Options:
-- `-s, --socket <PATH>`: Socket path (uses auto-discovery if not specified)
 
 #### `instance ping`
 Test connection to an instance.
 
 ```bash
-aimdb instance ping [--socket <PATH>]
+aimdb [--connect <ENDPOINT>] instance ping
 ```
 
 ### Record Commands
@@ -135,7 +138,6 @@ aimdb record list [OPTIONS]
 ```
 
 Options:
-- `-s, --socket <PATH>`: Socket path (uses auto-discovery if not specified)
 - `-f, --format <FORMAT>`: Output format (table, json, json-compact, yaml)
 - `-w, --writable`: Show only writable records
 
@@ -150,7 +152,6 @@ Arguments:
 - `<RECORD>`: Record name (e.g., `server::Temperature`)
 
 Options:
-- `-s, --socket <PATH>`: Socket path
 - `-f, --format <FORMAT>`: Output format (default: json)
 
 #### `record set`
@@ -165,7 +166,6 @@ Arguments:
 - `<VALUE>`: JSON value to set
 
 Options:
-- `-s, --socket <PATH>`: Socket path
 - `--dry-run`: Validate but don't actually set
 
 **Note**: Only records without producers can be set remotely.
@@ -183,7 +183,6 @@ Arguments:
 - `<RECORD>`: Record name to watch
 
 Options:
-- `-s, --socket <PATH>`: Socket path
 - `-q, --queue-size <SIZE>`: Subscription queue size (default: 100)
 - `-c, --count <N>`: Maximum number of events to receive (0 = unlimited)
 - `-f, --full`: Show full pretty-printed JSON for each event
@@ -202,7 +201,6 @@ aimdb graph nodes [OPTIONS]
 ```
 
 Options:
-- `-s, --socket <PATH>`: Socket path (uses auto-discovery if not specified)
 - `-f, --format <FORMAT>`: Output format (table, json, json-compact, yaml)
 
 Example output:
@@ -224,7 +222,6 @@ aimdb graph edges [OPTIONS]
 ```
 
 Options:
-- `-s, --socket <PATH>`: Socket path
 - `-f, --format <FORMAT>`: Output format
 
 Example output:
@@ -245,7 +242,6 @@ aimdb graph order [OPTIONS]
 ```
 
 Options:
-- `-s, --socket <PATH>`: Socket path
 - `-f, --format <FORMAT>`: Output format
 
 Example output:
@@ -267,7 +263,6 @@ aimdb graph dot [OPTIONS]
 ```
 
 Options:
-- `-s, --socket <PATH>`: Socket path
 - `-n, --name <NAME>`: Graph name (default: "aimdb")
 
 Example:
@@ -289,15 +284,57 @@ The CLI supports multiple output formats:
 - **json-compact**: Single-line JSON for scripting
 - **yaml**: YAML format (requires `yaml` feature)
 
-## Socket Discovery
+## Connecting to an Instance
 
-The CLI automatically discovers running AimDB instances by scanning:
-- `/tmp` directory
-- `/var/run/aimdb` directory
+Pick the target instance with the global `--connect <ENDPOINT>` flag. The endpoint
+is a `scheme://` URL — the scheme selects the transport at runtime, the same way
+records pick one for links:
 
-Socket files must have a `.sock` extension.
+| Endpoint | Transport |
+|---|---|
+| `unix:///tmp/aimdb.sock` / `uds:///tmp/aimdb.sock` | Unix domain socket |
+| `/tmp/aimdb.sock` (bare path) | Unix domain socket (the `unix://` shorthand) |
+| `serial:///dev/ttyACM0?baud=115200` | Serial/UART (requires the `transport-serial` build feature) |
 
-You can override auto-discovery by specifying `--socket <PATH>` for any command.
+```bash
+# Explicit endpoint
+aimdb --connect unix:///tmp/aimdb.sock record list
+
+# Bare path shorthand
+aimdb --connect /tmp/aimdb.sock record list
+
+# Serial board (CLI built with --features transport-serial)
+aimdb --connect serial:///dev/ttyACM0?baud=115200 record list
+```
+
+An unknown scheme — or one whose transport isn't compiled into this binary — is
+rejected with a clear error listing the built-in schemes.
+
+### Resolution order
+
+When `--connect` is omitted, the endpoint is resolved in this order:
+
+1. `--connect <ENDPOINT>`
+2. `AIMDB_CONNECT` environment variable
+3. UDS auto-discovery — scans `/tmp` and `/var/run/aimdb` for `.sock` files and
+   uses the first running instance.
+
+```bash
+export AIMDB_CONNECT=unix:///tmp/aimdb.sock
+aimdb record list   # uses $AIMDB_CONNECT
+```
+
+`instance list` is always discovery-only and ignores `--connect`.
+
+### Transport features
+
+The Unix-socket transport is built in by default. The serial transport is
+**off by default** (it pulls `tokio-serial` → libudev on Linux); enable it when
+building:
+
+```bash
+cargo build --release -p aimdb-cli --features transport-serial
+```
 
 ## Error Handling
 
@@ -389,7 +426,9 @@ aimdb graph nodes --format json | jq '.[] | select(.origin == "transform")'
 
 ## Protocol
 
-The CLI uses the AimX v1 remote access protocol over Unix domain sockets with NDJSON message format.
+The CLI uses the AimX v2 remote access protocol with NDJSON message format, over
+whichever transport the `--connect` endpoint selects (Unix domain socket by
+default; serial/UART with the `transport-serial` feature).
 
 See `docs/design/008-M3-remote-access.md` for the full protocol specification.
 

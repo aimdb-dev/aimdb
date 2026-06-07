@@ -84,7 +84,9 @@ async fn read_instances_resource() -> McpResult<ResourceReadResult> {
         .into_iter()
         .map(|info| {
             json!({
-                "endpoint": info.endpoint.display().to_string(),
+                // Discovery is a Unix-socket scan; this output mirrors the
+                // `discover_instances` tool, which keeps the `socket_path` key.
+                "socket_path": info.endpoint.display().to_string(),
                 "server_version": info.server_version,
                 "protocol_version": info.protocol_version,
                 "permissions": info.permissions,

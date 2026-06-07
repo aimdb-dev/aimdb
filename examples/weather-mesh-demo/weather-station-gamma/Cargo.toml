@@ -89,10 +89,6 @@ embedded-alloc = { version = "0.6", features = ["llff"] }
 # Random number generation for simulation
 rand = { version = "0.10.1", default-features = false }
 
-[profile.release]
-opt-level = "s"
-lto = true
-debug = true
 
 [package.metadata.embassy]
 build = [

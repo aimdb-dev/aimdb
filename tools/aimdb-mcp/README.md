@@ -10,8 +10,8 @@ Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspectio
 - **LLM-Powered**: Natural language queries to AimDB instances
 - **Auto-Discovery**: Automatically finds running AimDB servers
 - **Schema Inference**: Infers JSON schemas from record values
-- **Live Subscriptions**: Subscribe to record updates with automatic data capture
-- **Rich Toolset**: 11 tools covering all AimDB operations
+- **Architecture Agent**: Propose, validate, and apply schema/topology changes from natural language
+- **Rich Toolset**: 30 tools covering introspection, record ops, the dependency graph, metrics/profiling, and architecture editing
 - **VS Code Integration**: Works seamlessly with GitHub Copilot
 
 ## Architecture
@@ -87,6 +87,59 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
+### Choosing the Target Instance
+
+Every tool that talks to an instance takes an optional `endpoint` argument — a
+`scheme://` URL that selects the transport at runtime:
+
+| Endpoint | Transport |
+|---|---|
+| `unix:///tmp/aimdb.sock` / `uds:///tmp/aimdb.sock` | Unix domain socket |
+| `/tmp/aimdb.sock` (bare path) | Unix domain socket (the `unix://` shorthand) |
+| `serial:///dev/ttyACM0?baud=115200` | Serial/UART (requires the `transport-serial` build feature) |
+
+When a tool's `endpoint` is omitted, the server resolves it in this order:
+
+1. The tool's explicit `endpoint` argument
+2. The `--connect <ENDPOINT>` startup flag
+3. The `AIMDB_CONNECT` environment variable
+
+This lets you pin a single instance once at startup so the LLM never has to pass a
+path. Pass it as a flag:
+
+```json
+{
+  "mcpServers": {
+    "aimdb": {
+      "command": "/path/to/aimdb-mcp",
+      "args": ["--connect", "unix:///tmp/aimdb-demo.sock"]
+    }
+  }
+}
+```
+
+…or via the environment:
+
+```json
+{
+  "mcpServers": {
+    "aimdb": {
+      "command": "/path/to/aimdb-mcp",
+      "args": [],
+      "env": { "AIMDB_CONNECT": "unix:///tmp/aimdb-demo.sock" }
+    }
+  }
+}
+```
+
+In `--public` mode any client-supplied `endpoint` is stripped, so tools fall back
+to the server-pinned `--connect` / `AIMDB_CONNECT` and clients cannot probe
+arbitrary paths on the host.
+
+The serial transport is **off by default** (it pulls `tokio-serial` → libudev on
+Linux); build with `cargo build -p aimdb-mcp --features transport-serial` to dial
+`serial://` endpoints.
+
 ### Test Server
 
 Start the example server:
@@ -106,13 +159,18 @@ This creates an instance at `/tmp/aimdb-demo.sock` with sample records.
      1. Starting demo server
      2. Asking Copilot "What AimDB instances are running?"
      3. Asking "What's the current temperature?"
-     4. Subscribing to updates
+     4. Draining a record for trend analysis
      
      Suggested location: assets/aimdb-mcp-demo.gif
      Usage: ![AimDB MCP in Action](../../assets/aimdb-mcp-demo.gif)
 -->
 
 ## Available Tools
+
+30 tools in total: 14 introspection & operations tools (below) and 16
+architecture-agent tools (see [Architecture Agent Tools](#architecture-agent-tools)).
+In `--public` mode only `discover_instances`, `list_records`, and `get_record` are
+advertised.
 
 ### 1. discover_instances
 
@@ -174,44 +232,44 @@ Query: "What's the schema of the Temperature record?"
 Result: JSON Schema with types, required fields, and example
 ```
 
-### 7. subscribe_record
+### 7. drain_record
 
-Subscribe to live record updates:
-
-```
-Query: "Subscribe to temperature for 50 samples"
-
-Action: Creates subscription, auto-saves updates to JSONL file
-```
-
-### 8. unsubscribe_record
-
-Stop an active subscription:
+Drain all values accumulated since the last drain (a destructive batch read):
 
 ```
-Query: "Stop subscription sub-abc123"
+Query: "Drain the temperature buffer and analyze the trend"
 
-Action: Unsubscribes and stops data collection
+Result: Values in chronological order; the first call is a cold start (empty)
 ```
 
-### 9. list_subscriptions
+### 8. graph_nodes
 
-Show active subscriptions:
-
-```
-Query: "What subscriptions are active?"
-
-Result: Subscription IDs, records, sample counts, file paths
-```
-
-### 10. get_notification_directory
-
-Get directory where subscription data is saved:
+List all nodes in the dependency graph:
 
 ```
-Query: "Where is subscription data saved?"
+Query: "Show me the record graph nodes"
 
-Result: Path to notification directory
+Result: Per-record origin (source/link/transform/passive), buffer config, and edge counts
+```
+
+### 9. graph_edges
+
+List the directed edges (data flow) between records:
+
+```
+Query: "How does data flow between records?"
+
+Result: Directed edges from sources through transforms to consumers
+```
+
+### 10. graph_topo_order
+
+Show the topological (spawn/initialization) order of records:
+
+```
+Query: "What order are records initialized in?"
+
+Result: Record keys ordered so dependencies precede their dependents
 ```
 
 ### 11. get_stage_profiling
@@ -267,6 +325,36 @@ Query: "Reset the buffer metrics counters."
 Result: { "reset": true }
 ```
 
+## Architecture Agent Tools
+
+Beyond live introspection, the server exposes an **architecture agent** for
+designing and editing an AimDB topology from natural language. It reads/writes
+`.aimdb/state.toml` and, on confirmation, generates Mermaid and Rust artefacts.
+These tools are not available in `--public` mode.
+
+The editing tools follow a **propose → resolve** flow: a `propose_*` /
+`remove_*` / `rename_record` call creates a *pending proposal* (shown to the user),
+which `resolve_proposal` then confirms, rejects, or revises.
+
+| Tool | Purpose |
+|---|---|
+| `get_architecture` | Return current state from `.aimdb/state.toml` (record count, validation summary, decision-log length). Run first when starting a session. |
+| `validate_against_instance` | Compare `state.toml` to a live instance; report missing records, buffer/capacity mismatches, and connector diffs. |
+| `propose_add_record` | Propose a new record (explicit, typed fields). |
+| `propose_modify_buffer` | Propose changing a record's buffer type / capacity. |
+| `propose_add_connector` | Propose adding a connector (MQTT, KNX, …) to a record. |
+| `propose_modify_fields` | Propose replacing a record's value-struct fields (all fields). |
+| `propose_modify_key_variants` | Propose updating a record's key variants. |
+| `propose_add_task` | Propose a new task definition. |
+| `propose_add_binary` | Propose a new binary definition. |
+| `remove_task` | Propose removing a task. |
+| `remove_binary` | Propose removing a binary (task definitions are preserved). |
+| `remove_record` | Propose removing a record. |
+| `rename_record` | Propose renaming a record (renames the generated key enum + value struct). |
+| `resolve_proposal` | Confirm / reject / revise a pending proposal; on confirm writes `state.toml` and regenerates artefacts. |
+| `save_memory` | Persist ideation context and rationale to `.aimdb/memory.md`. |
+| `reset_session` | Discard pending proposals and start over. |
+
 ## Schema Inference
 
 The MCP server can infer JSON schemas from record values:
@@ -297,73 +385,32 @@ The MCP server can infer JSON schemas from record values:
 - Nullable fields require multiple samples
 - Ask user for clarification on ambiguous cases
 
-## Subscriptions
-
-### How It Works
-
-1. LLM requests subscription with sample limit
-2. Server creates subscription and JSONL file
-3. Updates automatically saved as they arrive
-4. Auto-unsubscribes when limit reached
-5. File path returned for analysis
-
-### File Format
-
-Subscription data saved as JSONL (one JSON object per line):
-
-```jsonl
-{"timestamp":"2025-11-06T10:30:45.123Z","sequence_number":1,"value":{"celsius":23.5,"sensor_id":"sensor-001"}}
-{"timestamp":"2025-11-06T10:30:47.456Z","sequence_number":2,"value":{"celsius":23.6,"sensor_id":"sensor-001"}}
-{"timestamp":"2025-11-06T10:30:49.789Z","sequence_number":3,"value":{"celsius":23.7,"sensor_id":"sensor-001"}}
-```
-
-### Sample Limits
-
-**IMPORTANT:** Always ask user for sample limit before subscribing.
-
-Suggested limits:
-- **10-30 samples**: Quick check (~20-60 seconds)
-- **50-100 samples**: Short monitoring (~2-3 minutes)
-- **200-500 samples**: Extended analysis (~7-17 minutes)
-- **null**: Unlimited (requires explicit user confirmation)
-
-### File Location
-
-Default: `~/.local/share/aimdb-mcp/notifications/`
-
-Files named: `{subscription_id}.jsonl`
-
 ## Resources
 
-MCP server provides 5 resources:
+The server exposes two families of resources. Instance resources are discovered
+by scanning for Unix sockets, so their URIs are keyed by socket path:
 
-### 1. `aimdb://instances`
-List of all discovered instances
+- `aimdb://instances` — list of all discovered instances
+- `aimdb://instance/{socket_path}` — details about a specific instance
+- `aimdb://{socket_path}/records` — all records in an instance
 
-### 2. `aimdb://instance/{socket_path}`
-Details about specific instance
+Architecture resources expose the `.aimdb/` design state used by the architecture
+agent:
 
-### 3. `aimdb://records/{socket_path}`
-All records in an instance
-
-### 4. `aimdb://record/{socket_path}/{record_name}`
-Specific record value
-
-### 5. `aimdb://schema/{socket_path}/{record_name}`
-Inferred schema for record
+- `aimdb://architecture` — architecture overview
+- `aimdb://architecture/state` — full `state.toml` as JSON
+- `aimdb://architecture/conflicts` — conflicts vs. a live instance
+- `aimdb://architecture/conventions` — naming/design conventions
+- `aimdb://architecture/memory` — persisted ideation context (`memory.md`)
 
 ## Prompts
 
-MCP server provides 3 helper prompts:
+The server provides 4 helper prompts (not available in `--public` mode):
 
-### 1. `aimdb-quickstart`
-Introduction and common usage patterns
-
-### 2. `notification-directory`
-Information about subscription data storage
-
-### 3. `subscription-help`
-Guide to subscriptions and data analysis
+- `architecture_agent` — drive the propose → resolve design workflow
+- `onboarding` — introduction and common usage patterns
+- `breaking_change_review` — review the impact of a proposed schema change
+- `troubleshooting` — guided diagnostics for connection/record issues
 
 ## Protocol Details
 
@@ -372,9 +419,9 @@ Guide to subscriptions and data analysis
 - **Format**: NDJSON (newline-delimited JSON)
 
 ### Capabilities
-- **Tools**: ✓ (11 tools)
-- **Resources**: ✓ (5 resources)  
-- **Prompts**: ✓ (3 prompts)
+- **Tools**: ✓ (30 tools; only 3 advertised in `--public` mode)
+- **Resources**: ✓ (instances + architecture families)
+- **Prompts**: ✓ (4 prompts)
 - **Sampling**: ✗ (not supported)
 - **Logging**: ✓ (stderr)
 
@@ -422,14 +469,13 @@ LLM:
 ### Data Monitoring
 
 ```
-User: "Monitor temperature for 100 samples and analyze"
+User: "Monitor temperature and analyze the trend"
 
 LLM:
-1. subscribe_record(server::Temperature, 100)
-2. Waits for completion
-3. Reads JSONL file
-4. Analyzes: min, max, avg, trends, anomalies
-5. Generates report
+1. drain_record(server::Temperature)   # cold start — creates the reader, returns empty
+2. drain_record(server::Temperature)   # later: returns values accumulated since last drain
+3. Analyzes: min, max, avg, trends, anomalies
+4. Generates report
 ```
 
 ### Configuration Update
@@ -520,20 +566,20 @@ pub fn my_new_tool() -> Tool {
 - Future: Token-based auth planned
 
 ### Permissions
-- Read-only by default (list, get, subscribe)
+- Read-only by default (list, get, drain, graph)
 - Write operations (set) require writable records
+- Architecture-editing tools are disabled in `--public` mode
 - No shell access or arbitrary code execution
 
 ### Data Privacy
-- Subscription data stored locally
+- Architecture state (`.aimdb/`) is stored locally
 - No network communication
 - All data stays on local machine
 
 ## Performance
 
 - **Tool latency**: < 10ms for local operations
-- **Subscription overhead**: Minimal (async streaming)
-- **Memory usage**: ~5MB base + subscription buffers
+- **Memory usage**: ~5MB base
 - **Concurrent connections**: Single-threaded stdio
 
 ## Troubleshooting
@@ -560,18 +606,6 @@ ls /tmp/*.sock /var/run/aimdb/*.sock
 2. Verify permissions:
 ```bash
 stat /tmp/aimdb-demo.sock
-```
-
-### Subscription not working
-
-1. Check notification directory:
-```bash
-ls -la ~/.local/share/aimdb-mcp/notifications/
-```
-
-2. Verify disk space:
-```bash
-df -h ~/.local/share/
 ```
 
 ## References
