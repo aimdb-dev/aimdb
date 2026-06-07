@@ -59,15 +59,15 @@ pub async fn discover_instances(_args: Option<Value>) -> McpResult<Value> {
 /// Parameters for get_instance_info tool
 #[derive(Debug, Deserialize)]
 struct GetInstanceInfoParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
+    /// Endpoint URL or socket path of the AimDB instance (falls back to AIMDB_CONNECT env)
+    endpoint: Option<String>,
 }
 
 /// Result from get_instance_info tool
 #[derive(Debug, Serialize)]
 pub struct InstanceInfoResult {
-    /// Unix socket path
-    pub socket_path: String,
+    /// Endpoint the instance was reached at
+    pub endpoint: String,
     /// Server version
     pub server_version: String,
     /// Protocol version
@@ -90,20 +90,20 @@ pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
         Some(value) => serde_json::from_value(value)?,
         None => {
             return Err(crate::error::McpError::InvalidParams(
-                "Missing socket_path".into(),
+                "Missing endpoint".into(),
             ))
         }
     };
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    debug!("🔍 Getting instance info for: {}", socket_path);
+    debug!("🔍 Getting instance info for: {}", endpoint);
 
     // Get or create connection from pool (if available)
     let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&socket_path).await?
+        pool.get_connection(&endpoint).await?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&socket_path).await?
+        AimxConnection::connect(&endpoint).await?
     };
 
     // Get server info from the welcome message
@@ -111,7 +111,7 @@ pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
 
     // Convert to result format
     let result = InstanceInfoResult {
-        socket_path: socket_path.clone(),
+        endpoint: endpoint.clone(),
         server_version: server_info.server.clone(),
         protocol_version: server_info.version.clone(),
         permissions: server_info.permissions.clone(),
@@ -153,13 +153,13 @@ mod tests {
         let result = get_instance_info(None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.message().contains("Missing socket_path"));
+        assert!(err.message().contains("Missing endpoint"));
     }
 
     #[tokio::test]
     async fn test_get_instance_info_invalid_socket() {
         let params = serde_json::json!({
-            "socket_path": "/tmp/nonexistent.sock"
+            "endpoint": "/tmp/nonexistent.sock"
         });
         let result = get_instance_info(Some(params)).await;
         assert!(result.is_err());

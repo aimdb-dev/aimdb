@@ -13,24 +13,24 @@ use tracing::debug;
 
 #[derive(Debug, Deserialize)]
 struct GetBufferMetricsParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    endpoint: Option<String>,
     /// Substring matched against record names (e.g. `"Temperature"`).
     record_key: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct ResetBufferMetricsParams {
-    socket_path: Option<String>,
+    endpoint: Option<String>,
 }
 
-async fn connect(socket_path: &str) -> McpResult<AimxConnection> {
+async fn connect(endpoint: &str) -> McpResult<AimxConnection> {
     if let Some(pool) = super::connection_pool() {
-        pool.get_connection(socket_path)
+        pool.get_connection(endpoint)
             .await
             .map_err(McpError::Client)
     } else {
-        AimxConnection::connect(socket_path)
+        AimxConnection::connect(endpoint)
             .await
             .map_err(McpError::Client)
     }
@@ -43,9 +43,9 @@ pub async fn get_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
     debug!("get_buffer_metrics called");
     let params: GetBufferMetricsParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("get_buffer_metrics: {e}")))?;
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&socket_path).await?;
+    let client = connect(&endpoint).await?;
     let raw = client.list_records().await.map_err(McpError::Client)?;
 
     let matching: Vec<_> = raw
@@ -73,9 +73,9 @@ pub async fn reset_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
     debug!("reset_buffer_metrics called");
     let params: ResetBufferMetricsParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("reset_buffer_metrics: {e}")))?;
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&socket_path).await?;
+    let client = connect(&endpoint).await?;
     match client.reset_buffer_metrics().await {
         Ok(_) => Ok(json!({
             "reset": true,

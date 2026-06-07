@@ -2,10 +2,9 @@
 //!
 //! Commands for exploring the dependency graph of records in an AimDB instance.
 
+use crate::commands::connect_endpoint;
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
-use aimdb_client::discovery::find_instance;
-use aimdb_client::AimxConnection;
 use clap::Args;
 use serde_json::Value;
 
@@ -20,40 +19,24 @@ pub struct GraphCommand {
 pub enum GraphSubcommand {
     /// List all nodes in the dependency graph
     Nodes {
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-
         /// Output format
         #[arg(short, long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// List all edges in the dependency graph
     Edges {
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-
         /// Output format
         #[arg(short, long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// Show topological order of records
     Order {
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-
         /// Output format
         #[arg(short, long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
     /// Export graph in DOT format for visualization
     Dot {
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-
         /// Graph name for the DOT output
         #[arg(short, long, default_value = "aimdb")]
         name: String,
@@ -61,25 +44,18 @@ pub enum GraphSubcommand {
 }
 
 impl GraphCommand {
-    pub async fn execute(self) -> CliResult<()> {
+    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
         match self.subcommand {
-            GraphSubcommand::Nodes { socket, format } => {
-                list_nodes(socket.as_deref(), format).await
-            }
-            GraphSubcommand::Edges { socket, format } => {
-                list_edges(socket.as_deref(), format).await
-            }
-            GraphSubcommand::Order { socket, format } => {
-                show_topo_order(socket.as_deref(), format).await
-            }
-            GraphSubcommand::Dot { socket, name } => export_dot(socket.as_deref(), &name).await,
+            GraphSubcommand::Nodes { format } => list_nodes(endpoint, format).await,
+            GraphSubcommand::Edges { format } => list_edges(endpoint, format).await,
+            GraphSubcommand::Order { format } => show_topo_order(endpoint, format).await,
+            GraphSubcommand::Dot { name } => export_dot(endpoint, &name).await,
         }
     }
 }
 
-async fn list_nodes(socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
-    let client = AimxConnection::connect(&instance.socket_path).await?;
+async fn list_nodes(endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
+    let client = connect_endpoint(endpoint).await?;
 
     let nodes = client.graph_nodes().await?;
 
@@ -96,9 +72,8 @@ async fn list_nodes(socket: Option<&str>, format: OutputFormat) -> CliResult<()>
     Ok(())
 }
 
-async fn list_edges(socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
-    let client = AimxConnection::connect(&instance.socket_path).await?;
+async fn list_edges(endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
+    let client = connect_endpoint(endpoint).await?;
 
     let edges = client.graph_edges().await?;
 
@@ -115,9 +90,8 @@ async fn list_edges(socket: Option<&str>, format: OutputFormat) -> CliResult<()>
     Ok(())
 }
 
-async fn show_topo_order(socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
-    let client = AimxConnection::connect(&instance.socket_path).await?;
+async fn show_topo_order(endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
+    let client = connect_endpoint(endpoint).await?;
 
     let order = client.graph_topo_order().await?;
 
@@ -134,9 +108,8 @@ async fn show_topo_order(socket: Option<&str>, format: OutputFormat) -> CliResul
     Ok(())
 }
 
-async fn export_dot(socket: Option<&str>, name: &str) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
-    let client = AimxConnection::connect(&instance.socket_path).await?;
+async fn export_dot(endpoint: Option<&str>, name: &str) -> CliResult<()> {
+    let client = connect_endpoint(endpoint).await?;
 
     let nodes = client.graph_nodes().await?;
     let edges = client.graph_edges().await?;

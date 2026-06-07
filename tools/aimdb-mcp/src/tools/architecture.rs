@@ -773,8 +773,8 @@ pub async fn rename_record(args: Option<Value>) -> McpResult<Value> {
 
 #[derive(Debug, Deserialize)]
 struct ValidateInstanceParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    endpoint: Option<String>,
     #[serde(default)]
     state_path: Option<String>,
 }
@@ -786,7 +786,7 @@ pub async fn validate_against_instance(args: Option<Value>) -> McpResult<Value> 
     debug!("validate_against_instance called");
     let params: ValidateInstanceParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("validate_against_instance: {e}")))?;
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
 
     let state_path = params
         .state_path
@@ -803,7 +803,7 @@ pub async fn validate_against_instance(args: Option<Value>) -> McpResult<Value> 
         })?;
 
     // Connect and list live records
-    let client = AimxConnection::connect(&socket_path)
+    let client = AimxConnection::connect(&endpoint)
         .await
         .map_err(McpError::Client)?;
 

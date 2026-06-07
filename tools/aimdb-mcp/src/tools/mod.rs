@@ -16,17 +16,18 @@ pub mod schema;
 // Global connection pool (initialized once)
 static CONNECTION_POOL: OnceCell<ConnectionPool> = OnceCell::new();
 
-// Default socket path set by --socket at startup (takes precedence over AIMDB_SOCKET env var)
-static DEFAULT_SOCKET: OnceCell<String> = OnceCell::new();
+// Default endpoint set by --connect at startup (takes precedence over the
+// AIMDB_CONNECT env var)
+static DEFAULT_ENDPOINT: OnceCell<String> = OnceCell::new();
 
 /// Initialize the connection pool for tools
 pub fn init_connection_pool(pool: ConnectionPool) {
     CONNECTION_POOL.set(pool).ok();
 }
 
-/// Set the default socket path (called once at startup from --socket flag).
-pub fn set_default_socket(path: String) {
-    DEFAULT_SOCKET.set(path).ok();
+/// Set the default endpoint (called once at startup from the --connect flag).
+pub fn set_default_endpoint(endpoint: String) {
+    DEFAULT_ENDPOINT.set(endpoint).ok();
 }
 
 /// Get the connection pool
@@ -34,18 +35,20 @@ pub(crate) fn connection_pool() -> Option<&'static ConnectionPool> {
     CONNECTION_POOL.get()
 }
 
-/// Resolve the socket path from an explicit argument, the `--socket` flag, or
-/// the `AIMDB_SOCKET` env var (checked in that order).
+/// Resolve the endpoint from an explicit argument, the `--connect` flag, or the
+/// `AIMDB_CONNECT` env var (checked in that order). The value is a `scheme://`
+/// URL (`unix://PATH`, `serial://DEVICE?baud=N`) or a bare path.
 ///
 /// Returns an error if none are set.
-pub(crate) fn resolve_socket_path(explicit: Option<String>) -> crate::error::McpResult<String> {
+pub(crate) fn resolve_endpoint(explicit: Option<String>) -> crate::error::McpResult<String> {
     explicit
-        .or_else(|| DEFAULT_SOCKET.get().cloned())
-        .or_else(|| std::env::var("AIMDB_SOCKET").ok())
+        .or_else(|| DEFAULT_ENDPOINT.get().cloned())
+        .or_else(|| std::env::var("AIMDB_CONNECT").ok())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             crate::error::McpError::InvalidParams(
-                "Missing socket_path (pass it explicitly, use --socket, or set AIMDB_SOCKET env var)".into(),
+                "Missing endpoint (pass it explicitly, use --connect, or set AIMDB_CONNECT env var)"
+                    .into(),
             )
         })
 }

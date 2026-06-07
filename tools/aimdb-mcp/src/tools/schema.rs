@@ -9,8 +9,8 @@ use tracing::debug;
 /// Parameters for query_schema tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuerySchemaParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    pub socket_path: Option<String>,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    pub endpoint: Option<String>,
 
     /// Name of the record to query schema for
     pub record_name: String,
@@ -92,7 +92,7 @@ fn infer_json_schema(value: &Value) -> McpResult<Value> {
 /// by analyzing its current value. Returns the schema along with record metadata.
 ///
 /// # Parameters
-/// - `socket_path` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (required): Unix socket path to the AimDB instance
 /// - `record_name` (required): Name of the record to query
 /// - `include_example` (optional): Include current value as example (default: true)
 ///
@@ -109,21 +109,21 @@ pub async fn query_schema(args: Option<Value>) -> McpResult<Value> {
     // Parse parameters
     let params: QuerySchemaParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
 
     debug!(
         "📊 Querying schema for record '{}' at {}",
-        params.record_name, socket_path
+        params.record_name, endpoint
     );
 
     // Get or create connection from pool (if available)
     let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&socket_path)
+        pool.get_connection(&endpoint)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&socket_path)
+        AimxConnection::connect(&endpoint)
             .await
             .map_err(McpError::Client)?
     };
@@ -332,12 +332,12 @@ mod tests {
     #[test]
     fn test_query_schema_params_defaults() {
         let params: QuerySchemaParams = serde_json::from_value(json!({
-            "socket_path": "/tmp/test.sock",
+            "endpoint": "/tmp/test.sock",
             "record_name": "test::Record"
         }))
         .unwrap();
 
-        assert_eq!(params.socket_path, Some("/tmp/test.sock".to_string()));
+        assert_eq!(params.endpoint, Some("/tmp/test.sock".to_string()));
         assert_eq!(params.record_name, "test::Record");
         assert!(params.include_example); // Should default to true
     }
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn test_query_schema_params_explicit_example() {
         let params: QuerySchemaParams = serde_json::from_value(json!({
-            "socket_path": "/tmp/test.sock",
+            "endpoint": "/tmp/test.sock",
             "record_name": "test::Record",
             "include_example": false
         }))

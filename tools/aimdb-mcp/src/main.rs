@@ -22,19 +22,20 @@ struct Cli {
     #[arg(long)]
     public: bool,
 
-    /// Default Unix socket path for AimDB connections.
-    /// Tools will use this instead of requiring an explicit socket_path argument.
-    /// Equivalent to setting the AIMDB_SOCKET environment variable.
-    #[arg(long, value_name = "PATH")]
-    socket: Option<String>,
+    /// Default endpoint for AimDB connections: a `scheme://` URL (`unix://PATH`,
+    /// `serial://DEVICE?baud=N`) or a bare path. Tools use this instead of
+    /// requiring an explicit `endpoint` argument. Equivalent to setting the
+    /// AIMDB_CONNECT environment variable.
+    #[arg(long, value_name = "ENDPOINT")]
+    connect: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    if let Some(ref socket) = cli.socket {
-        aimdb_mcp::tools::set_default_socket(socket.clone());
+    if let Some(ref endpoint) = cli.connect {
+        aimdb_mcp::tools::set_default_endpoint(endpoint.clone());
     }
 
     // Initialize tracing
@@ -52,8 +53,8 @@ async fn main() {
     if cli.public {
         info!("🔒 Public mode: only read-only tools are available");
     }
-    if let Some(ref socket) = cli.socket {
-        info!("📎 Default socket: {}", socket);
+    if let Some(ref endpoint) = cli.connect {
+        info!("📎 Default endpoint: {}", endpoint);
     }
 
     // Create server and transport

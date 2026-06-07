@@ -56,6 +56,9 @@ serde_yaml = { version = "0.9", optional = true }
 [features]
 default = []
 yaml = ["serde_yaml"]
+# Add the serial transport to the endpoint resolver, so `--connect serial://…`
+# works. Off by default (pulls tokio-serial → libudev on Linux).
+transport-serial = ["aimdb-client/transport-serial"]
 
 [dev-dependencies]
 tokio-test = "0.4"

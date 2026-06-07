@@ -1,9 +1,8 @@
 //! Watch Command - Live Record Monitoring
 
+use crate::commands::connect_endpoint;
 use crate::error::CliResult;
 use crate::output::live;
-use aimdb_client::discovery::find_instance;
-use aimdb_client::AimxConnection;
 use clap::Args;
 use futures::StreamExt;
 use tokio::signal;
@@ -13,10 +12,6 @@ use tokio::signal;
 pub struct WatchCommand {
     /// Record name to watch
     pub record: String,
-
-    /// Socket path (optional, uses auto-discovery if not specified)
-    #[arg(short, long)]
-    pub socket: Option<String>,
 
     /// Queue size for subscription
     #[arg(short, long, default_value = "100")]
@@ -32,10 +27,10 @@ pub struct WatchCommand {
 }
 
 impl WatchCommand {
-    pub async fn execute(self) -> CliResult<()> {
+    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
         watch_record(
             &self.record,
-            self.socket.as_deref(),
+            endpoint,
             self.queue_size,
             self.count,
             self.full,
@@ -46,14 +41,13 @@ impl WatchCommand {
 
 async fn watch_record(
     record_name: &str,
-    socket: Option<&str>,
+    endpoint: Option<&str>,
     queue_size: usize,
     max_count: usize,
     show_full: bool,
 ) -> CliResult<()> {
     let _ = queue_size; // queue sizing is now an engine concern; kept as a CLI flag
-    let instance = find_instance(socket).await?;
-    let conn = AimxConnection::connect(&instance.socket_path).await?;
+    let conn = connect_endpoint(endpoint).await?;
 
     // Subscribe to the record (the engine routes updates back by request id; no
     // server-allocated subscription id to track).

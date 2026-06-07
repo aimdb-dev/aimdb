@@ -19,8 +19,9 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Connect to an AimDB instance (performs the `hello` handshake).
-//!     let conn = AimxConnection::connect("/tmp/aimdb.sock").await?;
+//!     // Connect to an AimDB instance by endpoint (a bare path is the `unix://`
+//!     // shorthand; `serial://DEVICE?baud=N` reaches a board). Performs `hello`.
+//!     let conn = AimxConnection::connect("unix:///tmp/aimdb.sock").await?;
 //!
 //!     // List all records
 //!     let records = conn.list_records().await?;
@@ -34,14 +35,20 @@
 //! }
 //! ```
 
+// Instance discovery is a Unix-socket filesystem scan, so it rides the UDS
+// transport feature.
+#[cfg(feature = "transport-uds")]
 pub mod discovery;
+pub mod endpoint;
 pub mod engine;
 pub mod error;
 pub mod protocol;
 
 // Re-export main types for convenience. `AimxConnection` is the engine-based
 // client (the synchronous `AimxClient` was retired with the AimX server port).
+#[cfg(feature = "transport-uds")]
 pub use discovery::{discover_instances, find_instance, InstanceInfo};
+pub use endpoint::{dial, parse_endpoint, ParsedEndpoint, Scheme};
 pub use engine::{AimxConnection, DrainResponse};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{

@@ -9,6 +9,9 @@
 //! - **server → client**: updating the server's `tele` record streams it back
 //!   through a subscription → the client's inbound producer (arbiter path).
 
+// Exercises the UDS transport end-to-end, so it rides that transport feature.
+#![cfg(feature = "transport-uds")]
+
 use std::sync::Arc;
 use std::time::Duration;
 

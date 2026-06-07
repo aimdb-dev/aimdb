@@ -5,6 +5,9 @@
 //! standing up an actual `AimDb` and proving the wire end-to-end through the
 //! shared session engine.
 
+// Exercises the UDS transport end-to-end, so it rides that transport feature.
+#![cfg(feature = "transport-uds")]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,7 +69,9 @@ async fn aimx_roundtrip_over_uds_production_server() {
         .expect("seed setting");
 
     // Connect: performs the `hello` handshake and captures the Welcome.
-    let conn = AimxConnection::connect(&sock).await.expect("connect");
+    let conn = AimxConnection::connect(sock.to_str().unwrap())
+        .await
+        .expect("connect");
     assert_eq!(conn.server_info().server, "aimdb");
     assert!(conn
         .server_info()
@@ -156,7 +161,9 @@ async fn record_get_on_ring_falls_back_to_drain() {
     let db = Arc::new(db);
     tokio::spawn(runner.run());
 
-    let conn = AimxConnection::connect(&sock).await.expect("connect");
+    let conn = AimxConnection::connect(sock.to_str().unwrap())
+        .await
+        .expect("connect");
     let producer = db.producer::<Reading>("stream").expect("producer");
 
     // First get opens the cursor; a fresh broadcast reader starts at the tail, so

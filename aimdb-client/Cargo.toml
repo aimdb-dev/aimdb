@@ -10,8 +10,15 @@ keywords = ["client", "protocol", "database", "remote", "rpc"]
 categories = ["database", "network-programming"]
 
 [features]
+default = ["transport-uds"]
 metrics = ["aimdb-core/metrics"]
 profiling = ["aimdb-core/profiling"]
+
+# Transports the endpoint resolver (`crate::endpoint`) can dial. Each gates its
+# connector dep + the matching `dial`/`parse` arm; an endpoint whose scheme isn't
+# compiled in is rejected at resolve time.
+transport-uds = ["dep:aimdb-uds-connector"]
+transport-serial = ["dep:aimdb-serial-connector"]
 
 [dependencies]
 # Core dependencies - protocol types from aimdb-core. `connector-session`
@@ -22,9 +29,12 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
     "connector-session",
 ] }
 
-# The UDS transport (`UdsDialer`) relocated out of core in Phase 6; the
-# engine-based client dials over it.
-aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector" }
+# Transports the resolver dials over (relocated out of core in Phase 6), each
+# behind its `transport-*` feature so a binary links only what it needs.
+aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector", optional = true }
+aimdb-serial-connector = { version = "0.1.0", path = "../aimdb-serial-connector", default-features = false, features = [
+    "tokio-runtime",
+], optional = true }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

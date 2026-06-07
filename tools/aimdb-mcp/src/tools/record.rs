@@ -10,15 +10,15 @@ use tracing::debug;
 /// Parameters for list_records tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ListRecordsParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    endpoint: Option<String>,
 }
 
 /// Parameters for get_record tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GetRecordParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    endpoint: Option<String>,
     /// Name of the record to retrieve
     record_name: String,
 }
@@ -26,8 +26,8 @@ struct GetRecordParams {
 /// Parameters for set_record tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetRecordParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    endpoint: Option<String>,
     /// Name of the record to update
     record_name: String,
     /// New value for the record (JSON)
@@ -37,8 +37,8 @@ struct SetRecordParams {
 /// Parameters for drain_record tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DrainRecordParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_SOCKET env)
-    socket_path: Option<String>,
+    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    endpoint: Option<String>,
     /// Name of the record to drain
     record_name: String,
     /// Maximum number of values to drain (optional)
@@ -76,7 +76,7 @@ struct RecordInfo {
 /// registered records with their metadata.
 ///
 /// # Parameters
-/// - `socket_path` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (required): Unix socket path to the AimDB instance
 ///
 /// # Returns
 /// - Array of records with metadata
@@ -87,17 +87,17 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
     let params: ListRecordsParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
 
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
-    debug!("🔌 Connecting to {}", socket_path);
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
+    debug!("🔌 Connecting to {}", endpoint);
 
     // Get or create connection from pool (if available)
     let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&socket_path)
+        pool.get_connection(&endpoint)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&socket_path)
+        AimxConnection::connect(&endpoint)
             .await
             .map_err(McpError::Client)?
     };
@@ -134,7 +134,7 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
 /// of the named record.
 ///
 /// # Parameters
-/// - `socket_path` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (required): Unix socket path to the AimDB instance
 /// - `record_name` (required): Name of the record to retrieve
 ///
 /// # Returns
@@ -146,10 +146,10 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
     let params: GetRecordParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
 
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
     debug!(
         "🔌 Connecting to {} to get record '{}'",
-        socket_path, params.record_name
+        endpoint, params.record_name
     );
 
     // Reuse the *persistent* connection (the same pool `drain_record` uses) rather
@@ -164,7 +164,7 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
         .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
 
     let client_arc = pool
-        .get_drain_client(&socket_path)
+        .get_drain_client(&endpoint)
         .await
         .map_err(McpError::Client)?;
 
@@ -198,7 +198,7 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
         // A genuine connection/protocol error (not a warming ring cursor) means the
         // persistent client is unhealthy — drop it so the next call reconnects.
         if !cursor_warming {
-            let socket = socket_path.clone();
+            let socket = endpoint.clone();
             let pool = pool.clone();
             tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
         }
@@ -212,7 +212,7 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
 /// Connects to the specified socket and updates the value of a writable record.
 ///
 /// # Parameters
-/// - `socket_path` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (required): Unix socket path to the AimDB instance
 /// - `record_name` (required): Name of the record to update
 /// - `value` (required): New value for the record (JSON)
 ///
@@ -225,20 +225,20 @@ pub async fn set_record(args: Option<Value>) -> McpResult<Value> {
     let params: SetRecordParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
 
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
     debug!(
         "🔌 Connecting to {} to set record '{}'",
-        socket_path, params.record_name
+        endpoint, params.record_name
     );
 
     // Get or create connection from pool (if available)
     let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&socket_path)
+        pool.get_connection(&endpoint)
             .await
             .map_err(McpError::Client)?
     } else {
         // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&socket_path)
+        AimxConnection::connect(&endpoint)
             .await
             .map_err(McpError::Client)?
     };
@@ -261,7 +261,7 @@ pub async fn set_record(args: Option<Value>) -> McpResult<Value> {
 /// of accumulated data.
 ///
 /// # Parameters
-/// - `socket_path` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (required): Unix socket path to the AimDB instance
 /// - `record_name` (required): Name of the record to drain
 /// - `limit` (optional): Maximum number of values to drain
 ///
@@ -274,10 +274,10 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
     let params: DrainRecordParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("Invalid parameters: {}", e)))?;
 
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
     debug!(
         "🔌 Connecting to {} to drain record '{}'",
-        socket_path, params.record_name
+        endpoint, params.record_name
     );
 
     // Use persistent drain client so the server-side drain reader persists
@@ -286,7 +286,7 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
         .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
 
     let client_arc = pool
-        .get_drain_client(&socket_path)
+        .get_drain_client(&endpoint)
         .await
         .map_err(McpError::Client)?;
 
@@ -299,7 +299,7 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
             .await
             .map_err(|e| {
                 // On connection error, invalidate so next call reconnects
-                let socket = socket_path.clone();
+                let socket = endpoint.clone();
                 let pool = pool.clone();
                 tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
                 McpError::Client(e)
@@ -308,7 +308,7 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
             .drain_record(&params.record_name)
             .await
             .map_err(|e| {
-                let socket = socket_path.clone();
+                let socket = endpoint.clone();
                 let pool = pool.clone();
                 tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
                 McpError::Client(e)
@@ -330,8 +330,8 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn test_list_records_missing_socket_path() {
-        // Should fail without socket_path parameter
+    async fn test_list_records_missing_endpoint() {
+        // Should fail without endpoint parameter
         let result = list_records(None).await;
         assert!(result.is_err());
 
@@ -343,7 +343,7 @@ mod tests {
     async fn test_list_records_invalid_socket() {
         // Should fail with non-existent socket
         let params = json!({
-            "socket_path": "/tmp/nonexistent.sock"
+            "endpoint": "/tmp/nonexistent.sock"
         });
 
         let result = list_records(Some(params)).await;
@@ -369,7 +369,7 @@ mod tests {
     async fn test_get_record_invalid_socket() {
         // Should fail with non-existent socket
         let params = json!({
-            "socket_path": "/tmp/nonexistent.sock",
+            "endpoint": "/tmp/nonexistent.sock",
             "record_name": "TestRecord"
         });
 
@@ -391,7 +391,7 @@ mod tests {
     async fn test_set_record_invalid_socket() {
         // Should fail with non-existent socket
         let params = json!({
-            "socket_path": "/tmp/nonexistent.sock",
+            "endpoint": "/tmp/nonexistent.sock",
             "record_name": "TestRecord",
             "value": {"test": "value"}
         });

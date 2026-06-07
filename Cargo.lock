@@ -50,6 +50,7 @@ name = "aimdb-client"
 version = "0.6.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-serial-connector",
  "aimdb-tokio-adapter",
  "aimdb-uds-connector",
  "anyhow",
