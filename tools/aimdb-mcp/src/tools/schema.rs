@@ -9,7 +9,7 @@ use tracing::debug;
 /// Parameters for query_schema tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuerySchemaParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     pub endpoint: Option<String>,
 
     /// Name of the record to query schema for
@@ -92,7 +92,7 @@ fn infer_json_schema(value: &Value) -> McpResult<Value> {
 /// by analyzing its current value. Returns the schema along with record metadata.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 /// - `record_name` (required): Name of the record to query
 /// - `include_example` (optional): Include current value as example (default: true)
 ///

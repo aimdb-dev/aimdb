@@ -10,14 +10,14 @@ use tracing::debug;
 /// Parameters for list_records tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ListRecordsParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
 }
 
 /// Parameters for get_record tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GetRecordParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
     /// Name of the record to retrieve
     record_name: String,
@@ -26,7 +26,7 @@ struct GetRecordParams {
 /// Parameters for set_record tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetRecordParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
     /// Name of the record to update
     record_name: String,
@@ -37,7 +37,7 @@ struct SetRecordParams {
 /// Parameters for drain_record tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DrainRecordParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
     /// Name of the record to drain
     record_name: String,
@@ -72,11 +72,11 @@ struct RecordInfo {
 
 /// List all records from a specific AimDB instance
 ///
-/// Connects to the specified socket and retrieves the list of all
+/// Connects to the instance and retrieves the list of all
 /// registered records with their metadata.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 ///
 /// # Returns
 /// - Array of records with metadata
@@ -130,11 +130,11 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
 
 /// Get the current value of a specific record
 ///
-/// Connects to the specified socket and retrieves the current value
+/// Connects to the instance and retrieves the current value
 /// of the named record.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 /// - `record_name` (required): Name of the record to retrieve
 ///
 /// # Returns
@@ -209,10 +209,10 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
 
 /// Set the value of a writable record
 ///
-/// Connects to the specified socket and updates the value of a writable record.
+/// Connects to the instance and updates the value of a writable record.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 /// - `record_name` (required): Name of the record to update
 /// - `value` (required): New value for the record (JSON)
 ///
@@ -261,7 +261,7 @@ pub async fn set_record(args: Option<Value>) -> McpResult<Value> {
 /// of accumulated data.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 /// - `record_name` (required): Name of the record to drain
 /// - `limit` (optional): Maximum number of values to drain
 ///

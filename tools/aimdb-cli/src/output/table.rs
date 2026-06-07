@@ -26,7 +26,7 @@ pub fn format_instances_table(instances: &[InstanceInfo]) -> String {
     // Add rows
     for instance in instances {
         builder.push_record(vec![
-            instance.socket_path.display().to_string(),
+            instance.endpoint.display().to_string(),
             instance.server_version.clone(),
             instance.protocol_version.clone(),
             instance.permissions.len().to_string(),
@@ -82,7 +82,7 @@ pub fn format_instance_info(instance: &InstanceInfo) -> String {
     let mut output = String::new();
 
     output.push_str(&format!("{}\n", "Instance Information".bold()));
-    output.push_str(&format!("  Socket: {}\n", instance.socket_path.display()));
+    output.push_str(&format!("  Endpoint: {}\n", instance.endpoint.display()));
     output.push_str(&format!("  Server: {}\n", instance.server_version));
     output.push_str(&format!("  Protocol: {}\n", instance.protocol_version));
     output.push_str(&format!(

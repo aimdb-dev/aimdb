@@ -22,7 +22,7 @@ pub(crate) async fn connect_endpoint(endpoint: Option<&str>) -> CliResult<AimxCo
         Some(ep) => Ok(AimxConnection::connect(ep).await?),
         None => {
             let instance = aimdb_client::discovery::find_instance(None).await?;
-            Ok(AimxConnection::connect(&instance.socket_path.to_string_lossy()).await?)
+            Ok(AimxConnection::connect(&instance.endpoint.to_string_lossy()).await?)
         }
     }
 }

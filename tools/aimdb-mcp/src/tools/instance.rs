@@ -41,7 +41,7 @@ pub async fn discover_instances(_args: Option<Value>) -> McpResult<Value> {
     let discovered: Vec<DiscoveredInstance> = instances
         .into_iter()
         .map(|info| DiscoveredInstance {
-            socket_path: info.socket_path.display().to_string(),
+            socket_path: info.endpoint.display().to_string(),
             server_version: info.server_version,
             protocol_version: info.protocol_version,
             permissions: info.permissions,
@@ -86,15 +86,18 @@ pub struct InstanceInfoResult {
 ///
 /// Connects to the instance and retrieves server metadata from the welcome message.
 pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
-    let params: GetInstanceInfoParams = match args {
-        Some(value) => serde_json::from_value(value)?,
-        None => {
-            return Err(crate::error::McpError::InvalidParams(
-                "Missing endpoint".into(),
-            ))
+    // Omitted args (or `{}`) is not an error here — it just means "no explicit
+    // endpoint", so resolution can still fall back to `--connect` / AIMDB_CONNECT.
+    let explicit = match args {
+        Some(value) => {
+            let params: GetInstanceInfoParams = serde_json::from_value(value).map_err(|e| {
+                crate::error::McpError::InvalidParams(format!("get_instance_info: {e}"))
+            })?;
+            params.endpoint
         }
+        None => None,
     };
-    let endpoint = super::resolve_endpoint(params.endpoint)?;
+    let endpoint = super::resolve_endpoint(explicit)?;
 
     debug!("🔍 Getting instance info for: {}", endpoint);
 

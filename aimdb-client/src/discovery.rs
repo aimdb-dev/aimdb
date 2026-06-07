@@ -14,7 +14,7 @@ const SOCKET_SEARCH_DIRS: &[&str] = &["/tmp", "/var/run/aimdb"];
 /// Information about a discovered AimDB instance
 #[derive(Debug, Clone)]
 pub struct InstanceInfo {
-    pub socket_path: PathBuf,
+    pub endpoint: PathBuf,
     pub server_version: String,
     pub protocol_version: String,
     pub permissions: Vec<String>,
@@ -24,9 +24,9 @@ pub struct InstanceInfo {
 }
 
 impl From<(PathBuf, WelcomeMessage)> for InstanceInfo {
-    fn from((socket_path, welcome): (PathBuf, WelcomeMessage)) -> Self {
+    fn from((endpoint, welcome): (PathBuf, WelcomeMessage)) -> Self {
         Self {
-            socket_path,
+            endpoint,
             server_version: welcome.server,
             protocol_version: welcome.version,
             permissions: welcome.permissions,

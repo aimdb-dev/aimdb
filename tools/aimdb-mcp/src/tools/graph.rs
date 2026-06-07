@@ -9,21 +9,21 @@ use tracing::debug;
 /// Parameters for graph_nodes tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GraphNodesParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
 }
 
 /// Parameters for graph_edges tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GraphEdgesParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
 }
 
 /// Parameters for graph_topo_order tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GraphTopoOrderParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
 }
 
@@ -34,7 +34,7 @@ struct GraphTopoOrderParams {
 /// and connection counts.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 ///
 /// # Returns
 /// - Array of GraphNode objects with:
@@ -82,7 +82,7 @@ pub async fn graph_nodes(args: Option<Value>) -> McpResult<Value> {
 /// Edges show how data flows from sources through transforms to consumers.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 ///
 /// # Returns
 /// - Array of GraphEdge objects with:
@@ -128,7 +128,7 @@ pub async fn graph_edges(args: Option<Value>) -> McpResult<Value> {
 /// for spawn ordering and reflects the proper initialization sequence.
 ///
 /// # Parameters
-/// - `endpoint` (required): Unix socket path to the AimDB instance
+/// - `endpoint` (optional): endpoint URL (`unix://PATH`, `serial://DEVICE?baud=N`) or bare path; falls back to `--connect` / `AIMDB_CONNECT`
 ///
 /// # Returns
 /// - Array of record keys in topological order

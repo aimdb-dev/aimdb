@@ -773,7 +773,7 @@ pub async fn rename_record(args: Option<Value>) -> McpResult<Value> {
 
 #[derive(Debug, Deserialize)]
 struct ValidateInstanceParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
     #[serde(default)]
     state_path: Option<String>,

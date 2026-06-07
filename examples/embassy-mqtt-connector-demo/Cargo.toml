@@ -25,11 +25,20 @@ aimdb-executor = { path = "../../aimdb-executor", default-features = false, feat
 aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", default-features = false, features = [
     "embassy-runtime",
 ] }
+# Serial remote-access server — serves this db's records over a UART (ST-LINK VCP)
+# so a host can read them with `aimdb --features transport-serial --connect serial://…`.
+# Its `embassy-runtime` feature also turns on `aimdb-core/remote-access`.
+aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-features = false, features = [
+    "embassy-runtime",
+    "defmt",
+] }
 
-# Shared demo logic
+# Shared demo logic. `serde` makes the shared types serde-codec'able in no_std so
+# they can be exposed over the serial remote-access server.
 mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features = [
     "alloc",
     "derive",
+    "serde",
 ] }
 
 # Embassy ecosystem - STM32H563ZI with Ethernet

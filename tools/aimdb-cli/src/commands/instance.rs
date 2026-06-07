@@ -81,7 +81,7 @@ async fn ping_instance(endpoint: Option<&str>) -> CliResult<()> {
     let instance = resolve_instance(endpoint).await?;
 
     println!("✅ Connection successful!");
-    println!("  Endpoint: {}", instance.socket_path.display());
+    println!("  Endpoint: {}", instance.endpoint.display());
     println!("  Server: {}", instance.server_version);
     println!("  Protocol: {}", instance.protocol_version);
 

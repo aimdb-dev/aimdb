@@ -22,9 +22,11 @@
 //! Update the gateway URL and group addresses in `main()` to match your KNX setup.
 
 use aimdb_core::buffer::BufferCfg;
+use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use aimdb_uds_connector::UdsServer;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -82,13 +84,33 @@ async fn main() -> DbResult<()> {
     println!("Using shared types from knx-connector-demo-common");
     println!("⚠️  Update gateway URL and group addresses to match your setup!\n");
 
-    let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::new("knx://192.168.1.4:3671"),
-    );
+    // Expose this database over a Unix-domain socket as a *second* connector
+    // alongside KNX (the builder drives any number of them). A host can then
+    // introspect it live with the `aimdb` CLI or the aimdb-mcp server:
+    //
+    //   aimdb --connect unix:///tmp/aimdb-knx.sock record list
+    //   aimdb --connect unix:///tmp/aimdb-knx.sock record get temp.livingroom
+    //
+    // Read-only: KNX owns the writer for every record (single-writer-per-key), so
+    // remote `record.set` is disallowed — peers can list/get/subscribe, not write.
+    let socket_path = "/tmp/aimdb-knx.sock";
+    let _ = std::fs::remove_file(socket_path); // clear a stale socket from a prior run
+    let remote_config = AimxConfig::uds_default()
+        .socket_path(socket_path)
+        .security_policy(SecurityPolicy::read_only())
+        .max_connections(10);
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(runtime)
+        .with_connector(aimdb_knx_connector::KnxConnector::new(
+            "knx://192.168.1.4:3671",
+        ))
+        .with_connector(UdsServer::from_config(remote_config));
 
     // Temperature sensors (inbound) - using link_address() from key metadata
     builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
             .tap(temperature_monitor)
             .link_from(TemperatureKey::LivingRoom.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -100,6 +122,7 @@ async fn main() -> DbResult<()> {
 
     builder.configure::<TemperatureReading>(TemperatureKey::Bedroom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
             .tap(temperature_monitor)
             .link_from(TemperatureKey::Bedroom.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -111,6 +134,7 @@ async fn main() -> DbResult<()> {
 
     builder.configure::<TemperatureReading>(TemperatureKey::Kitchen, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
             .tap(temperature_monitor)
             .link_from(TemperatureKey::Kitchen.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -123,6 +147,7 @@ async fn main() -> DbResult<()> {
     // Light monitors (inbound) - using link_address() from key metadata
     builder.configure::<LightState>(LightKey::Main, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
             .tap(light_monitor)
             .link_from(LightKey::Main.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -134,6 +159,7 @@ async fn main() -> DbResult<()> {
 
     builder.configure::<LightState>(LightKey::Hallway, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
             .tap(light_monitor)
             .link_from(LightKey::Hallway.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -146,6 +172,7 @@ async fn main() -> DbResult<()> {
     // Light control (outbound) - using link_address() from key metadata
     builder.configure::<LightControl>(LightControlKey::Control, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
             .source(input_handler)
             .link_to(LightControlKey::Control.link_address().unwrap())
             .with_serializer_raw(|state: &LightControl| {
@@ -157,6 +184,9 @@ async fn main() -> DbResult<()> {
     });
 
     println!("Press ENTER to toggle light (1/0/6). Press Ctrl+C to stop.\n");
+    println!("📡 Remote access (read-only) on {socket_path}");
+    println!("   aimdb --connect unix://{socket_path} record list");
+    println!("   aimdb --connect unix://{socket_path} watch temp.livingroom\n");
 
     builder.run().await
 }

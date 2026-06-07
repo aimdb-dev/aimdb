@@ -13,7 +13,7 @@ use tracing::debug;
 
 #[derive(Debug, Deserialize)]
 struct GetBufferMetricsParams {
-    /// Unix socket path to the AimDB instance (falls back to AIMDB_CONNECT env)
+    /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
     /// Substring matched against record names (e.g. `"Temperature"`).
     record_key: String,

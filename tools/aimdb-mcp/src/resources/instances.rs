@@ -84,7 +84,7 @@ async fn read_instances_resource() -> McpResult<ResourceReadResult> {
         .into_iter()
         .map(|info| {
             json!({
-                "socket_path": info.socket_path.display().to_string(),
+                "endpoint": info.endpoint.display().to_string(),
                 "server_version": info.server_version,
                 "protocol_version": info.protocol_version,
                 "permissions": info.permissions,
