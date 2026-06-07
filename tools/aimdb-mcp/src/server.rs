@@ -121,12 +121,22 @@ impl McpServer {
             },
         };
 
-        // Build server info (version from Cargo.toml)
+        // Build server info (version from Cargo.toml). Advertise the prompts that
+        // `prompts/list` actually returns, derived from the same source rather than
+        // a hand-maintained list — empty in public mode, where prompts are disabled.
+        let prompts_available: Vec<String> = if self.public_mode {
+            Vec::new()
+        } else {
+            prompts::list_prompts()
+                .into_iter()
+                .map(|p| p.name)
+                .collect()
+        };
         let server_info = ServerInfo {
             name: "aimdb-mcp".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             metadata: Some(json!({
-                "prompts_available": ["schema-help", "troubleshooting"],
+                "prompts_available": prompts_available,
             })),
         };
 

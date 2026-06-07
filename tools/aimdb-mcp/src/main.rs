@@ -116,6 +116,16 @@ async fn process_request(
 
     debug!("🎯 Method: {}, ID: {:?}", method, request_id);
 
+    // A JSON-RPC notification has no `id` and MUST NOT receive a response — e.g.
+    // the client's `notifications/initialized` after the handshake. Acknowledge by
+    // ignoring it; replying (even with an error) violates the spec and trips strict
+    // clients. The server is already Ready post-`initialize`, so none of the
+    // notifications we currently receive need server-side handling.
+    if request.id.is_none() {
+        debug!("Ignoring notification: {}", method);
+        return Ok(());
+    }
+
     // Dispatch to handlers
     let response_value = match method.as_str() {
         "initialize" => {
