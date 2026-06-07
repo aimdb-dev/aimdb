@@ -2,8 +2,10 @@
 
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
-use aimdb_client::discovery::{discover_instances, find_instance};
+use aimdb_client::discovery::{discover_instances, find_instance, InstanceInfo};
+use aimdb_client::AimxConnection;
 use clap::Args;
+use std::path::PathBuf;
 
 /// Instance management commands
 #[derive(Debug, Args)]
@@ -21,26 +23,34 @@ pub enum InstanceSubcommand {
         format: OutputFormat,
     },
     /// Show detailed information about an instance
-    Info {
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-    },
+    Info {},
     /// Test connection to an instance
-    Ping {
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-    },
+    Ping {},
 }
 
 impl InstanceCommand {
-    pub async fn execute(self) -> CliResult<()> {
+    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
         match self.subcommand {
+            // `list` is discovery-only (a Unix-socket scan); it ignores --connect.
             InstanceSubcommand::List { format } => list_instances(format).await,
-            InstanceSubcommand::Info { socket } => show_instance_info(socket.as_deref()).await,
-            InstanceSubcommand::Ping { socket } => ping_instance(socket.as_deref()).await,
+            InstanceSubcommand::Info {} => show_instance_info(endpoint).await,
+            InstanceSubcommand::Ping {} => ping_instance(endpoint).await,
         }
+    }
+}
+
+/// Resolve an instance's info: an explicit endpoint connects and reads the
+/// server's Welcome; `None` falls back to UDS auto-discovery.
+async fn resolve_instance(endpoint: Option<&str>) -> CliResult<InstanceInfo> {
+    match endpoint {
+        Some(ep) => {
+            let conn = AimxConnection::connect(ep).await?;
+            Ok(InstanceInfo::from((
+                PathBuf::from(ep),
+                conn.server_info().clone(),
+            )))
+        }
+        None => Ok(find_instance(None).await?),
     }
 }
 
@@ -60,18 +70,18 @@ async fn list_instances(format: OutputFormat) -> CliResult<()> {
     Ok(())
 }
 
-async fn show_instance_info(socket: Option<&str>) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
+async fn show_instance_info(endpoint: Option<&str>) -> CliResult<()> {
+    let instance = resolve_instance(endpoint).await?;
     let output = table::format_instance_info(&instance);
     println!("{}", output);
     Ok(())
 }
 
-async fn ping_instance(socket: Option<&str>) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
+async fn ping_instance(endpoint: Option<&str>) -> CliResult<()> {
+    let instance = resolve_instance(endpoint).await?;
 
     println!("✅ Connection successful!");
-    println!("  Socket: {}", instance.socket_path.display());
+    println!("  Endpoint: {}", instance.endpoint.display());
     println!("  Server: {}", instance.server_version);
     println!("  Protocol: {}", instance.protocol_version);
 

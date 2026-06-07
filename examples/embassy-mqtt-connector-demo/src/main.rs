@@ -52,10 +52,12 @@
 
 extern crate alloc;
 
+use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
 use aimdb_embassy_adapter::{
     EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
 };
+use aimdb_serial_connector::embassy_transport::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
@@ -63,7 +65,8 @@ use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
-use embassy_stm32::{Config, bind_interrupts, eth, peripherals, rng};
+use embassy_stm32::usart::{BufferedUart, Config as UartConfig};
+use embassy_stm32::{Config, bind_interrupts, eth, peripherals, rng, usart};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -83,6 +86,7 @@ static ALLOCATOR: embedded_alloc::LlffHeap = embedded_alloc::LlffHeap::empty();
 bind_interrupts!(struct Irqs {
     ETH => eth::InterruptHandler;
     RNG => rng::InterruptHandler<peripherals::RNG>;
+    USART3 => usart::BufferedInterruptHandler<peripherals::USART3>;
 });
 
 type Device =
@@ -185,7 +189,7 @@ async fn main(spawner: Spawner) {
     // Initialize heap for the allocator
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 32768; // 32KB heap
+        const HEAP_SIZE: usize = 49152; // 48KB heap (MQTT + serial AimX server JSON)
         static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe {
             let heap_ptr = core::ptr::addr_of_mut!(HEAP);
@@ -308,9 +312,38 @@ async fn main(spawner: Spawner) {
     use alloc::format;
     let broker_url = format!("mqtt://{}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
 
+    // ── AimX-over-serial: serve this db over USART3 (ST-LINK VCP, PD8=TX/PD9=RX) ──
+    // A *second* connector alongside MQTT. With no extra cabling on a Nucleo-H563ZI
+    // it appears on the host as /dev/ttyACM0; read the live records with:
+    //   aimdb --features transport-serial \
+    //         --connect serial:///dev/ttyACM0?baud=115200 record list
+    // (sensor records are SpmcRing → use `record drain`/`watch`; `get` has no
+    // canonical latest). defmt logs ride RTT (SWD), separate from this data UART.
+    static TX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
+    static RX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
+    let mut uart_config = UartConfig::default();
+    uart_config.baudrate = 115_200;
+    let uart = BufferedUart::new(
+        p.USART3,
+        p.PD9, // RX
+        p.PD8, // TX
+        TX_BUF.init([0; 256]),
+        RX_BUF.init([0; 256]),
+        Irqs,
+        uart_config,
+    )
+    .unwrap();
+    let (serial_tx, serial_rx) = uart.split();
+
+    // Read-only: each record has a single writer (a sensor source, or MQTT for the
+    // command records), so remote `record.set` is refused — peers can
+    // list/drain/subscribe, not write.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector(MqttConnectorBuilder::new(&broker_url).with_client_id("embassy-demo-001"));
+        .with_connector(MqttConnectorBuilder::new(&broker_url).with_client_id("embassy-demo-001"))
+        .with_connector(
+            SerialServer::new(serial_rx, serial_tx).security_policy(SecurityPolicy::read_only()),
+        );
 
     // ========================================================================
     // TEMPERATURE SENSORS (outbound: AimDB → MQTT)
@@ -319,6 +352,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+            .with_remote_access()
             .source(indoor_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempIndoor.link_address().unwrap())
@@ -328,6 +362,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+            .with_remote_access()
             .source(outdoor_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempOutdoor.link_address().unwrap())
@@ -337,6 +372,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+            .with_remote_access()
             .source(server_room_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempServerRoom.link_address().unwrap())
@@ -351,6 +387,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<TemperatureCommand>(CommandKey::TempIndoor, |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
+            .with_remote_access()
             .tap(command_consumer)
             .link_from(CommandKey::TempIndoor.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| TemperatureCommand::from_json(data))
@@ -359,6 +396,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
+            .with_remote_access()
             .tap(command_consumer)
             .link_from(CommandKey::TempOutdoor.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| TemperatureCommand::from_json(data))
@@ -369,6 +407,10 @@ async fn main(spawner: Spawner) {
     info!("   OUTBOUND: sensors/temp/indoor, outdoor, server_room");
     info!("   INBOUND:  commands/temp/indoor, outdoor");
     info!("   Broker:   {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
+    info!("   SERIAL (read-only AimX over USART3 / ST-LINK VCP):");
+    info!(
+        "     aimdb --features transport-serial --connect serial:///dev/ttyACM0?baud=115200 record list"
+    );
     info!("");
     info!(
         "Subscribe: mosquitto_sub -h {} -t 'sensors/#' -v",

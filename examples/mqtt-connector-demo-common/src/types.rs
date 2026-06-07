@@ -6,7 +6,7 @@ extern crate alloc;
 
 use alloc::string::String;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Represents a temperature measurement that can be published to MQTT.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Temperature {
     /// Sensor identifier (e.g., "indoor-001", "outdoor-001")
     pub sensor_id: String,
@@ -80,7 +80,7 @@ impl Temperature {
 
 /// Command for controlling temperature sensors (inbound from MQTT)
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TemperatureCommand {
     /// Action to perform (e.g., "read", "calibrate", "reset")
     pub action: String,

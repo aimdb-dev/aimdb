@@ -15,23 +15,23 @@ use tracing::debug;
 
 #[derive(Debug, Deserialize)]
 struct GetStageProfilingParams {
-    socket_path: Option<String>,
+    endpoint: Option<String>,
     /// Substring matched against record name/key (e.g. `"Temperature"`).
     record_key: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct ResetStageProfilingParams {
-    socket_path: Option<String>,
+    endpoint: Option<String>,
 }
 
-async fn connect(socket_path: &str) -> McpResult<AimxConnection> {
+async fn connect(endpoint: &str) -> McpResult<AimxConnection> {
     if let Some(pool) = super::connection_pool() {
-        pool.get_connection(socket_path)
+        pool.get_connection(endpoint)
             .await
             .map_err(McpError::Client)
     } else {
-        AimxConnection::connect(socket_path)
+        AimxConnection::connect(endpoint)
             .await
             .map_err(McpError::Client)
     }
@@ -47,9 +47,9 @@ pub async fn get_stage_profiling(args: Option<Value>) -> McpResult<Value> {
     debug!("get_stage_profiling called");
     let params: GetStageProfilingParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("get_stage_profiling: {e}")))?;
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&socket_path).await?;
+    let client = connect(&endpoint).await?;
     let records = client.list_records().await.map_err(McpError::Client)?;
 
     let mut out = Vec::new();
@@ -108,9 +108,9 @@ pub async fn reset_stage_profiling(args: Option<Value>) -> McpResult<Value> {
     debug!("reset_stage_profiling called");
     let params: ResetStageProfilingParams = serde_json::from_value(args.unwrap_or(Value::Null))
         .map_err(|e| McpError::InvalidParams(format!("reset_stage_profiling: {e}")))?;
-    let socket_path = super::resolve_socket_path(params.socket_path)?;
+    let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&socket_path).await?;
+    let client = connect(&endpoint).await?;
     match client.reset_stage_profiling().await {
         Ok(_) => Ok(json!({
             "reset": true,

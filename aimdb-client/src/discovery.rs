@@ -5,7 +5,7 @@
 use crate::engine::AimxConnection;
 use crate::error::{ClientError, ClientResult};
 use crate::protocol::WelcomeMessage;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Known directories where AimDB sockets might be located
@@ -14,7 +14,7 @@ const SOCKET_SEARCH_DIRS: &[&str] = &["/tmp", "/var/run/aimdb"];
 /// Information about a discovered AimDB instance
 #[derive(Debug, Clone)]
 pub struct InstanceInfo {
-    pub socket_path: PathBuf,
+    pub endpoint: PathBuf,
     pub server_version: String,
     pub protocol_version: String,
     pub permissions: Vec<String>,
@@ -24,9 +24,9 @@ pub struct InstanceInfo {
 }
 
 impl From<(PathBuf, WelcomeMessage)> for InstanceInfo {
-    fn from((socket_path, welcome): (PathBuf, WelcomeMessage)) -> Self {
+    fn from((endpoint, welcome): (PathBuf, WelcomeMessage)) -> Self {
         Self {
-            socket_path,
+            endpoint,
             server_version: welcome.server,
             protocol_version: welcome.version,
             permissions: welcome.permissions,
@@ -74,16 +74,18 @@ async fn scan_directory(mut entries: tokio::fs::ReadDir) -> Vec<InstanceInfo> {
 }
 
 /// Try to connect to a socket and get instance information
-async fn probe_instance(socket_path: &PathBuf) -> ClientResult<InstanceInfo> {
+async fn probe_instance(socket_path: &Path) -> ClientResult<InstanceInfo> {
     // `connect_with_timeout` bounds the whole handshake (dial + hello), so a stale
     // socket whose peer accepts but never replies fails fast instead of hanging —
     // no need to wrap a second timeout around `connect`.
     let connect_timeout = Duration::from_millis(500);
-    let client = AimxConnection::connect_with_timeout(socket_path, connect_timeout).await?;
+    // A discovered socket path is dialed as the bare-path (`unix://`) shorthand.
+    let endpoint = socket_path.to_string_lossy();
+    let client = AimxConnection::connect_with_timeout(&endpoint, connect_timeout).await?;
 
     let welcome = client.server_info().clone();
 
-    Ok(InstanceInfo::from((socket_path.clone(), welcome)))
+    Ok(InstanceInfo::from((socket_path.to_path_buf(), welcome)))
 }
 
 /// Find a specific instance by socket path or name

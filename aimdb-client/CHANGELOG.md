@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Transport-agnostic endpoint resolver — pick the transport at runtime via a `scheme://` URL (Issue #123, follow-up to #39 / #122).** New `endpoint` module: `parse_endpoint` (pure, feature-independent grammar) and `dial(url) -> Box<dyn Dialer>` map an endpoint string to a transport `Dialer`, the way records already pick one for links. Schemes: `unix://PATH` / `uds://PATH`, a bare path (the `unix://` shorthand), and `serial://DEVICE?baud=N`. An unknown scheme — or one whose transport isn't compiled in — is rejected with a clear error. New `AimxConnection::connect_over(dialer)` / `connect_over_with_timeout` dial over an explicit `Dialer`, bypassing resolution. (Rides a new `impl Dialer for Box<dyn Dialer>` in `aimdb-core`.)
+
 ### Changed (breaking)
 
+- **`AimxConnection::connect` now takes a `&str` endpoint, and transports are feature-gated (Issue #123).** `connect`/`connect_with_timeout` accept an endpoint string (was `impl AsRef<Path>`) — a `scheme://` URL or a bare path — resolved through the new `endpoint` module. The transports are now opt-in Cargo features: `transport-uds` (default; makes `aimdb-uds-connector` optional and gates the `discovery` module — a Unix-socket scan) and `transport-serial` (off by default; pulls `aimdb-serial-connector`, i.e. `tokio-serial` → libudev). `ClientError::ConnectionFailed`'s `socket` field is renamed `endpoint`, and a new `ClientError::UnsupportedEndpoint` covers malformed / not-built-in endpoints. The discovery `InstanceInfo.socket_path` field is likewise renamed `endpoint` — it now also carries a caller-supplied endpoint, not just a discovered socket path.
 - **`AimxClient` → `AimxConnection`, rebuilt on the shared session engine (Issue #39, [design doc](../docs/design/remote-access-via-connectors.md)).** The synchronous `connection::AimxClient` is retired; the new `engine::AimxConnection` drives `aimdb-core`'s `run_client` engine over `aimdb-uds-connector`'s `UdsDialer` and speaks the reshaped **AimX-v2** protocol. Both the type and the module are re-exported from the crate root (`aimdb_client::AimxConnection`); the `connection` module is replaced by `engine`. `connect()` performs the `hello` handshake, and the full tool surface (list/get/set/subscribe/drain/graph/query) is available.
   - `subscribe(record_name)` now returns a `Stream` of updates directly — the engine routes events back by request id, so there is **no** server-allocated subscription id to track (the old `(subscription_id, queue_size)` handshake is gone).
   - New `connect_with_timeout(path, timeout)` bounds the whole dial + handshake (used by discovery probing).

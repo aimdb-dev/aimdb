@@ -40,12 +40,14 @@
 
 extern crate alloc;
 
+use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, RecordKey, RuntimeContext};
 use aimdb_embassy_adapter::{
     EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
 };
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
+use aimdb_serial_connector::embassy_transport::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
@@ -54,7 +56,8 @@ use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
-use embassy_stm32::{Config, bind_interrupts, eth, interrupt, peripherals, rng};
+use embassy_stm32::usart::{BufferedUart, Config as UartConfig};
+use embassy_stm32::{Config, bind_interrupts, eth, interrupt, peripherals, rng, usart};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -74,6 +77,7 @@ bind_interrupts!(struct Irqs {
     ETH => eth::InterruptHandler;
     RNG => rng::InterruptHandler<peripherals::RNG>;
     EXTI13 => exti::InterruptHandler<interrupt::typelevel::EXTI13>;
+    USART3 => usart::BufferedInterruptHandler<peripherals::USART3>;
 });
 
 type Device =
@@ -137,7 +141,7 @@ async fn main(spawner: Spawner) {
     // Initialize heap for the allocator
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 32768; // 32KB heap
+        const HEAP_SIZE: usize = 49152; // 48KB heap (KNX + serial AimX server JSON)
         static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe {
             let heap_ptr = core::ptr::addr_of_mut!(HEAP);
@@ -245,9 +249,36 @@ async fn main(spawner: Spawner) {
     use alloc::format;
     let gateway_url = format!("knx://{}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);
 
+    // ── AimX-over-serial: serve this db over USART3 (ST-LINK VCP, PD8=TX/PD9=RX) ──
+    // A *second* connector alongside KNX. With no extra cabling on a Nucleo-H563ZI
+    // it appears on the host as /dev/ttyACM0; read the live records with:
+    //   aimdb --features transport-serial \
+    //         --connect serial:///dev/ttyACM0?baud=115200 record list
+    // defmt logs ride RTT (SWD), so they don't collide with this data UART.
+    static TX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
+    static RX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
+    let mut uart_config = UartConfig::default();
+    uart_config.baudrate = 115_200;
+    let uart = BufferedUart::new(
+        p.USART3,
+        p.PD9, // RX
+        p.PD8, // TX
+        TX_BUF.init([0; 256]),
+        RX_BUF.init([0; 256]),
+        Irqs,
+        uart_config,
+    )
+    .unwrap();
+    let (serial_tx, serial_rx) = uart.split();
+
+    // Read-only: KNX owns the writer for every record (single-writer-per-key), so
+    // remote `record.set` is refused — peers can list/get/subscribe, not write.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector(KnxConnectorBuilder::new(&gateway_url));
+        .with_connector(KnxConnectorBuilder::new(&gateway_url))
+        .with_connector(
+            SerialServer::new(serial_rx, serial_tx).security_policy(SecurityPolicy::read_only()),
+        );
 
     // ========================================================================
     // TEMPERATURE SENSORS (inbound: KNX → AimDB)
@@ -256,6 +287,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
             .tap(temperature_monitor)
             .link_from(TemperatureKey::LivingRoom.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -267,6 +299,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<TemperatureReading>(TemperatureKey::Bedroom, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
             .tap(temperature_monitor)
             .link_from(TemperatureKey::Bedroom.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -278,6 +311,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<TemperatureReading>(TemperatureKey::Kitchen, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
             .tap(temperature_monitor)
             .link_from(TemperatureKey::Kitchen.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -294,6 +328,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<LightState>(LightKey::Main, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
             .tap(light_monitor)
             .link_from(LightKey::Main.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -305,6 +340,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<LightState>(LightKey::Hallway, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
             .tap(light_monitor)
             .link_from(LightKey::Hallway.link_address().unwrap())
             .with_deserializer_raw(|data: &[u8]| {
@@ -321,6 +357,7 @@ async fn main(spawner: Spawner) {
 
     builder.configure::<LightControl>(LightControlKey::Control, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
             .source_with_context(button, button_handler)
             .link_to(LightControlKey::Control.link_address().unwrap())
             .with_serializer_raw(|state: &LightControl| {
@@ -341,6 +378,10 @@ async fn main(spawner: Spawner) {
     info!("   OUTBOUND (AimDB → KNX):");
     info!("     - lights.control   (1/0/6)");
     info!("   Gateway: {}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);
+    info!("   SERIAL (read-only AimX over USART3 / ST-LINK VCP):");
+    info!(
+        "     aimdb --features transport-serial --connect serial:///dev/ttyACM0?baud=115200 record list"
+    );
     info!("");
     info!("Press USER button to toggle light (1/0/6)");
 

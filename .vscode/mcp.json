@@ -12,8 +12,8 @@
                 "--manifest-path",
                 "${workspaceFolder}/tools/aimdb-mcp/Cargo.toml",
                 "--",
-                "--socket",
-                "/tmp/aimdb-demo.sock"
+                "--connect",
+                "unix:///tmp/aimdb-demo.sock"
             ]
         }
     }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Tools take an `endpoint` (a `scheme://` URL), not a `socket_path` (Issue #123).** Every tool's `socket_path` parameter is renamed `endpoint` and now accepts any endpoint URL — `unix://PATH`, `serial://DEVICE?baud=N` (with the `transport-serial` feature), or a bare path (the `unix://` shorthand). The startup `--socket <PATH>` flag is now `--connect <ENDPOINT>`, and the `AIMDB_SOCKET` env var is now `AIMDB_CONNECT` (resolution order: explicit `endpoint` → `--connect` → `AIMDB_CONNECT`). The connection pool is keyed by endpoint URL, and public-mode SSRF stripping now strips `endpoint`. `get_instance_info`'s result field `socket_path` is renamed `endpoint`; `discover_instances` (Unix-socket discovery) keeps `socket_path`. New `transport-serial` feature (off by default; pulls libudev) adds the serial transport to the resolver.
+
 ### Changed
 
 - **`list_records`, the `records` resource, and `query_schema` no longer emit `created_at` / `last_update` (Issue #120).** `aimdb-core` dropped per-record timestamp tracking from `RecordMetadata` (it kept no wall-clock state for the `no_std` AimX server), so the AimX `record.list` payload — and these MCP outputs derived from it — no longer carry those two fields. The `RecordInfo` struct drops them too. Every other record-metadata field is unchanged.

@@ -135,6 +135,8 @@ test:
 	cargo test --package aimdb-core --features "std,connector-session" --test session_engine
 	@printf "$(YELLOW)  → Testing aimdb-client (engine-based AimX client + UDS round-trip)$(NC)\n"
 	cargo test --package aimdb-client
+	@printf "$(YELLOW)  → Testing aimdb-client (endpoint resolver, serial transport arm)$(NC)\n"
+	cargo test --package aimdb-client --no-default-features --features "transport-serial"
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"
@@ -222,12 +224,18 @@ clippy:
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library$(NC)\n"
 	cargo clippy --package aimdb-client --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on client library (serial transport arm)$(NC)\n"
+	cargo clippy --package aimdb-client --no-default-features --features "transport-serial" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on codegen library$(NC)\n"
 	cargo clippy --package aimdb-codegen --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on CLI tools$(NC)\n"
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on CLI tools (serial transport)$(NC)\n"
+	cargo clippy --package aimdb-cli --features "transport-serial" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MCP server$(NC)\n"
 	cargo clippy --package aimdb-mcp --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MCP server (serial transport)$(NC)\n"
+	cargo clippy --package aimdb-mcp --features "transport-serial" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on persistence backend$(NC)\n"
 	cargo clippy --package aimdb-persistence --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on persistence SQLite backend$(NC)\n"

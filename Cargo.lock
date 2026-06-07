@@ -50,6 +50,7 @@ name = "aimdb-client"
 version = "0.6.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-serial-connector",
  "aimdb-tokio-adapter",
  "aimdb-uds-connector",
  "anyhow",
@@ -1081,6 +1082,7 @@ dependencies = [
  "aimdb-embassy-adapter",
  "aimdb-executor",
  "aimdb-knx-connector",
+ "aimdb-serial-connector",
  "cortex-m",
  "cortex-m-rt",
  "critical-section",
@@ -1114,6 +1116,7 @@ dependencies = [
  "aimdb-embassy-adapter",
  "aimdb-executor",
  "aimdb-mqtt-connector",
+ "aimdb-serial-connector",
  "cortex-m",
  "cortex-m-rt",
  "critical-section",
@@ -3243,7 +3246,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-7aaa9af0001abcfb01c01e1a9b048697a82b7d57#f4d6b404521840db5ffd97712d29a557a22cbfa4"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-fb9d6e5e432ef51eaa686940d34b3487a50537a4#1a73224a4aaecff9b5ba9906595e12d21f34111d"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -3479,6 +3482,7 @@ dependencies = [
  "aimdb-executor",
  "aimdb-knx-connector",
  "aimdb-tokio-adapter",
+ "aimdb-uds-connector",
  "knx-connector-demo-common",
  "serde",
  "serde_json",

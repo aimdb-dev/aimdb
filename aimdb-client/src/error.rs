@@ -13,8 +13,13 @@ pub enum ClientError {
     NoInstancesFound,
 
     /// Connection error
-    #[error("Connection failed to {socket}: {reason}")]
-    ConnectionFailed { socket: String, reason: String },
+    #[error("Connection failed to {endpoint}: {reason}")]
+    ConnectionFailed { endpoint: String, reason: String },
+
+    /// The endpoint string was malformed, or named a `scheme://` whose transport
+    /// is not compiled into this build.
+    #[error("Unsupported endpoint {endpoint:?}: {reason}")]
+    UnsupportedEndpoint { endpoint: String, reason: String },
 
     /// Server returned an error
     #[error("Server error (code {code}): {message}")]
@@ -39,9 +44,17 @@ pub enum ClientError {
 
 impl ClientError {
     /// Create a connection failed error
-    pub fn connection_failed(socket: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn connection_failed(endpoint: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::ConnectionFailed {
-            socket: socket.into(),
+            endpoint: endpoint.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Create an unsupported-endpoint error (bad URL, or a scheme not built in).
+    pub fn unsupported_endpoint(endpoint: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::UnsupportedEndpoint {
+            endpoint: endpoint.into(),
             reason: reason.into(),
         }
     }

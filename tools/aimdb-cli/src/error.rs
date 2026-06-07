@@ -13,8 +13,12 @@ pub type CliResult<T> = Result<T, CliError>;
 #[allow(dead_code)] // Some variants are for future use
 pub enum CliError {
     /// Failed to connect to AimDB instance
-    #[error("Connection failed: {socket}\n  Reason: {reason}\n  Hint: Check if AimDB instance is running")]
-    ConnectionFailed { socket: String, reason: String },
+    #[error("Connection failed: {endpoint}\n  Reason: {reason}\n  Hint: Check if AimDB instance is running")]
+    ConnectionFailed { endpoint: String, reason: String },
+
+    /// Endpoint string was malformed or named an unsupported/not-built-in scheme
+    #[error("Unsupported endpoint: {endpoint}\n  Reason: {reason}\n  Hint: use unix://PATH, serial://DEVICE?baud=N, or a bare path")]
+    UnsupportedEndpoint { endpoint: String, reason: String },
 
     /// No running AimDB instances found
     #[error("No AimDB instances found\n  Searched: /tmp, /var/run/aimdb\n  Hint: Start an AimDB application that registers a remote-access server (e.g. UdsServer via .with_connector(...))")]
@@ -65,8 +69,11 @@ impl From<aimdb_client::ClientError> for CliError {
     fn from(err: aimdb_client::ClientError) -> Self {
         match err {
             aimdb_client::ClientError::NoInstancesFound => CliError::NoInstancesFound,
-            aimdb_client::ClientError::ConnectionFailed { socket, reason } => {
-                CliError::ConnectionFailed { socket, reason }
+            aimdb_client::ClientError::ConnectionFailed { endpoint, reason } => {
+                CliError::ConnectionFailed { endpoint, reason }
+            }
+            aimdb_client::ClientError::UnsupportedEndpoint { endpoint, reason } => {
+                CliError::UnsupportedEndpoint { endpoint, reason }
             }
             aimdb_client::ClientError::ServerError {
                 code,
@@ -94,9 +101,9 @@ fn format_details(details: &Option<serde_json::Value>) -> String {
 #[allow(dead_code)] // Helper methods for future use
 impl CliError {
     /// Create a connection failed error
-    pub fn connection_failed(socket: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn connection_failed(endpoint: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::ConnectionFailed {
-            socket: socket.into(),
+            endpoint: endpoint.into(),
             reason: reason.into(),
         }
     }

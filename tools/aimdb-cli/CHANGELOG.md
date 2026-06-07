@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Global `--connect <endpoint>` flag + `AIMDB_CONNECT` env (Issue #123).** Choose the target instance by `scheme://` URL — `unix://PATH`, `serial://DEVICE?baud=N` (with the `transport-serial` feature), or a bare path (the `unix://` shorthand). Precedence: `--connect` → `AIMDB_CONNECT` → UDS auto-discovery. `instance info`/`ping` now work over any endpoint (not just discovered sockets). New `transport-serial` feature (off by default; pulls libudev) adds the serial transport to the resolver.
+
+### Changed (breaking)
+
+- **Per-command `--socket` flags removed in favor of the global `--connect` (Issue #123).** `aimdb record/graph/watch/instance … --socket <path>` is gone; pass `--connect <endpoint>` (a bare path still works) or rely on `AIMDB_CONNECT`/auto-discovery. `instance list` remains discovery-only.
+
 ### Changed
 
 - **Migrated to the engine-based `aimdb-client::AimxConnection` (Issue #39).** All commands (`watch`, `record`, `graph`) now use `AimxConnection` instead of the retired `AimxClient`, speaking the reshaped **AimX-v2** protocol. `aimdb watch` subscribes via the engine, which streams updates routed by request id — there is no server-allocated subscription id to display, and `--queue-size` is accepted for compatibility but no longer meaningful (queue sizing is now an engine concern).

@@ -24,7 +24,7 @@ pub fn format_instances_json(
         .iter()
         .map(|i| {
             serde_json::json!({
-                "socket_path": i.socket_path.display().to_string(),
+                "socket_path": i.endpoint.display().to_string(),
                 "server_version": i.server_version,
                 "protocol_version": i.protocol_version,
                 "permissions": i.permissions,

@@ -32,6 +32,10 @@ aimdb-knx-connector = { path = "../../aimdb-knx-connector", features = [
     "tracing",
 ] }
 
+# UDS remote-access server — exposes this db to the `aimdb` CLI and aimdb-mcp
+# over a Unix-domain socket (`unix:///tmp/aimdb-knx.sock`).
+aimdb-uds-connector = { path = "../../aimdb-uds-connector" }
+
 # Tokio runtime
 tokio = { workspace = true, features = ["full"] }
 

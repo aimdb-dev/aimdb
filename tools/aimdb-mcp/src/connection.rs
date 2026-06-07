@@ -23,7 +23,7 @@ pub struct ConnectionPool {
     /// Track which connections we've attempted (for logging/metrics)
     connections: Arc<Mutex<HashMap<String, ConnectionEntry>>>,
     /// Persistent drain clients — kept alive so drain readers accumulate values
-    /// Key: socket_path, Value: shared AimxConnection
+    /// Key: endpoint, Value: shared AimxConnection
     drain_clients: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<AimxConnection>>>>>,
 }
 
@@ -51,33 +51,33 @@ impl ConnectionPool {
     /// connection each time. The pool tracks connection metadata for
     /// monitoring and future optimization (e.g., persistent connections
     /// via Arc<Mutex<AimxConnection>> if AimxConnection becomes Sync).
-    pub async fn get_connection(&self, socket_path: &str) -> Result<AimxConnection, ClientError> {
+    pub async fn get_connection(&self, endpoint: &str) -> Result<AimxConnection, ClientError> {
         let mut pool = self.connections.lock().await;
 
         // Update or insert connection metadata
         let now = std::time::Instant::now();
 
-        if let Some(entry) = pool.get_mut(socket_path) {
+        if let Some(entry) = pool.get_mut(endpoint) {
             debug!(
                 "♻️  Connection metadata exists for {}, reconnecting",
-                socket_path
+                endpoint
             );
             entry.last_used = now;
         } else {
-            debug!("🔌 First connection to {}", socket_path);
-            pool.insert(socket_path.to_string(), ConnectionEntry { last_used: now });
+            debug!("🔌 First connection to {}", endpoint);
+            pool.insert(endpoint.to_string(), ConnectionEntry { last_used: now });
         }
 
         // Always create a new connection (until AimxConnection supports cloning/sharing)
         drop(pool); // Release lock before async operation
-        AimxConnection::connect(socket_path).await
+        AimxConnection::connect(endpoint).await
     }
 
     /// Remove a connection from the pool (called when operations fail)
-    pub async fn invalidate_connection(&self, socket_path: &str) {
+    pub async fn invalidate_connection(&self, endpoint: &str) {
         let mut pool = self.connections.lock().await;
-        if pool.remove(socket_path).is_some() {
-            debug!("❌ Invalidated connection metadata for {}", socket_path);
+        if pool.remove(endpoint).is_some() {
+            debug!("❌ Invalidated connection metadata for {}", endpoint);
         }
     }
 
@@ -89,37 +89,37 @@ impl ConnectionPool {
     /// return all values accumulated since the previous drain.
     pub async fn get_drain_client(
         &self,
-        socket_path: &str,
+        endpoint: &str,
     ) -> Result<Arc<tokio::sync::Mutex<AimxConnection>>, ClientError> {
         let drain_map = self.drain_clients.lock().await;
 
-        if let Some(client) = drain_map.get(socket_path) {
-            debug!("♻️  Reusing persistent drain client for {}", socket_path);
+        if let Some(client) = drain_map.get(endpoint) {
+            debug!("♻️  Reusing persistent drain client for {}", endpoint);
             return Ok(Arc::clone(client));
         }
 
-        debug!("🔌 Creating persistent drain client for {}", socket_path);
+        debug!("🔌 Creating persistent drain client for {}", endpoint);
 
         // Drop lock before async connect
         drop(drain_map);
 
-        let client = AimxConnection::connect(socket_path).await?;
+        let client = AimxConnection::connect(endpoint).await?;
         let shared = Arc::new(tokio::sync::Mutex::new(client));
 
         let mut drain_map = self.drain_clients.lock().await;
         // Double-check: another task may have inserted while we were connecting
-        if let Some(existing) = drain_map.get(socket_path) {
+        if let Some(existing) = drain_map.get(endpoint) {
             return Ok(Arc::clone(existing));
         }
-        drain_map.insert(socket_path.to_string(), Arc::clone(&shared));
+        drain_map.insert(endpoint.to_string(), Arc::clone(&shared));
         Ok(shared)
     }
 
     /// Invalidate (remove) a persistent drain client, e.g. after connection error
-    pub async fn invalidate_drain_client(&self, socket_path: &str) {
+    pub async fn invalidate_drain_client(&self, endpoint: &str) {
         let mut drain_map = self.drain_clients.lock().await;
-        if drain_map.remove(socket_path).is_some() {
-            debug!("❌ Invalidated drain client for {}", socket_path);
+        if drain_map.remove(endpoint).is_some() {
+            debug!("❌ Invalidated drain client for {}", endpoint);
         }
     }
 

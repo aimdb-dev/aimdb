@@ -304,6 +304,16 @@ pub trait Dialer: Send {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>>;
 }
 
+/// A boxed dialer is itself a [`Dialer`], so a runtime-selected
+/// `Box<dyn Dialer>` (e.g. from a `scheme://` URL resolver) can be handed
+/// straight to [`run_client`]`<D: Dialer>` without a generic transport at the
+/// call site. `dyn Dialer: Send` (supertrait) makes the box `Send + 'static`.
+impl Dialer for Box<dyn Dialer> {
+    fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        (**self).connect()
+    }
+}
+
 // ===========================================================================
 // Layer 3 — dispatch. RPC and streaming unify in one per-connection role with
 // three reply cardinalities: `call` (one) / `subscribe` (many) / `write` (none).
@@ -531,5 +541,15 @@ mod tests {
         let _session: Box<dyn Session> = Box::new(MockSession);
         let _codec: Box<dyn EnvelopeCodec> = Box::new(MockCodec);
         let _source: Box<dyn Source> = Box::new(MockSource);
+    }
+
+    /// `Box<dyn Dialer>` satisfies the `Dialer` bound, so a runtime-selected
+    /// dialer (the URL resolver's return type) can be passed where `D: Dialer`
+    /// is expected. Compile-time proof via a generic that requires the bound.
+    #[test]
+    fn boxed_dialer_is_a_dialer() {
+        fn takes_dialer<D: Dialer + 'static>(_d: D) {}
+        let boxed: Box<dyn Dialer> = Box::new(MockDialer);
+        takes_dialer(boxed);
     }
 }

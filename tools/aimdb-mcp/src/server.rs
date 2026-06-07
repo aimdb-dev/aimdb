@@ -121,12 +121,22 @@ impl McpServer {
             },
         };
 
-        // Build server info (version from Cargo.toml)
+        // Build server info (version from Cargo.toml). Advertise the prompts that
+        // `prompts/list` actually returns, derived from the same source rather than
+        // a hand-maintained list — empty in public mode, where prompts are disabled.
+        let prompts_available: Vec<String> = if self.public_mode {
+            Vec::new()
+        } else {
+            prompts::list_prompts()
+                .into_iter()
+                .map(|p| p.name)
+                .collect()
+        };
         let server_info = ServerInfo {
             name: "aimdb-mcp".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             metadata: Some(json!({
-                "prompts_available": ["schema-help", "troubleshooting"],
+                "prompts_available": prompts_available,
             })),
         };
 
@@ -163,9 +173,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         }
                     },
                     "required": [],
@@ -178,9 +188,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
@@ -197,9 +207,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
@@ -219,9 +229,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         }
                     },
                     "required": [],
@@ -239,9 +249,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
@@ -268,9 +278,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         },
                         "record_name": {
                             "type": "string",
@@ -292,9 +302,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         }
                     },
                     "required": [],
@@ -307,9 +317,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         }
                     },
                     "required": [],
@@ -322,9 +332,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         }
                     },
                     "required": [],
@@ -721,9 +731,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         },
                         "state_path": {
                             "type": "string",
@@ -740,9 +750,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         },
                         "record_key": {
                             "type": "string",
@@ -759,9 +769,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         },
                         "record_key": {
                             "type": "string",
@@ -778,9 +788,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         }
                     },
                     "additionalProperties": false
@@ -792,9 +802,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "socket_path": {
+                        "endpoint": {
                             "type": "string",
-                            "description": "Unix socket path to the AimDB instance. Falls back to AIMDB_SOCKET env var if omitted."
+                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
                         }
                     },
                     "additionalProperties": false
@@ -865,14 +875,14 @@ impl McpServer {
             )));
         }
 
-        // In public mode, strip any client-supplied socket_path so
-        // resolve_socket_path falls back to the server-pinned --socket flag
-        // or the AIMDB_SOCKET env var (never a client-chosen path).
+        // In public mode, strip any client-supplied endpoint so
+        // resolve_endpoint falls back to the server-pinned --connect flag
+        // or the AIMDB_CONNECT env var (never a client-chosen path).
         // This prevents clients from probing arbitrary Unix sockets on the host.
         let arguments = if self.public_mode {
             params.arguments.map(|mut v| {
                 if let Some(obj) = v.as_object_mut() {
-                    obj.remove("socket_path");
+                    obj.remove("endpoint");
                 }
                 v
             })
@@ -1101,18 +1111,18 @@ mod tests {
         assert!(matches!(err, McpError::MethodNotFound(_)));
     }
 
-    // Helper: assert that an explicit socket_path is stripped in public mode.
+    // Helper: assert that an explicit endpoint is stripped in public mode.
     // The stripping is confirmed by getting InvalidParams (no socket configured)
     // rather than a connection error to the attacker-supplied path.
-    async fn assert_socket_path_stripped(tool: &str) {
+    async fn assert_endpoint_stripped(tool: &str) {
         // Clear env so it doesn't interfere with the expected InvalidParams result.
-        std::env::remove_var("AIMDB_SOCKET");
+        std::env::remove_var("AIMDB_CONNECT");
 
         let server = McpServer::new().with_public_mode(true);
         server.set_state(ServerState::Ready).await;
         let params = ToolCallParams {
             name: tool.to_string(),
-            arguments: Some(json!({ "socket_path": "/tmp/evil.sock" })),
+            arguments: Some(json!({ "endpoint": "/tmp/evil.sock" })),
         };
         let err = server.handle_tools_call(params).await.unwrap_err();
         assert!(
@@ -1122,26 +1132,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_mode_strips_socket_path_list_records() {
-        assert_socket_path_stripped("list_records").await;
+    async fn public_mode_strips_endpoint_list_records() {
+        assert_endpoint_stripped("list_records").await;
     }
 
     #[tokio::test]
-    async fn public_mode_strips_socket_path_get_record() {
-        assert_socket_path_stripped("get_record").await;
+    async fn public_mode_strips_endpoint_get_record() {
+        assert_endpoint_stripped("get_record").await;
     }
 
     #[tokio::test]
-    async fn public_mode_strips_socket_path_discover_instances() {
+    async fn public_mode_strips_endpoint_discover_instances() {
         // discover_instances scans the filesystem directly — it doesn't call
-        // resolve_socket_path, so stripping socket_path doesn't cause InvalidParams.
+        // resolve_endpoint, so stripping endpoint doesn't cause InvalidParams.
         // The expected outcome is that the tool runs normally (no instances found in
-        // the test environment), confirming the evil socket_path was not connected to.
+        // the test environment), confirming the evil endpoint was not connected to.
         let server = McpServer::new().with_public_mode(true);
         server.set_state(ServerState::Ready).await;
         let params = ToolCallParams {
             name: "discover_instances".to_string(),
-            arguments: Some(json!({ "socket_path": "/tmp/evil.sock" })),
+            arguments: Some(json!({ "endpoint": "/tmp/evil.sock" })),
         };
         let result = server.handle_tools_call(params).await;
         // The tool is allowed (not MethodNotFound) and does not attempt to connect

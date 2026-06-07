@@ -1,9 +1,8 @@
 //! Record Management Commands
 
+use crate::commands::connect_endpoint;
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
-use aimdb_client::discovery::find_instance;
-use aimdb_client::AimxConnection;
 use clap::Args;
 
 /// Record management commands
@@ -17,10 +16,6 @@ pub struct RecordCommand {
 pub enum RecordSubcommand {
     /// List all registered records
     List {
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-
         /// Output format
         #[arg(short, long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -34,10 +29,6 @@ pub enum RecordSubcommand {
         /// Record name
         record: String,
 
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-
         /// Output format
         #[arg(short, long, value_enum, default_value = "json")]
         format: OutputFormat,
@@ -50,10 +41,6 @@ pub enum RecordSubcommand {
         /// JSON value to set
         value: String,
 
-        /// Socket path (optional, uses auto-discovery if not specified)
-        #[arg(short, long)]
-        socket: Option<String>,
-
         /// Dry run - validate but don't actually set
         #[arg(long)]
         dry_run: bool,
@@ -61,35 +48,27 @@ pub enum RecordSubcommand {
 }
 
 impl RecordCommand {
-    pub async fn execute(self) -> CliResult<()> {
+    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
         match self.subcommand {
-            RecordSubcommand::List {
-                socket,
-                format,
-                writable,
-            } => list_records(socket.as_deref(), format, writable).await,
-            RecordSubcommand::Get {
-                record,
-                socket,
-                format,
-            } => get_record(&record, socket.as_deref(), format).await,
+            RecordSubcommand::List { format, writable } => {
+                list_records(endpoint, format, writable).await
+            }
+            RecordSubcommand::Get { record, format } => get_record(&record, endpoint, format).await,
             RecordSubcommand::Set {
                 name,
                 value,
-                socket,
                 dry_run,
-            } => set_record(&name, &value, socket.as_deref(), dry_run).await,
+            } => set_record(&name, &value, endpoint, dry_run).await,
         }
     }
 }
 
 async fn list_records(
-    socket: Option<&str>,
+    endpoint: Option<&str>,
     format: OutputFormat,
     writable_only: bool,
 ) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
-    let client = AimxConnection::connect(&instance.socket_path).await?;
+    let client = connect_endpoint(endpoint).await?;
 
     let mut records = client.list_records().await?;
 
@@ -111,9 +90,8 @@ async fn list_records(
     Ok(())
 }
 
-async fn get_record(name: &str, socket: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let instance = find_instance(socket).await?;
-    let client = AimxConnection::connect(&instance.socket_path).await?;
+async fn get_record(name: &str, endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
+    let client = connect_endpoint(endpoint).await?;
 
     let value = client.get_record(name).await?;
 
@@ -136,7 +114,7 @@ async fn get_record(name: &str, socket: Option<&str>, format: OutputFormat) -> C
 async fn set_record(
     name: &str,
     value_str: &str,
-    socket: Option<&str>,
+    endpoint: Option<&str>,
     dry_run: bool,
 ) -> CliResult<()> {
     // Parse JSON value
@@ -150,8 +128,7 @@ async fn set_record(
         return Ok(());
     }
 
-    let instance = find_instance(socket).await?;
-    let client = AimxConnection::connect(&instance.socket_path).await?;
+    let client = connect_endpoint(endpoint).await?;
 
     let result = client.set_record(name, value).await?;
 

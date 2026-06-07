@@ -11,6 +11,9 @@ default = []
 std = ["alloc", "aimdb-core/std", "aimdb-executor/std", "serde"]
 alloc = ["aimdb-core/alloc"]
 derive = ["aimdb-core/derive"]
+# serde derive on the shared types — works in `no_std + alloc` too, so an
+# embassy demo can expose these records over a remote-access (serial) server.
+serde = ["dep:serde"]
 
 # Embassy-specific features (no_std)
 defmt = ["dep:defmt"]

@@ -21,6 +21,12 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 
+    /// Endpoint of the AimDB instance: a `scheme://` URL (`unix://PATH`,
+    /// `serial://DEVICE?baud=N`) or a bare path (the `unix://` shorthand).
+    /// Falls back to the `AIMDB_CONNECT` env var, then auto-discovery.
+    #[arg(long, global = true)]
+    connect: Option<String>,
+
     /// Enable verbose output
     #[arg(short, long, global = true)]
     verbose: bool,
@@ -53,11 +59,18 @@ enum Command {
 async fn main() {
     let cli = Cli::parse();
 
+    // Endpoint precedence: --connect, then AIMDB_CONNECT, else auto-discovery (None).
+    let endpoint = cli
+        .connect
+        .or_else(|| std::env::var("AIMDB_CONNECT").ok())
+        .filter(|s| !s.is_empty());
+    let endpoint = endpoint.as_deref();
+
     let result = match cli.command {
-        Command::Instance(cmd) => cmd.execute().await,
-        Command::Record(cmd) => cmd.execute().await,
-        Command::Graph(cmd) => cmd.execute().await,
-        Command::Watch(cmd) => cmd.execute().await,
+        Command::Instance(cmd) => cmd.execute(endpoint).await,
+        Command::Record(cmd) => cmd.execute(endpoint).await,
+        Command::Graph(cmd) => cmd.execute(endpoint).await,
+        Command::Watch(cmd) => cmd.execute(endpoint).await,
         Command::Generate(cmd) => cmd.execute().await,
     };
 

@@ -63,7 +63,7 @@ pub async fn list_records_resources() -> McpResult<Vec<Resource>> {
     // Generate a resource for each instance
     let resources: Vec<Resource> = instances
         .into_iter()
-        .map(|info| records_resource_for_socket(&info.socket_path.display().to_string()))
+        .map(|info| records_resource_for_socket(&info.endpoint.display().to_string()))
         .collect();
 
     Ok(resources)
