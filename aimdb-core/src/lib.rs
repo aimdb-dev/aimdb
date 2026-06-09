@@ -17,6 +17,10 @@
 
 extern crate alloc;
 
+// Must precede the other modules: `macro_rules!` visibility is textual.
+#[macro_use]
+mod log;
+
 pub mod buffer;
 pub mod builder;
 #[cfg(feature = "json-serialize")]

@@ -109,8 +109,7 @@ impl Router {
                     DeserializerKind::Context(deser) => match ctx {
                         Some(ctx) => (deser)(ctx.clone(), payload),
                         None => {
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!(
+                            log_warn!(
                                 "Context deserializer on '{}' but no context provided, skipping",
                                 resource_id
                             );
@@ -133,12 +132,10 @@ impl Router {
                             Ok(()) => {
                                 routed = true;
 
-                                #[cfg(feature = "tracing")]
-                                tracing::debug!("Routed message on '{}' to producer", resource_id);
+                                log_debug!("Routed message on '{}' to producer", resource_id);
                             }
                             Err(_e) => {
-                                #[cfg(feature = "tracing")]
-                                tracing::error!(
+                                log_error!(
                                     "Failed to produce message on '{}': {}",
                                     resource_id,
                                     _e
@@ -154,12 +151,7 @@ impl Router {
                         }
                     }
                     Err(_e) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(
-                            "Failed to deserialize message on '{}': {}",
-                            resource_id,
-                            _e
-                        );
+                        log_warn!("Failed to deserialize message on '{}': {}", resource_id, _e);
 
                         #[cfg(feature = "defmt")]
                         defmt::warn!(
@@ -174,14 +166,12 @@ impl Router {
 
         if !routed {
             if matched {
-                #[cfg(feature = "tracing")]
-                tracing::debug!("Route matched for '{}' but message was not produced (missing context or errors)", resource_id);
+                log_debug!("Route matched for '{}' but message was not produced (missing context or errors)", resource_id);
 
                 #[cfg(feature = "defmt")]
                 defmt::debug!("Route matched for '{}' but not produced", resource_id);
             } else {
-                #[cfg(feature = "tracing")]
-                tracing::debug!("No route found for resource: '{}'", resource_id);
+                log_debug!("No route found for resource: '{}'", resource_id);
 
                 #[cfg(feature = "defmt")]
                 defmt::debug!("No route found for resource: '{}'", resource_id);

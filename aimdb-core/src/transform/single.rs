@@ -169,14 +169,12 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
     // `Producer<O>` no longer exposes a `.key()` accessor (design 029) — the
     // output key is threaded in by the transform descriptor so diagnostics
     // remain unambiguous when multiple records share type `O`.
-    #[cfg(feature = "tracing")]
-    tracing::info!("🔄 Transform started: '{}' → '{}'", input_key, output_key);
+    log_info!("🔄 Transform started: '{}' → '{}'", input_key, output_key);
 
     let consumer = match db.consumer::<I>(&input_key) {
         Ok(c) => c,
         Err(_e) => {
-            #[cfg(feature = "tracing")]
-            tracing::error!(
+            log_error!(
                 "🔄 Transform '{}' → '{}' FATAL: failed to resolve consumer: {:?}",
                 input_key,
                 output_key,
@@ -187,8 +185,7 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
     };
     let mut reader = consumer.subscribe();
 
-    #[cfg(feature = "tracing")]
-    tracing::debug!(
+    log_debug!(
         "✅ Transform '{}' → '{}' subscribed, entering event loop",
         input_key,
         output_key
@@ -202,8 +199,7 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
                 }
             }
             Err(crate::DbError::BufferLagged { .. }) => {
-                #[cfg(feature = "tracing")]
-                tracing::warn!(
+                log_warn!(
                     "🔄 Transform '{}' → '{}' lagged behind, some values skipped",
                     input_key,
                     output_key
@@ -211,8 +207,7 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
                 continue;
             }
             Err(_) => {
-                #[cfg(feature = "tracing")]
-                tracing::warn!(
+                log_warn!(
                     "🔄 Transform '{}' → '{}' input closed, task exiting",
                     input_key,
                     output_key

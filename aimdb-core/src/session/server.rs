@@ -100,8 +100,7 @@ pub async fn run_session<C, D>(
     let ctx = match dispatch.authenticate(conn.peer(), first.as_deref()).await {
         Ok(ctx) => ctx,
         Err(_e) => {
-            #[cfg(feature = "tracing")]
-            tracing::warn!("session authenticate rejected: {:?}", _e);
+            log_warn!("session authenticate rejected: {:?}", _e);
             return;
         }
     };
@@ -373,8 +372,7 @@ where
                 // under an accept flood (the biased `accept` arm starves the reap
                 // arm) it may read high transiently — acceptable for a soft cap.
                 if conns.len() >= config.limits.max_connections {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!(
+                    log_warn!(
                         "max_connections={} reached, refusing client",
                         config.limits.max_connections
                     );
@@ -389,8 +387,7 @@ where
                 }));
             }
             Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("accept failed: {:?}", _e);
+                log_error!("accept failed: {:?}", _e);
                 // Keep serving existing connections despite a transient accept error.
             }
         }

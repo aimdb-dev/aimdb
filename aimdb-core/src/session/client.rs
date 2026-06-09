@@ -249,8 +249,7 @@ async fn client_loop<D, C, R>(
                 conn
             }
             Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::warn!("client dial failed: {:?}", _e);
+                log_warn!("client dial failed: {:?}", _e);
                 match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
                     true => continue,
                     false => return,
@@ -284,8 +283,7 @@ async fn reconnect_after<R: TimeOps>(
     }
     *attempt += 1;
     if config.max_reconnect_attempts != 0 && *attempt >= config.max_reconnect_attempts {
-        #[cfg(feature = "tracing")]
-        tracing::warn!(
+        log_warn!(
             "client giving up after {} reconnect attempts",
             config.max_reconnect_attempts
         );

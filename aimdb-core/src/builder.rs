@@ -629,13 +629,11 @@ where
     where
         R: crate::RuntimeForProfiling,
     {
-        #[cfg(feature = "tracing")]
-        tracing::info!("Building database and spawning background tasks...");
+        log_info!("Building database and spawning background tasks...");
 
         let (_db, runner) = self.build().await?;
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Database running, runner driving collected futures.");
+        log_info!("Database running, runner driving collected futures.");
 
         runner.run().await;
 
@@ -746,8 +744,7 @@ where
         // Build and validate the dependency graph
         let dependency_graph = DependencyGraph::build_and_validate(&record_infos)?;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Dependency graph built successfully ({} nodes, {} edges, topo order: {:?})",
             dependency_graph.nodes.len(),
             dependency_graph.edges.len(),
@@ -777,8 +774,7 @@ where
         // Accumulator for every future the runner will drive.
         let mut futures_acc: Vec<BoxFuture> = Vec::new();
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Collecting futures for {} records", self.spawn_fns.len());
+        log_info!("Collecting futures for {} records", self.spawn_fns.len());
 
         // Build a lookup map from spawn_fns for topological ordering
         let mut spawn_fn_map: HashMap<StringKey, Box<dyn core::any::Any + Send>> =
@@ -807,8 +803,7 @@ where
             futures_acc.extend((*spawn_fn)(&runtime, &db, id)?);
         }
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Record future collection complete");
+        log_info!("Record future collection complete");
 
         // AimX remote-access servers are no longer stood up here: register a
         // session connector (`UdsServer::from_config(...)`) via `with_connector`
@@ -820,25 +815,22 @@ where
         // a `Vec<BoxFuture>` instead of an `Arc<dyn Connector>` (which previously
         // was discarded anyway — see design doc 028 §"The dropped Arc<dyn Connector> object").
         for builder in self.connector_builders {
-            #[cfg(feature = "tracing")]
-            let scheme = builder.scheme().to_string();
-
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Building connector for scheme: {}", scheme);
+            log_debug!("Building connector for scheme: {}", builder.scheme());
 
             let connector_futures = builder.build(&db).await?;
-            #[cfg(feature = "tracing")]
             let n_futures = connector_futures.len();
             futures_acc.extend(connector_futures);
 
-            #[cfg(feature = "tracing")]
-            tracing::info!("Connector '{}' contributed {} future(s)", scheme, n_futures);
+            log_info!(
+                "Connector '{}' contributed {} future(s)",
+                builder.scheme(),
+                n_futures
+            );
         }
 
         // Collect on_start futures (registered by external crates like aimdb-persistence).
         if !self.start_fns.is_empty() {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Collecting {} on_start future(s)", self.start_fns.len());
+            log_debug!("Collecting {} on_start future(s)", self.start_fns.len());
 
             for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
                 let start_fn = start_fn_any
@@ -1301,9 +1293,8 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
             }
         }
 
-        #[cfg(feature = "tracing")]
         if !routes.is_empty() {
-            tracing::debug!(
+            log_debug!(
                 "Collected {} inbound routes for scheme '{}'",
                 routes.len(),
                 scheme
@@ -1384,8 +1375,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
 
                 // Skip links without serializer
                 let Some(serializer) = link.serializer.clone() else {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("Outbound link '{}' has no serializer, skipping", link.url);
+                    log_warn!("Outbound link '{}' has no serializer, skipping", link.url);
                     continue;
                 };
 
@@ -1402,9 +1392,8 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
             }
         }
 
-        #[cfg(feature = "tracing")]
         if !routes.is_empty() {
-            tracing::debug!(
+            log_debug!(
                 "Collected {} outbound routes for scheme '{}'",
                 routes.len(),
                 scheme

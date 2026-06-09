@@ -728,8 +728,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         let descriptor = lock(&self.transform).take();
 
         if let Some(desc) = descriptor {
-            #[cfg(feature = "tracing")]
-            tracing::info!(
+            log_info!(
                 "🔄 Collecting transform futures for '{}' (inputs: {:?})",
                 record_key,
                 desc.input_keys
@@ -852,8 +851,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         // Capture the serde-backed codec where the bound is statically known.
         self.remote_codec = Some(Arc::new(crate::codec::SerdeJsonCodec));
 
-        #[cfg(feature = "tracing")]
-        tracing::info!(
+        log_info!(
             "with_remote_access() called for record type: {}",
             core::any::type_name::<T>()
         );
@@ -936,8 +934,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         #[cfg(not(feature = "std"))]
         let _ = record_key;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Collecting {} consumer futures for record type {}",
             self.consumer_count(),
             core::any::type_name::<T>()
@@ -1004,8 +1001,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         let service = lock(&self.producer).take();
 
         if let Some(service_fn) = service {
-            #[cfg(feature = "tracing")]
-            tracing::debug!(
+            log_debug!(
                 "Collecting producer service future for record '{}' (type {})",
                 record_key,
                 core::any::type_name::<T>()
@@ -1249,8 +1245,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     #[doc(hidden)]
     #[cfg(feature = "remote-access")]
     fn latest_json(&self) -> Option<serde_json::Value> {
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "latest_json called for type: {}",
             core::any::type_name::<T>()
         );
@@ -1260,8 +1255,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         let value = self.buffer.as_ref()?.peek()?;
         let result = self.remote_codec.as_ref()?.encode(&value);
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!("Serialization result: {:?}", result.is_some());
+        log_debug!("Serialization result: {:?}", result.is_some());
 
         result
     }
@@ -1271,8 +1265,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>> {
         use crate::DbError;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "subscribe_json called for type: {}",
             core::any::type_name::<T>()
         );
@@ -1295,8 +1288,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             codec,
         };
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Successfully created JSON subscription for type: {}",
             core::any::type_name::<T>()
         );
@@ -1309,16 +1301,14 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()> {
         use crate::DbError;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "set_from_json called for type: {}",
             core::any::type_name::<T>()
         );
 
         // SAFETY CHECK 1: Enforce "No Producer Override" rule
         if self.has_producer() || self.has_transform() {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
+            log_warn!(
                 "Rejected set_from_json for '{}': has active producer or transform",
                 core::any::type_name::<T>()
             );
@@ -1358,8 +1348,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             ))
         })?;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Successfully deserialized JSON to type: {}",
             core::any::type_name::<T>()
         );
@@ -1368,8 +1357,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         // metadata as updated — previously skipped on this path.
         self.writer_handle().push(value);
 
-        #[cfg(feature = "tracing")]
-        tracing::info!(
+        log_info!(
             "Successfully set value from JSON for record: {}",
             core::any::type_name::<T>()
         );
