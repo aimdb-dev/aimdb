@@ -501,8 +501,13 @@ where
     let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();
 
     // --- outbound: local record updates -> remote `write` ------------------
-    for (destination, consumer, serializer, _config, topic_provider) in
-        db.collect_outbound_routes(scheme)
+    for crate::OutboundRoute {
+        topic: destination,
+        consumer,
+        serializer,
+        topic_provider,
+        ..
+    } in db.collect_outbound_routes(scheme)
     {
         let handle = handle.clone();
         let ctx = ctx.clone();

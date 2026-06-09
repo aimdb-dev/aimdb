@@ -43,7 +43,14 @@ where
     let routes = db.collect_outbound_routes(scheme);
     let mut futures: Vec<BoxFuture> = Vec::with_capacity(routes.len());
 
-    for (default_topic, consumer, serializer, config, topic_provider) in routes {
+    for crate::OutboundRoute {
+        topic: default_topic,
+        consumer,
+        serializer,
+        config,
+        topic_provider,
+    } in routes
+    {
         let sink = sink.clone();
         let runtime_ctx = db.runtime_any();
         let cfg = ConnectorConfig::from_query(&config);

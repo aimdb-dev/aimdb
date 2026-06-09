@@ -40,21 +40,20 @@ use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
 use crate::{DbError, DbResult};
 
-/// Type alias for outbound route tuples returned by `collect_outbound_routes`
-///
-/// Each tuple contains:
-/// - `String` - Default topic/destination from the URL path
-/// - `Box<dyn ConsumerTrait>` - Consumer for subscribing to record values
-/// - `SerializerKind` - User-provided serializer for the record type (raw or context-aware)
-/// - `Vec<(String, String)>` - Configuration options from the URL query
-/// - `Option<TopicProviderFn>` - Optional dynamic topic provider
-pub type OutboundRoute = (
-    String,
-    Box<dyn crate::connector::ConsumerTrait>,
-    crate::connector::SerializerKind,
-    Vec<(String, String)>,
-    Option<crate::connector::TopicProviderFn>,
-);
+/// One outbound route returned by [`AimDb::collect_outbound_routes`]
+pub struct OutboundRoute {
+    /// Default topic/destination from the URL path; used when no
+    /// `topic_provider` overrides it per value.
+    pub topic: String,
+    /// Type-erased consumer for subscribing to record values
+    pub consumer: Box<dyn crate::connector::ConsumerTrait>,
+    /// User-provided serializer for the record type (raw or context-aware)
+    pub serializer: crate::connector::SerializerKind,
+    /// Configuration options from the URL query
+    pub config: Vec<(String, String)>,
+    /// Optional dynamic topic provider
+    pub topic_provider: Option<crate::connector::TopicProviderFn>,
+}
 
 /// Marker type for untyped builder (before runtime is set)
 pub struct NoRuntime;
@@ -1381,13 +1380,13 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
 
                 // Create consumer using the stored factory
                 if let Some(consumer) = link.create_consumer(db_any.clone()) {
-                    routes.push((
-                        destination,
+                    routes.push(OutboundRoute {
+                        topic: destination,
                         consumer,
                         serializer,
-                        link.config.clone(),
-                        link.topic_provider.clone(),
-                    ));
+                        config: link.config.clone(),
+                        topic_provider: link.topic_provider.clone(),
+                    });
                 }
             }
         }
