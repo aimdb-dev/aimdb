@@ -4,10 +4,19 @@
 //!
 //! # Architecture
 //!
-//! - Manual UDP socket management with `embassy-net`
-//! - Manual connection state machine (CONNECT_REQUEST/RESPONSE, TUNNELING_ACK)
-//! - Manual telegram parsing and routing
-//! - Integration with AimDB's ConnectorBuilder pattern
+//! This crate contributes only the KNX/IP **protocol**: UDP socket management with
+//! `embassy-net` and the tunnelling state machine (CONNECT_REQUEST/RESPONSE,
+//! TUNNELING_ACK, heartbeat, telegram parsing). The data-flow is shared:
+//!
+//! - **Outbound** (records → telegrams) rides core's `pump_sink` via the existing
+//!   [`Connector`](aimdb_core::transport::Connector) impl (commands go onto a
+//!   `CriticalSectionRawMutex` channel the connection task drains).
+//! - **Inbound** (telegrams → records) rides core's `pump_source`: the connection
+//!   task parses each telegram and pushes `(group-address, payload)` onto an inbound
+//!   channel that [`KnxSource`] drains.
+//! - The connection task is force-`Send`ed once via
+//!   [`into_box_future`](aimdb_embassy_adapter::connectors::into_box_future); the
+//!   crate carries no `unsafe`.
 //!
 //! # Usage
 //!
@@ -32,11 +41,11 @@
 
 use crate::GroupAddress;
 use aimdb_core::connector::ConnectorUrl;
-use aimdb_core::router::{Router, RouterBuilder};
+use aimdb_core::session::{pump_sink, pump_source, Payload};
 use aimdb_core::ConnectorBuilder;
-use aimdb_embassy_adapter::SendFutureWrapper;
+use aimdb_embassy_adapter::connectors::into_box_future;
 use alloc::boxed::Box;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -68,8 +77,20 @@ pub struct GroupWriteData {
 }
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
+use embassy_sync::channel::{Channel, Receiver, Sender};
 use static_cell::StaticCell;
+
+/// Inbound telegram item: `(group-address string, payload)` — pushed by the
+/// connection task, drained by [`KnxSource`] into core's `pump_source`.
+type InboundItem = (String, Payload);
+
+/// `'static` reference to the outbound command channel.
+type CommandChannelRef =
+    &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>;
+/// Sender / receiver halves of the inbound telegram channel.
+type InboundSender = Sender<'static, CriticalSectionRawMutex, InboundItem, KNX_INBOUND_QUEUE_SIZE>;
+type InboundReceiver =
+    Receiver<'static, CriticalSectionRawMutex, InboundItem, KNX_INBOUND_QUEUE_SIZE>;
 
 /// Capacity of the static KNX command channel.
 ///
@@ -87,6 +108,35 @@ static KNX_COMMAND_CHANNEL: StaticCell<
 fn get_command_channel(
 ) -> &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE> {
     KNX_COMMAND_CHANNEL.init(Channel::new())
+}
+
+/// Capacity of the static inbound telegram channel.
+const KNX_INBOUND_QUEUE_SIZE: usize = 32;
+
+/// Static channel for inbound telegrams (capacity: [`KNX_INBOUND_QUEUE_SIZE`]).
+static KNX_INBOUND_CHANNEL: StaticCell<
+    Channel<CriticalSectionRawMutex, InboundItem, KNX_INBOUND_QUEUE_SIZE>,
+> = StaticCell::new();
+
+/// Get or initialize the inbound telegram channel.
+fn get_inbound_channel(
+) -> &'static Channel<CriticalSectionRawMutex, InboundItem, KNX_INBOUND_QUEUE_SIZE> {
+    KNX_INBOUND_CHANNEL.init(Channel::new())
+}
+
+/// Inbound [`Source`](aimdb_core::session::Source): drains the connection task's
+/// telegram channel, yielding each `(group-address, payload)` for core's
+/// `pump_source` to fan out to the matching record producers. The KNX command/
+/// inbound channels use `CriticalSectionRawMutex` (`Send`), so this is a plain
+/// `Source` — no force-`Send` wrapper needed.
+struct KnxSource {
+    receiver: Receiver<'static, CriticalSectionRawMutex, InboundItem, KNX_INBOUND_QUEUE_SIZE>,
+}
+
+impl aimdb_core::session::Source for KnxSource {
+    fn next(&mut self) -> aimdb_core::session::BoxFut<'_, Option<(String, Payload)>> {
+        Box::pin(async move { Some(self.receiver.receive().await) })
+    }
 }
 
 /// KNX connector builder for Embassy runtime
@@ -118,70 +168,43 @@ where
         &'a self,
         db: &'a aimdb_core::builder::AimDb<R>,
     ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
-        // Wrap in SendFutureWrapper since Embassy types aren't Send but we're single-threaded
-        Box::pin(SendFutureWrapper(async move {
-            // Collect inbound routes from database
-            let routes = db.collect_inbound_routes("knx");
-
-            #[cfg(feature = "defmt")]
-            defmt::trace!(
-                "Collected {} inbound routes for KNX connector",
-                routes.len()
-            );
-
-            // Convert routes to Router
-            let router = RouterBuilder::from_routes(routes).build();
-
-            #[cfg(feature = "defmt")]
-            defmt::trace!(
-                "KNX router has {} unique group addresses",
-                router.resource_ids().len()
-            );
-
-            // Build connection future and channel
-            let runtime_ctx = db.runtime_any();
-            let (command_channel, connection_future) = KnxConnectorImpl::build_internal(
-                self.gateway_url.as_str(),
-                router,
-                db.runtime(),
-                Some(runtime_ctx.clone()),
-            )
-            .await
-            .map_err(|_e| {
-                #[cfg(feature = "defmt")]
-                defmt::error!("Failed to build KNX connector");
-
-                #[cfg(feature = "std")]
-                {
-                    aimdb_core::DbError::RuntimeError {
-                        message: format!("Failed to build KNX connector: {}", _e),
+        // No `.await` here, so the build future is `Send` without a wrapper: the
+        // tunnelling connection task (which holds the `!Send` UDP socket) is
+        // force-`Send`ed once via `into_box_future`; the data-flow rides core's
+        // pumps with `Send` `Connector`/`Source` (KNX channels are
+        // `CriticalSectionRawMutex`, i.e. `Send`).
+        Box::pin(async move {
+            let (command_channel, inbound_rx, connection_task) =
+                KnxConnectorImpl::setup(self.gateway_url.as_str(), db.runtime()).map_err(|_e| {
+                    #[cfg(feature = "defmt")]
+                    defmt::error!("Failed to build KNX connector");
+                    #[cfg(feature = "std")]
+                    {
+                        aimdb_core::DbError::RuntimeError {
+                            message: format!("Failed to build KNX connector: {}", _e),
+                        }
                     }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    aimdb_core::DbError::RuntimeError { _message: () }
-                }
-            })?;
+                    #[cfg(not(feature = "std"))]
+                    {
+                        aimdb_core::DbError::RuntimeError { _message: () }
+                    }
+                })?;
 
-            // Collect outbound publisher futures
-            let outbound_routes = db.collect_outbound_routes("knx");
-
-            #[cfg(feature = "defmt")]
-            defmt::trace!(
-                "Collected {} outbound routes for KNX connector",
-                outbound_routes.len()
-            );
-
-            let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_routes.len());
-            futures.push(connection_future);
-            futures.extend(KnxConnectorImpl::collect_outbound_futures(
-                command_channel,
-                runtime_ctx,
-                outbound_routes,
+            // Outbound: records → KNX telegrams via the existing `Connector` impl.
+            let mut futures = pump_sink(db, "knx", Arc::new(KnxConnectorImpl { command_channel }));
+            // Inbound: KNX telegrams → records via the connection task's channel.
+            futures.extend(pump_source(
+                db,
+                "knx",
+                KnxSource {
+                    receiver: inbound_rx,
+                },
             ));
+            // The KNX/IP tunnelling state machine (force-`Send` protocol task).
+            futures.push(connection_task);
 
             Ok(futures)
-        }))
+        })
     }
 
     fn scheme(&self) -> &str {
@@ -279,19 +302,15 @@ pub struct KnxConnectorImpl {
 }
 
 impl KnxConnectorImpl {
-    /// Create a new KNX connector with pre-configured router (internal)
-    async fn build_internal<R>(
+    /// Set up the command + inbound channels and the tunnelling connection task.
+    ///
+    /// Synchronous (no `.await`) so the caller's `build` future stays `Send`.
+    /// Returns the command channel (for outbound `pump_sink`), the inbound
+    /// receiver (for `pump_source`), and the force-`Send` connection task.
+    fn setup<R>(
         gateway_url: &str,
-        router: Router,
         runtime: &R,
-        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
-    ) -> Result<
-        (
-            &'static Channel<CriticalSectionRawMutex, KnxCommand, KNX_COMMAND_QUEUE_SIZE>,
-            BoxFuture,
-        ),
-        &'static str,
-    >
+    ) -> Result<(CommandChannelRef, InboundReceiver, BoxFuture), &'static str>
     where
         R: aimdb_executor::RuntimeAdapter + aimdb_embassy_adapter::EmbassyNetwork + 'static,
     {
@@ -307,40 +326,33 @@ impl KnxConnectorImpl {
         // Parse gateway IP address
         let gateway_ip = Ipv4Address::from_str(&host).map_err(|_| "Invalid gateway IP address")?;
 
-        // Clone router for background task
-        let router_arc = Arc::new(router);
-        let router_for_task = router_arc.clone();
-
         // Get network stack for background task
         let network = runtime.network_stack();
 
-        // Initialize command channel
+        // Channels: outbound commands (publish → task) and inbound telegrams (task → pump_source).
         let command_channel = get_command_channel();
+        let inbound_channel = get_inbound_channel();
+        let inbound_tx = inbound_channel.sender();
+        let inbound_rx = inbound_channel.receiver();
 
-        // Build KNX connection future (returned instead of spawned)
-        let knx_task_future: BoxFuture = Box::pin(SendFutureWrapper(async move {
+        // The KNX/IP tunnelling state machine (holds the `!Send` UDP socket — force-`Send`).
+        let knx_task_future = into_box_future(async move {
             #[cfg(feature = "defmt")]
             defmt::trace!("KNX background task starting for {}:{}", gateway_ip, port);
 
             // Run the connection listener (this never returns under normal conditions)
             #[allow(unreachable_code)]
             {
-                let _: () = Self::connection_task(
-                    network,
-                    gateway_ip,
-                    port,
-                    router_for_task,
-                    command_channel,
-                    runtime_ctx,
-                )
-                .await;
+                let _: () =
+                    Self::connection_task(network, gateway_ip, port, command_channel, inbound_tx)
+                        .await;
             }
-        }));
+        });
 
         #[cfg(feature = "defmt")]
         defmt::trace!("KNX connector initialized");
 
-        Ok((command_channel, knx_task_future))
+        Ok((command_channel, inbound_rx, knx_task_future))
     }
 
     /// Background task that maintains KNX connection and receives telegrams
@@ -348,13 +360,8 @@ impl KnxConnectorImpl {
         stack: &'static Stack<'static>,
         gateway_addr: Ipv4Address,
         gateway_port: u16,
-        router: Arc<Router>,
-        command_channel: &'static Channel<
-            CriticalSectionRawMutex,
-            KnxCommand,
-            KNX_COMMAND_QUEUE_SIZE,
-        >,
-        runtime_ctx: Option<Arc<dyn core::any::Any + Send + Sync>>,
+        command_channel: CommandChannelRef,
+        inbound_tx: InboundSender,
     ) {
         loop {
             #[cfg(feature = "defmt")]
@@ -368,9 +375,8 @@ impl KnxConnectorImpl {
                 stack,
                 gateway_addr,
                 gateway_port,
-                &router,
                 command_channel,
-                runtime_ctx.as_ref(),
+                inbound_tx,
             )
             .await
             {
@@ -397,13 +403,8 @@ impl KnxConnectorImpl {
         stack: &'static Stack<'static>,
         gateway_addr: Ipv4Address,
         gateway_port: u16,
-        router: &Router,
-        command_channel: &'static Channel<
-            CriticalSectionRawMutex,
-            KnxCommand,
-            KNX_COMMAND_QUEUE_SIZE,
-        >,
-        runtime_ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
+        command_channel: CommandChannelRef,
+        inbound_tx: InboundSender,
     ) -> Result<(), &'static str> {
         // Create UDP socket with static buffers
         let mut rx_meta = [PacketMetadata::EMPTY; 4];
@@ -585,7 +586,10 @@ impl KnxConnectorImpl {
                             #[cfg(feature = "defmt")]
                             defmt::trace!("Sent TUNNELING_ACK with seq={}", received_seq);
 
-                            // Parse and route telegram
+                            // Parse and forward telegram to `pump_source` (via the
+                            // inbound channel). Non-blocking: drop + log on a full
+                            // channel rather than stalling the protocol loop, matching
+                            // the router's drop-on-overflow behaviour.
                             if let Some((addr, data)) = Self::parse_telegram(&recv_buf[..len]) {
                                 let resource_id = addr.to_string();
 
@@ -596,14 +600,12 @@ impl KnxConnectorImpl {
                                     data.len()
                                 );
 
-                                if let Err(_e) =
-                                    router.route(&resource_id, &data, runtime_ctx).await
+                                if inbound_tx
+                                    .try_send((resource_id, Payload::from(data)))
+                                    .is_err()
                                 {
                                     #[cfg(feature = "defmt")]
-                                    defmt::warn!(
-                                        "Failed to route telegram to {}",
-                                        resource_id.as_str()
-                                    );
+                                    defmt::warn!("KNX inbound channel full; dropped telegram");
                                 }
                             } else {
                                 #[cfg(feature = "defmt")]
@@ -1012,168 +1014,6 @@ impl KnxConnectorImpl {
         );
 
         Some((dest, payload))
-    }
-
-    /// Spawn outbound publishers for records that link_to() KNX group addresses
-    ///
-    /// If a topic provider is configured, it will be called for each value to
-    /// dynamically determine the KNX group address. Otherwise, the static default is used.
-    fn collect_outbound_futures(
-        command_channel: &'static Channel<
-            CriticalSectionRawMutex,
-            KnxCommand,
-            KNX_COMMAND_QUEUE_SIZE,
-        >,
-        runtime_ctx: Arc<dyn core::any::Any + Send + Sync>,
-        outbound_routes: Vec<aimdb_core::OutboundRoute>,
-    ) -> Vec<BoxFuture> {
-        let mut futures = Vec::with_capacity(outbound_routes.len());
-
-        for (default_group_addr_str, consumer, serializer, _config, topic_provider) in
-            outbound_routes
-        {
-            let default_group_addr_clone = default_group_addr_str.clone();
-            let runtime_ctx = runtime_ctx.clone();
-
-            futures.push(Box::pin(SendFutureWrapper(async move {
-                // Parse default group address using knx-pico's type-safe parser
-                let default_group_addr = match default_group_addr_clone.parse::<GroupAddress>() {
-                    Ok(addr) => Some(addr),
-                    Err(_e) => {
-                        // If no topic provider, this is an error
-                        if topic_provider.is_none() {
-                            #[cfg(feature = "defmt")]
-                            defmt::error!(
-                                "Invalid group address for outbound: '{}'",
-                                default_group_addr_clone.as_str()
-                            );
-                            return;
-                        }
-                        // With topic provider, the default can be invalid (will be overridden)
-                        None
-                    }
-                };
-
-                // Subscribe to typed values (type-erased)
-                let mut reader = match consumer.subscribe_any().await {
-                    Ok(r) => r,
-                    Err(_e) => {
-                        #[cfg(feature = "defmt")]
-                        defmt::error!(
-                            "Failed to subscribe for outbound: '{}'",
-                            default_group_addr_clone.as_str()
-                        );
-                        return;
-                    }
-                };
-
-                #[cfg(feature = "defmt")]
-                defmt::info!(
-                    "KNX outbound publisher started for: {}",
-                    default_group_addr_clone.as_str()
-                );
-
-                loop {
-                    let value_any = match reader.recv_any().await {
-                        Ok(v) => v,
-                        // SPMC-ring overflow — skip the gap, keep publishing.
-                        Err(aimdb_core::DbError::BufferLagged { .. }) => {
-                            #[cfg(feature = "defmt")]
-                            defmt::warn!(
-                                "KNX outbound: consumer lagged for '{}'",
-                                default_group_addr_clone.as_str()
-                            );
-                            continue;
-                        }
-                        // Buffer closed — stop the publisher.
-                        Err(_) => break,
-                    };
-                    // Determine group address: dynamic (from provider) or default (from URL)
-                    let group_addr_str = topic_provider
-                        .as_ref()
-                        .and_then(|provider| provider.topic_any(&*value_any))
-                        .unwrap_or_else(|| default_group_addr_clone.clone());
-
-                    // Parse group address (may be dynamic)
-                    let group_addr = match group_addr_str.parse::<GroupAddress>() {
-                        Ok(addr) => addr,
-                        Err(_e) => {
-                            // Try to use cached default if available
-                            if let Some(addr) = default_group_addr {
-                                addr
-                            } else {
-                                #[cfg(feature = "defmt")]
-                                defmt::error!(
-                                    "Invalid dynamic group address: '{}'",
-                                    group_addr_str.as_str()
-                                );
-                                continue;
-                            }
-                        }
-                    };
-
-                    // Serialize the type-erased value
-                    let bytes = match &serializer {
-                        aimdb_core::connector::SerializerKind::Raw(ser) => match ser(&*value_any) {
-                            Ok(b) => b,
-                            Err(_e) => {
-                                #[cfg(feature = "defmt")]
-                                defmt::error!(
-                                    "Failed to serialize for group address '{}'",
-                                    group_addr_str.as_str()
-                                );
-                                continue;
-                            }
-                        },
-                        aimdb_core::connector::SerializerKind::Context(ser) => {
-                            match ser(runtime_ctx.clone(), &*value_any) {
-                                Ok(b) => b,
-                                Err(_e) => {
-                                    #[cfg(feature = "defmt")]
-                                    defmt::error!(
-                                        "Failed to serialize for group address '{}'",
-                                        group_addr_str.as_str()
-                                    );
-                                    continue;
-                                }
-                            }
-                        }
-                    };
-
-                    // Convert to heapless::Vec
-                    let mut vec_data = heapless::Vec::<u8, 254>::new();
-                    if vec_data.extend_from_slice(&bytes).is_err() {
-                        #[cfg(feature = "defmt")]
-                        defmt::error!(
-                            "Data too large for group address '{}'",
-                            group_addr_str.as_str()
-                        );
-                        continue;
-                    }
-
-                    // Send command to connection task
-                    let cmd = KnxCommand {
-                        kind: KnxCommandKind::GroupWrite(Box::new(GroupWriteData {
-                            group_addr,
-                            data: vec_data,
-                        })),
-                    };
-
-                    command_channel.send(cmd).await;
-
-                    #[cfg(feature = "defmt")]
-                    defmt::debug!("Published to KNX: {}", group_addr_str.as_str());
-                }
-
-                #[cfg(feature = "defmt")]
-                defmt::info!(
-                    "KNX outbound publisher stopped for: {}",
-                    default_group_addr_clone.as_str()
-                );
-            })) as BoxFuture);
-        }
-
-        futures
     }
 }
 

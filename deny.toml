@@ -26,6 +26,7 @@ yanked = "warn"
 # embedded stack; there is currently no drop-in replacement at this depth.
 ignore = [
     "RUSTSEC-2026-0110", # bare-metal deprecated via cortex-m (embedded-only transitive)
+    "RUSTSEC-2026-0173", # TEMP: proc-macro-error2 unmaintained (transitive via defmt-macros/tabled_derive)
 ]
 
 [sources]

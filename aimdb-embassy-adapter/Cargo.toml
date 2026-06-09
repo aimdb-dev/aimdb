@@ -20,6 +20,9 @@ alloc = []
 embassy-runtime = ["embassy-executor", "embassy-time", "embassy-sync"]
 embassy-net-support = ["embassy-net"]                                  # Network stack support for connectors
 
+connectors = ["aimdb-core/connector-session"]
+connector-io = ["connectors", "dep:embedded-io-async"]
+
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]
 
@@ -50,6 +53,9 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = fal
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
+
+# Generic framed `Connection` over async UART halves (feature `connector-io`).
+embedded-io-async = { workspace = true, optional = true }
 
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }

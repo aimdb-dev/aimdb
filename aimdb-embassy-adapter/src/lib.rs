@@ -82,6 +82,11 @@ pub mod time;
 #[cfg(not(feature = "std"))]
 pub mod send_wrapper;
 
+// Centralized Embassy connector spines (session + data-plane) — the one audited
+// home for the single-core `unsafe` + `SendFutureWrapper`.
+#[cfg(all(not(feature = "std"), feature = "connectors"))]
+pub mod connectors;
+
 // Error handling exports
 #[cfg(not(feature = "std"))]
 pub use error::EmbassyErrorSupport;

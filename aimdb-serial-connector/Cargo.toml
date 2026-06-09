@@ -31,14 +31,15 @@ tokio-runtime = [
 ]
 
 # Embedded half: `no_std + alloc`, generic over `embedded-io-async` UART halves.
-# Hand-rolls the `ConnectorBuilder` and force-`Send`s the engine futures via
-# `aimdb-embassy-adapter`'s `SendFutureWrapper`.
+# Thin sugar over the centralized Embassy session spine in `aimdb-embassy-adapter`
+# (`connector-io`), which owns the single-core `unsafe` + force-`Send`; this crate
+# contributes only the COBS `Framer`.
 embassy-runtime = [
     "aimdb-core/alloc",
     "aimdb-core/connector-session",
     "aimdb-core/remote-access",
     "dep:aimdb-embassy-adapter",
-    # `SendFutureWrapper` (force-`Send`) is always available on the no_std adapter;
+    "aimdb-embassy-adapter/connector-io",
     # `embassy-time`/`-sync` give the `EmbassyAdapter` clock the smoke test runs on.
     "aimdb-embassy-adapter/embassy-time",
     "aimdb-embassy-adapter/embassy-sync",

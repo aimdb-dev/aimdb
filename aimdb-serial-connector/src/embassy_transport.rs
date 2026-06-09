@@ -1,27 +1,17 @@
-//! Embassy serial transport (feature `embassy-runtime`, `no_std + alloc`) — a
-//! [`Connection`] over an [`embedded_io_async`] UART with COBS framing, plus
-//! [`SerialClient`]/[`SerialServer`] sugar.
+//! Embassy serial transport (feature `embassy-runtime`, `no_std + alloc`) — thin
+//! sugar over the centralized Embassy session spine in `aimdb-embassy-adapter`.
+//!
+//! This half contributes **only** the COBS [`Framer`] plus thin sugar; the framed
+//! [`Connection`](aimdb_core::session::Connection), the one-shot
+//! dialer/listener/cell, and the force-`Send` plumbing all live in
+//! [`aimdb_embassy_adapter::connectors`]. So this module carries **no `unsafe`**
+//! (down from the seven `unsafe impl`s this half used to hand-roll) — the Embassy
+//! half is now structurally a sibling of the [Tokio half](crate::tokio_transport),
+//! both thin sugar over a shared spine.
 //!
 //! Generic over the `embedded-io-async` `Read`/`Write` halves (the common Embassy
 //! HAL shape, e.g. `Uart::split()`), so it works with any chip's async UART.
-//!
-//! # Why this half hand-rolls `ConnectorBuilder`
-//!
-//! The generic [`SessionClientConnector`](aimdb_core::session::SessionClientConnector)
-//! / [`SessionServerConnector`](aimdb_core::session::SessionServerConnector) demand
-//! `Clone + Send + Sync` on the dialer / `Send + Sync` on the listener+dispatch
-//! factories — bounds a moved-in UART peripheral can't meet. The underlying
-//! engines need only the bare traits ([`run_client`]`<D: Dialer>`, [`serve`]`<L:
-//! Listener>`), so we call them directly and force-`Send` the (single-core,
-//! cooperative) Embassy futures with `aimdb-embassy-adapter`'s
-//! [`SendFutureWrapper`] — the same pattern the MQTT/KNX Embassy connectors use.
-//!
-//! The `unsafe impl Send`/`Sync` on the transport + builder types rest on the same
-//! invariant `SendFutureWrapper` documents: an Embassy executor runs cooperatively
-//! on a single core with no preemption or thread migration, so these values are
-//! never actually accessed from another thread.
 
-use core::cell::RefCell;
 use core::future::Future;
 use core::pin::Pin;
 
@@ -33,17 +23,15 @@ use alloc::vec::Vec;
 
 use embedded_io_async::{Read, Write};
 
-use aimdb_embassy_adapter::SendFutureWrapper;
+use aimdb_embassy_adapter::connectors::{
+    EmbassyConnection, EmbassySessionClient, Framer, OneShotCell, OneShotDialer, OneShotListener,
+};
 
 use aimdb_core::connector::ConnectorBuilder;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
-use aimdb_core::session::{
-    pump_client, run_client, serve, BoxFut, ClientConfig, Connection, Dialer, Dispatch, Listener,
-    PeerInfo, SessionConfig, SessionLimits, TransportError, TransportResult,
-};
-use aimdb_core::{AimDb, DbError, DbResult, RuntimeAdapter};
-use aimdb_executor::TimeOps;
+use aimdb_core::session::{serve, Dispatch, SessionConfig, SessionLimits};
+use aimdb_core::{AimDb, DbResult, RuntimeAdapter};
 
 use crate::framing::{encode_frame, FrameAccumulator};
 use crate::DEFAULT_SCHEME;
@@ -51,274 +39,132 @@ use crate::DEFAULT_SCHEME;
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + Send + 'a>>;
 
-/// How many bytes a single UART `read()` pulls before re-checking for a frame.
+/// How many bytes a single UART `read` pulls before re-checking for a frame.
 const READ_CHUNK: usize = 64;
-
-/// Max bytes per `write()` call. Some HAL `BufferedUart::write` is atomic-or-error
-/// (e.g. `embassy-stm32` returns `BufferTooLong` for a single write larger than its
-/// TX ring), so a frame bigger than the buffer must be split. Chunking at this size
-/// sends a frame of any length as long as the TX buffer is at least this big.
+/// Max bytes per `write` call. Some HAL `BufferedUart::write` is atomic-or-error
+/// (e.g. `embassy-stm32` returns `BufferTooLong` for a single write larger than
+/// its TX ring), so a frame bigger than the buffer must be split.
 const WRITE_CHUNK: usize = 64;
 
+/// The framed connection type a serial peripheral produces: COBS over the UART.
+type SerialConnection<Rd, Wr> = EmbassyConnection<Rd, Wr, CobsFramer, READ_CHUNK, WRITE_CHUNK>;
+
 // ===========================================================================
-// Connection
+// COBS framer — the only serial-specific transport bit.
 // ===========================================================================
 
-/// A framed bidirectional pipe over an `embedded-io-async` UART. Framing lives in
-/// the transport: [`recv`](Connection::recv) returns one COBS frame (sentinel
-/// stripped); [`send`](Connection::send) COBS-encodes and appends the sentinel.
-pub struct EmbassySerialConnection<Rd, Wr> {
-    rx: Rd,
-    tx: Wr,
+/// COBS framing for the Embassy [`EmbassyConnection`]: `encode` COBS-encodes a
+/// frame and appends the `0x00` sentinel; the accumulator yields one frame per
+/// sentinel (a malformed run is skipped — COBS is self-synchronizing).
+pub struct CobsFramer {
     acc: FrameAccumulator,
-    peer: PeerInfo,
 }
 
-// SAFETY: Embassy executors run cooperatively on a single core with no preemption
-// or thread migration, so the wrapped UART halves are never accessed across
-// threads. Only construct this where it is driven by an Embassy executor. Same
-// invariant as `aimdb_embassy_adapter::SendFutureWrapper`.
-unsafe impl<Rd, Wr> Send for EmbassySerialConnection<Rd, Wr> {}
-
-impl<Rd, Wr> EmbassySerialConnection<Rd, Wr> {
-    /// Wrap the split read/write halves of an async UART.
-    pub fn new(rx: Rd, tx: Wr) -> Self {
+impl CobsFramer {
+    /// A fresh COBS framer.
+    pub fn new() -> Self {
         Self {
-            rx,
-            tx,
             acc: FrameAccumulator::new(),
-            peer: PeerInfo::default(),
         }
     }
 }
 
-impl<Rd, Wr> Connection for EmbassySerialConnection<Rd, Wr>
-where
-    Rd: Read,
-    Wr: Write,
-{
-    fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
-        // `SendFutureWrapper` force-`Send`s the (single-core) UART read future to
-        // satisfy the `Send` `BoxFut` return type.
-        Box::pin(SendFutureWrapper(async move {
-            loop {
-                // COBS is self-synchronizing: a chunk that fails to decode is line
-                // noise or a mid-stream join, not a fatal transport error. The
-                // accumulator has already consumed it, so skip it and resync on the
-                // next sentinel rather than tearing down the session.
-                match self.acc.next_frame() {
-                    Some(Ok(frame)) => return Ok(Some(frame)),
-                    Some(Err(_)) => continue,
-                    None => {}
-                }
-                let mut chunk = [0u8; READ_CHUNK];
-                match self.rx.read(&mut chunk).await {
-                    Ok(0) => return Ok(None), // EOF — peer closed
-                    Ok(n) => self.acc.push_bytes(&chunk[..n]),
-                    Err(_) => return Err(TransportError::Io),
-                }
-            }
-        }))
+impl Default for CobsFramer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Framer for CobsFramer {
+    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+        encode_frame(frame, out);
     }
 
-    fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFut<'a, TransportResult<()>> {
-        Box::pin(SendFutureWrapper(async move {
-            let mut out = Vec::new();
-            encode_frame(frame, &mut out);
-            // Write in ring-sized chunks: a HAL `BufferedUart` rejects a single
-            // write larger than its TX buffer, so a frame bigger than the buffer
-            // (e.g. a `record.list` reply) must be split.
-            for chunk in out.chunks(WRITE_CHUNK) {
-                self.tx
-                    .write_all(chunk)
-                    .await
-                    .map_err(|_| TransportError::Closed)?;
-            }
-            self.tx.flush().await.map_err(|_| TransportError::Closed)
-        }))
+    fn push_bytes(&mut self, bytes: &[u8]) {
+        self.acc.push_bytes(bytes);
     }
 
-    fn peer(&self) -> &PeerInfo {
-        &self.peer
+    fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+        // The accumulator's `FrameError` collapses to `()`: the connection only
+        // distinguishes "got a frame" from "skip and resync".
+        self.acc.next_frame().map(|r| r.map_err(|_| ()))
     }
 }
 
 // ===========================================================================
-// Dialer / Listener
+// Client sugar — one-shot dial over the moved-in UART.
 // ===========================================================================
 
-/// The initiating (client) side. Holds the UART halves and hands them to the one
-/// connection it ever opens (the peripheral is moved in, so it can't redial —
-/// pair with `ClientConfig { reconnect: false, .. }`, the [`SerialClient`] default).
-pub struct SerialDialer<Rd, Wr> {
-    halves: RefCell<Option<(Rd, Wr)>>,
-}
+/// Constructs an [`EmbassySessionClient`] that mirrors records to/from an AimX
+/// peer over a serial UART. `SerialClient::new(rx, tx)` is sugar; chain
+/// `.scheme(...)` / `.with_config(...)` on the returned connector and register it
+/// with `with_connector`.
+///
+/// Reconnect is disabled by default: the peripheral is moved in and can't be
+/// re-acquired after a drop.
+pub struct SerialClient;
 
-// SAFETY: single-core cooperative Embassy executor — see the connection above.
-unsafe impl<Rd, Wr> Send for SerialDialer<Rd, Wr> {}
-
-impl<Rd, Wr> SerialDialer<Rd, Wr> {
-    /// Build a one-shot dialer over the split UART halves.
-    pub fn new(rx: Rd, tx: Wr) -> Self {
-        Self {
-            halves: RefCell::new(Some((rx, tx))),
-        }
-    }
-}
-
-impl<Rd, Wr> Dialer for SerialDialer<Rd, Wr>
-where
-    Rd: Read + 'static,
-    Wr: Write + 'static,
-{
-    fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
-        Box::pin(SendFutureWrapper(async move {
-            let (rx, tx) = self.halves.borrow_mut().take().ok_or(TransportError::Io)?;
-            Ok(Box::new(EmbassySerialConnection::new(rx, tx)) as Box<dyn Connection>)
-        }))
-    }
-}
-
-/// The accepting (server) side. Serial is point-to-point: the first
-/// [`accept`](Listener::accept) hands out the connection; later calls park forever.
-pub struct SerialListener<Rd, Wr> {
-    halves: Option<(Rd, Wr)>,
-}
-
-// SAFETY: single-core cooperative Embassy executor — see the connection above.
-unsafe impl<Rd, Wr> Send for SerialListener<Rd, Wr> {}
-
-impl<Rd, Wr> SerialListener<Rd, Wr> {
-    /// Wrap the split UART halves as a one-shot listener.
-    pub fn new(rx: Rd, tx: Wr) -> Self {
-        Self {
-            halves: Some((rx, tx)),
-        }
-    }
-}
-
-impl<Rd, Wr> Listener for SerialListener<Rd, Wr>
-where
-    Rd: Read + 'static,
-    Wr: Write + 'static,
-{
-    fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
-        Box::pin(SendFutureWrapper(async move {
-            match self.halves.take() {
-                Some((rx, tx)) => {
-                    Ok(Box::new(EmbassySerialConnection::new(rx, tx)) as Box<dyn Connection>)
-                }
-                // Point-to-point: no second peer ever arrives.
-                None => core::future::pending().await,
-            }
-        }))
+impl SerialClient {
+    /// Mirror records to/from the AimX peer over the split UART halves (e.g. from
+    /// `Uart::split()`). Scheme defaults to [`DEFAULT_SCHEME`].
+    // Sugar constructor: intentionally returns the spine connector, not `Self`.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new<Rd, Wr>(
+        rx: Rd,
+        tx: Wr,
+    ) -> EmbassySessionClient<OneShotDialer<SerialConnection<Rd, Wr>>, AimxCodec>
+    where
+        Rd: Read + 'static,
+        Wr: Write + 'static,
+    {
+        let conn = EmbassyConnection::new(rx, tx, CobsFramer::new());
+        // Reconnect stays disabled (the spine's default): the UART peripheral is
+        // moved in and can't be re-acquired.
+        EmbassySessionClient::new(OneShotDialer::new(conn), AimxCodec).scheme(DEFAULT_SCHEME)
     }
 }
 
 // ===========================================================================
-// Client sugar (hand-rolled ConnectorBuilder)
-// ===========================================================================
-
-/// Mirrors records to/from an AimX peer over a serial UART. Register it via
-/// `with_connector`; declare the routes with `link_to`/`link_from` on the
-/// `serial://` scheme (or override with [`scheme`](Self::scheme)).
-pub struct SerialClient<Rd, Wr> {
-    halves: RefCell<Option<(Rd, Wr)>>,
-    config: ClientConfig,
-    scheme: String,
-}
-
-// SAFETY: single-core cooperative Embassy executor — see the connection above.
-// `ConnectorBuilder: Send + Sync`, so the builder must assert both.
-unsafe impl<Rd, Wr> Send for SerialClient<Rd, Wr> {}
-unsafe impl<Rd, Wr> Sync for SerialClient<Rd, Wr> {}
-
-impl<Rd, Wr> SerialClient<Rd, Wr> {
-    /// Build a client over the split UART halves (e.g. from `Uart::split()`).
-    ///
-    /// Reconnect is disabled by default: the peripheral is moved in and can't be
-    /// re-acquired after a drop. Override with [`with_config`](Self::with_config).
-    pub fn new(rx: Rd, tx: Wr) -> Self {
-        let config = ClientConfig {
-            reconnect: false,
-            ..ClientConfig::default()
-        };
-        Self {
-            halves: RefCell::new(Some((rx, tx))),
-            config,
-            scheme: DEFAULT_SCHEME.to_string(),
-        }
-    }
-
-    /// Override the scheme this connector registers.
-    pub fn scheme(mut self, scheme: impl Into<String>) -> Self {
-        self.scheme = scheme.into();
-        self
-    }
-
-    /// Override the client engine config (keepalive, offline queue, …). Note that
-    /// re-enabling `reconnect` cannot re-open the moved-in UART.
-    pub fn with_config(mut self, config: ClientConfig) -> Self {
-        self.config = config;
-        self
-    }
-}
-
-impl<R, Rd, Wr> ConnectorBuilder<R> for SerialClient<Rd, Wr>
-where
-    R: TimeOps + 'static,
-    Rd: Read + 'static,
-    Wr: Write + 'static,
-{
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
-        Box::pin(SendFutureWrapper(async move {
-            let (rx, tx) = self
-                .halves
-                .borrow_mut()
-                .take()
-                .ok_or_else(connector_consumed)?;
-            let dialer = SerialDialer::new(rx, tx);
-            let (handle, engine) =
-                run_client(dialer, AimxCodec, self.config.clone(), db.runtime_arc());
-            // One pump future per route; each holds a `ClientHandle` clone, so the
-            // engine stays alive as long as any mirror runs.
-            let mut futures = pump_client(db, &self.scheme, &handle);
-            futures.push(engine);
-            Ok(futures)
-        }))
-    }
-
-    fn scheme(&self) -> &str {
-        &self.scheme
-    }
-}
-
-// ===========================================================================
-// Server sugar (hand-rolled ConnectorBuilder)
+// Server sugar — serve the full AimX toolset over the moved-in UART.
 // ===========================================================================
 
 /// Serves the full AimX toolset over a serial UART, so a host (or another board)
 /// can `record.list`/`get`/`set`/`subscribe`/`drain` this db over the wire.
+/// Register it directly with `with_connector`:
+///
+/// ```ignore
+/// builder.with_connector(
+///     SerialServer::new(rx, tx).security_policy(SecurityPolicy::read_only()),
+/// );
+/// ```
+///
+/// Holds the moved-in framed UART connection (built up front from the halves) in
+/// the adapter's force-`Send + Sync` [`OneShotCell`]; `build` takes it, hands it
+/// to a [`OneShotListener`], and drives `serve`. Storing it in the cell (rather
+/// than a bare `RefCell`) keeps **all** the `unsafe` in the adapter — this crate
+/// has none.
 pub struct SerialServer<Rd, Wr> {
-    halves: RefCell<Option<(Rd, Wr)>>,
+    conn: OneShotCell<SerialConnection<Rd, Wr>>,
     config: AimxConfig,
     scheme: String,
 }
 
-// SAFETY: single-core cooperative Embassy executor — see the connection above.
-unsafe impl<Rd, Wr> Send for SerialServer<Rd, Wr> {}
-unsafe impl<Rd, Wr> Sync for SerialServer<Rd, Wr> {}
-
-impl<Rd, Wr> SerialServer<Rd, Wr> {
+impl<Rd, Wr> SerialServer<Rd, Wr>
+where
+    Rd: Read + 'static,
+    Wr: Write + 'static,
+{
     /// Serve AimX over the split UART halves, with the default read-only policy.
     pub fn new(rx: Rd, tx: Wr) -> Self {
         Self {
-            halves: RefCell::new(Some((rx, tx))),
+            conn: OneShotCell::new(EmbassyConnection::new(rx, tx, CobsFramer::new())),
             config: AimxConfig::uds_default(),
             scheme: DEFAULT_SCHEME.to_string(),
         }
     }
+}
 
+impl<Rd, Wr> SerialServer<Rd, Wr> {
     /// Use a prepared [`AimxConfig`] for the security policy / limits (the
     /// `socket_path` / `socket_permissions` fields are unused over serial).
     pub fn with_config(mut self, config: AimxConfig) -> Self {
@@ -352,56 +198,40 @@ where
     Wr: Write + 'static,
 {
     fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
-        Box::pin(SendFutureWrapper(async move {
-            let (rx, tx) = self
-                .halves
-                .borrow_mut()
-                .take()
-                .ok_or_else(connector_consumed)?;
-            let listener = SerialListener::new(rx, tx);
-
+        // Take the moved-in connection out of `&self` (build runs once); the
+        // canonical "already built" error lives on the adapter's cell.
+        let conn = self.conn.take_required();
+        let config = self.config.clone();
+        Box::pin(async move {
+            let conn = conn?;
             // Apply the security policy's writable marking so `record.list` reports
             // the `writable` flag (the dispatch also enforces it).
-            crate::apply_writable(db, &self.config);
-
+            crate::apply_writable(db, &config);
             let session_config = SessionConfig {
                 limits: SessionLimits {
                     // A UART carries a single peer.
                     max_connections: 1,
-                    max_subs_per_connection: self.config.max_subs_per_connection,
+                    max_subs_per_connection: config.max_subs_per_connection,
                 },
                 reads_hello: false,
                 // AimX's subscribe ack stays implicit (events flow); no ack frame.
                 acks_subscribe: false,
             };
             let dispatch: Arc<dyn Dispatch> =
-                Arc::new(AimxDispatch::new(Arc::new(db.clone()), self.config.clone()));
+                Arc::new(AimxDispatch::new(Arc::new(db.clone()), config));
+            // `serve` is `Send` here: the one-shot listener + framed connection
+            // force-`Send` their futures inside the adapter.
             let fut: BoxFuture = Box::pin(serve(
-                listener,
+                OneShotListener::new(conn),
                 Arc::new(AimxCodec),
                 dispatch,
                 session_config,
             ));
             Ok(vec![fut])
-        }))
+        })
     }
 
     fn scheme(&self) -> &str {
         &self.scheme
-    }
-}
-
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-/// The builder's UART halves were already taken — `build` ran twice. The
-/// framework calls it once, so this is unreachable in practice.
-fn connector_consumed() -> DbError {
-    DbError::MissingConfiguration {
-        #[cfg(feature = "std")]
-        parameter: String::from("serial connector already built"),
-        #[cfg(not(feature = "std"))]
-        _parameter: (),
     }
 }
