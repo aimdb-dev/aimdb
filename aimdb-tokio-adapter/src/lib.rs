@@ -43,13 +43,6 @@ pub use error::TokioErrorSupport;
 #[cfg(feature = "tokio-runtime")]
 pub use runtime::TokioAdapter;
 
-/// Type alias for Tokio database
-///
-/// This provides a convenient type for working with databases on the Tokio runtime.
-/// Most users should use `AimDbBuilder` directly to create databases.
-#[cfg(feature = "tokio-runtime")]
-pub type TokioDatabase = aimdb_core::Database<TokioAdapter>;
-
 // Generate extension trait for Tokio adapter using the macro
 aimdb_core::impl_record_registrar_ext! {
     TokioRecordRegistrarExt,

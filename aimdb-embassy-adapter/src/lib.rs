@@ -106,13 +106,6 @@ pub use runtime::EmbassyNetwork;
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
 pub use buffer::EmbassyBuffer;
 
-/// Type alias for Embassy database
-///
-/// This provides a convenient type for working with databases on the Embassy runtime.
-/// Most users should use `AimDbBuilder` directly to create databases.
-#[cfg(feature = "embassy-runtime")]
-pub type EmbassyDatabase = aimdb_core::Database<EmbassyAdapter>;
-
 // Re-export core types for convenience
 #[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]
 pub use embassy_executor::Spawner;

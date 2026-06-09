@@ -8,7 +8,6 @@
 //! # Architecture
 //!
 //! - **RecordKey/RecordId**: Stable identifiers for multi-instance records
-//! - **Unified API**: Single `Database<A>` type for all operations
 //! - **Runtime Agnostic**: Works with Tokio (std) or Embassy (embedded)
 //! - **Producer-Consumer**: Built-in typed message passing
 //!
@@ -24,7 +23,6 @@ pub mod builder;
 pub mod codec;
 pub mod connector;
 pub mod context;
-pub mod database;
 mod error;
 pub mod ext_macros;
 pub mod extensions;
@@ -73,9 +71,6 @@ pub use extensions::Extensions;
 pub use aimdb_executor::{
     ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, TimeOps,
 };
-
-// Database implementation exports
-pub use database::Database;
 
 // Producer-Consumer Pattern exports
 pub use builder::OutboundRoute;
