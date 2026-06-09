@@ -18,8 +18,6 @@
 //! let state = db.extensions().get::<MyState>().expect("MyState not configured");
 //! ```
 
-extern crate alloc;
-
 use alloc::boxed::Box;
 use core::any::{Any, TypeId};
 use hashbrown::HashMap;

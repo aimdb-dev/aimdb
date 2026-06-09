@@ -11,8 +11,6 @@
 //! - **Multi-transport publishing**: Same data can be published to multiple protocols
 //! - **Protocol-agnostic core**: Core doesn't know about MQTT, Kafka, etc. - just routes by scheme
 
-extern crate alloc;
-
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::future::Future;
 use core::pin::Pin;

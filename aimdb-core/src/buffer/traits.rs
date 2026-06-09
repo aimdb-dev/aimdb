@@ -8,14 +8,7 @@
 use core::future::Future;
 use core::pin::Pin;
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
-
-#[cfg(feature = "std")]
-use std::boxed::Box;
 
 use super::BufferCfg;
 use crate::DbError;

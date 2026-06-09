@@ -55,7 +55,6 @@ use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
 
-extern crate alloc;
 use alloc::{
     boxed::Box,
     format,

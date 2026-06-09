@@ -31,8 +31,6 @@ use core::fmt::{self, Debug};
 use core::future::Future;
 use core::pin::Pin;
 
-extern crate alloc;
-
 use alloc::{
     boxed::Box,
     string::{String, ToString},

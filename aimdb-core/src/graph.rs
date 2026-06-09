@@ -10,7 +10,6 @@
 //! - Spawn ordering (topological sort)
 //! - Runtime introspection (AimX protocol, MCP tools, CLI)
 
-extern crate alloc;
 use alloc::{
     string::{String, ToString},
     vec::Vec,

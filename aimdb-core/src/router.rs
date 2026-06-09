@@ -10,14 +10,7 @@
 //! - DDS: Routes topics to producers
 //! - Shared Memory: Routes segment names to producers
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
-
-#[cfg(feature = "std")]
-use std::sync::Arc;
 
 use crate::connector::{DeserializerKind, ProducerTrait};
 

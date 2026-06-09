@@ -7,19 +7,13 @@ use core::any::TypeId;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-extern crate alloc;
-
-use alloc::vec::Vec;
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use hashbrown::HashMap;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc};
-
-#[cfg(not(feature = "std"))]
-use alloc::string::{String, ToString};
-
-#[cfg(feature = "std")]
-use std::{boxed::Box, sync::Arc};
 
 use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;

@@ -13,8 +13,6 @@
 //!
 //! Both are `no_std + alloc`-native (boxed futures, no `tokio`).
 
-extern crate alloc;
-
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;

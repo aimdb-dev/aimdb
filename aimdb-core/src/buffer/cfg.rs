@@ -4,9 +4,6 @@
 
 use core::fmt;
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
 /// Buffer configuration for a record type
 ///
 /// Selects buffering strategy: SPMC Ring (backlog), SingleLatest (state sync), or Mailbox (commands).

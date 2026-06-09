@@ -3,14 +3,7 @@
 //! Pre-binds the buffer so `Producer<T>` can push values without holding an
 //! `Arc<AimDb<R>>` or running a `HashMap` lookup per call.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
 use alloc::sync::Arc;
-
-#[cfg(feature = "std")]
-use std::sync::Arc;
 
 use super::traits::{DynBuffer, WriteHandle};
 
