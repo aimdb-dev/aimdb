@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Buffer and `nb` errors now carry their context on `no_std` (Issue #129).** With `DbError` unified on `alloc::String`, the adapter's error sites fill the real fields instead of `_field: ()` placeholders: the SPMC-ring/watch paths report `buffer_name` (`"embassy spmc ring"` / `"embassy watch"`), and `from_nb_error(WouldBlock)` reports `resource_name: "nb::WouldBlock"`. Allocation happens only on the error path.
 - **`buffer()` / `buffer_sized()` now record the `BufferCfg` (via `buffer_with_cfg`).** `buffer_info()` therefore reports the real buffer type and capacity in the dependency graph on `no_std` too (previously `"unknown"`), matching std behaviour. Mirrors the `aimdb-core` `impl_record_registrar_ext!` change (M15).
 
 ### Changed (breaking)
@@ -36,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed (breaking)
 
+- **`EmbassyDatabase` type alias removed (Issue #132, design 034 Phase 1).** It aliased the dead `aimdb_core::Database<EmbassyAdapter>` wrapper (also removed) and had no users in the workspace. Use `AimDb<EmbassyAdapter>` via `AimDbBuilder`.
 - **`impl Spawn for EmbassyAdapter` deleted (Issue #88).** Static `generic_task_runner` task pool gone, along with `BoxedFuture` and the `unsafe Pin::new_unchecked` cast that fed the pool. Drive database futures by awaiting `AimDbRunner::run()` from inside the Embassy main task.
 - **`embassy-task-pool-8` / `embassy-task-pool-16` / `embassy-task-pool-32` Cargo features deleted.** No pool — `FuturesUnordered` grows as needed within a single Embassy task's heap budget.
 - **`EmbassyAdapter::new_with_spawner(spawner)` constructor deleted.**
