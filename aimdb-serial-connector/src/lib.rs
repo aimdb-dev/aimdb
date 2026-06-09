@@ -19,9 +19,10 @@
 //!   / [`SessionServerConnector`](aimdb_core::session::SessionServerConnector).
 //!   See [`tokio_transport`].
 //! - **`embassy-runtime`** (`no_std + alloc`, MCU): generic over
-//!   [`embedded_io_async`] UART halves; hand-rolls the `ConnectorBuilder` and
-//!   force-`Send`s the engine futures via `aimdb-embassy-adapter`'s
-//!   `SendFutureWrapper`. See [`embassy_transport`].
+//!   [`embedded_io_async`] UART halves; the COBS `Framer` plus thin sugar over the
+//!   centralized Embassy session spine in `aimdb-embassy-adapter`, which owns the
+//!   force-`Send` plumbing, the framed connection, and all the `unsafe` — this
+//!   crate carries none. See [`embassy_transport`].
 //!
 //! Both speak the `serial://` scheme by default ([`DEFAULT_SCHEME`]).
 

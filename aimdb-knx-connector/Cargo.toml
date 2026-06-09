@@ -16,8 +16,10 @@ std = ["aimdb-core/std", "knx-pico/std", "thiserror"]
 tokio-runtime = ["std", "tokio", "uuid", "async-stream", "futures-util"]
 embassy-runtime = [
     "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
+    "aimdb-core/connector-session",              # `pump_sink`/`pump_source`/`Source`/`Payload`
     "dep:aimdb-embassy-adapter",                 # Enable the optional dependency
     "aimdb-embassy-adapter/embassy-net-support", # Enable EmbassyNetwork trait for network stack access
+    "aimdb-embassy-adapter/connectors",          # `into_box_future` spine helper
     "embassy-executor",
     "embassy-time",
     "embassy-sync",

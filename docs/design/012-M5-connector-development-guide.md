@@ -175,41 +175,43 @@ tokio = { workspace = true, optional = true }
 
 ## Embassy Implementation Pattern
 
+Embassy's primitives are `!Send` (single-core, cooperative), but AimDB's connector
+contract is `Send`-everywhere (so a Tokio app can `tokio::spawn(runner.run())`). **Do not
+hand-roll the `unsafe`/force-`Send` bridge** — it lives, audited and once, in
+`aimdb_embassy_adapter::connectors` (Design 033). A connector crate contributes only its
+transport-specific logic and carries **no `unsafe`**.
+
 **Dependencies:**
 ```toml
 [features]
-embassy-runtime = ["aimdb-core/alloc", "embassy-net", "embassy-sync"]
-
-[dependencies]
-embassy-net = { workspace = true, optional = true }
-embassy-sync = { workspace = true, optional = true }
-static-cell = "2.0"
+# Session transport (serial/TCP): needs the framed-connection spine.
+embassy-runtime = ["aimdb-core/connector-session", "aimdb-embassy-adapter/connector-io", …]
+# Data-plane transport (MQTT/KNX): needs the sink/source bridges + pumps.
+embassy-runtime = ["aimdb-core/connector-session", "aimdb-embassy-adapter/connectors", …]
 ```
 
-**Key patterns:**
-- Use `alloc` types: `alloc::sync::Arc`, `alloc::string::String`
-- Wrap futures: `SendFutureWrapper(async move { ... })`
-- Static allocation: `StaticCell<T>`
-- Logging: `defmt::info!()` (behind `#[cfg(feature = "defmt")]`)
-- Network access: `R: EmbassyNetwork` trait bound
-- Unsafe `Send + Sync` impls for single-threaded safety
+**Session transport** (a framed byte stream — serial, TCP):
+- Implement `aimdb_embassy_adapter::connectors::Framer` (encode/accumulate/next-frame).
+- Client sugar → `EmbassySessionClient::new(OneShotDialer::new(EmbassyConnection::new(rx, tx, MyFramer)), Codec)`.
+- Server sugar → `EmbassySessionServer::new(OneShotListener::new(conn), Codec, dispatch_factory, cfg)`,
+  or a thin `ConnectorBuilder` that stores the moved-in connection in a `OneShotCell` and
+  drives `serve` (see `aimdb-serial-connector`).
 
-**SendFutureWrapper helper:**
-```rust
-struct SendFutureWrapper<F>(F);
-unsafe impl<F> Send for SendFutureWrapper<F> {}
+**Data-plane transport** (a pub/sub channel — MQTT, KNX):
+- Implement `EmbassySinkRaw` (outbound publish) and/or `EmbassySourceRaw` (inbound next),
+  then ride core's pumps:
+  `pump_sink(db, scheme, Arc::new(EmbassySink(my_sink)))` /
+  `pump_source(db, scheme, EmbassySource(my_source))`.
+  (If your channels are already `Send` — e.g. `CriticalSectionRawMutex` — implement core's
+  `Connector`/`Source` directly and skip the bridges; see `aimdb-knx-connector`.)
+- Force-`Send` the long-lived protocol task with `into_box_future(async move { … })`.
 
-impl<F: Future> Future for SendFutureWrapper<F> {
-    type Output = F::Output;
-    fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) 
-        -> core::task::Poll<Self::Output> 
-    {
-        unsafe { self.map_unchecked_mut(|s| &mut s.0).poll(cx) }
-    }
-}
-```
+**Other:** `alloc` types (`alloc::sync::Arc`, `alloc::string::String`), `StaticCell<T>` for
+channels, `defmt` logging behind `#[cfg(feature = "defmt")]`, `R: EmbassyNetwork` for the
+network stack.
 
-**See:** `examples/embassy-mqtt-connector-demo/` for Embassy patterns
+**See:** `aimdb-serial-connector` (session), `aimdb-mqtt-connector` / `aimdb-knx-connector`
+(data-plane), and `examples/embassy-mqtt-connector-demo/`.
 
 ---
 
@@ -244,13 +246,14 @@ static CH: StaticCell<Channel<...>> = StaticCell::new();
 let ch = CH.init(Channel::new());
 ```
 
-**Missing Send wrapper (Embassy):**
+**Force-`Send` a protocol task (Embassy):**
 ```rust
-// ❌ Not Send
-Box::pin(async move { ... })
-
-// ✅ Send-wrapped
+// ❌ Don't hand-roll the unsafe wrapper in your connector crate
 Box::pin(SendFutureWrapper(async move { ... }))
+
+// ✅ Use the adapter spine's helper (the unsafe lives there, audited once)
+use aimdb_embassy_adapter::connectors::into_box_future;
+into_box_future(async move { ... })
 ```
 
 ---

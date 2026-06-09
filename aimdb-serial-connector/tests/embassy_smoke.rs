@@ -27,8 +27,9 @@ use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use aimdb_core::session::{
     run_client, ClientConfig, CodecError, EnvelopeCodec, Inbound, Outbound, Payload,
 };
+use aimdb_embassy_adapter::connectors::{EmbassyConnection, OneShotDialer};
 use aimdb_embassy_adapter::EmbassyAdapter;
-use aimdb_serial_connector::embassy_transport::SerialDialer;
+use aimdb_serial_connector::embassy_transport::CobsFramer;
 
 // Trivial host time driver so `embassy_time` links (the happy path never awaits
 // `clock.sleep`, so the driver is never actually exercised).
@@ -140,7 +141,10 @@ fn embassy_clock_drives_client_engine_rpc_over_serial() {
     };
 
     let uart = LoopbackUart::default();
-    let dialer = SerialDialer::new(uart.clone(), uart);
+    // The one-shot dialer over the real COBS framed connection — the exact spine
+    // an MCU build uses (`OneShotDialer<EmbassyConnection<_, _, CobsFramer>>`).
+    let conn = EmbassyConnection::<_, _, _>::new(uart.clone(), uart, CobsFramer::new());
+    let dialer = OneShotDialer::new(conn);
     let (handle, engine_fut) = run_client(dialer, EchoCodec, config, clock);
 
     block_on(async move {
