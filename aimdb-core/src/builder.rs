@@ -182,18 +182,9 @@ impl AimDbInner {
         let key_str = key.as_ref();
 
         // Resolve key to RecordId
-        let id = self.resolve_str(key_str).ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::RecordKeyNotFound {
-                    key: key_str.to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::RecordKeyNotFound { _key: () }
-            }
-        })?;
+        let id = self
+            .resolve_str(key_str)
+            .ok_or_else(|| DbError::record_key_not_found(key_str))?;
 
         self.get_typed_record_by_id::<T, R>(id)
     }
@@ -215,32 +206,21 @@ impl AimDbInner {
         let expected = TypeId::of::<T>();
         let actual = self.types[id.index()];
         if expected != actual {
-            #[cfg(feature = "std")]
             return Err(DbError::TypeMismatch {
                 record_id: id.raw(),
                 expected_type: core::any::type_name::<T>().to_string(),
-            });
-            #[cfg(not(feature = "std"))]
-            return Err(DbError::TypeMismatch {
-                record_id: id.raw(),
-                _expected_type: (),
             });
         }
 
         // Safe to downcast (type validated above)
         let record = &self.storages[id.index()];
 
-        #[cfg(feature = "std")]
-        let typed_record = record.as_typed::<T, R>().ok_or(DbError::InvalidOperation {
-            operation: "get_typed_record_by_id".to_string(),
-            reason: "type mismatch during downcast".to_string(),
-        })?;
-
-        #[cfg(not(feature = "std"))]
-        let typed_record = record.as_typed::<T, R>().ok_or(DbError::InvalidOperation {
-            _operation: (),
-            _reason: (),
-        })?;
+        let typed_record = record
+            .as_typed::<T, R>()
+            .ok_or_else(|| DbError::InvalidOperation {
+                operation: "get_typed_record_by_id".to_string(),
+                reason: "type mismatch during downcast".to_string(),
+            })?;
 
         Ok(typed_record)
     }
@@ -706,35 +686,19 @@ where
     {
         // Validate all records
         for (key, _, record) in &self.records {
-            record.validate().map_err(|_msg| {
-                #[cfg(feature = "std")]
-                {
-                    DbError::RuntimeError {
-                        message: format!("Record '{}' validation failed: {}", key.as_str(), _msg),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    // Suppress unused warning for key in no_std
-                    let _ = &key;
-                    DbError::RuntimeError { _message: () }
-                }
+            record.validate().map_err(|msg| {
+                DbError::runtime_error(alloc::format!(
+                    "Record '{}' validation failed: {}",
+                    key.as_str(),
+                    msg
+                ))
             })?;
         }
 
         // Ensure runtime is set
-        let runtime = self.runtime.ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::RuntimeError {
-                    message: "runtime not set (use .runtime())".into(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::RuntimeError { _message: () }
-            }
-        })?;
+        let runtime = self
+            .runtime
+            .ok_or_else(|| DbError::runtime_error("runtime not set (use .runtime())"))?;
 
         // Build the new index structures
         let record_count = self.records.len();
@@ -749,12 +713,9 @@ where
 
             // Check for duplicate keys (should not happen if configure() is used correctly)
             if by_key.contains_key(&key) {
-                #[cfg(feature = "std")]
                 return Err(DbError::DuplicateRecordKey {
                     key: key.as_str().to_string(),
                 });
-                #[cfg(not(feature = "std"))]
-                return Err(DbError::DuplicateRecordKey { _key: () });
             }
 
             // Build index structures
@@ -841,18 +802,9 @@ where
                 None => continue,
             };
 
-            let id = inner.resolve(&key).ok_or({
-                #[cfg(feature = "std")]
-                {
-                    DbError::RecordKeyNotFound {
-                        key: key.as_str().to_string(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    DbError::RecordKeyNotFound { _key: () }
-                }
-            })?;
+            let id = inner
+                .resolve(&key)
+                .ok_or_else(|| DbError::record_key_not_found(key.as_str()))?;
 
             let spawn_fn = spawn_fn_any
                 .downcast::<SpawnFnType<R>>()
@@ -1163,17 +1115,8 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         // than panicking later inside `subscribe()`.
         let key_str: alloc::string::String = key.into();
         let typed_rec = self.inner.get_typed_record_by_key::<T, R>(&key_str)?;
-        let buffer = typed_rec.buffer_handle().ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::MissingConfiguration {
-                    parameter: alloc::format!("buffer for record '{}'", key_str),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::MissingConfiguration { _parameter: () }
-            }
+        let buffer = typed_rec.buffer_handle().ok_or_else(|| {
+            DbError::missing_configuration(alloc::format!("buffer for record '{}'", key_str))
         })?;
         Ok(crate::typed_api::Consumer::new(buffer))
     }

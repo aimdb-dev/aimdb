@@ -321,10 +321,7 @@ mod tests {
             Box::pin(async {
                 // Return closed for testing
                 Err(DbError::BufferClosed {
-                    #[cfg(feature = "std")]
                     buffer_name: "mock".to_string(),
-                    #[cfg(not(feature = "std"))]
-                    _buffer_name: (),
                 })
             })
         }

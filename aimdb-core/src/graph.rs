@@ -162,19 +162,12 @@ impl DependencyGraph {
         }
 
         // Validate: check all transform input keys exist
-        #[allow(unused_variables)] // output_key, input_key used only in std error messages
         for (output_key, input_keys) in &transform_inputs {
             for input_key in input_keys {
                 if !all_keys.contains(input_key) {
-                    #[cfg(feature = "std")]
                     return Err(crate::DbError::TransformInputNotFound {
                         output_key: output_key.to_string(),
                         input_key: input_key.to_string(),
-                    });
-                    #[cfg(not(feature = "std"))]
-                    return Err(crate::DbError::TransformInputNotFound {
-                        _output_key: (),
-                        _input_key: (),
                     });
                 }
             }
@@ -221,21 +214,16 @@ impl DependencyGraph {
         }
 
         if topo_order.len() != all_keys.len() {
-            #[cfg(feature = "std")]
-            {
-                // Find the cycle participants for a helpful error message
-                let cycle_records: Vec<String> = in_degree
-                    .iter()
-                    .filter(|(_, &deg)| deg > 0)
-                    .map(|(&k, _)| k.to_string())
-                    .collect();
+            // Find the cycle participants for a helpful error message
+            let cycle_records: Vec<String> = in_degree
+                .iter()
+                .filter(|(_, &deg)| deg > 0)
+                .map(|(&k, _)| k.to_string())
+                .collect();
 
-                return Err(crate::DbError::CyclicDependency {
-                    records: cycle_records,
-                });
-            }
-            #[cfg(not(feature = "std"))]
-            return Err(crate::DbError::CyclicDependency { _records: () });
+            return Err(crate::DbError::CyclicDependency {
+                records: cycle_records,
+            });
         }
 
         // Build nodes from record infos

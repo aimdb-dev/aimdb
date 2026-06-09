@@ -40,7 +40,6 @@ use alloc::{
     vec::Vec,
 };
 
-#[cfg(feature = "std")]
 use alloc::format;
 
 use crate::{builder::AimDb, DbResult};
@@ -812,22 +811,12 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
     use crate::DbError;
 
     // Split scheme from rest
-    let (scheme, rest) = url.split_once("://").ok_or({
-        #[cfg(feature = "std")]
-        {
-            DbError::InvalidOperation {
-                operation: "parse_connector_url".into(),
-                reason: format!("Missing scheme in URL: {}", url),
-            }
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            DbError::InvalidOperation {
-                _operation: (),
-                _reason: (),
-            }
-        }
-    })?;
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| DbError::InvalidOperation {
+            operation: "parse_connector_url".into(),
+            reason: format!("Missing scheme in URL: {}", url),
+        })?;
 
     // Extract credentials if present (user:pass@host)
     let (credentials, host_part) = if let Some(at_idx) = rest.find('@') {

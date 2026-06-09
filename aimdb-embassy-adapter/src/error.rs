@@ -3,13 +3,15 @@
 //! This module provides traits and implementations that add Embassy
 //! and embedded-hal specific functionality to AimDB's core error types.
 //!
-//! Embassy is a no_std async runtime, so this adapter always works in no_std mode
-//! and uses the no_std field names from DbError.
+//! Embassy is a no_std async runtime, so this adapter always works in no_std mode.
 //!
 //! This crate is excluded from the main workspace to prevent feature unification issues
 //! that would enable std mode. Build it separately with: cargo build -p aimdb-embassy-adapter
 
+extern crate alloc;
+
 use aimdb_core::DbError;
+use alloc::string::String;
 use embedded_hal_nb::nb;
 
 /// Trait that provides Embassy-specific error conversions for DbError
@@ -26,7 +28,7 @@ pub trait EmbassyErrorSupport {
     /// pattern, which is commonly used in embedded async code for hardware interfaces.
     ///
     /// # Returns
-    /// - `nb::Error::WouldBlock` → `DbError::ResourceUnavailable { resource_type: 1, _resource_name: () }`
+    /// - `nb::Error::WouldBlock` → `DbError::ResourceUnavailable` with `RESOURCE_TYPE_WOULD_BLOCK`
     /// - `nb::Error::Other(e)` → The underlying error `e` converted to DbError
     ///
     /// # Example
@@ -57,7 +59,7 @@ impl EmbassyErrorSupport for DbError {
             nb::Error::Other(e) => e.into(),
             nb::Error::WouldBlock => DbError::ResourceUnavailable {
                 resource_type: DbError::RESOURCE_TYPE_WOULD_BLOCK,
-                _resource_name: (),
+                resource_name: String::from("nb::WouldBlock"),
             },
         }
     }
@@ -83,11 +85,8 @@ mod tests {
     #[test]
     fn test_nb_error_other_conversion() {
         // Test nb::Error::Other conversion with a hardware error
-        let hardware_error = DbError::HardwareError {
-            component: 4,       // UART component
-            error_code: 0x6242, // UART error code
-            _description: (),
-        };
+        let hardware_error =
+            DbError::hardware_error(4 /* UART */, 0x6242 /* UART error */);
         let nb_other_error: nb::Error<DbError> = nb::Error::Other(hardware_error);
         let converted_error = DbError::from_nb_error(nb_other_error);
 
@@ -111,11 +110,8 @@ mod tests {
         }
 
         // Practical example: unwrapping a hardware error from nb::Error::Other
-        let underlying_error = DbError::HardwareError {
-            component: 4,       // UART component
-            error_code: 0x6220, // UART error code
-            _description: (),
-        };
+        let underlying_error =
+            DbError::hardware_error(4 /* UART */, 0x6220 /* UART error */);
         let nb_wrapped: nb::Error<DbError> = nb::Error::Other(underlying_error);
         let unwrapped_error = DbError::from_nb_error(nb_wrapped);
 

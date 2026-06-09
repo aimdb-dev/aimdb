@@ -438,18 +438,11 @@ where
         use crate::DbError;
 
         // Downcast to TypedRecord<T, R>
-        let typed_record: &TypedRecord<T, R> =
-            record.as_any().downcast_ref::<TypedRecord<T, R>>().ok_or({
-                #[cfg(feature = "std")]
-                {
-                    DbError::RecordNotFound {
-                        record_name: core::any::type_name::<T>().to_string(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    DbError::RecordNotFound { _record_name: () }
-                }
+        let typed_record: &TypedRecord<T, R> = record
+            .as_any()
+            .downcast_ref::<TypedRecord<T, R>>()
+            .ok_or_else(|| DbError::RecordNotFound {
+                record_name: core::any::type_name::<T>().to_string(),
             })?;
 
         let mut futures = Vec::new();
@@ -833,18 +826,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// # Errors
     /// Returns `DbError::MissingConfiguration` if no buffer configured
     pub fn subscribe(&self) -> crate::DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
-        let buffer = self.buffer.as_ref().ok_or({
-            #[cfg(feature = "std")]
-            {
-                crate::DbError::MissingConfiguration {
-                    parameter: "buffer".to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                crate::DbError::MissingConfiguration { _parameter: () }
-            }
-        })?;
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or_else(|| crate::DbError::missing_configuration("buffer"))?;
 
         Ok(buffer.subscribe_boxed())
     }
@@ -976,20 +961,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         // Pre-resolve the buffer handle once — every consumer shares the same Arc.
         // A `.tap()` requires a buffer; surface the misconfiguration here with the
         // record key in the message rather than panicking inside `Consumer::new`.
-        let buffer_arc = self.buffer_handle().ok_or({
-            #[cfg(feature = "std")]
-            {
-                crate::DbError::MissingConfiguration {
-                    parameter: alloc::format!(
-                        "buffer for record '{}' (required by .tap())",
-                        record_key
-                    ),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                crate::DbError::MissingConfiguration { _parameter: () }
-            }
+        let buffer_arc = self.buffer_handle().ok_or_else(|| {
+            crate::DbError::missing_configuration(alloc::format!(
+                "buffer for record '{}' (required by .tap())",
+                record_key
+            ))
         })?;
 
         #[cfg_attr(not(feature = "profiling"), allow(unused_variables))]

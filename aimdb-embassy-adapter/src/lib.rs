@@ -39,12 +39,8 @@
 //! let nb_error: embedded_hal_nb::nb::Error<DbError> = embedded_hal_nb::nb::Error::WouldBlock;
 //! let db_error = DbError::from_nb_error(nb_error);
 //!
-//! // Create hardware errors directly (recommended approach)
-//! let uart_error = DbError::HardwareError {
-//!     component: 4,  // UART component ID
-//!     error_code: 0x6210,
-//!     _description: (),
-//! };
+//! // Create hardware errors via the helper (recommended approach)
+//! let uart_error = DbError::hardware_error(4 /* UART component ID */, 0x6210);
 //! # }
 //! ```
 //!

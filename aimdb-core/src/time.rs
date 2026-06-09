@@ -70,16 +70,10 @@ pub mod utils {
     }
 
     /// Creates a generic timeout error for operations that exceed their time limit
-    pub fn create_timeout_error(_operation_name: &str) -> crate::DbError {
+    pub fn create_timeout_error(operation_name: &str) -> crate::DbError {
         crate::DbError::ConnectionFailed {
-            #[cfg(feature = "std")]
-            endpoint: "timeout".to_string(),
-            #[cfg(feature = "std")]
-            reason: format!("{} operation timed out", _operation_name),
-            #[cfg(not(feature = "std"))]
-            _endpoint: (),
-            #[cfg(not(feature = "std"))]
-            _reason: (),
+            endpoint: alloc::string::String::from("timeout"),
+            reason: alloc::format!("{} operation timed out", operation_name),
         }
     }
 }

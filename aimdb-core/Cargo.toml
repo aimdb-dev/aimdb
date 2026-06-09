@@ -42,11 +42,11 @@ json-serialize = ["alloc", "serde_json"]
 # AimX remote-access data model (`crate::remote`): record metadata +
 # introspection (`RecordMetadata`, `AimDb::list_records`), the JSON
 # read/write/subscribe API (`try_latest_as_json` / `set_record_from_json` /
-# `JsonBufferReader`), and the wire protocol/config/security/error types. Builds on
-# the `json-serialize` value codec and adds `thiserror` (no_std-capable; see below)
-# for `RemoteError`. The AimX *server* dispatch (`session::aimx`) additionally
-# needs `connector-session`. All compiles on `no_std + alloc`.
-remote-access = ["json-serialize", "thiserror"]
+# `JsonBufferReader`), and the wire protocol/config/security/error types. Builds
+# on the `json-serialize` value codec. The AimX *server* dispatch
+# (`session::aimx`) additionally needs `connector-session`. All compiles on
+# `no_std + alloc`.
+remote-access = ["json-serialize"]
 
 # The connector-session substrate (`crate::session`): the dyn-safe trait set
 # (Connection/Listener/Dialer, Dispatch/EnvelopeCodec, Source + shared types) and
@@ -117,8 +117,8 @@ async-channel = { version = "2", default-features = false }
 # Serialization (optional)
 serde = { workspace = true, optional = true }
 
-# Error handling
-thiserror = { version = "2.0.16", default-features = false, optional = true }
+# Error handling (thiserror 2.x is no_std-capable; DbError derives it on every target)
+thiserror = { version = "2.0.16", default-features = false }
 anyhow = { workspace = true, optional = true }
 # `raw_value` lets the connector-session `EnvelopeCodec` splice an already-
 # serialized record-value `Payload` into a JSON envelope without re-escaping

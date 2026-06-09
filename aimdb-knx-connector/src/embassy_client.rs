@@ -175,19 +175,13 @@ where
         // `CriticalSectionRawMutex`, i.e. `Send`).
         Box::pin(async move {
             let (command_channel, inbound_rx, connection_task) =
-                KnxConnectorImpl::setup(self.gateway_url.as_str(), db.runtime()).map_err(|_e| {
+                KnxConnectorImpl::setup(self.gateway_url.as_str(), db.runtime()).map_err(|e| {
                     #[cfg(feature = "defmt")]
                     defmt::error!("Failed to build KNX connector");
-                    #[cfg(feature = "std")]
-                    {
-                        aimdb_core::DbError::RuntimeError {
-                            message: format!("Failed to build KNX connector: {}", _e),
-                        }
-                    }
-                    #[cfg(not(feature = "std"))]
-                    {
-                        aimdb_core::DbError::RuntimeError { _message: () }
-                    }
+                    aimdb_core::DbError::runtime_error(alloc::format!(
+                        "Failed to build KNX connector: {}",
+                        e
+                    ))
                 })?;
 
             // Outbound: records → KNX telegrams via the existing `Connector` impl.
