@@ -258,6 +258,7 @@ pub trait BufferMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     // Mock implementation for testing trait bounds
     struct MockBuffer<T: Clone + Send + Sync> {
