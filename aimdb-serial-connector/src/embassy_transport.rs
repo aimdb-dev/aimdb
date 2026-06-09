@@ -30,7 +30,7 @@ use aimdb_embassy_adapter::connectors::{
 use aimdb_core::connector::ConnectorBuilder;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
-use aimdb_core::session::{serve, ClientConfig, Dispatch, SessionConfig, SessionLimits};
+use aimdb_core::session::{serve, Dispatch, SessionConfig, SessionLimits};
 use aimdb_core::{AimDb, DbResult, RuntimeAdapter};
 
 use crate::framing::{encode_frame, FrameAccumulator};
@@ -118,12 +118,9 @@ impl SerialClient {
         Wr: Write + 'static,
     {
         let conn = EmbassyConnection::new(rx, tx, CobsFramer::new());
-        EmbassySessionClient::new(OneShotDialer::new(conn), AimxCodec)
-            .scheme(DEFAULT_SCHEME)
-            .with_config(ClientConfig {
-                reconnect: false,
-                ..ClientConfig::default()
-            })
+        // Reconnect stays disabled (the spine's default): the UART peripheral is
+        // moved in and can't be re-acquired.
+        EmbassySessionClient::new(OneShotDialer::new(conn), AimxCodec).scheme(DEFAULT_SCHEME)
     }
 }
 

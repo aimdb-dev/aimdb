@@ -187,8 +187,8 @@ impl<C> OneShotCell<C> {
 }
 
 /// One-shot [`Dialer`] over a pre-built, moved-in `Connection` (an Embassy
-/// peripheral can't be re-acquired, so it dials exactly once; pair with
-/// `ClientConfig { reconnect: false, .. }`).
+/// peripheral can't be re-acquired, so it dials exactly once; keep reconnect
+/// disabled — [`EmbassySessionClient::new`]'s default).
 pub struct OneShotDialer<C> {
     conn: OneShotCell<C>,
 }
@@ -255,13 +255,22 @@ pub struct EmbassySessionClient<D, C> {
 
 impl<D, C> EmbassySessionClient<D, C> {
     /// Mirror records over `dialer`, framing with `codec`. Scheme defaults to
-    /// [`DEFAULT_SCHEME`]; config to [`ClientConfig::default`].
+    /// [`DEFAULT_SCHEME`].
+    ///
+    /// Reconnect is **disabled** by default (unlike [`ClientConfig::default`]):
+    /// an Embassy dialer typically wraps a moved-in peripheral ([`OneShotDialer`])
+    /// that can't be re-acquired, so redialing would spin on [`TransportError::Io`]
+    /// forever. A transport whose dialer really can redial opts back in via
+    /// [`with_config`](Self::with_config).
     pub fn new(dialer: D, codec: C) -> Self {
         Self {
             scheme: DEFAULT_SCHEME.to_string(),
             dialer: OneShotCell::new(dialer),
             codec,
-            config: ClientConfig::default(),
+            config: ClientConfig {
+                reconnect: false,
+                ..ClientConfig::default()
+            },
         }
     }
 
@@ -271,7 +280,8 @@ impl<D, C> EmbassySessionClient<D, C> {
         self
     }
 
-    /// Override the client engine config (reconnect, keepalive, …).
+    /// Override the client engine config (reconnect, keepalive, …). Only enable
+    /// `reconnect` if the dialer can actually redial (a [`OneShotDialer`] can't).
     pub fn with_config(mut self, config: ClientConfig) -> Self {
         self.config = config;
         self

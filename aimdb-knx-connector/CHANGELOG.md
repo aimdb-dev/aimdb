@@ -11,14 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tokio client rebuilt on the shared data-plane toolkit (Issue #39, [design doc](../docs/design/remote-access-via-connectors.md)).** The hand-rolled consume-serialize-publish and telegram read-route loops are replaced by `aimdb-core`'s `pump_sink` / `pump_source` helpers: the connector now writes only a `KnxSink` (`Connector`, parses the destination group address and forwards a fire-and-forget `GroupValueWrite`) and a `KnxSource` (`Source`, yields each inbound `(group_address, payload)`) and composes the pumps in `build()`. The routing `Router` is (re)built inside `pump_source`. `std` enables `aimdb-core/connector-session` (where the pump helpers live; `std` implies it transitively). No public API change.
 - **Outbound publishers survive a consumer lag (Tokio + Embassy).** A `BufferLagged` (SPMC-ring overflow) on the outbound reader now skips the gap and keeps publishing instead of terminating the publisher; only a closed buffer stops it.
-- **`SendFutureWrapper` moved to `aimdb-embassy-adapter`.** The Embassy client's local force-`Send` wrapper is gone in favour of the shared `aimdb_embassy_adapter::SendFutureWrapper` (single definition, no behavior change).
+- **M17 — Embassy client rebuilt on core's pumps via the adapter spine ([Design 033](../docs/design/033-M17-unify-connectors-drop-send.md)).** The hand-rolled outbound publisher loops are gone; this crate now contributes only the KNX/IP **protocol** (UDP socket + tunnelling state machine), force-`Send`ed once via `aimdb_embassy_adapter::connectors::into_box_future` — **no `unsafe`, no `SendFutureWrapper`** remain in this crate. Data-flow changes:
+  - **Outbound** rides core's `pump_sink` through the existing `Connector` impl (commands onto the `CriticalSectionRawMutex` command channel, which is already `Send` — no force-`Send` bridge needed). Behavior change: when a topic provider returns an **invalid dynamic group address**, the value is now dropped (`PublishError::InvalidDestination`, logged by the pump) instead of falling back to the URL's default address — silently writing to a different group address than the provider asked for was misrouting, and this matches the Tokio half.
+  - **Inbound** rides core's `pump_source` via a new static 32-deep telegram channel (`KnxSource` drains it). The protocol loop forwards each parsed telegram with `try_send` — **drop + log when the channel is full** rather than awaiting, so a slow consumer can never stall the loop that answers `TUNNELING_ACK`s and heartbeats (a stalled loop would time out the gateway connection, losing far more than the dropped telegram).
 
 ### Changed (breaking)
 
 - **`ConnectorBuilder::build()` now returns `Vec<BoxFuture<'static, ()>>` instead of `Arc<dyn Connector>` (Issue #88).** Both Tokio and Embassy implementations updated.
 - `spawn_connection_task()` → `build_connection_future()`; the `mpsc::channel` for outbound commands is created up front, the receiver captured by the connection future, and the sender cloned into each outbound publisher future. `spawn_outbound_publishers()` → `collect_outbound_futures()`.
 - `R: Spawn` bounds dropped in favour of `R: RuntimeAdapter`.
-- The `transport::Connector` impl on `KnxConnectorImpl` was removed alongside the discarded `Arc<dyn Connector>` return path.
+- The `transport::Connector` impl on `KnxConnectorImpl` was removed alongside the discarded `Arc<dyn Connector>` return path (Issue #88) — then reinstated as the pure outbound I/O adapter that `pump_sink` drives (Issue #39 / M17): it is no longer a programmatic-publish surface but the route through which every outbound record reaches the command channel.
 
 ## [0.4.0] - 2026-05-22
 
