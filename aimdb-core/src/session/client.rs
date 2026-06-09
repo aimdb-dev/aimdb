@@ -512,10 +512,7 @@ where
         let handle = handle.clone();
         let ctx = ctx.clone();
         pumps.push(Box::pin(async move {
-            let mut reader = match consumer.subscribe_any().await {
-                Ok(r) => r,
-                Err(_e) => return,
-            };
+            let mut reader = consumer.subscribe_any().await;
             loop {
                 let value = match reader.recv_any().await {
                     Ok(v) => v,

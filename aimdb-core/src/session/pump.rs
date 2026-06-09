@@ -57,17 +57,7 @@ where
 
         futures.push(Box::pin(async move {
             // Subscribe to typed values (type-erased).
-            let mut reader = match consumer.subscribe_any().await {
-                Ok(r) => r,
-                Err(_e) => {
-                    log_error!(
-                        "pump_sink: failed to subscribe for destination '{}': {:?}",
-                        default_topic,
-                        _e
-                    );
-                    return;
-                }
-            };
+            let mut reader = consumer.subscribe_any().await;
 
             log_info!(
                 "pump_sink: publisher started for destination: {}",

@@ -780,20 +780,16 @@ where
             self.spawn_fns.into_iter().collect();
 
         // Execute collectors in topological order — transforms collect after their inputs.
+        // `StringKey: Borrow<str>` with content-based Hash, so the map lookup by
+        // `&str` is O(1) and yields both the interned key and the RecordId.
         for key_str in inner.dependency_graph.topo_order() {
-            let key = match inner.by_key.keys().find(|k| k.as_str() == key_str) {
-                Some(k) => *k,
-                None => continue,
+            let Some((&key, &id)) = inner.by_key.get_key_value(key_str.as_str()) else {
+                continue;
             };
 
-            let spawn_fn_any = match spawn_fn_map.remove(&key) {
-                Some(f) => f,
-                None => continue,
+            let Some(spawn_fn_any) = spawn_fn_map.remove(&key) else {
+                continue;
             };
-
-            let id = inner
-                .resolve(&key)
-                .ok_or_else(|| DbError::record_key_not_found(key.as_str()))?;
 
             let spawn_fn = spawn_fn_any
                 .downcast::<SpawnFnType<R>>()

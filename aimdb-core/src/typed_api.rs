@@ -296,14 +296,10 @@ where
 {
     fn subscribe_any<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn crate::connector::AnyReader>>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Box<dyn crate::connector::AnyReader>> + Send + 'a>> {
         Box::pin(async move {
-            // `subscribe()` is infallible after M14; keep the `DbResult` on
-            // the trait surface so connector code stays unchanged.
             let reader = self.subscribe();
-            Ok(Box::new(TypedAnyReader::<T> { inner: reader })
-                as Box<dyn crate::connector::AnyReader>)
+            Box::new(TypedAnyReader::<T> { inner: reader }) as Box<dyn crate::connector::AnyReader>
         })
     }
 }

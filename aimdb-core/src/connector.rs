@@ -658,12 +658,12 @@ pub trait ConsumerTrait: Send + Sync {
     ///
     /// Returns a type-erased reader that can be polled for `Box<dyn Any>` values.
     /// The connector will downcast to the expected type after deserialization.
+    /// Infallible since M14 — subscription is a pre-resolved buffer handle.
     fn subscribe_any<'a>(&'a self) -> SubscribeAnyFuture<'a>;
 }
 
 /// Type alias for the future returned by `ConsumerTrait::subscribe_any`
-type SubscribeAnyFuture<'a> =
-    Pin<Box<dyn Future<Output = DbResult<Box<dyn AnyReader>>> + Send + 'a>>;
+type SubscribeAnyFuture<'a> = Pin<Box<dyn Future<Output = Box<dyn AnyReader>> + Send + 'a>>;
 
 /// Type alias for the future returned by `AnyReader::recv_any`
 type RecvAnyFuture<'a> =
