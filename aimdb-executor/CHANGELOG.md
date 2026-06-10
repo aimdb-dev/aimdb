@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`JoinFanInRuntime`/`JoinQueue`/`JoinSender`/`JoinReceiver` deleted (Issue #131, design doc 034 §3.2/§3.3).** Multi-input join fan-in now uses one bounded `async-channel` queue inside `aimdb-core` — the same primitive the session engine already uses on every runtime — so the per-adapter GAT queue family (and each adapter's `join_queue.rs`) has no reason to exist. `RuntimeOps` (from #130) is now consumed by core: it is the value-level runtime surface behind `AimDb`/`RuntimeContext`.
+
 ### Removed (breaking)
 
 - **`Spawn` trait deleted (Issue #88).** Including the `SpawnToken` associated type and the `ExecutorError::SpawnFailed` variant. The `Runtime` bundle trait is now `RuntimeAdapter + TimeOps + Logger` (no `Spawn` supertrait). Task execution moves to `AimDbRunner::run()` in `aimdb-core`, which drives every collected future via a single `FuturesUnordered`. Custom adapters must drop `impl Spawn`.

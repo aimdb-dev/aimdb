@@ -25,7 +25,6 @@ embassy-runtime = [
     "embassy-sync",
     "embassy-net",
     "embassy-futures",
-    "heapless",
     "static_cell",
 ]
 tracing = ["dep:tracing", "aimdb-core/tracing"]
@@ -76,8 +75,9 @@ embassy-net = { version = "0.9.0", path = "../_external/embassy/embassy-net", op
     "proto-ipv4",
 ] }
 
-# Embedded utilities
-heapless = { workspace = true, optional = true }
+# Embedded utilities (heapless is unconditional: the shared sans-io tunnel
+# engine uses stack-allocated frames on both runtimes)
+heapless = { workspace = true }
 static_cell = { version = "2.0", optional = true }
 
 # Optional observability

@@ -213,10 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// Because this runs inside a `.source()` callback, every `produce()` call is
 /// timed by the `profiling` feature — see `get_stage_profiling`.
-async fn temperature_simulator(
-    ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature>,
-) {
+async fn temperature_simulator(ctx: RuntimeContext, temperature: Producer<Temperature>) {
     let time = ctx.time();
     let mut counter = 0u64;
     loop {
@@ -236,13 +233,13 @@ async fn temperature_simulator(
         temperature.produce(reading);
 
         counter += 1;
-        time.sleep(time.secs(2)).await;
+        time.sleep_secs(2).await;
     }
 }
 
 /// Fast tap on Temperature — just logs. Stage profiling will show it as
 /// substantially faster than `slow_status_processor` on SystemStatus.
-async fn temperature_logger(_ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<Temperature>) {
+async fn temperature_logger(_ctx: RuntimeContext, consumer: Consumer<Temperature>) {
     let mut reader = consumer.subscribe();
     while let Ok(reading) = reader.recv().await {
         tracing::debug!(
@@ -254,10 +251,7 @@ async fn temperature_logger(_ctx: RuntimeContext<TokioAdapter>, consumer: Consum
 }
 
 /// Periodically produces SystemStatus readings.
-async fn system_status_simulator(
-    ctx: RuntimeContext<TokioAdapter>,
-    status: Producer<SystemStatus>,
-) {
+async fn system_status_simulator(ctx: RuntimeContext, status: Producer<SystemStatus>) {
     let time = ctx.time();
     let mut uptime = 3600u64;
     loop {
@@ -270,21 +264,18 @@ async fn system_status_simulator(
         status.produce(snapshot);
 
         uptime += 5;
-        time.sleep(time.secs(5)).await;
+        time.sleep_secs(5).await;
     }
 }
 
 /// Intentionally slow tap on SystemStatus — sleeps 100ms per value to simulate
 /// expensive per-value processing. With profiling enabled, this stage shows up
 /// as the per-record bottleneck in `get_stage_profiling`.
-async fn slow_status_processor(
-    ctx: RuntimeContext<TokioAdapter>,
-    consumer: Consumer<SystemStatus>,
-) {
+async fn slow_status_processor(ctx: RuntimeContext, consumer: Consumer<SystemStatus>) {
     let time = ctx.time();
     let mut reader = consumer.subscribe();
     while let Ok(snapshot) = reader.recv().await {
-        time.sleep(time.millis(100)).await;
+        time.sleep_millis(100).await;
         tracing::debug!(
             "💻 Processed status: CPU {:.1}%, MEM {:.1}%",
             snapshot.cpu_usage,

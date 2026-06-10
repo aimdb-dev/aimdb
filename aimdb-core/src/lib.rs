@@ -28,7 +28,6 @@ pub mod codec;
 pub mod connector;
 pub mod context;
 mod error;
-pub mod ext_macros;
 pub mod extensions;
 pub mod graph;
 #[cfg(feature = "profiling")]
@@ -45,36 +44,18 @@ pub mod transport;
 pub mod typed_api;
 pub mod typed_record;
 
-/// Marker trait used to add a `TimeOps` requirement to runtime-agnostic builder
-/// methods *only* when the `profiling` feature is enabled (stage-duration timing
-/// needs the runtime clock).
-///
-/// When `profiling` is off this is a blanket no-op (every `R` implements it), so
-/// the public API is unchanged. When `profiling` is on it requires
-/// [`aimdb_executor::TimeOps`], which every real runtime adapter already provides
-/// (it is part of [`aimdb_executor::Runtime`]).
-#[cfg(feature = "profiling")]
-pub trait RuntimeForProfiling: aimdb_executor::TimeOps {}
-#[cfg(feature = "profiling")]
-impl<R: aimdb_executor::TimeOps> RuntimeForProfiling for R {}
-
-/// See the `profiling`-enabled definition above. Blanket no-op when `profiling`
-/// is disabled.
-#[cfg(not(feature = "profiling"))]
-pub trait RuntimeForProfiling {}
-#[cfg(not(feature = "profiling"))]
-impl<R> RuntimeForProfiling for R {}
-
 // Public API exports
 pub use context::RuntimeContext;
 pub use error::{ConfigError, DbError, DbResult};
 pub use extensions::Extensions;
 
-// Runtime trait re-exports from aimdb-executor
-// These traits define the platform-specific execution, timing, and logging capabilities
-pub use aimdb_executor::{
-    ExecutorError, ExecutorResult, Logger, Runtime, RuntimeAdapter, RuntimeInfo, TimeOps,
-};
+// Error/result re-exports from aimdb-executor. The generic runtime trait
+// family (`RuntimeAdapter`, `Runtime`, `TimeOps`, `Logger`, `RuntimeInfo`) is
+// no longer consumed by core — the runtime travels as
+// `Arc<dyn aimdb_executor::RuntimeOps>` (issue #131) — so it is not
+// re-exported here; import those traits from `aimdb_executor` directly if an
+// adapter still needs them.
+pub use aimdb_executor::{ExecutorError, ExecutorResult};
 
 // Producer-Consumer Pattern exports
 pub use builder::OutboundRoute;

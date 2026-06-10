@@ -34,7 +34,7 @@ async fn source_and_tap_stages_are_timed_and_named() {
                 loop {
                     producer.produce(Reading { value: n });
                     n += 1;
-                    ctx.time().sleep(ctx.time().millis(10)).await;
+                    ctx.time().sleep_millis(10).await;
                 }
             })
             .with_name("sensor_reader")
@@ -43,7 +43,7 @@ async fn source_and_tap_stages_are_timed_and_named() {
                 while let Ok(reading) = reader.recv().await {
                     // Simulate per-value processing work (wall-clock).
                     let _ = reading.value;
-                    ctx.time().sleep(ctx.time().millis(5)).await;
+                    ctx.time().sleep_millis(5).await;
                 }
             })
             .with_name("data_processor");
@@ -57,7 +57,7 @@ async fn source_and_tap_stages_are_timed_and_named() {
 
     let rec = db
         .inner()
-        .get_typed_record_by_key::<Reading, TokioAdapter>(KEY)
+        .get_typed_record_by_key::<Reading>(KEY)
         .expect("typed record");
     let prof = rec.profiling();
 
@@ -112,7 +112,7 @@ async fn with_name_is_a_no_op_friendly_builder() {
     tokio::spawn(runner.run());
     let rec = db
         .inner()
-        .get_typed_record_by_key::<Reading, TokioAdapter>("profiling::Unused")
+        .get_typed_record_by_key::<Reading>("profiling::Unused")
         .expect("typed record");
     assert_eq!(
         rec.profiling().tap(0).unwrap().name.as_deref(),

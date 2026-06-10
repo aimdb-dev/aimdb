@@ -49,10 +49,7 @@ pub const DEFAULT_SCHEME: &str = "serial";
 /// `record.list` advertises the `writable` flag (the dispatch also enforces it).
 /// Shared by both `SerialServer` halves; mirrors the UDS connector.
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub(crate) fn apply_writable<R>(db: &aimdb_core::AimDb<R>, config: &aimdb_core::remote::AimxConfig)
-where
-    R: aimdb_core::RuntimeAdapter + 'static,
-{
+pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote::AimxConfig) {
     for key in config.security_policy.writable_records() {
         if let Some(id) = db.inner().resolve_str(&key) {
             if let Some(storage) = db.inner().storage(id) {

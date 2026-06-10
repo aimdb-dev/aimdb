@@ -88,6 +88,10 @@ defmt = { workspace = true, optional = true }
 # keeping it out of dev-deps avoids a std/no_std unification clash with the tokio
 # tests, where it would otherwise compile against a std `aimdb-core`.)
 embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+# No-op defmt logger stub for the embassy smoke test binary: the engine holds
+# the adapter as `Arc<dyn RuntimeOps>` (issue #131), whose vtable references
+# the defmt-backed `log` path.
+defmt = { workspace = true }
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",

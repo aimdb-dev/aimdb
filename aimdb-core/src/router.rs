@@ -77,7 +77,7 @@ impl Router {
     /// # Arguments
     /// * `resource_id` - Resource identifier (topic, path, segment name, etc.)
     /// * `payload` - Raw message payload bytes
-    /// * `ctx` - Optional type-erased runtime context for context-aware deserializers
+    /// * `ctx` - Optional runtime context for context-aware deserializers
     ///
     /// # Returns
     /// * `Ok(())` - Always returns Ok, even if no routes matched or processing failed.
@@ -93,7 +93,7 @@ impl Router {
         &self,
         resource_id: &str,
         payload: &[u8],
-        ctx: Option<&Arc<dyn core::any::Any + Send + Sync>>,
+        ctx: Option<&crate::RuntimeContext>,
     ) -> Result<(), String> {
         let mut routed = false;
         let mut matched = false;
@@ -466,8 +466,24 @@ mod tests {
 
         let router = Router::new(routes);
 
-        // Provide a dummy context (just an i32 wrapped in Arc)
-        let ctx: Arc<dyn Any + Send + Sync> = Arc::new(0i32);
+        // Provide a dummy context backed by a no-op RuntimeOps.
+        struct NoopOps;
+        impl aimdb_executor::RuntimeOps for NoopOps {
+            fn name(&self) -> &'static str {
+                "noop"
+            }
+            fn now_nanos(&self) -> u64 {
+                0
+            }
+            fn unix_time(&self) -> Option<(u64, u32)> {
+                None
+            }
+            fn sleep(&self, _d: core::time::Duration) -> aimdb_executor::BoxFuture {
+                Box::pin(core::future::ready(()))
+            }
+            fn log(&self, _level: aimdb_executor::LogLevel, _msg: &str) {}
+        }
+        let ctx = crate::RuntimeContext::new(Arc::new(NoopOps));
         router
             .route("ctx/resource", b"dummy", Some(&ctx))
             .await

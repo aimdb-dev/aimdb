@@ -45,7 +45,7 @@ use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
     Dispatch, SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector,
 };
-use aimdb_core::{AimDb, DbError, DbResult, RuntimeAdapter};
+use aimdb_core::{AimDb, DbError, DbResult};
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + Send + 'a>>;
@@ -137,11 +137,8 @@ impl UdsServer {
     }
 }
 
-impl<R> ConnectorBuilder<R> for UdsServer
-where
-    R: RuntimeAdapter + 'static,
-{
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
+impl ConnectorBuilder for UdsServer {
+    fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         let config = self.config.clone();
         let scheme = self.scheme.clone();
         Box::pin(async move {
@@ -161,7 +158,7 @@ where
             let connector = SessionServerConnector::new(
                 move || bind_uds_listener(&bind_config),
                 AimxCodec,
-                move |db: &AimDb<R>| -> Arc<dyn Dispatch> {
+                move |db: &AimDb| -> Arc<dyn Dispatch> {
                     // Apply the security policy's writable marking so `record.list`
                     // reports the `writable` flag (the dispatch also enforces it).
                     apply_writable(db, &dispatch_config);
@@ -232,10 +229,7 @@ fn bind_uds_listener(config: &AimxConfig) -> DbResult<UdsListener> {
 
 /// Mark each record named in the policy's writable set as writable, so
 /// `record.list` advertises the `writable` flag.
-fn apply_writable<R>(db: &AimDb<R>, config: &AimxConfig)
-where
-    R: RuntimeAdapter + 'static,
-{
+fn apply_writable(db: &AimDb, config: &AimxConfig) {
     for key in config.security_policy.writable_records() {
         if let Some(id) = db.inner().resolve_str(&key) {
             if let Some(storage) = db.inner().storage(id) {

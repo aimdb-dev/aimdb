@@ -383,7 +383,7 @@ pub fn generate_tasks_rs(state: &ArchitectureState, binary_name: &str) -> Option
             let fn_name = format_ident!("{}", task.name);
 
             // Build parameter list
-            let mut params: Vec<TokenStream> = vec![quote! { ctx: RuntimeContext<TokioAdapter> }];
+            let mut params: Vec<TokenStream> = vec![quote! { ctx: RuntimeContext }];
             for input in &task.inputs {
                 let arg_name = format_ident!("{}", to_snake_case(&input.record));
                 let value_type = format_ident!("{}Value", input.record);
@@ -557,7 +557,6 @@ fn emit_imports(state: &ArchitectureState) -> TokenStream {
         use aimdb_core::builder::AimDbBuilder;
         use aimdb_core::RecordKey;
         use aimdb_data_contracts::{#(#contract_traits),*};
-        use aimdb_executor::RuntimeAdapter;
         use serde::{Deserialize, Serialize};
     }
 }
@@ -731,7 +730,7 @@ fn emit_configure_schema(state: &ArchitectureState) -> TokenStream {
         /// addresses. Producers, consumers, serializers, and deserializers contain
         /// business logic and must be provided by application code — they are not
         /// generated here.
-        pub fn configure_schema<R: RuntimeAdapter + 'static>(builder: &mut AimDbBuilder<R>) {
+        pub fn configure_schema(builder: &mut AimDbBuilder) {
             #(#record_blocks)*
         }
     }
@@ -1250,7 +1249,6 @@ pub fn generate_hub_schema_rs(state: &ArchitectureState) -> String {
     let file_tokens = quote! {
         use aimdb_core::buffer::BufferCfg;
         use aimdb_core::builder::AimDbBuilder;
-        use aimdb_executor::RuntimeAdapter;
         use #common_crate::*;
 
         #configure_fn
@@ -1688,7 +1686,7 @@ pub fn {handler}(input: &{in_t}) -> Option<{out_t}> {{\n\
             // Pure source
             fns.push_str(&format!(
                 "pub async fn {}(\n\
-    _ctx: aimdb_core::RuntimeContext<TokioAdapter>,\n\
+    _ctx: aimdb_core::RuntimeContext,\n\
     _producer: aimdb_core::Producer<{out_t}>,\n\
 ) {{\n\
     todo!(\"implement {}\")\n\
@@ -1699,7 +1697,7 @@ pub fn {handler}(input: &{in_t}) -> Option<{out_t}> {{\n\
             // Pure sink / tap
             fns.push_str(&format!(
                 "pub async fn {}(\n\
-    _ctx: aimdb_core::RuntimeContext<TokioAdapter>,\n\
+    _ctx: aimdb_core::RuntimeContext,\n\
     _consumer: aimdb_core::Consumer<{in_t}>,\n\
 ) {{\n\
     todo!(\"implement {}\")\n\
@@ -1833,10 +1831,6 @@ url = "mqtt://ota/cmd/{variant}"
             "Missing RecordKey import:\n{out}"
         );
         assert!(
-            out.contains("use aimdb_executor::RuntimeAdapter;"),
-            "Missing RuntimeAdapter import:\n{out}"
-        );
-        assert!(
             out.contains("use serde::{Deserialize, Serialize};"),
             "Missing serde import:\n{out}"
         );
@@ -1937,9 +1931,7 @@ url = "mqtt://ota/cmd/{variant}"
     fn configure_schema_function_present() {
         let out = generated();
         assert!(
-            out.contains(
-                "pub fn configure_schema<R: RuntimeAdapter + 'static>(builder: &mut AimDbBuilder<R>)"
-            ),
+            out.contains("pub fn configure_schema(builder: &mut AimDbBuilder)"),
             "Missing configure_schema function:\n{out}"
         );
     }

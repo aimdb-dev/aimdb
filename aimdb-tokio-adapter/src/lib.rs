@@ -33,7 +33,6 @@ compile_error!("tokio-adapter requires the std feature");
 pub mod buffer;
 pub mod error;
 #[cfg(feature = "tokio-runtime")]
-pub mod join_queue;
 pub mod runtime;
 pub mod time;
 
@@ -43,11 +42,29 @@ pub use error::TokioErrorSupport;
 #[cfg(feature = "tokio-runtime")]
 pub use runtime::TokioAdapter;
 
-// Generate extension trait for Tokio adapter using the macro
-aimdb_core::impl_record_registrar_ext! {
-    TokioRecordRegistrarExt,
-    TokioAdapter,
-    TokioBuffer,
-    "tokio-runtime",
-    |cfg| TokioBuffer::<T>::new(cfg)
+/// Buffer-construction extension for [`aimdb_core::RecordRegistrar`].
+///
+/// Buffer construction is the one genuinely adapter-specific registration
+/// step left after issue #131 — `source()` / `tap()` / `transform()` are
+/// inherent methods on the registrar. This trait adds `.buffer(cfg)` backed
+/// by [`TokioBuffer`].
+pub trait TokioRecordRegistrarExt<T>
+where
+    T: Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    /// Configures a [`TokioBuffer`] from the given configuration.
+    fn buffer(&mut self, cfg: aimdb_core::buffer::BufferCfg) -> &mut Self;
+}
+
+impl<T> TokioRecordRegistrarExt<T> for aimdb_core::RecordRegistrar<'_, T>
+where
+    T: Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    fn buffer(&mut self, cfg: aimdb_core::buffer::BufferCfg) -> &mut Self {
+        use aimdb_core::buffer::Buffer;
+        let buffer = Box::new(TokioBuffer::<T>::new(&cfg));
+        // Record the cfg so buffer_info() reports the real buffer
+        // type/capacity for the dependency graph.
+        self.buffer_with_cfg(buffer, cfg)
+    }
 }

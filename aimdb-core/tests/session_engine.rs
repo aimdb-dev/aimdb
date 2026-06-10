@@ -23,44 +23,27 @@ use aimdb_core::session::{
     SessionConfig, SessionCtx, SessionLimits, TransportError, TransportResult,
 };
 
-/// Minimal [`TimeOps`](aimdb_executor::TimeOps) clock for the engine tests
+/// Minimal [`RuntimeOps`](aimdb_executor::RuntimeOps) clock for the engine tests
 /// (aimdb-core can't depend on a runtime adapter — that would be a cycle).
 /// Backs the reconnect/keepalive seam with `tokio::time`; these tests run with
 /// `reconnect: false` and no keepalive, so it is never actually awaited.
 #[derive(Clone, Copy)]
 struct TestClock;
 
-impl aimdb_executor::RuntimeAdapter for TestClock {
-    fn runtime_name() -> &'static str {
+impl aimdb_executor::RuntimeOps for TestClock {
+    fn name(&self) -> &'static str {
         "test-clock"
     }
-}
-
-impl aimdb_executor::TimeOps for TestClock {
-    type Instant = std::time::Instant;
-    type Duration = Duration;
-
-    fn now(&self) -> Self::Instant {
-        std::time::Instant::now()
+    fn now_nanos(&self) -> u64 {
+        0
     }
-    fn duration_since(&self, later: Self::Instant, earlier: Self::Instant) -> Option<Duration> {
-        later.checked_duration_since(earlier)
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        None
     }
-    fn millis(&self, ms: u64) -> Duration {
-        Duration::from_millis(ms)
+    fn sleep(&self, d: Duration) -> aimdb_executor::BoxFuture {
+        Box::pin(tokio::time::sleep(d))
     }
-    fn secs(&self, secs: u64) -> Duration {
-        Duration::from_secs(secs)
-    }
-    fn micros(&self, micros: u64) -> Duration {
-        Duration::from_micros(micros)
-    }
-    fn sleep(&self, duration: Duration) -> impl core::future::Future<Output = ()> + Send {
-        tokio::time::sleep(duration)
-    }
-    fn duration_as_nanos(&self, duration: Duration) -> u64 {
-        duration.as_nanos().min(u64::MAX as u128) as u64
-    }
+    fn log(&self, _level: aimdb_executor::LogLevel, _msg: &str) {}
 }
 
 // ===========================================================================

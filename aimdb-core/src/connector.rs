@@ -104,16 +104,10 @@ pub type SerializerFn =
 
 /// Type alias for context-aware type-erased serializer callbacks
 ///
-/// Like `SerializerFn`, but receives a type-erased runtime context
+/// Like `SerializerFn`, but receives the concrete [`RuntimeContext`](crate::RuntimeContext)
 /// for platform-independent timestamps and logging during serialization.
-///
-/// The first argument is the type-erased runtime (as `Arc<dyn Any + Send + Sync>`),
-/// which is downcast to the concrete runtime type via `RuntimeContext::extract_from_any`.
 pub type ContextSerializerFn = Arc<
-    dyn Fn(
-            Arc<dyn core::any::Any + Send + Sync>,
-            &dyn core::any::Any,
-        ) -> Result<Vec<u8>, SerializeError>
+    dyn Fn(crate::RuntimeContext, &dyn core::any::Any) -> Result<Vec<u8>, SerializeError>
         + Send
         + Sync,
 >;
@@ -470,7 +464,7 @@ pub struct ConnectorLink {
 
     /// Consumer factory callback (alloc feature)
     ///
-    /// Creates `ConsumerTrait` from `Arc<AimDb<R>>` to enable type-safe subscription.
+    /// Creates `ConsumerTrait` from the live [`AimDb`] to enable type-safe subscription.
     /// The factory captures the record type T at link_to() configuration time,
     /// allowing the connector to subscribe without knowing T at compile time.
     ///
@@ -533,17 +527,12 @@ impl ConnectorLink {
 
     /// Creates a consumer using the stored factory (alloc feature)
     ///
-    /// Takes an `Arc<dyn Any>` (which should contain `Arc<AimDb<R>>`) and invokes
-    /// the consumer factory to create a ConsumerTrait instance.
-    ///
-    /// Returns None if no factory is configured.
+    /// Invokes the consumer factory with the live database to create a
+    /// ConsumerTrait instance. Returns None if no factory is configured.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    pub fn create_consumer(
-        &self,
-        db_any: Arc<dyn core::any::Any + Send + Sync>,
-    ) -> Option<Box<dyn ConsumerTrait>> {
-        self.consumer_factory.as_ref().map(|f| f(db_any))
+    pub fn create_consumer(&self, db: &AimDb) -> Option<Box<dyn ConsumerTrait>> {
+        self.consumer_factory.as_ref().map(|f| f(db))
     }
 }
 
@@ -556,16 +545,10 @@ pub type DeserializerFn =
 
 /// Type alias for context-aware type-erased deserializer callbacks
 ///
-/// Like `DeserializerFn`, but receives a type-erased runtime context
+/// Like `DeserializerFn`, but receives the concrete [`RuntimeContext`](crate::RuntimeContext)
 /// for platform-independent timestamps and logging during deserialization.
-///
-/// The first argument is the type-erased runtime (as `Arc<dyn Any + Send + Sync>`),
-/// which is downcast to the concrete runtime type via `RuntimeContext::extract_from_any`.
 pub type ContextDeserializerFn = Arc<
-    dyn Fn(
-            Arc<dyn core::any::Any + Send + Sync>,
-            &[u8],
-        ) -> Result<Box<dyn core::any::Any + Send>, String>
+    dyn Fn(crate::RuntimeContext, &[u8]) -> Result<Box<dyn core::any::Any + Send>, String>
         + Send
         + Sync,
 >;
@@ -584,13 +567,12 @@ pub enum DeserializerKind {
 
 /// Type alias for producer factory callback (alloc feature)
 ///
-/// Takes `Arc<dyn Any>` (which contains `AimDb<R>`) and returns a boxed `ProducerTrait`.
-/// This allows capturing the record type T at link_from() time while storing
-/// the factory in a type-erased InboundConnectorLink.
+/// Takes the live [`AimDb`] and returns a boxed `ProducerTrait`. This allows
+/// capturing the record type T at link_from() time while storing the factory
+/// in a type-erased InboundConnectorLink.
 ///
 /// Available in both `std` and `no_std + alloc` environments.
-pub type ProducerFactoryFn =
-    Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait> + Send + Sync>;
+pub type ProducerFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn ProducerTrait> + Send + Sync>;
 
 /// Topic resolver function for inbound connections (late-binding)
 ///
@@ -634,15 +616,14 @@ pub trait ProducerTrait: Send + Sync {
 
 /// Type alias for consumer factory callback (alloc feature)
 ///
-/// Takes `Arc<dyn Any>` (which contains `AimDb<R>`) and returns a boxed `ConsumerTrait`.
-/// This allows capturing the record type T at link_to() time while storing
-/// the factory in a type-erased ConnectorLink.
+/// Takes the live [`AimDb`] and returns a boxed `ConsumerTrait`. This allows
+/// capturing the record type T at link_to() time while storing the factory
+/// in a type-erased ConnectorLink.
 ///
 /// Mirrors the ProducerFactoryFn pattern for symmetry between inbound and outbound.
 ///
 /// Available in both `std` and `no_std + alloc` environments.
-pub type ConsumerFactoryFn =
-    Arc<dyn Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ConsumerTrait> + Send + Sync>;
+pub type ConsumerFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn ConsumerTrait> + Send + Sync>;
 
 /// Type-erased consumer trait for outbound routing
 ///
@@ -704,7 +685,7 @@ pub struct InboundConnectorLink {
 
     /// Producer creation callback (alloc feature)
     ///
-    /// Takes `Arc<AimDb<R>>` and returns `Box<dyn ProducerTrait>`.
+    /// Takes the live [`AimDb`] and returns `Box<dyn ProducerTrait>`.
     /// Captures the record type T at link_from() call time.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
@@ -762,10 +743,7 @@ impl InboundConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     pub fn with_producer_factory<F>(mut self, factory: F) -> Self
     where
-        F: Fn(Arc<dyn core::any::Any + Send + Sync>) -> Box<dyn ProducerTrait>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&AimDb) -> Box<dyn ProducerTrait> + Send + Sync + 'static,
     {
         self.producer_factory = Some(Arc::new(factory));
         self
@@ -774,11 +752,8 @@ impl InboundConnectorLink {
     /// Creates a producer using the stored factory.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    pub fn create_producer(
-        &self,
-        db_any: Arc<dyn core::any::Any + Send + Sync>,
-    ) -> Option<Box<dyn ProducerTrait>> {
-        self.producer_factory.as_ref().map(|f| f(db_any))
+    pub fn create_producer(&self, db: &AimDb) -> Option<Box<dyn ProducerTrait>> {
+        self.producer_factory.as_ref().map(|f| f(db))
     }
 
     /// Resolves the subscription topic for this link
@@ -902,31 +877,25 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 ///     broker_url: String,
 /// }
 ///
-/// impl<R> ConnectorBuilder<R> for MqttConnectorBuilder
-/// where
-///     R: aimdb_executor::RuntimeAdapter + 'static,
-/// {
+/// impl ConnectorBuilder for MqttConnectorBuilder {
 ///     fn build<'a>(
 ///         &'a self,
-///         db: &'a AimDb<R>,
-///     ) -> Pin<Box<dyn Future<Output = DbResult<Arc<dyn Connector>>> + Send + 'a>> {
+///         db: &'a AimDb,
+///     ) -> Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + Send + 'a>> {
 ///         Box::pin(async move {
 ///             let routes = db.collect_inbound_routes(self.scheme());
 ///             let router = RouterBuilder::from_routes(routes).build();
 ///             let connector = MqttConnector::new(&self.broker_url, router).await?;
-///             Ok(Arc::new(connector) as Arc<dyn Connector>)
+///             Ok(connector.futures())
 ///         })
 ///     }
-///     
+///
 ///     fn scheme(&self) -> &str {
 ///         "mqtt"
 ///     }
 /// }
 /// ```
-pub trait ConnectorBuilder<R>: Send + Sync
-where
-    R: aimdb_executor::RuntimeAdapter + 'static,
-{
+pub trait ConnectorBuilder: Send + Sync {
     /// Build the connector and return its driving futures.
     ///
     /// Called during `AimDbBuilder::build()` after the database has been
@@ -943,7 +912,7 @@ where
     #[allow(clippy::type_complexity)]
     fn build<'a>(
         &'a self,
-        db: &'a AimDb<R>,
+        db: &'a AimDb,
     ) -> Pin<
         Box<
             dyn Future<Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>>

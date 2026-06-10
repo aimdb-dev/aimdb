@@ -32,17 +32,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn rollout_source(ctx: RuntimeContext<TokioAdapter>, producer: Producer<FeatureGate>) {
+async fn rollout_source(ctx: RuntimeContext, producer: Producer<FeatureGate>) {
     let time = ctx.time();
 
-    time.sleep(time.millis(50)).await;
+    time.sleep_millis(50).await;
 
     for rollout_percent in [0, 10, 25] {
         publish_rollout(&producer, rollout_percent).await;
     }
 
     for rollout_percent in [50, 100] {
-        time.sleep(time.millis(120)).await;
+        time.sleep_millis(120).await;
         publish_rollout(&producer, rollout_percent).await;
     }
 }
@@ -52,7 +52,7 @@ async fn publish_rollout(producer: &Producer<FeatureGate>, rollout_percent: u8) 
     producer.produce(gate);
 }
 
-async fn rollout_observer(ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<FeatureGate>) {
+async fn rollout_observer(ctx: RuntimeContext, consumer: Consumer<FeatureGate>) {
     let mut reader = consumer.subscribe();
     let time = ctx.time();
 
@@ -71,6 +71,6 @@ async fn rollout_observer(ctx: RuntimeContext<TokioAdapter>, consumer: Consumer<
         if gate.rollout_percent == 100 {
             break;
         }
-        time.sleep(time.millis(90)).await;
+        time.sleep_millis(90).await;
     }
 }

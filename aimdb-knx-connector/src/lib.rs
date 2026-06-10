@@ -74,11 +74,11 @@
 //! use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
 //! use alloc::sync::Arc;
 //!
-//! let runtime = Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
+//! let runtime = Arc::new(EmbassyAdapter::new().unwrap());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(KnxConnectorBuilder::new("knx://192.168.1.19:3671"))
+//!     .with_connector(KnxConnectorBuilder::new("knx://192.168.1.19:3671", stack))
 //!     .configure::<SensorData>(|reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)
@@ -122,7 +122,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(not(feature = "std"))]
+// The shared tunnel engine uses `alloc` types on both runtimes.
 extern crate alloc;
 
 // Re-export knx-pico types for user convenience
@@ -151,6 +151,9 @@ pub mod dpt {
 // Convenience re-exports for common types (std only for backward compat)
 #[cfg(feature = "std")]
 pub use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
+
+// Runtime-neutral KNX/IP tunneling state machine shared by both transports.
+pub mod tunnel;
 
 // Platform-specific implementations
 #[cfg(feature = "tokio-runtime")]

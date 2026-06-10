@@ -21,8 +21,9 @@
 //!   [`TimeOps`](crate::TimeOps) is impossible: `now_nanos` needs an epoch
 //!   anchor, and `TimeOps::Instant` is opaque with no place to store one.
 //!
-//! This trait is groundwork: `aimdb-core` does not consume it yet (that is
-//! the follow-up de-genericization, issue #131).
+//! Since the de-genericization (issue #131) this is the runtime contract
+//! `aimdb-core` consumes: `AimDb`/`RuntimeContext` hold the runtime as
+//! `Arc<dyn RuntimeOps>`, and adapters hand one to `AimDbBuilder::runtime`.
 
 /// Heap-pinned, `Send`, `'static` future — the unit of work AimDB drives.
 ///

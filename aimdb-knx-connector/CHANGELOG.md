@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sans-io KNX/IP tunneling engine — one lifecycle implementation for both transports (Issue #135, [design doc §3.7](../docs/design/034-technical-debt-review.md)).** New runtime-neutral `tunnel` module (`no_std + alloc`): a poll-based `TunnelEngine` owning the CONNECT handshake, channel id, wrapping sequence counters, pending-ACK map (with the non-standard 4-byte-ACK fallback parse), keepalive schedule, ACK-timeout sweep, and reconnect backoff — events in (`handle_datagram`/`handle_command`/`handle_socket_error` + `poll(now)`), `Action`s out (`Send`/`Telegram`/`ResetSocket`/`AckTimeout`), `next_deadline()` for timer arming. `tokio_client.rs` and `embassy_client.rs` are reduced to socket shims; the lifecycle is covered by 15 host unit tests plus a fake-gateway localhost-UDP integration roundtrip. Behavior notes: Embassy gains the 5 s CONNECT_RESPONSE timeout; both shims reconnect on fatal *recv* errors, while a failed outbound send is logged and the tunnel kept (transient `ENOBUFS`/route flaps must not force a 5 s re-handshake — matching both previous implementations); truncated `TUNNELING_REQUEST`s (no full connection header) are dropped without an ACK instead of being ACKed with a fabricated sequence number, and each datagram is parsed exactly once; the CONNECT_REQUEST HPAI stays per-transport (`LocalEndpoint`: tokio = real bound address, Embassy = NAT); commands queue (not drop) during a reconnect cycle, as before. The action-drain policy is shared (`tunnel::drain_actions` over a per-transport `TunnelIo`), and publish validation is shared (`GroupWrite::try_new` — destination checked before payload size on both runtimes; the tokio client previously reported `MessageTooLarge` first). The tokio connection task survives an inbound-only configuration (no `link_to` routes): a closed command channel only disables its select arm instead of exiting the task that routes inbound telegrams.
+
+### Changed (breaking)
+
+- **Issue #135:** the tokio `KnxCommand` oneshot ack-response channel is deleted (it was dead code — `KnxSink` always sent `None`); the Embassy module's `KnxCommand`/`KnxCommandKind`/`GroupWriteData` types are replaced by the engine's `tunnel::GroupWrite`.
+- **Issue #131:** the Embassy `KnxConnectorBuilder::new` takes the network stack — `KnxConnectorBuilder::new(gateway_url, stack)` — since the deleted `EmbassyNetwork` runtime trait can no longer supply it; both `ConnectorBuilder` impls are non-generic (`build(&self, db: &AimDb)`).
+
 ### Changed
 
 - **Connector-build errors carry their message on `no_std` too (Issue #129).** With `DbError` unified on `alloc::String`, the dual `#[cfg]` error-construction branches in both clients collapse to one `DbError::runtime_error(...)` expression; the Embassy client's "Failed to build KNX connector" detail is no longer dropped on embedded targets. No API change.

@@ -36,10 +36,7 @@ use crate::transport::{Connector, ConnectorConfig};
 ///
 /// The publisher future terminates when its subscription yields an error (e.g. the
 /// record buffer closed), matching the legacy hand-rolled loop.
-pub fn pump_sink<R>(db: &AimDb<R>, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxFuture>
-where
-    R: aimdb_executor::RuntimeAdapter + 'static,
-{
+pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxFuture> {
     let routes = db.collect_outbound_routes(scheme);
     let mut futures: Vec<BoxFuture> = Vec::with_capacity(routes.len());
 
@@ -52,7 +49,7 @@ where
     } in routes
     {
         let sink = sink.clone();
-        let runtime_ctx = db.runtime_any();
+        let runtime_ctx = db.runtime_ctx();
         let cfg = ConnectorConfig::from_query(&config);
 
         futures.push(Box::pin(async move {
@@ -147,13 +144,10 @@ where
 ///
 /// [`Router`]: crate::router::Router
 /// [`Router::route`]: crate::router::Router::route
-pub fn pump_source<R>(db: &AimDb<R>, scheme: &str, mut src: impl Source + 'static) -> Vec<BoxFuture>
-where
-    R: aimdb_executor::RuntimeAdapter + 'static,
-{
+pub fn pump_source(db: &AimDb, scheme: &str, mut src: impl Source + 'static) -> Vec<BoxFuture> {
     let routes = db.collect_inbound_routes(scheme);
     let router = Arc::new(RouterBuilder::from_routes(routes).build());
-    let ctx = db.runtime_any();
+    let ctx = db.runtime_ctx();
 
     vec![Box::pin(async move {
         log_info!(

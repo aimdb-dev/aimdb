@@ -33,6 +33,24 @@ use aimdb_serial_connector::embassy_transport::CobsFramer;
 
 // Trivial host time driver so `embassy_time` links (the happy path never awaits
 // `clock.sleep`, so the driver is never actually exercised).
+// No-op defmt logger so the binary links: the engine holds the adapter as
+// `Arc<dyn RuntimeOps>` (issue #131), whose vtable references the `log` path
+// (`defmt` on Embassy) even though this smoke never logs.
+#[defmt::global_logger]
+struct TestLogger;
+
+unsafe impl defmt::Logger for TestLogger {
+    fn acquire() {}
+    unsafe fn flush() {}
+    unsafe fn release() {}
+    unsafe fn write(_bytes: &[u8]) {}
+}
+
+#[defmt::panic_handler]
+fn defmt_panic() -> ! {
+    core::panic!("defmt panic in host test")
+}
+
 struct TestTimeDriver;
 impl embassy_time_driver::Driver for TestTimeDriver {
     fn now(&self) -> u64 {

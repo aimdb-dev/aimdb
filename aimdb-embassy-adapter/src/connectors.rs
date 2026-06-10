@@ -41,8 +41,7 @@ use aimdb_core::session::{
     EnvelopeCodec, Listener, Payload, SessionConfig, Source, TransportError, TransportResult,
 };
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
-use aimdb_core::{AimDb, DbError, DbResult, RuntimeAdapter};
-use aimdb_executor::TimeOps;
+use aimdb_core::{AimDb, DbError, DbResult};
 
 use crate::SendFutureWrapper;
 
@@ -139,6 +138,49 @@ where
     F: Future<Output = ()> + 'static,
 {
     Box::pin(SendFutureWrapper(fut))
+}
+
+/// Force-`Send + Sync` handle to the Embassy network stack.
+///
+/// `embassy_net::Stack` is `!Sync` (internal `RefCell`), so a
+/// [`ConnectorBuilder`] (which must be `Send + Sync`) cannot hold the bare
+/// `&'static Stack`. Network connectors (MQTT, KNX) take the stack at
+/// construction and wrap it here — keeping the single-core `unsafe` in this
+/// audited module instead of in every connector crate. Replaces the deleted
+/// `EmbassyNetwork` runtime trait (issue #131: the runtime travels as
+/// `Arc<dyn RuntimeOps>`, which cannot surface adapter-specific capabilities).
+#[cfg(feature = "embassy-net-support")]
+#[derive(Clone, Copy)]
+pub struct NetStack(&'static embassy_net::Stack<'static>);
+
+// SAFETY: single-core cooperative Embassy executor — see the module-level invariant.
+#[cfg(feature = "embassy-net-support")]
+unsafe impl Send for NetStack {}
+// SAFETY: same invariant; the stack's `RefCell` is never borrowed from another thread.
+#[cfg(feature = "embassy-net-support")]
+unsafe impl Sync for NetStack {}
+
+#[cfg(feature = "embassy-net-support")]
+impl NetStack {
+    /// Wrap the device's network stack for storage inside a connector builder.
+    ///
+    /// # Safety
+    ///
+    /// `embassy_net::Stack` is `!Sync` (internal `RefCell`), and `NetStack`
+    /// force-implements `Send + Sync` on top of it. The caller must uphold the
+    /// module-level invariant: every future that touches this stack —
+    /// including the connector protocol task the builder spawns — is polled on
+    /// the same single-core cooperative executor. Constructing one on a
+    /// multicore / multi-executor setup (a second core's executor or an
+    /// interrupt executor also driving network futures) is undefined behavior.
+    pub unsafe fn new(stack: &'static embassy_net::Stack<'static>) -> Self {
+        Self(stack)
+    }
+
+    /// The wrapped stack reference.
+    pub fn get(&self) -> &'static embassy_net::Stack<'static> {
+        self.0
+    }
 }
 
 // ===========================================================================
@@ -283,20 +325,19 @@ impl<D, C> EmbassySessionClient<D, C> {
     }
 }
 
-impl<R, D, C> ConnectorBuilder<R> for EmbassySessionClient<D, C>
+impl<D, C> ConnectorBuilder for EmbassySessionClient<D, C>
 where
-    R: TimeOps + 'static,
     D: Dialer + 'static,
     C: EnvelopeCodec + Clone + 'static,
 {
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
+    fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         Box::pin(SendFutureWrapper(async move {
             let dialer = self.dialer.take_required()?;
             let (handle, engine) = run_client(
                 dialer,
                 self.codec.clone(),
                 self.config.clone(),
-                db.runtime_arc(),
+                db.runtime_ops(),
             );
             // One pump future per route; each holds a `ClientHandle` clone, so the
             // engine stays alive as long as any mirror runs.
@@ -344,14 +385,13 @@ impl<L, C, DF> EmbassySessionServer<L, C, DF> {
     }
 }
 
-impl<R, L, C, DF> ConnectorBuilder<R> for EmbassySessionServer<L, C, DF>
+impl<L, C, DF> ConnectorBuilder for EmbassySessionServer<L, C, DF>
 where
-    R: RuntimeAdapter + 'static,
     L: Listener + 'static,
     C: EnvelopeCodec + Clone + 'static,
-    DF: Fn(&AimDb<R>) -> Arc<dyn Dispatch> + Send + Sync,
+    DF: Fn(&AimDb) -> Arc<dyn Dispatch> + Send + Sync,
 {
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
+    fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         Box::pin(SendFutureWrapper(async move {
             let listener = self.listener.take_required()?;
             let dispatch = (self.dispatch_factory)(db);

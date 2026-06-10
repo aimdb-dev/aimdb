@@ -33,18 +33,18 @@ use crate::remote::{AimxConfig, RecordMetadata, SecurityPolicy, WelcomeMessage};
 use crate::session::{
     AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, Session, SessionCtx,
 };
-use crate::{AimDb, DbError, RuntimeAdapter};
+use crate::{AimDb, DbError};
 
 /// The shared AimX dispatch — `authenticate` (peer-only) + the `AimxSession`
 /// factory. One `Arc<AimxDispatch>` is shared across every accepted connection.
-pub struct AimxDispatch<R: RuntimeAdapter> {
-    db: Arc<AimDb<R>>,
+pub struct AimxDispatch {
+    db: Arc<AimDb>,
     config: Arc<AimxConfig>,
 }
 
-impl<R: RuntimeAdapter> AimxDispatch<R> {
+impl AimxDispatch {
     /// Build a dispatch over `db` with the given remote-access `config`.
-    pub fn new(db: Arc<AimDb<R>>, config: AimxConfig) -> Self {
+    pub fn new(db: Arc<AimDb>, config: AimxConfig) -> Self {
         Self {
             db,
             config: Arc::new(config),
@@ -52,10 +52,7 @@ impl<R: RuntimeAdapter> AimxDispatch<R> {
     }
 }
 
-impl<R> Dispatch for AimxDispatch<R>
-where
-    R: RuntimeAdapter + 'static,
-{
+impl Dispatch for AimxDispatch {
     fn authenticate<'a>(
         &'a self,
         _peer: &'a PeerInfo,
@@ -79,17 +76,14 @@ where
 /// One AimX connection's mutable dispatch state. The engine owns this by value
 /// and threads `&mut self` into each method, so `drain_readers` (lazy per-record
 /// cursors) need no lock.
-struct AimxSession<R: RuntimeAdapter> {
-    db: Arc<AimDb<R>>,
+struct AimxSession {
+    db: Arc<AimDb>,
     config: Arc<AimxConfig>,
     /// Per-record drain readers, created lazily on first `record.drain`.
     drain_readers: HashMap<String, Box<dyn JsonBufferReader + Send>>,
 }
 
-impl<R> Session for AimxSession<R>
-where
-    R: RuntimeAdapter + 'static,
-{
+impl Session for AimxSession {
     fn call<'a>(
         &'a mut self,
         method: &'a str,
@@ -136,10 +130,7 @@ where
     }
 }
 
-impl<R> AimxSession<R>
-where
-    R: RuntimeAdapter + 'static,
-{
+impl AimxSession {
     /// Match the method and produce its JSON result (or an [`RpcError`]).
     async fn dispatch_call(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
         match method {

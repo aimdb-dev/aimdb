@@ -1,7 +1,6 @@
 //! AimDB handle for managing the sync API runtime thread.
 
 use aimdb_core::{AimDb, AimDbBuilder, DbError, DbResult};
-use aimdb_tokio_adapter::TokioAdapter;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -62,7 +61,7 @@ pub trait AimDbBuilderSyncExt {
     fn attach(self) -> DbResult<AimDbHandle>;
 }
 
-impl AimDbBuilderSyncExt for AimDbBuilder<TokioAdapter> {
+impl AimDbBuilderSyncExt for AimDbBuilder {
     fn attach(self) -> DbResult<AimDbHandle> {
         AimDbHandle::new_from_builder(self)
     }
@@ -102,7 +101,7 @@ pub trait AimDbSyncExt {
     fn attach(self) -> DbResult<AimDbHandle>;
 }
 
-impl AimDbSyncExt for AimDb<aimdb_tokio_adapter::TokioAdapter> {
+impl AimDbSyncExt for AimDb {
     fn attach(self) -> DbResult<AimDbHandle> {
         AimDbHandle::new(self)
     }
@@ -135,7 +134,7 @@ pub struct AimDbHandle {
     runtime_handle: tokio::runtime::Handle,
 
     /// Shared reference to the database (protected by Arc for thread safety)
-    db: Arc<AimDb<TokioAdapter>>,
+    db: Arc<AimDb>,
 }
 
 /// Signal to shut down the runtime thread.
@@ -144,12 +143,12 @@ struct ShutdownSignal;
 
 impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
-    pub(crate) fn new_from_builder(builder: AimDbBuilder<TokioAdapter>) -> DbResult<Self> {
+    pub(crate) fn new_from_builder(builder: AimDbBuilder) -> DbResult<Self> {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
         // Create channels for passing the built database and runtime handle back
-        let (db_tx, mut db_rx) = mpsc::channel::<Arc<AimDb<TokioAdapter>>>(1);
+        let (db_tx, mut db_rx) = mpsc::channel::<Arc<AimDb>>(1);
         let (handle_tx, mut handle_rx) = mpsc::channel::<tokio::runtime::Handle>(1);
 
         // Spawn the runtime thread
@@ -226,7 +225,7 @@ impl AimDbHandle {
 
     /// Create a new handle from an already-built database (legacy method).
     #[allow(dead_code)]
-    pub(crate) fn new(db: AimDb<TokioAdapter>) -> DbResult<Self> {
+    pub(crate) fn new(db: AimDb) -> DbResult<Self> {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 

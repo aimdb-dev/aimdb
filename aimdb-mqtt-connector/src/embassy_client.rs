@@ -270,6 +270,7 @@ impl EmbassySourceRaw for MqttSource {
 pub struct MqttConnectorBuilder {
     broker_url: String,
     client_id: String,
+    stack: aimdb_embassy_adapter::connectors::NetStack,
 }
 
 impl MqttConnectorBuilder {
@@ -277,10 +278,17 @@ impl MqttConnectorBuilder {
     ///
     /// # Arguments
     /// * `broker_url` - Broker URL in format `mqtt://host:port`
-    pub fn new(broker_url: impl Into<String>) -> Self {
+    /// * `stack` - The device's network stack (the runtime travels as
+    ///   `Arc<dyn RuntimeOps>` since issue #131 and cannot surface it)
+    pub fn new(broker_url: impl Into<String>, stack: &'static embassy_net::Stack<'static>) -> Self {
         Self {
             broker_url: broker_url.into(),
             client_id: "aimdb-client".to_string(),
+            // SAFETY: AimDB's Embassy integration requires a single-core
+            // cooperative executor (the adapter's module-level invariant);
+            // every future touching this stack — including the broker task
+            // built from this builder — is polled on that executor.
+            stack: unsafe { aimdb_embassy_adapter::connectors::NetStack::new(stack) },
         }
     }
 
@@ -291,17 +299,15 @@ impl MqttConnectorBuilder {
     }
 }
 
-/// Implement ConnectorBuilder trait for Embassy runtime with network stack access.
+/// Implement ConnectorBuilder trait for Embassy.
 ///
-/// Requires the runtime to provide the `EmbassyNetwork` trait so the connector
-/// can access the network stack for creating TCP connections.
-impl<R> ConnectorBuilder<R> for MqttConnectorBuilder
-where
-    R: aimdb_executor::RuntimeAdapter + aimdb_embassy_adapter::EmbassyNetwork + 'static,
-{
+/// The network stack is taken at construction (see
+/// [`MqttConnectorBuilder::new`]), so the builder needs nothing from the
+/// runtime beyond the dyn-safe capabilities the database already holds.
+impl ConnectorBuilder for MqttConnectorBuilder {
     fn build<'a>(
         &'a self,
-        db: &'a aimdb_core::builder::AimDb<R>,
+        db: &'a aimdb_core::builder::AimDb,
     ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
     {
         // No `.await` in this body, so the future is `Send` without a wrapper: the
@@ -322,7 +328,7 @@ where
 
             // Broker manager task + the channel ends for the pumps.
             let (action_sender, event_receiver, manager_task) =
-                setup_manager(&self.broker_url, &self.client_id, db.runtime(), topics)?;
+                setup_manager(&self.broker_url, &self.client_id, self.stack, topics)?;
 
             // Outbound publishes + inbound routing ride core's pumps.
             let mut futures = pump_sink(
@@ -355,15 +361,12 @@ where
 /// the action sender (outbound), the event receiver (inbound), and the manager
 /// task future (which first queues the topic subscriptions, then runs the broker
 /// loop). Synchronous — no `.await` — so the caller's `build` future stays `Send`.
-fn setup_manager<R>(
+fn setup_manager(
     broker_url: &str,
     client_id: &str,
-    runtime: &R,
+    stack: aimdb_embassy_adapter::connectors::NetStack,
     topics: Vec<String>,
-) -> Result<(ActionSender, EventReceiver, EmbassyBoxFuture), aimdb_core::DbError>
-where
-    R: aimdb_executor::RuntimeAdapter + aimdb_embassy_adapter::EmbassyNetwork + 'static,
-{
+) -> Result<(ActionSender, EventReceiver, EmbassyBoxFuture), aimdb_core::DbError> {
     let build_err = |msg: &str| {
         #[cfg(feature = "defmt")]
         defmt::error!("Failed to build MQTT connector: {}", msg);
@@ -404,7 +407,7 @@ where
 
     let connection_settings = ConnectionSettings::unauthenticated(client_id_static);
     let settings = Settings::new(broker_addr, port);
-    let network = runtime.network_stack();
+    let network = stack.get();
 
     // Manager task: queue subscriptions, then run the broker loop (never returns).
     let sub_sender = action_sender;

@@ -22,14 +22,13 @@ use crate::graph::DependencyGraph;
 pub type BoxFuture = aimdb_executor::BoxFuture;
 
 /// `on_start` task stored in `AimDbBuilder::start_fns`, invoked at `build()`.
-type StartFnType<R> = Box<dyn FnOnce(Arc<R>) -> BoxFuture + Send>;
+type StartFnType = Box<dyn FnOnce(crate::RuntimeContext) -> BoxFuture + Send>;
 
 /// Per-record future collector stored in `AimDbBuilder::spawn_fns`.
 ///
 /// At `build()` time each is invoked in topological order; the returned
 /// `Vec<BoxFuture>` is appended to the runner's accumulator.
-type SpawnFnType<R> =
-    Box<dyn FnOnce(&Arc<R>, &Arc<AimDb<R>>, RecordId) -> DbResult<Vec<BoxFuture>> + Send>;
+type SpawnFnType = Box<dyn FnOnce(&Arc<AimDb>, RecordId) -> DbResult<Vec<BoxFuture>> + Send>;
 use crate::record_id::{RecordId, RecordKey, StringKey};
 use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
@@ -49,9 +48,6 @@ pub struct OutboundRoute {
     /// Optional dynamic topic provider
     pub topic_provider: Option<crate::connector::TopicProviderFn>,
 }
-
-/// Marker type for untyped builder (before runtime is set)
-pub struct NoRuntime;
 
 /// Internal database state
 ///
@@ -159,13 +155,9 @@ impl AimDbInner {
     /// 1. Resolving key to RecordId
     /// 2. Validating TypeId matches
     /// 3. Downcasting to the typed record
-    pub fn get_typed_record_by_key<T, R>(
-        &self,
-        key: impl AsRef<str>,
-    ) -> DbResult<&TypedRecord<T, R>>
+    pub fn get_typed_record_by_key<T>(&self, key: impl AsRef<str>) -> DbResult<&TypedRecord<T>>
     where
         T: Send + 'static + Debug + Clone,
-        R: aimdb_executor::RuntimeAdapter + 'static,
     {
         let key_str = key.as_ref();
 
@@ -174,14 +166,13 @@ impl AimDbInner {
             .resolve_str(key_str)
             .ok_or_else(|| DbError::record_key_not_found(key_str))?;
 
-        self.get_typed_record_by_id::<T, R>(id)
+        self.get_typed_record_by_id::<T>(id)
     }
 
     /// Helper to get a typed record by RecordId with type validation
-    pub fn get_typed_record_by_id<T, R>(&self, id: RecordId) -> DbResult<&TypedRecord<T, R>>
+    pub fn get_typed_record_by_id<T>(&self, id: RecordId) -> DbResult<&TypedRecord<T>>
     where
         T: Send + 'static + Debug + Clone,
-        R: aimdb_executor::RuntimeAdapter + 'static,
     {
         use crate::typed_record::AnyRecordExt;
 
@@ -204,7 +195,7 @@ impl AimDbInner {
         let record = &self.storages[id.index()];
 
         let typed_record = record
-            .as_typed::<T, R>()
+            .as_typed::<T>()
             .ok_or_else(|| DbError::InvalidOperation {
                 operation: "get_typed_record_by_id".to_string(),
                 reason: "type mismatch during downcast".to_string(),
@@ -278,25 +269,23 @@ impl AimDbInner {
 /// Database builder for producer-consumer pattern
 ///
 /// Provides a fluent API for constructing databases with type-safe record registration.
-/// Use `.runtime()` to set the runtime and transition to a typed builder.
-pub struct AimDbBuilder<R = NoRuntime> {
+/// Set the runtime via `.runtime()`; a missing runtime is reported by `build()`
+/// like any other configuration mistake (issue #133 contract).
+pub struct AimDbBuilder {
     /// Registered records with their keys (order matters for RecordId assignment)
     records: Vec<(StringKey, TypeId, Box<dyn AnyRecord>)>,
 
-    /// Runtime adapter
-    runtime: Option<Arc<R>>,
+    /// Runtime capabilities, held as a value (issue #131)
+    runtime: Option<Arc<dyn aimdb_executor::RuntimeOps>>,
 
     /// Connector builders that will be invoked during build()
-    connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder<R>>>,
+    connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder>>,
 
-    /// Per-record future collectors with their keys. Always empty on the
-    /// `NoRuntime` typestate — `configure()` only exists once `R` is fixed.
-    spawn_fns: Vec<(StringKey, SpawnFnType<R>)>,
+    /// Per-record future collectors with their keys.
+    spawn_fns: Vec<(StringKey, SpawnFnType)>,
 
     /// Startup tasks registered via on_start() — spawned after build() completes.
-    /// Always empty on the `NoRuntime` typestate — `on_start()` only exists
-    /// once `R` is fixed.
-    start_fns: Vec<StartFnType<R>>,
+    start_fns: Vec<StartFnType>,
 
     /// Generic extension storage for external crates (e.g., persistence, metrics).
     /// Moved into AimDbInner during build() so it can be read on the live AimDb handle.
@@ -309,7 +298,7 @@ pub struct AimDbBuilder<R = NoRuntime> {
     config_errors: Vec<crate::error::ConfigError>,
 }
 
-impl AimDbBuilder<NoRuntime> {
+impl AimDbBuilder {
     /// Creates a new database builder without a runtime
     ///
     /// Call `.runtime()` to set the runtime adapter.
@@ -325,50 +314,16 @@ impl AimDbBuilder<NoRuntime> {
         }
     }
 
-    /// Sets the runtime adapter
+    /// Sets the runtime adapter.
     ///
-    /// This transitions the builder from untyped to typed with concrete runtime `R`.
-    ///
-    /// # Type Safety Note
-    ///
-    /// The `connector_builders`, `spawn_fns` and `start_fns` fields are
-    /// intentionally reset to `Vec::new()` during this transition: all three
-    /// are parameterized by the runtime type (`ConnectorBuilder<NoRuntime>` →
-    /// `ConnectorBuilder<R>`, etc.), and the `NoRuntime` instantiations are
-    /// incompatible with — and provably empty before — the typed ones, because
-    /// `.with_connector()`, `.configure()` and `.on_start()` are only available
-    /// AFTER calling `.runtime()` (they're defined in the
-    /// `impl<R> where R: RuntimeAdapter` block, not in `impl AimDbBuilder<NoRuntime>`).
-    ///
-    /// This means the type system **enforces** the correct call order:
-    /// ```rust,ignore
-    /// AimDbBuilder::new()
-    ///     .runtime(runtime)           // ← Must be called first
-    ///     .with_connector(connector)  // ← Now available
-    /// ```
-    ///
-    /// The `records` are preserved across the transition since they are not
-    /// parameterized by the runtime type.
-    pub fn runtime<R>(self, rt: Arc<R>) -> AimDbBuilder<R>
-    where
-        R: aimdb_executor::RuntimeAdapter + 'static,
-    {
-        AimDbBuilder {
-            records: self.records,
-            runtime: Some(rt),
-            connector_builders: Vec::new(),
-            spawn_fns: Vec::new(),
-            start_fns: Vec::new(),
-            extensions: self.extensions,
-            config_errors: self.config_errors,
-        }
+    /// Accepts any adapter implementing the dyn-safe
+    /// [`RuntimeOps`](aimdb_executor::RuntimeOps) capability surface
+    /// (`TokioAdapter`, `EmbassyAdapter`, `WasmAdapter`); the builder stores it
+    /// as a value — no runtime type parameter (issue #131).
+    pub fn runtime(mut self, rt: Arc<impl aimdb_executor::RuntimeOps + 'static>) -> Self {
+        self.runtime = Some(rt);
+        self
     }
-}
-
-impl<R> AimDbBuilder<R>
-where
-    R: aimdb_executor::RuntimeAdapter + 'static,
-{
     /// Returns a shared reference to the extension storage.
     ///
     /// External crates use this to retrieve state stored via `extensions_mut()`.
@@ -386,27 +341,26 @@ where
 
     /// Registers a task to be spawned after `build()` completes.
     ///
-    /// The closure receives an `Arc<R>` (the runtime adapter) and must return a
-    /// future that runs for as long as needed (e.g. an infinite cleanup loop).
-    /// Tasks are spawned in registration order, after all record tasks and
-    /// connectors have been started.
+    /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) and
+    /// must return a future that runs for as long as needed (e.g. an infinite
+    /// cleanup loop). Tasks are spawned in registration order, after all
+    /// record tasks and connectors have been started.
     ///
     /// # Example
     /// ```rust,ignore
-    /// builder.on_start(|runtime| async move {
+    /// builder.on_start(|ctx| async move {
     ///     loop {
     ///         do_cleanup().await;
-    ///         runtime.sleep(Duration::from_secs(3600)).await;
+    ///         ctx.time().sleep_secs(3600).await;
     ///     }
     /// });
     /// ```
     pub fn on_start<F, Fut>(&mut self, f: F) -> &mut Self
     where
-        F: FnOnce(Arc<R>) -> Fut + Send + 'static,
+        F: FnOnce(crate::RuntimeContext) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
-        self.start_fns
-            .push(Box::new(move |runtime| Box::pin(f(runtime))));
+        self.start_fns.push(Box::new(move |ctx| Box::pin(f(ctx))));
         self
     }
 
@@ -452,7 +406,7 @@ where
     /// ```
     pub fn with_connector(
         mut self,
-        builder: impl crate::connector::ConnectorBuilder<R> + 'static,
+        builder: impl crate::connector::ConnectorBuilder + 'static,
     ) -> Self {
         self.connector_builders.push(Box::new(builder));
         self
@@ -489,7 +443,7 @@ where
     pub fn configure<T>(
         &mut self,
         key: impl RecordKey,
-        f: impl FnOnce(&mut RecordRegistrar<'_, T, R>),
+        f: impl FnOnce(&mut RecordRegistrar<'_, T>),
     ) -> &mut Self
     where
         T: Send + Sync + 'static + Debug + Clone,
@@ -517,7 +471,7 @@ where
                     return self;
                 }
                 (
-                    record.as_typed_mut::<T, R>().expect(
+                    record.as_typed_mut::<T>().expect(
                         "record registry type mismatch despite TypeId check — \
                          this is a bug in aimdb-core",
                     ),
@@ -527,10 +481,10 @@ where
             None => {
                 // Create new record
                 self.records
-                    .push((record_key, type_id, Box::new(TypedRecord::<T, R>::new())));
+                    .push((record_key, type_id, Box::new(TypedRecord::<T>::new())));
                 let (_, _, record) = self.records.last_mut().unwrap();
                 (
-                    record.as_typed_mut::<T, R>().expect(
+                    record.as_typed_mut::<T>().expect(
                         "record registry type mismatch despite TypeId check — \
                          this is a bug in aimdb-core",
                     ),
@@ -552,22 +506,16 @@ where
         if is_new_record {
             let spawn_key = record_key;
 
-            let spawn_fn: SpawnFnType<R> =
-                Box::new(move |runtime: &Arc<R>, db: &Arc<AimDb<R>>, id: RecordId| {
-                    let typed_record = db.inner().get_typed_record_by_id::<T, R>(id)?;
-                    // Resolve the record's key for key-based Producer/Consumer construction.
-                    let key = db
-                        .inner()
-                        .key_for(id)
-                        .map(|k| k.as_str().to_string())
-                        .unwrap_or_else(|| alloc::format!("__record_{}", id.index()));
-                    RecordFutureCollector::<T>::collect_all_futures(
-                        typed_record,
-                        runtime,
-                        db,
-                        key.as_str(),
-                    )
-                });
+            let spawn_fn: SpawnFnType = Box::new(move |db: &Arc<AimDb>, id: RecordId| {
+                let typed_record = db.inner().get_typed_record_by_id::<T>(id)?;
+                // Resolve the record's key for key-based Producer/Consumer construction.
+                let key = db
+                    .inner()
+                    .key_for(id)
+                    .map(|k| k.as_str().to_string())
+                    .unwrap_or_else(|| alloc::format!("__record_{}", id.index()));
+                RecordFutureCollector::<T>::collect_all_futures(typed_record, db, key.as_str())
+            });
 
             self.spawn_fns.push((spawn_key, spawn_fn));
         }
@@ -577,12 +525,12 @@ where
 
     /// Registers a self-registering record type
     ///
-    /// The record type must implement `RecordT<R>`.
+    /// The record type must implement `RecordT`.
     ///
     /// Uses the type name as the default key. For custom keys, use `configure()` directly.
     pub fn register_record<T>(&mut self, cfg: &T::Config) -> &mut Self
     where
-        T: RecordT<R>,
+        T: RecordT,
     {
         // Default key is the full type name for backward compatibility
         let key = StringKey::new(core::any::type_name::<T>());
@@ -591,10 +539,10 @@ where
 
     /// Registers a self-registering record type with a custom key
     ///
-    /// The record type must implement `RecordT<R>`.
+    /// The record type must implement `RecordT`.
     pub fn register_record_with_key<T>(&mut self, key: impl RecordKey, cfg: &T::Config) -> &mut Self
     where
-        T: RecordT<R>,
+        T: RecordT,
     {
         self.configure::<T>(key, |reg| T::register(reg, cfg))
     }
@@ -605,7 +553,7 @@ where
     /// `runner.run().await`. The database handle is dropped on exit.
     ///
     /// For programmatic access to the handle (manual subscriptions, holding the
-    /// `AimDb<R>` for other uses), prefer `build()` directly.
+    /// `AimDb` for other uses), prefer `build()` directly.
     ///
     /// # Returns
     /// `DbResult<()>` — Ok once the database starts; the call then blocks until
@@ -626,10 +574,7 @@ where
     ///         .run().await  // Runs forever
     /// }
     /// ```
-    pub async fn run(self) -> DbResult<()>
-    where
-        R: crate::RuntimeForProfiling,
-    {
+    pub async fn run(self) -> DbResult<()> {
         log_info!("Building database and spawning background tasks...");
 
         let (_db, runner) = self.build().await?;
@@ -646,7 +591,7 @@ where
     /// `build()` collects every future the database needs to drive (producer
     /// services, consumer taps, transforms with fan-in forwarders, connectors,
     /// remote-access supervisor, `on_start` tasks) into the [`AimDbRunner`]
-    /// returned alongside the clone-able [`AimDb<R>`] handle. **No background
+    /// returned alongside the clone-able [`AimDb`] handle. **No background
     /// work runs until `runner.run().await` is awaited.**
     ///
     /// Use this when you need programmatic access to the handle for manual
@@ -658,7 +603,7 @@ where
     /// Their driving futures are appended to the runner.
     ///
     /// # Returns
-    /// `DbResult<(AimDb<R>, AimDbRunner)>` — the handle (cloneable) and the
+    /// `DbResult<(AimDb, AimDbRunner)>` — the handle (cloneable) and the
     /// non-`Clone` runner that owns the collected futures.
     ///
     /// # Errors
@@ -683,10 +628,7 @@ where
     /// let handle = db.clone();              // clone freely before runner.run()
     /// runner.run().await;                   // drives everything to completion
     /// ```
-    pub async fn build(mut self) -> DbResult<(AimDb<R>, AimDbRunner)>
-    where
-        R: crate::RuntimeForProfiling,
-    {
+    pub async fn build(mut self) -> DbResult<(AimDb, AimDbRunner)> {
         use crate::error::ConfigError;
 
         // ── Validation pass: collect every configuration mistake before any
@@ -731,8 +673,8 @@ where
             }
         }
 
-        // Ensure runtime is set. Unreachable through the public API — the
-        // typed builder only exists once `.runtime()` was called.
+        // Ensure runtime is set — a missing runtime is a configuration
+        // mistake, reported from build() like every other (issue #133).
         let runtime = self
             .runtime
             .ok_or_else(|| DbError::runtime_error("runtime not set (use .runtime())"))?;
@@ -833,7 +775,7 @@ where
         log_info!("Collecting futures for {} records", self.spawn_fns.len());
 
         // Build a lookup map from spawn_fns for topological ordering
-        let mut spawn_fn_map: HashMap<StringKey, SpawnFnType<R>> =
+        let mut spawn_fn_map: HashMap<StringKey, SpawnFnType> =
             self.spawn_fns.into_iter().collect();
 
         // Execute collectors in topological order — transforms collect after their inputs.
@@ -848,7 +790,7 @@ where
                 continue;
             };
 
-            futures_acc.extend(spawn_fn(&runtime, &db, id)?);
+            futures_acc.extend(spawn_fn(&db, id)?);
         }
 
         log_info!("Record future collection complete");
@@ -881,7 +823,7 @@ where
             log_debug!("Collecting {} on_start future(s)", self.start_fns.len());
 
             for start_fn in self.start_fns {
-                futures_acc.push(start_fn(runtime.clone()));
+                futures_acc.push(start_fn(crate::RuntimeContext::new(runtime.clone())));
             }
         }
 
@@ -891,7 +833,7 @@ where
     }
 }
 
-impl Default for AimDbBuilder<NoRuntime> {
+impl Default for AimDbBuilder {
     fn default() -> Self {
         Self::new()
     }
@@ -900,8 +842,8 @@ impl Default for AimDbBuilder<NoRuntime> {
 /// Producer-consumer database
 ///
 /// A database instance with type-safe record registration and cross-record
-/// communication via the Emitter pattern. The type parameter `R` represents
-/// the runtime adapter (e.g., TokioAdapter, EmbassyAdapter).
+/// communication via the Emitter pattern. The runtime is held as a value
+/// (`Arc<dyn RuntimeOps>`) — records are the only generic surface (issue #131).
 ///
 /// See `examples/` for usage.
 ///
@@ -911,42 +853,29 @@ impl Default for AimDbBuilder<NoRuntime> {
 /// use aimdb_tokio_adapter::TokioAdapter;
 ///
 /// let runtime = Arc::new(TokioAdapter);
-/// let db: AimDb<TokioAdapter> = AimDbBuilder::new()
+/// let (db, runner) = AimDbBuilder::new()
 ///     .runtime(runtime)
 ///     .register_record::<Temperature>(&TemperatureConfig)
-///     .build()?;
+///     .build().await?;
 /// ```
-// No struct-level bound: `SpawnFnType<R>` must be a well-formed type even for
-// the builder's `NoRuntime` typestate (where it is never instantiated). All
-// functionality lives on `R: RuntimeAdapter` impls.
-pub struct AimDb<R> {
+#[derive(Clone)]
+pub struct AimDb {
     /// Internal state
     inner: Arc<AimDbInner>,
 
-    /// Runtime adapter with concrete type
-    runtime: Arc<R>,
+    /// Runtime capabilities, held as a value
+    runtime: Arc<dyn aimdb_executor::RuntimeOps>,
 
     /// Shared wall clock for stage profiling, built from the runtime at `build()` time.
     #[cfg(feature = "profiling")]
     profiling_clock: crate::profiling::Clock,
 }
 
-impl<R> Clone for AimDb<R> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            runtime: self.runtime.clone(),
-            #[cfg(feature = "profiling")]
-            profiling_clock: self.profiling_clock.clone(),
-        }
-    }
-}
-
 // ============================================================================
 // AimDbRunner — drives every future the builder collected
 // ============================================================================
 
-/// Non-`Clone` runner returned alongside [`AimDb<R>`] from
+/// Non-`Clone` runner returned alongside [`AimDb`] from
 /// [`AimDbBuilder::build()`].
 ///
 /// Owns the complete set of futures that drive the database (producer
@@ -993,7 +922,7 @@ impl AimDbRunner {
     }
 }
 
-impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
+impl AimDb {
     /// Internal accessor for the inner state
     ///
     /// Used by adapter crates and internal spawning logic.
@@ -1023,10 +952,10 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     }
 
     /// Builds a database with a closure-based builder pattern
-    pub async fn build_with(rt: Arc<R>, f: impl FnOnce(&mut AimDbBuilder<R>)) -> DbResult<()>
-    where
-        R: crate::RuntimeForProfiling,
-    {
+    pub async fn build_with(
+        rt: Arc<impl aimdb_executor::RuntimeOps + 'static>,
+        f: impl FnOnce(&mut AimDbBuilder),
+    ) -> DbResult<()> {
         let mut b = AimDbBuilder::new().runtime(rt);
         f(&mut b);
         b.run().await
@@ -1056,7 +985,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     {
         // Single write path via WriteHandle (design 031). For hot paths,
         // prefer `db.producer::<T>(key)` once and reuse the returned handle.
-        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(key)?;
+        let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
         typed_rec.writer_handle().push(value);
         Ok(())
     }
@@ -1083,7 +1012,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(key)?;
+        let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
         typed_rec.subscribe()
     }
 
@@ -1114,7 +1043,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         // Pre-resolve the typed record so the returned Producer holds a write
         // handle to the record's buffer/snapshot/metadata directly
         let key_str: alloc::string::String = key.into();
-        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(&key_str)?;
+        let typed_rec = self.inner.get_typed_record_by_key::<T>(&key_str)?;
         Ok(crate::typed_api::Producer::new(typed_rec.writer_handle()))
     }
 
@@ -1146,7 +1075,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         // a configured buffer surfaces as `MissingConfiguration` here rather
         // than panicking later inside `subscribe()`.
         let key_str: alloc::string::String = key.into();
-        let typed_rec = self.inner.get_typed_record_by_key::<T, R>(&key_str)?;
+        let typed_rec = self.inner.get_typed_record_by_key::<T>(&key_str)?;
         let buffer = typed_rec.buffer_handle().ok_or_else(|| {
             DbError::missing_configuration(alloc::format!("buffer for record '{}'", key_str))
         })?;
@@ -1183,28 +1112,25 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         self.inner.records_of_type::<T>()
     }
 
-    /// Returns a reference to the runtime adapter
-    ///
-    /// Provides direct access to the concrete runtime type.
-    pub fn runtime(&self) -> &R {
-        &self.runtime
+    /// Returns a reference to the runtime capabilities.
+    pub fn runtime(&self) -> &dyn aimdb_executor::RuntimeOps {
+        &*self.runtime
     }
 
-    /// Returns an owned `Arc` handle to the runtime adapter.
+    /// Returns an owned `Arc` handle to the runtime capabilities.
     ///
     /// Connectors that hand the runtime to a `'static` engine future (e.g. the
-    /// session client engine, which needs the adapter's [`TimeOps`](aimdb_executor::TimeOps)
-    /// clock for reconnect backoff/keepalive) clone it through here.
-    pub fn runtime_arc(&self) -> Arc<R> {
+    /// session client engine, which needs the clock for reconnect
+    /// backoff/keepalive) clone it through here.
+    pub fn runtime_ops(&self) -> Arc<dyn aimdb_executor::RuntimeOps> {
         self.runtime.clone()
     }
 
-    /// Returns the runtime as a type-erased `Arc<dyn Any + Send + Sync>`
-    ///
-    /// Used by connectors to provide `RuntimeContext` to context-aware
-    /// deserializers during inbound message routing.
-    pub fn runtime_any(&self) -> Arc<dyn core::any::Any + Send + Sync> {
-        self.runtime.clone()
+    /// Returns a [`RuntimeContext`](crate::RuntimeContext) over this
+    /// database's runtime — the value handed to services and context-aware
+    /// (de)serializers.
+    pub fn runtime_ctx(&self) -> crate::RuntimeContext {
+        crate::RuntimeContext::new(self.runtime.clone())
     }
 
     /// Lists all registered records (std only)
@@ -1317,9 +1243,6 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     )> {
         let mut routes = Vec::new();
 
-        // Convert self to Arc<dyn Any> for producer factory
-        let db_any: Arc<dyn core::any::Any + Send + Sync> = Arc::new(self.clone());
-
         for record in &self.inner.storages {
             let inbound_links = record.inbound_connectors();
 
@@ -1333,7 +1256,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
                 let topic = link.resolve_topic();
 
                 // Create producer using the stored factory
-                if let Some(producer) = link.create_producer(db_any.clone()) {
+                if let Some(producer) = link.create_producer(self) {
                     routes.push((topic, producer, link.deserializer.clone()));
                 }
             }
@@ -1403,11 +1326,6 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
         let mut routes = Vec::new();
 
-        // Convert self to Arc<dyn Any> for consumer factory
-        // This is necessary because the factory takes Arc<dyn Any> to avoid
-        // needing to know the runtime type R at the factory definition site
-        let db_any: Arc<dyn core::any::Any + Send + Sync> = Arc::new(self.clone());
-
         for record in &self.inner.storages {
             let outbound_links = record.outbound_connectors();
 
@@ -1426,7 +1344,7 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
                 };
 
                 // Create consumer using the stored factory
-                if let Some(consumer) = link.create_consumer(db_any.clone()) {
+                if let Some(consumer) = link.create_consumer(self) {
                     routes.push(OutboundRoute {
                         topic: destination,
                         consumer,

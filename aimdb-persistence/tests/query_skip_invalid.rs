@@ -67,9 +67,9 @@ impl PersistenceBackend for MockBackend {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build a minimal `AimDb<TokioAdapter>` backed by `mock` (no records
+/// Build a minimal `AimDb` backed by `mock` (no records
 /// configured — we only need the Extensions TypeMap and the query path).
-async fn build_db(mock: Arc<MockBackend>) -> aimdb_core::AimDb<TokioAdapter> {
+async fn build_db(mock: Arc<MockBackend>) -> aimdb_core::AimDb {
     let adapter = Arc::new(TokioAdapter);
     let (db, runner) = AimDbBuilder::new()
         .runtime(adapter)

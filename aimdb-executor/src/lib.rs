@@ -29,12 +29,10 @@ extern crate alloc;
 
 use core::future::Future;
 
-pub mod join;
 pub mod ops;
 #[doc(hidden)]
 pub mod test_support;
 
-pub use join::{JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
 pub use ops::{BoxFuture, LogLevel, RuntimeOps};
 
 // ============================================================================

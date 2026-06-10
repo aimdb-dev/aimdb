@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Issue #131:** `AimDbSyncExt` extends the non-generic `aimdb_core::AimDb`; internal handles drop the `TokioAdapter` type parameter.
+
 ### Changed
 
 - `attach()` updated to destructure the `(AimDb<TokioAdapter>, AimDbRunner)` tuple returned by `AimDbBuilder::build()` after issue #88, and to drive the runner inside the runtime thread via `tokio::select!` against the shutdown signal. No public API change.

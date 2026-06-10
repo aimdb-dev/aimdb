@@ -136,7 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // this drain returns only what's accrued since (they share one cursor).
     println!("📤 Drain #1: history since the (already-open) cursor...");
     let d1 = conn.drain_record("server::Temperature").await?;
-    println!("   Values: {} (cursor shared with the record.get above)\n", d1.count);
+    println!(
+        "   Values: {} (cursor shared with the record.get above)\n",
+        d1.count
+    );
 
     println!("⏳ Waiting 7s for temperature readings to accumulate...");
     tokio::time::sleep(Duration::from_secs(7)).await;

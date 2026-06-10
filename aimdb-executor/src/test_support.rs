@@ -2,7 +2,7 @@
 //!
 //! Each adapter crate calls [`assert_runtime_ops_contract`] from a test running
 //! under its own executor (`#[tokio::test]`, `block_on`, `#[wasm_bindgen_test]`),
-//! mirroring how the join-queue behavioral tests are duplicated per adapter.
+//! so the one contract is exercised against every runtime implementation.
 
 use crate::{LogLevel, RuntimeOps};
 

@@ -25,8 +25,6 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
-use aimdb_executor::{RuntimeAdapter, TimeOps};
-
 use crate::builder::AimDb;
 use crate::connector::ConnectorBuilder;
 use crate::session::{
@@ -81,19 +79,18 @@ impl<D, C> SessionClientConnector<D, C> {
     }
 }
 
-impl<R, D, C> ConnectorBuilder<R> for SessionClientConnector<D, C>
+impl<D, C> ConnectorBuilder for SessionClientConnector<D, C>
 where
-    R: TimeOps + 'static,
     D: Dialer + Clone + Send + Sync + 'static,
     C: EnvelopeCodec + Clone + 'static,
 {
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
+    fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         Box::pin(async move {
             let (handle, engine_fut) = run_client(
                 self.dialer.clone(),
                 self.codec.clone(),
                 self.config.clone(),
-                db.runtime_arc(),
+                db.runtime_ops(),
             );
             // One pump future per route; each holds a `ClientHandle` clone, so the
             // engine stays alive as long as any mirror runs. `handle` drops here.
@@ -118,7 +115,7 @@ where
 /// Two factories keep it transport- and protocol-agnostic:
 /// - `listener_factory` runs at `build` time and returns `DbResult<L>`, so the
 ///   bind happens there and any error surfaces synchronously from `build`.
-/// - `dispatch_factory` turns the live `&AimDb<R>` into an `Arc<dyn Dispatch>`
+/// - `dispatch_factory` turns the live `&AimDb` into an `Arc<dyn Dispatch>`
 ///   (e.g. an `AimxDispatch`), so the spine never names a concrete protocol.
 pub struct SessionServerConnector<C, LF, DF> {
     scheme: String,
@@ -154,15 +151,14 @@ impl<C, LF, DF> SessionServerConnector<C, LF, DF> {
     }
 }
 
-impl<R, L, C, LF, DF> ConnectorBuilder<R> for SessionServerConnector<C, LF, DF>
+impl<L, C, LF, DF> ConnectorBuilder for SessionServerConnector<C, LF, DF>
 where
-    R: RuntimeAdapter + 'static,
     L: Listener + 'static,
     C: EnvelopeCodec + Clone + 'static,
     LF: Fn() -> DbResult<L> + Send + Sync + 'static,
-    DF: Fn(&AimDb<R>) -> Arc<dyn Dispatch> + Send + Sync + 'static,
+    DF: Fn(&AimDb) -> Arc<dyn Dispatch> + Send + Sync + 'static,
 {
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
+    fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         // Bind synchronously so a bind error surfaces from `build`.
         let listener = (self.listener_factory)();
         let dispatch = (self.dispatch_factory)(db);

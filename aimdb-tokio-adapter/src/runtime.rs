@@ -29,7 +29,7 @@ use tracing::{debug, warn};
 /// # Example
 /// ```rust,no_run
 /// use aimdb_tokio_adapter::TokioAdapter;
-/// use aimdb_core::RuntimeAdapter;
+/// use aimdb_executor::RuntimeAdapter;
 ///
 /// #[tokio::main]
 /// async fn main() -> aimdb_core::DbResult<()> {
@@ -80,7 +80,7 @@ impl TokioAdapter {
     /// # Example
     /// ```rust,no_run
     /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use aimdb_core::RuntimeAdapter;
+    /// use aimdb_executor::RuntimeAdapter;
     ///
     /// # #[tokio::main]
     /// # async fn main() -> aimdb_core::DbResult<()> {

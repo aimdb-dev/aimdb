@@ -92,10 +92,10 @@ impl MqttConnectorBuilder {
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-impl<R: aimdb_executor::RuntimeAdapter + 'static> ConnectorBuilder<R> for MqttConnectorBuilder {
+impl ConnectorBuilder for MqttConnectorBuilder {
     fn build<'a>(
         &'a self,
-        db: &'a aimdb_core::builder::AimDb<R>,
+        db: &'a aimdb_core::builder::AimDb,
     ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
         Box::pin(async move {
             // Build a router from the inbound routes purely to drive the MQTT
