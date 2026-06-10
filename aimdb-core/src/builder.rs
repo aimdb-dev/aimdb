@@ -19,8 +19,8 @@ use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
 
 /// Shorthand for a heap-pinned, `Send`, `'static` future — the unit of work
-/// the `AimDbRunner` drives.
-pub type BoxFuture = core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
+/// the `AimDbRunner` drives. Canonical definition lives in `aimdb-executor`.
+pub type BoxFuture = aimdb_executor::BoxFuture;
 
 /// Type-erased on_start function stored in `AimDbBuilder::start_fns`.
 ///

@@ -222,6 +222,40 @@ impl aimdb_executor::TimeOps for EmbassyAdapter {
     }
 }
 
+#[cfg(feature = "embassy-time")]
+impl aimdb_executor::RuntimeOps for EmbassyAdapter {
+    fn name(&self) -> &'static str {
+        <Self as RuntimeAdapter>::runtime_name()
+    }
+
+    fn now_nanos(&self) -> u64 {
+        // Boot-anchored monotonic uptime; microsecond granularity is the
+        // portable lower bound (see `duration_as_nanos`).
+        embassy_time::Instant::now()
+            .as_micros()
+            .saturating_mul(1_000)
+    }
+
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        <Self as aimdb_executor::TimeOps>::unix_time(self)
+    }
+
+    fn sleep(&self, d: core::time::Duration) -> aimdb_executor::BoxFuture {
+        let duration = embassy_time::Duration::from_micros(d.as_micros().min(u64::MAX as u128) as u64);
+        alloc::boxed::Box::pin(embassy_time::Timer::after(duration))
+    }
+
+    fn log(&self, level: aimdb_executor::LogLevel, msg: &str) {
+        use aimdb_executor::{LogLevel, Logger};
+        match level {
+            LogLevel::Debug => Logger::debug(self, msg),
+            LogLevel::Info => Logger::info(self, msg),
+            LogLevel::Warn => Logger::warn(self, msg),
+            LogLevel::Error => Logger::error(self, msg),
+        }
+    }
+}
+
 // Implement Logger trait
 impl aimdb_executor::Logger for EmbassyAdapter {
     fn info(&self, message: &str) {
@@ -242,6 +276,29 @@ impl aimdb_executor::Logger for EmbassyAdapter {
 }
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger are all implemented
+
+// Host-run contract test for the dyn-safe RuntimeOps surface. Gated like the
+// join-queue tests: `embassy-sync` (not `embassy-runtime`) so the cortex-m
+// executor never enters the host build; the defmt/time-driver stubs shared by
+// the lib test binary live in `buffer.rs`'s test module. The stub clock is
+// pinned at 0, so only `Duration::ZERO` sleeps complete — see
+// `assert_runtime_ops_contract`'s docs.
+#[cfg(all(test, feature = "embassy-sync", feature = "embassy-time"))]
+mod runtime_ops_tests {
+    use super::*;
+    use aimdb_executor::RuntimeOps;
+    use alloc::sync::Arc;
+    use futures::executor::block_on;
+
+    #[test]
+    fn runtime_ops_contract() {
+        // `Arc<dyn RuntimeOps>` must be constructible from the adapter.
+        let ops: Arc<dyn RuntimeOps> = Arc::new(EmbassyAdapter::new().unwrap());
+        block_on(aimdb_executor::test_support::assert_runtime_ops_contract(
+            ops.as_ref(),
+        ));
+    }
+}
 
 // Implement EmbassyNetwork trait for accessing network stack
 #[cfg(feature = "embassy-net-support")]

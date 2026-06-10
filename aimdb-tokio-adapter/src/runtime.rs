@@ -190,6 +190,42 @@ impl TimeOps for TokioAdapter {
 }
 
 #[cfg(feature = "tokio-runtime")]
+impl aimdb_executor::RuntimeOps for TokioAdapter {
+    fn name(&self) -> &'static str {
+        <Self as RuntimeAdapter>::runtime_name()
+    }
+
+    fn now_nanos(&self) -> u64 {
+        // std `Instant` has no public epoch, so anchor the first reading and
+        // report nanoseconds elapsed since it (monotonic, arbitrary epoch).
+        static ANCHOR: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        ANCHOR
+            .get_or_init(Instant::now)
+            .elapsed()
+            .as_nanos()
+            .min(u64::MAX as u128) as u64
+    }
+
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        <Self as TimeOps>::unix_time(self)
+    }
+
+    fn sleep(&self, d: core::time::Duration) -> aimdb_executor::BoxFuture {
+        Box::pin(tokio::time::sleep(d))
+    }
+
+    fn log(&self, level: aimdb_executor::LogLevel, msg: &str) {
+        use aimdb_executor::LogLevel;
+        match level {
+            LogLevel::Debug => Logger::debug(self, msg),
+            LogLevel::Info => Logger::info(self, msg),
+            LogLevel::Warn => Logger::warn(self, msg),
+            LogLevel::Error => Logger::error(self, msg),
+        }
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
 impl Logger for TokioAdapter {
     fn info(&self, message: &str) {
         println!("ℹ️  {}", message);
@@ -212,3 +248,30 @@ impl Logger for TokioAdapter {
 }
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger are implemented
+
+#[cfg(all(test, feature = "tokio-runtime"))]
+mod runtime_ops_tests {
+    use super::*;
+    use aimdb_executor::RuntimeOps;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn runtime_ops_contract() {
+        // `Arc<dyn RuntimeOps>` must be constructible from the adapter.
+        let ops: Arc<dyn RuntimeOps> = Arc::new(TokioAdapter);
+        aimdb_executor::test_support::assert_runtime_ops_contract(ops.as_ref()).await;
+    }
+
+    #[tokio::test]
+    async fn runtime_ops_sleep_advances_clock() {
+        let ops: Arc<dyn RuntimeOps> = Arc::new(TokioAdapter);
+        let before = ops.now_nanos();
+        ops.sleep(Duration::from_millis(10)).await;
+        let after = ops.now_nanos();
+        assert!(
+            after - before >= 10_000_000,
+            "10ms sleep advanced now_nanos by only {}ns",
+            after - before
+        );
+    }
+}
