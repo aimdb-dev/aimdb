@@ -166,8 +166,7 @@ where
                     let consumer = match db.consumer::<I>(&key_for_factory) {
                         Ok(c) => c,
                         Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!(
+                            log_error!(
                                 "🔄 Join input '{}' (index {}) consumer resolution failed: {:?}",
                                 key_for_factory,
                                 index,
@@ -260,7 +259,6 @@ where
 // Join Transform Build (forwarders + handler future, both collected at build time)
 // ============================================================================
 
-#[allow(unused_variables)]
 fn build_join_collected<O, R, F, Fut>(
     db: Arc<crate::AimDb<R>>,
     inputs: Vec<(String, JoinInputFactory<R>)>,
@@ -277,28 +275,21 @@ where
 {
     // Output key is threaded in from the descriptor so diagnostics stay
     // unambiguous when multiple records share output type `O` (design 029).
-    #[cfg(feature = "tracing")]
-    let output_key_owned = output_key.to_string();
-    #[cfg(not(feature = "tracing"))]
-    let _ = output_key;
-
-    #[cfg(feature = "tracing")]
-    {
-        let input_keys: Vec<String> = inputs.iter().map(|(k, _)| k.clone()).collect();
-        tracing::info!(
-            "🔄 Join transform building: {:?} → '{}'",
-            input_keys,
-            output_key_owned
-        );
-    }
+    // Owned copies are build-time, one-shot allocations.
+    let output_key = output_key.to_string();
+    let input_keys: Vec<String> = inputs.iter().map(|(k, _)| k.clone()).collect();
+    log_info!(
+        "🔄 Join transform building: {:?} → '{}'",
+        input_keys,
+        output_key
+    );
 
     let queue = match runtime.create_join_queue::<JoinTrigger>() {
         Ok(q) => q,
         Err(_e) => {
-            #[cfg(feature = "tracing")]
-            tracing::error!(
+            log_error!(
                 "🔄 Join transform '{}' FATAL: failed to create join queue",
-                output_key_owned
+                output_key
             );
             // Empty collected transform — caller still receives a valid descriptor.
             return CollectedTransform {
@@ -323,16 +314,14 @@ where
     drop(tx);
 
     let task_future: BoxFuture<'static, ()> = Box::pin(async move {
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "✅ Join transform '{}' handing receiver to user task",
-            output_key_owned
+            output_key
         );
 
         handler(JoinEventRx::new(rx), producer).await;
 
-        #[cfg(feature = "tracing")]
-        tracing::warn!("🔄 Join transform '{}' user task exited", output_key_owned);
+        log_warn!("🔄 Join transform '{}' user task exited", output_key);
     });
 
     CollectedTransform {

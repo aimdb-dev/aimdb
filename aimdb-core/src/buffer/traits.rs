@@ -8,14 +8,7 @@
 use core::future::Future;
 use core::pin::Pin;
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
-
-#[cfg(feature = "std")]
-use std::boxed::Box;
 
 use super::BufferCfg;
 use crate::DbError;
@@ -265,6 +258,7 @@ pub trait BufferMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     // Mock implementation for testing trait bounds
     struct MockBuffer<T: Clone + Send + Sync> {
@@ -321,10 +315,7 @@ mod tests {
             Box::pin(async {
                 // Return closed for testing
                 Err(DbError::BufferClosed {
-                    #[cfg(feature = "std")]
                     buffer_name: "mock".to_string(),
-                    #[cfg(not(feature = "std"))]
-                    _buffer_name: (),
                 })
             })
         }

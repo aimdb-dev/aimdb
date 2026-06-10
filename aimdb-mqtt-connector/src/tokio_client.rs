@@ -112,17 +112,11 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> ConnectorBuilder<R> for MqttCo
             let (client, event_loop) =
                 MqttConnectorImpl::build_internal(&self.broker_url, self.client_id.clone(), router)
                     .await
-                    .map_err(|_e| {
-                        #[cfg(feature = "std")]
-                        {
-                            aimdb_core::DbError::RuntimeError {
-                                message: format!("Failed to build MQTT connector: {}", _e),
-                            }
-                        }
-                        #[cfg(not(feature = "std"))]
-                        {
-                            aimdb_core::DbError::RuntimeError { _message: () }
-                        }
+                    .map_err(|e| {
+                        aimdb_core::DbError::runtime_error(format!(
+                            "Failed to build MQTT connector: {}",
+                            e
+                        ))
                     })?;
 
             let mut futures: Vec<BoxFuture> = Vec::new();

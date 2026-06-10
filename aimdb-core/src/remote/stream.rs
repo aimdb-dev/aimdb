@@ -48,29 +48,24 @@ where
     // hides which subscription is misbehaving in mixed-record traces.
     let state = (reader, record_key.to_string());
 
-    Ok(unfold(state, |(mut reader, _key)| async move {
+    Ok(unfold(state, |(mut reader, key)| async move {
         loop {
             match reader.recv_json().await {
-                Ok(value) => return Some((value, (reader, _key))),
-                Err(DbError::BufferLagged {
-                    lag_count: _lag_count,
-                    ..
-                }) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!(
-                        record = %_key,
-                        "stream_record_updates: subscription lagged by {} messages",
-                        _lag_count
+                Ok(value) => return Some((value, (reader, key))),
+                Err(DbError::BufferLagged { lag_count, .. }) => {
+                    log_warn!(
+                        "stream_record_updates: record '{}' subscription lagged by {} messages",
+                        key,
+                        lag_count
                     );
                     continue;
                 }
                 Err(DbError::BufferClosed { .. }) => return None,
-                Err(_e) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!(
-                        record = %_key,
-                        "stream_record_updates: terminating on error: {:?}",
-                        _e
+                Err(e) => {
+                    log_error!(
+                        "stream_record_updates: record '{}' terminating on error: {:?}",
+                        key,
+                        e
                     );
                     return None;
                 }

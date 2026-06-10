@@ -249,8 +249,7 @@ async fn client_loop<D, C, R>(
                 conn
             }
             Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::warn!("client dial failed: {:?}", _e);
+                log_warn!("client dial failed: {:?}", _e);
                 match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
                     true => continue,
                     false => return,
@@ -284,8 +283,7 @@ async fn reconnect_after<R: TimeOps>(
     }
     *attempt += 1;
     if config.max_reconnect_attempts != 0 && *attempt >= config.max_reconnect_attempts {
-        #[cfg(feature = "tracing")]
-        tracing::warn!(
+        log_warn!(
             "client giving up after {} reconnect attempts",
             config.max_reconnect_attempts
         );
@@ -503,16 +501,18 @@ where
     let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();
 
     // --- outbound: local record updates -> remote `write` ------------------
-    for (destination, consumer, serializer, _config, topic_provider) in
-        db.collect_outbound_routes(scheme)
+    for crate::OutboundRoute {
+        topic: destination,
+        consumer,
+        serializer,
+        topic_provider,
+        ..
+    } in db.collect_outbound_routes(scheme)
     {
         let handle = handle.clone();
         let ctx = ctx.clone();
         pumps.push(Box::pin(async move {
-            let mut reader = match consumer.subscribe_any().await {
-                Ok(r) => r,
-                Err(_e) => return,
-            };
+            let mut reader = consumer.subscribe_any().await;
             loop {
                 let value = match reader.recv_any().await {
                     Ok(v) => v,

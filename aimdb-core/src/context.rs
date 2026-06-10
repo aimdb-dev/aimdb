@@ -3,10 +3,8 @@
 //! Provides a unified interface to runtime capabilities like sleep and timestamp
 //! functions, abstracting away the specific runtime adapter implementation.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
 use aimdb_executor::Runtime;
+use alloc::sync::Arc;
 use core::future::Future;
 
 /// Unified runtime context for AimDB services
@@ -21,69 +19,33 @@ pub struct RuntimeContext<R>
 where
     R: Runtime,
 {
-    #[cfg(feature = "std")]
-    runtime: std::sync::Arc<R>,
-    #[cfg(not(feature = "std"))]
-    runtime: alloc::sync::Arc<R>,
+    runtime: Arc<R>,
 }
 
-#[cfg(feature = "std")]
 impl<R> RuntimeContext<R>
 where
     R: Runtime,
 {
-    /// Create a new RuntimeContext (std version uses Arc internally)
+    /// Create a new RuntimeContext (wraps the runtime in an Arc internally)
     pub fn new(runtime: R) -> Self {
         Self {
-            runtime: std::sync::Arc::new(runtime),
+            runtime: Arc::new(runtime),
         }
     }
 
     /// Create from an existing Arc to avoid double-wrapping
-    pub fn from_arc(runtime: std::sync::Arc<R>) -> Self {
+    pub fn from_arc(runtime: Arc<R>) -> Self {
         Self { runtime }
     }
 
-    /// Extract runtime context from type-erased Arc (std version)
+    /// Extract runtime context from type-erased Arc
     ///
     /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
     /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
     ///
     /// # Panics
     /// Panics if the runtime type doesn't match `R`.
-    pub fn extract_from_any(ctx_any: std::sync::Arc<dyn core::any::Any + Send + Sync>) -> Self {
-        let runtime = ctx_any
-            .downcast::<R>()
-            .expect("Runtime type mismatch - expected matching runtime adapter");
-        Self::from_arc(runtime.clone())
-    }
-}
-
-#[cfg(not(feature = "std"))]
-impl<R> RuntimeContext<R>
-where
-    R: Runtime,
-{
-    /// Create a new RuntimeContext (no_std version uses Arc internally)
-    pub fn new(runtime: R) -> Self {
-        Self {
-            runtime: alloc::sync::Arc::new(runtime),
-        }
-    }
-
-    /// Create from an existing Arc to avoid double-wrapping
-    pub fn from_arc(runtime: alloc::sync::Arc<R>) -> Self {
-        Self { runtime }
-    }
-
-    /// Extract runtime context from type-erased Arc (no_std version)
-    ///
-    /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
-    /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
-    ///
-    /// # Panics
-    /// Panics if the runtime type doesn't match `R`.
-    pub fn extract_from_any(ctx_any: alloc::sync::Arc<dyn core::any::Any + Send + Sync>) -> Self {
+    pub fn extract_from_any(ctx_any: Arc<dyn core::any::Any + Send + Sync>) -> Self {
         let runtime = ctx_any
             .downcast::<R>()
             .expect("Runtime type mismatch - expected matching runtime adapter");
@@ -110,30 +72,22 @@ where
     /// Get access to the underlying runtime
     ///
     /// This provides direct access to the runtime for advanced use cases.
-    #[cfg(feature = "std")]
-    pub fn runtime(&self) -> &R {
-        &self.runtime
-    }
-
-    #[cfg(not(feature = "std"))]
     pub fn runtime(&self) -> &R {
         &self.runtime
     }
 }
 
-#[cfg(feature = "std")]
 impl<R> RuntimeContext<R>
 where
     R: Runtime,
 {
-    /// Create a RuntimeContext from a runtime adapter (std version with Arc)
+    /// Create a RuntimeContext from a runtime adapter
     pub fn from_runtime(runtime: R) -> Self {
         Self::new(runtime)
     }
 }
 
-/// Create a RuntimeContext from any Runtime implementation (std version)
-#[cfg(feature = "std")]
+/// Create a RuntimeContext from any Runtime implementation
 pub fn create_runtime_context<R>(runtime: R) -> RuntimeContext<R>
 where
     R: Runtime,

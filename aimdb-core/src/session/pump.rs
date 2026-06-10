@@ -13,8 +13,6 @@
 //!
 //! Both are `no_std + alloc`-native (boxed futures, no `tokio`).
 
-extern crate alloc;
-
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -45,28 +43,23 @@ where
     let routes = db.collect_outbound_routes(scheme);
     let mut futures: Vec<BoxFuture> = Vec::with_capacity(routes.len());
 
-    for (default_topic, consumer, serializer, config, topic_provider) in routes {
+    for crate::OutboundRoute {
+        topic: default_topic,
+        consumer,
+        serializer,
+        config,
+        topic_provider,
+    } in routes
+    {
         let sink = sink.clone();
         let runtime_ctx = db.runtime_any();
         let cfg = ConnectorConfig::from_query(&config);
 
         futures.push(Box::pin(async move {
             // Subscribe to typed values (type-erased).
-            let mut reader = match consumer.subscribe_any().await {
-                Ok(r) => r,
-                Err(_e) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!(
-                        "pump_sink: failed to subscribe for destination '{}': {:?}",
-                        default_topic,
-                        _e
-                    );
-                    return;
-                }
-            };
+            let mut reader = consumer.subscribe_any().await;
 
-            #[cfg(feature = "tracing")]
-            tracing::info!(
+            log_info!(
                 "pump_sink: publisher started for destination: {}",
                 default_topic
             );
@@ -79,14 +72,12 @@ where
                     // gap and keep pumping — a transient lag must not permanently
                     // kill the publisher.
                     Err(crate::DbError::BufferLagged { .. }) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!("pump_sink: consumer lagged for '{}'", default_topic);
+                        log_warn!("pump_sink: consumer lagged for '{}'", default_topic);
                         continue;
                     }
                     // Buffer closed / fatal — the record is gone; end the publisher.
                     Err(_e) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::info!(
+                        log_info!(
                             "pump_sink: publisher stopping for '{}': {:?}",
                             default_topic,
                             _e
@@ -105,8 +96,7 @@ where
                     SerializerKind::Raw(ser) => match ser(&*value_any) {
                         Ok(b) => b,
                         Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!(
+                            log_error!(
                                 "pump_sink: failed to serialize for destination '{}': {:?}",
                                 dest,
                                 _e
@@ -117,8 +107,7 @@ where
                     SerializerKind::Context(ser) => match ser(runtime_ctx.clone(), &*value_any) {
                         Ok(b) => b,
                         Err(_e) => {
-                            #[cfg(feature = "tracing")]
-                            tracing::error!(
+                            log_error!(
                                 "pump_sink: failed to serialize for destination '{}': {:?}",
                                 dest,
                                 _e
@@ -130,16 +119,13 @@ where
 
                 // Publish through the connector's pure I/O adapter.
                 if let Err(_e) = sink.publish(&dest, &cfg, &bytes).await {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!("pump_sink: failed to publish to '{}': {:?}", dest, _e);
+                    log_error!("pump_sink: failed to publish to '{}': {:?}", dest, _e);
                 } else {
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("pump_sink: published to: {}", dest);
+                    log_debug!("pump_sink: published to: {}", dest);
                 }
             }
 
-            #[cfg(feature = "tracing")]
-            tracing::info!(
+            log_info!(
                 "pump_sink: publisher stopped for destination: {}",
                 default_topic
             );
@@ -170,8 +156,7 @@ where
     let ctx = db.runtime_any();
 
     vec![Box::pin(async move {
-        #[cfg(feature = "tracing")]
-        tracing::info!(
+        log_info!(
             "pump_source: reader started ({} topics)",
             router.resource_ids().len()
         );
@@ -180,8 +165,7 @@ where
             // `route` deserializes and fans out to producers; it drops + logs on a
             // full producer buffer and never returns a fatal error.
             if let Err(_e) = router.route(&topic, &payload, Some(&ctx)).await {
-                #[cfg(feature = "tracing")]
-                tracing::error!(
+                log_error!(
                     "pump_source: failed to route message on '{}': {}",
                     topic,
                     _e
@@ -189,7 +173,6 @@ where
             }
         }
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("pump_source: reader stopped");
+        log_info!("pump_source: reader stopped");
     })]
 }

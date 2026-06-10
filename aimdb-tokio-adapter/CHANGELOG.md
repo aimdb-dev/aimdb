@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **`TokioDatabase` type alias removed (Issue #132, design 034 Phase 1).** It aliased the dead `aimdb_core::Database<TokioAdapter>` wrapper (also removed) and had no users in the workspace. Use `AimDb<TokioAdapter>` via `AimDbBuilder`.
+
 ### Added
 
 - **`TimeOps::unix_time()` implemented from the OS wall clock (Issue #120).** Returns `SystemTime::now()` since the Unix epoch as `(secs, subsec_nanos)`; `now()` stays monotonic for duration measurement. Supplies absolute timestamps to the runtime-neutral AimX server / remote-display paths.

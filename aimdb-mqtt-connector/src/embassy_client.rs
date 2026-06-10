@@ -364,19 +364,10 @@ fn setup_manager<R>(
 where
     R: aimdb_executor::RuntimeAdapter + aimdb_embassy_adapter::EmbassyNetwork + 'static,
 {
-    let build_err = |_msg: &str| {
+    let build_err = |msg: &str| {
         #[cfg(feature = "defmt")]
-        defmt::error!("Failed to build MQTT connector: {}", _msg);
-        #[cfg(feature = "std")]
-        {
-            aimdb_core::DbError::RuntimeError {
-                message: format!("Failed to build MQTT connector: {}", _msg),
-            }
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            aimdb_core::DbError::RuntimeError { _message: () }
-        }
+        defmt::error!("Failed to build MQTT connector: {}", msg);
+        aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", msg))
     };
 
     // Parse the broker URL (add a dummy topic if none, so parsing succeeds).

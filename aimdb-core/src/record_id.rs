@@ -50,14 +50,7 @@
 //! let producer = db.producer::<Temperature>(AppKey::TempIndoor);
 //! ```
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, string::ToString};
-
-#[cfg(feature = "std")]
-use std::boxed::Box;
 
 #[cfg(all(debug_assertions, feature = "std"))]
 use core::sync::atomic::{AtomicUsize, Ordering};

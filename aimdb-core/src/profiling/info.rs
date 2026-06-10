@@ -1,6 +1,5 @@
 //! Serializable snapshot of stage profiling metrics, for remote introspection.
 
-extern crate alloc;
 use alloc::{string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};

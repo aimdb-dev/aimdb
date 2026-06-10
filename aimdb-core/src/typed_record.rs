@@ -20,17 +20,12 @@
 use core::any::Any;
 use core::fmt::Debug;
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
-
-#[cfg(not(feature = "std"))]
-use alloc::string::ToString;
-
-#[cfg(feature = "std")]
-use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 
 #[cfg(feature = "profiling")]
 use crate::profiling::RecordProfilingMetrics;
@@ -438,18 +433,11 @@ where
         use crate::DbError;
 
         // Downcast to TypedRecord<T, R>
-        let typed_record: &TypedRecord<T, R> =
-            record.as_any().downcast_ref::<TypedRecord<T, R>>().ok_or({
-                #[cfg(feature = "std")]
-                {
-                    DbError::RecordNotFound {
-                        record_name: core::any::type_name::<T>().to_string(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    DbError::RecordNotFound { _record_name: () }
-                }
+        let typed_record: &TypedRecord<T, R> = record
+            .as_any()
+            .downcast_ref::<TypedRecord<T, R>>()
+            .ok_or_else(|| DbError::RecordNotFound {
+                record_name: core::any::type_name::<T>().to_string(),
             })?;
 
         let mut futures = Vec::new();
@@ -740,8 +728,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         let descriptor = lock(&self.transform).take();
 
         if let Some(desc) = descriptor {
-            #[cfg(feature = "tracing")]
-            tracing::info!(
+            log_info!(
                 "🔄 Collecting transform futures for '{}' (inputs: {:?})",
                 record_key,
                 desc.input_keys
@@ -833,18 +820,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// # Errors
     /// Returns `DbError::MissingConfiguration` if no buffer configured
     pub fn subscribe(&self) -> crate::DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
-        let buffer = self.buffer.as_ref().ok_or({
-            #[cfg(feature = "std")]
-            {
-                crate::DbError::MissingConfiguration {
-                    parameter: "buffer".to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                crate::DbError::MissingConfiguration { _parameter: () }
-            }
-        })?;
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or_else(|| crate::DbError::missing_configuration("buffer"))?;
 
         Ok(buffer.subscribe_boxed())
     }
@@ -872,8 +851,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         // Capture the serde-backed codec where the bound is statically known.
         self.remote_codec = Some(Arc::new(crate::codec::SerdeJsonCodec));
 
-        #[cfg(feature = "tracing")]
-        tracing::info!(
+        log_info!(
             "with_remote_access() called for record type: {}",
             core::any::type_name::<T>()
         );
@@ -956,8 +934,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         #[cfg(not(feature = "std"))]
         let _ = record_key;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Collecting {} consumer futures for record type {}",
             self.consumer_count(),
             core::any::type_name::<T>()
@@ -976,20 +953,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         // Pre-resolve the buffer handle once — every consumer shares the same Arc.
         // A `.tap()` requires a buffer; surface the misconfiguration here with the
         // record key in the message rather than panicking inside `Consumer::new`.
-        let buffer_arc = self.buffer_handle().ok_or({
-            #[cfg(feature = "std")]
-            {
-                crate::DbError::MissingConfiguration {
-                    parameter: alloc::format!(
-                        "buffer for record '{}' (required by .tap())",
-                        record_key
-                    ),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                crate::DbError::MissingConfiguration { _parameter: () }
-            }
+        let buffer_arc = self.buffer_handle().ok_or_else(|| {
+            crate::DbError::missing_configuration(alloc::format!(
+                "buffer for record '{}' (required by .tap())",
+                record_key
+            ))
         })?;
 
         #[cfg_attr(not(feature = "profiling"), allow(unused_variables))]
@@ -1033,8 +1001,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         let service = lock(&self.producer).take();
 
         if let Some(service_fn) = service {
-            #[cfg(feature = "tracing")]
-            tracing::debug!(
+            log_debug!(
                 "Collecting producer service future for record '{}' (type {})",
                 record_key,
                 core::any::type_name::<T>()
@@ -1278,8 +1245,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     #[doc(hidden)]
     #[cfg(feature = "remote-access")]
     fn latest_json(&self) -> Option<serde_json::Value> {
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "latest_json called for type: {}",
             core::any::type_name::<T>()
         );
@@ -1289,8 +1255,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         let value = self.buffer.as_ref()?.peek()?;
         let result = self.remote_codec.as_ref()?.encode(&value);
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!("Serialization result: {:?}", result.is_some());
+        log_debug!("Serialization result: {:?}", result.is_some());
 
         result
     }
@@ -1300,8 +1265,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>> {
         use crate::DbError;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "subscribe_json called for type: {}",
             core::any::type_name::<T>()
         );
@@ -1324,8 +1288,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             codec,
         };
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Successfully created JSON subscription for type: {}",
             core::any::type_name::<T>()
         );
@@ -1338,16 +1301,14 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()> {
         use crate::DbError;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "set_from_json called for type: {}",
             core::any::type_name::<T>()
         );
 
         // SAFETY CHECK 1: Enforce "No Producer Override" rule
         if self.has_producer() || self.has_transform() {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
+            log_warn!(
                 "Rejected set_from_json for '{}': has active producer or transform",
                 core::any::type_name::<T>()
             );
@@ -1387,8 +1348,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
             ))
         })?;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Successfully deserialized JSON to type: {}",
             core::any::type_name::<T>()
         );
@@ -1397,8 +1357,7 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
         // metadata as updated — previously skipped on this path.
         self.writer_handle().push(value);
 
-        #[cfg(feature = "tracing")]
-        tracing::info!(
+        log_info!(
             "Successfully set value from JSON for record: {}",
             core::any::type_name::<T>()
         );

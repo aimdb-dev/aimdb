@@ -12,8 +12,6 @@
 //! All contracts are `dyn`-safe and compile on `std` and `no_std + alloc`. See
 //! `docs/design/remote-access-via-connectors.md` for the design.
 
-extern crate alloc;
-
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::future::Future;
 use core::pin::Pin;

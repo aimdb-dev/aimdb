@@ -41,6 +41,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
@@ -432,7 +433,9 @@ impl<
                                      Count one slot per .tap(), .link_to() connector, and each transform_join input.",
                                     SUBS
                                 );
-                                DbError::BufferClosed { _buffer_name: () }
+                                DbError::BufferClosed {
+                                    buffer_name: String::from("embassy spmc ring"),
+                                }
                             })?,
                         );
                     }
@@ -447,7 +450,7 @@ impl<
                             self.metrics.add_dropped(n);
                             Err(DbError::BufferLagged {
                                 lag_count: n,
-                                _buffer_name: (),
+                                buffer_name: String::from("embassy spmc ring"),
                             })
                         }
                     }
@@ -467,7 +470,9 @@ impl<
 
                         self.watch_receiver = watch_static.receiver();
                         if self.watch_receiver.is_none() {
-                            return Err(DbError::BufferClosed { _buffer_name: () });
+                            return Err(DbError::BufferClosed {
+                                buffer_name: String::from("embassy watch"),
+                            });
                         }
                     }
 
@@ -478,7 +483,9 @@ impl<
                         self.metrics.increment_consumed();
                         Ok(value)
                     } else {
-                        Err(DbError::BufferClosed { _buffer_name: () })
+                        Err(DbError::BufferClosed {
+                            buffer_name: String::from("embassy watch"),
+                        })
                     }
                 }
                 EmbassyBufferInner::Mailbox(channel) => {
@@ -512,7 +519,9 @@ impl<
                                  Count one slot per .tap(), .link_to() connector, and each transform_join input.",
                                 SUBS
                             );
-                            DbError::BufferClosed { _buffer_name: () }
+                            DbError::BufferClosed {
+                                buffer_name: String::from("embassy spmc ring"),
+                            }
                         })?,
                     );
                 }

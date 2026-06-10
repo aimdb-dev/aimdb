@@ -232,7 +232,7 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
                     *read_seq = oldest_seq;
                     return Err(DbError::BufferLagged {
                         lag_count,
-                        _buffer_name: (),
+                        buffer_name: alloc::string::String::from("wasm ring"),
                     });
                 }
 

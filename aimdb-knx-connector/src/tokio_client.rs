@@ -112,17 +112,11 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> ConnectorBuilder<R> for KnxCon
             let (command_tx, telegram_rx, connection_future) =
                 KnxConnectorImpl::build_internal(&self.gateway_url, self.command_queue_size)
                     .await
-                    .map_err(|_e| {
-                        #[cfg(feature = "std")]
-                        {
-                            aimdb_core::DbError::RuntimeError {
-                                message: format!("Failed to build KNX connector: {}", _e),
-                            }
-                        }
-                        #[cfg(not(feature = "std"))]
-                        {
-                            aimdb_core::DbError::RuntimeError { _message: () }
-                        }
+                    .map_err(|e| {
+                        aimdb_core::DbError::runtime_error(format!(
+                            "Failed to build KNX connector: {}",
+                            e
+                        ))
                     })?;
 
             let mut futures: Vec<BoxFuture> = vec![connection_future];

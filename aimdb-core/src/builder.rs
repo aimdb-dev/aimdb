@@ -7,19 +7,13 @@ use core::any::TypeId;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-extern crate alloc;
-
-use alloc::vec::Vec;
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use hashbrown::HashMap;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc};
-
-#[cfg(not(feature = "std"))]
-use alloc::string::{String, ToString};
-
-#[cfg(feature = "std")]
-use std::{boxed::Box, sync::Arc};
 
 use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
@@ -46,21 +40,20 @@ use crate::typed_api::{RecordRegistrar, RecordT};
 use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
 use crate::{DbError, DbResult};
 
-/// Type alias for outbound route tuples returned by `collect_outbound_routes`
-///
-/// Each tuple contains:
-/// - `String` - Default topic/destination from the URL path
-/// - `Box<dyn ConsumerTrait>` - Consumer for subscribing to record values
-/// - `SerializerKind` - User-provided serializer for the record type (raw or context-aware)
-/// - `Vec<(String, String)>` - Configuration options from the URL query
-/// - `Option<TopicProviderFn>` - Optional dynamic topic provider
-pub type OutboundRoute = (
-    String,
-    Box<dyn crate::connector::ConsumerTrait>,
-    crate::connector::SerializerKind,
-    Vec<(String, String)>,
-    Option<crate::connector::TopicProviderFn>,
-);
+/// One outbound route returned by [`AimDb::collect_outbound_routes`]
+pub struct OutboundRoute {
+    /// Default topic/destination from the URL path; used when no
+    /// `topic_provider` overrides it per value.
+    pub topic: String,
+    /// Type-erased consumer for subscribing to record values
+    pub consumer: Box<dyn crate::connector::ConsumerTrait>,
+    /// User-provided serializer for the record type (raw or context-aware)
+    pub serializer: crate::connector::SerializerKind,
+    /// Configuration options from the URL query
+    pub config: Vec<(String, String)>,
+    /// Optional dynamic topic provider
+    pub topic_provider: Option<crate::connector::TopicProviderFn>,
+}
 
 /// Marker type for untyped builder (before runtime is set)
 pub struct NoRuntime;
@@ -182,18 +175,9 @@ impl AimDbInner {
         let key_str = key.as_ref();
 
         // Resolve key to RecordId
-        let id = self.resolve_str(key_str).ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::RecordKeyNotFound {
-                    key: key_str.to_string(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::RecordKeyNotFound { _key: () }
-            }
-        })?;
+        let id = self
+            .resolve_str(key_str)
+            .ok_or_else(|| DbError::record_key_not_found(key_str))?;
 
         self.get_typed_record_by_id::<T, R>(id)
     }
@@ -215,32 +199,21 @@ impl AimDbInner {
         let expected = TypeId::of::<T>();
         let actual = self.types[id.index()];
         if expected != actual {
-            #[cfg(feature = "std")]
             return Err(DbError::TypeMismatch {
                 record_id: id.raw(),
                 expected_type: core::any::type_name::<T>().to_string(),
-            });
-            #[cfg(not(feature = "std"))]
-            return Err(DbError::TypeMismatch {
-                record_id: id.raw(),
-                _expected_type: (),
             });
         }
 
         // Safe to downcast (type validated above)
         let record = &self.storages[id.index()];
 
-        #[cfg(feature = "std")]
-        let typed_record = record.as_typed::<T, R>().ok_or(DbError::InvalidOperation {
-            operation: "get_typed_record_by_id".to_string(),
-            reason: "type mismatch during downcast".to_string(),
-        })?;
-
-        #[cfg(not(feature = "std"))]
-        let typed_record = record.as_typed::<T, R>().ok_or(DbError::InvalidOperation {
-            _operation: (),
-            _reason: (),
-        })?;
+        let typed_record = record
+            .as_typed::<T, R>()
+            .ok_or_else(|| DbError::InvalidOperation {
+                operation: "get_typed_record_by_id".to_string(),
+                reason: "type mismatch during downcast".to_string(),
+            })?;
 
         Ok(typed_record)
     }
@@ -655,13 +628,11 @@ where
     where
         R: crate::RuntimeForProfiling,
     {
-        #[cfg(feature = "tracing")]
-        tracing::info!("Building database and spawning background tasks...");
+        log_info!("Building database and spawning background tasks...");
 
         let (_db, runner) = self.build().await?;
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Database running, runner driving collected futures.");
+        log_info!("Database running, runner driving collected futures.");
 
         runner.run().await;
 
@@ -706,35 +677,19 @@ where
     {
         // Validate all records
         for (key, _, record) in &self.records {
-            record.validate().map_err(|_msg| {
-                #[cfg(feature = "std")]
-                {
-                    DbError::RuntimeError {
-                        message: format!("Record '{}' validation failed: {}", key.as_str(), _msg),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    // Suppress unused warning for key in no_std
-                    let _ = &key;
-                    DbError::RuntimeError { _message: () }
-                }
+            record.validate().map_err(|msg| {
+                DbError::runtime_error(alloc::format!(
+                    "Record '{}' validation failed: {}",
+                    key.as_str(),
+                    msg
+                ))
             })?;
         }
 
         // Ensure runtime is set
-        let runtime = self.runtime.ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::RuntimeError {
-                    message: "runtime not set (use .runtime())".into(),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::RuntimeError { _message: () }
-            }
-        })?;
+        let runtime = self
+            .runtime
+            .ok_or_else(|| DbError::runtime_error("runtime not set (use .runtime())"))?;
 
         // Build the new index structures
         let record_count = self.records.len();
@@ -749,12 +704,9 @@ where
 
             // Check for duplicate keys (should not happen if configure() is used correctly)
             if by_key.contains_key(&key) {
-                #[cfg(feature = "std")]
                 return Err(DbError::DuplicateRecordKey {
                     key: key.as_str().to_string(),
                 });
-                #[cfg(not(feature = "std"))]
-                return Err(DbError::DuplicateRecordKey { _key: () });
             }
 
             // Build index structures
@@ -791,8 +743,7 @@ where
         // Build and validate the dependency graph
         let dependency_graph = DependencyGraph::build_and_validate(&record_infos)?;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "Dependency graph built successfully ({} nodes, {} edges, topo order: {:?})",
             dependency_graph.nodes.len(),
             dependency_graph.edges.len(),
@@ -822,37 +773,23 @@ where
         // Accumulator for every future the runner will drive.
         let mut futures_acc: Vec<BoxFuture> = Vec::new();
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Collecting futures for {} records", self.spawn_fns.len());
+        log_info!("Collecting futures for {} records", self.spawn_fns.len());
 
         // Build a lookup map from spawn_fns for topological ordering
         let mut spawn_fn_map: HashMap<StringKey, Box<dyn core::any::Any + Send>> =
             self.spawn_fns.into_iter().collect();
 
         // Execute collectors in topological order — transforms collect after their inputs.
+        // `StringKey: Borrow<str>` with content-based Hash, so the map lookup by
+        // `&str` is O(1) and yields both the interned key and the RecordId.
         for key_str in inner.dependency_graph.topo_order() {
-            let key = match inner.by_key.keys().find(|k| k.as_str() == key_str) {
-                Some(k) => *k,
-                None => continue,
+            let Some((&key, &id)) = inner.by_key.get_key_value(key_str.as_str()) else {
+                continue;
             };
 
-            let spawn_fn_any = match spawn_fn_map.remove(&key) {
-                Some(f) => f,
-                None => continue,
+            let Some(spawn_fn_any) = spawn_fn_map.remove(&key) else {
+                continue;
             };
-
-            let id = inner.resolve(&key).ok_or({
-                #[cfg(feature = "std")]
-                {
-                    DbError::RecordKeyNotFound {
-                        key: key.as_str().to_string(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    DbError::RecordKeyNotFound { _key: () }
-                }
-            })?;
 
             let spawn_fn = spawn_fn_any
                 .downcast::<SpawnFnType<R>>()
@@ -861,8 +798,7 @@ where
             futures_acc.extend((*spawn_fn)(&runtime, &db, id)?);
         }
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Record future collection complete");
+        log_info!("Record future collection complete");
 
         // AimX remote-access servers are no longer stood up here: register a
         // session connector (`UdsServer::from_config(...)`) via `with_connector`
@@ -874,25 +810,22 @@ where
         // a `Vec<BoxFuture>` instead of an `Arc<dyn Connector>` (which previously
         // was discarded anyway — see design doc 028 §"The dropped Arc<dyn Connector> object").
         for builder in self.connector_builders {
-            #[cfg(feature = "tracing")]
-            let scheme = builder.scheme().to_string();
-
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Building connector for scheme: {}", scheme);
+            log_debug!("Building connector for scheme: {}", builder.scheme());
 
             let connector_futures = builder.build(&db).await?;
-            #[cfg(feature = "tracing")]
             let n_futures = connector_futures.len();
             futures_acc.extend(connector_futures);
 
-            #[cfg(feature = "tracing")]
-            tracing::info!("Connector '{}' contributed {} future(s)", scheme, n_futures);
+            log_info!(
+                "Connector '{}' contributed {} future(s)",
+                builder.scheme(),
+                n_futures
+            );
         }
 
         // Collect on_start futures (registered by external crates like aimdb-persistence).
         if !self.start_fns.is_empty() {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Collecting {} on_start future(s)", self.start_fns.len());
+            log_debug!("Collecting {} on_start future(s)", self.start_fns.len());
 
             for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
                 let start_fn = start_fn_any
@@ -1163,17 +1096,8 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
         // than panicking later inside `subscribe()`.
         let key_str: alloc::string::String = key.into();
         let typed_rec = self.inner.get_typed_record_by_key::<T, R>(&key_str)?;
-        let buffer = typed_rec.buffer_handle().ok_or({
-            #[cfg(feature = "std")]
-            {
-                DbError::MissingConfiguration {
-                    parameter: alloc::format!("buffer for record '{}'", key_str),
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                DbError::MissingConfiguration { _parameter: () }
-            }
+        let buffer = typed_rec.buffer_handle().ok_or_else(|| {
+            DbError::missing_configuration(alloc::format!("buffer for record '{}'", key_str))
         })?;
         Ok(crate::typed_api::Consumer::new(buffer))
     }
@@ -1364,9 +1288,8 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
             }
         }
 
-        #[cfg(feature = "tracing")]
         if !routes.is_empty() {
-            tracing::debug!(
+            log_debug!(
                 "Collected {} inbound routes for scheme '{}'",
                 routes.len(),
                 scheme
@@ -1447,27 +1370,25 @@ impl<R: aimdb_executor::RuntimeAdapter + 'static> AimDb<R> {
 
                 // Skip links without serializer
                 let Some(serializer) = link.serializer.clone() else {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("Outbound link '{}' has no serializer, skipping", link.url);
+                    log_warn!("Outbound link '{}' has no serializer, skipping", link.url);
                     continue;
                 };
 
                 // Create consumer using the stored factory
                 if let Some(consumer) = link.create_consumer(db_any.clone()) {
-                    routes.push((
-                        destination,
+                    routes.push(OutboundRoute {
+                        topic: destination,
                         consumer,
                         serializer,
-                        link.config.clone(),
-                        link.topic_provider.clone(),
-                    ));
+                        config: link.config.clone(),
+                        topic_provider: link.topic_provider.clone(),
+                    });
                 }
             }
         }
 
-        #[cfg(feature = "tracing")]
         if !routes.is_empty() {
-            tracing::debug!(
+            log_debug!(
                 "Collected {} outbound routes for scheme '{}'",
                 routes.len(),
                 scheme

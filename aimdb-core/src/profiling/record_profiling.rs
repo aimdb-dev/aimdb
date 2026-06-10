@@ -1,6 +1,5 @@
 //! Per-record container of stage profiling metrics.
 
-extern crate alloc;
 use alloc::{string::String, sync::Arc, vec::Vec};
 
 use crate::profiling::StageMetrics;

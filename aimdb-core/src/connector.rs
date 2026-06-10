@@ -31,8 +31,6 @@ use core::fmt::{self, Debug};
 use core::future::Future;
 use core::pin::Pin;
 
-extern crate alloc;
-
 use alloc::{
     boxed::Box,
     string::{String, ToString},
@@ -40,7 +38,6 @@ use alloc::{
     vec::Vec,
 };
 
-#[cfg(feature = "std")]
 use alloc::format;
 
 use crate::{builder::AimDb, DbResult};
@@ -661,12 +658,12 @@ pub trait ConsumerTrait: Send + Sync {
     ///
     /// Returns a type-erased reader that can be polled for `Box<dyn Any>` values.
     /// The connector will downcast to the expected type after deserialization.
+    /// Infallible since M14 — subscription is a pre-resolved buffer handle.
     fn subscribe_any<'a>(&'a self) -> SubscribeAnyFuture<'a>;
 }
 
 /// Type alias for the future returned by `ConsumerTrait::subscribe_any`
-type SubscribeAnyFuture<'a> =
-    Pin<Box<dyn Future<Output = DbResult<Box<dyn AnyReader>>> + Send + 'a>>;
+type SubscribeAnyFuture<'a> = Pin<Box<dyn Future<Output = Box<dyn AnyReader>> + Send + 'a>>;
 
 /// Type alias for the future returned by `AnyReader::recv_any`
 type RecvAnyFuture<'a> =
@@ -812,22 +809,12 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
     use crate::DbError;
 
     // Split scheme from rest
-    let (scheme, rest) = url.split_once("://").ok_or({
-        #[cfg(feature = "std")]
-        {
-            DbError::InvalidOperation {
-                operation: "parse_connector_url".into(),
-                reason: format!("Missing scheme in URL: {}", url),
-            }
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            DbError::InvalidOperation {
-                _operation: (),
-                _reason: (),
-            }
-        }
-    })?;
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| DbError::InvalidOperation {
+            operation: "parse_connector_url".into(),
+            reason: format!("Missing scheme in URL: {}", url),
+        })?;
 
     // Extract credentials if present (user:pass@host)
     let (credentials, host_part) = if let Some(at_idx) = rest.find('@') {

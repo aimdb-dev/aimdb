@@ -58,12 +58,7 @@ type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + S
 /// The spine's one-shot peripheral was already consumed — `build` ran twice. The
 /// framework calls it once, so this is unreachable in practice.
 fn connector_consumed() -> DbError {
-    DbError::MissingConfiguration {
-        #[cfg(feature = "std")]
-        parameter: String::from("embassy connector already built"),
-        #[cfg(not(feature = "std"))]
-        _parameter: (),
-    }
+    DbError::missing_configuration("embassy connector already built")
 }
 
 // ===========================================================================

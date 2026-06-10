@@ -39,12 +39,8 @@
 //! let nb_error: embedded_hal_nb::nb::Error<DbError> = embedded_hal_nb::nb::Error::WouldBlock;
 //! let db_error = DbError::from_nb_error(nb_error);
 //!
-//! // Create hardware errors directly (recommended approach)
-//! let uart_error = DbError::HardwareError {
-//!     component: 4,  // UART component ID
-//!     error_code: 0x6210,
-//!     _description: (),
-//! };
+//! // Create hardware errors via the helper (recommended approach)
+//! let uart_error = DbError::hardware_error(4 /* UART component ID */, 0x6210);
 //! # }
 //! ```
 //!
@@ -105,13 +101,6 @@ pub use runtime::EmbassyNetwork;
 // Buffer implementation exports
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
 pub use buffer::EmbassyBuffer;
-
-/// Type alias for Embassy database
-///
-/// This provides a convenient type for working with databases on the Embassy runtime.
-/// Most users should use `AimDbBuilder` directly to create databases.
-#[cfg(feature = "embassy-runtime")]
-pub type EmbassyDatabase = aimdb_core::Database<EmbassyAdapter>;
 
 // Re-export core types for convenience
 #[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]

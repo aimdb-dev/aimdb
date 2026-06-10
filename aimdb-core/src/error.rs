@@ -5,12 +5,11 @@
 //!
 //! # Platform Compatibility
 //!
-//! The error system is designed with conditional compilation to optimize for
-//! different deployment targets:
-//!
-//! - **MCU/Embedded**: Minimal memory footprint with `no_std` compatibility
-//! - **Edge/Desktop**: Rich error context with standard library features
-//! - **Cloud**: Full error chains and debugging capabilities with thiserror integration
+//! Every variant has a single shape on all targets: context fields use
+//! `alloc::string::String`, which is available everywhere (the crate
+//! unconditionally requires `alloc`), and `Display`/`Error` come from
+//! `thiserror` (no_std-capable since 2.x). Only variants that wrap std types
+//! (`Io`, `Json`, sync-API timeouts) are gated on the `std` feature.
 //!
 //! # Error Categories
 //!
@@ -25,7 +24,8 @@
 //! - **Hardware**: MCU hardware errors (embedded only)
 //! - **I/O & JSON**: Standard library integrations (std only)
 
-#[cfg(feature = "std")]
+use alloc::string::String;
+use alloc::vec::Vec;
 use thiserror::Error;
 
 #[cfg(feature = "std")]
@@ -35,192 +35,96 @@ use std::io;
 ///
 /// Only includes errors that are actually used in the codebase,
 /// removing theoretical/unused error variants for simplicity.
-#[derive(Debug)]
-#[cfg_attr(feature = "std", derive(Error))]
+#[derive(Debug, Error)]
 pub enum DbError {
     // ===== Network Errors (0x1000-0x1FFF) =====
     /// Connection or timeout failures
-    #[cfg_attr(feature = "std", error("Connection failed to {endpoint}: {reason}"))]
-    ConnectionFailed {
-        #[cfg(feature = "std")]
-        endpoint: String,
-        #[cfg(feature = "std")]
-        reason: String,
-        #[cfg(not(feature = "std"))]
-        _endpoint: (),
-        #[cfg(not(feature = "std"))]
-        _reason: (),
-    },
+    #[error("Connection failed to {endpoint}: {reason}")]
+    ConnectionFailed { endpoint: String, reason: String },
 
     // ===== Buffer Errors (0x2000-0x2FFF & 0xA000-0xAFFF) =====
     /// Buffer is full and cannot accept more items
-    #[cfg_attr(feature = "std", error("Buffer full: {buffer_name} ({size} items)"))]
-    BufferFull {
-        size: u32,
-        #[cfg(feature = "std")]
-        buffer_name: String,
-        #[cfg(not(feature = "std"))]
-        _buffer_name: (),
-    },
+    #[error("Buffer full: {buffer_name} ({size} items)")]
+    BufferFull { size: u32, buffer_name: String },
 
     /// Consumer lagged behind producer (SPMC ring buffers)
-    #[cfg_attr(feature = "std", error("Consumer lagged by {lag_count} messages"))]
-    BufferLagged {
-        lag_count: u64,
-        #[cfg(feature = "std")]
-        buffer_name: String,
-        #[cfg(not(feature = "std"))]
-        _buffer_name: (),
-    },
+    #[error("Consumer lagged by {lag_count} messages")]
+    BufferLagged { lag_count: u64, buffer_name: String },
 
     /// Buffer channel has been closed (shutdown)
-    #[cfg_attr(feature = "std", error("Buffer channel closed: {buffer_name}"))]
-    BufferClosed {
-        #[cfg(feature = "std")]
-        buffer_name: String,
-        #[cfg(not(feature = "std"))]
-        _buffer_name: (),
-    },
+    #[error("Buffer channel closed: {buffer_name}")]
+    BufferClosed { buffer_name: String },
 
     /// Non-blocking receive found no pending values
-    #[cfg_attr(feature = "std", error("Buffer empty: no pending values"))]
+    #[error("Buffer empty: no pending values")]
     BufferEmpty,
 
     // ===== Database Errors (0x7003-0x7009) =====
     /// Record type not found in database (legacy, by type name)
-    #[cfg_attr(feature = "std", error("Record type not found: {record_name}"))]
-    RecordNotFound {
-        #[cfg(feature = "std")]
-        record_name: String,
-        #[cfg(not(feature = "std"))]
-        _record_name: (),
-    },
+    #[error("Record type not found: {record_name}")]
+    RecordNotFound { record_name: String },
 
     /// Record key not found in registry
-    #[cfg_attr(feature = "std", error("Record key not found: {key}"))]
-    RecordKeyNotFound {
-        #[cfg(feature = "std")]
-        key: String,
-        #[cfg(not(feature = "std"))]
-        _key: (),
-    },
+    #[error("Record key not found: {key}")]
+    RecordKeyNotFound { key: String },
 
     /// RecordId out of bounds or invalid
-    #[cfg_attr(feature = "std", error("Invalid record ID: {id}"))]
+    #[error("Invalid record ID: {id}")]
     InvalidRecordId { id: u32 },
 
     /// Type mismatch when accessing record by ID
-    #[cfg_attr(
-        feature = "std",
-        error("Type mismatch: expected {expected_type}, record {record_id} has different type")
-    )]
+    #[error("Type mismatch: expected {expected_type}, record {record_id} has different type")]
     TypeMismatch {
         record_id: u32,
-        #[cfg(feature = "std")]
         expected_type: String,
-        #[cfg(not(feature = "std"))]
-        _expected_type: (),
     },
 
     /// Multiple records of same type exist (ambiguous type-only lookup)
-    #[cfg_attr(
-        feature = "std",
-        error("Ambiguous type lookup: {type_name} has {count} records, use explicit key")
-    )]
-    AmbiguousType {
-        count: u32,
-        #[cfg(feature = "std")]
-        type_name: String,
-        #[cfg(not(feature = "std"))]
-        _type_name: (),
-    },
+    #[error("Ambiguous type lookup: {type_name} has {count} records, use explicit key")]
+    AmbiguousType { count: u32, type_name: String },
 
     /// Duplicate record key during registration
-    #[cfg_attr(feature = "std", error("Duplicate record key: {key}"))]
-    DuplicateRecordKey {
-        #[cfg(feature = "std")]
-        key: String,
-        #[cfg(not(feature = "std"))]
-        _key: (),
-    },
+    #[error("Duplicate record key: {key}")]
+    DuplicateRecordKey { key: String },
 
     /// Invalid operation attempted
-    #[cfg_attr(feature = "std", error("Invalid operation '{operation}': {reason}"))]
-    InvalidOperation {
-        #[cfg(feature = "std")]
-        operation: String,
-        #[cfg(feature = "std")]
-        reason: String,
-        #[cfg(not(feature = "std"))]
-        _operation: (),
-        #[cfg(not(feature = "std"))]
-        _reason: (),
-    },
+    #[error("Invalid operation '{operation}': {reason}")]
+    InvalidOperation { operation: String, reason: String },
 
     /// Permission denied for operation
-    #[cfg_attr(feature = "std", error("Permission denied: {operation}"))]
-    PermissionDenied {
-        #[cfg(feature = "std")]
-        operation: String,
-        #[cfg(not(feature = "std"))]
-        _operation: (),
-    },
+    #[error("Permission denied: {operation}")]
+    PermissionDenied { operation: String },
 
     // ===== Configuration Errors (0x4000-0x4FFF) =====
     /// Missing required configuration parameter
-    #[cfg_attr(feature = "std", error("Missing configuration parameter: {parameter}"))]
-    MissingConfiguration {
-        #[cfg(feature = "std")]
-        parameter: String,
-        #[cfg(not(feature = "std"))]
-        _parameter: (),
-    },
+    #[error("Missing configuration parameter: {parameter}")]
+    MissingConfiguration { parameter: String },
 
     // ===== Runtime Errors (0x7002 & 0x5000-0x5FFF) =====
     /// Runtime execution error (task spawning, scheduling, etc.)
-    #[cfg_attr(feature = "std", error("Runtime error: {message}"))]
-    RuntimeError {
-        #[cfg(feature = "std")]
-        message: String,
-        #[cfg(not(feature = "std"))]
-        _message: (),
-    },
+    #[error("Runtime error: {message}")]
+    RuntimeError { message: String },
 
     /// Resource temporarily unavailable (used by adapters)
-    #[cfg_attr(feature = "std", error("Resource unavailable: {resource_name}"))]
+    #[error("Resource unavailable: {resource_name}")]
     ResourceUnavailable {
         resource_type: u8,
-        #[cfg(feature = "std")]
         resource_name: String,
-        #[cfg(not(feature = "std"))]
-        _resource_name: (),
     },
 
     // ===== Hardware Errors (0x6000-0x6FFF) - Embedded Only =====
     /// Hardware-specific errors for embedded/MCU environments
-    #[cfg_attr(
-        feature = "std",
-        error("Hardware error: component {component}, code 0x{error_code:04X}")
-    )]
+    #[error("Hardware error: component {component}, code 0x{error_code:04X}")]
     HardwareError {
         component: u8,
         error_code: u16,
-        #[cfg(feature = "std")]
         description: String,
-        #[cfg(not(feature = "std"))]
-        _description: (),
     },
 
     // ===== Internal Errors (0x7001) =====
     /// Internal error for unexpected conditions
-    #[cfg_attr(feature = "std", error("Internal error (0x{code:04X}): {message}"))]
-    Internal {
-        code: u32,
-        #[cfg(feature = "std")]
-        message: String,
-        #[cfg(not(feature = "std"))]
-        _message: (),
-    },
+    #[error("Internal error (0x{code:04X}): {message}")]
+    Internal { code: u32, message: String },
 
     // ===== Sync API Errors (0xB000-0xBFFF) - std only =====
     /// Failed to attach database to runtime thread
@@ -250,31 +154,14 @@ pub enum DbError {
 
     // ===== Transform / Dependency Graph Errors =====
     /// Transform dependency graph contains a cycle
-    #[cfg_attr(
-        feature = "std",
-        error("Cyclic dependency detected among records: {records:?}")
-    )]
-    CyclicDependency {
-        #[cfg(feature = "std")]
-        records: Vec<String>,
-        #[cfg(not(feature = "std"))]
-        _records: (),
-    },
+    #[error("Cyclic dependency detected among records: {records:?}")]
+    CyclicDependency { records: Vec<String> },
 
     /// Transform input key references a record that was not registered
-    #[cfg_attr(
-        feature = "std",
-        error("Transform on '{output_key}' references unregistered input '{input_key}'")
-    )]
+    #[error("Transform on '{output_key}' references unregistered input '{input_key}'")]
     TransformInputNotFound {
-        #[cfg(feature = "std")]
         output_key: String,
-        #[cfg(feature = "std")]
         input_key: String,
-        #[cfg(not(feature = "std"))]
-        _output_key: (),
-        #[cfg(not(feature = "std"))]
-        _input_key: (),
     },
 
     // ===== Standard Library Integrations (std only) =====
@@ -313,36 +200,6 @@ pub enum DbError {
     },
 }
 
-// ===== no_std Display Implementation =====
-#[cfg(not(feature = "std"))]
-impl core::fmt::Display for DbError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let (code, message) = match self {
-            DbError::ConnectionFailed { .. } => (0x1002, "Connection failed"),
-            DbError::BufferFull { .. } => (0x2002, "Buffer full"),
-            DbError::BufferLagged { .. } => (0xA001, "Buffer consumer lagged"),
-            DbError::BufferClosed { .. } => (0xA002, "Buffer channel closed"),
-            DbError::BufferEmpty => (0xA003, "Buffer empty"),
-            DbError::RecordNotFound { .. } => (0x7003, "Record not found"),
-            DbError::RecordKeyNotFound { .. } => (0x7006, "Record key not found"),
-            DbError::InvalidRecordId { .. } => (0x7007, "Invalid record ID"),
-            DbError::TypeMismatch { .. } => (0x7008, "Type mismatch"),
-            DbError::AmbiguousType { .. } => (0x7009, "Ambiguous type lookup"),
-            DbError::DuplicateRecordKey { .. } => (0x700A, "Duplicate record key"),
-            DbError::InvalidOperation { .. } => (0x7004, "Invalid operation"),
-            DbError::PermissionDenied { .. } => (0x7005, "Permission denied"),
-            DbError::MissingConfiguration { .. } => (0x4002, "Missing configuration"),
-            DbError::RuntimeError { .. } => (0x7002, "Runtime error"),
-            DbError::ResourceUnavailable { .. } => (0x5002, "Resource unavailable"),
-            DbError::HardwareError { .. } => (0x6001, "Hardware error"),
-            DbError::Internal { .. } => (0x7001, "Internal error"),
-            DbError::CyclicDependency { .. } => (0xC001, "Cyclic dependency in transforms"),
-            DbError::TransformInputNotFound { .. } => (0xC002, "Transform input not found"),
-        };
-        write!(f, "Error 0x{:04X}: {}", code, message)
-    }
-}
-
 // ===== DbError Implementation =====
 impl DbError {
     // Resource type constants
@@ -361,10 +218,7 @@ impl DbError {
         DbError::HardwareError {
             component,
             error_code,
-            #[cfg(feature = "std")]
             description: String::new(),
-            #[cfg(not(feature = "std"))]
-            _description: (),
         }
     }
 
@@ -372,48 +226,33 @@ impl DbError {
     pub fn internal(code: u32) -> Self {
         DbError::Internal {
             code,
-            #[cfg(feature = "std")]
             message: String::new(),
-            #[cfg(not(feature = "std"))]
-            _message: (),
         }
     }
 
-    /// Builds a [`RuntimeError`](DbError::RuntimeError). The message is carried
-    /// on `std` and dropped on `no_std` (where the variant holds a unit
-    /// placeholder); lets callers write one expression across both targets.
-    /// Gated on `remote-access` — its only callers are the JSON/remote paths.
-    #[cfg(feature = "remote-access")]
-    pub(crate) fn runtime_error(_message: impl Into<alloc::string::String>) -> Self {
+    /// Builds a [`RuntimeError`](DbError::RuntimeError).
+    pub fn runtime_error(message: impl Into<String>) -> Self {
         DbError::RuntimeError {
-            #[cfg(feature = "std")]
-            message: _message.into(),
-            #[cfg(not(feature = "std"))]
-            _message: (),
+            message: message.into(),
         }
     }
 
-    /// Builds a [`PermissionDenied`](DbError::PermissionDenied). The operation
-    /// detail is carried on `std` and dropped on `no_std`.
-    #[cfg(feature = "remote-access")]
-    pub(crate) fn permission_denied(_operation: impl Into<alloc::string::String>) -> Self {
+    /// Builds a [`PermissionDenied`](DbError::PermissionDenied).
+    pub fn permission_denied(operation: impl Into<String>) -> Self {
         DbError::PermissionDenied {
-            #[cfg(feature = "std")]
-            operation: _operation.into(),
-            #[cfg(not(feature = "std"))]
-            _operation: (),
+            operation: operation.into(),
         }
     }
 
-    /// Builds a [`RecordKeyNotFound`](DbError::RecordKeyNotFound). The key is
-    /// carried on `std` and dropped on `no_std`.
-    #[cfg(feature = "remote-access")]
-    pub(crate) fn record_key_not_found(_key: impl Into<alloc::string::String>) -> Self {
-        DbError::RecordKeyNotFound {
-            #[cfg(feature = "std")]
-            key: _key.into(),
-            #[cfg(not(feature = "std"))]
-            _key: (),
+    /// Builds a [`RecordKeyNotFound`](DbError::RecordKeyNotFound).
+    pub fn record_key_not_found(key: impl Into<String>) -> Self {
+        DbError::RecordKeyNotFound { key: key.into() }
+    }
+
+    /// Builds a [`MissingConfiguration`](DbError::MissingConfiguration).
+    pub fn missing_configuration(parameter: impl Into<String>) -> Self {
+        DbError::MissingConfiguration {
+            parameter: parameter.into(),
         }
     }
 
@@ -562,15 +401,13 @@ impl DbError {
     }
 
     /// Helper to prepend context to a message string
-    #[cfg(feature = "std")]
     fn prepend_context<S: Into<String>>(existing: &mut String, new_context: S) {
         let new_context = new_context.into();
         existing.insert_str(0, ": ");
         existing.insert_str(0, &new_context);
     }
 
-    /// Adds additional context to an error (std only)
-    #[cfg(feature = "std")]
+    /// Adds additional context to an error
     pub fn with_context<S: Into<String>>(self, context: S) -> Self {
         match self {
             DbError::ConnectionFailed {
@@ -760,41 +597,15 @@ impl From<aimdb_executor::ExecutorError> for DbError {
     fn from(err: aimdb_executor::ExecutorError) -> Self {
         use aimdb_executor::ExecutorError;
 
+        // `ExecutorError`'s `message` field is `String` on std and
+        // `&'static str` on no_std; `.into()` is required for the latter.
+        #[allow(clippy::useless_conversion)]
         match err {
-            ExecutorError::RuntimeUnavailable { message } => {
-                #[cfg(feature = "std")]
-                {
-                    DbError::RuntimeError { message }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    let _ = message; // Avoid unused warnings
-                    DbError::RuntimeError { _message: () }
-                }
-            }
-            ExecutorError::TaskJoinFailed { message } => {
-                #[cfg(feature = "std")]
-                {
-                    DbError::RuntimeError { message }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    let _ = message; // Avoid unused warnings
-                    DbError::RuntimeError { _message: () }
-                }
-            }
-            ExecutorError::QueueClosed => {
-                #[cfg(feature = "std")]
-                {
-                    DbError::RuntimeError {
-                        message: "join queue closed".to_string(),
-                    }
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    DbError::RuntimeError { _message: () }
-                }
-            }
+            ExecutorError::RuntimeUnavailable { message }
+            | ExecutorError::TaskJoinFailed { message } => DbError::RuntimeError {
+                message: message.into(),
+            },
+            ExecutorError::QueueClosed => DbError::runtime_error("join queue closed"),
         }
     }
 }
@@ -802,6 +613,8 @@ impl From<aimdb_executor::ExecutorError> for DbError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
+    use alloc::vec;
 
     #[test]
     fn test_error_size_constraint() {
@@ -816,24 +629,15 @@ mod tests {
     #[test]
     fn test_error_codes() {
         let connection_error = DbError::ConnectionFailed {
-            #[cfg(feature = "std")]
             endpoint: "localhost".to_string(),
-            #[cfg(feature = "std")]
             reason: "timeout".to_string(),
-            #[cfg(not(feature = "std"))]
-            _endpoint: (),
-            #[cfg(not(feature = "std"))]
-            _reason: (),
         };
         assert_eq!(connection_error.error_code(), 0x1002);
         assert_eq!(connection_error.error_category(), 0x1000);
 
         let buffer_error = DbError::BufferFull {
             size: 1024,
-            #[cfg(feature = "std")]
             buffer_name: String::new(),
-            #[cfg(not(feature = "std"))]
-            _buffer_name: (),
         };
         assert_eq!(buffer_error.error_code(), 0x2002);
     }
@@ -841,14 +645,8 @@ mod tests {
     #[test]
     fn test_helper_methods() {
         let connection_error = DbError::ConnectionFailed {
-            #[cfg(feature = "std")]
             endpoint: "localhost".to_string(),
-            #[cfg(feature = "std")]
             reason: "timeout".to_string(),
-            #[cfg(not(feature = "std"))]
-            _endpoint: (),
-            #[cfg(not(feature = "std"))]
-            _reason: (),
         };
 
         assert!(connection_error.is_network_error());
@@ -865,7 +663,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_error_context() {
         let error = DbError::ConnectionFailed {
@@ -901,7 +698,6 @@ mod tests {
         assert!(!buffer.is_network_error());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_configuration_error() {
         let configuration = DbError::MissingConfiguration {
@@ -911,7 +707,6 @@ mod tests {
         assert!(!configuration.is_buffer_error());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_runtime_error() {
         let runtime = DbError::RuntimeError {
@@ -928,7 +723,6 @@ mod tests {
         assert!(!database.is_buffer_error());
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_transform_error() {
         let transform = DbError::CyclicDependency {

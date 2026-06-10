@@ -23,7 +23,6 @@ pub use info::StageProfilingInfo;
 pub use record_profiling::{RecordProfilingMetrics, StageEntry};
 pub use stage_metrics::StageMetrics;
 
-extern crate alloc;
 use alloc::{boxed::Box, sync::Arc};
 use core::future::Future;
 use core::pin::Pin;

@@ -52,9 +52,6 @@
 //!    .tap(|em, cfg| async { ... });
 //! ```
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
 // Module structure
 mod cfg;
 #[cfg(feature = "metrics")]

@@ -23,7 +23,6 @@ std = [
     "serde",
     "anyhow",
     "remote-access",
-    "tokio",
     "aimdb-executor/std",
     # AimX remote access now rides the shared session engine: `with_remote_access`
     # builds the `session::aimx` server, so std pulls in the connector-session module.
@@ -42,11 +41,11 @@ json-serialize = ["alloc", "serde_json"]
 # AimX remote-access data model (`crate::remote`): record metadata +
 # introspection (`RecordMetadata`, `AimDb::list_records`), the JSON
 # read/write/subscribe API (`try_latest_as_json` / `set_record_from_json` /
-# `JsonBufferReader`), and the wire protocol/config/security/error types. Builds on
-# the `json-serialize` value codec and adds `thiserror` (no_std-capable; see below)
-# for `RemoteError`. The AimX *server* dispatch (`session::aimx`) additionally
-# needs `connector-session`. All compiles on `no_std + alloc`.
-remote-access = ["json-serialize", "thiserror"]
+# `JsonBufferReader`), and the wire protocol/config/security/error types. Builds
+# on the `json-serialize` value codec. The AimX *server* dispatch
+# (`session::aimx`) additionally needs `connector-session`. All compiles on
+# `no_std + alloc`.
+remote-access = ["json-serialize"]
 
 # The connector-session substrate (`crate::session`): the dyn-safe trait set
 # (Connection/Listener/Dialer, Dispatch/EnvelopeCodec, Source + shared types) and
@@ -117,22 +116,14 @@ async-channel = { version = "2", default-features = false }
 # Serialization (optional)
 serde = { workspace = true, optional = true }
 
-# Error handling
-thiserror = { version = "2.0.16", default-features = false, optional = true }
+# Error handling (thiserror 2.x is no_std-capable; DbError derives it on every target)
+thiserror = { version = "2.0.16", default-features = false }
 anyhow = { workspace = true, optional = true }
 # `raw_value` lets the connector-session `EnvelopeCodec` splice an already-
 # serialized record-value `Payload` into a JSON envelope without re-escaping
 # (037 Decision 1). Only compiled when `serde_json` is pulled in (std /
 # json-serialize); the no_std `connector-session` contracts build never sees it.
 serde_json = { workspace = true, optional = true, features = ["raw_value"] }
-
-# Async runtime - only for std environments with remote access
-tokio = { workspace = true, features = [
-    "net",
-    "io-util",
-    "sync",
-    "time",
-], optional = true }
 
 # Atomic operations for all platforms
 portable-atomic = { version = "1.9", default-features = false }
@@ -155,6 +146,7 @@ hashbrown = { version = "0.15", default-features = false, features = [
 [dev-dependencies]
 # For no_std testing
 heapless = "0.9.1"
-# For async testing
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+# For async testing (`sync` covers tokio::sync::mpsc in tests/session_engine.rs,
+# which previously leaked in from the optional [dependencies] entry)
+tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }

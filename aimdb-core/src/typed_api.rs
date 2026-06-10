@@ -55,7 +55,6 @@ use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
 
-extern crate alloc;
 use alloc::{
     boxed::Box,
     format,
@@ -203,7 +202,7 @@ where
 pub struct Consumer<T> {
     /// Pre-resolved buffer handle to the record's buffer.
     buffer: Arc<dyn DynBuffer<T>>,
-    /// Stage profiling state (set by the spawn machinery for `.tap()` / `.link()`).
+    /// Stage profiling state (set by the spawn machinery for `.tap()` / `.link_to()`).
     #[cfg(feature = "profiling")]
     profiling: Option<(Arc<crate::profiling::StageMetrics>, crate::profiling::Clock)>,
     // See Producer<T>: `fn() -> T` keeps Send/Sync independent of T.
@@ -297,14 +296,10 @@ where
 {
     fn subscribe_any<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output = DbResult<Box<dyn crate::connector::AnyReader>>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Box<dyn crate::connector::AnyReader>> + Send + 'a>> {
         Box::pin(async move {
-            // `subscribe()` is infallible after M14; keep the `DbResult` on
-            // the trait surface so connector code stays unchanged.
             let reader = self.subscribe();
-            Ok(Box::new(TypedAnyReader::<T> { inner: reader })
-                as Box<dyn crate::connector::AnyReader>)
+            Box::new(TypedAnyReader::<T> { inner: reader }) as Box<dyn crate::connector::AnyReader>
         })
     }
 }
@@ -429,7 +424,7 @@ where
     ///
     /// This method accepts the raw runtime context as `Arc<dyn Any>` and is used by:
     /// - Runtime adapter implementations to provide convenient wrappers
-    /// - Internal connector implementations (e.g., `.link()` creates consumers via this method)
+    /// - Internal connector implementations (e.g., `.link_to()` creates consumers via this method)
     /// - Advanced use cases requiring direct control
     pub fn tap_raw<F, Fut>(&'a mut self, f: F) -> &'a mut Self
     where
@@ -572,22 +567,6 @@ where
         F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
     {
         self.transform_join_raw(build_fn)
-    }
-
-    /// Adds a connector link for external system integration (DEPRECATED)
-    ///
-    /// **Deprecated**: Use `.link_to()` for outbound connectors or `.link_from()` for inbound.
-    /// This method will be removed in a future version.
-    #[deprecated(since = "0.2.0", note = "Use link_to() or link_from() instead")]
-    pub fn link(&'a mut self, url: &str) -> OutboundConnectorBuilder<'a, T, R> {
-        OutboundConnectorBuilder {
-            registrar: self,
-            url: url.to_string(),
-            config: Vec::new(),
-            serializer: None,
-            context_serializer: None,
-            topic_provider: None,
-        }
     }
 
     /// Link TO external system (outbound: AimDB → External)
