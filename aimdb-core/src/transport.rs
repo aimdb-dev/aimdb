@@ -1,15 +1,15 @@
-//! Transport connector traits for MQTT, Kafka, HTTP, shmem, and other protocols
+//! Transport connector traits for protocol-agnostic publishing
 //!
 //! Provides a generic `Connector` trait that enables scheme-based routing
 //! to different transport protocols. Each connector manages a single connection
-//! to a specific endpoint (e.g., one MQTT broker, one shared memory segment, etc.).
+//! to a specific endpoint (e.g., one MQTT broker).
 //!
 //! # Design Philosophy
 //!
-//! - **Scheme-based routing**: URL scheme (mqtt://, shmem://, kafka://) determines which connector handles requests
+//! - **Scheme-based routing**: the URL scheme (e.g. `mqtt://`, `knx://`) determines which connector handles requests
 //! - **Single endpoint per connector**: Each connector connects to ONE broker/resource
 //! - **Multi-transport publishing**: Same data can be published to multiple protocols
-//! - **Protocol-agnostic core**: Core doesn't know about MQTT, Kafka, etc. - just routes by scheme
+//! - **Protocol-agnostic core**: Core knows schemes and key/value options, never protocol semantics
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::future::Future;
@@ -17,24 +17,17 @@ use core::pin::Pin;
 
 /// Protocol-agnostic connector configuration
 ///
-/// Provides common configuration options that apply across multiple protocols.
-/// Each protocol interprets these fields according to its semantics.
-///
-/// # Protocol Interpretation
-///
-/// - **MQTT**: qos=QoS level, retain=retain flag, timeout_ms=publish timeout
-/// - **Kafka**: qos=acks setting (0=none, 1=leader, 2=all), timeout_ms=send timeout
-/// - **HTTP**: qos=retry count, timeout_ms=request timeout
-/// - **Shmem**: qos=priority, retain=pin in memory
+/// Carries the route's key/value options to [`Connector::publish`]. Only the
+/// genuinely protocol-agnostic `timeout_ms` is a typed field; every
+/// protocol-specific knob (e.g. MQTT's `qos`/`retain`) travels in
+/// [`protocol_options`](ConnectorConfig::protocol_options) and is interpreted
+/// by the connector with its own defaults. Connector crates expose typed
+/// setters as extension traits over the link builders (e.g. the MQTT
+/// connector's `MqttLinkExt`).
 #[derive(Debug, Clone)]
 pub struct ConnectorConfig {
-    /// Quality of Service / reliability level (0, 1, or 2)
-    pub qos: u8,
-
-    /// Whether to retain/persist the message
-    pub retain: bool,
-
-    /// Optional timeout in milliseconds
+    /// Optional timeout in milliseconds for the publish/operation, as
+    /// interpreted by the connector
     pub timeout_ms: Option<u32>,
 
     /// Protocol-specific options as key-value pairs
@@ -45,8 +38,6 @@ pub struct ConnectorConfig {
 impl Default for ConnectorConfig {
     fn default() -> Self {
         Self {
-            qos: 0,
-            retain: false,
             timeout_ms: Some(5000),
             protocol_options: Vec::new(),
         }
@@ -60,16 +51,10 @@ impl ConnectorConfig {
     /// per-route configuration through to [`Connector::publish`] without changing
     /// the `publish` signature.
     ///
-    /// Only the protocol-agnostic `timeout_ms` is lifted into a typed field. The
-    /// `qos`/`retain` *meaning* differs per protocol (an MQTT QoS level vs. a
-    /// Kafka `acks` setting vs. an HTTP retry count — see the type docs), and a
-    /// `u8`/`bool` field cannot represent "unspecified", so these — and every
-    /// other key — are passed through verbatim in [`protocol_options`] for the
-    /// connector to interpret with its own defaults. The typed `qos`/`retain`
-    /// fields therefore keep their [`Default`] values here; they remain available
-    /// for callers that construct a [`ConnectorConfig`] directly.
-    ///
-    /// [`protocol_options`]: ConnectorConfig::protocol_options
+    /// Only the protocol-agnostic `timeout_ms` is lifted into the typed field;
+    /// every other key is passed through verbatim in
+    /// [`protocol_options`](ConnectorConfig::protocol_options) for the
+    /// connector to interpret with its own defaults.
     pub fn from_query(query: &[(String, String)]) -> ConnectorConfig {
         let mut cfg = ConnectorConfig::default();
         for (k, v) in query {
@@ -139,12 +124,8 @@ impl std::error::Error for PublishError {}
 
 /// Generic transport connector trait for protocol-agnostic publishing
 ///
-/// This trait enables multi-protocol publishing via scheme-based routing:
-/// - `mqtt://topic` → MQTT broker
-/// - `shmem://segment` → Shared memory
-/// - `kafka://topic` → Kafka cluster
-/// - `http://endpoint` → HTTP POST
-/// - `dds://topic` → DDS topic
+/// This trait enables multi-protocol publishing via scheme-based routing
+/// (e.g. `mqtt://topic` → MQTT broker, `knx://1/0/6` → KNX group address).
 ///
 /// Each connector manages ONE connection/endpoint. For multiple brokers/endpoints,
 /// create multiple connectors and register them with different schemes.
@@ -159,28 +140,20 @@ impl std::error::Error for PublishError {}
 ///         config: &ConnectorConfig,
 ///         payload: &[u8],
 ///     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
+///         // Protocol knobs come from the route's key/value options,
+///         // with connector-chosen defaults.
+///         let qos = config
+///             .protocol_options
+///             .iter()
+///             .find(|(k, _)| k == "qos")
+///             .and_then(|(_, v)| v.parse::<u8>().ok())
+///             .unwrap_or(1);
 ///         Box::pin(async move {
-///             self.client.publish(destination, config.qos, config.retain, payload).await
+///             self.client.publish(destination, qos, payload).await
 ///                 .map_err(|_| PublishError::ConnectionFailed)
 ///         })
 ///     }
 /// }
-/// ```
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// let mqtt_connector = MqttConnector::new("mqtt://broker.local:1883").await?;
-///
-/// let db = AimDbBuilder::new()
-///     .runtime(runtime)
-///     .with_connector("mqtt", Arc::new(mqtt_connector))
-///     .configure::<Temperature>(|reg| {
-///         reg.link_to("mqtt://sensors/temp")
-///            .with_qos(1)
-///            .finish()
-///     })
-///     .build()?;
 /// ```
 ///
 /// # Thread Safety
@@ -191,12 +164,9 @@ pub trait Connector: Send + Sync {
     /// Publish data to a protocol-specific destination
     ///
     /// # Arguments
-    /// * `destination` - Protocol-specific path (no broker/host info):
-    ///   - MQTT: "sensors/temperature"
-    ///   - Shmem: "temp_readings"
-    ///   - Kafka: "production/events"
-    ///   - HTTP: "api/v1/sensors"
-    /// * `config` - Publishing configuration (QoS, retain, timeout, protocol options)
+    /// * `destination` - Protocol-specific path, no broker/host info
+    ///   (e.g. an MQTT topic like "sensors/temperature")
+    /// * `config` - Publishing configuration (timeout + protocol options)
     /// * `payload` - Message payload as byte slice
     ///
     /// # Returns
@@ -239,8 +209,6 @@ mod tests {
     #[test]
     fn test_connector_config_default() {
         let config = ConnectorConfig::default();
-        assert_eq!(config.qos, 0);
-        assert!(!config.retain);
         assert_eq!(config.timeout_ms, Some(5000));
         assert_eq!(config.protocol_options.len(), 0);
     }

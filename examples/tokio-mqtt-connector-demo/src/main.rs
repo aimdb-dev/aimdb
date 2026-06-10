@@ -36,6 +36,7 @@
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
+use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
 
@@ -146,12 +147,17 @@ async fn main() -> DbResult<()> {
             .with_client_id("tokio-demo-multi-sensor"),
     );
 
-    // Temperature sensors (outbound to MQTT) - using link_address() from key metadata
+    // Temperature sensors (outbound to MQTT) - using link_address() from key metadata.
+    // The MQTT knobs come from the connector crate's MqttLinkExt/
+    // MqttOutboundLinkExt extension traits (design 034 §3.6); QoS 1 / no
+    // retain matches the connector defaults.
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(indoor_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempIndoor.link_address().unwrap())
+            .with_qos(1)
+            .with_retain(false)
             .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
@@ -179,6 +185,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
             .link_from(CommandKey::TempIndoor.link_address().unwrap())
+            .with_qos(1) // subscribe QoS via MqttLinkExt
             .with_deserializer_raw(|data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
