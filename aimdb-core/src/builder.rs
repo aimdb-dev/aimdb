@@ -481,7 +481,7 @@ where
     pub fn configure<T>(
         &mut self,
         key: impl RecordKey,
-        f: impl for<'a> FnOnce(&'a mut RecordRegistrar<'a, T, R>),
+        f: impl FnOnce(&mut RecordRegistrar<'_, T, R>),
     ) -> &mut Self
     where
         T: Send + Sync + 'static + Debug + Clone,

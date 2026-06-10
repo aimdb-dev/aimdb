@@ -241,7 +241,8 @@ impl aimdb_executor::RuntimeOps for EmbassyAdapter {
     }
 
     fn sleep(&self, d: core::time::Duration) -> aimdb_executor::BoxFuture {
-        let duration = embassy_time::Duration::from_micros(d.as_micros().min(u64::MAX as u128) as u64);
+        let duration =
+            embassy_time::Duration::from_micros(d.as_micros().min(u64::MAX as u128) as u64);
         alloc::boxed::Box::pin(embassy_time::Timer::after(duration))
     }
 

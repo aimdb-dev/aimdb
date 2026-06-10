@@ -374,7 +374,7 @@ where
     /// reg.source(|ctx, producer| async move { /* ... */ })
     ///    .with_name("sensor_reader");
     /// ```
-    pub fn with_name(&'a mut self, name: &str) -> &'a mut Self {
+    pub fn with_name(&mut self, name: &str) -> &mut Self {
         #[cfg(feature = "profiling")]
         if let Some((kind, idx)) = self.last_stage {
             self.rec.profiling_mut().set_stage_name(kind, idx, name);
@@ -395,7 +395,7 @@ where
     /// - Runtime adapter implementations to provide convenient wrappers
     /// - Internal connector implementations
     /// - Advanced use cases requiring direct control
-    pub fn source_raw<F, Fut>(&'a mut self, f: F) -> &'a mut Self
+    pub fn source_raw<F, Fut>(&mut self, f: F) -> &mut Self
     where
         F: FnOnce(crate::Producer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
             + Send
@@ -426,7 +426,7 @@ where
     /// - Runtime adapter implementations to provide convenient wrappers
     /// - Internal connector implementations (e.g., `.link_to()` creates consumers via this method)
     /// - Advanced use cases requiring direct control
-    pub fn tap_raw<F, Fut>(&'a mut self, f: F) -> &'a mut Self
+    pub fn tap_raw<F, Fut>(&mut self, f: F) -> &mut Self
     where
         F: FnOnce(crate::Consumer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
             + Send
@@ -460,24 +460,24 @@ where
     ///
     /// **Note:** For metadata tracking in std mode, call `buffer_with_cfg()` instead,
     /// or call `buffer_cfg()` separately to set the configuration.
-    pub fn buffer_raw(&'a mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &'a mut Self {
+    pub fn buffer_raw(&mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &mut Self {
         self.rec.set_buffer(buffer);
         self
     }
 
     /// Configures a buffer with metadata tracking
     pub fn buffer_with_cfg(
-        &'a mut self,
+        &mut self,
         buffer: Box<dyn crate::buffer::DynBuffer<T>>,
         cfg: crate::buffer::BufferCfg,
-    ) -> &'a mut Self {
+    ) -> &mut Self {
         self.rec.set_buffer(buffer);
         self.rec.set_buffer_cfg(cfg);
         self
     }
 
     /// Sets the buffer configuration for metadata tracking
-    pub fn buffer_cfg(&'a mut self, cfg: crate::buffer::BufferCfg) -> &'a mut Self {
+    pub fn buffer_cfg(&mut self, cfg: crate::buffer::BufferCfg) -> &mut Self {
         self.rec.set_buffer_cfg(cfg);
         self
     }
@@ -497,7 +497,7 @@ where
     /// });
     /// ```
     #[cfg(feature = "json-serialize")]
-    pub fn with_remote_access(&'a mut self) -> &'a mut Self
+    pub fn with_remote_access(&mut self) -> &mut Self
     where
         T: crate::codec::RemoteSerialize + 'static,
     {
@@ -519,10 +519,10 @@ where
     /// * `input_key` - The record key to subscribe to as input
     /// * `build_fn` - Closure that configures the transform pipeline via `TransformBuilder`
     pub fn transform_raw<I, F>(
-        &'a mut self,
+        &mut self,
         input_key: impl crate::RecordKey,
         build_fn: F,
-    ) -> &'a mut Self
+    ) -> &mut Self
     where
         I: Send + Sync + Clone + Debug + 'static,
         F: FnOnce(
@@ -543,7 +543,7 @@ where
     /// Register a multi-input join transform (low-level API).
     ///
     /// Panics if a `.source()` or another `.transform()` is already registered.
-    pub fn transform_join_raw<F>(&'a mut self, build_fn: F) -> &'a mut Self
+    pub fn transform_join_raw<F>(&mut self, build_fn: F) -> &mut Self
     where
         R: aimdb_executor::JoinFanInRuntime,
         F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
@@ -561,7 +561,7 @@ where
     /// Derives this record from multiple input records. Available on any runtime
     /// that implements `JoinFanInRuntime`. Panics if a `.source()` or another
     /// `.transform()` is already registered.
-    pub fn transform_join<F>(&'a mut self, build_fn: F) -> &'a mut Self
+    pub fn transform_join<F>(&mut self, build_fn: F) -> &mut Self
     where
         R: aimdb_executor::JoinFanInRuntime,
         F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
@@ -583,7 +583,7 @@ where
     ///            .finish()
     /// });
     /// ```
-    pub fn link_to(&'a mut self, url: &str) -> OutboundConnectorBuilder<'a, T, R> {
+    pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T, R> {
         OutboundConnectorBuilder {
             registrar: self,
             url: url.to_string(),
@@ -608,7 +608,7 @@ where
     ///            .finish()
     /// });
     /// ```
-    pub fn link_from(&'a mut self, url: &str) -> InboundConnectorBuilder<'a, T, R> {
+    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T, R> {
         InboundConnectorBuilder {
             registrar: self,
             url: url.to_string(),
@@ -625,12 +625,16 @@ where
 // ============================================================================
 
 /// Builder for configuring outbound connector links (AimDB → External)
+///
+/// `'r` is the borrow of the registrar taken by `link_to()`; `'a` is the
+/// registrar's own borrow of the record being configured.
 pub struct OutboundConnectorBuilder<
+    'r,
     'a,
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::RuntimeAdapter + 'static,
 > {
-    registrar: &'a mut RecordRegistrar<'a, T, R>,
+    registrar: &'r mut RecordRegistrar<'a, T, R>,
     url: String,
     config: Vec<(String, String)>,
     serializer: Option<TypedSerializerFn<T>>,
@@ -638,7 +642,7 @@ pub struct OutboundConnectorBuilder<
     topic_provider: Option<crate::connector::TopicProviderFn>,
 }
 
-impl<'a, T, R> OutboundConnectorBuilder<'a, T, R>
+impl<'r, 'a, T, R> OutboundConnectorBuilder<'r, 'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::RuntimeAdapter + 'static,
@@ -759,7 +763,7 @@ where
     }
 
     /// Finalizes the connector registration
-    pub fn finish(self) -> &'a mut RecordRegistrar<'a, T, R> {
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, R> {
         use crate::connector::{ConnectorLink, ConnectorUrl};
 
         let url = ConnectorUrl::parse(&self.url)
@@ -877,12 +881,16 @@ where
 type TypedDeserializerFn<T> = Arc<dyn Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static>;
 
 /// Builder for configuring inbound connector links (External → AimDB)
+///
+/// `'r` is the borrow of the registrar taken by `link_from()`; `'a` is the
+/// registrar's own borrow of the record being configured.
 pub struct InboundConnectorBuilder<
+    'r,
     'a,
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::RuntimeAdapter + 'static,
 > {
-    registrar: &'a mut RecordRegistrar<'a, T, R>,
+    registrar: &'r mut RecordRegistrar<'a, T, R>,
     url: String,
     config: Vec<(String, String)>,
     deserializer: Option<TypedDeserializerFn<T>>,
@@ -890,7 +898,7 @@ pub struct InboundConnectorBuilder<
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
-impl<'a, T, R> InboundConnectorBuilder<'a, T, R>
+impl<'r, 'a, T, R> InboundConnectorBuilder<'r, 'a, T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
     R: aimdb_executor::RuntimeAdapter + 'static,
@@ -1009,7 +1017,7 @@ where
     /// - If the URL is invalid
     /// - If the record already has a `.source()` or `.transform()`
     ///   (local producer + inbound connector would race as last-writer-wins)
-    pub fn finish(self) -> &'a mut RecordRegistrar<'a, T, R> {
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, R> {
         use crate::connector::{ConnectorUrl, DeserializerKind, InboundConnectorLink};
 
         let url = ConnectorUrl::parse(&self.url)
@@ -1121,7 +1129,7 @@ pub trait RecordT<R: aimdb_executor::RuntimeAdapter + 'static>:
     type Config;
 
     /// Registers producer and consumer functions
-    fn register<'a>(reg: &'a mut RecordRegistrar<'a, Self, R>, cfg: &Self::Config);
+    fn register(reg: &mut RecordRegistrar<'_, Self, R>, cfg: &Self::Config);
 }
 
 #[cfg(test)]
@@ -1690,8 +1698,7 @@ mod tests {
         let extensions = crate::extensions::Extensions::new();
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
-        // Chain via finish() → &mut RecordRegistrar — the registrar's
-        // lifetime only permits one borrow chain at a time.
+        // Chained via finish() → &mut RecordRegistrar …
         reg.link_from("mqtt://broker/topic-a")
             .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish()
@@ -1699,6 +1706,31 @@ mod tests {
             .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
 
-        assert_eq!(rec.inbound_connectors().len(), 2);
+        // … and as separate statements: each call takes a fresh borrow, so
+        // the registrar is reusable after a chain ends (issue #130).
+        reg.link_from("mqtt://broker/topic-c")
+            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .finish();
+        reg.with_name("third-link");
+
+        assert_eq!(rec.inbound_connectors().len(), 3);
+    }
+
+    /// Registrar methods take fresh borrows (issue #130): separate
+    /// statements in a configure-style closure must compile.
+    #[test]
+    fn registrar_allows_separate_statements() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> = vec![];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.source_raw(|_p, _ctx| async move {});
+        reg.tap_raw(|_c, _ctx| async move {});
+
+        assert!(rec.has_producer());
+        assert_eq!(rec.consumer_count(), 1);
     }
 }

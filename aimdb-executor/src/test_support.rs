@@ -28,8 +28,14 @@ pub async fn assert_runtime_ops_contract(ops: &dyn RuntimeOps) {
     ops.sleep(core::time::Duration::ZERO).await;
 
     if let Some((secs, nanos)) = ops.unix_time() {
-        assert!(nanos < 1_000_000_000, "unix_time nanos out of range: {nanos}");
+        assert!(
+            nanos < 1_000_000_000,
+            "unix_time nanos out of range: {nanos}"
+        );
         // Sanity: any real wall clock reads after 2020-09-13 (1.6e9).
-        assert!(secs > 1_600_000_000, "unix_time seconds implausible: {secs}");
+        assert!(
+            secs > 1_600_000_000,
+            "unix_time seconds implausible: {secs}"
+        );
     }
 }
