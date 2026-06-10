@@ -16,6 +16,8 @@
 //! 1. **`RuntimeAdapter`** - Platform identity and metadata
 //! 2. **`TimeOps`** - Time operations (now, sleep, duration helpers)
 //! 3. **`Logger`** - Structured logging (info, debug, warn, error)
+//! 4. **`RuntimeOps`** - Object-safe bundle of the above (`Arc<dyn RuntimeOps>`)
+//!    for code that holds the runtime as a value instead of a type parameter
 //!
 //! Task execution is driven by the `AimDbRunner` returned from
 //! `AimDbBuilder::build()`, which collects every future the database needs
@@ -23,10 +25,17 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
 use core::future::Future;
 
 pub mod join;
+pub mod ops;
+#[doc(hidden)]
+pub mod test_support;
+
 pub use join::{JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
+pub use ops::{BoxFuture, LogLevel, RuntimeOps};
 
 // ============================================================================
 // Error Types

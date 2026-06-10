@@ -5,7 +5,6 @@
 
 use core::any::TypeId;
 use core::fmt::Debug;
-use core::marker::PhantomData;
 
 use alloc::{
     boxed::Box,
@@ -19,17 +18,13 @@ use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
 
 /// Shorthand for a heap-pinned, `Send`, `'static` future — the unit of work
-/// the `AimDbRunner` drives.
-pub type BoxFuture = core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
+/// the `AimDbRunner` drives. Canonical definition lives in `aimdb-executor`.
+pub type BoxFuture = aimdb_executor::BoxFuture;
 
-/// Type-erased on_start function stored in `AimDbBuilder::start_fns`.
-///
-/// Defined once here so `on_start()` (which stores) and `build()` (which
-/// downcasts) share the *exact same* type and a silent type mismatch cannot
-/// cause a runtime panic. Single alias regardless of `std`/`no_std`.
+/// `on_start` task stored in `AimDbBuilder::start_fns`, invoked at `build()`.
 type StartFnType<R> = Box<dyn FnOnce(Arc<R>) -> BoxFuture + Send>;
 
-/// Type-erased per-record future collector stored in `AimDbBuilder::spawn_fns`.
+/// Per-record future collector stored in `AimDbBuilder::spawn_fns`.
 ///
 /// At `build()` time each is invoked in topological order; the returned
 /// `Vec<BoxFuture>` is appended to the runner's accumulator.
@@ -294,20 +289,18 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Connector builders that will be invoked during build()
     connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder<R>>>,
 
-    /// Spawn functions with their keys
-    spawn_fns: Vec<(StringKey, Box<dyn core::any::Any + Send>)>,
+    /// Per-record future collectors with their keys. Always empty on the
+    /// `NoRuntime` typestate — `configure()` only exists once `R` is fixed.
+    spawn_fns: Vec<(StringKey, SpawnFnType<R>)>,
 
     /// Startup tasks registered via on_start() — spawned after build() completes.
-    /// Stored type-erased (`Box<Box<dyn FnOnce(Arc<R>) -> BoxFuture<…>>>`) to allow
-    /// the field to exist on the unparameterised NoRuntime builder too.
-    start_fns: Vec<Box<dyn core::any::Any + Send>>,
+    /// Always empty on the `NoRuntime` typestate — `on_start()` only exists
+    /// once `R` is fixed.
+    start_fns: Vec<StartFnType<R>>,
 
     /// Generic extension storage for external crates (e.g., persistence, metrics).
     /// Moved into AimDbInner during build() so it can be read on the live AimDb handle.
     extensions: Extensions,
-
-    /// PhantomData to track the runtime type parameter
-    _phantom: PhantomData<R>,
 }
 
 impl AimDbBuilder<NoRuntime> {
@@ -322,7 +315,6 @@ impl AimDbBuilder<NoRuntime> {
             spawn_fns: Vec::new(),
             start_fns: Vec::new(),
             extensions: Extensions::new(),
-            _phantom: PhantomData,
         }
     }
 
@@ -332,15 +324,14 @@ impl AimDbBuilder<NoRuntime> {
     ///
     /// # Type Safety Note
     ///
-    /// The `connector_builders` field is intentionally reset to `Vec::new()` during this
-    /// transition because connectors are parameterized by the runtime type:
-    ///
-    /// - Before: `Vec<Box<dyn ConnectorBuilder<NoRuntime>>>`
-    /// - After: `Vec<Box<dyn ConnectorBuilder<R>>>`
-    ///
-    /// These types are incompatible and cannot be transferred. However, this is not a bug
-    /// because `.with_connector()` is only available AFTER calling `.runtime()` (it's defined
-    /// in the `impl<R> where R: RuntimeAdapter` block, not in `impl AimDbBuilder<NoRuntime>`).
+    /// The `connector_builders`, `spawn_fns` and `start_fns` fields are
+    /// intentionally reset to `Vec::new()` during this transition: all three
+    /// are parameterized by the runtime type (`ConnectorBuilder<NoRuntime>` →
+    /// `ConnectorBuilder<R>`, etc.), and the `NoRuntime` instantiations are
+    /// incompatible with — and provably empty before — the typed ones, because
+    /// `.with_connector()`, `.configure()` and `.on_start()` are only available
+    /// AFTER calling `.runtime()` (they're defined in the
+    /// `impl<R> where R: RuntimeAdapter` block, not in `impl AimDbBuilder<NoRuntime>`).
     ///
     /// This means the type system **enforces** the correct call order:
     /// ```rust,ignore
@@ -360,9 +351,8 @@ impl AimDbBuilder<NoRuntime> {
             runtime: Some(rt),
             connector_builders: Vec::new(),
             spawn_fns: Vec::new(),
-            start_fns: self.start_fns,
+            start_fns: Vec::new(),
             extensions: self.extensions,
-            _phantom: PhantomData,
         }
     }
 }
@@ -407,11 +397,8 @@ where
         F: FnOnce(Arc<R>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
-        // Type-erase so the field can be shared with the `NoRuntime` builder struct.
-        // Uses the module-level `StartFnType<R>` alias — must stay in sync with
-        // the downcast in `build()`.
-        let boxed: StartFnType<R> = Box::new(move |runtime| Box::pin(f(runtime)));
-        self.start_fns.push(Box::new(boxed));
+        self.start_fns
+            .push(Box::new(move |runtime| Box::pin(f(runtime))));
         self
     }
 
@@ -494,7 +481,7 @@ where
     pub fn configure<T>(
         &mut self,
         key: impl RecordKey,
-        f: impl for<'a> FnOnce(&'a mut RecordRegistrar<'a, T, R>),
+        f: impl FnOnce(&mut RecordRegistrar<'_, T, R>),
     ) -> &mut Self
     where
         T: Send + Sync + 'static + Debug + Clone,
@@ -566,8 +553,7 @@ where
                     )
                 });
 
-            // Store the spawn function (type-erased in Box<dyn Any>)
-            self.spawn_fns.push((spawn_key, Box::new(spawn_fn)));
+            self.spawn_fns.push((spawn_key, spawn_fn));
         }
 
         self
@@ -776,7 +762,7 @@ where
         log_info!("Collecting futures for {} records", self.spawn_fns.len());
 
         // Build a lookup map from spawn_fns for topological ordering
-        let mut spawn_fn_map: HashMap<StringKey, Box<dyn core::any::Any + Send>> =
+        let mut spawn_fn_map: HashMap<StringKey, SpawnFnType<R>> =
             self.spawn_fns.into_iter().collect();
 
         // Execute collectors in topological order — transforms collect after their inputs.
@@ -787,15 +773,11 @@ where
                 continue;
             };
 
-            let Some(spawn_fn_any) = spawn_fn_map.remove(&key) else {
+            let Some(spawn_fn) = spawn_fn_map.remove(&key) else {
                 continue;
             };
 
-            let spawn_fn = spawn_fn_any
-                .downcast::<SpawnFnType<R>>()
-                .expect("spawn function type mismatch");
-
-            futures_acc.extend((*spawn_fn)(&runtime, &db, id)?);
+            futures_acc.extend(spawn_fn(&runtime, &db, id)?);
         }
 
         log_info!("Record future collection complete");
@@ -827,13 +809,8 @@ where
         if !self.start_fns.is_empty() {
             log_debug!("Collecting {} on_start future(s)", self.start_fns.len());
 
-            for (idx, start_fn_any) in self.start_fns.into_iter().enumerate() {
-                let start_fn = start_fn_any
-                    .downcast::<StartFnType<R>>()
-                    .unwrap_or_else(|_| {
-                        panic!("on_start fn[{idx}] type mismatch — this is a bug in aimdb-core")
-                    });
-                futures_acc.push((*start_fn)(runtime.clone()));
+            for start_fn in self.start_fns {
+                futures_acc.push(start_fn(runtime.clone()));
             }
         }
 
@@ -868,7 +845,10 @@ impl Default for AimDbBuilder<NoRuntime> {
 ///     .register_record::<Temperature>(&TemperatureConfig)
 ///     .build()?;
 /// ```
-pub struct AimDb<R: aimdb_executor::RuntimeAdapter + 'static> {
+// No struct-level bound: `SpawnFnType<R>` must be a well-formed type even for
+// the builder's `NoRuntime` typestate (where it is never instantiated). All
+// functionality lives on `R: RuntimeAdapter` impls.
+pub struct AimDb<R> {
     /// Internal state
     inner: Arc<AimDbInner>,
 
@@ -880,7 +860,7 @@ pub struct AimDb<R: aimdb_executor::RuntimeAdapter + 'static> {
     profiling_clock: crate::profiling::Clock,
 }
 
-impl<R: aimdb_executor::RuntimeAdapter + 'static> Clone for AimDb<R> {
+impl<R> Clone for AimDb<R> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),

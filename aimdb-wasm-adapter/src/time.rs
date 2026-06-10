@@ -185,3 +185,108 @@ impl TimeOps for WasmAdapter {
         }
     }
 }
+
+// ─── RuntimeOps (dyn-safe capability surface) ─────────────────────────────
+
+impl aimdb_executor::RuntimeOps for WasmAdapter {
+    fn name(&self) -> &'static str {
+        <Self as aimdb_executor::RuntimeAdapter>::runtime_name()
+    }
+
+    fn now_nanos(&self) -> u64 {
+        // `Performance.now()` is monotonic milliseconds since page load.
+        let now_ms = self.now();
+        self.duration_as_nanos(WasmDuration(now_ms.0))
+    }
+
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
+        {
+            // `Date.now()` is wall-clock milliseconds since the Unix epoch.
+            let ms = js_sys::Date::now();
+            if ms <= 0.0 {
+                return None;
+            }
+            let secs = (ms / 1000.0) as u64;
+            let sub_nanos = ((ms % 1000.0) * 1_000_000.0) as u32;
+            Some((secs, sub_nanos))
+        }
+
+        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
+        {
+            None
+        }
+    }
+
+    fn sleep(&self, d: core::time::Duration) -> aimdb_executor::BoxFuture {
+        extern crate alloc;
+        // `TimeOps::sleep`'s opaque return captures `&self`, so it cannot be
+        // boxed as `'static`; build the same future directly instead.
+        let ms = d.as_secs_f64() * 1000.0;
+
+        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
+        {
+            use futures_util::FutureExt;
+            let fut = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
+                &mut |resolve, _reject| {
+                    global_set_timeout(&resolve, ms as i32);
+                },
+            ))
+            .map(|_result| ());
+            // SAFETY rationale matches `TimeOps::sleep` above: wasm32 without
+            // atomics is single-threaded.
+            alloc::boxed::Box::pin(SendFuture(fut))
+        }
+
+        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
+        {
+            let _ = ms;
+            alloc::boxed::Box::pin(core::future::ready(()))
+        }
+    }
+
+    fn log(&self, level: aimdb_executor::LogLevel, msg: &str) {
+        use aimdb_executor::{LogLevel, Logger};
+        match level {
+            LogLevel::Debug => Logger::debug(self, msg),
+            LogLevel::Info => Logger::info(self, msg),
+            LogLevel::Warn => Logger::warn(self, msg),
+            LogLevel::Error => Logger::error(self, msg),
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_ops_tests {
+    use super::*;
+    use aimdb_executor::RuntimeOps;
+    use alloc::sync::Arc;
+
+    // Full async contract needs the browser event loop (setTimeout sleep).
+    #[cfg(target_arch = "wasm32")]
+    mod wasm {
+        use super::*;
+        use wasm_bindgen_test::wasm_bindgen_test;
+
+        wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+        #[wasm_bindgen_test]
+        async fn runtime_ops_contract() {
+            let ops: Arc<dyn RuntimeOps> = Arc::new(WasmAdapter);
+            aimdb_executor::test_support::assert_runtime_ops_contract(ops.as_ref()).await;
+        }
+    }
+
+    // Native fallback build: cover the sync surface and the dyn coercion.
+    // `log` is excluded — the wasm Logger forwards to web_sys console, which
+    // panics off-target (pre-existing); the browser test covers it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn runtime_ops_sync_surface() {
+        let ops: Arc<dyn RuntimeOps> = Arc::new(WasmAdapter);
+        assert_eq!(ops.name(), "wasm");
+        let t0 = ops.now_nanos();
+        assert!(ops.now_nanos() >= t0);
+        assert_eq!(ops.unix_time(), None);
+    }
+}

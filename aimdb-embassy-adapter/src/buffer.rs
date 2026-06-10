@@ -592,14 +592,19 @@ mod tests {
         core::panic!("defmt panic in host test")
     }
 
-    // Trivial time driver so `_embassy_time_now` resolves on the host. peek()
-    // never reads the clock; the driver only needs to exist for linking.
+    // Trivial time driver so `_embassy_time_now` resolves on the host. The
+    // clock is pinned at 0; `schedule_wake` wakes immediately so an
+    // already-expired `Timer` (e.g. `sleep(Duration::ZERO)` in the RuntimeOps
+    // contract test) completes on its next poll. Non-zero sleeps would spin
+    // forever — host tests must not use them.
     struct TestTimeDriver;
     impl embassy_time_driver::Driver for TestTimeDriver {
         fn now(&self) -> u64 {
             0
         }
-        fn schedule_wake(&self, _at: u64, _waker: &core::task::Waker) {}
+        fn schedule_wake(&self, _at: u64, waker: &core::task::Waker) {
+            waker.wake_by_ref();
+        }
     }
     embassy_time_driver::time_driver_impl!(static TEST_TIME_DRIVER: TestTimeDriver = TestTimeDriver);
 

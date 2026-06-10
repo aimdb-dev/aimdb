@@ -253,9 +253,9 @@ where
     /// immediately, producing no output). A `defmt::error!` is emitted, but set
     /// `CONSUMERS` high enough to avoid it altogether.
     fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
-        &'a mut self,
+        &mut self,
         buffer_type: EmbassyBufferType,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>;
+    ) -> &mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>;
 
     /// Registers a producer with additional context (e.g., hardware peripherals)
     ///
@@ -289,10 +289,10 @@ where
     /// }
     /// ```
     fn source_with_context<Ctx, F, Fut>(
-        &'a mut self,
+        &mut self,
         context: Ctx,
         f: F,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
+    ) -> &mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
     where
         Ctx: Send + Sync + 'static,
         F: FnOnce(aimdb_core::RuntimeContext<EmbassyAdapter>, aimdb_core::Producer<T>, Ctx) -> Fut
@@ -309,9 +309,9 @@ where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,
 {
     fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
-        &'a mut self,
+        &mut self,
         buffer_type: EmbassyBufferType,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter> {
+    ) -> &mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter> {
         use aimdb_core::buffer::{Buffer, BufferCfg};
         use alloc::boxed::Box;
 
@@ -340,10 +340,10 @@ where
     }
 
     fn source_with_context<Ctx, F, Fut>(
-        &'a mut self,
+        &mut self,
         context: Ctx,
         f: F,
-    ) -> &'a mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
+    ) -> &mut aimdb_core::RecordRegistrar<'a, T, EmbassyAdapter>
     where
         Ctx: Send + Sync + 'static,
         F: FnOnce(aimdb_core::RuntimeContext<EmbassyAdapter>, aimdb_core::Producer<T>, Ctx) -> Fut

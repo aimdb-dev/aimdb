@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`RuntimeOps` implemented for `TokioAdapter` (Issue #130, design 034 Phase 2).** The dyn-safe capability surface from `aimdb-executor`: `now_nanos()` reports nanoseconds since a process-global `OnceLock<Instant>` anchor (std `Instant` has no public epoch), `sleep` boxes `tokio::time::sleep`, `unix_time`/`log` forward to the existing `TimeOps`/`Logger` impls. Covered by the shared contract test plus a real-sleep monotonicity test.
 - **`TimeOps::unix_time()` implemented from the OS wall clock (Issue #120).** Returns `SystemTime::now()` since the Unix epoch as `(secs, subsec_nanos)`; `now()` stays monotonic for duration measurement. Supplies absolute timestamps to the runtime-neutral AimX server / remote-display paths.
 - **`TokioBuffer::peek()` (M15, Design 031).** Non-destructive buffer-native read backing AimX `record.get` / `TypedRecord::latest()`: `SingleLatest` (`Watch`) reads via `watch::Sender::borrow()`, `Mailbox` (`Notify`) clones the slot mutex, `SpmcRing` (`Broadcast`) returns `None` (no canonical latest). Unit tests cover all three buffer types (empty, populated, non-destructive, overwrite, drained).
 - **`tests/remote_access_validation.rs` integration test.** Asserts that a `.with_remote_access()` record with no buffer fails `build()`, and that the same record with a `SingleLatest` buffer builds — locking in the new build-time guard from `aimdb-core` (M15).

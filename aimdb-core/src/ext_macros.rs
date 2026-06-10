@@ -61,15 +61,15 @@ macro_rules! impl_record_registrar_ext {
         {
             /// Configures a buffer using inline configuration
             fn buffer(
-                &'a mut self,
+                &mut self,
                 cfg: $crate::buffer::BufferCfg,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>;
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>;
 
             /// Registers a producer with automatic runtime context injection
             fn source<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
@@ -79,9 +79,9 @@ macro_rules! impl_record_registrar_ext {
 
             /// Registers a consumer with automatic runtime context injection
             fn tap<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
@@ -93,10 +93,10 @@ macro_rules! impl_record_registrar_ext {
             /// Derives this record from an input record. Panics if a `.source()` or
             /// another `.transform()` is already registered.
             fn transform<I, F>(
-                &'a mut self,
+                &mut self,
                 input_key: impl $crate::RecordKey,
                 build_fn: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 I: Send + Sync + Clone + core::fmt::Debug + 'static,
                 F: FnOnce(
@@ -111,9 +111,9 @@ macro_rules! impl_record_registrar_ext {
             T: Send + Sync + Clone + core::fmt::Debug + 'static,
         {
             fn buffer(
-                &'a mut self,
+                &mut self,
                 cfg: $crate::buffer::BufferCfg,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime> {
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime> {
                 use $crate::buffer::Buffer;
 
                 extern crate alloc;
@@ -124,9 +124,9 @@ macro_rules! impl_record_registrar_ext {
             }
 
             fn source<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
@@ -141,9 +141,9 @@ macro_rules! impl_record_registrar_ext {
             }
 
             fn tap<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
@@ -157,10 +157,10 @@ macro_rules! impl_record_registrar_ext {
             }
 
             fn transform<I, F>(
-                &'a mut self,
+                &mut self,
                 input_key: impl $crate::RecordKey,
                 build_fn: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 I: Send + Sync + Clone + core::fmt::Debug + 'static,
                 F: FnOnce(
@@ -191,15 +191,15 @@ macro_rules! impl_record_registrar_ext {
         {
             /// Configures a buffer using inline configuration
             fn buffer(
-                &'a mut self,
+                &mut self,
                 cfg: $crate::buffer::BufferCfg,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>;
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>;
 
             /// Registers a producer with automatic runtime context injection
             fn source<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
@@ -209,9 +209,9 @@ macro_rules! impl_record_registrar_ext {
 
             /// Registers a consumer with automatic runtime context injection
             fn tap<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
@@ -220,10 +220,10 @@ macro_rules! impl_record_registrar_ext {
 
             /// Single-input reactive transform.
             fn transform<I, F>(
-                &'a mut self,
+                &mut self,
                 input_key: impl $crate::RecordKey,
                 build_fn: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 I: Send + Sync + Clone + core::fmt::Debug + 'static,
                 F: FnOnce(
@@ -238,9 +238,9 @@ macro_rules! impl_record_registrar_ext {
             T: Send + Sync + Clone + core::fmt::Debug + 'static,
         {
             fn buffer(
-                &'a mut self,
+                &mut self,
                 cfg: $crate::buffer::BufferCfg,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime> {
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime> {
                 use $crate::buffer::Buffer;
 
                 extern crate alloc;
@@ -251,9 +251,9 @@ macro_rules! impl_record_registrar_ext {
             }
 
             fn source<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Producer<T>) -> Fut
                     + Send
@@ -268,9 +268,9 @@ macro_rules! impl_record_registrar_ext {
             }
 
             fn tap<F, Fut>(
-                &'a mut self,
+                &mut self,
                 f: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 F: FnOnce($crate::RuntimeContext<$runtime>, $crate::Consumer<T>) -> Fut
                     + Send
@@ -284,10 +284,10 @@ macro_rules! impl_record_registrar_ext {
             }
 
             fn transform<I, F>(
-                &'a mut self,
+                &mut self,
                 input_key: impl $crate::RecordKey,
                 build_fn: F,
-            ) -> &'a mut $crate::RecordRegistrar<'a, T, $runtime>
+            ) -> &mut $crate::RecordRegistrar<'a, T, $runtime>
             where
                 I: Send + Sync + Clone + core::fmt::Debug + 'static,
                 F: FnOnce(
