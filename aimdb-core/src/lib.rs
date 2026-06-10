@@ -81,7 +81,10 @@ pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
-pub use typed_api::{Consumer, Producer, RecordRegistrar, RecordT, StageKind};
+pub use typed_api::{
+    Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
+    RecordT, StageKind,
+};
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // JSON codec (feature `json-serialize`, no_std + alloc compatible)

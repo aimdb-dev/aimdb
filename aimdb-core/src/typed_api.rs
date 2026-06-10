@@ -703,19 +703,13 @@ where
         self
     }
 
-    /// Sets the MQTT Quality of Service level
-    pub fn with_qos(mut self, qos: u8) -> Self {
-        self.config.push(("qos".to_string(), qos.to_string()));
-        self
-    }
-
-    /// Sets the MQTT retain flag
-    pub fn with_retain(mut self, retain: bool) -> Self {
-        self.config.push(("retain".to_string(), retain.to_string()));
-        self
-    }
-
-    /// Sets the publish timeout in milliseconds
+    /// Sets the operation timeout in milliseconds (the connector interprets
+    /// it; passed as the `timeout_ms` option — see
+    /// `ConnectorConfig::from_query`)
+    ///
+    /// Protocol-specific knobs (e.g. MQTT QoS/retain) are provided by the
+    /// connector crates as extension traits over this builder, or generically
+    /// via [`with_config`](Self::with_config).
     pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
         self.config
             .push(("timeout_ms".to_string(), timeout_ms.to_string()));
@@ -992,13 +986,13 @@ where
         self
     }
 
-    /// Sets the MQTT Quality of Service level
-    pub fn with_qos(mut self, qos: u8) -> Self {
-        self.config.push(("qos".to_string(), qos.to_string()));
-        self
-    }
-
-    /// Sets the publish timeout in milliseconds
+    /// Sets the operation timeout in milliseconds (the connector interprets
+    /// it; passed as the `timeout_ms` option — see
+    /// `ConnectorConfig::from_query`)
+    ///
+    /// Protocol-specific knobs (e.g. MQTT subscribe QoS) are provided by the
+    /// connector crates as extension traits over this builder, or generically
+    /// via [`with_config`](Self::with_config).
     pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
         self.config
             .push(("timeout_ms".to_string(), timeout_ms.to_string()));

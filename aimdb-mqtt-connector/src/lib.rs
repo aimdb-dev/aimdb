@@ -16,7 +16,7 @@
 //! ```rust,ignore
 //! use aimdb_core::AimDbBuilder;
 //! use aimdb_tokio_adapter::TokioAdapter;
-//! use aimdb_mqtt_connector::MqttConnector;
+//! use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt, MqttOutboundLinkExt};
 //! use std::sync::Arc;
 //!
 //! let runtime = Arc::new(TokioAdapter::new()?);
@@ -26,8 +26,10 @@
 //!     .with_connector(MqttConnector::new("mqtt://localhost:1883"))
 //!     .configure::<Temperature>(|reg| {
 //!         reg.source(temperature_producer)
-//!            // Outbound: Publish to MQTT
+//!            // Outbound: Publish to MQTT (QoS/retain via MqttLinkExt traits)
 //!            .link_to("mqtt://sensors/temperature")
+//!            .with_qos(1)
+//!            .with_retain(false)
 //!            .with_serializer_raw(|t| {
 //!                serde_json::to_vec(t)
 //!                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
@@ -71,8 +73,11 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(not(feature = "std"))]
 extern crate alloc;
+
+// MQTT knobs over core's generic link builders (works on every feature leg)
+pub mod link_ext;
+pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};
 
 // Platform-specific implementations
 #[cfg(feature = "tokio-runtime")]
