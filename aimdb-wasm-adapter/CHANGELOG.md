@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`RuntimeOps` implemented for `WasmAdapter` (Issue #130, design 034 Phase 2).** The dyn-safe capability surface from `aimdb-executor`: `now_nanos()` from `Performance.now()` (monotonic ms since page load), `unix_time()` from `Date.now()` (wall clock — the generic `TimeOps::unix_time` default still returns `None`), `sleep` boxes the setTimeout-Promise future, `log` forwards to the console-backed `Logger`. Browser contract test via `wasm_bindgen_test`; native fallback covered by a sync-surface test.
+
 ### Changed
 
 - **`record.set` write path routes through `Producer<T>` (M15, Design 031).** `bindings.rs` (`set`) and `ws_bridge.rs` now call `db.producer::<T>(key)?.produce(val)` instead of the removed `TypedRecord::produce`. Internal only — no `#[wasm_bindgen]` / JS API change.
