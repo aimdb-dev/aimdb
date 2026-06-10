@@ -239,6 +239,16 @@ pub trait AnyRecord: Send + Sync {
     /// Returns whether a producer service is registered
     fn has_producer(&self) -> bool;
 
+    /// Returns whether a buffer is configured
+    fn has_buffer(&self) -> bool;
+
+    /// Drains the configuration mistakes recorded during registration.
+    ///
+    /// Called by `AimDbBuilder::build()`, which fills in the record key and
+    /// reports every finding via
+    /// [`DbError::InvalidConfiguration`](crate::DbError::InvalidConfiguration).
+    fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError>;
+
     /// Returns whether a transform is registered for this record
     fn has_transform(&self) -> bool;
 
@@ -523,6 +533,12 @@ pub struct TypedRecord<
     /// `T: RemoteSerialize` bound is known at the call site.
     #[cfg(feature = "json-serialize")]
     remote_codec: Option<RecordCodec<T>>,
+
+    /// Configuration mistakes recorded during registration instead of
+    /// panicking (issue #133). Drained by `AimDbBuilder::build()`, which fills
+    /// in the record key and reports all of them via
+    /// [`DbError::InvalidConfiguration`](crate::DbError::InvalidConfiguration).
+    config_errors: Vec<crate::error::ConfigError>,
 }
 
 impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
@@ -546,7 +562,16 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
             writable: portable_atomic::AtomicBool::new(false),
             #[cfg(feature = "json-serialize")]
             remote_codec: None,
+            config_errors: Vec::new(),
         }
+    }
+
+    /// Records a configuration mistake to be reported from `build()`.
+    ///
+    /// Errors recorded here never panic; `build()` drains them (filling in
+    /// the record key) and fails with `DbError::InvalidConfiguration`.
+    pub(crate) fn push_config_error(&mut self, err: crate::error::ConfigError) {
+        self.config_errors.push(err);
     }
 
     /// Stage profiling metrics for this record (feature `profiling`).
@@ -566,9 +591,11 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     ///
     /// Long-running task that generates data via `producer.produce()`. Auto-spawned during `build()`.
     ///
-    /// # Panics
-    /// Panics if producer already set (one producer per record), if a transform is registered,
-    /// or if a `.link_from()` inbound connector is registered (all three would race on the buffer).
+    /// A producer is mutually exclusive with a `.transform()` and with any
+    /// `.link_from()` inbound connector (all three would race on the buffer),
+    /// and only one producer is allowed. Violations are recorded — not
+    /// panicked — and reported from `build()`; the conflicting registration
+    /// is skipped.
     pub fn set_producer<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
@@ -576,16 +603,31 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     {
         // Check for existing transform (mutual exclusion)
         if lock(&self.transform).is_some() {
-            panic!("Record already has a .transform(); cannot also have a .source().");
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                None,
+                "Record already has a .transform(); cannot also have a .source().",
+            ));
+            return;
         }
 
         if !self.inbound_connectors.is_empty() {
-            panic!("Record already has a .link_from(); cannot also have a .source().");
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                None,
+                "Record already has a .link_from(); cannot also have a .source().",
+            ));
+            return;
         }
 
         // Check if already set
         if lock(&self.producer).is_some() {
-            panic!("This record type already has a producer service");
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                None,
+                "This record type already has a producer service",
+            ));
+            return;
         }
 
         // Box the future-returning function
@@ -637,26 +679,41 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     ///
     /// A transform is mutually exclusive with `.source()` and with any
     /// `.link_from()` inbound connector — all three write to the same buffer
-    /// and would race as last-writer-wins. Panics if any of those are
-    /// already registered, or if a transform is already set.
+    /// and would race as last-writer-wins. Violations (including a second
+    /// transform) are recorded — not panicked — and reported from `build()`;
+    /// the conflicting registration is skipped.
     pub(crate) fn set_transform(
         &mut self,
         descriptor: crate::transform::TransformDescriptor<T, R>,
     ) {
         // Enforce mutual exclusion with .source()
         if lock(&self.producer).is_some() {
-            panic!("Record already has a .source(); cannot also have a .transform().");
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                None,
+                "Record already has a .source(); cannot also have a .transform().",
+            ));
+            return;
         }
 
         if !self.inbound_connectors.is_empty() {
-            panic!("Record already has a .link_from(); cannot also have a .transform().");
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                None,
+                "Record already has a .link_from(); cannot also have a .transform().",
+            ));
+            return;
         }
 
-        let mut slot = lock(&self.transform);
-        if slot.is_some() {
-            panic!("Record already has a .transform(); only one is allowed.");
+        if lock(&self.transform).is_some() {
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                None,
+                "Record already has a .transform(); only one is allowed.",
+            ));
+            return;
         }
-        *slot = Some(descriptor);
+        *lock(&self.transform) = Some(descriptor);
     }
 
     /// Returns whether a transform is registered for this record.
@@ -887,17 +944,28 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     ///
     /// Called by `.link_from()` builder API during record configuration.
     ///
-    /// # Panics
-    /// Panics if a `.source()` or `.transform()` is already registered.
-    /// All three write to the same buffer and would race as last-writer-wins.
+    /// An inbound connector is mutually exclusive with `.source()` and
+    /// `.transform()` — all three write to the same buffer and would race as
+    /// last-writer-wins. Violations are recorded — not panicked — and
+    /// reported from `build()`; the conflicting registration is skipped.
     /// Multiple inbound connectors on the same record are permitted (fan-in).
     pub fn add_inbound_connector(&mut self, link: crate::connector::InboundConnectorLink) {
         if lock(&self.producer).is_some() {
-            panic!("Record already has a .source(); cannot also have a .link_from().");
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                Some(alloc::format!("{}", link.url)),
+                "Record already has a .source(); cannot also have a .link_from().",
+            ));
+            return;
         }
 
         if lock(&self.transform).is_some() {
-            panic!("Record already has a .transform(); cannot also have a .link_from().");
+            self.push_config_error(crate::error::ConfigError::new(
+                "",
+                Some(alloc::format!("{}", link.url)),
+                "Record already has a .transform(); cannot also have a .link_from().",
+            ));
+            return;
         }
 
         self.inbound_connectors.push(link);
@@ -1158,6 +1226,14 @@ impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter
 
     fn has_producer(&self) -> bool {
         TypedRecord::has_producer(self)
+    }
+
+    fn has_buffer(&self) -> bool {
+        TypedRecord::has_buffer(self)
+    }
+
+    fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError> {
+        core::mem::take(&mut self.config_errors)
     }
 
     fn has_transform(&self) -> bool {

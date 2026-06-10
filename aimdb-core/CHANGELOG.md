@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **Phase 2 — panic-free builder validation; `build()` collects every configuration mistake (Issue #133, [design doc §3.4](../docs/design/034-technical-debt-review.md)).** One failure model instead of two: builder methods stay infallible and never panic on user mistakes; `build()` performs all validation and returns one `DbError::InvalidConfiguration { errors: Vec<ConfigError> }` (new variant + new public `ConfigError { record_key, url, message }` type, error code `0x4003`) carrying **every** finding from the run. Specifics:
+  - `TypedRecord::set_producer`/`set_transform`/`add_inbound_connector` mutual-exclusion violations and duplicate producers/transforms: recorded, conflicting registration skipped (observable: `has_producer()` stays `false` after a conflicting `.source()`).
+  - `OutboundConnectorBuilder::finish()`/`InboundConnectorBuilder::finish()`: invalid URL, missing serializer/deserializer, unregistered scheme, and the transform/source conflicts are recorded with record key + URL; the link is not registered and the registrar is returned as usual.
+  - The spawn-time factory panics (missing buffer, record lookup) are now build()-time checks: any record with an outbound or inbound link and no buffer fails `build()` with key + link URL. Consequence: `.buffer()` may be called after `.link_to()`/`.link_from()` — the finish()-time buffer check is gone.
+  - `configure()` with a key already registered under a different type: recorded, the closure is skipped (previously `assert!`).
+  - Duplicate record keys and `DependencyGraph` findings (cycles, unregistered transform inputs) fold into the same `InvalidConfiguration` report — callers matching on `DuplicateRecordKey`/`CyclicDependency` from `build()` must update.
+  - Surviving `panic!`/`expect`s on the builder path are internal invariants only, worded "this is a bug in aimdb-core". `AnyRecord` gains `has_buffer()` and `drain_config_errors()` (breaking for external implementors).
+
 - **Phase 2 — `RecordRegistrar` fluent methods take fresh borrows (Issue #130, [design doc §3.5](../docs/design/034-technical-debt-review.md)).** The methods previously took `&'a mut self` and returned `&'a mut Self` with `'a` = the struct's own lifetime parameter, so the first call borrowed the registrar for its entire remaining lifetime and only one unbroken chain per `configure` closure was possible. Now:
   - All fluent methods are `&mut self -> &mut Self`; separate statements (`reg.source_raw(…); reg.tap_raw(…);`) and registrar reuse after a chain work.
   - `configure`'s closure bound is `FnOnce(&mut RecordRegistrar<'_, T, R>)` (HRTB dropped) — existing closures compile unchanged.

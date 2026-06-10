@@ -763,11 +763,30 @@ where
     }
 
     /// Finalizes the connector registration
+    ///
+    /// Configuration mistakes — an invalid URL, a missing serializer, or an
+    /// unregistered scheme — are recorded instead of panicking: the link is
+    /// **not** registered and `build()` reports every finding via
+    /// `DbError::InvalidConfiguration`. The registrar is returned either way
+    /// so chained configuration keeps compiling; the failed `build()` is the
+    /// single error surface.
+    ///
+    /// The buffer requirement is validated by `build()` (calling `.buffer()`
+    /// after `.link_to()` is fine).
     pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, R> {
         use crate::connector::{ConnectorLink, ConnectorUrl};
+        use crate::error::ConfigError;
 
-        let url = ConnectorUrl::parse(&self.url)
-            .unwrap_or_else(|_| panic!("Invalid connector URL: {}", self.url));
+        let record_key = self.registrar.record_key.clone();
+
+        let Ok(url) = ConnectorUrl::parse(&self.url) else {
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Invalid connector URL",
+            ));
+            return self.registrar;
+        };
 
         let url_string = url.to_string();
         let scheme = url.scheme().to_string();
@@ -790,10 +809,13 @@ where
                 });
             crate::connector::SerializerKind::Raw(erased)
         } else {
-            panic!(
-                "Outbound connector requires a serializer. Call .with_serializer() or .with_serializer_raw() for {}",
-                self.url
-            );
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Outbound connector requires a serializer. \
+                 Call .with_serializer() or .with_serializer_raw()",
+            ));
+            return self.registrar;
         };
 
         link.serializer = Some(ser_kind);
@@ -809,10 +831,14 @@ where
             .any(|b| b.scheme() == scheme);
 
         if !has_connector {
-            panic!(
-                "No connector registered for scheme '{}'. Register via .with_connector() for {}",
-                scheme, url_string
-            );
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(url_string),
+                alloc::format!(
+                    "No connector registered for scheme '{scheme}'. Register via .with_connector()"
+                ),
+            ));
+            return self.registrar;
         }
 
         // Register the link as a profiling stage (so `.with_name()` can name it
@@ -834,26 +860,30 @@ where
         // Resolves the record at link-startup time (not per-message) and constructs a
         // `Consumer<T>` bound to a pre-resolved buffer handle — same pattern as the
         // build-time path in `TypedRecord::collect_consumer_futures` (design 029).
+        //
+        // The factory runs during build() after every record is registered and
+        // validated (including the linked-records-need-a-buffer check), so
+        // failures here are aimdb bugs, not user mistakes.
         {
             let record_key = self.registrar.record_key.clone();
             link.consumer_factory = Some(Arc::new(
                 move |db_any: Arc<dyn core::any::Any + Send + Sync>| {
-                    let db_ref = db_any
-                        .downcast_ref::<AimDb<R>>()
-                        .expect("Invalid db type in consumer factory");
+                    let db_ref = db_any.downcast_ref::<AimDb<R>>().expect(
+                        "consumer factory: AimDb downcast failed — this is a bug in aimdb-core",
+                    );
                     let typed_rec = db_ref
                         .inner()
                         .get_typed_record_by_key::<T, R>(&record_key)
                         .unwrap_or_else(|e| {
                             panic!(
-                                "outbound connector consumer factory: record '{}' lookup failed: {:?}",
-                                record_key, e
+                                "consumer factory: record '{record_key}' lookup failed ({e:?}) — \
+                                 this is a bug in aimdb-core"
                             )
                         });
                     let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
                         panic!(
-                            "outbound connector for '{}' requires a buffer (call .buffer(...) before .link_to(...))",
-                            record_key
+                            "consumer factory: record '{record_key}' has no buffer despite \
+                             build()-time validation — this is a bug in aimdb-core"
                         )
                     });
 
@@ -1009,45 +1039,55 @@ where
 
     /// Finalizes the inbound connector registration
     ///
-    /// # Panics
+    /// Configuration mistakes — an invalid URL, a missing deserializer, an
+    /// unregistered scheme, or a conflict with `.source()`/`.transform()`
+    /// (local producer + inbound connector would race as last-writer-wins) —
+    /// are recorded instead of panicking: the link is **not** registered and
+    /// `build()` reports every finding via `DbError::InvalidConfiguration`.
+    /// The registrar is returned either way so chained configuration keeps
+    /// compiling; the failed `build()` is the single error surface.
     ///
-    /// - If no buffer is configured (inbound connectors require a buffer)
-    /// - If no deserializer is provided
-    /// - If no connector is registered for the URL scheme
-    /// - If the URL is invalid
-    /// - If the record already has a `.source()` or `.transform()`
-    ///   (local producer + inbound connector would race as last-writer-wins)
+    /// The buffer requirement is validated by `build()` (calling `.buffer()`
+    /// after `.link_from()` is fine).
     pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, R> {
         use crate::connector::{ConnectorUrl, DeserializerKind, InboundConnectorLink};
+        use crate::error::ConfigError;
 
-        let url = ConnectorUrl::parse(&self.url)
-            .unwrap_or_else(|_| panic!("Invalid connector URL: {}", self.url));
+        let record_key = self.registrar.record_key.clone();
+
+        let Ok(url) = ConnectorUrl::parse(&self.url) else {
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Invalid connector URL",
+            ));
+            return self.registrar;
+        };
 
         let scheme = url.scheme().to_string();
 
-        // Validation: Buffer must exist for inbound connectors
-        if !self.registrar.rec.has_buffer() {
-            panic!(
-                "Inbound connector requires a buffer. Call .buffer() before .link_from() for record type {}",
-                core::any::type_name::<T>()
-            );
-        }
+        // NOTE: the buffer requirement is validated by `build()`, not here —
+        // `.buffer()` may legitimately be called after `.link_from()`.
 
         // Mutual exclusion with local producers — both write to the same
-        // buffer and would race as last-writer-wins. Builder-level check
-        // surfaces the URL in the message; `add_inbound_connector` enforces
-        // the same invariant from the other direction.
+        // buffer and would race as last-writer-wins. The check here carries
+        // the URL; `add_inbound_connector` enforces the same invariant from
+        // the other direction.
         if self.registrar.rec.has_transform() {
-            panic!(
-                "Record already has a .transform(); cannot also have a .link_from() for {}",
-                self.url
-            );
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Record already has a .transform(); cannot also have a .link_from().",
+            ));
+            return self.registrar;
         }
         if self.registrar.rec.has_producer() {
-            panic!(
-                "Record already has a .source(); cannot also have a .link_from() for {}",
-                self.url
-            );
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Record already has a .source(); cannot also have a .link_from().",
+            ));
+            return self.registrar;
         }
 
         // Resolve deserializer variant (mutually exclusive)
@@ -1060,10 +1100,13 @@ where
             });
             DeserializerKind::Raw(erased)
         } else {
-            panic!(
-                "Inbound connector requires a deserializer. Call .with_deserializer() or .with_deserializer_raw() for {}",
-                self.url
-            );
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Inbound connector requires a deserializer. \
+                 Call .with_deserializer() or .with_deserializer_raw()",
+            ));
+            return self.registrar;
         };
 
         // Validation: Connector builder must be registered
@@ -1074,10 +1117,14 @@ where
             .any(|b| b.scheme() == scheme);
 
         if !has_connector {
-            panic!(
-                "No connector registered for scheme '{}'. Register via .with_connector() for {}",
-                scheme, self.url
-            );
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                alloc::format!(
+                    "No connector registered for scheme '{scheme}'. Register via .with_connector()"
+                ),
+            ));
+            return self.registrar;
         }
 
         // Create inbound connector link
@@ -1088,19 +1135,21 @@ where
         link.topic_resolver = self.topic_resolver;
 
         // Add producer factory callback that captures type T and record key.
+        // The factory runs during build() after every record is registered and
+        // validated, so failures here are aimdb bugs, not user mistakes.
         {
             let record_key = self.registrar.record_key.clone();
             link = link.with_producer_factory(move |db_any| {
-                let db = db_any
-                    .downcast::<crate::builder::AimDb<R>>()
-                    .expect("Failed to downcast to AimDb");
+                let db = db_any.downcast::<crate::builder::AimDb<R>>().expect(
+                    "producer factory: AimDb downcast failed — this is a bug in aimdb-core",
+                );
                 let typed_rec = db
                     .inner()
                     .get_typed_record_by_key::<T, R>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
-                            "inbound connector producer factory: record '{}' lookup failed: {:?}",
-                            record_key, e
+                            "producer factory: record '{record_key}' lookup failed ({e:?}) — \
+                             this is a bug in aimdb-core"
                         )
                     });
                 Box::new(Producer::<T>::new(typed_rec.writer_handle()))
@@ -1410,9 +1459,16 @@ mod tests {
         ));
     }
 
+    /// Drains the configuration errors a registrar/setter recorded on `rec`.
+    fn drain_errors(
+        rec: &mut crate::typed_record::TypedRecord<TestRecord, MockRuntime>,
+    ) -> Vec<crate::error::ConfigError> {
+        use crate::typed_record::AnyRecord;
+        rec.drain_config_errors()
+    }
+
     #[test]
-    #[should_panic(expected = "Inbound connector requires a deserializer")]
-    fn inbound_finish_panics_without_deserializer() {
+    fn inbound_finish_without_deserializer_records_error() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
@@ -1424,8 +1480,17 @@ mod tests {
 
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
-        // No deserializer set — should panic
+        // No deserializer set — error recorded, link not registered
         reg.link_from("mqtt://broker/topic").finish();
+
+        assert!(rec.inbound_connectors().is_empty());
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .message
+            .contains("Inbound connector requires a deserializer"));
+        assert_eq!(errors[0].record_key, "test::Record");
+        assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/topic"));
     }
 
     // ====================================================================
@@ -1565,8 +1630,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Outbound connector requires a serializer")]
-    fn outbound_finish_panics_without_serializer() {
+    fn outbound_finish_without_serializer_records_error() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
@@ -1578,8 +1642,40 @@ mod tests {
 
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
-        // No serializer set — should panic
+        // No serializer set — error recorded, link not registered
         reg.link_to("mqtt://broker/topic").finish();
+
+        assert!(rec.outbound_connectors().is_empty());
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .message
+            .contains("Outbound connector requires a serializer"));
+        assert_eq!(errors[0].record_key, "test::Record");
+        assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/topic"));
+    }
+
+    #[test]
+    fn finish_with_unregistered_scheme_records_error() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        // No connector builders registered at all
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> = vec![];
+        let extensions = crate::extensions::Extensions::new();
+
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+        reg.link_to("mqtt://broker/topic")
+            .with_serializer_raw(|r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
+            .finish();
+
+        assert!(rec.outbound_connectors().is_empty());
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .message
+            .contains("No connector registered for scheme 'mqtt'"));
+        assert_eq!(errors[0].record_key, "test::Record");
     }
 
     // ====================================================================
@@ -1601,10 +1697,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "Record already has a .source(); cannot also have a .link_from() for mqtt://broker/topic"
-    )]
-    fn link_from_after_source_panics() {
+    fn link_from_after_source_records_error() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
         rec.set_producer(|_p, _ctx| async move {});
@@ -1619,13 +1712,18 @@ mod tests {
         reg.link_from("mqtt://broker/topic")
             .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
+
+        assert!(rec.inbound_connectors().is_empty());
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .message
+            .contains("Record already has a .source(); cannot also have a .link_from()."));
+        assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/topic"));
     }
 
     #[test]
-    #[should_panic(
-        expected = "Record already has a .transform(); cannot also have a .link_from() for mqtt://broker/topic"
-    )]
-    fn link_from_after_transform_panics() {
+    fn link_from_after_transform_records_error() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
         rec.set_transform(dummy_transform_descriptor());
@@ -1640,11 +1738,18 @@ mod tests {
         reg.link_from("mqtt://broker/topic")
             .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
+
+        assert!(rec.inbound_connectors().is_empty());
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .message
+            .contains("Record already has a .transform(); cannot also have a .link_from()."));
+        assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/topic"));
     }
 
     #[test]
-    #[should_panic(expected = "Record already has a .link_from(); cannot also have a .source().")]
-    fn source_after_link_from_panics() {
+    fn source_after_link_from_records_error() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
@@ -1661,13 +1766,17 @@ mod tests {
         }
 
         rec.set_producer(|_p, _ctx| async move {});
+
+        assert!(!rec.has_producer(), "conflicting producer must be skipped");
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .message
+            .contains("Record already has a .link_from(); cannot also have a .source()."));
     }
 
     #[test]
-    #[should_panic(
-        expected = "Record already has a .link_from(); cannot also have a .transform()."
-    )]
-    fn transform_after_link_from_panics() {
+    fn transform_after_link_from_records_error() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
@@ -1684,6 +1793,16 @@ mod tests {
         }
 
         rec.set_transform(dummy_transform_descriptor());
+
+        assert!(
+            !rec.has_transform(),
+            "conflicting transform must be skipped"
+        );
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .message
+            .contains("Record already has a .link_from(); cannot also have a .transform()."));
     }
 
     #[test]
@@ -1732,5 +1851,117 @@ mod tests {
 
         assert!(rec.has_producer());
         assert_eq!(rec.consumer_count(), 1);
+    }
+
+    // ====================================================================
+    // build()-level validation tests (issue #133)
+    // ====================================================================
+
+    #[derive(Debug, Clone)]
+    struct OtherRecord;
+
+    /// Connector builder whose `build()` contributes nothing — for tests
+    /// that must get through the connector phase.
+    struct NoopConnectorBuilder;
+
+    impl crate::connector::ConnectorBuilder<MockRuntime> for NoopConnectorBuilder {
+        fn build<'a>(
+            &'a self,
+            _db: &'a crate::AimDb<MockRuntime>,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn scheme(&self) -> &str {
+            "mqtt"
+        }
+    }
+
+    /// Acceptance criterion (issue #133): a builder with three distinct
+    /// mistakes reports all three from one `build()` call.
+    #[tokio::test]
+    async fn build_reports_all_configuration_mistakes_at_once() {
+        let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
+
+        // Mistake 1: outbound link with no serializer
+        builder.configure::<TestRecord>("rec.a", |reg| {
+            reg.link_to("mqtt://broker/a").finish();
+        });
+        // Mistake 2: two .source() registrations on one record
+        builder.configure::<TestRecord>("rec.b", |reg| {
+            reg.source_raw(|_p, _ctx| async move {});
+            reg.source_raw(|_p, _ctx| async move {});
+        });
+        // Mistake 3: key re-registered with a different type
+        builder.configure::<TestRecord>("rec.c", |_reg| {});
+        builder.configure::<OtherRecord>("rec.c", |_reg| {});
+
+        let Err(err) = builder.build().await else {
+            panic!("build must fail");
+        };
+        let crate::DbError::InvalidConfiguration { errors } = err else {
+            panic!("expected InvalidConfiguration, got {err:?}");
+        };
+        assert_eq!(errors.len(), 3, "expected 3 errors, got: {errors:?}");
+        assert!(errors.iter().any(|e| e.record_key == "rec.a"
+            && e.url.as_deref() == Some("mqtt://broker/a")
+            && e.message.contains("requires a serializer")));
+        assert!(errors.iter().any(
+            |e| e.record_key == "rec.b" && e.message.contains("already has a producer service")
+        ));
+        assert!(errors
+            .iter()
+            .any(|e| e.record_key == "rec.c" && e.message.contains("different type")));
+    }
+
+    /// `.buffer()` after `.link_from()` is legitimate now that the buffer
+    /// requirement is validated by `build()` instead of `finish()`.
+    #[tokio::test]
+    async fn buffer_after_link_from_is_valid() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+
+        builder.configure::<TestRecord>("rec.x", |reg| {
+            reg.link_from("mqtt://broker/x")
+                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+            // Buffer configured AFTER the link — order-independent.
+            reg.buffer_raw(Box::new(MockBuffer));
+        });
+
+        builder.build().await.expect("build must succeed");
+    }
+
+    /// A linked record without a buffer fails at build() — previously this
+    /// panicked at spawn time, deep inside a connector factory closure.
+    #[tokio::test]
+    async fn linked_record_without_buffer_fails_build() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+
+        builder.configure::<TestRecord>("rec.x", |reg| {
+            reg.link_from("mqtt://broker/x")
+                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+        });
+
+        let Err(err) = builder.build().await else {
+            panic!("build must fail");
+        };
+        let crate::DbError::InvalidConfiguration { errors } = err else {
+            panic!("expected InvalidConfiguration, got {err:?}");
+        };
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("requires a buffer"));
+        assert_eq!(errors[0].record_key, "rec.x");
+        assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/x"));
     }
 }

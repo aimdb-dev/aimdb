@@ -197,12 +197,10 @@ async fn test_type_mismatch_error() {
     }
 }
 
-/// Test: Duplicate key error (registering same key twice panics at configure time)
-///
-/// Note: The current implementation panics during configure() rather than
-/// returning an error during build(). This is a fail-fast design choice.
+/// Test: Re-registering a key with a different type is collected by
+/// configure() and reported from build() (issue #133 — builder methods never
+/// panic on user mistakes).
 #[tokio::test]
-#[should_panic(expected = "already registered with different type")]
 async fn test_duplicate_key_error() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
@@ -213,10 +211,17 @@ async fn test_duplicate_key_error() {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    // Try to register second record with same key - should panic
+    // Re-register the same key with a different type — recorded, not panicked
     builder.configure::<AppConfig>("shared.key", |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
+
+    let Err(DbError::InvalidConfiguration { errors }) = builder.build().await else {
+        panic!("build() must fail with InvalidConfiguration");
+    };
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].record_key, "shared.key");
+    assert!(errors[0].message.contains("different type"));
 }
 
 /// Test: RecordId remains stable and can be used for O(1) access
