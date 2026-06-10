@@ -301,6 +301,12 @@ pub struct AimDbBuilder<R = NoRuntime> {
     /// Generic extension storage for external crates (e.g., persistence, metrics).
     /// Moved into AimDbInner during build() so it can be read on the live AimDb handle.
     extensions: Extensions,
+
+    /// Builder-level configuration mistakes (e.g. re-registering a key with a
+    /// different type), recorded instead of panicking and reported — together
+    /// with the per-record errors — by `build()` via
+    /// [`DbError::InvalidConfiguration`].
+    config_errors: Vec<crate::error::ConfigError>,
 }
 
 impl AimDbBuilder<NoRuntime> {
@@ -315,6 +321,7 @@ impl AimDbBuilder<NoRuntime> {
             spawn_fns: Vec::new(),
             start_fns: Vec::new(),
             extensions: Extensions::new(),
+            config_errors: Vec::new(),
         }
     }
 
@@ -353,6 +360,7 @@ impl AimDbBuilder<NoRuntime> {
             spawn_fns: Vec::new(),
             start_fns: Vec::new(),
             extensions: self.extensions,
+            config_errors: self.config_errors,
         }
     }
 }
@@ -495,17 +503,24 @@ where
 
         let (rec, is_new_record) = match record_index {
             Some(idx) => {
-                // Use existing record
+                // Use existing record. A key re-registered with a different
+                // type is a user mistake: record it (reported from build())
+                // and skip the closure — a registrar for the wrong `T`
+                // cannot even be constructed.
                 let (_, existing_type, record) = &mut self.records[idx];
-                assert!(
-                    *existing_type == type_id,
-                    "StringKey '{}' already registered with different type",
-                    record_key.as_str()
-                );
+                if *existing_type != type_id {
+                    self.config_errors.push(crate::error::ConfigError::new(
+                        record_key.as_str(),
+                        None,
+                        "key already registered with a different type",
+                    ));
+                    return self;
+                }
                 (
-                    record
-                        .as_typed_mut::<T, R>()
-                        .expect("type mismatch in record registry"),
+                    record.as_typed_mut::<T, R>().expect(
+                        "record registry type mismatch despite TypeId check — \
+                         this is a bug in aimdb-core",
+                    ),
                     false,
                 )
             }
@@ -515,9 +530,10 @@ where
                     .push((record_key, type_id, Box::new(TypedRecord::<T, R>::new())));
                 let (_, _, record) = self.records.last_mut().unwrap();
                 (
-                    record
-                        .as_typed_mut::<T, R>()
-                        .expect("type mismatch in record registry"),
+                    record.as_typed_mut::<T, R>().expect(
+                        "record registry type mismatch despite TypeId check — \
+                         this is a bug in aimdb-core",
+                    ),
                     true,
                 )
             }
@@ -645,6 +661,16 @@ where
     /// `DbResult<(AimDb<R>, AimDbRunner)>` — the handle (cloneable) and the
     /// non-`Clone` runner that owns the collected futures.
     ///
+    /// # Errors
+    ///
+    /// `build()` is the single surface for configuration mistakes: everything
+    /// recorded during configuration (conflicting `.source()`/`.transform()`/
+    /// `.link_from()`, missing serializers, unregistered schemes, …) plus the
+    /// build-time checks here (record validation, linked records without a
+    /// buffer, duplicate keys, dependency-graph cycles) is collected and
+    /// returned as one [`DbError::InvalidConfiguration`] carrying **all**
+    /// findings — one run surfaces every mistake.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -657,22 +683,56 @@ where
     /// let handle = db.clone();              // clone freely before runner.run()
     /// runner.run().await;                   // drives everything to completion
     /// ```
-    pub async fn build(self) -> DbResult<(AimDb<R>, AimDbRunner)>
+    pub async fn build(mut self) -> DbResult<(AimDb<R>, AimDbRunner)>
     where
         R: crate::RuntimeForProfiling,
     {
-        // Validate all records
-        for (key, _, record) in &self.records {
-            record.validate().map_err(|msg| {
-                DbError::runtime_error(alloc::format!(
-                    "Record '{}' validation failed: {}",
+        use crate::error::ConfigError;
+
+        // ── Validation pass: collect every configuration mistake before any
+        // effectful phase runs (issue #133). Nothing returns early here.
+        let mut errors = core::mem::take(&mut self.config_errors);
+
+        for (key, _, record) in self.records.iter_mut() {
+            // Mistakes recorded during configuration — fill in the record key
+            // the setters didn't have.
+            for mut e in record.drain_config_errors() {
+                if e.record_key.is_empty() {
+                    e.record_key = key.as_str().to_string();
+                }
+                errors.push(e);
+            }
+
+            // Record-level validation (e.g. remote access without a buffer).
+            if let Err(msg) = record.validate() {
+                errors.push(ConfigError::new(key.as_str(), None, msg));
+            }
+
+            // Connector links subscribe to / produce into the record's buffer;
+            // a linked record without one only surfaced at spawn time before.
+            let has_links =
+                record.outbound_connector_count() > 0 || !record.inbound_connectors().is_empty();
+            if has_links && !record.has_buffer() {
+                let url = record
+                    .outbound_connectors()
+                    .first()
+                    .map(|l| l.url.to_string())
+                    .or_else(|| {
+                        record
+                            .inbound_connectors()
+                            .first()
+                            .map(|l| l.url.to_string())
+                    });
+                errors.push(ConfigError::new(
                     key.as_str(),
-                    msg
-                ))
-            })?;
+                    url,
+                    "linked record requires a buffer (call .buffer(...))",
+                ));
+            }
         }
 
-        // Ensure runtime is set
+        // Ensure runtime is set. Unreachable through the public API — the
+        // typed builder only exists once `.runtime()` was called.
         let runtime = self
             .runtime
             .ok_or_else(|| DbError::runtime_error("runtime not set (use .runtime())"))?;
@@ -685,17 +745,16 @@ where
         let mut types: Vec<TypeId> = Vec::with_capacity(record_count);
         let mut keys: Vec<StringKey> = Vec::with_capacity(record_count);
 
-        for (i, (key, type_id, record)) in self.records.into_iter().enumerate() {
-            let id = RecordId::new(i as u32);
-
-            // Check for duplicate keys (should not happen if configure() is used correctly)
+        for (key, type_id, record) in self.records.into_iter() {
+            // Duplicate keys (should not happen if configure() is used
+            // correctly): collect and skip so every mistake is reported.
             if by_key.contains_key(&key) {
-                return Err(DbError::DuplicateRecordKey {
-                    key: key.as_str().to_string(),
-                });
+                errors.push(ConfigError::new(key.as_str(), None, "duplicate record key"));
+                continue;
             }
 
             // Build index structures
+            let id = RecordId::new(storages.len() as u32);
             storages.push(record);
             by_key.insert(key, id);
             by_type.entry(type_id).or_default().push(id);
@@ -726,8 +785,20 @@ where
             })
             .collect();
 
-        // Build and validate the dependency graph
-        let dependency_graph = DependencyGraph::build_and_validate(&record_infos)?;
+        // Build and validate the dependency graph; fold its findings (cycles,
+        // unregistered transform inputs) into the collected errors.
+        let dependency_graph = match DependencyGraph::build_and_validate(&record_infos) {
+            Ok(graph) => graph,
+            Err(e) => {
+                errors.push(ConfigError::new("", None, alloc::format!("{e}")));
+                return Err(DbError::InvalidConfiguration { errors });
+            }
+        };
+
+        // All validation done — report every collected mistake at once.
+        if !errors.is_empty() {
+            return Err(DbError::InvalidConfiguration { errors });
+        }
 
         log_debug!(
             "Dependency graph built successfully ({} nodes, {} edges, topo order: {:?})",

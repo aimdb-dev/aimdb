@@ -67,7 +67,7 @@ impl<R> RuntimeForProfiling for R {}
 
 // Public API exports
 pub use context::RuntimeContext;
-pub use error::{DbError, DbResult};
+pub use error::{ConfigError, DbError, DbResult};
 pub use extensions::Extensions;
 
 // Runtime trait re-exports from aimdb-executor

@@ -31,6 +31,67 @@ use thiserror::Error;
 #[cfg(feature = "std")]
 use std::io;
 
+/// One configuration mistake found while configuring an `AimDbBuilder`.
+///
+/// Builder methods never panic on user mistakes; they record one of these and
+/// `build()` reports **all** of them at once via
+/// [`DbError::InvalidConfiguration`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigError {
+    /// Key of the record the mistake belongs to. Errors recorded before the
+    /// key is known (inside `TypedRecord` setters) carry an empty key that
+    /// `build()` fills in when draining.
+    pub record_key: String,
+    /// Connector URL, for link-related mistakes.
+    pub url: Option<String>,
+    /// Human-readable description of the mistake.
+    pub message: String,
+}
+
+impl ConfigError {
+    /// Builds a `ConfigError`.
+    pub fn new(
+        record_key: impl Into<String>,
+        url: Option<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            record_key: record_key.into(),
+            url,
+            message: message.into(),
+        }
+    }
+}
+
+impl core::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Graph-level findings (cycles) span records and carry no single key.
+        if !self.record_key.is_empty() {
+            write!(f, "record '{}'", self.record_key)?;
+            if let Some(url) = &self.url {
+                write!(f, " ({url})")?;
+            }
+            write!(f, ": ")?;
+        } else if let Some(url) = &self.url {
+            write!(f, "({url}): ")?;
+        }
+        write!(f, "{}", self.message)
+    }
+}
+
+/// Joins collected configuration errors for `InvalidConfiguration`'s `Display`.
+fn join_config_errors(errors: &[ConfigError]) -> String {
+    use core::fmt::Write;
+    let mut out = String::new();
+    for (i, e) in errors.iter().enumerate() {
+        if i > 0 {
+            out.push_str("; ");
+        }
+        let _ = write!(out, "{e}");
+    }
+    out
+}
+
 /// Streamlined error type for AimDB operations
 ///
 /// Only includes errors that are actually used in the codebase,
@@ -99,6 +160,11 @@ pub enum DbError {
     /// Missing required configuration parameter
     #[error("Missing configuration parameter: {parameter}")]
     MissingConfiguration { parameter: String },
+
+    /// Configuration mistakes collected by `AimDbBuilder::build()` — one
+    /// entry per finding, so a single run surfaces every mistake.
+    #[error("invalid configuration ({} error(s)): {}", errors.len(), join_config_errors(errors))]
+    InvalidConfiguration { errors: Vec<ConfigError> },
 
     // ===== Runtime Errors (0x7002 & 0x5000-0x5FFF) =====
     /// Runtime execution error (task spawning, scheduling, etc.)
@@ -299,7 +365,10 @@ impl DbError {
 
     /// Returns true if this is a configuration-related error
     pub fn is_configuration_error(&self) -> bool {
-        matches!(self, DbError::MissingConfiguration { .. })
+        matches!(
+            self,
+            DbError::MissingConfiguration { .. } | DbError::InvalidConfiguration { .. }
+        )
     }
 
     /// Returns true if this is a runtime error
@@ -341,6 +410,7 @@ impl DbError {
 
             // Configuration errors: 0x4000-0x4FFF
             DbError::MissingConfiguration { .. } => 0x4002,
+            DbError::InvalidConfiguration { .. } => 0x4003,
 
             // Resource errors: 0x5000-0x5FFF
             DbError::ResourceUnavailable { .. } => 0x5002,
@@ -487,6 +557,8 @@ impl DbError {
                 Self::prepend_context(&mut parameter, context);
                 DbError::MissingConfiguration { parameter }
             }
+            // Collected configuration errors carry their own per-entry context
+            DbError::InvalidConfiguration { .. } => self,
             DbError::RuntimeError { mut message } => {
                 Self::prepend_context(&mut message, context);
                 DbError::RuntimeError { message }
@@ -624,6 +696,31 @@ mod tests {
             "DbError size ({} bytes) exceeds 64-byte embedded limit",
             size
         );
+    }
+
+    #[test]
+    fn test_invalid_configuration_display_and_code() {
+        let err = DbError::InvalidConfiguration {
+            errors: vec![
+                ConfigError::new(
+                    "rec.a",
+                    Some("mqtt://broker/a".to_string()),
+                    "missing serializer",
+                ),
+                ConfigError::new("rec.b", None, "duplicate producer"),
+            ],
+        };
+        assert_eq!(err.error_code(), 0x4003);
+        assert_eq!(err.error_category(), 0x4000);
+        assert!(err.is_configuration_error());
+
+        let s = err.to_string();
+        assert!(s.contains("2 error(s)"), "got: {s}");
+        assert!(
+            s.contains("record 'rec.a' (mqtt://broker/a): missing serializer"),
+            "got: {s}"
+        );
+        assert!(s.contains("record 'rec.b': duplicate producer"), "got: {s}");
     }
 
     #[test]
