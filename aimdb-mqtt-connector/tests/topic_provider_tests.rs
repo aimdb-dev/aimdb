@@ -355,58 +355,48 @@ async fn test_mixed_static_and_dynamic_topics() {
 }
 
 // ============================================================================
-// Test TopicProviderAny Type Erasure
+// Test TopicProvider as a typed trait object
 // ============================================================================
 
 #[test]
-fn test_topic_provider_type_erasure() {
-    use aimdb_core::connector::{TopicProviderAny, TopicProviderWrapper};
-    use std::any::Any;
+fn test_topic_provider_as_trait_object() {
+    use aimdb_core::connector::TopicProvider;
+    use std::sync::Arc;
 
-    let provider = TopicProviderWrapper::new(SensorIdTopicProvider);
+    // Providers are stored as Arc<dyn TopicProvider<T>> and stay typed
+    // end-to-end (design 036 W1) — a wrong-type call is unrepresentable.
+    let provider: Arc<dyn TopicProvider<Temperature>> = Arc::new(SensorIdTopicProvider);
 
-    // Correct type: should return Some
     let temp = Temperature::new("kitchen", 22.0);
-    let temp_any: &dyn Any = &temp;
-    assert_eq!(
-        provider.topic_any(temp_any),
-        Some("sensors/temp/kitchen".into())
-    );
-
-    // Wrong type: should return None (type mismatch)
-    let wrong_type = "not a temperature";
-    let wrong_any: &dyn Any = &wrong_type;
-    assert_eq!(provider.topic_any(wrong_any), None);
+    assert_eq!(provider.topic(&temp), Some("sensors/temp/kitchen".into()));
 }
 
 // ============================================================================
 // Test: Simulate Connector Topic Resolution Logic
 // ============================================================================
 //
-// These tests simulate EXACTLY what the MQTT connector does internally:
+// These tests simulate EXACTLY what the fused outbound reader does internally
+// while it still holds the typed value (design 036 W1):
 // ```rust
-// let topic = topic_provider
-//     .as_ref()
-//     .and_then(|provider| provider.topic_any(&*value_any))
-//     .unwrap_or_else(|| default_topic.clone());
+// let dest = topic.as_ref().and_then(|p| p.topic(&value));
+// // ...later, in the pump:
+// let dest = msg.dest.unwrap_or_else(|| default_topic.clone());
 // ```
 
-/// Simulates the connector's topic resolution for outbound messages
+/// Simulates the fused reader's topic resolution for outbound messages
 fn resolve_topic_like_connector(
     default_topic: &str,
-    topic_provider: Option<&dyn aimdb_core::connector::TopicProviderAny>,
-    value: &dyn std::any::Any,
+    topic_provider: Option<&dyn aimdb_core::connector::TopicProvider<Temperature>>,
+    value: &Temperature,
 ) -> String {
     topic_provider
-        .and_then(|provider| provider.topic_any(value))
+        .and_then(|provider| provider.topic(value))
         .unwrap_or_else(|| default_topic.to_string())
 }
 
 #[test]
 fn test_connector_topic_resolution_with_dynamic_provider() {
-    use aimdb_core::connector::TopicProviderWrapper;
-
-    let provider = TopicProviderWrapper::new(SensorIdTopicProvider);
+    let provider = SensorIdTopicProvider;
     let default_topic = "sensors/temp/default";
 
     // Test 1: Dynamic topic is returned when provider returns Some
@@ -427,9 +417,7 @@ fn test_connector_topic_resolution_with_dynamic_provider() {
 
 #[test]
 fn test_connector_topic_resolution_fallback_to_default() {
-    use aimdb_core::connector::TopicProviderWrapper;
-
-    let provider = TopicProviderWrapper::new(FallbackTopicProvider);
+    let provider = FallbackTopicProvider;
     let default_topic = "sensors/temp/default";
 
     // Test 1: Provider returns Some → use dynamic topic
@@ -455,9 +443,7 @@ fn test_connector_topic_resolution_no_provider() {
 
 #[test]
 fn test_connector_topic_resolution_with_threshold_provider() {
-    use aimdb_core::connector::TopicProviderWrapper;
-
-    let provider = TopicProviderWrapper::new(ThresholdTopicProvider { threshold: 30.0 });
+    let provider = ThresholdTopicProvider { threshold: 30.0 };
     let default_topic = "sensors/temp/normal";
 
     // Normal temperature → fallback (provider returns None)

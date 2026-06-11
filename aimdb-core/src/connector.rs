@@ -83,46 +83,65 @@ impl std::fmt::Display for SerializeError {
 #[cfg(feature = "std")]
 impl std::error::Error for SerializeError {}
 
-/// Type alias for serializer callbacks (reduces type complexity)
+/// One serialized record update, produced by a fused [`SerializedReader`]
 ///
-/// Requires the `alloc` feature for `Arc` and `Vec` (available in both std and no_std+alloc).
-/// Serializers convert record values to bytes for publishing to external systems.
-///
-/// # Current Implementation
-///
-/// Returns `Vec<u8>` which requires heap allocation. This works in:
-/// - ✅ `std` environments (full standard library)
-/// - ✅ `no_std + alloc` environments (embedded with allocator, e.g., ESP32, STM32 with heap)
-/// - ❌ `no_std` without `alloc` (bare-metal MCUs without allocator)
-///
-/// # Future Considerations
-///
-/// For zero-allocation embedded environments, future versions may support buffer-based
-/// serialization using `&mut [u8]` output or static lifetime slices.
-pub type SerializerFn =
-    Arc<dyn Fn(&dyn core::any::Any) -> Result<Vec<u8>, SerializeError> + Send + Sync>;
-
-/// Type alias for context-aware type-erased serializer callbacks
-///
-/// Like `SerializerFn`, but receives the concrete [`RuntimeContext`](crate::RuntimeContext)
-/// for platform-independent timestamps and logging during serialization.
-pub type ContextSerializerFn = Arc<
-    dyn Fn(crate::RuntimeContext, &dyn core::any::Any) -> Result<Vec<u8>, SerializeError>
-        + Send
-        + Sync,
->;
-
-/// Which serializer variant is registered for an outbound link
-///
-/// Enforces mutual exclusivity between raw value-only serializers
-/// and context-aware serializers.
-#[derive(Clone)]
-pub enum SerializerKind {
-    /// Plain value-only serializer (from `.with_serializer_raw()`)
-    Raw(SerializerFn),
-    /// Context-aware serializer (from `.with_serializer()`)
-    Context(ContextSerializerFn),
+/// Carries the wire payload plus the destination resolved by the link's
+/// [`TopicProvider`] while the typed value was still in hand — the last
+/// erasure crossing the old `topic_any(&dyn Any)` path required.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerializedValue {
+    /// Dynamic destination resolved by the link's `TopicProvider<T>`;
+    /// `None` means use the route's default topic (from the URL).
+    pub dest: Option<String>,
+    /// Wire payload from the link's serializer.
+    ///
+    /// `Vec<u8>` requires heap allocation; works on `std` and
+    /// `no_std + alloc` (not bare-metal without an allocator).
+    pub payload: Vec<u8>,
 }
+
+/// Type alias for the future returned by [`SerializedReader::recv`]
+///
+/// Manual boxed future for object safety — same pattern as the rest of this
+/// module (`#[async_trait]` would drag in `std`).
+pub type RecvSerializedFuture<'a> =
+    Pin<Box<dyn Future<Output = DbResult<SerializedValue>> + Send + 'a>>;
+
+/// A subscription to one record, fused with destination resolution and
+/// serialization at registration time — no `dyn Any` crosses this boundary
+/// (design 036 W1).
+pub trait SerializedReader: Send {
+    /// Yield the next successfully serialized value.
+    ///
+    /// `ctx` is threaded per call (not captured) for context-aware
+    /// serializers (design 026). Buffer errors propagate unchanged:
+    /// `DbError::BufferLagged` means values were skipped but the reader
+    /// recovered; any other error means the buffer is gone. Serialization
+    /// failures are logged and skipped inside the reader.
+    fn recv<'a>(&'a mut self, ctx: &'a crate::RuntimeContext) -> RecvSerializedFuture<'a>;
+}
+
+/// A record's outbound wire interface, built where the record type `T` is
+/// known (`OutboundConnectorBuilder::finish`) and consumed by the pumps as
+/// bytes. Replaces the erased `ConsumerTrait` + serializer + topic-provider
+/// triple (design 036 W1).
+pub trait SerializedSource: Send + Sync {
+    /// Subscribe to the record's updates.
+    ///
+    /// Synchronous and infallible — the buffer handle is pre-resolved at
+    /// construction (design 029).
+    fn subscribe(&self) -> Box<dyn SerializedReader>;
+}
+
+/// Type alias for source factory callback (alloc feature)
+///
+/// Takes the live [`AimDb`] and returns the fused [`SerializedSource`].
+/// This allows capturing the record type T at link_to() time while storing
+/// the factory in a type-erased ConnectorLink. The factory runs once at
+/// route-collection time, not per message.
+///
+/// Available in both `std` and `no_std + alloc` environments.
+pub type SourceFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn SerializedSource> + Send + Sync>;
 
 // ============================================================================
 // TopicProvider - Dynamic topic/destination routing
@@ -137,7 +156,9 @@ pub enum SerializerKind {
 /// # Type Safety
 ///
 /// The trait is generic over `T`, providing compile-time type safety
-/// at the implementation site. Type erasure occurs only at storage time.
+/// at the implementation site. The provider stays typed end-to-end: it is
+/// fused into the link's [`SerializedSource`] at registration time and
+/// called with `&T` while the value is in hand (design 036 W1).
 ///
 /// # no_std Compatibility
 ///
@@ -163,66 +184,6 @@ pub trait TopicProvider<T>: Send + Sync {
     /// to the static topic from the `link_to()` URL.
     fn topic(&self, value: &T) -> Option<String>;
 }
-
-/// Type-erased topic provider trait (internal)
-///
-/// Allows storing providers for different types in a unified collection.
-/// The concrete type is recovered via `Any::downcast_ref()` at runtime.
-pub trait TopicProviderAny: Send + Sync {
-    /// Get the topic for a type-erased value
-    ///
-    /// Returns `None` if the value type doesn't match or if the provider
-    /// returns `None` for this value.
-    fn topic_any(&self, value: &dyn core::any::Any) -> Option<String>;
-}
-
-/// Wrapper struct for type-erasing a `TopicProvider<T>`
-///
-/// This wraps a concrete `TopicProvider<T>` implementation and provides
-/// the `TopicProviderAny` interface for type-erased storage.
-///
-/// Uses `PhantomData<fn(T) -> T>` instead of `PhantomData<T>` to avoid
-/// inheriting Send/Sync bounds from T (the data type isn't stored).
-pub struct TopicProviderWrapper<T, P>
-where
-    T: 'static,
-    P: TopicProvider<T>,
-{
-    provider: P,
-    // Use fn(T) -> T to avoid Send/Sync variance issues with T
-    _phantom: core::marker::PhantomData<fn(T) -> T>,
-}
-
-impl<T, P> TopicProviderWrapper<T, P>
-where
-    T: 'static,
-    P: TopicProvider<T>,
-{
-    /// Create a new wrapper for a topic provider
-    pub fn new(provider: P) -> Self {
-        Self {
-            provider,
-            _phantom: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<T, P> TopicProviderAny for TopicProviderWrapper<T, P>
-where
-    T: 'static,
-    P: TopicProvider<T> + Send + Sync,
-{
-    fn topic_any(&self, value: &dyn core::any::Any) -> Option<String> {
-        value
-            .downcast_ref::<T>()
-            .and_then(|v| self.provider.topic(v))
-    }
-}
-
-/// Type alias for stored topic provider (no_std compatible)
-///
-/// Uses `Arc<dyn TopicProviderAny>` for shared ownership across async tasks.
-pub type TopicProviderFn = Arc<dyn TopicProviderAny>;
 
 /// Parsed connector URL with protocol, host, port, and credentials
 ///
@@ -441,8 +402,9 @@ impl ConnectorClient {
 
 /// Configuration for a connector link
 ///
-/// Stores the parsed URL and configuration until the record is built.
-/// The actual client creation and handler spawning happens during the build phase.
+/// Stores the parsed URL, configuration, and the fused source factory until
+/// the record is built. The actual client creation and handler spawning
+/// happens during the build phase.
 #[derive(Clone)]
 pub struct ConnectorLink {
     /// Parsed connector URL
@@ -451,36 +413,17 @@ pub struct ConnectorLink {
     /// Additional configuration options (protocol-specific)
     pub config: Vec<(String, String)>,
 
-    /// Serialization callback that converts record values to bytes for publishing
+    /// Fused source factory (alloc feature)
     ///
-    /// Either a plain value-only serializer (`Raw`) or a context-aware
-    /// serializer (`Context`) that receives `RuntimeContext` for timestamps
-    /// and logging.
-    ///
-    /// If `None`, the connector must provide a default serialization mechanism or fail.
-    ///
-    /// Available in both `std` and `no_std` (with `alloc` feature) environments.
-    pub serializer: Option<SerializerKind>,
-
-    /// Consumer factory callback (alloc feature)
-    ///
-    /// Creates `ConsumerTrait` from the live [`AimDb`] to enable type-safe subscription.
-    /// The factory captures the record type T at link_to() configuration time,
-    /// allowing the connector to subscribe without knowing T at compile time.
-    ///
-    /// Mirrors the producer_factory pattern used for inbound connectors.
+    /// Takes the live [`AimDb`] and returns the [`SerializedSource`] whose
+    /// readers yield destination + payload directly (subscribe → recv →
+    /// resolve topic → serialize, all typed inside). Captures the record
+    /// type T at link_to() configuration time — `finish()` validates the
+    /// serializer is present before registering the link, so the factory is
+    /// always set.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    pub consumer_factory: Option<ConsumerFactoryFn>,
-
-    /// Optional dynamic topic provider
-    ///
-    /// When set, the provider is called with each value to determine the
-    /// topic/destination dynamically. If the provider returns `None`,
-    /// the static topic from the URL is used as fallback.
-    ///
-    /// Available in both `std` and `no_std + alloc` environments.
-    pub topic_provider: Option<TopicProviderFn>,
+    pub source_factory: SourceFactoryFn,
 }
 
 impl Debug for ConnectorLink {
@@ -488,34 +431,18 @@ impl Debug for ConnectorLink {
         f.debug_struct("ConnectorLink")
             .field("url", &self.url)
             .field("config", &self.config)
-            .field(
-                "serializer",
-                &self.serializer.as_ref().map(|s| match s {
-                    SerializerKind::Raw(_) => "<raw>",
-                    SerializerKind::Context(_) => "<context>",
-                }),
-            )
-            .field(
-                "consumer_factory",
-                &self.consumer_factory.as_ref().map(|_| "<function>"),
-            )
-            .field(
-                "topic_provider",
-                &self.topic_provider.as_ref().map(|_| "<function>"),
-            )
+            .field("source_factory", &"<factory>")
             .finish()
     }
 }
 
 impl ConnectorLink {
-    /// Creates a new connector link from a URL
-    pub fn new(url: ConnectorUrl) -> Self {
+    /// Creates a new connector link from a URL and source factory
+    pub fn new(url: ConnectorUrl, source_factory: SourceFactoryFn) -> Self {
         Self {
             url,
             config: Vec::new(),
-            serializer: None,
-            consumer_factory: None,
-            topic_provider: None,
+            source_factory,
         }
     }
 
@@ -525,14 +452,14 @@ impl ConnectorLink {
         self
     }
 
-    /// Creates a consumer using the stored factory (alloc feature)
+    /// Creates the fused serialized source using the stored factory.
     ///
-    /// Invokes the consumer factory with the live database to create a
-    /// ConsumerTrait instance. Returns None if no factory is configured.
+    /// Runs once at route-collection time; the readers it hands out are the
+    /// per-message path (no `Box<dyn Any>`, design 036 W1).
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    pub fn create_consumer(&self, db: &AimDb) -> Option<Box<dyn ConsumerTrait>> {
-        self.consumer_factory.as_ref().map(|f| f(db))
+    pub fn create_source(&self, db: &AimDb) -> Box<dyn SerializedSource> {
+        (self.source_factory)(db)
     }
 }
 
@@ -577,54 +504,6 @@ pub type IngestFactoryFn = Arc<dyn Fn(&AimDb) -> IngestFn + Send + Sync>;
 ///
 /// Works in both `std` and `no_std + alloc` environments.
 pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
-
-/// Type alias for consumer factory callback (alloc feature)
-///
-/// Takes the live [`AimDb`] and returns a boxed `ConsumerTrait`. This allows
-/// capturing the record type T at link_to() time while storing the factory
-/// in a type-erased ConnectorLink.
-///
-/// Mirrors the ProducerFactoryFn pattern for symmetry between inbound and outbound.
-///
-/// Available in both `std` and `no_std + alloc` environments.
-pub type ConsumerFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn ConsumerTrait> + Send + Sync>;
-
-/// Type-erased consumer trait for outbound routing
-///
-/// Mirrors ProducerTrait but for consumption. Allows connectors to subscribe
-/// to typed values without knowing the concrete type T at compile time.
-///
-/// # Implementation Note
-///
-/// Like ProducerTrait, this uses manual futures instead of `#[async_trait]`
-/// to enable `no_std` compatibility.
-pub trait ConsumerTrait: Send + Sync {
-    /// Subscribe to typed values from this record
-    ///
-    /// Returns a type-erased reader that can be polled for `Box<dyn Any>` values.
-    /// The connector will downcast to the expected type after deserialization.
-    /// Infallible since M14 — subscription is a pre-resolved buffer handle.
-    fn subscribe_any<'a>(&'a self) -> SubscribeAnyFuture<'a>;
-}
-
-/// Type alias for the future returned by `ConsumerTrait::subscribe_any`
-type SubscribeAnyFuture<'a> = Pin<Box<dyn Future<Output = Box<dyn AnyReader>> + Send + 'a>>;
-
-/// Type alias for the future returned by `AnyReader::recv_any`
-type RecvAnyFuture<'a> =
-    Pin<Box<dyn Future<Output = DbResult<Box<dyn core::any::Any + Send>>> + Send + 'a>>;
-
-/// Helper trait for type-erased reading
-///
-/// Allows reading values from a buffer without knowing the concrete type at compile time.
-/// The value is returned as `Box<dyn Any>` and must be downcast by the caller.
-pub trait AnyReader: Send {
-    /// Receive a type-erased value from the buffer
-    ///
-    /// Returns `Box<dyn Any>` which must be downcast to the concrete type.
-    /// Returns an error if the buffer is closed or an I/O error occurs.
-    fn recv_any<'a>(&'a mut self) -> RecvAnyFuture<'a>;
-}
 
 /// Configuration for an inbound connector link (External → AimDB)
 ///
@@ -996,32 +875,20 @@ mod tests {
     }
 
     #[test]
-    fn test_topic_provider_type_erasure() {
-        use super::{TopicProviderAny, TopicProviderWrapper};
-
-        let provider: Arc<dyn TopicProviderAny> =
-            Arc::new(TopicProviderWrapper::new(TestTopicProvider));
+    fn test_topic_provider_as_trait_object() {
+        // Providers are stored as Arc<dyn TopicProvider<T>> — typed, no
+        // erasure (design 036 W1).
+        let provider: Arc<dyn super::TopicProvider<TestTemperature>> =
+            Arc::new(TestTopicProvider);
         let temp = TestTemperature {
             sensor_id: "kitchen-001".into(),
             celsius: 22.5,
         };
 
         assert_eq!(
-            provider.topic_any(&temp),
+            provider.topic(&temp),
             Some("sensors/temp/kitchen-001".into())
         );
-    }
-
-    #[test]
-    fn test_topic_provider_type_mismatch() {
-        use super::{TopicProviderAny, TopicProviderWrapper};
-
-        let provider: Arc<dyn TopicProviderAny> =
-            Arc::new(TopicProviderWrapper::new(TestTopicProvider));
-        let wrong_type = "not a temperature";
-
-        // Type mismatch returns None (falls back to default topic)
-        assert_eq!(provider.topic_any(&wrong_type), None);
     }
 
     #[test]
@@ -1038,27 +905,22 @@ mod tests {
             }
         }
 
-        use super::{TopicProviderAny, TopicProviderWrapper};
-
-        let provider: Arc<dyn TopicProviderAny> =
-            Arc::new(TopicProviderWrapper::new(OptionalTopicProvider));
+        let provider: Arc<dyn super::TopicProvider<TestTemperature>> =
+            Arc::new(OptionalTopicProvider);
 
         // Non-empty sensor_id returns dynamic topic
         let temp_with_id = TestTemperature {
             sensor_id: "abc".into(),
             celsius: 20.0,
         };
-        assert_eq!(
-            provider.topic_any(&temp_with_id),
-            Some("sensors/abc".into())
-        );
+        assert_eq!(provider.topic(&temp_with_id), Some("sensors/abc".into()));
 
         // Empty sensor_id returns None (fallback)
         let temp_without_id = TestTemperature {
             sensor_id: String::new(),
             celsius: 20.0,
         };
-        assert_eq!(provider.topic_any(&temp_without_id), None);
+        assert_eq!(provider.topic(&temp_without_id), None);
     }
 
     // ========================================================================
