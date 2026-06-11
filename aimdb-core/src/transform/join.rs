@@ -48,6 +48,17 @@ fn join_channel() -> (
 /// Passed to the event loop inside the closure registered with [`JoinBuilder::on_triggers`].
 /// Use [`JoinTrigger::index`] to branch on the source input and
 /// [`JoinTrigger::as_input`] to downcast the value to the concrete type.
+///
+/// # Why this carries `Box<dyn Any>`
+///
+/// This is the one deliberate exception to the data-plane de-erasure
+/// (design 036 W1): a join fans N *differently-typed* inputs into a single
+/// trigger channel, and the user's `on_triggers` closure branches on them
+/// via [`JoinTrigger::as_input`] — the erasure *is* the public API here, not
+/// an implementation accident. Removing it would mean N channels or a
+/// generated input enum, i.e. a different feature. The cost (one box +
+/// downcast per join input value) is confined to this module and applies
+/// only to explicit user-built joins, never to the connector spine.
 pub enum JoinTrigger {
     Input {
         index: usize,

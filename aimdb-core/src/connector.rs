@@ -51,9 +51,6 @@ pub enum SerializeError {
     /// Output buffer is too small for the serialized data
     BufferTooSmall,
 
-    /// Type mismatch in serializer (wrong type passed)
-    TypeMismatch,
-
     /// Invalid data that cannot be serialized
     InvalidData,
 }
@@ -63,7 +60,6 @@ impl defmt::Format for SerializeError {
     fn format(&self, f: defmt::Formatter) {
         match self {
             Self::BufferTooSmall => defmt::write!(f, "BufferTooSmall"),
-            Self::TypeMismatch => defmt::write!(f, "TypeMismatch"),
             Self::InvalidData => defmt::write!(f, "InvalidData"),
         }
     }
@@ -74,7 +70,6 @@ impl std::fmt::Display for SerializeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BufferTooSmall => write!(f, "Output buffer too small"),
-            Self::TypeMismatch => write!(f, "Type mismatch in serializer"),
             Self::InvalidData => write!(f, "Invalid data for serialization"),
         }
     }
@@ -336,70 +331,6 @@ impl fmt::Display for ConnectorUrl {
     }
 }
 
-/// Connector client types (type-erased for storage)
-///
-/// This enum allows storing different connector client types in a unified way.
-/// Actual protocol implementations will downcast to their concrete types.
-///
-/// # Design Note
-///
-/// This is intentionally minimal - actual client types are defined by
-/// user extensions. The core only provides the infrastructure.
-///
-/// Works in both `std` and `no_std` (with `alloc`) environments.
-#[derive(Clone)]
-pub enum ConnectorClient {
-    /// MQTT client (protocol-specific, user-provided)
-    Mqtt(Arc<dyn core::any::Any + Send + Sync>),
-
-    /// Kafka producer (protocol-specific, user-provided)
-    Kafka(Arc<dyn core::any::Any + Send + Sync>),
-
-    /// HTTP client (protocol-specific, user-provided)
-    Http(Arc<dyn core::any::Any + Send + Sync>),
-
-    /// Generic connector for custom protocols
-    Generic {
-        protocol: String,
-        client: Arc<dyn core::any::Any + Send + Sync>,
-    },
-}
-
-impl Debug for ConnectorClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ConnectorClient::Mqtt(_) => write!(f, "ConnectorClient::Mqtt(..)"),
-            ConnectorClient::Kafka(_) => write!(f, "ConnectorClient::Kafka(..)"),
-            ConnectorClient::Http(_) => write!(f, "ConnectorClient::Http(..)"),
-            ConnectorClient::Generic { protocol, .. } => {
-                write!(f, "ConnectorClient::Generic({})", protocol)
-            }
-        }
-    }
-}
-
-impl ConnectorClient {
-    /// Downcasts to a concrete client type
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use rumqttc::AsyncClient;
-    ///
-    /// if let Some(mqtt_client) = connector.downcast_ref::<Arc<AsyncClient>>() {
-    ///     // Use the MQTT client
-    /// }
-    /// ```
-    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-        match self {
-            ConnectorClient::Mqtt(arc) => arc.downcast_ref::<T>(),
-            ConnectorClient::Kafka(arc) => arc.downcast_ref::<T>(),
-            ConnectorClient::Http(arc) => arc.downcast_ref::<T>(),
-            ConnectorClient::Generic { client, .. } => client.downcast_ref::<T>(),
-        }
-    }
-}
-
 /// Configuration for a connector link
 ///
 /// Stores the parsed URL, configuration, and the fused source factory until
@@ -585,12 +516,6 @@ impl InboundConnectorLink {
             .and_then(|resolver| resolver())
             .unwrap_or_else(|| self.url.resource_id())
     }
-}
-
-/// Configuration for an outbound connector link (AimDB → External)
-pub struct OutboundConnectorLink {
-    pub url: ConnectorUrl,
-    pub config: Vec<(String, String)>,
 }
 
 /// Parses a connector URL string into structured components
