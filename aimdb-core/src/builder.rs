@@ -1224,13 +1224,14 @@ impl AimDb {
     /// Collects inbound connector routes for automatic router construction (std only)
     ///
     /// Iterates all records, filters their inbound_connectors by scheme,
-    /// and returns routes with producer creation callbacks.
+    /// and returns routes with fused ingest callbacks (deserialize + produce
+    /// in one typed closure — no `Box<dyn Any>` per message).
     ///
     /// # Arguments
     /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
     ///
     /// # Returns
-    /// Vector of tuples: (topic, producer_trait, deserializer)
+    /// Vector of tuples: (topic, ingest)
     ///
     /// The topic is resolved dynamically if a `TopicResolverFn` is configured,
     /// otherwise the static topic from the URL is used.
@@ -1245,11 +1246,7 @@ impl AimDb {
     pub fn collect_inbound_routes(
         &self,
         scheme: &str,
-    ) -> Vec<(
-        String,
-        Box<dyn crate::connector::ProducerTrait>,
-        crate::connector::DeserializerKind,
-    )> {
+    ) -> Vec<(String, crate::connector::IngestFn)> {
         let mut routes = Vec::new();
 
         for record in &self.inner.storages {
@@ -1264,10 +1261,8 @@ impl AimDb {
                 // Resolve topic: dynamic (from resolver) or static (from URL)
                 let topic = link.resolve_topic();
 
-                // Create producer using the stored factory
-                if let Some(producer) = link.create_producer(self) {
-                    routes.push((topic, producer, link.deserializer.clone()));
-                }
+                // Create the fused ingest callback using the stored factory
+                routes.push((topic, link.create_ingest(self)));
             }
         }
 

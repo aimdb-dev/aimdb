@@ -88,6 +88,7 @@ pub use profiling::{RecordProfilingMetrics, StageMetrics, StageProfilingInfo};
 // Connector Infrastructure exports
 pub use connector::TopicResolverFn;
 pub use connector::{ConnectorClient, ConnectorLink, ConnectorUrl, SerializeError};
+pub use connector::{IngestFactoryFn, IngestFn};
 pub use connector::{TopicProvider, TopicProviderAny, TopicProviderFn, TopicProviderWrapper};
 
 // Router exports for connector implementations

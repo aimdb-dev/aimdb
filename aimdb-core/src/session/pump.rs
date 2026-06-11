@@ -156,9 +156,10 @@ pub fn pump_source(db: &AimDb, scheme: &str, mut src: impl Source + 'static) -> 
         );
 
         while let Some((topic, payload)) = src.next().await {
-            // `route` deserializes and fans out to producers; it drops + logs on a
-            // full producer buffer and never returns a fatal error.
-            if let Err(_e) = router.route(&topic, &payload, Some(&ctx)).await {
+            // `route` deserializes and fans out to producers (synchronously —
+            // the fused ingest path never awaits); it drops + logs on a full
+            // producer buffer and never returns a fatal error.
+            if let Err(_e) = router.route(&topic, &payload, &ctx) {
                 log_error!(
                     "pump_source: failed to route message on '{}': {}",
                     topic,

@@ -536,43 +536,29 @@ impl ConnectorLink {
     }
 }
 
-/// Type alias for type-erased deserializer callbacks
+/// Fused inbound ingest callback: deserialize + produce in one typed closure
 ///
-/// Converts raw bytes to a boxed Any that can be downcast to the concrete type.
-/// This allows storing deserializers for different types in a unified collection.
-pub type DeserializerFn =
-    Arc<dyn Fn(&[u8]) -> Result<Box<dyn core::any::Any + Send>, String> + Send + Sync>;
+/// Built where the record type `T` is known (`InboundConnectorBuilder::finish`),
+/// so no `Box<dyn Any>` crosses the connector boundary per message. The closure
+/// captures the typed producer and deserializer; callers only see bytes.
+///
+/// Synchronous by design: `Producer<T>::produce` is sync and infallible
+/// (design 029, pre-resolved write handle), so the only failure is the user
+/// deserializer's — reported as the same `String` the deserializer API uses.
+///
+/// The [`RuntimeContext`](crate::RuntimeContext) is threaded per call (not
+/// captured) for context-aware deserializers (design 026).
+pub type IngestFn = Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<(), String> + Send + Sync>;
 
-/// Type alias for context-aware type-erased deserializer callbacks
+/// Type alias for ingest factory callback (alloc feature)
 ///
-/// Like `DeserializerFn`, but receives the concrete [`RuntimeContext`](crate::RuntimeContext)
-/// for platform-independent timestamps and logging during deserialization.
-pub type ContextDeserializerFn = Arc<
-    dyn Fn(crate::RuntimeContext, &[u8]) -> Result<Box<dyn core::any::Any + Send>, String>
-        + Send
-        + Sync,
->;
-
-/// Which deserializer variant is registered for an inbound link
-///
-/// Enforces mutual exclusivity between raw bytes-only deserializers
-/// and context-aware deserializers.
-#[derive(Clone)]
-pub enum DeserializerKind {
-    /// Plain bytes-only deserializer (from `.with_deserializer_raw()`)
-    Raw(DeserializerFn),
-    /// Context-aware deserializer (from `.with_deserializer()`)
-    Context(ContextDeserializerFn),
-}
-
-/// Type alias for producer factory callback (alloc feature)
-///
-/// Takes the live [`AimDb`] and returns a boxed `ProducerTrait`. This allows
+/// Takes the live [`AimDb`] and returns the fused [`IngestFn`]. This allows
 /// capturing the record type T at link_from() time while storing the factory
-/// in a type-erased InboundConnectorLink.
+/// in a type-erased InboundConnectorLink. The factory runs once at
+/// route-collection time, not per message.
 ///
 /// Available in both `std` and `no_std + alloc` environments.
-pub type ProducerFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn ProducerTrait> + Send + Sync>;
+pub type IngestFactoryFn = Arc<dyn Fn(&AimDb) -> IngestFn + Send + Sync>;
 
 /// Topic resolver function for inbound connections (late-binding)
 ///
@@ -591,28 +577,6 @@ pub type ProducerFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn ProducerTrait> + Send
 ///
 /// Works in both `std` and `no_std + alloc` environments.
 pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
-
-/// Type-erased producer trait for MQTT router
-///
-/// Allows the router to call produce() on different record types without knowing
-/// the concrete type at compile time. The value is passed as `Box<dyn Any>` and
-/// downcast to the correct type inside the implementation.
-///
-/// # Implementation Note
-///
-/// This trait uses manual futures instead of `#[async_trait]` to enable `no_std`
-/// compatibility. The `async_trait` macro generates code that depends on `std`,
-/// while manual `Pin<Box<dyn Future>>` works in both `std` and `no_std + alloc`.
-pub trait ProducerTrait: Send + Sync {
-    /// Produce a value into the record's buffer
-    ///
-    /// The value must be passed as `Box<dyn Any>` and will be downcast to the correct type.
-    /// Returns an error if the downcast fails or if production fails.
-    fn produce_any<'a>(
-        &'a self,
-        value: Box<dyn core::any::Any + Send>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
-}
 
 /// Type alias for consumer factory callback (alloc feature)
 ///
@@ -664,9 +628,10 @@ pub trait AnyReader: Send {
 
 /// Configuration for an inbound connector link (External → AimDB)
 ///
-/// Stores the parsed URL, configuration, deserializer, and a producer creation callback.
-/// The callback captures the type T at creation time, allowing type-safe producer creation
-/// later without needing PhantomData or type parameters.
+/// Stores the parsed URL, configuration, and the fused ingest factory. The
+/// factory captures the type T at creation time, allowing type-safe
+/// deserialize+produce later without needing PhantomData or type parameters.
+#[derive(Clone)]
 pub struct InboundConnectorLink {
     /// Parsed connector URL
     pub url: ConnectorUrl,
@@ -674,22 +639,16 @@ pub struct InboundConnectorLink {
     /// Additional configuration options (protocol-specific)
     pub config: Vec<(String, String)>,
 
-    /// Deserialization callback that converts bytes to typed values
+    /// Fused ingest factory (alloc feature)
     ///
-    /// Either a plain bytes-only deserializer (`Raw`) or a context-aware
-    /// deserializer (`Context`) that receives `RuntimeContext` for timestamps
-    /// and logging.
-    ///
-    /// Available in both `std` and `no_std` (with `alloc` feature) environments.
-    pub deserializer: DeserializerKind,
-
-    /// Producer creation callback (alloc feature)
-    ///
-    /// Takes the live [`AimDb`] and returns `Box<dyn ProducerTrait>`.
-    /// Captures the record type T at link_from() call time.
+    /// Takes the live [`AimDb`] and returns the [`IngestFn`] that
+    /// deserializes bytes and produces into the record's buffer in one typed
+    /// closure. Captures the record type T at link_from() call time —
+    /// `finish()` validates the deserializer is present before registering
+    /// the link, so the factory is always set.
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    pub producer_factory: Option<ProducerFactoryFn>,
+    pub ingest_factory: IngestFactoryFn,
 
     /// Optional dynamic topic resolver (late-binding)
     ///
@@ -700,24 +659,12 @@ pub struct InboundConnectorLink {
     pub topic_resolver: Option<TopicResolverFn>,
 }
 
-impl Clone for InboundConnectorLink {
-    fn clone(&self) -> Self {
-        Self {
-            url: self.url.clone(),
-            config: self.config.clone(),
-            deserializer: self.deserializer.clone(),
-            producer_factory: self.producer_factory.clone(),
-            topic_resolver: self.topic_resolver.clone(),
-        }
-    }
-}
-
 impl Debug for InboundConnectorLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InboundConnectorLink")
             .field("url", &self.url)
             .field("config", &self.config)
-            .field("deserializer", &"<function>")
+            .field("ingest_factory", &"<factory>")
             .field(
                 "topic_resolver",
                 &self.topic_resolver.as_ref().map(|_| "<function>"),
@@ -727,33 +674,24 @@ impl Debug for InboundConnectorLink {
 }
 
 impl InboundConnectorLink {
-    /// Creates a new inbound connector link from a URL and deserializer
-    pub fn new(url: ConnectorUrl, deserializer: DeserializerKind) -> Self {
+    /// Creates a new inbound connector link from a URL and ingest factory
+    pub fn new(url: ConnectorUrl, ingest_factory: IngestFactoryFn) -> Self {
         Self {
             url,
             config: Vec::new(),
-            deserializer,
-            producer_factory: None,
+            ingest_factory,
             topic_resolver: None,
         }
     }
 
-    /// Sets the producer factory callback.
+    /// Creates the fused ingest callback using the stored factory.
+    ///
+    /// Runs once at route-collection time; the returned [`IngestFn`] is the
+    /// per-message path (deserialize + produce, no erasure crossing).
     ///
     /// Available in both `std` and `no_std + alloc` environments.
-    pub fn with_producer_factory<F>(mut self, factory: F) -> Self
-    where
-        F: Fn(&AimDb) -> Box<dyn ProducerTrait> + Send + Sync + 'static,
-    {
-        self.producer_factory = Some(Arc::new(factory));
-        self
-    }
-
-    /// Creates a producer using the stored factory.
-    ///
-    /// Available in both `std` and `no_std + alloc` environments.
-    pub fn create_producer(&self, db: &AimDb) -> Option<Box<dyn ProducerTrait>> {
-        self.producer_factory.as_ref().map(|f| f(db))
+    pub fn create_ingest(&self, db: &AimDb) -> IngestFn {
+        (self.ingest_factory)(db)
     }
 
     /// Resolves the subscription topic for this link
@@ -1160,14 +1098,17 @@ mod tests {
         assert_eq!(resolver(), None);
     }
 
+    /// Dummy ingest factory for link-construction tests (never invoked).
+    fn dummy_ingest_factory() -> super::IngestFactoryFn {
+        Arc::new(|_db| Arc::new(|_ctx: &crate::RuntimeContext, _bytes: &[u8]| Ok(())))
+    }
+
     #[test]
     fn test_inbound_connector_link_resolve_topic_default() {
-        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
+        use super::{ConnectorUrl, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/temperature").unwrap();
-        let deserializer: DeserializerFn =
-            Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
+        let link = InboundConnectorLink::new(url, dummy_ingest_factory());
 
         // No resolver configured, should return static topic from URL
         assert_eq!(link.resolve_topic(), "sensors/temperature");
@@ -1175,12 +1116,10 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_dynamic() {
-        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
+        use super::{ConnectorUrl, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/default").unwrap();
-        let deserializer: DeserializerFn =
-            Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let mut link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
+        let mut link = InboundConnectorLink::new(url, dummy_ingest_factory());
 
         // Configure dynamic resolver
         link.topic_resolver = Some(Arc::new(|| Some("sensors/dynamic/kitchen".into())));
@@ -1191,12 +1130,10 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_fallback() {
-        use super::{ConnectorUrl, DeserializerFn, DeserializerKind, InboundConnectorLink};
+        use super::{ConnectorUrl, InboundConnectorLink};
 
         let url = ConnectorUrl::parse("mqtt://sensors/fallback").unwrap();
-        let deserializer: DeserializerFn =
-            Arc::new(|_| Ok(Box::new(()) as Box<dyn core::any::Any + Send>));
-        let mut link = InboundConnectorLink::new(url, DeserializerKind::Raw(deserializer));
+        let mut link = InboundConnectorLink::new(url, dummy_ingest_factory());
 
         // Configure resolver that returns None
         link.topic_resolver = Some(Arc::new(|| None));

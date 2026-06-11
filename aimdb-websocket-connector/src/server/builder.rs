@@ -343,7 +343,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 known_topics: Arc::new(known_topics),
                 auth: self.auth.clone(),
                 late_join: self.late_join,
-                runtime_ctx: Some(db.runtime_ctx()),
+                runtime_ctx: db.runtime_ctx(),
             });
 
             // ── Outbound: the shared `pump_sink` drives records → bus ───────

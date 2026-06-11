@@ -580,7 +580,7 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
                 Err(_e) => return,
             };
             while let Some(payload) = stream.next().await {
-                let _ = router.route(id.as_ref(), &payload, Some(&ctx)).await;
+                let _ = router.route(id.as_ref(), &payload, &ctx);
             }
         }));
     }

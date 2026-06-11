@@ -55,7 +55,6 @@ use core::pin::Pin;
 
 use alloc::{
     boxed::Box,
-    format,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -150,30 +149,6 @@ impl<T> Clone for Producer<T> {
             profiling: self.profiling.clone(),
             _phantom: PhantomData,
         }
-    }
-}
-
-// Implement ProducerTrait for type-erased routing
-impl<T> crate::connector::ProducerTrait for Producer<T>
-where
-    T: Send + 'static + Debug + Clone,
-{
-    fn produce_any<'a>(
-        &'a self,
-        value: Box<dyn core::any::Any + Send>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
-        Box::pin(async move {
-            // The only fallibility left is the type-erasure downcast; the
-            // produce itself is synchronous + infallible after M14.
-            let value = value.downcast::<T>().map_err(|_| {
-                format!(
-                    "Failed to downcast value to type {}",
-                    core::any::type_name::<T>()
-                )
-            })?;
-            self.produce(*value);
-            Ok(())
-        })
     }
 }
 
@@ -869,6 +844,13 @@ where
 /// Type alias for typed deserializer callbacks
 type TypedDeserializerFn<T> = Arc<dyn Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static>;
 
+/// Type alias for typed context-aware deserializer callbacks
+///
+/// Stays typed until `finish()` fuses it with the producer — no per-message
+/// erasure (design 036 W1).
+type TypedContextDeserializerFn<T> =
+    Arc<dyn Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static>;
+
 /// Builder for configuring inbound connector links (External → AimDB)
 ///
 /// `'r` is the borrow of the registrar taken by `link_from()`; `'a` is the
@@ -878,7 +860,7 @@ pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Cl
     url: String,
     config: Vec<(String, String)>,
     deserializer: Option<TypedDeserializerFn<T>>,
-    context_deserializer: Option<crate::connector::ContextDeserializerFn>,
+    context_deserializer: Option<TypedContextDeserializerFn<T>>,
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
@@ -936,10 +918,7 @@ where
     where
         F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
     {
-        let f = Arc::new(f);
-        self.context_deserializer = Some(Arc::new(move |ctx, bytes| {
-            (f)(ctx, bytes).map(|val| Box::new(val) as Box<dyn core::any::Any + Send>)
-        }));
+        self.context_deserializer = Some(Arc::new(f));
         self.deserializer = None; // mutually exclusive
         self
     }
@@ -1002,7 +981,7 @@ where
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_from()` is fine).
     pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
-        use crate::connector::{ConnectorUrl, DeserializerKind, InboundConnectorLink};
+        use crate::connector::{ConnectorUrl, InboundConnectorLink};
         use crate::error::ConfigError;
 
         let record_key = self.registrar.record_key.clone();
@@ -1042,24 +1021,27 @@ where
             return self.registrar;
         }
 
-        // Resolve deserializer variant (mutually exclusive)
-        let deser_kind = if let Some(ctx_deser) = self.context_deserializer {
-            DeserializerKind::Context(ctx_deser)
-        } else if let Some(raw_deser) = self.deserializer {
-            // Type-erase the raw deserializer
-            let erased: crate::connector::DeserializerFn = Arc::new(move |bytes: &[u8]| {
-                raw_deser(bytes).map(|val| Box::new(val) as Box<dyn core::any::Any + Send>)
-            });
-            DeserializerKind::Raw(erased)
-        } else {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Inbound connector requires a deserializer. \
-                 Call .with_deserializer() or .with_deserializer_raw()",
-            ));
-            return self.registrar;
-        };
+        // Unify the deserializer variants (mutually exclusive) into one typed
+        // closure — the raw/context split collapses into what it captures
+        // (only the context variant pays the per-message ctx clone). Stays
+        // typed: fused with the producer below, no `Box<dyn Any>` per message
+        // (design 036 W1).
+        type UnifiedDeserializeFn<T> =
+            Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync>;
+        let deserialize: UnifiedDeserializeFn<T> =
+            if let Some(ctx_deser) = self.context_deserializer {
+                Arc::new(move |ctx, bytes| ctx_deser(ctx.clone(), bytes))
+            } else if let Some(raw_deser) = self.deserializer {
+                Arc::new(move |_ctx, bytes| raw_deser(bytes))
+            } else {
+                self.registrar.rec.push_config_error(ConfigError::new(
+                    record_key,
+                    Some(self.url),
+                    "Inbound connector requires a deserializer. \
+                     Call .with_deserializer() or .with_deserializer_raw()",
+                ));
+                return self.registrar;
+            };
 
         // Validation: Connector builder must be registered
         let has_connector = self
@@ -1079,32 +1061,39 @@ where
             return self.registrar;
         }
 
-        // Create inbound connector link
-        let mut link = InboundConnectorLink::new(url, deser_kind);
-        link.config = self.config;
-
-        // Wire through the topic resolver
-        link.topic_resolver = self.topic_resolver;
-
-        // Add producer factory callback that captures type T and record key.
-        // The factory runs during build() after every record is registered and
-        // validated, so failures here are aimdb bugs, not user mistakes.
-        {
+        // Fused ingest factory that captures type T and record key: resolves
+        // the typed producer once at route-collection time; per message the
+        // returned IngestFn runs deserialize + produce with no erasure
+        // crossing. The factory runs during build() after every record is
+        // registered and validated, so failures here are aimdb bugs, not
+        // user mistakes.
+        let ingest_factory: crate::connector::IngestFactoryFn = {
             let record_key = self.registrar.record_key.clone();
-            link = link.with_producer_factory(move |db: &AimDb| {
+            Arc::new(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
                     .get_typed_record_by_key::<T>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
-                            "producer factory: record '{record_key}' lookup failed ({e:?}) — \
+                            "ingest factory: record '{record_key}' lookup failed ({e:?}) — \
                              this is a bug in aimdb-core"
                         )
                     });
-                Box::new(Producer::<T>::new(typed_rec.writer_handle()))
-                    as Box<dyn crate::connector::ProducerTrait>
-            });
-        }
+                let producer = Producer::<T>::new(typed_rec.writer_handle());
+                let deserialize = deserialize.clone();
+                Arc::new(move |ctx: &crate::RuntimeContext, payload: &[u8]| {
+                    producer.produce(deserialize(ctx, payload)?);
+                    Ok(())
+                }) as crate::connector::IngestFn
+            })
+        };
+
+        // Create inbound connector link
+        let mut link = InboundConnectorLink::new(url, ingest_factory);
+        link.config = self.config;
+
+        // Wire through the topic resolver
+        link.topic_resolver = self.topic_resolver;
 
         // Add to record
         self.registrar.rec.add_inbound_connector(link);
@@ -1227,13 +1216,11 @@ mod tests {
     }
 
     // ====================================================================
-    // Deserializer-kind selection tests
+    // Inbound link registration tests (fused ingest — design 036 W1)
     // ====================================================================
 
     #[test]
-    fn inbound_finish_stores_raw_deserializer_kind() {
-        use crate::connector::DeserializerKind;
-
+    fn inbound_finish_registers_fused_link() {
         let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
@@ -1254,118 +1241,8 @@ mod tests {
             .finish();
 
         assert_eq!(rec.inbound_connectors().len(), 1);
-        let link = &rec.inbound_connectors()[0];
-
-        // Variant must be Raw
-        assert!(
-            matches!(link.deserializer, DeserializerKind::Raw(_)),
-            "expected DeserializerKind::Raw, got Context"
-        );
-
-        // Verify the type-erased deserializer round-trips correctly
-        if let DeserializerKind::Raw(ref f) = link.deserializer {
-            let result = f(&[1, 2, 3]).expect("deserializer should succeed");
-            let record = result
-                .downcast::<TestRecord>()
-                .expect("should downcast to TestRecord");
-            assert_eq!(record.value, 3);
-        }
-    }
-
-    #[test]
-    fn inbound_finish_stores_context_deserializer_kind() {
-        use crate::connector::DeserializerKind;
-
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
-        rec.set_buffer(Box::new(MockBuffer));
-
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
-            vec![Box::new(MockConnectorBuilder {
-                scheme: "mqtt".to_string(),
-            })];
-        let extensions = crate::extensions::Extensions::new();
-
-        let mut reg = make_registrar(&mut rec, &builders, &extensions);
-
-        reg.link_from("mqtt://broker/topic")
-            .with_deserializer(|_ctx: crate::RuntimeContext, bytes: &[u8]| {
-                Ok(TestRecord {
-                    value: bytes.len() as i32 * 10,
-                })
-            })
-            .finish();
-
-        assert_eq!(rec.inbound_connectors().len(), 1);
-
-        assert!(
-            matches!(
-                rec.inbound_connectors()[0].deserializer,
-                DeserializerKind::Context(_)
-            ),
-            "expected DeserializerKind::Context, got Raw"
-        );
-    }
-
-    #[test]
-    fn inbound_raw_overrides_previous_context_deserializer() {
-        use crate::connector::DeserializerKind;
-
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
-        rec.set_buffer(Box::new(MockBuffer));
-
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
-            vec![Box::new(MockConnectorBuilder {
-                scheme: "mqtt".to_string(),
-            })];
-        let extensions = crate::extensions::Extensions::new();
-
-        let mut reg = make_registrar(&mut rec, &builders, &extensions);
-
-        // Set context first, then override with raw — raw should win
-        reg.link_from("mqtt://broker/topic")
-            .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
-                Ok(TestRecord { value: 0 })
-            })
-            .with_deserializer_raw(|bytes: &[u8]| {
-                Ok(TestRecord {
-                    value: bytes.len() as i32,
-                })
-            })
-            .finish();
-
-        assert!(matches!(
-            rec.inbound_connectors()[0].deserializer,
-            DeserializerKind::Raw(_)
-        ));
-    }
-
-    #[test]
-    fn inbound_context_overrides_previous_raw_deserializer() {
-        use crate::connector::DeserializerKind;
-
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
-        rec.set_buffer(Box::new(MockBuffer));
-
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
-            vec![Box::new(MockConnectorBuilder {
-                scheme: "mqtt".to_string(),
-            })];
-        let extensions = crate::extensions::Extensions::new();
-
-        let mut reg = make_registrar(&mut rec, &builders, &extensions);
-
-        // Set raw first, then override with context — context should win
-        reg.link_from("mqtt://broker/topic")
-            .with_deserializer_raw(|_bytes: &[u8]| Ok(TestRecord { value: 0 }))
-            .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
-                Ok(TestRecord { value: 99 })
-            })
-            .finish();
-
-        assert!(matches!(
-            rec.inbound_connectors()[0].deserializer,
-            DeserializerKind::Context(_)
-        ));
+        assert_eq!(rec.inbound_connectors()[0].resolve_topic(), "broker/topic");
+        assert!(drain_errors(&mut rec).is_empty());
     }
 
     /// Drains the configuration errors a registrar/setter recorded on `rec`.
@@ -1865,5 +1742,137 @@ mod tests {
         assert!(errors[0].message.contains("requires a buffer"));
         assert_eq!(errors[0].record_key, "rec.x");
         assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/x"));
+    }
+
+    // ====================================================================
+    // Fused ingest roundtrip tests (design 036 W1)
+    // ====================================================================
+
+    use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+
+    /// Buffer that records the last pushed value and a push count —
+    /// atomics only, so the test runs under no_std + alloc too.
+    struct RecordingBuffer {
+        last: Arc<AtomicI32>,
+        count: Arc<AtomicUsize>,
+    }
+
+    impl crate::buffer::DynBuffer<TestRecord> for RecordingBuffer {
+        fn push(&self, value: TestRecord) {
+            self.last.store(value.value, Ordering::SeqCst);
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+        fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
+            unimplemented!("not needed for ingest tests")
+        }
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+    }
+
+    /// End-to-end inbound path: bytes → fused ingest → typed buffer push,
+    /// with no `Box<dyn Any>` in between.
+    #[tokio::test]
+    async fn ingest_roundtrip_produces_value() {
+        let last = Arc::new(AtomicI32::new(-1));
+        let count = Arc::new(AtomicUsize::new(0));
+        let (buf_last, buf_count) = (last.clone(), count.clone());
+
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", move |reg| {
+            reg.buffer_raw(Box::new(RecordingBuffer {
+                last: buf_last,
+                count: buf_count,
+            }));
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer_raw(|bytes: &[u8]| {
+                    if bytes.is_empty() {
+                        return Err("empty payload".to_string());
+                    }
+                    Ok(TestRecord {
+                        value: bytes.len() as i32,
+                    })
+                })
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+
+        let routes = db.collect_inbound_routes("mqtt");
+        assert_eq!(routes.len(), 1);
+        let (topic, ingest) = &routes[0];
+        assert_eq!(topic, "cmd/in");
+
+        let ctx = db.runtime_ctx();
+        ingest(&ctx, &[1, 2, 3]).expect("ingest must succeed");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(last.load(Ordering::SeqCst), 3);
+
+        // Bad bytes: the deserializer error propagates, nothing is produced.
+        let err = ingest(&ctx, &[]).expect_err("empty payload must fail");
+        assert_eq!(err, "empty payload");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Raw/context mutual exclusion is behavior now (the kind enum is gone):
+    /// the variant set last wins inside the fused ingest closure.
+    #[tokio::test]
+    async fn context_deserializer_set_last_wins() {
+        let last = Arc::new(AtomicI32::new(-1));
+        let count = Arc::new(AtomicUsize::new(0));
+        let (buf_last, buf_count) = (last.clone(), count.clone());
+
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", move |reg| {
+            reg.buffer_raw(Box::new(RecordingBuffer {
+                last: buf_last,
+                count: buf_count,
+            }));
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer_raw(|_bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
+                    Ok(TestRecord { value: 99 })
+                })
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+
+        let routes = db.collect_inbound_routes("mqtt");
+        let (_, ingest) = &routes[0];
+        ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
+        assert_eq!(last.load(Ordering::SeqCst), 99);
+    }
+
+    /// And the reverse: raw set last wins over a prior context deserializer.
+    #[tokio::test]
+    async fn raw_deserializer_set_last_wins() {
+        let last = Arc::new(AtomicI32::new(-1));
+        let count = Arc::new(AtomicUsize::new(0));
+        let (buf_last, buf_count) = (last.clone(), count.clone());
+
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", move |reg| {
+            reg.buffer_raw(Box::new(RecordingBuffer {
+                last: buf_last,
+                count: buf_count,
+            }));
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
+                    Ok(TestRecord { value: 0 })
+                })
+                .with_deserializer_raw(|_bytes: &[u8]| Ok(TestRecord { value: 7 }))
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+
+        let routes = db.collect_inbound_routes("mqtt");
+        let (_, ingest) = &routes[0];
+        ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
+        assert_eq!(last.load(Ordering::SeqCst), 7);
     }
 }
