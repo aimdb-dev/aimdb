@@ -26,10 +26,7 @@
         "terminal.integrated.shell.linux": "/bin/bash",
         "rust-analyzer.cargo.features": "all",
         "rust-analyzer.check.command": "clippy",
-        "rust-analyzer.check.extraArgs": [
-          "--all-targets",
-          "--all-features"
-        ],
+        "rust-analyzer.check.allTargets": true,
         "rust-analyzer.cargo.buildScripts.enable": true,
         "rust-analyzer.procMacro.enable": true,
         "files.watcherExclude": {
