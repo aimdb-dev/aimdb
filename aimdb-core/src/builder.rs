@@ -1120,11 +1120,6 @@ impl AimDb {
         self.inner.records_of_type::<T>()
     }
 
-    /// Returns a reference to the runtime capabilities.
-    pub fn runtime(&self) -> &dyn aimdb_executor::RuntimeOps {
-        &*self.runtime
-    }
-
     /// Returns an owned `Arc` handle to the runtime capabilities.
     ///
     /// Connectors that hand the runtime to a `'static` engine future (e.g. the

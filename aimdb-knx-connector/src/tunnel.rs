@@ -324,7 +324,10 @@ impl TunnelEngine {
     /// An outbound GroupValueWrite arrived from the command channel.
     ///
     /// Returns `false` when the command was dropped because no connection is
-    /// established (the transport may want to log that).
+    /// established. This is a defensive contract: both shims gate command
+    /// intake on `is_connected()` (commands queue in their channel while
+    /// disconnected), so in production this path is unreachable — it is
+    /// exercised by the engine unit tests only.
     pub fn handle_command(&mut self, cmd: GroupWrite, now: Millis) -> bool {
         let Phase::Connected(state) = &mut self.phase else {
             return false;

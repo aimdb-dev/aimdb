@@ -407,7 +407,7 @@ async fn drive_connection(
     command_channel: CommandChannelRef,
     inbound_tx: &InboundSender,
 ) {
-    use embassy_futures::select::{select, select3, Either, Either3};
+    use embassy_futures::select::{select3, Either3};
 
     let gateway = (IpAddress::Ipv4(gateway_addr), gateway_port);
 
@@ -429,47 +429,37 @@ async fn drive_connection(
         let deadline = embassy_time::Timer::after(embassy_time::Duration::from_millis(sleep_ms));
         let mut recv_buf = [0u8; 512];
 
-        if engine.is_connected() {
-            match select3(
-                socket.recv_from(&mut recv_buf),
-                command_channel.receive(),
-                deadline,
-            )
-            .await
-            {
-                Either3::First(Ok((len, _peer))) => {
-                    engine.handle_datagram(&recv_buf[..len], now_ms());
-                }
-                Either3::First(Err(_)) => {
-                    #[cfg(feature = "defmt")]
-                    defmt::error!("Socket receive error");
-                    engine.handle_socket_error(now_ms());
-                }
-                Either3::Second(cmd) => {
-                    if !engine.handle_command(*cmd, now_ms()) {
-                        #[cfg(feature = "defmt")]
-                        defmt::warn!("Not connected, dropping GroupWrite");
-                    }
-                }
-                // Wake for the engine deadline; `poll` at the loop top fires it.
-                Either3::Third(()) => {}
+        // Only drain commands while connected: during connect / backoff the
+        // arm stays pending, so commands keep queueing in the static channel
+        // and flush once the handshake completes (same as the previous
+        // implementation, where the select loop only ran while connected).
+        let connected = engine.is_connected();
+        let cmd_arm = async {
+            if connected {
+                command_channel.receive().await
+            } else {
+                core::future::pending().await
             }
-        } else {
-            // While connecting / backing off, leave commands queued in the
-            // channel so they flush once the handshake completes (same as the
-            // previous implementation, where the select loop only ran while
-            // connected).
-            match select(socket.recv_from(&mut recv_buf), deadline).await {
-                Either::First(Ok((len, _peer))) => {
-                    engine.handle_datagram(&recv_buf[..len], now_ms());
-                }
-                Either::First(Err(_)) => {
-                    #[cfg(feature = "defmt")]
-                    defmt::error!("Socket receive error");
-                    engine.handle_socket_error(now_ms());
-                }
-                Either::Second(()) => {}
+        };
+
+        match select3(socket.recv_from(&mut recv_buf), cmd_arm, deadline).await {
+            Either3::First(Ok((len, _peer))) => {
+                engine.handle_datagram(&recv_buf[..len], now_ms());
             }
+            Either3::First(Err(_)) => {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Socket receive error");
+                engine.handle_socket_error(now_ms());
+            }
+            Either3::Second(cmd) => {
+                // The command arm only resolves while connected, so the
+                // engine's disconnected drop path is unreachable here; its
+                // `false` return is a defensive contract covered by the
+                // engine unit tests.
+                let _ = engine.handle_command(*cmd, now_ms());
+            }
+            // Wake for the engine deadline; `poll` at the loop top fires it.
+            Either3::Third(()) => {}
         }
     }
 }

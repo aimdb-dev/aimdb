@@ -311,10 +311,11 @@ async fn connection_task(
                 // ran while connected).
                 cmd = command_rx.recv(), if commands_open && engine.is_connected() => match cmd {
                     Some(cmd) => {
-                        if !engine.handle_command(cmd, now_ms()) {
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!("Not connected, dropping GroupWrite");
-                        }
+                        // The arm guard above only admits commands while
+                        // connected, so the engine's disconnected drop path is
+                        // unreachable here; its `false` return is a defensive
+                        // contract covered by the engine unit tests.
+                        let _ = engine.handle_command(cmd, now_ms());
                     }
                     // All `KnxSink`s dropped — no outbound publisher remains.
                     // Inbound monitoring still has to run, so only disable this
