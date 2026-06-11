@@ -275,6 +275,10 @@ pub struct AimDbBuilder {
     /// Registered records with their keys (order matters for RecordId assignment)
     records: Vec<(StringKey, TypeId, Box<dyn AnyRecord>)>,
 
+    /// Key → index into `records`, so repeated `configure()` calls resolve a
+    /// key without scanning the vec.
+    record_index: HashMap<StringKey, usize>,
+
     /// Runtime capabilities, held as a value (issue #131)
     runtime: Option<Arc<dyn aimdb_executor::RuntimeOps>>,
 
@@ -305,6 +309,7 @@ impl AimDbBuilder {
     pub fn new() -> Self {
         Self {
             records: Vec::new(),
+            record_index: HashMap::new(),
             runtime: None,
             connector_builders: Vec::new(),
             spawn_fns: Vec::new(),
@@ -453,7 +458,7 @@ impl AimDbBuilder {
         let type_id = TypeId::of::<T>();
 
         // Find existing record with this key, or create new one
-        let record_index = self.records.iter().position(|(k, _, _)| k == &record_key);
+        let record_index = self.record_index.get(&record_key).copied();
 
         let (rec, is_new_record) = match record_index {
             Some(idx) => {
@@ -480,6 +485,7 @@ impl AimDbBuilder {
             }
             None => {
                 // Create new record
+                self.record_index.insert(record_key, self.records.len());
                 self.records
                     .push((record_key, type_id, Box::new(TypedRecord::<T>::new())));
                 let (_, _, record) = self.records.last_mut().unwrap();

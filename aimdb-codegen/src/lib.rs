@@ -6,7 +6,7 @@
 //! - **Mermaid diagram** — `.aimdb/architecture.mermaid`, a read-only graph
 //!   projection of the architecture (see [`generate_mermaid`])
 //! - **Rust source** — `src/generated_schema.rs`, compilable AimDB schema
-//!   using the actual 0.5.x API (see [`generate_rust`])
+//!   using the current AimDB API (see [`generate_rust`])
 //!
 //! # Usage
 //!

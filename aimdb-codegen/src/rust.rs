@@ -1,7 +1,7 @@
 //! Rust source code generator
 //!
 //! Converts an [`ArchitectureState`] into compilable Rust source that uses the
-//! actual AimDB 0.5.x API: `#[derive(RecordKey)]`, `BufferCfg`, and
+//! current AimDB API: `#[derive(RecordKey)]`, `BufferCfg`, and
 //! `AimDbBuilder::configure()`.
 //!
 //! Uses [`quote`] for quasi-quoting token streams and [`prettyplease`] for
