@@ -803,8 +803,7 @@ mod tests {
     fn test_topic_provider_as_trait_object() {
         // Providers are stored as Arc<dyn TopicProvider<T>> — typed, no
         // erasure (design 036 W1).
-        let provider: Arc<dyn super::TopicProvider<TestTemperature>> =
-            Arc::new(TestTopicProvider);
+        let provider: Arc<dyn super::TopicProvider<TestTemperature>> = Arc::new(TestTopicProvider);
         let temp = TestTemperature {
             sensor_id: "kitchen-001".into(),
             celsius: 22.5,

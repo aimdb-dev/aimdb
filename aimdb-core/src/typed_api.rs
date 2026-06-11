@@ -1814,7 +1814,7 @@ mod tests {
     // Fused outbound reader tests (design 036 W1)
     // ====================================================================
 
-    use crate::connector::{SerializedReader as _, SerializedSource as _};
+    use crate::connector::SerializedReader as _;
 
     /// Buffer reader that replays a fixed script, then reports the buffer
     /// closed.
@@ -1833,8 +1833,7 @@ mod tests {
     impl crate::buffer::BufferReader<TestRecord> for ScriptedReader {
         fn recv(
             &mut self,
-        ) -> Pin<Box<dyn Future<Output = Result<TestRecord, crate::DbError>> + Send + '_>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Result<TestRecord, crate::DbError>> + Send + '_>> {
             let next = if self.script.is_empty() {
                 Err(Self::closed())
             } else {
