@@ -21,17 +21,14 @@ use aimdb_core::record_id::StringKey;
 
 use aimdb_data_contracts::Streamable;
 
-use crate::WasmAdapter;
-
 // ─── Type-erased operations ───────────────────────────────────────────────
 
-type ConfigureFn = Arc<dyn Fn(&mut AimDbBuilder<WasmAdapter>, StringKey, BufferCfg) + Send + Sync>;
-type GetFn = Arc<dyn Fn(&AimDb<WasmAdapter>, &str) -> Result<JsValue, JsError> + Send + Sync>;
-type SetFn = Arc<dyn Fn(&AimDb<WasmAdapter>, &str, JsValue) -> Result<(), JsError> + Send + Sync>;
-type SubscribeFn = Arc<
-    dyn Fn(&AimDb<WasmAdapter>, &str, &js_sys::Function) -> Result<JsValue, JsError> + Send + Sync,
->;
-type ProduceFromJsonFn = Arc<dyn Fn(&AimDb<WasmAdapter>, &str, serde_json::Value) + Send + Sync>;
+type ConfigureFn = Arc<dyn Fn(&mut AimDbBuilder, StringKey, BufferCfg) + Send + Sync>;
+type GetFn = Arc<dyn Fn(&AimDb, &str) -> Result<JsValue, JsError> + Send + Sync>;
+type SetFn = Arc<dyn Fn(&AimDb, &str, JsValue) -> Result<(), JsError> + Send + Sync>;
+type SubscribeFn =
+    Arc<dyn Fn(&AimDb, &str, &js_sys::Function) -> Result<JsValue, JsError> + Send + Sync>;
+type ProduceFromJsonFn = Arc<dyn Fn(&AimDb, &str, serde_json::Value) + Send + Sync>;
 
 /// Type-erased operations for a single [`Streamable`] type.
 #[derive(Clone)]

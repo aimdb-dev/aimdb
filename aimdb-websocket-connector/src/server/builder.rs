@@ -277,17 +277,14 @@ impl WebSocketConnectorBuilder {
 
 type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
 
-impl<R> ConnectorBuilder<R> for WebSocketConnectorBuilder
-where
-    R: aimdb_executor::RuntimeAdapter + 'static,
-{
+impl ConnectorBuilder for WebSocketConnectorBuilder {
     fn scheme(&self) -> &str {
         "ws"
     }
 
     fn build<'a>(
         &'a self,
-        db: &'a aimdb_core::builder::AimDb<R>,
+        db: &'a aimdb_core::builder::AimDb,
     ) -> Pin<Box<dyn core::future::Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -346,7 +343,7 @@ where
                 known_topics: Arc::new(known_topics),
                 auth: self.auth.clone(),
                 late_join: self.late_join,
-                runtime_ctx: Some(db.runtime_any()),
+                runtime_ctx: Some(db.runtime_ctx()),
             });
 
             // ── Outbound: the shared `pump_sink` drives records → bus ───────

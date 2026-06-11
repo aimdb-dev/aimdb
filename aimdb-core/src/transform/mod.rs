@@ -37,7 +37,7 @@ pub(crate) struct CollectedTransform {
     pub fanin_futures: Vec<BoxFuture<'static, ()>>,
 }
 
-pub(crate) struct TransformDescriptor<T, R: aimdb_executor::RuntimeAdapter + 'static>
+pub(crate) struct TransformDescriptor<T>
 where
     T: Send + 'static + Debug + Clone,
 {
@@ -47,16 +47,13 @@ where
     ///
     /// Receives:
     /// - `Producer<T>` — the pre-resolved write handle for the output record.
-    /// - `Arc<AimDb<R>>` — used by input forwarders to resolve their input
+    /// - `Arc<AimDb>` — used by input forwarders to resolve their input
     ///   consumers at startup time.
-    /// - `Arc<R>` — the runtime adapter (e.g. for `create_join_queue`).
     /// - `&str` — the output record's key, threaded through so the transform
     ///   task can include it in tracing messages even though `Producer<T>` no
     ///   longer carries a `.key()` accessor (design 029, M14). Important when
     ///   multiple records share type `T` under different keys.
     #[allow(clippy::type_complexity)]
-    pub build_fn: Box<
-        dyn FnOnce(crate::Producer<T>, Arc<crate::AimDb<R>>, Arc<R>, &str) -> CollectedTransform
-            + Send,
-    >,
+    pub build_fn:
+        Box<dyn FnOnce(crate::Producer<T>, Arc<crate::AimDb>, &str) -> CollectedTransform + Send>,
 }

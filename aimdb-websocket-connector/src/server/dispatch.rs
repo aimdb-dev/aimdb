@@ -10,7 +10,6 @@
 //! not here. The `Subscribed` ack and late-join `Snapshot` are engine emissions;
 //! this session only supplies the snapshot bytes and the subscription stream.
 
-use std::any::Any;
 use std::sync::Arc;
 
 use aimdb_core::session::Session;
@@ -34,7 +33,7 @@ pub struct WsDispatch {
     pub(crate) known_topics: Arc<Vec<TopicInfo>>,
     pub(crate) auth: Arc<dyn AuthHandler>,
     pub(crate) late_join: bool,
-    pub(crate) runtime_ctx: Option<Arc<dyn Any + Send + Sync>>,
+    pub(crate) runtime_ctx: Option<aimdb_core::RuntimeContext>,
 }
 
 impl Dispatch for WsDispatch {
@@ -86,7 +85,7 @@ struct WsSession {
     known_topics: Arc<Vec<TopicInfo>>,
     auth: Arc<dyn AuthHandler>,
     late_join: bool,
-    runtime_ctx: Option<Arc<dyn Any + Send + Sync>>,
+    runtime_ctx: Option<aimdb_core::RuntimeContext>,
     info: Arc<ClientInfo>,
     /// Decrements the live-connection count on drop.
     _conn_guard: ConnectionGuard,

@@ -4,13 +4,12 @@ use std::sync::Arc;
 
 use aimdb_core::builder::AimDbBuilder;
 use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams};
-use aimdb_executor::{RuntimeAdapter, TimeOps};
 
 use crate::backend::{PersistenceBackend, QueryParams};
 
 /// State stored in the builder's [`Extensions`](aimdb_core::Extensions) TypeMap.
 ///
-/// Both `.persist()` (on `RecordRegistrar`) and `AimDbQueryExt` (on `AimDb<R>`)
+/// Both `.persist()` (on `RecordRegistrar`) and `AimDbQueryExt` (on `AimDb`)
 /// retrieve this via `extensions().get::<PersistenceState>()`.
 pub struct PersistenceState {
     /// The configured persistence backend.
@@ -20,7 +19,7 @@ pub struct PersistenceState {
 }
 
 /// Extension trait that adds `.with_persistence()` to [`AimDbBuilder`].
-pub trait AimDbBuilderPersistExt<R: RuntimeAdapter + TimeOps> {
+pub trait AimDbBuilderPersistExt {
     /// Configures a persistence backend with a retention window.
     ///
     /// Stores the backend in the builder's `Extensions` TypeMap (accessible to
@@ -41,10 +40,7 @@ pub trait AimDbBuilderPersistExt<R: RuntimeAdapter + TimeOps> {
     ) -> Self;
 }
 
-impl<R> AimDbBuilderPersistExt<R> for AimDbBuilder<R>
-where
-    R: RuntimeAdapter + TimeOps + 'static,
-{
+impl AimDbBuilderPersistExt for AimDbBuilder {
     fn with_persistence(
         mut self,
         backend: Arc<dyn PersistenceBackend>,
@@ -96,7 +92,7 @@ where
 
         // Register a startup task for periodic retention cleanup.
         let backend_task = backend.clone();
-        self.on_start(move |runtime: Arc<R>| async move {
+        self.on_start(move |ctx: aimdb_core::RuntimeContext| async move {
             loop {
                 // Calculate the cutoff: now minus retention window.
                 let now = u64::try_from(
@@ -125,9 +121,8 @@ where
                     }
                 }
 
-                // Sleep 24 hours using the runtime's TimeOps.
-                let day = runtime.secs(24 * 3600);
-                runtime.sleep(day).await;
+                // Sleep 24 hours using the runtime's clock.
+                ctx.time().sleep_secs(24 * 3600).await;
             }
         });
 

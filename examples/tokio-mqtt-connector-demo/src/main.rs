@@ -50,10 +50,7 @@ use mqtt_connector_demo_common::{
 // ============================================================================
 
 /// Indoor temperature sensor producer
-async fn indoor_temp_producer(
-    ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature>,
-) {
+async fn indoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
     let log = ctx.log();
     let time = ctx.time();
 
@@ -69,17 +66,14 @@ async fn indoor_temp_producer(
 
         temperature.produce(temp);
 
-        time.sleep(time.secs(2)).await;
+        time.sleep_secs(2).await;
     }
 
     log.info("✅ Indoor producer finished");
 }
 
 /// Outdoor temperature sensor producer
-async fn outdoor_temp_producer(
-    ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature>,
-) {
+async fn outdoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
     let log = ctx.log();
     let time = ctx.time();
 
@@ -95,17 +89,14 @@ async fn outdoor_temp_producer(
 
         temperature.produce(temp);
 
-        time.sleep(time.secs(2)).await;
+        time.sleep_secs(2).await;
     }
 
     log.info("✅ Outdoor producer finished");
 }
 
 /// Server room temperature sensor producer
-async fn server_room_temp_producer(
-    ctx: RuntimeContext<TokioAdapter>,
-    temperature: Producer<Temperature>,
-) {
+async fn server_room_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
     let log = ctx.log();
     let time = ctx.time();
 
@@ -121,7 +112,7 @@ async fn server_room_temp_producer(
 
         temperature.produce(temp);
 
-        time.sleep(time.secs(2)).await;
+        time.sleep_secs(2).await;
     }
 
     log.info("✅ Server room producer finished");

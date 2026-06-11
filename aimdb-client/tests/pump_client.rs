@@ -33,7 +33,7 @@ struct Msg {
 /// is robust against subscription-registration timing (a fresh subscriber may
 /// only see values produced after it attaches).
 async fn mirror_reaches(
-    db: &Arc<AimDb<TokioAdapter>>,
+    db: &Arc<AimDb>,
     key: &str,
     want: &serde_json::Value,
     mut push: impl FnMut(),

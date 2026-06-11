@@ -35,7 +35,6 @@
 extern crate alloc;
 
 pub mod buffer;
-pub mod join_queue;
 pub mod logger;
 pub mod runtime;
 pub mod time;
@@ -63,11 +62,29 @@ pub use buffer::{WasmBuffer, WasmBufferReader};
 // Re-export time types
 pub use time::{WasmDuration, WasmInstant};
 
-// Generate the extension trait for convenient record configuration
-aimdb_core::impl_record_registrar_ext! {
-    WasmRecordRegistrarExt,
-    WasmAdapter,
-    WasmBuffer,
-    "wasm-runtime",
-    |cfg| WasmBuffer::<T>::new(cfg)
+/// Buffer-construction extension for [`aimdb_core::RecordRegistrar`].
+///
+/// Buffer construction is the one genuinely adapter-specific registration
+/// step left after issue #131 — `source()` / `tap()` / `transform()` are
+/// inherent methods on the registrar. This trait adds `.buffer(cfg)` backed
+/// by [`WasmBuffer`].
+pub trait WasmRecordRegistrarExt<T>
+where
+    T: Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    /// Configures a [`WasmBuffer`] from the given configuration.
+    fn buffer(&mut self, cfg: aimdb_core::buffer::BufferCfg) -> &mut Self;
+}
+
+impl<T> WasmRecordRegistrarExt<T> for aimdb_core::RecordRegistrar<'_, T>
+where
+    T: Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    fn buffer(&mut self, cfg: aimdb_core::buffer::BufferCfg) -> &mut Self {
+        use aimdb_core::buffer::Buffer;
+        let buffer = alloc::boxed::Box::new(WasmBuffer::<T>::new(&cfg));
+        // Record the cfg so buffer_info() reports the real buffer
+        // type/capacity for the dependency graph.
+        self.buffer_with_cfg(buffer, cfg)
+    }
 }

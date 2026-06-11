@@ -42,9 +42,7 @@ extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, RecordKey, RuntimeContext};
-use aimdb_embassy_adapter::{
-    EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
-};
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
 use aimdb_serial_connector::embassy_transport::SerialServer;
@@ -95,7 +93,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 
 /// Button handler that toggles light on button press
 async fn button_handler(
-    ctx: RuntimeContext<EmbassyAdapter>,
+    ctx: RuntimeContext,
     producer: aimdb_core::Producer<LightControl>,
     mut button: ExtiInput<'static, embassy_stm32::mode::Async>,
 ) {
@@ -110,7 +108,7 @@ async fn button_handler(
         button.wait_for_falling_edge().await;
 
         // Debounce
-        time.sleep(time.millis(50)).await;
+        time.sleep_millis(50).await;
         if button.is_high() {
             continue;
         }
@@ -122,7 +120,7 @@ async fn button_handler(
         producer.produce(state);
 
         button.wait_for_rising_edge().await;
-        time.sleep(time.millis(50)).await;
+        time.sleep_millis(50).await;
     }
 }
 
@@ -244,7 +242,7 @@ async fn main(spawner: Spawner) {
 
     info!("🔌 Initializing KNX client...");
 
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(stack));
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
 
     use alloc::format;
     let gateway_url = format!("knx://{}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);
@@ -275,7 +273,7 @@ async fn main(spawner: Spawner) {
     // remote `record.set` is refused — peers can list/get/subscribe, not write.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector(KnxConnectorBuilder::new(&gateway_url))
+        .with_connector(KnxConnectorBuilder::new(&gateway_url, stack))
         .with_connector(
             SerialServer::new(serial_rx, serial_tx).security_policy(SecurityPolicy::read_only()),
         );
@@ -385,7 +383,7 @@ async fn main(spawner: Spawner) {
     info!("");
     info!("Press USER button to toggle light (1/0/6)");
 
-    static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
+    static DB_CELL: StaticCell<aimdb_core::AimDb> = StaticCell::new();
     let (db, db_runner) = builder.build().await.expect("Failed to build database");
     let _db = DB_CELL.init(db);
 

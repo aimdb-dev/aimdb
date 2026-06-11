@@ -16,18 +16,17 @@ use crate::transform::{CollectedTransform, TransformDescriptor};
 
 /// Configures a single-input transform pipeline.
 ///
-/// Created by `RecordRegistrar::transform_raw()`. Use `.map()` for stateless
+/// Created by `RecordRegistrar::transform()`. Use `.map()` for stateless
 /// transforms or `.with_state()` for stateful transforms.
-pub struct TransformBuilder<I, O, R: aimdb_executor::RuntimeAdapter + 'static> {
+pub struct TransformBuilder<I, O> {
     input_key: String,
-    _phantom: PhantomData<(I, O, R)>,
+    _phantom: PhantomData<(I, O)>,
 }
 
-impl<I, O, R> TransformBuilder<I, O, R>
+impl<I, O> TransformBuilder<I, O>
 where
     I: Send + Sync + Clone + Debug + 'static,
     O: Send + Sync + Clone + Debug + 'static,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     pub(crate) fn new(input_key: String) -> Self {
         Self {
@@ -37,7 +36,7 @@ where
     }
 
     /// Stateless 1:1 map. Returning `None` skips output for this input value.
-    pub fn map<F>(self, f: F) -> TransformPipeline<I, O, R>
+    pub fn map<F>(self, f: F) -> TransformPipeline<I, O>
     where
         F: Fn(&I) -> Option<O> + Send + Sync + 'static,
     {
@@ -45,7 +44,7 @@ where
             input_key: self.input_key,
             spawn_factory: Box::new(move |input_key| {
                 let transform_fn = move |val: &I, _state: &mut ()| f(val);
-                create_single_transform_descriptor::<I, O, (), R>(input_key, (), transform_fn)
+                create_single_transform_descriptor::<I, O, ()>(input_key, (), transform_fn)
             }),
             _phantom_i: PhantomData,
         }
@@ -55,7 +54,7 @@ where
     pub fn with_state<S: Send + Sync + 'static>(
         self,
         initial: S,
-    ) -> StatefulTransformBuilder<I, O, S, R> {
+    ) -> StatefulTransformBuilder<I, O, S> {
         StatefulTransformBuilder {
             input_key: self.input_key,
             initial_state: initial,
@@ -65,21 +64,20 @@ where
 }
 
 /// Intermediate builder for stateful single-input transforms.
-pub struct StatefulTransformBuilder<I, O, S, R: aimdb_executor::RuntimeAdapter + 'static> {
+pub struct StatefulTransformBuilder<I, O, S> {
     input_key: String,
     initial_state: S,
-    _phantom: PhantomData<(I, O, R)>,
+    _phantom: PhantomData<(I, O)>,
 }
 
-impl<I, O, S, R> StatefulTransformBuilder<I, O, S, R>
+impl<I, O, S> StatefulTransformBuilder<I, O, S>
 where
     I: Send + Sync + Clone + Debug + 'static,
     O: Send + Sync + Clone + Debug + 'static,
     S: Send + Sync + 'static,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Called for each input value. Receives mutable state, returns optional output.
-    pub fn on_value<F>(self, f: F) -> TransformPipeline<I, O, R>
+    pub fn on_value<F>(self, f: F) -> TransformPipeline<I, O>
     where
         F: Fn(&I, &mut S) -> Option<O> + Send + Sync + 'static,
     {
@@ -87,7 +85,7 @@ where
         TransformPipeline {
             input_key: self.input_key,
             spawn_factory: Box::new(move |input_key| {
-                create_single_transform_descriptor::<I, O, S, R>(input_key, initial, f)
+                create_single_transform_descriptor::<I, O, S>(input_key, initial, f)
             }),
             _phantom_i: PhantomData,
         }
@@ -95,56 +93,48 @@ where
 }
 
 /// Completed single-input transform pipeline, ready to be stored in `TypedRecord`.
-pub struct TransformPipeline<
-    I,
-    O: Send + Sync + Clone + Debug + 'static,
-    R: aimdb_executor::RuntimeAdapter + 'static,
-> {
+pub struct TransformPipeline<I, O: Send + Sync + Clone + Debug + 'static> {
     pub(crate) input_key: String,
-    pub(crate) spawn_factory: Box<dyn FnOnce(String) -> TransformDescriptor<O, R> + Send + Sync>,
+    pub(crate) spawn_factory: Box<dyn FnOnce(String) -> TransformDescriptor<O> + Send + Sync>,
     pub(crate) _phantom_i: PhantomData<I>,
 }
 
-impl<I, O, R> TransformPipeline<I, O, R>
+impl<I, O> TransformPipeline<I, O>
 where
     I: Send + Sync + Clone + Debug + 'static,
     O: Send + Sync + Clone + Debug + 'static,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
-    pub(crate) fn into_descriptor(self) -> TransformDescriptor<O, R> {
+    pub(crate) fn into_descriptor(self) -> TransformDescriptor<O> {
         (self.spawn_factory)(self.input_key)
     }
 }
 
-fn create_single_transform_descriptor<I, O, S, R>(
+fn create_single_transform_descriptor<I, O, S>(
     input_key: String,
     initial_state: S,
     transform_fn: impl Fn(&I, &mut S) -> Option<O> + Send + Sync + 'static,
-) -> TransformDescriptor<O, R>
+) -> TransformDescriptor<O>
 where
     I: Send + Sync + Clone + Debug + 'static,
     O: Send + Sync + Clone + Debug + 'static,
     S: Send + Sync + 'static,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     let input_key_clone = input_key.clone();
     let input_keys = vec![input_key];
 
     TransformDescriptor {
         input_keys,
-        build_fn: Box::new(
-            move |producer, db, _runtime, output_key| CollectedTransform {
-                task_future: Box::pin(run_single_transform::<I, O, S, R>(
-                    db,
-                    input_key_clone,
-                    output_key.to_string(),
-                    producer,
-                    initial_state,
-                    transform_fn,
-                )),
-                fanin_futures: alloc::vec::Vec::new(),
-            },
-        ),
+        build_fn: Box::new(move |producer, db, output_key| CollectedTransform {
+            task_future: Box::pin(run_single_transform::<I, O, S>(
+                db,
+                input_key_clone,
+                output_key.to_string(),
+                producer,
+                initial_state,
+                transform_fn,
+            )),
+            fanin_futures: alloc::vec::Vec::new(),
+        }),
     }
 }
 
@@ -153,8 +143,8 @@ where
 // ============================================================================
 
 #[allow(unused_variables)]
-pub(crate) async fn run_single_transform<I, O, S, R>(
-    db: Arc<crate::AimDb<R>>,
+pub(crate) async fn run_single_transform<I, O, S>(
+    db: Arc<crate::AimDb>,
     input_key: String,
     output_key: String,
     producer: crate::Producer<O>,
@@ -164,7 +154,6 @@ pub(crate) async fn run_single_transform<I, O, S, R>(
     I: Send + Sync + Clone + Debug + 'static,
     O: Send + Sync + Clone + Debug + 'static,
     S: Send + 'static,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     // `Producer<O>` no longer exposes a `.key()` accessor (design 029) — the
     // output key is threaded in by the transform descriptor so diagnostics

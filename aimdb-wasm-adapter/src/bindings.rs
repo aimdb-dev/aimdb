@@ -111,7 +111,7 @@ pub struct WasmDb {
     /// Pre-build record configurations. `None` after `build()`.
     configs: Option<Vec<RecordConfig>>,
     /// Live database handle. `None` before `build()`.
-    db: Option<AimDb<WasmAdapter>>,
+    db: Option<AimDb>,
     /// Maps record key → schema type name (always populated).
     schema_map: BTreeMap<String, String>,
     /// Type-erased dispatch registry built via `.register::<T>()` calls.
@@ -472,7 +472,7 @@ fn discover_impl(url: String) -> js_sys::Promise {
 
 impl WasmDb {
     /// Resolve a record key to the live DB handle and its type-erased ops.
-    fn resolve(&self, record_key: &str) -> Result<(&AimDb<WasmAdapter>, &SchemaOps), JsError> {
+    fn resolve(&self, record_key: &str) -> Result<(&AimDb, &SchemaOps), JsError> {
         let db = self
             .db
             .as_ref()
@@ -498,7 +498,7 @@ impl WasmDb {
 /// Apply a single `RecordConfig` to the builder, dispatching on schema type.
 fn apply_record_config(
     registry: &SchemaRegistry,
-    builder: &mut AimDbBuilder<WasmAdapter>,
+    builder: &mut AimDbBuilder,
     config: &RecordConfig,
 ) -> Result<(), JsError> {
     let key = StringKey::intern(config.key.clone());
@@ -513,13 +513,13 @@ fn apply_record_config(
 }
 
 /// Read the latest snapshot for record `key` and convert to `JsValue`.
-pub(crate) fn get_typed<T>(db: &AimDb<WasmAdapter>, key: &str) -> Result<JsValue, JsError>
+pub(crate) fn get_typed<T>(db: &AimDb, key: &str) -> Result<JsValue, JsError>
 where
     T: Send + Sync + 'static + Debug + Clone + Serialize,
 {
     let inner = db.inner();
     let typed = inner
-        .get_typed_record_by_key::<T, WasmAdapter>(key)
+        .get_typed_record_by_key::<T>(key)
         .map_err(|e| JsError::new(&format!("{e:?}")))?;
 
     match typed.latest() {
@@ -534,11 +534,7 @@ where
 }
 
 /// Deserialize `JsValue` → `T` (contract enforcement), then push to buffer.
-pub(crate) fn set_typed<T>(
-    db: &AimDb<WasmAdapter>,
-    key: &str,
-    value: JsValue,
-) -> Result<(), JsError>
+pub(crate) fn set_typed<T>(db: &AimDb, key: &str, value: JsValue) -> Result<(), JsError>
 where
     T: Send + Sync + 'static + Debug + Clone + DeserializeOwned,
 {
@@ -559,7 +555,7 @@ where
 /// future so the unsubscribe closure can break the loop immediately — even
 /// when `recv()` is blocked waiting for the next push.
 pub(crate) fn subscribe_typed<T>(
-    db: &AimDb<WasmAdapter>,
+    db: &AimDb,
     key: &str,
     callback: &js_sys::Function,
 ) -> Result<JsValue, JsError>

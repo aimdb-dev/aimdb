@@ -28,13 +28,12 @@ use crate::Observable;
 /// });
 /// ```
 #[cfg(feature = "observable")]
-pub async fn log_tap<T, R>(
-    ctx: aimdb_core::RuntimeContext<R>,
+pub async fn log_tap<T>(
+    ctx: aimdb_core::RuntimeContext,
     consumer: aimdb_core::typed_api::Consumer<T>,
     node_id: &'static str,
 ) where
     T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,
-    R: aimdb_executor::Runtime + aimdb_executor::Logger + Send + Sync + 'static,
 {
     let log = ctx.log();
 

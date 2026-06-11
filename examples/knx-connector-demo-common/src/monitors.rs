@@ -7,7 +7,7 @@
 extern crate alloc;
 
 use crate::types::{LightState, TemperatureReading};
-use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
+use aimdb_core::{Consumer, RuntimeContext};
 
 // ============================================================================
 // TEMPERATURE MONITOR
@@ -26,10 +26,7 @@ use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
 ///        .finish();
 /// });
 /// ```
-pub async fn temperature_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureReading>)
-where
-    R: Runtime + Logger + Send + Sync + 'static,
-{
+pub async fn temperature_monitor(ctx: RuntimeContext, consumer: Consumer<TemperatureReading>) {
     let log = ctx.log();
     log.info("🌡️  Temperature monitor started\n");
 
@@ -53,10 +50,7 @@ where
 /// Light monitor that logs state changes from the buffer
 ///
 /// Uses the group address from the `LightState` data itself.
-pub async fn light_monitor<R>(ctx: RuntimeContext<R>, consumer: Consumer<LightState>)
-where
-    R: Runtime + Logger + Send + Sync + 'static,
-{
+pub async fn light_monitor(ctx: RuntimeContext, consumer: Consumer<LightState>) {
     let log = ctx.log();
     log.info("💡 Light monitor started\n");
 

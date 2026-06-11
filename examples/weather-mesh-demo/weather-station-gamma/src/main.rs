@@ -26,9 +26,7 @@ extern crate alloc;
 
 use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
 use aimdb_data_contracts::{Simulatable, SimulationConfig, SimulationParams};
-use aimdb_embassy_adapter::{
-    EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
-};
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 use defmt::*;
 use embassy_executor::Spawner;
@@ -67,10 +65,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 }
 
 /// Temperature producer - generates synthetic data
-async fn temperature_producer(
-    ctx: RuntimeContext<EmbassyAdapter>,
-    producer: Producer<Temperature>,
-) {
+async fn temperature_producer(ctx: RuntimeContext, producer: Producer<Temperature>) {
     let log = ctx.log();
     log.info("🌡️  Starting temperature producer...");
 
@@ -89,7 +84,7 @@ async fn temperature_producer(
     let mut prev: Option<Temperature> = None;
 
     loop {
-        let now = ctx.time().now().as_millis();
+        let now = ctx.time().now() / 1_000_000;
         let temp = Temperature::simulate(&config, prev.as_ref(), &mut rng, now);
 
         log.info(&alloc::format!("📊 Temp: {:.1}°C", temp.celsius));
@@ -102,7 +97,7 @@ async fn temperature_producer(
 }
 
 /// Humidity producer - generates synthetic data
-async fn humidity_producer(ctx: RuntimeContext<EmbassyAdapter>, producer: Producer<Humidity>) {
+async fn humidity_producer(ctx: RuntimeContext, producer: Producer<Humidity>) {
     let log = ctx.log();
     log.info("💧 Starting humidity producer...");
 
@@ -121,7 +116,7 @@ async fn humidity_producer(ctx: RuntimeContext<EmbassyAdapter>, producer: Produc
     let mut prev: Option<Humidity> = None;
 
     loop {
-        let now = ctx.time().now().as_millis();
+        let now = ctx.time().now() / 1_000_000;
         let humidity = Humidity::simulate(&config, prev.as_ref(), &mut rng, now);
 
         log.info(&alloc::format!("📊 Humidity: {:.1}%", humidity.percent));
@@ -249,14 +244,14 @@ async fn main(spawner: Spawner) {
     info!("🔌 Initializing MQTT client...");
 
     // Create AimDB database with Embassy adapter
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(stack));
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
 
     // Build MQTT broker URL
     use alloc::format;
     let broker_url = format!("mqtt://{}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
 
     let mut builder = AimDbBuilder::new().runtime(runtime.clone()).with_connector(
-        MqttConnectorBuilder::new(&broker_url).with_client_id("weather-station-gamma"),
+        MqttConnectorBuilder::new(&broker_url, stack).with_client_id("weather-station-gamma"),
     );
 
     // Configure temperature record
@@ -369,7 +364,7 @@ async fn main(spawner: Spawner) {
     info!("   Broker: {}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
     info!("");
 
-    static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
+    static DB_CELL: StaticCell<aimdb_core::AimDb> = StaticCell::new();
     let (db, db_runner) = builder.build().await.expect("Failed to build database");
     let _db = DB_CELL.init(db);
 

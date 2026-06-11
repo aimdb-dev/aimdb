@@ -38,16 +38,10 @@ use crate::DbError;
 /// (cheaply, behind `Arc`) with the per-stage instrumentation.
 pub(crate) type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-/// Builds a [`Clock`] from a runtime adapter.
-pub(crate) fn make_clock<R: aimdb_executor::TimeOps>(rt: Arc<R>) -> Clock {
-    let epoch = rt.now();
-    Arc::new(move || {
-        let now = rt.now();
-        match rt.duration_since(now, epoch.clone()) {
-            Some(d) => rt.duration_as_nanos(d),
-            None => 0,
-        }
-    })
+/// Builds a [`Clock`] from the dyn-safe runtime capabilities.
+pub(crate) fn make_clock(rt: Arc<dyn aimdb_executor::RuntimeOps>) -> Clock {
+    let epoch = rt.now_nanos();
+    Arc::new(move || rt.now_nanos().saturating_sub(epoch))
 }
 
 /// Sentinel for "no previous `produce()` recorded yet".

@@ -24,6 +24,24 @@ use aimdb_core::session::{
 };
 use aimdb_embassy_adapter::EmbassyAdapter;
 
+// No-op defmt logger so the binary links: the engine holds the adapter as
+// `Arc<dyn RuntimeOps>` (issue #131), whose vtable references the `log` path
+// (`defmt` on Embassy) even though this smoke never logs.
+#[defmt::global_logger]
+struct TestLogger;
+
+unsafe impl defmt::Logger for TestLogger {
+    fn acquire() {}
+    unsafe fn flush() {}
+    unsafe fn release() {}
+    unsafe fn write(_bytes: &[u8]) {}
+}
+
+#[defmt::panic_handler]
+fn defmt_panic() -> ! {
+    core::panic!("defmt panic in host test")
+}
+
 // Trivial host time driver so `embassy_time` links (the happy path never awaits
 // `clock.sleep`, so `now`/`schedule_wake` are never actually exercised).
 struct TestTimeDriver;

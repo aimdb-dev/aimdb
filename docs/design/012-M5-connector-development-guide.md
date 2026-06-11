@@ -207,8 +207,10 @@ embassy-runtime = ["aimdb-core/connector-session", "aimdb-embassy-adapter/connec
 - Force-`Send` the long-lived protocol task with `into_box_future(async move { … })`.
 
 **Other:** `alloc` types (`alloc::sync::Arc`, `alloc::string::String`), `StaticCell<T>` for
-channels, `defmt` logging behind `#[cfg(feature = "defmt")]`, `R: EmbassyNetwork` for the
-network stack.
+channels, `defmt` logging behind `#[cfg(feature = "defmt")]`. Network connectors take the
+`embassy_net::Stack` at builder construction, wrapped in
+`aimdb_embassy_adapter::connectors::NetStack` (the `EmbassyNetwork` runtime trait is gone
+since issue #131 — a `dyn RuntimeOps` cannot surface adapter-specific capabilities).
 
 **See:** `aimdb-serial-connector` (session), `aimdb-mqtt-connector` / `aimdb-knx-connector`
 (data-plane), and `examples/embassy-mqtt-connector-demo/`.

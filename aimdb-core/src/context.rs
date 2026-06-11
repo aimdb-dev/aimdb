@@ -1,171 +1,117 @@
 //! Runtime context for AimDB services
 //!
-//! Provides a unified interface to runtime capabilities like sleep and timestamp
-//! functions, abstracting away the specific runtime adapter implementation.
+//! Provides a unified interface to runtime capabilities (time, sleep, logging)
+//! as a concrete value wrapping `Arc<dyn RuntimeOps>` — no runtime type
+//! parameter (issue #131, design doc 034 §3.2/§3.3).
 
-use aimdb_executor::Runtime;
+use aimdb_executor::{BoxFuture, LogLevel, RuntimeOps};
 use alloc::sync::Arc;
-use core::future::Future;
 
 /// Unified runtime context for AimDB services
 ///
-/// Provides access to runtime capabilities (sleep, timestamps) through
-/// a unified API, abstracting the underlying runtime implementation.
-///
-/// Services receive this context for timing operations without knowing
-/// about the specific runtime adapter.
+/// Wraps the dyn-safe [`RuntimeOps`] capability surface so services can use
+/// timing and logging without knowing the runtime adapter type. Cheap to
+/// clone (one `Arc`).
 #[derive(Clone)]
-pub struct RuntimeContext<R>
-where
-    R: Runtime,
-{
-    runtime: Arc<R>,
+pub struct RuntimeContext {
+    ops: Arc<dyn RuntimeOps>,
 }
 
-impl<R> RuntimeContext<R>
-where
-    R: Runtime,
-{
-    /// Create a new RuntimeContext (wraps the runtime in an Arc internally)
-    pub fn new(runtime: R) -> Self {
-        Self {
-            runtime: Arc::new(runtime),
-        }
+impl RuntimeContext {
+    /// Create a new RuntimeContext from the dyn-safe runtime capabilities.
+    pub fn new(ops: Arc<dyn RuntimeOps>) -> Self {
+        Self { ops }
     }
 
-    /// Create from an existing Arc to avoid double-wrapping
-    pub fn from_arc(runtime: Arc<R>) -> Self {
-        Self { runtime }
-    }
-
-    /// Extract runtime context from type-erased Arc
-    ///
-    /// This is a helper for runtime adapters to convert the raw `Arc<dyn Any>`
-    /// context passed to `.source_raw()` and `.tap_raw()` into a typed `RuntimeContext`.
-    ///
-    /// # Panics
-    /// Panics if the runtime type doesn't match `R`.
-    pub fn extract_from_any(ctx_any: Arc<dyn core::any::Any + Send + Sync>) -> Self {
-        let runtime = ctx_any
-            .downcast::<R>()
-            .expect("Runtime type mismatch - expected matching runtime adapter");
-        Self::from_arc(runtime)
-    }
-}
-
-impl<R> RuntimeContext<R>
-where
-    R: Runtime,
-{
     /// Access time utilities
     ///
-    /// Returns a time accessor for duration creation, sleep, and timing operations.
-    pub fn time(&self) -> Time<'_, R> {
-        Time { ctx: self }
+    /// Returns a time accessor for clock reads and sleeping.
+    pub fn time(&self) -> Time<'_> {
+        Time { ops: &*self.ops }
     }
 
     /// Access logging utilities
-    pub fn log(&self) -> Log<'_, R> {
-        Log { ctx: self }
+    pub fn log(&self) -> Log<'_> {
+        Log { ops: &*self.ops }
     }
 
-    /// Get access to the underlying runtime
-    ///
-    /// This provides direct access to the runtime for advanced use cases.
-    pub fn runtime(&self) -> &R {
-        &self.runtime
+    /// Direct access to the underlying runtime capabilities.
+    pub fn ops(&self) -> &Arc<dyn RuntimeOps> {
+        &self.ops
     }
-}
-
-impl<R> RuntimeContext<R>
-where
-    R: Runtime,
-{
-    /// Create a RuntimeContext from a runtime adapter
-    pub fn from_runtime(runtime: R) -> Self {
-        Self::new(runtime)
-    }
-}
-
-/// Create a RuntimeContext from any Runtime implementation
-pub fn create_runtime_context<R>(runtime: R) -> RuntimeContext<R>
-where
-    R: Runtime,
-{
-    RuntimeContext::from_runtime(runtime)
 }
 
 /// Time utilities accessor for RuntimeContext
 ///
-/// Provides duration creation, sleep, and timing measurements.
-pub struct Time<'a, R: Runtime> {
-    ctx: &'a RuntimeContext<R>,
+/// Durations are plain [`core::time::Duration`]; instants are `u64`
+/// nanoseconds from an arbitrary monotonic epoch (only differences between
+/// two readings are meaningful).
+pub struct Time<'a> {
+    ops: &'a dyn RuntimeOps,
 }
 
-impl<'a, R: Runtime> Time<'a, R> {
-    /// Create a duration from milliseconds
-    pub fn millis(&self, millis: u64) -> R::Duration {
-        self.ctx.runtime.millis(millis)
-    }
-
-    /// Create a duration from seconds
-    pub fn secs(&self, secs: u64) -> R::Duration {
-        self.ctx.runtime.secs(secs)
-    }
-
-    /// Create a duration from microseconds
-    pub fn micros(&self, micros: u64) -> R::Duration {
-        self.ctx.runtime.micros(micros)
-    }
-
-    /// Sleep for the specified duration
-    pub fn sleep(&self, duration: R::Duration) -> impl Future<Output = ()> + Send + '_ {
-        self.ctx.runtime.sleep(duration)
-    }
-
-    /// Get the current timestamp
-    pub fn now(&self) -> R::Instant {
-        self.ctx.runtime.now()
-    }
-
-    /// Get the duration between two instants
+impl Time<'_> {
+    /// Monotonic clock reading in nanoseconds from an arbitrary epoch.
     ///
-    /// Returns None if `later` is before `earlier`.
-    pub fn duration_since(&self, later: R::Instant, earlier: R::Instant) -> Option<R::Duration> {
-        self.ctx.runtime.duration_since(later, earlier)
+    /// Never decreases; saturates at `u64::MAX` rather than wrapping.
+    pub fn now(&self) -> u64 {
+        self.ops.now_nanos()
     }
 
-    /// Number of whole nanoseconds in a duration (runtime-agnostic).
-    pub fn duration_as_nanos(&self, duration: R::Duration) -> u64 {
-        self.ctx.runtime.duration_as_nanos(duration)
+    /// Wall-clock time as `(seconds, nanoseconds)` since the Unix epoch, if
+    /// the runtime has a real-time clock (`None` on e.g. a bare MCU without
+    /// an RTC anchor).
+    pub fn unix_time(&self) -> Option<(u64, u32)> {
+        self.ops.unix_time()
+    }
+
+    /// Completes after at least `duration` has elapsed.
+    ///
+    /// The future is boxed (it crosses the `dyn RuntimeOps` boundary), so each
+    /// call costs one small heap allocation. That is fine for periodic loops
+    /// and timeouts; in a no_std hot path that sleeps every iteration, await
+    /// the adapter's native timer (e.g. `embassy_time::Timer`) directly
+    /// instead.
+    pub fn sleep(&self, duration: core::time::Duration) -> BoxFuture {
+        self.ops.sleep(duration)
+    }
+
+    /// Convenience: sleep for `ms` milliseconds.
+    pub fn sleep_millis(&self, ms: u64) -> BoxFuture {
+        self.ops.sleep(core::time::Duration::from_millis(ms))
+    }
+
+    /// Convenience: sleep for `secs` seconds.
+    pub fn sleep_secs(&self, secs: u64) -> BoxFuture {
+        self.ops.sleep(core::time::Duration::from_secs(secs))
     }
 }
 
 /// Log utilities accessor for RuntimeContext
 ///
 /// Provides structured logging operations.
-pub struct Log<'a, R: Runtime> {
-    ctx: &'a RuntimeContext<R>,
+pub struct Log<'a> {
+    ops: &'a dyn RuntimeOps,
 }
 
-impl<'a, R: Runtime> Log<'a, R> {
+impl Log<'_> {
     /// Log an informational message
     pub fn info(&self, message: &str) {
-        self.ctx.runtime.info(message)
+        self.ops.log(LogLevel::Info, message)
     }
 
     /// Log a debug message
     pub fn debug(&self, message: &str) {
-        self.ctx.runtime.debug(message)
+        self.ops.log(LogLevel::Debug, message)
     }
 
     /// Log a warning message
     pub fn warn(&self, message: &str) {
-        self.ctx.runtime.warn(message)
+        self.ops.log(LogLevel::Warn, message)
     }
 
     /// Log an error message
     pub fn error(&self, message: &str) {
-        self.ctx.runtime.error(message)
+        self.ops.log(LogLevel::Error, message)
     }
 }

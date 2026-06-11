@@ -41,7 +41,7 @@ fn test_socket_path(test_name: &str) -> String {
 }
 
 /// Helper: set up a test AimDB server with remote access
-async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb<TokioAdapter> {
+async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb {
     let _ = std::fs::remove_file(socket_path);
 
     let adapter = Arc::new(TokioAdapter);
@@ -72,7 +72,7 @@ async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb<TokioAdapter>
 }
 
 /// Helper: set up server with a small ring to test overflow
-async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb<TokioAdapter> {
+async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb {
     let _ = std::fs::remove_file(socket_path);
 
     let adapter = Arc::new(TokioAdapter);
@@ -97,7 +97,7 @@ async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb<TokioAd
 }
 
 /// Helper: set up server with a record that does NOT have remote access
-async fn setup_no_remote_access_server(socket_path: &str) -> aimdb_core::AimDb<TokioAdapter> {
+async fn setup_no_remote_access_server(socket_path: &str) -> aimdb_core::AimDb {
     let _ = std::fs::remove_file(socket_path);
 
     let adapter = Arc::new(TokioAdapter);

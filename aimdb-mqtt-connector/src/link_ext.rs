@@ -37,30 +37,27 @@ pub trait MqttOutboundLinkExt: MqttLinkExt {
     fn with_retain(self, retain: bool) -> Self;
 }
 
-impl<'r, 'a, T, R> MqttLinkExt for OutboundConnectorBuilder<'r, 'a, T, R>
+impl<'r, 'a, T> MqttLinkExt for OutboundConnectorBuilder<'r, 'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn with_qos(self, qos: u8) -> Self {
         self.with_config("qos", &qos.to_string())
     }
 }
 
-impl<'r, 'a, T, R> MqttOutboundLinkExt for OutboundConnectorBuilder<'r, 'a, T, R>
+impl<'r, 'a, T> MqttOutboundLinkExt for OutboundConnectorBuilder<'r, 'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn with_retain(self, retain: bool) -> Self {
         self.with_config("retain", if retain { "true" } else { "false" })
     }
 }
 
-impl<'r, 'a, T, R> MqttLinkExt for InboundConnectorBuilder<'r, 'a, T, R>
+impl<'r, 'a, T> MqttLinkExt for InboundConnectorBuilder<'r, 'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     fn with_qos(self, qos: u8) -> Self {
         self.with_config("qos", &qos.to_string())

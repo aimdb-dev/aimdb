@@ -31,7 +31,7 @@ use aimdb_core::connector::ConnectorBuilder;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{serve, Dispatch, SessionConfig, SessionLimits};
-use aimdb_core::{AimDb, DbResult, RuntimeAdapter};
+use aimdb_core::{AimDb, DbResult};
 
 use crate::framing::{encode_frame, FrameAccumulator};
 use crate::DEFAULT_SCHEME;
@@ -191,13 +191,12 @@ impl<Rd, Wr> SerialServer<Rd, Wr> {
     }
 }
 
-impl<R, Rd, Wr> ConnectorBuilder<R> for SerialServer<Rd, Wr>
+impl<Rd, Wr> ConnectorBuilder for SerialServer<Rd, Wr>
 where
-    R: RuntimeAdapter + 'static,
     Rd: Read + 'static,
     Wr: Write + 'static,
 {
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
+    fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         // Take the moved-in connection out of `&self` (build runs once); the
         // canonical "already built" error lives on the adapter's cell.
         let conn = self.conn.take_required();

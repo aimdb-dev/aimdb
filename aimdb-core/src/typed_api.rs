@@ -9,15 +9,14 @@
 //! # Producer Example
 //!
 //! ```rust,ignore
-//! #[service]
-//! async fn temperature_producer<R: Runtime>(
-//!     ctx: RuntimeContext<R>,
+//! async fn temperature_producer(
+//!     ctx: RuntimeContext,
 //!     producer: Producer<Temperature>,
 //! ) {
 //!     loop {
 //!         let temp = read_sensor().await;
 //!         producer.produce(temp);
-//!         ctx.time().sleep(ctx.time().secs(1)).await;
+//!         ctx.time().sleep_secs(1).await;
 //!     }
 //! }
 //! ```
@@ -25,9 +24,8 @@
 //! # Consumer Example
 //!
 //! ```rust,ignore
-//! #[service]
-//! async fn temperature_monitor<R: Runtime>(
-//!     ctx: RuntimeContext<R>,
+//! async fn temperature_monitor(
+//!     ctx: RuntimeContext,
 //!     consumer: Consumer<Temperature>,
 //! ) {
 //!     let mut rx = consumer.subscribe();
@@ -41,9 +39,9 @@
 //!
 //! ```rust,ignore
 //! builder.configure::<Temperature>("sensors.outdoor", |reg| {
-//!     reg.buffer(buffer)
-//!        .source(|producer, ctx| temperature_service(ctx, producer))
-//!        .tap(|consumer| temperature_logger(consumer))
+//!     reg.buffer(cfg)
+//!        .source(temperature_producer)
+//!        .tap(temperature_monitor)
 //!        .link_to("mqtt://sensors/temp")
 //!        .with_serializer_raw(|t| serde_json::to_vec(t))
 //!        .finish();
@@ -330,15 +328,11 @@ pub enum StageKind {
 /// Registrar for configuring a typed record
 ///
 /// Provides a fluent API for registering producer and consumer functions.
-pub struct RecordRegistrar<
-    'a,
-    T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
-> {
+pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     /// The typed record being configured
-    pub(crate) rec: &'a mut TypedRecord<T, R>,
+    pub(crate) rec: &'a mut TypedRecord<T>,
     /// Connector builders indexed by scheme
-    pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder<R>>],
+    pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder>],
     /// The record key for this record
     pub(crate) record_key: String,
     /// Extension storage from the builder — allows external crates (e.g.
@@ -350,10 +344,9 @@ pub struct RecordRegistrar<
     pub(crate) last_stage: Option<(StageKind, usize)>,
 }
 
-impl<'a, T, R> RecordRegistrar<'a, T, R>
+impl<'a, T> RecordRegistrar<'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Returns a reference to the builder's extension storage.
     ///
@@ -384,22 +377,23 @@ where
         self
     }
 
-    /// Registers a producer service for this record type (low-level API)
+    /// Registers a producer service for this record type.
     ///
-    /// **Note:** This is the foundational API used by runtime adapter implementations.
-    /// Most users should use the higher-level `source()` method provided by runtime
-    /// adapter extension traits (e.g., `TokioRecordRegistrarExt::source()`) which
-    /// automatically extract the typed `RuntimeContext`.
+    /// The closure receives the [`RuntimeContext`](crate::RuntimeContext)
+    /// (time + logging capabilities) and a pre-resolved [`Producer<T>`]; it is
+    /// collected at `build()` time and driven by the `AimDbRunner`.
     ///
-    /// This method accepts the raw runtime context as `Arc<dyn Any>` and is used by:
-    /// - Runtime adapter implementations to provide convenient wrappers
-    /// - Internal connector implementations
-    /// - Advanced use cases requiring direct control
-    pub fn source_raw<F, Fut>(&mut self, f: F) -> &mut Self
+    /// ```rust,ignore
+    /// reg.source(|ctx, producer| async move {
+    ///     loop {
+    ///         producer.produce(read_sensor().await);
+    ///         ctx.time().sleep_secs(1).await;
+    ///     }
+    /// });
+    /// ```
+    pub fn source<F, Fut>(&mut self, f: F) -> &mut Self
     where
-        F: FnOnce(crate::Producer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
-            + Send
-            + 'static,
+        F: FnOnce(crate::RuntimeContext, crate::Producer<T>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.rec.set_producer(f);
@@ -415,22 +409,23 @@ where
         self
     }
 
-    /// Register a side-effect observer that taps into the data stream (low-level API)
+    /// Register a side-effect observer that taps into the data stream.
     ///
-    /// **Note:** This is the foundational API used by runtime adapter and connector implementations.
-    /// Most users should use the higher-level `tap()` method provided by runtime
-    /// adapter extension traits (e.g., `TokioRecordRegistrarExt::tap()`) which
-    /// automatically extract the typed `RuntimeContext`.
+    /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) and a
+    /// pre-resolved [`Consumer<T>`]; it is collected at `build()` time and
+    /// driven by the `AimDbRunner`. Multiple taps per record are allowed.
     ///
-    /// This method accepts the raw runtime context as `Arc<dyn Any>` and is used by:
-    /// - Runtime adapter implementations to provide convenient wrappers
-    /// - Internal connector implementations (e.g., `.link_to()` creates consumers via this method)
-    /// - Advanced use cases requiring direct control
-    pub fn tap_raw<F, Fut>(&mut self, f: F) -> &mut Self
+    /// ```rust,ignore
+    /// reg.tap(|ctx, consumer| async move {
+    ///     let mut rx = consumer.subscribe();
+    ///     while let Ok(value) = rx.recv().await {
+    ///         ctx.log().info("observed value");
+    ///     }
+    /// });
+    /// ```
+    pub fn tap<F, Fut>(&mut self, f: F) -> &mut Self
     where
-        F: FnOnce(crate::Consumer<T>, Arc<dyn core::any::Any + Send + Sync>) -> Fut
-            + Send
-            + 'static,
+        F: FnOnce(crate::RuntimeContext, crate::Consumer<T>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
         T: Sync,
     {
@@ -505,12 +500,10 @@ where
         self
     }
 
-    /// Register a single-input reactive transform (low-level API).
+    /// Register a single-input reactive transform.
     ///
-    /// **Note:** This is the foundational API. Most users should use the higher-level
-    /// `transform()` method provided by runtime adapter extension traits.
-    ///
-    /// Panics if a `.source()` or another `.transform()` is already registered.
+    /// Conflicts with `.source()` and other `.transform()`s are recorded and
+    /// reported from `build()`.
     ///
     /// # Type Parameters
     /// * `I` - The input record type to subscribe to
@@ -518,19 +511,15 @@ where
     /// # Arguments
     /// * `input_key` - The record key to subscribe to as input
     /// * `build_fn` - Closure that configures the transform pipeline via `TransformBuilder`
-    pub fn transform_raw<I, F>(
-        &mut self,
-        input_key: impl crate::RecordKey,
-        build_fn: F,
-    ) -> &mut Self
+    pub fn transform<I, F>(&mut self, input_key: impl crate::RecordKey, build_fn: F) -> &mut Self
     where
         I: Send + Sync + Clone + Debug + 'static,
         F: FnOnce(
-            crate::transform::TransformBuilder<I, T, R>,
-        ) -> crate::transform::TransformPipeline<I, T, R>,
+            crate::transform::TransformBuilder<I, T>,
+        ) -> crate::transform::TransformPipeline<I, T>,
     {
         let input_key_str = input_key.as_str().to_string();
-        let builder = crate::transform::TransformBuilder::<I, T, R>::new(input_key_str);
+        let builder = crate::transform::TransformBuilder::<I, T>::new(input_key_str);
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
@@ -540,33 +529,21 @@ where
         self
     }
 
-    /// Register a multi-input join transform (low-level API).
+    /// Multi-input reactive transform (join).
     ///
-    /// Panics if a `.source()` or another `.transform()` is already registered.
-    pub fn transform_join_raw<F>(&mut self, build_fn: F) -> &mut Self
+    /// Derives this record from multiple input records. Available on every
+    /// runtime. Conflicts with `.source()` and other `.transform()`s are
+    /// recorded and reported from `build()`.
+    pub fn transform_join<F>(&mut self, build_fn: F) -> &mut Self
     where
-        R: aimdb_executor::JoinFanInRuntime,
-        F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
+        F: FnOnce(crate::transform::JoinBuilder<T>) -> crate::transform::JoinPipeline<T>,
     {
-        let builder = crate::transform::JoinBuilder::<T, R>::new();
+        let builder = crate::transform::JoinBuilder::<T>::new();
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
         self.last_stage = Some((StageKind::Transform, 0));
         self
-    }
-
-    /// Multi-input reactive transform (join).
-    ///
-    /// Derives this record from multiple input records. Available on any runtime
-    /// that implements `JoinFanInRuntime`. Panics if a `.source()` or another
-    /// `.transform()` is already registered.
-    pub fn transform_join<F>(&mut self, build_fn: F) -> &mut Self
-    where
-        R: aimdb_executor::JoinFanInRuntime,
-        F: FnOnce(crate::transform::JoinBuilder<T, R>) -> crate::transform::JoinPipeline<T, R>,
-    {
-        self.transform_join_raw(build_fn)
     }
 
     /// Link TO external system (outbound: AimDB → External)
@@ -583,7 +560,7 @@ where
     ///            .finish()
     /// });
     /// ```
-    pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T, R> {
+    pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T> {
         OutboundConnectorBuilder {
             registrar: self,
             url: url.to_string(),
@@ -608,7 +585,7 @@ where
     ///            .finish()
     /// });
     /// ```
-    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T, R> {
+    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
         InboundConnectorBuilder {
             registrar: self,
             url: url.to_string(),
@@ -628,13 +605,8 @@ where
 ///
 /// `'r` is the borrow of the registrar taken by `link_to()`; `'a` is the
 /// registrar's own borrow of the record being configured.
-pub struct OutboundConnectorBuilder<
-    'r,
-    'a,
-    T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
-> {
-    registrar: &'r mut RecordRegistrar<'a, T, R>,
+pub struct OutboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Clone> {
+    registrar: &'r mut RecordRegistrar<'a, T>,
     url: String,
     config: Vec<(String, String)>,
     serializer: Option<TypedSerializerFn<T>>,
@@ -642,10 +614,9 @@ pub struct OutboundConnectorBuilder<
     topic_provider: Option<crate::connector::TopicProviderFn>,
 }
 
-impl<'r, 'a, T, R> OutboundConnectorBuilder<'r, 'a, T, R>
+impl<'r, 'a, T> OutboundConnectorBuilder<'r, 'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
@@ -669,8 +640,9 @@ where
 
     /// Sets a context-aware serialization callback
     ///
-    /// The closure receives a `RuntimeContext<R>` for platform-independent
-    /// timestamps and logging, plus the typed value being serialized.
+    /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
+    /// platform-independent timestamps and logging, plus the typed value being
+    /// serialized.
     ///
     /// # Example
     ///
@@ -684,15 +656,13 @@ where
     /// ```
     pub fn with_serializer<F>(mut self, f: F) -> Self
     where
-        F: Fn(crate::RuntimeContext<R>, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
+        F: Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
             + Send
             + Sync
             + 'static,
-        R: aimdb_executor::Runtime + Send + Sync,
     {
         let f = Arc::new(f);
-        self.context_serializer = Some(Arc::new(move |ctx_any, value_any| {
-            let ctx = crate::RuntimeContext::<R>::extract_from_any(ctx_any);
+        self.context_serializer = Some(Arc::new(move |ctx, value_any| {
             if let Some(value) = value_any.downcast_ref::<T>() {
                 (f)(ctx, value)
             } else {
@@ -767,7 +737,7 @@ where
     ///
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_to()` is fine).
-    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, R> {
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
         use crate::connector::{ConnectorLink, ConnectorUrl};
         use crate::error::ConfigError;
 
@@ -860,34 +830,29 @@ where
         // failures here are aimdb bugs, not user mistakes.
         {
             let record_key = self.registrar.record_key.clone();
-            link.consumer_factory = Some(Arc::new(
-                move |db_any: Arc<dyn core::any::Any + Send + Sync>| {
-                    let db_ref = db_any.downcast_ref::<AimDb<R>>().expect(
-                        "consumer factory: AimDb downcast failed — this is a bug in aimdb-core",
-                    );
-                    let typed_rec = db_ref
-                        .inner()
-                        .get_typed_record_by_key::<T, R>(&record_key)
-                        .unwrap_or_else(|e| {
-                            panic!(
-                                "consumer factory: record '{record_key}' lookup failed ({e:?}) — \
-                                 this is a bug in aimdb-core"
-                            )
-                        });
-                    let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
+            link.consumer_factory = Some(Arc::new(move |db: &AimDb| {
+                let typed_rec = db
+                    .inner()
+                    .get_typed_record_by_key::<T>(&record_key)
+                    .unwrap_or_else(|e| {
                         panic!(
-                            "consumer factory: record '{record_key}' has no buffer despite \
-                             build()-time validation — this is a bug in aimdb-core"
+                            "consumer factory: record '{record_key}' lookup failed ({e:?}) — \
+                             this is a bug in aimdb-core"
                         )
                     });
+                let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
+                    panic!(
+                        "consumer factory: record '{record_key}' has no buffer despite \
+                         build()-time validation — this is a bug in aimdb-core"
+                    )
+                });
 
-                    #[allow(unused_mut)]
-                    let mut consumer = Consumer::<T>::new(buffer);
-                    #[cfg(feature = "profiling")]
-                    consumer.set_profiling(link_metrics.clone(), db_ref.profiling_clock().clone());
-                    Box::new(consumer) as Box<dyn crate::connector::ConsumerTrait>
-                },
-            ));
+                #[allow(unused_mut)]
+                let mut consumer = Consumer::<T>::new(buffer);
+                #[cfg(feature = "profiling")]
+                consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+                Box::new(consumer) as Box<dyn crate::connector::ConsumerTrait>
+            }));
         }
 
         // Store the connector link - consumers will be created later in build()
@@ -908,13 +873,8 @@ type TypedDeserializerFn<T> = Arc<dyn Fn(&[u8]) -> Result<T, String> + Send + Sy
 ///
 /// `'r` is the borrow of the registrar taken by `link_from()`; `'a` is the
 /// registrar's own borrow of the record being configured.
-pub struct InboundConnectorBuilder<
-    'r,
-    'a,
-    T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
-> {
-    registrar: &'r mut RecordRegistrar<'a, T, R>,
+pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Clone> {
+    registrar: &'r mut RecordRegistrar<'a, T>,
     url: String,
     config: Vec<(String, String)>,
     deserializer: Option<TypedDeserializerFn<T>>,
@@ -922,10 +882,9 @@ pub struct InboundConnectorBuilder<
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
-impl<'r, 'a, T, R> InboundConnectorBuilder<'r, 'a, T, R>
+impl<'r, 'a, T> InboundConnectorBuilder<'r, 'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
 {
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
@@ -959,8 +918,9 @@ where
 
     /// Sets a context-aware deserialization callback
     ///
-    /// The closure receives a `RuntimeContext<R>` for platform-independent
-    /// timestamps and logging, plus the raw bytes from the external system.
+    /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
+    /// platform-independent timestamps and logging, plus the raw bytes from
+    /// the external system.
     ///
     /// # Example
     ///
@@ -974,12 +934,10 @@ where
     /// ```
     pub fn with_deserializer<F>(mut self, f: F) -> Self
     where
-        F: Fn(crate::RuntimeContext<R>, &[u8]) -> Result<T, String> + Send + Sync + 'static,
-        R: aimdb_executor::Runtime + Send + Sync,
+        F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
     {
         let f = Arc::new(f);
-        self.context_deserializer = Some(Arc::new(move |ctx_any, bytes| {
-            let ctx = crate::RuntimeContext::<R>::extract_from_any(ctx_any);
+        self.context_deserializer = Some(Arc::new(move |ctx, bytes| {
             (f)(ctx, bytes).map(|val| Box::new(val) as Box<dyn core::any::Any + Send>)
         }));
         self.deserializer = None; // mutually exclusive
@@ -1043,7 +1001,7 @@ where
     ///
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_from()` is fine).
-    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, R> {
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
         use crate::connector::{ConnectorUrl, DeserializerKind, InboundConnectorLink};
         use crate::error::ConfigError;
 
@@ -1133,13 +1091,10 @@ where
         // validated, so failures here are aimdb bugs, not user mistakes.
         {
             let record_key = self.registrar.record_key.clone();
-            link = link.with_producer_factory(move |db_any| {
-                let db = db_any.downcast::<crate::builder::AimDb<R>>().expect(
-                    "producer factory: AimDb downcast failed — this is a bug in aimdb-core",
-                );
+            link = link.with_producer_factory(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
-                    .get_typed_record_by_key::<T, R>(&record_key)
+                    .get_typed_record_by_key::<T>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
                             "producer factory: record '{record_key}' lookup failed ({e:?}) — \
@@ -1165,14 +1120,12 @@ where
 ///
 /// Records implementing this trait register their producer and consumer
 /// functions, encapsulating behavior with their type.
-pub trait RecordT<R: aimdb_executor::RuntimeAdapter + 'static>:
-    Send + Sync + 'static + Debug + Clone
-{
+pub trait RecordT: Send + Sync + 'static + Debug + Clone {
     /// Configuration type for this record
     type Config;
 
     /// Registers producer and consumer functions
-    fn register(reg: &mut RecordRegistrar<'_, Self, R>, cfg: &Self::Config);
+    fn register(reg: &mut RecordRegistrar<'_, Self>, cfg: &Self::Config);
 }
 
 #[cfg(test)]
@@ -1216,47 +1169,9 @@ mod tests {
     // Test infrastructure for InboundConnectorBuilder deserializer tests
     // ====================================================================
 
-    /// Minimal mock runtime for context tests
-    struct MockRuntime;
-
-    impl aimdb_executor::RuntimeAdapter for MockRuntime {
-        fn runtime_name() -> &'static str {
-            "mock"
-        }
-    }
-
-    impl aimdb_executor::TimeOps for MockRuntime {
-        type Instant = u64;
-        type Duration = u64;
-        fn now(&self) -> u64 {
-            0
-        }
-        fn duration_since(&self, _later: u64, _earlier: u64) -> Option<u64> {
-            Some(0)
-        }
-        fn millis(&self, ms: u64) -> u64 {
-            ms
-        }
-        fn secs(&self, secs: u64) -> u64 {
-            secs * 1000
-        }
-        fn micros(&self, micros: u64) -> u64 {
-            micros
-        }
-        fn sleep(&self, _duration: u64) -> impl Future<Output = ()> + Send {
-            core::future::ready(())
-        }
-        fn duration_as_nanos(&self, duration: u64) -> u64 {
-            duration
-        }
-    }
-
-    impl aimdb_executor::Logger for MockRuntime {
-        fn info(&self, _message: &str) {}
-        fn debug(&self, _message: &str) {}
-        fn warn(&self, _message: &str) {}
-        fn error(&self, _message: &str) {}
-    }
+    /// Minimal mock runtime for context tests — the builder only needs the
+    /// dyn-safe `RuntimeOps` surface, supplied by the shared test stub.
+    use aimdb_executor::test_support::NoopRuntimeOps as MockRuntime;
 
     /// Minimal mock buffer so `has_buffer()` returns true
     struct MockBuffer;
@@ -1276,10 +1191,10 @@ mod tests {
         scheme: String,
     }
 
-    impl crate::connector::ConnectorBuilder<MockRuntime> for MockConnectorBuilder {
+    impl crate::connector::ConnectorBuilder for MockConnectorBuilder {
         fn build<'a>(
             &'a self,
-            _db: &'a crate::AimDb<MockRuntime>,
+            _db: &'a crate::AimDb,
         ) -> Pin<
             Box<
                 dyn Future<
@@ -1298,10 +1213,10 @@ mod tests {
     /// Helper: build a RecordRegistrar wired to a TypedRecord with a buffer and a
     /// mock connector builder for the given scheme.
     fn make_registrar<'a>(
-        rec: &'a mut crate::typed_record::TypedRecord<TestRecord, MockRuntime>,
-        builders: &'a [Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>],
+        rec: &'a mut crate::typed_record::TypedRecord<TestRecord>,
+        builders: &'a [Box<dyn crate::connector::ConnectorBuilder>],
         extensions: &'a crate::extensions::Extensions,
-    ) -> RecordRegistrar<'a, TestRecord, MockRuntime> {
+    ) -> RecordRegistrar<'a, TestRecord> {
         RecordRegistrar {
             rec,
             connector_builders: builders,
@@ -1319,10 +1234,10 @@ mod tests {
     fn inbound_finish_stores_raw_deserializer_kind() {
         use crate::connector::DeserializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1361,10 +1276,10 @@ mod tests {
     fn inbound_finish_stores_context_deserializer_kind() {
         use crate::connector::DeserializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1373,7 +1288,7 @@ mod tests {
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
         reg.link_from("mqtt://broker/topic")
-            .with_deserializer(|_ctx: crate::RuntimeContext<MockRuntime>, bytes: &[u8]| {
+            .with_deserializer(|_ctx: crate::RuntimeContext, bytes: &[u8]| {
                 Ok(TestRecord {
                     value: bytes.len() as i32 * 10,
                 })
@@ -1395,10 +1310,10 @@ mod tests {
     fn inbound_raw_overrides_previous_context_deserializer() {
         use crate::connector::DeserializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1408,7 +1323,7 @@ mod tests {
 
         // Set context first, then override with raw — raw should win
         reg.link_from("mqtt://broker/topic")
-            .with_deserializer(|_ctx: crate::RuntimeContext<MockRuntime>, _bytes: &[u8]| {
+            .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
                 Ok(TestRecord { value: 0 })
             })
             .with_deserializer_raw(|bytes: &[u8]| {
@@ -1428,10 +1343,10 @@ mod tests {
     fn inbound_context_overrides_previous_raw_deserializer() {
         use crate::connector::DeserializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1442,7 +1357,7 @@ mod tests {
         // Set raw first, then override with context — context should win
         reg.link_from("mqtt://broker/topic")
             .with_deserializer_raw(|_bytes: &[u8]| Ok(TestRecord { value: 0 }))
-            .with_deserializer(|_ctx: crate::RuntimeContext<MockRuntime>, _bytes: &[u8]| {
+            .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
                 Ok(TestRecord { value: 99 })
             })
             .finish();
@@ -1455,7 +1370,7 @@ mod tests {
 
     /// Drains the configuration errors a registrar/setter recorded on `rec`.
     fn drain_errors(
-        rec: &mut crate::typed_record::TypedRecord<TestRecord, MockRuntime>,
+        rec: &mut crate::typed_record::TypedRecord<TestRecord>,
     ) -> Vec<crate::error::ConfigError> {
         use crate::typed_record::AnyRecord;
         rec.drain_config_errors()
@@ -1463,10 +1378,10 @@ mod tests {
 
     #[test]
     fn inbound_finish_without_deserializer_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1495,10 +1410,10 @@ mod tests {
     fn outbound_finish_stores_raw_serializer_kind() {
         use crate::connector::SerializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1532,10 +1447,10 @@ mod tests {
     fn outbound_finish_stores_context_serializer_kind() {
         use crate::connector::SerializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1544,11 +1459,9 @@ mod tests {
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
         reg.link_to("mqtt://broker/topic")
-            .with_serializer(
-                |_ctx: crate::RuntimeContext<MockRuntime>, record: &TestRecord| {
-                    Ok(record.value.to_le_bytes().to_vec())
-                },
-            )
+            .with_serializer(|_ctx: crate::RuntimeContext, record: &TestRecord| {
+                Ok(record.value.to_le_bytes().to_vec())
+            })
             .finish();
 
         assert_eq!(rec.outbound_connectors().len(), 1);
@@ -1567,10 +1480,10 @@ mod tests {
     fn outbound_raw_overrides_previous_context_serializer() {
         use crate::connector::SerializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1580,9 +1493,7 @@ mod tests {
 
         // Set context first, then override with raw — raw should win
         reg.link_to("mqtt://broker/topic")
-            .with_serializer(
-                |_ctx: crate::RuntimeContext<MockRuntime>, _record: &TestRecord| Ok(vec![0]),
-            )
+            .with_serializer(|_ctx: crate::RuntimeContext, _record: &TestRecord| Ok(vec![0]))
             .with_serializer_raw(|record: &TestRecord| Ok(record.value.to_le_bytes().to_vec()))
             .finish();
 
@@ -1597,10 +1508,10 @@ mod tests {
     fn outbound_context_overrides_previous_raw_serializer() {
         use crate::connector::SerializerKind;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1611,9 +1522,7 @@ mod tests {
         // Set raw first, then override with context — context should win
         reg.link_to("mqtt://broker/topic")
             .with_serializer_raw(|_record: &TestRecord| Ok(vec![0]))
-            .with_serializer(
-                |_ctx: crate::RuntimeContext<MockRuntime>, _record: &TestRecord| Ok(vec![99]),
-            )
+            .with_serializer(|_ctx: crate::RuntimeContext, _record: &TestRecord| Ok(vec![99]))
             .finish();
 
         let ser = rec.outbound_connectors()[0]
@@ -1625,10 +1534,10 @@ mod tests {
 
     #[test]
     fn outbound_finish_without_serializer_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1651,11 +1560,11 @@ mod tests {
 
     #[test]
     fn finish_with_unregistered_scheme_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
         // No connector builders registered at all
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> = vec![];
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> = vec![];
         let extensions = crate::extensions::Extensions::new();
 
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
@@ -1677,12 +1586,11 @@ mod tests {
     // ====================================================================
 
     /// Helper: build a `TransformDescriptor` with a no-op spawn function.
-    fn dummy_transform_descriptor() -> crate::transform::TransformDescriptor<TestRecord, MockRuntime>
-    {
-        crate::transform::TransformDescriptor::<TestRecord, MockRuntime> {
+    fn dummy_transform_descriptor() -> crate::transform::TransformDescriptor<TestRecord> {
+        crate::transform::TransformDescriptor::<TestRecord> {
             input_keys: vec![],
             build_fn: Box::new(
-                |_p, _db, _ctx, _output_key| crate::transform::CollectedTransform {
+                |_p, _db, _output_key| crate::transform::CollectedTransform {
                     task_future: Box::pin(async {}),
                     fanin_futures: vec![],
                 },
@@ -1692,11 +1600,11 @@ mod tests {
 
     #[test]
     fn link_from_after_source_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
-        rec.set_producer(|_p, _ctx| async move {});
+        rec.set_producer(|_ctx, _p| async move {});
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1718,11 +1626,11 @@ mod tests {
 
     #[test]
     fn link_from_after_transform_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
         rec.set_transform(dummy_transform_descriptor());
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1744,10 +1652,10 @@ mod tests {
 
     #[test]
     fn source_after_link_from_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1759,7 +1667,7 @@ mod tests {
                 .finish();
         }
 
-        rec.set_producer(|_p, _ctx| async move {});
+        rec.set_producer(|_ctx, _p| async move {});
 
         assert!(!rec.has_producer(), "conflicting producer must be skipped");
         let errors = drain_errors(&mut rec);
@@ -1771,10 +1679,10 @@ mod tests {
 
     #[test]
     fn transform_after_link_from_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1801,10 +1709,10 @@ mod tests {
 
     #[test]
     fn multiple_link_from_allowed() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> =
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
             vec![Box::new(MockConnectorBuilder {
                 scheme: "mqtt".to_string(),
             })];
@@ -1833,15 +1741,15 @@ mod tests {
     /// statements in a configure-style closure must compile.
     #[test]
     fn registrar_allows_separate_statements() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord, MockRuntime>::new();
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
 
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder<MockRuntime>>> = vec![];
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> = vec![];
         let extensions = crate::extensions::Extensions::new();
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
-        reg.source_raw(|_p, _ctx| async move {});
-        reg.tap_raw(|_c, _ctx| async move {});
+        reg.source(|_ctx, _p| async move {});
+        reg.tap(|_ctx, _c| async move {});
 
         assert!(rec.has_producer());
         assert_eq!(rec.consumer_count(), 1);
@@ -1858,10 +1766,10 @@ mod tests {
     /// that must get through the connector phase.
     struct NoopConnectorBuilder;
 
-    impl crate::connector::ConnectorBuilder<MockRuntime> for NoopConnectorBuilder {
+    impl crate::connector::ConnectorBuilder for NoopConnectorBuilder {
         fn build<'a>(
             &'a self,
-            _db: &'a crate::AimDb<MockRuntime>,
+            _db: &'a crate::AimDb,
         ) -> Pin<
             Box<
                 dyn Future<
@@ -1889,8 +1797,8 @@ mod tests {
         });
         // Mistake 2: two .source() registrations on one record
         builder.configure::<TestRecord>("rec.b", |reg| {
-            reg.source_raw(|_p, _ctx| async move {});
-            reg.source_raw(|_p, _ctx| async move {});
+            reg.source(|_ctx, _p| async move {});
+            reg.source(|_ctx, _p| async move {});
         });
         // Mistake 3: key re-registered with a different type
         builder.configure::<TestRecord>("rec.c", |_reg| {});

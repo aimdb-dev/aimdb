@@ -8,7 +8,7 @@
 //! mirrors records over the same engine.
 //!
 //! Runtime-neutral: the only runtime-specific primitive is *time* (reconnect
-//! backoff + keepalive), via the adapter's [`TimeOps`] clock; everything else is
+//! backoff + keepalive), via the adapter's dyn-safe `RuntimeOps` clock; everything else is
 //! `futures` channels. The demux loop uses the same **extract-then-act** shape as
 //! the server (compute a [`ClientStep`], then act once the arm borrows release).
 
@@ -17,7 +17,6 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use aimdb_executor::TimeOps;
 use async_channel::{Receiver, Sender};
 use futures_channel::oneshot;
 use futures_util::{select_biased, FutureExt, StreamExt};
@@ -28,10 +27,10 @@ use super::{
 };
 use crate::connector::SerializerKind;
 use crate::router::RouterBuilder;
-use crate::{AimDb, RuntimeAdapter};
+use crate::AimDb;
 
 /// Client engine knobs. Durations are in **milliseconds** so the engine stays
-/// `no_std`-clean; the adapter's [`TimeOps`] turns them into its native `Duration`.
+/// `no_std`-clean; plain milliseconds turned into `core::time::Duration` for the clock.
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     /// Redial after a dropped/failed connection instead of ending the engine.
@@ -47,8 +46,8 @@ pub struct ClientConfig {
     pub max_reconnect_delay: u64,
     /// Maximum redial attempts before giving up. `0` = unlimited (default).
     pub max_reconnect_attempts: usize,
-    /// Send a keepalive `Ping` after this many ms of an idle connection; the timer
-    /// re-arms each iteration, so traffic resets it. `None` (default) disables it.
+    /// Send a keepalive `Ping` after this many ms of an idle connection; any
+    /// traffic resets the idle window. `None` (default) disables it.
     pub keepalive_interval: Option<u64>,
     /// Cap on caller commands buffered while disconnected (oldest dropped past it).
     /// Defaults to `usize::MAX` (unbounded).
@@ -172,19 +171,19 @@ impl ClientHandle {
 /// `ClientHandle` clones are dropped (graceful stop) — or, with
 /// [`ClientConfig::reconnect`] off, until the first disconnect.
 ///
-/// `clock` is the adapter's [`TimeOps`] runtime (e.g. `db.runtime_arc()`); the
-/// engine uses it for the reconnect backoff and keepalive — the *only* runtime
-/// dependency, so the rest of the engine is runtime-neutral.
-pub fn run_client<D, C, R>(
+/// `clock` is the adapter's dyn-safe [`RuntimeOps`](aimdb_executor::RuntimeOps)
+/// (e.g. `db.runtime_ops()`); the engine uses it for the reconnect backoff and
+/// keepalive — the *only* runtime dependency, so the rest of the engine is
+/// runtime-neutral.
+pub fn run_client<D, C>(
     dialer: D,
     codec: C,
     config: ClientConfig,
-    clock: Arc<R>,
+    clock: Arc<dyn aimdb_executor::RuntimeOps>,
 ) -> (ClientHandle, BoxFut<'static, ()>)
 where
     D: Dialer + 'static,
     C: EnvelopeCodec + 'static,
-    R: TimeOps + 'static,
 {
     let (cmd_tx, cmd_rx) = async_channel::unbounded();
     let handle = ClientHandle { cmd_tx };
@@ -227,16 +226,15 @@ enum ClientStep {
     Cmd(Option<ClientCmd>),
 }
 
-async fn client_loop<D, C, R>(
+async fn client_loop<D, C>(
     dialer: D,
     codec: C,
     config: ClientConfig,
     cmd_rx: Receiver<ClientCmd>,
-    clock: Arc<R>,
+    clock: Arc<dyn aimdb_executor::RuntimeOps>,
 ) where
     D: Dialer,
     C: EnvelopeCodec,
-    R: TimeOps,
 {
     // Whenever the engine returns, fail any buffered/in-flight calls (see guard).
     let _drain = DrainOnExit(&cmd_rx);
@@ -272,11 +270,11 @@ async fn client_loop<D, C, R>(
 /// Decide whether to redial: honor `reconnect`, the attempt cap, the offline-queue
 /// bound, and the exponential backoff sleep (via the runtime clock). Returns
 /// `true` to retry, `false` to stop the engine.
-async fn reconnect_after<R: TimeOps>(
+async fn reconnect_after(
     attempt: &mut usize,
     config: &ClientConfig,
     cmd_rx: &Receiver<ClientCmd>,
-    clock: &R,
+    clock: &dyn aimdb_executor::RuntimeOps,
 ) -> bool {
     if !config.reconnect {
         return false;
@@ -291,7 +289,9 @@ async fn reconnect_after<R: TimeOps>(
     }
     bound_offline_queue(cmd_rx, config.max_offline_queue);
     clock
-        .sleep(clock.millis(backoff_delay(config, *attempt)))
+        .sleep(core::time::Duration::from_millis(backoff_delay(
+            config, *attempt,
+        )))
         .await;
     true
 }
@@ -301,16 +301,15 @@ async fn reconnect_after<R: TimeOps>(
 /// subscription channels) interleaved with caller commands. Pending state is
 /// per-connection: a disconnect fails outstanding calls (their `oneshot`
 /// senders drop → callers see [`RpcError::Internal`]).
-async fn drive_connection<C, R>(
+async fn drive_connection<C>(
     mut conn: Box<dyn Connection>,
     codec: &C,
     cmd_rx: &Receiver<ClientCmd>,
     config: &ClientConfig,
-    clock: &R,
+    clock: &dyn aimdb_executor::RuntimeOps,
 ) -> Ended
 where
     C: EnvelopeCodec + ?Sized,
-    R: TimeOps,
 {
     let mut next_id: u64 = 1;
     let mut pending: HashMap<u64, oneshot::Sender<Result<Payload, RpcError>>> = HashMap::new();
@@ -319,6 +318,13 @@ where
     let mut subs: HashMap<String, Sender<Payload>> = HashMap::new();
     let mut out = Vec::new();
     let keepalive_ms = config.keepalive_interval;
+    // Keepalive is deadline-based: activity only records a timestamp (one dyn
+    // clock read, no allocation) and the boxed `clock.sleep` stays armed for a
+    // full idle window — re-created roughly once per interval, not on every
+    // processed frame (`dyn RuntimeOps::sleep` heap-allocates its future).
+    let mut last_activity = clock.now_nanos();
+    let mut keepalive_timer =
+        keepalive_ms.map(|ms| clock.sleep(core::time::Duration::from_millis(ms)).fuse());
 
     // Handshake-as-caller: prove the link with Ping/Pong before serving commands.
     if config.sends_hello {
@@ -340,27 +346,31 @@ where
         // Biased toward the server read. The select only decides the next step.
         let step = {
             let mut recv = conn.recv().fuse();
-            // Idle keepalive, re-armed each iteration; with no interval it parks on
-            // `pending()` forever. `!Unpin`, so pin it for the arm.
-            let mut keepalive = core::pin::pin!(async {
-                match keepalive_ms {
-                    Some(ms) => clock.sleep(clock.millis(ms)).await,
-                    None => core::future::pending::<()>().await,
-                }
-            }
-            .fuse());
+            // The armed idle timer (see above); with no interval it parks on
+            // `pending()` forever. `Either` re-borrows the persistent timer,
+            // so this is allocation-free per iteration.
+            let mut keepalive = match keepalive_timer.as_mut() {
+                Some(timer) => futures_util::future::Either::Left(timer),
+                None => futures_util::future::Either::Right(futures_util::future::pending::<()>()),
+            };
             // `recv()` is `!Unpin`, so pin it for the arm.
             let mut cmd = core::pin::pin!(cmd_rx.recv().fuse());
             select_biased! {
                 // ---- inbound from server: Reply / Event / Snapshot / Pong --
                 r = recv => ClientStep::Inbound(r),
-                // ---- keepalive: send a Ping when the idle timer fires ------
+                // ---- keepalive: the idle timer fired ------------------------
                 _ = keepalive => ClientStep::Keepalive,
                 // ---- caller commands from ClientHandle ---------------------
                 // `recv()` errors only when every `ClientHandle` is dropped → `None`.
                 c = cmd => ClientStep::Cmd(c.ok()),
             }
         };
+
+        // Frames and commands are link activity; only a genuinely idle link
+        // needs a Ping.
+        if !matches!(step, ClientStep::Keepalive) {
+            last_activity = clock.now_nanos();
+        }
 
         match step {
             ClientStep::Inbound(recv) => {
@@ -402,11 +412,31 @@ where
             }
 
             ClientStep::Keepalive => {
-                out.clear();
-                if codec.encode_inbound(Inbound::Ping, &mut out).is_ok()
-                    && conn.send(&out).await.is_err()
-                {
-                    return Ended::Disconnected;
+                // `keepalive_timer` is `Some` whenever this step fires.
+                let interval_ms = keepalive_ms.unwrap_or(0);
+                let idle_ms = clock.now_nanos().saturating_sub(last_activity) / 1_000_000;
+                if idle_ms >= interval_ms {
+                    // Genuinely idle for a full window: ping and re-arm.
+                    out.clear();
+                    if codec.encode_inbound(Inbound::Ping, &mut out).is_ok()
+                        && conn.send(&out).await.is_err()
+                    {
+                        return Ended::Disconnected;
+                    }
+                    last_activity = clock.now_nanos();
+                    keepalive_timer = Some(
+                        clock
+                            .sleep(core::time::Duration::from_millis(interval_ms))
+                            .fuse(),
+                    );
+                } else {
+                    // Activity happened while the timer was armed: no ping,
+                    // re-arm for the remainder of the idle window.
+                    keepalive_timer = Some(
+                        clock
+                            .sleep(core::time::Duration::from_millis(interval_ms - idle_ms))
+                            .fuse(),
+                    );
                 }
             }
 
@@ -488,16 +518,9 @@ where
 ///
 /// Reconnect caveat: inbound pumps subscribe once and are not replayed across a
 /// reconnect (see [`ClientConfig::reconnect`]); outbound mirroring is unaffected.
-pub fn pump_client<R>(
-    db: &AimDb<R>,
-    scheme: &str,
-    handle: &ClientHandle,
-) -> Vec<BoxFut<'static, ()>>
-where
-    R: RuntimeAdapter + 'static,
-{
-    // The type-erased runtime context for context-aware (de)serializers.
-    let ctx = db.runtime_any();
+pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFut<'static, ()>> {
+    // The runtime context for context-aware (de)serializers.
+    let ctx = db.runtime_ctx();
     let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();
 
     // --- outbound: local record updates -> remote `write` ------------------

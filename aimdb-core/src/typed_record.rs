@@ -170,21 +170,19 @@ pub(crate) type BoxFuture<'a, T> =
     core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
 
 /// Type alias for consumer service closure stored in TypedRecord
-/// Each consumer receives a Consumer<T> handle for subscribing to the buffer
-/// and a runtime context (Arc<dyn Any>) for accessing runtime capabilities
-type ConsumerServiceFn<T> = Box<
-    dyn FnOnce(crate::Consumer<T>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()> + Send,
->;
+/// Each consumer receives the [`RuntimeContext`](crate::RuntimeContext) and a
+/// Consumer<T> handle for subscribing to the buffer
+type ConsumerServiceFn<T> =
+    Box<dyn FnOnce(crate::RuntimeContext, crate::Consumer<T>) -> BoxFuture<'static, ()> + Send>;
 
 /// Type alias for producer service closure stored in TypedRecord
-/// Takes (Producer<T>, RuntimeContext) and returns a Future
+/// Takes (RuntimeContext, Producer<T>) and returns a Future
 /// This will be auto-spawned during build().
 /// `Send` only — `Sync` is not required because the closure is taken out of
 /// `Mutex<Option<...>>` exactly once via `.take()`, and `Mutex<T>: Sync`
 /// already holds when `T: Send`. Matches the consumer-side `ConsumerServiceFn`.
-type ProducerServiceFn<T> = Box<
-    dyn FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> BoxFuture<'static, ()> + Send,
->;
+type ProducerServiceFn<T> =
+    Box<dyn FnOnce(crate::RuntimeContext, crate::Producer<T>) -> BoxFuture<'static, ()> + Send>;
 
 /// Type-erased trait for records
 ///
@@ -372,44 +370,28 @@ pub trait AnyRecordExt {
     ///
     /// # Type Parameters
     /// * `T` - The expected record type
-    /// * `R` - The runtime type
     ///
     /// # Returns
-    /// `Some(&TypedRecord<T, R>)` if types match, `None` otherwise
-    fn as_typed<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>(
-        &self,
-    ) -> Option<&TypedRecord<T, R>>;
+    /// `Some(&TypedRecord<T>)` if types match, `None` otherwise
+    fn as_typed<T: Send + 'static + Debug + Clone>(&self) -> Option<&TypedRecord<T>>;
 
     /// Attempts to downcast to a mutable typed record reference
     ///
     /// # Type Parameters
     /// * `T` - The expected record type
-    /// * `R` - The runtime type
     ///
     /// # Returns
-    /// `Some(&mut TypedRecord<T, R>)` if types match, `None` otherwise
-    fn as_typed_mut<
-        T: Send + 'static + Debug + Clone,
-        R: aimdb_executor::RuntimeAdapter + 'static,
-    >(
-        &mut self,
-    ) -> Option<&mut TypedRecord<T, R>>;
+    /// `Some(&mut TypedRecord<T>)` if types match, `None` otherwise
+    fn as_typed_mut<T: Send + 'static + Debug + Clone>(&mut self) -> Option<&mut TypedRecord<T>>;
 }
 
 impl AnyRecordExt for Box<dyn AnyRecord> {
-    fn as_typed<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>(
-        &self,
-    ) -> Option<&TypedRecord<T, R>> {
-        self.as_any().downcast_ref::<TypedRecord<T, R>>()
+    fn as_typed<T: Send + 'static + Debug + Clone>(&self) -> Option<&TypedRecord<T>> {
+        self.as_any().downcast_ref::<TypedRecord<T>>()
     }
 
-    fn as_typed_mut<
-        T: Send + 'static + Debug + Clone,
-        R: aimdb_executor::RuntimeAdapter + 'static,
-    >(
-        &mut self,
-    ) -> Option<&mut TypedRecord<T, R>> {
-        self.as_any_mut().downcast_mut::<TypedRecord<T, R>>()
+    fn as_typed_mut<T: Send + 'static + Debug + Clone>(&mut self) -> Option<&mut TypedRecord<T>> {
+        self.as_any_mut().downcast_mut::<TypedRecord<T>>()
     }
 }
 
@@ -428,24 +410,20 @@ where
 {
     /// Collects all futures (producer, transform, consumers) for a record.
     ///
-    /// Downcasts the type-erased `AnyRecord` to `TypedRecord<T, R>` then returns
+    /// Downcasts the type-erased `AnyRecord` to `TypedRecord<T>` then returns
     /// every future the record contributes to the runner. Source/transform are
     /// mutually exclusive — at most one will appear.
-    pub fn collect_all_futures<R>(
+    pub fn collect_all_futures(
         record: &dyn AnyRecord,
-        runtime: &Arc<R>,
-        db: &Arc<crate::builder::AimDb<R>>,
+        db: &Arc<crate::builder::AimDb>,
         record_key: &str,
-    ) -> crate::DbResult<Vec<BoxFuture<'static, ()>>>
-    where
-        R: aimdb_executor::RuntimeAdapter + 'static,
-    {
+    ) -> crate::DbResult<Vec<BoxFuture<'static, ()>>> {
         use crate::DbError;
 
-        // Downcast to TypedRecord<T, R>
-        let typed_record: &TypedRecord<T, R> = record
+        // Downcast to TypedRecord<T>
+        let typed_record: &TypedRecord<T> = record
             .as_any()
-            .downcast_ref::<TypedRecord<T, R>>()
+            .downcast_ref::<TypedRecord<T>>()
             .ok_or_else(|| DbError::RecordNotFound {
                 record_name: core::any::type_name::<T>().to_string(),
             })?;
@@ -453,17 +431,17 @@ where
         let mut futures = Vec::new();
 
         if typed_record.has_producer() {
-            if let Some(f) = typed_record.collect_producer_future(runtime, db, record_key)? {
+            if let Some(f) = typed_record.collect_producer_future(db, record_key)? {
                 futures.push(f);
             }
         }
 
         if typed_record.has_transform() {
-            futures.extend(typed_record.collect_transform_futures(runtime, db, record_key)?);
+            futures.extend(typed_record.collect_transform_futures(db, record_key)?);
         }
 
         if typed_record.consumer_count() > 0 {
-            futures.extend(typed_record.collect_consumer_futures(runtime, db, record_key)?);
+            futures.extend(typed_record.collect_consumer_futures(db, record_key)?);
         }
 
         Ok(futures)
@@ -473,10 +451,7 @@ where
 /// Typed record storage with producer/consumer functions
 ///
 /// Stores type-safe producer and consumer functions with optional buffering for async dispatch.
-pub struct TypedRecord<
-    T: Send + 'static + Debug + Clone,
-    R: aimdb_executor::RuntimeAdapter + 'static,
-> {
+pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// Optional producer service - a task that generates data
     /// This will be auto-spawned during build() if present
     /// Stored as `FnOnce` that takes (`Producer<T>`, `RuntimeContext`) and returns a `Future`
@@ -491,7 +466,7 @@ pub struct TypedRecord<
     /// Transform descriptor — mutually exclusive with producer.
     /// If set, this record is a reactive derivation from one or more input records.
     /// Uses the same Mutex pattern for take()-during-spawn.
-    transform: Mutex<Option<crate::transform::TransformDescriptor<T, R>>>,
+    transform: Mutex<Option<crate::transform::TransformDescriptor<T>>>,
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
@@ -541,9 +516,7 @@ pub struct TypedRecord<
     config_errors: Vec<crate::error::ConfigError>,
 }
 
-impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
-    TypedRecord<T, R>
-{
+impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Creates a new empty typed record
     ///
     /// Call `.with_remote_access()` to enable JSON (std only).
@@ -598,7 +571,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// is skipped.
     pub fn set_producer<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(crate::Producer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
+        F: FnOnce(crate::RuntimeContext, crate::Producer<T>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Check for existing transform (mutual exclusion)
@@ -632,9 +605,9 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
 
         // Box the future-returning function
         let boxed_fn = Box::new(
-            move |producer: crate::Producer<T>,
-                  ctx: Arc<dyn Any + Send + Sync>|
-                  -> BoxFuture<'static, ()> { Box::pin(f(producer, ctx)) },
+            move |ctx: crate::RuntimeContext,
+                  producer: crate::Producer<T>|
+                  -> BoxFuture<'static, ()> { Box::pin(f(ctx, producer)) },
         );
 
         // Store it in the mutex
@@ -648,12 +621,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// Multiple consumers can be registered for the same record type.
     ///
     /// # Arguments
-    /// * `f` - A function that takes `Consumer<T>`, runtime context, and returns a Future
+    /// * `f` - A function that takes the `RuntimeContext` and a `Consumer<T>`, and returns a Future
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// record.add_consumer(|consumer, ctx_any| async move {
+    /// record.add_consumer(|ctx, consumer| async move {
     ///     let mut rx = consumer.subscribe();
     ///     while let Ok(value) = rx.recv().await {
     ///         println!("Consumer: {:?}", value);
@@ -662,14 +635,14 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// ```
     pub fn add_consumer<F, Fut>(&mut self, f: F)
     where
-        F: FnOnce(crate::Consumer<T>, Arc<dyn Any + Send + Sync>) -> Fut + Send + 'static,
+        F: FnOnce(crate::RuntimeContext, crate::Consumer<T>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         // Box the future to make it trait object compatible
         let boxed = Box::new(
-            move |consumer: crate::Consumer<T>,
-                  ctx_any: Arc<dyn Any + Send + Sync>|
-                  -> BoxFuture<'static, ()> { Box::pin(f(consumer, ctx_any)) },
+            move |ctx: crate::RuntimeContext,
+                  consumer: crate::Consumer<T>|
+                  -> BoxFuture<'static, ()> { Box::pin(f(ctx, consumer)) },
         );
 
         lock(&self.consumers).push(boxed);
@@ -682,10 +655,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// and would race as last-writer-wins. Violations (including a second
     /// transform) are recorded — not panicked — and reported from `build()`;
     /// the conflicting registration is skipped.
-    pub(crate) fn set_transform(
-        &mut self,
-        descriptor: crate::transform::TransformDescriptor<T, R>,
-    ) {
+    pub(crate) fn set_transform(&mut self, descriptor: crate::transform::TransformDescriptor<T>) {
         // Enforce mutual exclusion with .source()
         if lock(&self.producer).is_some() {
             self.push_config_error(crate::error::ConfigError::new(
@@ -773,12 +743,10 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// empty `Vec` if no transform is registered.
     pub fn collect_transform_futures(
         &self,
-        runtime: &Arc<R>,
-        db: &Arc<crate::AimDb<R>>,
+        db: &Arc<crate::AimDb>,
         record_key: &str,
     ) -> crate::DbResult<Vec<BoxFuture<'static, ()>>>
     where
-        R: aimdb_executor::RuntimeAdapter,
         T: Sync,
     {
         // Take the transform descriptor (can only collect once)
@@ -794,7 +762,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
             // Create Producer<T> bound to a pre-resolved write handle for this record.
             let producer = crate::typed_api::Producer::new(self.writer_handle());
 
-            let collected = (desc.build_fn)(producer, db.clone(), runtime.clone(), record_key);
+            let collected = (desc.build_fn)(producer, db.clone(), record_key);
 
             let mut out = Vec::with_capacity(1 + collected.fanin_futures.len());
             out.push(collected.task_future);
@@ -986,19 +954,13 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// and driven by `AimDbRunner::run()`.
     pub fn collect_consumer_futures(
         &self,
-        runtime: &Arc<R>,
-        db: &Arc<crate::AimDb<R>>,
+        db: &Arc<crate::AimDb>,
         record_key: &str,
     ) -> crate::DbResult<Vec<BoxFuture<'static, ()>>>
     where
-        R: aimdb_executor::RuntimeAdapter,
         T: Sync,
     {
-        // `db` carries the profiling clock; `record_key` shows up in the no-buffer
-        // error message (std only). Both are unused when their feature is off —
-        // silence them narrowly so an unused `runtime` would still warn.
-        #[cfg(not(feature = "profiling"))]
-        let _ = db;
+        // `record_key` shows up in the no-buffer error message (std only).
         #[cfg(not(feature = "std"))]
         let _ = record_key;
 
@@ -1012,7 +974,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
         let consumers = core::mem::take(&mut *lock(&self.consumers));
 
         // Invariant: taps are pushed to `profiling` in the same order consumers are
-        // added (both happen in `RecordRegistrar::tap_raw`), so index `i` lines up.
+        // added (both happen in `RecordRegistrar::tap`), so index `i` lines up.
         #[cfg(feature = "profiling")]
         debug_assert_eq!(self.profiling.tap_count(), consumers.len());
 
@@ -1039,10 +1001,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
                 consumer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
             }
 
-            // Type-erase the runtime for the consumer signature.
-            let runtime_any: Arc<dyn Any + Send + Sync> = runtime.clone();
-
-            futures.push(consumer_fn(consumer, runtime_any));
+            futures.push(consumer_fn(db.runtime_ctx(), consumer));
         }
 
         Ok(futures)
@@ -1051,20 +1010,12 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     /// Collects the producer-service future, if one is registered.
     pub fn collect_producer_future(
         &self,
-        runtime: &Arc<R>,
-        db: &Arc<crate::AimDb<R>>,
+        db: &Arc<crate::AimDb>,
         record_key: &str,
     ) -> crate::DbResult<Option<BoxFuture<'static, ()>>>
     where
-        R: aimdb_executor::RuntimeAdapter,
         T: Sync,
     {
-        // `db` is only consulted under `profiling` for the clock; silence the
-        // unused-variable warning narrowly so an unused `runtime` would still warn.
-        // `record_key` is silenced inside the `if let Some(...)` branch below.
-        #[cfg(not(feature = "profiling"))]
-        let _ = db;
-
         // Take the producer service (can only collect once)
         let service = lock(&self.producer).take();
 
@@ -1086,9 +1037,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
                 producer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
             }
 
-            let ctx: Arc<dyn core::any::Any + Send + Sync> = runtime.clone();
-
-            Ok(Some(service_fn(producer, ctx)))
+            Ok(Some(service_fn(db.runtime_ctx(), producer)))
         } else {
             Ok(None)
         }
@@ -1160,9 +1109,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
     }
 }
 
-impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static> Default
-    for TypedRecord<T, R>
-{
+impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -1172,9 +1119,7 @@ impl<T: Send + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'sta
 // This enables safe concurrent access to records from multiple connector tasks
 // in the bidirectional routing system. The Sync bound propagates from AnyRecord
 // trait and ensures thread-safe sharing of record values.
-impl<T: Send + Sync + 'static + Debug + Clone, R: aimdb_executor::RuntimeAdapter + 'static>
-    AnyRecord for TypedRecord<T, R>
-{
+impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     fn validate(&self) -> Result<(), &'static str> {
         // Producer service is optional - some records are driven by external events
         // Consumer is also optional - records can be accessed via:

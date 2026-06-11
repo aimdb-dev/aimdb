@@ -26,13 +26,10 @@ use futures_util::stream::unfold;
 /// - [`DbError::InvalidRecordId`] if the resolved id has no storage.
 /// - Any error returned by `subscribe_json()` (e.g. the record was not
 ///   configured with `.with_remote_access()`).
-pub(crate) fn stream_record_updates<R>(
-    db: &AimDb<R>,
+pub(crate) fn stream_record_updates(
+    db: &AimDb,
     record_key: &str,
-) -> DbResult<impl Stream<Item = serde_json::Value> + Send + 'static>
-where
-    R: aimdb_executor::RuntimeAdapter + 'static,
-{
+) -> DbResult<impl Stream<Item = serde_json::Value> + Send + 'static> {
     let inner = db.inner();
     let id = inner
         .resolve_str(record_key)

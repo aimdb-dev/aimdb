@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Issue #131 — `TokioRecordRegistrarExt` shrinks to `.buffer(cfg)` only.** `source`/`tap`/`transform` are inherent methods on the non-generic `aimdb_core::RecordRegistrar<'a, T>` (closures keep the `(ctx, producer)` arg order — typically only the import changes); `join_queue.rs` (`TokioJoinQueue`) is deleted with the `JoinFanInRuntime` family (join fan-in lives in core on `async-channel`).
+
 ### Removed (breaking)
 
 - **`TokioDatabase` type alias removed (Issue #132, design 034 Phase 1).** It aliased the dead `aimdb_core::Database<TokioAdapter>` wrapper (also removed) and had no users in the workspace. Use `AimDb<TokioAdapter>` via `AimDbBuilder`.

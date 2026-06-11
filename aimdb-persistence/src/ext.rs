@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use aimdb_core::typed_api::RecordRegistrar;
-use aimdb_executor::RuntimeAdapter;
 
 use crate::backend::PersistenceBackend;
 use crate::builder_ext::PersistenceState;
@@ -13,25 +12,23 @@ use crate::builder_ext::PersistenceState;
 /// `T: Serialize` is required so values can be converted to JSON for storage.
 /// `.with_remote_access()` is **not** required — persistence subscribes to the
 /// typed buffer directly.
-pub trait RecordRegistrarPersistExt<'a, T, R>
+pub trait RecordRegistrarPersistExt<'a, T>
 where
     T: serde::Serialize + Send + Sync + Clone + core::fmt::Debug + 'static,
-    R: RuntimeAdapter + 'static,
 {
     /// Opt this record into persistence.
     ///
-    /// Spawns a background subscriber (via `tap_raw`) that serializes each
+    /// Spawns a background subscriber (via `.tap()`) that serializes each
     /// value to JSON and writes it to the configured backend. Retention is
     /// managed by the cleanup task registered during `with_persistence()`.
-    fn persist(&mut self, record_name: impl Into<String>) -> &mut RecordRegistrar<'a, T, R>;
+    fn persist(&mut self, record_name: impl Into<String>) -> &mut RecordRegistrar<'a, T>;
 }
 
-impl<'a, T, R> RecordRegistrarPersistExt<'a, T, R> for RecordRegistrar<'a, T, R>
+impl<'a, T> RecordRegistrarPersistExt<'a, T> for RecordRegistrar<'a, T>
 where
     T: serde::Serialize + Send + Sync + Clone + core::fmt::Debug + 'static,
-    R: RuntimeAdapter + 'static,
 {
-    fn persist(&mut self, record_name: impl Into<String>) -> &mut RecordRegistrar<'a, T, R> {
+    fn persist(&mut self, record_name: impl Into<String>) -> &mut RecordRegistrar<'a, T> {
         let record_name: String = record_name.into();
         // Retrieve the backend from the builder's Extensions TypeMap, if configured.
         let backend: Option<Arc<dyn PersistenceBackend>> = self
@@ -50,9 +47,8 @@ where
             return self;
         };
         // Subscribe to the typed buffer as a tap (side-effect observer).
-        // The second closure argument is the runtime context (Arc<dyn Any>),
-        // which we don't need — persistence is runtime-agnostic.
-        self.tap_raw(move |consumer, _ctx| async move {
+        // The runtime context isn't needed — persistence is runtime-agnostic.
+        self.tap(move |_ctx, consumer| async move {
             let mut reader = consumer.subscribe();
 
             loop {

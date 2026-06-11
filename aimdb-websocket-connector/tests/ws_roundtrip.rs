@@ -36,7 +36,7 @@ fn free_addr() -> SocketAddr {
 /// Re-assert `db.<key>` reaches `want`, re-driving `push` each tick so the test is
 /// robust against subscription-registration timing.
 async fn mirror_reaches(
-    db: &Arc<AimDb<TokioAdapter>>,
+    db: &Arc<AimDb>,
     key: &str,
     want: &serde_json::Value,
     mut push: impl FnMut(),

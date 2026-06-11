@@ -54,9 +54,7 @@ extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
-use aimdb_embassy_adapter::{
-    EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
-};
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_serial_connector::embassy_transport::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
@@ -103,10 +101,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 // ============================================================================
 
 /// Indoor temperature sensor producer
-async fn indoor_temp_producer(
-    ctx: RuntimeContext<EmbassyAdapter>,
-    temperature: Producer<Temperature>,
-) {
+async fn indoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
     let log = ctx.log();
     log.info("🏠 Starting INDOOR temperature producer...\n");
 
@@ -127,10 +122,7 @@ async fn indoor_temp_producer(
 }
 
 /// Outdoor temperature sensor producer
-async fn outdoor_temp_producer(
-    ctx: RuntimeContext<EmbassyAdapter>,
-    temperature: Producer<Temperature>,
-) {
+async fn outdoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
     let log = ctx.log();
     log.info("🌳 Starting OUTDOOR temperature producer...\n");
 
@@ -151,10 +143,7 @@ async fn outdoor_temp_producer(
 }
 
 /// Server room temperature sensor producer
-async fn server_room_temp_producer(
-    ctx: RuntimeContext<EmbassyAdapter>,
-    temperature: Producer<Temperature>,
-) {
+async fn server_room_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
     let log = ctx.log();
     log.info("🖥️  Starting SERVER ROOM temperature producer...\n");
 
@@ -306,7 +295,7 @@ async fn main(spawner: Spawner) {
     info!("🔌 Initializing MQTT client...");
 
     // Create AimDB database with Embassy adapter
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new_with_network(stack));
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
 
     // Build MQTT broker URL
     use alloc::format;
@@ -340,7 +329,9 @@ async fn main(spawner: Spawner) {
     // list/drain/subscribe, not write.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector(MqttConnectorBuilder::new(&broker_url).with_client_id("embassy-demo-001"))
+        .with_connector(
+            MqttConnectorBuilder::new(&broker_url, stack).with_client_id("embassy-demo-001"),
+        )
         .with_connector(
             SerialServer::new(serial_rx, serial_tx).security_policy(SecurityPolicy::read_only()),
         );
@@ -423,7 +414,7 @@ async fn main(spawner: Spawner) {
     info!("             -m '{{\"action\":\"read\",\"sensor_id\":\"test\"}}'");
     info!("");
 
-    static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
+    static DB_CELL: StaticCell<aimdb_core::AimDb> = StaticCell::new();
     let (db, db_runner) = builder.build().await.expect("Failed to build database");
     let _db = DB_CELL.init(db);
 

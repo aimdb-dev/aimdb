@@ -134,17 +134,14 @@ impl WsClientConnectorBuilder {
 
 type BoxFuture = Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
 
-impl<R> ConnectorBuilder<R> for WsClientConnectorBuilder
-where
-    R: aimdb_executor::TimeOps + 'static,
-{
+impl ConnectorBuilder for WsClientConnectorBuilder {
     fn scheme(&self) -> &str {
         "ws-client"
     }
 
     fn build<'a>(
         &'a self,
-        db: &'a aimdb_core::builder::AimDb<R>,
+        db: &'a aimdb_core::builder::AimDb,
     ) -> Pin<Box<dyn core::future::Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -171,12 +168,12 @@ where
             // Like `UdsClient`: `run_client` owns demux/reconnect/keepalive over
             // the WS `Dialer` + per-connection `WsCodec`; `pump_client` wires
             // `link_to`/`link_from` routes to the handle.
-            // The runtime's `TimeOps` clock drives reconnect backoff/keepalive.
+            // The runtime's clock drives reconnect backoff/keepalive.
             let (handle, engine_fut) = run_client(
                 WsDialer::new(self.url.clone()),
                 WsCodec::new(),
                 config,
-                db.runtime_arc(),
+                db.runtime_ops(),
             );
             let mut futures = pump_client(db, "ws-client", &handle);
             futures.push(engine_fut);

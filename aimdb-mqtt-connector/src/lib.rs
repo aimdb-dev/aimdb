@@ -51,11 +51,11 @@
 //! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 //! use alloc::sync::Arc;
 //!
-//! let runtime = Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
+//! let runtime = Arc::new(EmbassyAdapter::new());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883"))
+//!     .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883", stack))
 //!     .configure::<SensorData>(|reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)

@@ -20,7 +20,7 @@ use aimdb_core::session::{
     BoxFut, Connection, Dialer, Dispatch, Listener, PeerInfo, SessionClientConnector,
     SessionConfig, SessionLimits, SessionServerConnector, TransportError, TransportResult,
 };
-use aimdb_core::{AimDb, DbError, DbResult, RuntimeAdapter};
+use aimdb_core::{AimDb, DbError, DbResult};
 
 use crate::framing::{encode_frame, FrameAccumulator};
 use crate::DEFAULT_SCHEME;
@@ -245,11 +245,8 @@ impl SerialServer {
     }
 }
 
-impl<R> ConnectorBuilder<R> for SerialServer
-where
-    R: RuntimeAdapter + 'static,
-{
-    fn build<'a>(&'a self, db: &'a AimDb<R>) -> BuildFuture<'a> {
+impl ConnectorBuilder for SerialServer {
+    fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         let path = self.path.clone();
         let baud = self.baud;
         let config = self.config.clone();
@@ -271,7 +268,7 @@ where
             let connector = SessionServerConnector::new(
                 move || open_serial_listener(&path, baud),
                 AimxCodec,
-                move |db: &AimDb<R>| -> Arc<dyn Dispatch> {
+                move |db: &AimDb| -> Arc<dyn Dispatch> {
                     // Apply the security policy's writable marking so `record.list`
                     // reports the `writable` flag (the dispatch also enforces it).
                     crate::apply_writable(db, &dispatch_config);

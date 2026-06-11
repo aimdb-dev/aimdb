@@ -610,7 +610,7 @@ Embassy main becomes:
 ```rust
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    let adapter = EmbassyAdapter::new().unwrap();
+    let adapter = EmbassyAdapter::new();
     let db = AimDbBuilder::new()
         .runtime(Arc::new(adapter))
         .configure::<Temperature>(...)

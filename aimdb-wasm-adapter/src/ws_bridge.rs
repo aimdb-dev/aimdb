@@ -30,8 +30,6 @@ use wasm_bindgen::prelude::*;
 use crate::schema_registry::SchemaRegistry;
 use aimdb_core::builder::AimDb;
 
-use crate::WasmAdapter;
-
 // ─── Connection status ────────────────────────────────────────────────────
 
 /// Observable connection state (matches design doc §7.1).
@@ -150,7 +148,7 @@ struct PendingRequest {
 /// Wrapped in `Rc` so closures can cheaply reference it without cloning
 /// every field individually (reduces parameter explosion).
 struct SharedCtx {
-    db: AimDb<WasmAdapter>,
+    db: AimDb,
     schema_map: BTreeMap<String, String>,
     registry: SchemaRegistry,
     state: Rc<RefCell<BridgeState>>,
@@ -330,7 +328,7 @@ impl Drop for WsBridge {
 impl WsBridge {
     /// Create a new bridge (called from `WasmDb::connect_bridge`).
     pub(crate) fn new_internal(
-        db: AimDb<WasmAdapter>,
+        db: AimDb,
         schema_map: BTreeMap<String, String>,
         registry: SchemaRegistry,
         url: &str,
@@ -748,7 +746,7 @@ fn handle_server_message(ctx: &SharedCtx, msg: ServerMessage) {
 /// Deserialize `serde_json::Value` → `T` and push to the record buffer.
 ///
 /// This is the fast path for incoming server data — no `JsValue` hop.
-pub(crate) fn produce_from_json<T>(db: &AimDb<WasmAdapter>, key: &str, json: serde_json::Value)
+pub(crate) fn produce_from_json<T>(db: &AimDb, key: &str, json: serde_json::Value)
 where
     T: Send + Sync + 'static + Debug + Clone + DeserializeOwned,
 {

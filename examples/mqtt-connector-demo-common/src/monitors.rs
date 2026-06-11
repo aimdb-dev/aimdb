@@ -6,7 +6,7 @@
 extern crate alloc;
 
 use crate::types::{Temperature, TemperatureCommand};
-use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
+use aimdb_core::{Consumer, RuntimeContext};
 
 // ============================================================================
 // TEMPERATURE LOGGER
@@ -25,10 +25,7 @@ use aimdb_core::{Consumer, Logger, Runtime, RuntimeContext};
 ///        .finish();
 /// });
 /// ```
-pub async fn temperature_logger<R>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature>)
-where
-    R: Runtime + Logger + Send + Sync + 'static,
-{
+pub async fn temperature_logger(ctx: RuntimeContext, consumer: Consumer<Temperature>) {
     let log = ctx.log();
 
     let mut reader = consumer.subscribe();
@@ -50,10 +47,7 @@ where
 /// Command consumer that logs received commands
 ///
 /// Uses the action and sensor_id from the `TemperatureCommand` data.
-pub async fn command_consumer<R>(ctx: RuntimeContext<R>, consumer: Consumer<TemperatureCommand>)
-where
-    R: Runtime + Logger + Send + Sync + 'static,
-{
+pub async fn command_consumer(ctx: RuntimeContext, consumer: Consumer<TemperatureCommand>) {
     let log = ctx.log();
     log.info("📨 Command consumer started\n");
 

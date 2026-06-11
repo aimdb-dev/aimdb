@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use aimdb_core::builder::AimDb;
-use aimdb_executor::RuntimeAdapter;
 use serde::de::DeserializeOwned;
 
 use crate::backend::{BoxFuture, PersistenceBackend, QueryParams};
@@ -13,7 +12,7 @@ use crate::error::PersistenceError;
 /// Extension trait that adds persistence query methods to [`AimDb`].
 ///
 /// Import `use aimdb_persistence::AimDbQueryExt;` to call `.query_latest()` /
-/// `.query_range()` on a live `AimDb<R>` handle.
+/// `.query_range()` on a live `AimDb` handle.
 pub trait AimDbQueryExt {
     /// Query the latest N values per matching record.
     ///
@@ -56,16 +55,14 @@ pub trait AimDbQueryExt {
 }
 
 /// Helper: extract the backend from the `AimDb` extensions.
-fn get_backend<R: RuntimeAdapter + 'static>(
-    db: &AimDb<R>,
-) -> Result<Arc<dyn PersistenceBackend>, PersistenceError> {
+fn get_backend(db: &AimDb) -> Result<Arc<dyn PersistenceBackend>, PersistenceError> {
     db.extensions()
         .get::<PersistenceState>()
         .map(|s| s.backend.clone())
         .ok_or(PersistenceError::NotConfigured)
 }
 
-impl<R: RuntimeAdapter + 'static> AimDbQueryExt for AimDb<R> {
+impl AimDbQueryExt for AimDb {
     fn query_latest<T: DeserializeOwned>(
         &self,
         record_pattern: &str,

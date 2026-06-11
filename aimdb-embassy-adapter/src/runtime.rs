@@ -3,122 +3,39 @@
 //! This module provides the Embassy-specific implementation of AimDB's runtime traits,
 //! enabling async task execution in embedded environments using Embassy.
 
-use aimdb_core::{DbError, DbResult};
-use aimdb_executor::{ExecutorResult, RuntimeAdapter};
+use aimdb_executor::RuntimeAdapter;
 
 #[cfg(feature = "tracing")]
 use tracing::debug;
 
-#[cfg(feature = "embassy-net-support")]
-use embassy_net::Stack;
-
-/// Trait for accessing Embassy network stack
-///
-/// This trait provides connectors with access to the network stack for
-/// creating TCP/UDP connections. It's implemented by EmbassyAdapter when
-/// the `embassy-net-support` feature is enabled.
-///
-/// # Example
-/// ```rust,ignore
-/// use aimdb_embassy_adapter::EmbassyNetwork;
-///
-/// fn create_mqtt_connector<R: EmbassyNetwork>(runtime: &R) {
-///     let network = runtime.network_stack();
-///     // Use network to create TCP connection
-/// }
-/// ```
-#[cfg(feature = "embassy-net-support")]
-pub trait EmbassyNetwork {
-    /// Get a reference to the Embassy network stack
-    ///
-    /// Returns a reference to the static network stack that can be used
-    /// for creating network connections (TCP, UDP, etc.).
-    fn network_stack(&self) -> &'static Stack<'static>;
-}
-
 /// Embassy runtime adapter for async task execution in embedded systems.
 ///
-/// When the `embassy-net-support` feature is enabled it holds a `&'static Stack<'static>`
-/// for connector use; otherwise it is effectively a unit type. All futures are
-/// driven by the `AimDbRunner` returned from `AimDbBuilder::build()`, which is
-/// awaited inside the Embassy main task.
-///
-/// # Safety
-///
-/// `embassy_net::Stack` contains a `RefCell` and is `!Sync`. Embassy executors
-/// run cooperatively on a single core with no preemption or thread migration,
-/// so `unsafe impl Send/Sync` is sound here. This is the only `unsafe` left in
-/// the adapter after issue #88 removed the `Spawn` impl and task pool.
+/// A unit type: the runtime travels as `Arc<dyn RuntimeOps>` (issue #131) and
+/// network connectors take the `embassy_net::Stack` at construction (wrapped in
+/// [`NetStack`](crate::connectors::NetStack)), so the adapter carries no state
+/// and no `unsafe`. All futures are driven by the `AimDbRunner` returned from
+/// `AimDbBuilder::build()`, which is awaited inside the Embassy main task.
 ///
 /// # Example
 /// ```rust,no_run
 /// # #[cfg(not(feature = "std"))]
 /// # {
 /// use aimdb_embassy_adapter::EmbassyAdapter;
-/// use aimdb_core::RuntimeAdapter;
 ///
-/// # async fn example() -> aimdb_core::DbResult<()> {
-/// let adapter = EmbassyAdapter::new()?;
-/// # Ok(())
-/// # }
+/// let adapter = EmbassyAdapter::new();
 /// # }
 /// ```
-#[derive(Clone)]
-pub struct EmbassyAdapter {
-    #[cfg(feature = "embassy-net-support")]
-    network: Option<&'static Stack<'static>>,
-    #[cfg(not(feature = "embassy-net-support"))]
-    _phantom: core::marker::PhantomData<()>,
-}
-
-// SAFETY: Embassy executors run cooperatively on a single core. The
-// `embassy_net::Stack` (when present) is `!Sync` only because of its internal
-// `RefCell`; in a single-threaded executor no concurrent access is possible.
-unsafe impl Send for EmbassyAdapter {}
-unsafe impl Sync for EmbassyAdapter {}
-
-impl core::fmt::Debug for EmbassyAdapter {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut s = f.debug_struct("EmbassyAdapter");
-        #[cfg(feature = "embassy-net-support")]
-        s.field("network", &self.network.is_some());
-        #[cfg(not(feature = "embassy-net-support"))]
-        s.field("_phantom", &"no features enabled");
-        s.finish()
-    }
-}
+#[derive(Clone, Debug, Default)]
+pub struct EmbassyAdapter;
 
 impl EmbassyAdapter {
-    /// Creates a new EmbassyAdapter without a network stack.
-    ///
-    /// # Returns
-    /// `Ok(EmbassyAdapter)` — always succeeds.
-    pub fn new() -> ExecutorResult<Self> {
+    /// Creates a new EmbassyAdapter. Infallible — the adapter is a stateless
+    /// unit type.
+    pub fn new() -> Self {
         #[cfg(feature = "tracing")]
-        debug!("Creating EmbassyAdapter (no network)");
+        debug!("Creating EmbassyAdapter");
 
-        Ok(Self {
-            #[cfg(feature = "embassy-net-support")]
-            network: None,
-            #[cfg(not(feature = "embassy-net-support"))]
-            _phantom: core::marker::PhantomData,
-        })
-    }
-
-    /// Creates a new EmbassyAdapter returning `DbResult` for backward compatibility.
-    pub fn new_db_result() -> DbResult<Self> {
-        Self::new().map_err(DbError::from)
-    }
-
-    /// Creates a new EmbassyAdapter with a network stack
-    #[cfg(feature = "embassy-net-support")]
-    pub fn new_with_network(network: &'static Stack<'static>) -> Self {
-        #[cfg(feature = "tracing")]
-        debug!("Creating EmbassyAdapter with network");
-
-        Self {
-            network: Some(network),
-        }
+        Self
     }
 
     /// Anchors wall-clock time so [`TimeOps::unix_time`](aimdb_executor::TimeOps::unix_time)
@@ -135,12 +52,6 @@ impl EmbassyAdapter {
         let uptime_secs = embassy_time::Instant::now().as_secs();
         let boot = now_unix_secs.saturating_sub(uptime_secs) as u32;
         BOOT_UNIX_SECS.store(boot, Ordering::Relaxed);
-    }
-}
-
-impl Default for EmbassyAdapter {
-    fn default() -> Self {
-        Self::new().expect("EmbassyAdapter::default() should not fail")
     }
 }
 
@@ -278,8 +189,8 @@ impl aimdb_executor::Logger for EmbassyAdapter {
 
 // Runtime trait is auto-implemented when RuntimeAdapter + TimeOps + Logger are all implemented
 
-// Host-run contract test for the dyn-safe RuntimeOps surface. Gated like the
-// join-queue tests: `embassy-sync` (not `embassy-runtime`) so the cortex-m
+// Host-run contract test for the dyn-safe RuntimeOps surface. Gated on
+// `embassy-sync` (not `embassy-runtime`) so the cortex-m
 // executor never enters the host build; the defmt/time-driver stubs shared by
 // the lib test binary live in `buffer.rs`'s test module. The stub clock is
 // pinned at 0, so only `Duration::ZERO` sleeps complete — see
@@ -294,19 +205,9 @@ mod runtime_ops_tests {
     #[test]
     fn runtime_ops_contract() {
         // `Arc<dyn RuntimeOps>` must be constructible from the adapter.
-        let ops: Arc<dyn RuntimeOps> = Arc::new(EmbassyAdapter::new().unwrap());
+        let ops: Arc<dyn RuntimeOps> = Arc::new(EmbassyAdapter::new());
         block_on(aimdb_executor::test_support::assert_runtime_ops_contract(
             ops.as_ref(),
         ));
-    }
-}
-
-// Implement EmbassyNetwork trait for accessing network stack
-#[cfg(feature = "embassy-net-support")]
-impl EmbassyNetwork for EmbassyAdapter {
-    fn network_stack(&self) -> &'static Stack<'static> {
-        self.network.expect(
-            "Network stack not available - connectors requiring network access need the 'embassy-net-support' feature enabled and must use EmbassyAdapter::new_with_network() to provide a network stack",
-        )
     }
 }

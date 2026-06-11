@@ -155,7 +155,7 @@ async fn main(spawner: Spawner) {
             .with_remote_access();
     });
 
-    static DB_CELL: StaticCell<aimdb_core::AimDb<EmbassyAdapter>> = StaticCell::new();
+    static DB_CELL: StaticCell<aimdb_core::AimDb> = StaticCell::new();
     let (db, db_runner) = builder.build().await.expect("build db");
     let db = DB_CELL.init(db);
 

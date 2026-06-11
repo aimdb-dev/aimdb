@@ -144,7 +144,7 @@ async fn wait_for_listen(addr: SocketAddr) {
 
 /// Stand up a WS server (with the injector record) on an ephemeral port. The
 /// caller pre-configures `ws` (auth / late-join / …); we add `bind`/`path`.
-async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb<TokioAdapter>>) {
+async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
     let addr = free_addr();
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
@@ -167,12 +167,12 @@ async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb<TokioAdapter>>)
 }
 
 /// Default allow-all, late-join-on server.
-async fn spawn_default() -> (SocketAddr, Arc<AimDb<TokioAdapter>>) {
+async fn spawn_default() -> (SocketAddr, Arc<AimDb>) {
     spawn(WebSocketConnector::new().with_late_join(true)).await
 }
 
 /// Push `payload` to subscribers of `topic` (one outbound record update).
-fn inject(db: &AimDb<TokioAdapter>, topic: &str, payload: Value) {
+fn inject(db: &AimDb, topic: &str, payload: Value) {
     db.set_record_from_json("inject", json!({ "topic": topic, "payload": payload }))
         .expect("inject");
 }

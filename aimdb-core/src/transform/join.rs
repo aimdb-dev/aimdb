@@ -9,10 +9,35 @@ use alloc::{
     vec::Vec,
 };
 
-use aimdb_executor::{ExecutorResult, JoinFanInRuntime, JoinQueue, JoinReceiver, JoinSender};
+use aimdb_executor::{ExecutorError, ExecutorResult};
 
 use crate::transform::{CollectedTransform, TransformDescriptor};
 use crate::typed_record::BoxFuture;
+
+// ============================================================================
+// Fan-in queue
+// ============================================================================
+
+/// Capacity of the bounded fan-in channel between input forwarders and the
+/// trigger loop. Sized per target to match the per-adapter GAT queue family
+/// this replaces: 64 on std and wasm32 (tokio/WASM used 64 — a blocked
+/// forwarder stops draining its input buffer, so burst headroom matters
+/// there; the WASM adapter builds core without `std`, hence the target cfg).
+#[cfg(any(feature = "std", target_arch = "wasm32"))]
+const JOIN_QUEUE_CAPACITY: usize = 64;
+/// Embedded no_std: the Embassy queue this replaces used 8; 16 adds burst
+/// headroom at a few words of RAM per slot.
+#[cfg(not(any(feature = "std", target_arch = "wasm32")))]
+const JOIN_QUEUE_CAPACITY: usize = 16;
+
+/// One bounded queue for all runtimes — the same `async-channel` primitive the
+/// session engine already uses on tokio, Embassy, and WASM.
+fn join_channel() -> (
+    async_channel::Sender<JoinTrigger>,
+    async_channel::Receiver<JoinTrigger>,
+) {
+    async_channel::bounded(JOIN_QUEUE_CAPACITY)
+}
 
 // ============================================================================
 // JoinTrigger
@@ -45,10 +70,10 @@ impl JoinTrigger {
 }
 
 // ============================================================================
-// JoinEventRx — type-erased trigger receiver
+// JoinEventRx — trigger receiver
 // ============================================================================
 
-/// Type-erased receiver for join trigger events.
+/// Receiver for join trigger events.
 ///
 /// Obtained as the first argument to the [`JoinBuilder::on_triggers`] closure.
 /// Call `.recv().await` in a loop to consume trigger events from all input forwarders.
@@ -71,41 +96,24 @@ impl JoinTrigger {
 /// })
 /// ```
 pub struct JoinEventRx {
-    inner: Box<dyn DynJoinRx + Send>,
+    inner: async_channel::Receiver<JoinTrigger>,
 }
 
 impl JoinEventRx {
-    fn new<R: JoinReceiver<JoinTrigger> + Send + 'static>(inner: R) -> Self {
-        Self {
-            inner: Box::new(inner),
-        }
+    fn new(inner: async_channel::Receiver<JoinTrigger>) -> Self {
+        Self { inner }
     }
 
     /// Receive the next trigger event.
     ///
-    /// Returns `Ok(JoinTrigger)` when an input fires, or `Err` when all inputs are closed.
-    ///
-    /// # Runtime portability
-    ///
-    /// On Tokio and WASM, the channel closes once every input forwarder has
-    /// dropped its sender, and `recv` returns `Err`, ending any
+    /// Returns `Ok(JoinTrigger)` when an input fires, or `Err` when all input
+    /// forwarders have dropped their senders — on every runtime, ending any
     /// `while let Ok(_) = rx.recv().await` loop.
-    ///
-    /// On Embassy the channel **never** closes — this branch is unreachable
-    /// and the loop runs for the device lifetime. Portable handlers should
-    /// not rely on the loop exiting to release resources.
     pub async fn recv(&mut self) -> ExecutorResult<JoinTrigger> {
-        self.inner.recv_boxed().await
-    }
-}
-
-trait DynJoinRx: Send {
-    fn recv_boxed<'a>(&'a mut self) -> BoxFuture<'a, ExecutorResult<JoinTrigger>>;
-}
-
-impl<R: JoinReceiver<JoinTrigger> + Send> DynJoinRx for R {
-    fn recv_boxed<'a>(&'a mut self) -> BoxFuture<'a, ExecutorResult<JoinTrigger>> {
-        Box::pin(self.recv())
+        self.inner
+            .recv()
+            .await
+            .map_err(|_| ExecutorError::QueueClosed)
     }
 }
 
@@ -114,11 +122,11 @@ impl<R: JoinReceiver<JoinTrigger> + Send> DynJoinRx for R {
 // ============================================================================
 
 /// Type-erased factory for creating a forwarder task for one join input.
-type JoinInputFactory<R> = Box<
+type JoinInputFactory = Box<
     dyn FnOnce(
-            Arc<crate::AimDb<R>>,
+            Arc<crate::AimDb>,
             usize,
-            <<R as JoinFanInRuntime>::JoinQueue<JoinTrigger> as JoinQueue<JoinTrigger>>::Sender,
+            async_channel::Sender<JoinTrigger>,
         ) -> BoxFuture<'static, ()>
         + Send
         + Sync,
@@ -126,21 +134,19 @@ type JoinInputFactory<R> = Box<
 
 /// Configures a multi-input join transform.
 ///
-/// Available on any runtime that implements [`aimdb_executor::JoinFanInRuntime`].
-/// The fan-in queue (bounded channel between input forwarders and the trigger
-/// loop) is created by the runtime adapter at database startup — capacity is an
-/// internal constant chosen per adapter (Tokio: 64, Embassy: 8, WASM: 64).
+/// Available on every runtime. The fan-in queue (bounded channel between input
+/// forwarders and the trigger loop) lives in core; its capacity is
+/// [`JOIN_QUEUE_CAPACITY`].
 ///
 /// Obtain via [`RecordRegistrar::transform_join`](crate::RecordRegistrar::transform_join).
-pub struct JoinBuilder<O, R: JoinFanInRuntime + 'static> {
-    inputs: Vec<(String, JoinInputFactory<R>)>,
-    _phantom: PhantomData<(O, R)>,
+pub struct JoinBuilder<O> {
+    inputs: Vec<(String, JoinInputFactory)>,
+    _phantom: PhantomData<O>,
 }
 
-impl<O, R> JoinBuilder<O, R>
+impl<O> JoinBuilder<O>
 where
     O: Send + Sync + Clone + Debug + 'static,
-    R: JoinFanInRuntime + 'static,
 {
     pub(crate) fn new() -> Self {
         Self {
@@ -157,11 +163,8 @@ where
         let key_str = key.as_str().to_string();
         let key_for_factory = key_str.clone();
 
-        type Tx<R> =
-            <<R as JoinFanInRuntime>::JoinQueue<JoinTrigger> as JoinQueue<JoinTrigger>>::Sender;
-
-        let factory: JoinInputFactory<R> =
-            Box::new(move |db: Arc<crate::AimDb<R>>, index: usize, tx: Tx<R>| {
+        let factory: JoinInputFactory = Box::new(
+            move |db: Arc<crate::AimDb>, index: usize, tx: async_channel::Sender<JoinTrigger>| {
                 Box::pin(async move {
                     let consumer = match db.consumer::<I>(&key_for_factory) {
                         Ok(c) => c,
@@ -177,7 +180,24 @@ where
                     };
                     let mut reader = consumer.subscribe();
 
-                    while let Ok(value) = reader.recv().await {
+                    loop {
+                        let value = match reader.recv().await {
+                            Ok(v) => v,
+                            // SPMC-ring overflow: the reader recovers (cursor
+                            // resets to the oldest live value), so a transient
+                            // lag must not permanently silence this input —
+                            // same policy as every other recv loop in core.
+                            Err(crate::DbError::BufferLagged { .. }) => {
+                                log_warn!(
+                                    "🔄 Join input '{}' (index {}) lagged behind, some values skipped",
+                                    key_for_factory,
+                                    index
+                                );
+                                continue;
+                            }
+                            // Buffer closed / fatal — the input record is gone.
+                            Err(_) => break,
+                        };
                         let trigger = JoinTrigger::Input {
                             index,
                             value: Box::new(value),
@@ -187,7 +207,8 @@ where
                         }
                     }
                 }) as BoxFuture<'static, ()>
-            });
+            },
+        );
 
         self.inputs.push((key_str, factory));
         self
@@ -217,7 +238,7 @@ where
     ///     }
     /// })
     /// ```
-    pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O, R>
+    pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O>
     where
         F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
@@ -229,8 +250,8 @@ where
         JoinPipeline {
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
-                build_fn: Box::new(move |producer, db, runtime, output_key| {
-                    build_join_collected(db, inputs, producer, handler, runtime, output_key)
+                build_fn: Box::new(move |producer, db, output_key| {
+                    build_join_collected(db, inputs, producer, handler, output_key)
                 }),
             }),
         }
@@ -241,16 +262,15 @@ where
 ///
 /// Produced by [`JoinBuilder::on_triggers`] and consumed by
 /// [`RecordRegistrar::transform_join`](crate::RecordRegistrar::transform_join). Not normally constructed directly.
-pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static, R: JoinFanInRuntime + 'static> {
-    pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O, R> + Send>,
+pub struct JoinPipeline<O: Send + Sync + Clone + Debug + 'static> {
+    pub(crate) spawn_factory: Box<dyn FnOnce(()) -> TransformDescriptor<O> + Send>,
 }
 
-impl<O, R> JoinPipeline<O, R>
+impl<O> JoinPipeline<O>
 where
     O: Send + Sync + Clone + Debug + 'static,
-    R: JoinFanInRuntime + 'static,
 {
-    pub(crate) fn into_descriptor(self) -> TransformDescriptor<O, R> {
+    pub(crate) fn into_descriptor(self) -> TransformDescriptor<O> {
         (self.spawn_factory)(())
     }
 }
@@ -259,17 +279,15 @@ where
 // Join Transform Build (forwarders + handler future, both collected at build time)
 // ============================================================================
 
-fn build_join_collected<O, R, F, Fut>(
-    db: Arc<crate::AimDb<R>>,
-    inputs: Vec<(String, JoinInputFactory<R>)>,
+fn build_join_collected<O, F, Fut>(
+    db: Arc<crate::AimDb>,
+    inputs: Vec<(String, JoinInputFactory)>,
     producer: crate::Producer<O>,
     handler: F,
-    runtime: Arc<R>,
     output_key: &str,
 ) -> CollectedTransform
 where
     O: Send + Sync + Clone + Debug + 'static,
-    R: JoinFanInRuntime + 'static,
     F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,
     Fut: core::future::Future<Output = ()> + Send + 'static,
 {
@@ -284,21 +302,7 @@ where
         output_key
     );
 
-    let queue = match runtime.create_join_queue::<JoinTrigger>() {
-        Ok(q) => q,
-        Err(_e) => {
-            log_error!(
-                "🔄 Join transform '{}' FATAL: failed to create join queue",
-                output_key
-            );
-            // Empty collected transform — caller still receives a valid descriptor.
-            return CollectedTransform {
-                task_future: Box::pin(async {}),
-                fanin_futures: Vec::new(),
-            };
-        }
-    };
-    let (tx, rx) = queue.split();
+    let (tx, rx) = join_channel();
 
     // Build all forwarder futures eagerly; they will be driven by AimDbRunner.
     let fanin_futures: Vec<BoxFuture<'static, ()>> = inputs

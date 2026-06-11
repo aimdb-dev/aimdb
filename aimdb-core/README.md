@@ -49,23 +49,23 @@ pub struct Temperature {
 
 ### Producer and Consumer
 
-Portable code uses `R: Runtime` — no platform imports needed:
+Portable code receives the concrete `RuntimeContext` — no platform imports needed:
 
 ```rust
 /// Producer: reads a sensor and pushes typed values into AimDB.
-async fn sensor_producer<R: Runtime>(ctx: RuntimeContext<R>, producer: Producer<Temperature>) {
+async fn sensor_producer(ctx: RuntimeContext, producer: Producer<Temperature>) {
     loop {
         let reading = read_sensor().await;
         producer.produce(Temperature {
             sensor_id: "outdoor-001".into(),
             celsius: reading,
         }).await.ok();
-        ctx.time().sleep(ctx.time().secs(1)).await;
+        ctx.time().sleep_secs(1).await;
     }
 }
 
 /// Consumer: subscribes to the buffer and reacts to every new value.
-async fn temp_logger<R: Runtime>(ctx: RuntimeContext<R>, consumer: Consumer<Temperature>) {
+async fn temp_logger(ctx: RuntimeContext, consumer: Consumer<Temperature>) {
     let mut reader = consumer.subscribe().unwrap();
     while let Ok(temp) = reader.recv().await {
         ctx.log().info(&format!("{}: {:.1}°C", temp.sensor_id, temp.celsius));
@@ -178,21 +178,19 @@ let runtime = Arc::new(TokioAdapter::new()?);
 let mut builder = AimDbBuilder::new().runtime(runtime);
 
 // On Cortex-M4 — Embassy
-let runtime = EmbassyAdapter::new();
+let runtime = Arc::new(EmbassyAdapter::new());
 let mut builder = AimDbBuilder::new().runtime(runtime);
 ```
 
 Everything else — records, keys, producers, consumers, transforms — stays identical across platforms.
 
-Core depends on abstract traits from `aimdb-executor`:
-- `RuntimeAdapter` — Platform identification
-- `Spawn` — Task creation
-- `TimeOps` — Clocks and sleep
-- `Logger` — Structured output
+Core consumes the runtime through `aimdb-executor`'s dyn-safe `RuntimeOps`
+trait (name, monotonic clock, wall clock, sleep, log) — adapters implement it
+once and the runtime travels as a value (`Arc<dyn RuntimeOps>`).
 
-Portable code receives a `RuntimeContext<R>` with two accessors:
-- `ctx.time()` → `Time<R>` with `.sleep()`, `.now()`, `.secs()`, etc.
-- `ctx.log()` → `Log<R>` with `.info()`, `.warn()`, etc.
+Portable code receives the concrete `RuntimeContext` with two accessors:
+- `ctx.time()` → `Time` with `.sleep(Duration)` / `.sleep_millis()` / `.sleep_secs()`, `.now()` (u64 nanos), `.unix_time()`
+- `ctx.log()` → `Log` with `.info()`, `.warn()`, etc.
 
 Available adapters:
 - **[aimdb-tokio-adapter](https://crates.io/crates/aimdb-tokio-adapter)** — Standard library / server environments

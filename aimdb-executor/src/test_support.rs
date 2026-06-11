@@ -2,9 +2,34 @@
 //!
 //! Each adapter crate calls [`assert_runtime_ops_contract`] from a test running
 //! under its own executor (`#[tokio::test]`, `block_on`, `#[wasm_bindgen_test]`),
-//! mirroring how the join-queue behavioral tests are duplicated per adapter.
+//! so the one contract is exercised against every runtime implementation.
 
 use crate::{LogLevel, RuntimeOps};
+
+/// A no-op [`RuntimeOps`] for tests that need a runtime value (a
+/// `RuntimeContext`, an engine clock) but no real runtime behind it: the
+/// clock is pinned at `0`, sleeps complete immediately, logs are discarded.
+///
+/// One shared stub instead of a hand-rolled copy per test module, so a
+/// `RuntimeOps` change is fixed here and in the real adapters only.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopRuntimeOps;
+
+impl RuntimeOps for NoopRuntimeOps {
+    fn name(&self) -> &'static str {
+        "noop"
+    }
+    fn now_nanos(&self) -> u64 {
+        0
+    }
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        None
+    }
+    fn sleep(&self, _d: core::time::Duration) -> crate::BoxFuture {
+        alloc::boxed::Box::pin(core::future::ready(()))
+    }
+    fn log(&self, _level: LogLevel, _msg: &str) {}
+}
 
 /// Asserts the behavioral contract every `RuntimeOps` implementation must hold.
 ///
