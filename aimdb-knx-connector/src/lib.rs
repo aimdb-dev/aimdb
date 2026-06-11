@@ -74,7 +74,7 @@
 //! use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
 //! use alloc::sync::Arc;
 //!
-//! let runtime = Arc::new(EmbassyAdapter::new().unwrap());
+//! let runtime = Arc::new(EmbassyAdapter::new());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)

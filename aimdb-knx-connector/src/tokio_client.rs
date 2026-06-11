@@ -156,24 +156,28 @@ impl KnxConnectorImpl {
         let gateway_ip = connector_url.host.clone();
         let gateway_port = connector_url.port.unwrap_or(3671);
 
+        // Validate the gateway address here so a typo'd IP (or a hostname —
+        // never resolved) surfaces as a build() error instead of a parked
+        // connection task, matching the Embassy shim (issue #133 contract).
+        let gateway_addr: SocketAddr = format!("{}:{}", gateway_ip, gateway_port)
+            .parse()
+            .map_err(|_| {
+                format!(
+                    "Invalid KNX gateway address {}:{} (an IP address is required; hostnames are not resolved)",
+                    gateway_ip, gateway_port
+                )
+            })?;
+
         #[cfg(feature = "tracing")]
-        tracing::info!(
-            "Creating KNX connector for gateway {}:{}",
-            gateway_ip,
-            gateway_port
-        );
+        tracing::info!("Creating KNX connector for gateway {}", gateway_addr);
 
         // Outbound commands (publishers → connection task) and inbound telegrams
         // (connection task → `KnxSource`/`pump_source`).
         let (command_tx, command_rx) = mpsc::channel::<GroupWrite>(command_queue_size);
         let (telegram_tx, telegram_rx) = mpsc::channel::<(String, Payload)>(command_queue_size);
 
-        let connection_future: BoxFuture = Box::pin(connection_task(
-            gateway_ip,
-            gateway_port,
-            telegram_tx,
-            command_rx,
-        ));
+        let connection_future: BoxFuture =
+            Box::pin(connection_task(gateway_addr, telegram_tx, command_rx));
 
         Ok((command_tx, telegram_rx, connection_future))
     }
@@ -224,43 +228,23 @@ impl Source for KnxSource {
 
 /// The connection task: socket I/O around the shared [`TunnelEngine`].
 ///
-/// Binds a UDP socket (rebinding whenever the engine asks for a reset), then
-/// loops: fire engine deadlines, apply the engine's actions, and select over
-/// inbound datagrams, outbound commands, and the next engine deadline.
+/// Each outer iteration binds a fresh UDP socket and drives the engine over
+/// its lifetime: fire engine deadlines, apply the engine's actions, and select
+/// over inbound datagrams, outbound commands, and the next engine deadline.
+/// When the engine asks for a socket reset, the socket is dropped and the
+/// engine's backoff deadline is waited out before rebinding.
 async fn connection_task(
-    gateway_ip: String,
-    gateway_port: u16,
+    gateway_addr: SocketAddr,
     telegram_tx: mpsc::Sender<(String, Payload)>,
     mut command_rx: mpsc::Receiver<GroupWrite>,
 ) {
     #[cfg(feature = "tracing")]
-    tracing::info!(
-        "KNX connection task started for {}:{}",
-        gateway_ip,
-        gateway_port
-    );
-
-    let gateway_addr: SocketAddr = loop {
-        match format!("{}:{}", gateway_ip, gateway_port).parse() {
-            Ok(addr) => break addr,
-            Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!(
-                    "Invalid KNX gateway address {}:{}",
-                    gateway_ip,
-                    gateway_port
-                );
-                // The address never becomes valid; park instead of spinning.
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-            }
-        }
-    };
+    tracing::info!("KNX connection task started for {}", gateway_addr);
 
     let epoch = tokio::time::Instant::now();
     let now_ms = || epoch.elapsed().as_millis() as u64;
 
     let mut engine = TunnelEngine::new(TunnelConfig::default(), now_ms());
-    let mut socket: Option<UdpSocket> = None;
     let mut buf = [0u8; 1024];
     // Set to false once every `KnxSink` is gone. With no outbound routes that
     // happens right at build time (`pump_sink` drops the unused sink), so a
@@ -269,93 +253,87 @@ async fn connection_task(
     let mut commands_open = true;
 
     loop {
-        // (Re)bind the socket if the engine reset it (or on first entry), and
-        // advertise the real bound address in the next CONNECT_REQUEST.
-        if socket.is_none() {
-            match UdpSocket::bind("0.0.0.0:0").await {
-                Ok(s) => {
-                    if let Ok(local) = s.local_addr() {
-                        if let IpAddr::V4(ip) = local.ip() {
-                            engine.set_local_endpoint(LocalEndpoint::Explicit {
-                                ip: ip.octets(),
-                                port: local.port(),
-                            });
+        // Bind a fresh socket for this connection cycle and advertise its
+        // real address in the next CONNECT_REQUEST.
+        let socket = match UdpSocket::bind("0.0.0.0:0").await {
+            Ok(s) => {
+                if let Ok(local) = s.local_addr() {
+                    if let IpAddr::V4(ip) = local.ip() {
+                        engine.set_local_endpoint(LocalEndpoint::Explicit {
+                            ip: ip.octets(),
+                            port: local.port(),
+                        });
+                    }
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!("KNX: Connecting from {} to {}", local, gateway_addr);
+                }
+                s
+            }
+            Err(_e) => {
+                #[cfg(feature = "tracing")]
+                tracing::error!("Failed to bind UDP socket: {}, retrying in 5s", _e);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+
+        // Drive the engine over this socket's lifetime.
+        loop {
+            engine.poll(now_ms());
+
+            let mut io = TokioIo {
+                socket: &socket,
+                gateway: gateway_addr,
+                telegram_tx: &telegram_tx,
+            };
+            if drain_actions(&mut engine, &mut io).await {
+                break; // engine asked for a socket reset
+            }
+
+            let sleep_ms = engine.next_deadline().saturating_sub(now_ms());
+
+            tokio::select! {
+                result = socket.recv_from(&mut buf) => match result {
+                    Ok((len, _)) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::trace!("Received {} bytes from gateway", len);
+                        engine.handle_datagram(&buf[..len], now_ms());
+                    }
+                    Err(_e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("Socket error: {}", _e);
+                        engine.handle_socket_error(now_ms());
+                    }
+                },
+                // Only drained while connected: commands queue up in the channel
+                // during a reconnect cycle and flush once the handshake completes
+                // (same as the previous implementation, where the select loop only
+                // ran while connected).
+                cmd = command_rx.recv(), if commands_open && engine.is_connected() => match cmd {
+                    Some(cmd) => {
+                        if !engine.handle_command(cmd, now_ms()) {
+                            #[cfg(feature = "tracing")]
+                            tracing::warn!("Not connected, dropping GroupWrite");
                         }
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!("KNX: Connecting from {} to {}", local, gateway_addr);
                     }
-                    socket = Some(s);
-                }
-                Err(_e) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!("Failed to bind UDP socket: {}, retrying in 5s", _e);
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue;
-                }
+                    // All `KnxSink`s dropped — no outbound publisher remains.
+                    // Inbound monitoring still has to run, so only disable this
+                    // arm instead of exiting the connection task.
+                    None => commands_open = false,
+                },
+                // Wake for the next engine deadline; `poll` at the loop top fires it.
+                _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {}
             }
         }
 
-        engine.poll(now_ms());
-
-        // `socket` is always `Some` here (bound above); apply the engine's
-        // actions through the shared drain.
-        let reset = match socket.as_ref() {
-            Some(s) => {
-                let mut io = TokioIo {
-                    socket: s,
-                    gateway: gateway_addr,
-                    telegram_tx: &telegram_tx,
-                };
-                drain_actions(&mut engine, &mut io).await
-            }
-            None => false,
-        };
-        if reset {
-            #[cfg(feature = "tracing")]
-            tracing::error!("KNX connection lost, reconnecting after backoff...");
-            // Rebind at the top of the loop.
-            socket = None;
-            continue;
-        }
-
-        let Some(s) = socket.as_ref() else {
-            continue;
-        };
-
-        let sleep_ms = engine.next_deadline().saturating_sub(now_ms());
-
-        tokio::select! {
-            result = s.recv_from(&mut buf) => match result {
-                Ok((len, _)) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::trace!("Received {} bytes from gateway", len);
-                    engine.handle_datagram(&buf[..len], now_ms());
-                }
-                Err(_e) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!("Socket error: {}", _e);
-                    engine.handle_socket_error(now_ms());
-                }
-            },
-            // Only drained while connected: commands queue up in the channel
-            // during a reconnect cycle and flush once the handshake completes
-            // (same as the previous implementation, where the select loop only
-            // ran while connected).
-            cmd = command_rx.recv(), if commands_open && engine.is_connected() => match cmd {
-                Some(cmd) => {
-                    if !engine.handle_command(cmd, now_ms()) {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!("Not connected, dropping GroupWrite");
-                    }
-                }
-                // All `KnxSink`s dropped — no outbound publisher remains.
-                // Inbound monitoring still has to run, so only disable this
-                // arm instead of exiting the connection task.
-                None => commands_open = false,
-            },
-            // Wake for the next engine deadline; `poll` at the loop top fires it.
-            _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {}
-        }
+        #[cfg(feature = "tracing")]
+        tracing::error!("KNX connection lost, reconnecting after backoff...");
+        // The engine is backing off: nothing can be sent until its deadline,
+        // so wait it out before binding the fresh socket. This also paces the
+        // rebind cycle when a socket errors persistently (the old client
+        // likewise slept the full backoff between socket teardowns).
+        let wait_ms = engine.next_deadline().saturating_sub(now_ms());
+        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
     }
 }
 
@@ -368,12 +346,17 @@ struct TokioIo<'a> {
 }
 
 impl TunnelIo for TokioIo<'_> {
-    async fn send(&mut self, frame: &[u8]) {
+    async fn send(&mut self, frame: &[u8]) -> bool {
         // Log-and-continue: a transient send error must not tear down the
-        // tunnel; persistent socket death surfaces via the recv path.
-        if let Err(_e) = self.socket.send_to(frame, self.gateway).await {
-            #[cfg(feature = "tracing")]
-            tracing::error!("KNX send failed: {}", _e);
+        // tunnel; a persistently dead send path surfaces through the engine's
+        // heartbeat-response timeout.
+        match self.socket.send_to(frame, self.gateway).await {
+            Ok(_) => true,
+            Err(_e) => {
+                #[cfg(feature = "tracing")]
+                tracing::error!("KNX send failed: {}", _e);
+                false
+            }
         }
     }
 
@@ -552,9 +535,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connector_with_port() {
+    async fn test_connector_rejects_hostname_at_build() {
+        // Hostnames are never resolved (`SocketAddr::parse` only accepts IP
+        // addresses), so this must fail from build() instead of producing a
+        // connector whose task can never reach a gateway (issue #133).
         let connector = KnxConnectorImpl::build_internal("knx://gateway.local:3672", 32).await;
-        assert!(connector.is_ok());
+        assert!(connector.is_err());
     }
 
     #[test]

@@ -22,8 +22,8 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 use knx_pico::protocol::{
-    CEMIFrame, ConnectRequest, ConnectResponse, ConnectionHeader, ConnectionStateRequest, Hpai,
-    KnxnetIpFrame, ServiceType, TunnelingAck, TunnelingRequest,
+    CEMIFrame, ConnectRequest, ConnectResponse, ConnectionHeader, ConnectionStateRequest,
+    ConnectionStateResponse, Hpai, KnxnetIpFrame, ServiceType, TunnelingAck, TunnelingRequest,
 };
 
 /// Monotonic milliseconds from an arbitrary, transport-chosen epoch.
@@ -75,8 +75,10 @@ impl GroupWrite {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Send this datagram to the gateway.
-    Send(Frame),
+    /// Send this datagram to the gateway. `await_ack` carries the sequence
+    /// number of a tracked TUNNELING_REQUEST so a failed send can stop its
+    /// ACK tracking (see [`TunnelIo::send`]); `None` for everything else.
+    Send { frame: Frame, await_ack: Option<u8> },
     /// Deliver a parsed inbound telegram toward `pump_source`
     /// (`try_send`, drop-on-full — never stall the protocol loop).
     Telegram {
@@ -128,6 +130,12 @@ pub struct TunnelConfig {
     pub ack_sweep_ms: Millis,
     /// CONNECTIONSTATE_REQUEST keepalive cadence.
     pub heartbeat_ms: Millis,
+    /// CONNECTIONSTATE_RESPONSE wait before the connection is considered
+    /// dead (KNX spec CONNECTIONSTATE_REQUEST timeout: 10 s). This is the
+    /// send-side liveness guard: a silently failing send path or a gateway
+    /// that expired the tunnel never surfaces through the recv path of an
+    /// unconnected UDP socket.
+    pub heartbeat_response_timeout_ms: Millis,
     /// Wait between a connection failure and the next CONNECT_REQUEST.
     pub reconnect_backoff_ms: Millis,
 }
@@ -140,6 +148,7 @@ impl Default for TunnelConfig {
             ack_timeout_ms: 3_000,
             ack_sweep_ms: 500,
             heartbeat_ms: 55_000,
+            heartbeat_response_timeout_ms: 10_000,
             reconnect_backoff_ms: 5_000,
         }
     }
@@ -154,12 +163,13 @@ const PENDING_ACK_CAPACITY: usize = 16;
 #[derive(Debug)]
 struct ChannelState {
     channel_id: u8,
-    /// Last sequence counter received from the gateway (kept for parity with
-    /// the previous implementations; the ACK echoes it directly).
-    inbound_seq: u8,
     outbound_seq: u8,
     pending_acks: heapless::FnvIndexMap<u8, Millis, PENDING_ACK_CAPACITY>,
     next_heartbeat: Millis,
+    /// Set when a CONNECTIONSTATE_REQUEST goes out; cleared by the gateway's
+    /// OK response. A pending entry older than
+    /// `heartbeat_response_timeout_ms` drops the connection.
+    heartbeat_pending_since: Option<Millis>,
     next_ack_sweep: Millis,
 }
 
@@ -167,10 +177,10 @@ impl ChannelState {
     fn new(channel_id: u8, now: Millis, cfg: &TunnelConfig) -> Self {
         Self {
             channel_id,
-            inbound_seq: 0,
             outbound_seq: 0,
             pending_acks: heapless::FnvIndexMap::new(),
             next_heartbeat: now + cfg.heartbeat_ms,
+            heartbeat_pending_since: None,
             next_ack_sweep: now + cfg.ack_sweep_ms,
         }
     }
@@ -229,6 +239,9 @@ impl TunnelEngine {
 
     /// A datagram arrived from the gateway.
     pub fn handle_datagram(&mut self, data: &[u8], now: Millis) {
+        // Set inside the `Connected` arm (where `self.phase` is borrowed) and
+        // applied after the match.
+        let mut drop_connection = false;
         match &mut self.phase {
             // Stale datagram from a previous connection — ignore.
             Phase::Backoff { .. } => {}
@@ -276,18 +289,35 @@ impl TunnelEngine {
                             return;
                         };
                         let seq = request.connection_header.sequence_counter;
-                        state.inbound_seq = seq;
                         let channel_id = state.channel_id;
-                        self.actions
-                            .push_back(Action::Send(build_tunneling_ack(channel_id, seq)));
+                        self.actions.push_back(Action::Send {
+                            frame: build_tunneling_ack(channel_id, seq),
+                            await_ack: None,
+                        });
                         if let Some((addr, payload)) = parse_telegram(request.cemi_data) {
                             self.actions.push_back(Action::Telegram { addr, payload });
                         }
                     }
-                    // CONNECTIONSTATE_RESPONSE, DISCONNECT_RESPONSE, …
+                    ServiceType::ConnectionstateResponse => {
+                        let Ok(response) = ConnectionStateResponse::parse(frame.body()) else {
+                            return;
+                        };
+                        if response.is_ok() {
+                            state.heartbeat_pending_since = None;
+                        } else {
+                            // The gateway no longer recognizes the channel
+                            // (e.g. it expired during an outage) — reconnect
+                            // with a fresh one.
+                            drop_connection = true;
+                        }
+                    }
+                    // DISCONNECT_RESPONSE, …
                     _ => {}
                 }
             }
+        }
+        if drop_connection {
+            self.handle_socket_error(now);
         }
     }
 
@@ -302,22 +332,44 @@ impl TunnelEngine {
         let seq = state.next_outbound_seq();
         let cemi = build_group_write_cemi(cmd.group_addr, &cmd.data);
         let frame = build_tunneling_request(state.channel_id, seq, &cemi);
-        // A full map only loses timeout *reporting* for this seq, not the send.
-        let _ = state.pending_acks.insert(seq, now);
-        self.actions.push_back(Action::Send(frame));
+        if state.pending_acks.insert(seq, now).is_err() {
+            // Map full (burst deeper than PENDING_ACK_CAPACITY): evict the
+            // oldest entry and report it now, so no unacknowledged telegram
+            // is ever silently untracked.
+            if let Some((&oldest, _)) = state.pending_acks.iter().next() {
+                state.pending_acks.remove(&oldest);
+                self.actions.push_back(Action::AckTimeout { seq: oldest });
+            }
+            let _ = state.pending_acks.insert(seq, now);
+        }
+        self.actions.push_back(Action::Send {
+            frame,
+            await_ack: Some(seq),
+        });
         true
+    }
+
+    /// The transport failed to hand a tracked TUNNELING_REQUEST to the socket
+    /// (see [`TunnelIo::send`]): stop awaiting its ACK so the sweep doesn't
+    /// misreport the local send failure as a gateway ACK loss.
+    fn send_failed(&mut self, seq: u8) {
+        if let Phase::Connected(state) = &mut self.phase {
+            let _ = state.pending_acks.remove(&seq);
+        }
     }
 
     /// The transport's UDP send/recv failed fatally — drop the connection and
     /// start a reconnect cycle.
     pub fn handle_socket_error(&mut self, now: Millis) {
-        if matches!(self.phase, Phase::Backoff { .. }) {
-            return;
-        }
+        // Always tear the erroring socket down (the previous implementations
+        // recreated it on every recv error); an already-running backoff keeps
+        // its deadline so persistent errors cannot postpone the reconnect.
         self.actions.push_back(Action::ResetSocket);
-        self.phase = Phase::Backoff {
-            until: now + self.cfg.reconnect_backoff_ms,
-        };
+        if !matches!(self.phase, Phase::Backoff { .. }) {
+            self.phase = Phase::Backoff {
+                until: now + self.cfg.reconnect_backoff_ms,
+            };
+        }
     }
 
     /// Fire any deadlines that have passed. Call at the top of every loop
@@ -327,7 +379,10 @@ impl TunnelEngine {
             Phase::Backoff { until } => {
                 if now >= *until {
                     let frame = build_connect_request(&self.cfg.local_endpoint);
-                    self.actions.push_back(Action::Send(frame));
+                    self.actions.push_back(Action::Send {
+                        frame,
+                        await_ack: None,
+                    });
                     self.phase = Phase::Connecting { sent_at: now };
                 }
             }
@@ -340,9 +395,23 @@ impl TunnelEngine {
                 }
             }
             Phase::Connected(state) => {
+                // Unanswered keepalive: the gateway (or the send path) is
+                // gone — drop the connection and re-handshake.
+                if let Some(sent_at) = state.heartbeat_pending_since {
+                    if now >= sent_at.saturating_add(self.cfg.heartbeat_response_timeout_ms) {
+                        self.handle_socket_error(now);
+                        return;
+                    }
+                }
                 if now >= state.next_heartbeat {
                     let frame = build_connectionstate_request(state.channel_id);
-                    self.actions.push_back(Action::Send(frame));
+                    self.actions.push_back(Action::Send {
+                        frame,
+                        await_ack: None,
+                    });
+                    if state.heartbeat_pending_since.is_none() {
+                        state.heartbeat_pending_since = Some(now);
+                    }
                     state.next_heartbeat = now + self.cfg.heartbeat_ms;
                 }
                 if now >= state.next_ack_sweep {
@@ -367,7 +436,13 @@ impl TunnelEngine {
         match &self.phase {
             Phase::Backoff { until } => *until,
             Phase::Connecting { sent_at } => sent_at.saturating_add(self.cfg.connect_timeout_ms),
-            Phase::Connected(state) => state.next_heartbeat.min(state.next_ack_sweep),
+            Phase::Connected(state) => {
+                let mut next = state.next_heartbeat.min(state.next_ack_sweep);
+                if let Some(sent_at) = state.heartbeat_pending_since {
+                    next = next.min(sent_at.saturating_add(self.cfg.heartbeat_response_timeout_ms));
+                }
+                next
+            }
         }
     }
 
@@ -391,12 +466,15 @@ impl TunnelEngine {
     allow(dead_code)
 )]
 pub(crate) trait TunnelIo {
-    /// Send one datagram to the gateway. Transient errors are logged by the
-    /// impl and otherwise ignored — an established tunnel must survive e.g.
-    /// ENOBUFS or a route flap (matching the previous implementations).
-    /// Persistent socket death surfaces through the transport's recv path,
-    /// which calls [`TunnelEngine::handle_socket_error`].
-    async fn send(&mut self, frame: &[u8]);
+    /// Send one datagram to the gateway. Returns `false` when the datagram
+    /// could not be handed to the socket; [`drain_actions`] then stops the
+    /// ACK tracking of a tracked TUNNELING_REQUEST. Transient errors are
+    /// logged by the impl and otherwise non-fatal — an established tunnel
+    /// must survive e.g. ENOBUFS or a route flap. A persistently dead send
+    /// path surfaces through the heartbeat-response timeout
+    /// ([`TunnelConfig::heartbeat_response_timeout_ms`]), which drops the
+    /// connection even when the recv path never errors.
+    async fn send(&mut self, frame: &[u8]) -> bool;
     /// Forward a parsed telegram toward `pump_source`. Non-blocking:
     /// drop + log on a full channel rather than stalling the protocol loop.
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>);
@@ -416,7 +494,13 @@ pub(crate) async fn drain_actions(engine: &mut TunnelEngine, io: &mut impl Tunne
     let mut reset = false;
     while let Some(action) = engine.next_action() {
         match action {
-            Action::Send(frame) => io.send(&frame).await,
+            Action::Send { frame, await_ack } => {
+                if !io.send(&frame).await {
+                    if let Some(seq) = await_ack {
+                        engine.send_failed(seq);
+                    }
+                }
+            }
             Action::Telegram { addr, payload } => io.forward(addr, payload),
             Action::ResetSocket => reset = true,
             Action::AckTimeout { seq } => io.warn_ack_timeout(seq),
@@ -630,6 +714,7 @@ mod tests {
         ack_timeout_ms: 3_000,
         ack_sweep_ms: 500,
         heartbeat_ms: 55_000,
+        heartbeat_response_timeout_ms: 10_000,
         reconnect_backoff_ms: 5_000,
     };
 
@@ -673,7 +758,7 @@ mod tests {
         engine.poll(now);
         let actions = drain(&mut engine);
         assert_eq!(actions.len(), 1);
-        let Action::Send(req) = &actions[0] else {
+        let Action::Send { frame: req, .. } = &actions[0] else {
             panic!("expected CONNECT_REQUEST send, got {actions:?}");
         };
         assert_eq!(service_type_of(req), 0x0205); // CONNECT_REQUEST
@@ -701,7 +786,9 @@ mod tests {
         // Backoff expiry emits a fresh CONNECT_REQUEST.
         engine.poll(10 + CFG.reconnect_backoff_ms);
         let actions = drain(&mut engine);
-        assert!(matches!(&actions[..], [Action::Send(f)] if service_type_of(f) == 0x0205));
+        assert!(
+            matches!(&actions[..], [Action::Send { frame: f, .. }] if service_type_of(f) == 0x0205)
+        );
     }
 
     #[test]
@@ -720,7 +807,9 @@ mod tests {
         assert_eq!(drain(&mut engine), vec![Action::ResetSocket]);
         engine.poll(CFG.connect_timeout_ms + CFG.reconnect_backoff_ms);
         let actions = drain(&mut engine);
-        assert!(matches!(&actions[..], [Action::Send(f)] if service_type_of(f) == 0x0205));
+        assert!(
+            matches!(&actions[..], [Action::Send { frame: f, .. }] if service_type_of(f) == 0x0205)
+        );
     }
 
     #[test]
@@ -765,7 +854,7 @@ mod tests {
         engine.handle_datagram(&datagram, 100);
         let actions = drain(&mut engine);
         assert_eq!(actions.len(), 2);
-        let Action::Send(ack) = &actions[0] else {
+        let Action::Send { frame: ack, .. } = &actions[0] else {
             panic!("expected ACK first, got {actions:?}");
         };
         assert_eq!(service_type_of(ack), 0x0421); // TUNNELING_ACK
@@ -814,7 +903,7 @@ mod tests {
                 10
             ));
             let actions = drain(&mut engine);
-            let Action::Send(frame) = &actions[0] else {
+            let Action::Send { frame, .. } = &actions[0] else {
                 panic!("expected TUNNELING_REQUEST send");
             };
             assert_eq!(service_type_of(frame), 0x0420);
@@ -853,7 +942,7 @@ mod tests {
         let seqs: Vec<u8> = actions
             .iter()
             .filter_map(|a| match a {
-                Action::Send(f) if service_type_of(f) == 0x0420 => Some(f[8]),
+                Action::Send { frame: f, .. } if service_type_of(f) == 0x0420 => Some(f[8]),
                 _ => None,
             })
             .collect();
@@ -945,13 +1034,13 @@ mod tests {
         engine.poll(CFG.heartbeat_ms - 1);
         assert!(drain(&mut engine)
             .iter()
-            .all(|a| !matches!(a, Action::Send(f) if service_type_of(f) == 0x0207)));
+            .all(|a| !matches!(a, Action::Send { frame: f, .. } if service_type_of(f) == 0x0207)));
 
         engine.poll(CFG.heartbeat_ms);
         let actions = drain(&mut engine);
         assert!(actions
             .iter()
-            .any(|a| matches!(a, Action::Send(f) if service_type_of(f) == 0x0207)));
+            .any(|a| matches!(a, Action::Send { frame: f, .. } if service_type_of(f) == 0x0207)));
 
         // After a socket error, no heartbeat fires during backoff.
         engine.handle_socket_error(CFG.heartbeat_ms + 10);
@@ -959,7 +1048,7 @@ mod tests {
         engine.poll(CFG.heartbeat_ms * 2);
         assert!(drain(&mut engine)
             .iter()
-            .all(|a| !matches!(a, Action::Send(f) if service_type_of(f) == 0x0207)));
+            .all(|a| !matches!(a, Action::Send { frame: f, .. } if service_type_of(f) == 0x0207)));
     }
 
     #[test]
@@ -969,30 +1058,152 @@ mod tests {
         assert!(!engine.is_connected());
         assert_eq!(drain(&mut engine), vec![Action::ResetSocket]);
 
-        // A second error during backoff is a no-op.
+        // A second error during backoff still tears the erroring socket down,
+        // but the original backoff deadline stands (no postponement).
         engine.handle_socket_error(200);
-        assert!(drain(&mut engine).is_empty());
+        assert_eq!(drain(&mut engine), vec![Action::ResetSocket]);
 
         engine.poll(100 + CFG.reconnect_backoff_ms);
         let actions = drain(&mut engine);
-        assert!(matches!(&actions[..], [Action::Send(f)] if service_type_of(f) == 0x0205));
+        assert!(
+            matches!(&actions[..], [Action::Send { frame: f, .. }] if service_type_of(f) == 0x0205)
+        );
         engine.handle_datagram(&connect_response(9, 0), 100 + CFG.reconnect_backoff_ms + 5);
         assert!(engine.is_connected());
     }
 
+    /// Hand-built CONNECTIONSTATE_RESPONSE (0x0208) frame.
+    fn connectionstate_response(channel_id: u8, status: u8) -> Vec<u8> {
+        let mut frame = vec![0x06, 0x10, 0x02, 0x08];
+        frame.extend_from_slice(&8u16.to_be_bytes());
+        frame.extend_from_slice(&[channel_id, status]);
+        frame
+    }
+
     #[test]
-    fn connectionstate_and_disconnect_responses_are_ignored() {
+    fn ok_connectionstate_and_disconnect_responses_keep_connection() {
         let mut engine = connected_engine(0);
-        // CONNECTIONSTATE_RESPONSE (0x0208) and DISCONNECT_RESPONSE (0x020A).
-        for service in [0x0208u16, 0x020A] {
-            let mut frame = vec![0x06, 0x10];
-            frame.extend_from_slice(&service.to_be_bytes());
-            frame.extend_from_slice(&8u16.to_be_bytes());
-            frame.extend_from_slice(&[7, 0]); // channel_id, status
-            engine.handle_datagram(&frame, 50);
-        }
+        engine.handle_datagram(&connectionstate_response(7, 0), 50);
+        // DISCONNECT_RESPONSE (0x020A) is ignored.
+        let mut frame = vec![0x06, 0x10, 0x02, 0x0A];
+        frame.extend_from_slice(&8u16.to_be_bytes());
+        frame.extend_from_slice(&[7, 0]);
+        engine.handle_datagram(&frame, 50);
         assert!(engine.is_connected());
         assert!(drain(&mut engine).is_empty());
+    }
+
+    #[test]
+    fn answered_heartbeat_keeps_connection_past_response_timeout() {
+        let mut engine = connected_engine(0);
+        engine.poll(CFG.heartbeat_ms);
+        drain(&mut engine);
+        engine.handle_datagram(&connectionstate_response(7, 0), CFG.heartbeat_ms + 100);
+        engine.poll(CFG.heartbeat_ms + CFG.heartbeat_response_timeout_ms + 1);
+        assert!(engine.is_connected());
+        assert!(drain(&mut engine).is_empty());
+    }
+
+    #[test]
+    fn unanswered_heartbeat_drops_connection_after_response_timeout() {
+        let mut engine = connected_engine(0);
+        engine.poll(CFG.heartbeat_ms);
+        let actions = drain(&mut engine);
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::Send { frame: f, .. } if service_type_of(f) == 0x0207)));
+
+        // Inside the response window nothing happens…
+        engine.poll(CFG.heartbeat_ms + CFG.heartbeat_response_timeout_ms - 1);
+        assert!(engine.is_connected());
+        assert!(drain(&mut engine).is_empty());
+
+        // …then the silent gateway (or dead send path) drops the connection.
+        engine.poll(CFG.heartbeat_ms + CFG.heartbeat_response_timeout_ms);
+        assert!(!engine.is_connected());
+        assert_eq!(drain(&mut engine), vec![Action::ResetSocket]);
+    }
+
+    #[test]
+    fn refused_connectionstate_response_drops_connection() {
+        let mut engine = connected_engine(0);
+        // Gateway answers the keepalive with E_CONNECTION_ID — it no longer
+        // recognizes the channel (e.g. it expired during an outage).
+        engine.handle_datagram(&connectionstate_response(7, 0x21), 50);
+        assert!(!engine.is_connected());
+        assert_eq!(drain(&mut engine), vec![Action::ResetSocket]);
+        // Reconnect after the backoff window.
+        engine.poll(50 + CFG.reconnect_backoff_ms);
+        let actions = drain(&mut engine);
+        assert!(
+            matches!(&actions[..], [Action::Send { frame: f, .. }] if service_type_of(f) == 0x0205)
+        );
+    }
+
+    #[test]
+    fn failed_send_stops_ack_tracking() {
+        let addr: GroupAddress = "1/0/8".parse().unwrap();
+        let mut engine = connected_engine(0);
+        let mut data = heapless::Vec::new();
+        data.push(0x01).unwrap();
+        engine.handle_command(
+            GroupWrite {
+                group_addr: addr,
+                data,
+            },
+            10,
+        );
+        let actions = drain(&mut engine);
+        let Some(Action::Send {
+            await_ack: Some(seq),
+            ..
+        }) = actions.last()
+        else {
+            panic!("expected tracked TUNNELING_REQUEST send, got {actions:?}");
+        };
+
+        // The transport reports the send failed: tracking stops, so the sweep
+        // does not misreport the local failure as a gateway ACK loss.
+        engine.send_failed(*seq);
+        engine.poll(10 + CFG.ack_timeout_ms + CFG.ack_sweep_ms + 1);
+        assert!(drain(&mut engine)
+            .iter()
+            .all(|a| !matches!(a, Action::AckTimeout { .. })));
+    }
+
+    #[test]
+    fn pending_ack_overflow_evicts_and_reports_oldest() {
+        let addr: GroupAddress = "1/0/8".parse().unwrap();
+        let mut engine = connected_engine(0);
+        let mut data = heapless::Vec::new();
+        data.push(0x01).unwrap();
+        // One more tracked send than the map holds.
+        for _ in 0..=PENDING_ACK_CAPACITY {
+            engine.handle_command(
+                GroupWrite {
+                    group_addr: addr,
+                    data: data.clone(),
+                },
+                10,
+            );
+        }
+        let actions = drain(&mut engine);
+        // The overflowing send evicted the oldest entry and reported it.
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::AckTimeout { seq: 0 }))
+                .count(),
+            1
+        );
+        // Every send still went out.
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::Send { .. }))
+                .count(),
+            PENDING_ACK_CAPACITY + 1
+        );
     }
 
     #[test]
@@ -1004,7 +1215,7 @@ mod tests {
         });
         engine.poll(0);
         let actions = drain(&mut engine);
-        let Action::Send(req) = &actions[0] else {
+        let Action::Send { frame: req, .. } = &actions[0] else {
             panic!("expected CONNECT_REQUEST");
         };
         // Control HPAI starts at offset 6: [len, proto, ip(4), port(2)].

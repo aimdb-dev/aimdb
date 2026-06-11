@@ -46,8 +46,8 @@ pub struct ClientConfig {
     pub max_reconnect_delay: u64,
     /// Maximum redial attempts before giving up. `0` = unlimited (default).
     pub max_reconnect_attempts: usize,
-    /// Send a keepalive `Ping` after this many ms of an idle connection; the timer
-    /// re-arms each iteration, so traffic resets it. `None` (default) disables it.
+    /// Send a keepalive `Ping` after this many ms of an idle connection; any
+    /// traffic resets the idle window. `None` (default) disables it.
     pub keepalive_interval: Option<u64>,
     /// Cap on caller commands buffered while disconnected (oldest dropped past it).
     /// Defaults to `usize::MAX` (unbounded).
@@ -318,6 +318,13 @@ where
     let mut subs: HashMap<String, Sender<Payload>> = HashMap::new();
     let mut out = Vec::new();
     let keepalive_ms = config.keepalive_interval;
+    // Keepalive is deadline-based: activity only records a timestamp (one dyn
+    // clock read, no allocation) and the boxed `clock.sleep` stays armed for a
+    // full idle window — re-created roughly once per interval, not on every
+    // processed frame (`dyn RuntimeOps::sleep` heap-allocates its future).
+    let mut last_activity = clock.now_nanos();
+    let mut keepalive_timer =
+        keepalive_ms.map(|ms| clock.sleep(core::time::Duration::from_millis(ms)).fuse());
 
     // Handshake-as-caller: prove the link with Ping/Pong before serving commands.
     if config.sends_hello {
@@ -339,27 +346,31 @@ where
         // Biased toward the server read. The select only decides the next step.
         let step = {
             let mut recv = conn.recv().fuse();
-            // Idle keepalive, re-armed each iteration; with no interval it parks on
-            // `pending()` forever. `!Unpin`, so pin it for the arm.
-            let mut keepalive = core::pin::pin!(async {
-                match keepalive_ms {
-                    Some(ms) => clock.sleep(core::time::Duration::from_millis(ms)).await,
-                    None => core::future::pending::<()>().await,
-                }
-            }
-            .fuse());
+            // The armed idle timer (see above); with no interval it parks on
+            // `pending()` forever. `Either` re-borrows the persistent timer,
+            // so this is allocation-free per iteration.
+            let mut keepalive = match keepalive_timer.as_mut() {
+                Some(timer) => futures_util::future::Either::Left(timer),
+                None => futures_util::future::Either::Right(futures_util::future::pending::<()>()),
+            };
             // `recv()` is `!Unpin`, so pin it for the arm.
             let mut cmd = core::pin::pin!(cmd_rx.recv().fuse());
             select_biased! {
                 // ---- inbound from server: Reply / Event / Snapshot / Pong --
                 r = recv => ClientStep::Inbound(r),
-                // ---- keepalive: send a Ping when the idle timer fires ------
+                // ---- keepalive: the idle timer fired ------------------------
                 _ = keepalive => ClientStep::Keepalive,
                 // ---- caller commands from ClientHandle ---------------------
                 // `recv()` errors only when every `ClientHandle` is dropped → `None`.
                 c = cmd => ClientStep::Cmd(c.ok()),
             }
         };
+
+        // Frames and commands are link activity; only a genuinely idle link
+        // needs a Ping.
+        if !matches!(step, ClientStep::Keepalive) {
+            last_activity = clock.now_nanos();
+        }
 
         match step {
             ClientStep::Inbound(recv) => {
@@ -401,11 +412,31 @@ where
             }
 
             ClientStep::Keepalive => {
-                out.clear();
-                if codec.encode_inbound(Inbound::Ping, &mut out).is_ok()
-                    && conn.send(&out).await.is_err()
-                {
-                    return Ended::Disconnected;
+                // `keepalive_timer` is `Some` whenever this step fires.
+                let interval_ms = keepalive_ms.unwrap_or(0);
+                let idle_ms = clock.now_nanos().saturating_sub(last_activity) / 1_000_000;
+                if idle_ms >= interval_ms {
+                    // Genuinely idle for a full window: ping and re-arm.
+                    out.clear();
+                    if codec.encode_inbound(Inbound::Ping, &mut out).is_ok()
+                        && conn.send(&out).await.is_err()
+                    {
+                        return Ended::Disconnected;
+                    }
+                    last_activity = clock.now_nanos();
+                    keepalive_timer = Some(
+                        clock
+                            .sleep(core::time::Duration::from_millis(interval_ms))
+                            .fuse(),
+                    );
+                } else {
+                    // Activity happened while the timer was armed: no ping,
+                    // re-arm for the remainder of the idle window.
+                    keepalive_timer = Some(
+                        clock
+                            .sleep(core::time::Duration::from_millis(interval_ms - idle_ms))
+                            .fuse(),
+                    );
                 }
             }
 

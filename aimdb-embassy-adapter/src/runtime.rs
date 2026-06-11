@@ -3,8 +3,7 @@
 //! This module provides the Embassy-specific implementation of AimDB's runtime traits,
 //! enabling async task execution in embedded environments using Embassy.
 
-use aimdb_core::{DbError, DbResult};
-use aimdb_executor::{ExecutorResult, RuntimeAdapter};
+use aimdb_executor::RuntimeAdapter;
 
 #[cfg(feature = "tracing")]
 use tracing::debug;
@@ -22,32 +21,21 @@ use tracing::debug;
 /// # #[cfg(not(feature = "std"))]
 /// # {
 /// use aimdb_embassy_adapter::EmbassyAdapter;
-/// use aimdb_executor::RuntimeAdapter;
 ///
-/// # async fn example() -> aimdb_core::DbResult<()> {
-/// let adapter = EmbassyAdapter::new()?;
-/// # Ok(())
-/// # }
+/// let adapter = EmbassyAdapter::new();
 /// # }
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct EmbassyAdapter;
 
 impl EmbassyAdapter {
-    /// Creates a new EmbassyAdapter.
-    ///
-    /// # Returns
-    /// `Ok(EmbassyAdapter)` — always succeeds.
-    pub fn new() -> ExecutorResult<Self> {
+    /// Creates a new EmbassyAdapter. Infallible — the adapter is a stateless
+    /// unit type.
+    pub fn new() -> Self {
         #[cfg(feature = "tracing")]
         debug!("Creating EmbassyAdapter");
 
-        Ok(Self)
-    }
-
-    /// Creates a new EmbassyAdapter returning `DbResult` for backward compatibility.
-    pub fn new_db_result() -> DbResult<Self> {
-        Self::new().map_err(DbError::from)
+        Self
     }
 
     /// Anchors wall-clock time so [`TimeOps::unix_time`](aimdb_executor::TimeOps::unix_time)
@@ -217,7 +205,7 @@ mod runtime_ops_tests {
     #[test]
     fn runtime_ops_contract() {
         // `Arc<dyn RuntimeOps>` must be constructible from the adapter.
-        let ops: Arc<dyn RuntimeOps> = Arc::new(EmbassyAdapter::new().unwrap());
+        let ops: Arc<dyn RuntimeOps> = Arc::new(EmbassyAdapter::new());
         block_on(aimdb_executor::test_support::assert_runtime_ops_contract(
             ops.as_ref(),
         ));

@@ -10,9 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - **Issue #131:** `RecordRegistrarPersistExt`/`AimDbBuilderPersistExt`/`AimDbQueryExt` are non-generic over the runtime (they extend `RecordRegistrar<'a, T>` / `AimDbBuilder` / `AimDb`); the retention-cleanup `on_start` task receives `RuntimeContext` and sleeps via `ctx.time().sleep_secs(...)`.
-
-### Changed (breaking)
-
 - **`RecordRegistrarPersistExt::persist` takes a fresh borrow (Issue #130, design 034 Phase 2).** `fn persist(&mut self, …) -> &mut RecordRegistrar<'a, T, R>` (was `&'a mut self -> &'a mut …`), following core's registrar lifetime fix — `persist()` no longer borrows the registrar for its entire remaining lifetime. Call sites compile unchanged.
 - All `R: Spawn` bounds replaced with `R: RuntimeAdapter` on public traits (`AimDbBuilderPersistExt`, `RecordRegistrarPersistExt`, `AimDbQueryExt`) and internal helpers (Issue #88). No behavioural change — `aimdb-persistence` never called `runtime.spawn` directly, the bound was just propagated.
 

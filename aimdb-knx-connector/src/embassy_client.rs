@@ -335,9 +335,17 @@ async fn connection_task(
             &inbound_tx,
         )
         .await;
+        drop(socket);
 
         #[cfg(feature = "defmt")]
         defmt::trace!("KNX connection reset, reconnecting after backoff...");
+
+        // Nothing can be sent until the engine's backoff deadline, so wait it
+        // out before binding the fresh socket. This also paces the rebind
+        // cycle when a socket errors persistently (the old client likewise
+        // slept the full backoff between socket teardowns).
+        let wait_ms = engine.next_deadline().saturating_sub(now_ms());
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
     }
 }
 
@@ -350,13 +358,16 @@ struct EmbassyIo<'a, 'b> {
 }
 
 impl TunnelIo for EmbassyIo<'_, '_> {
-    async fn send(&mut self, frame: &[u8]) {
+    async fn send(&mut self, frame: &[u8]) -> bool {
         // Log-and-continue: a transient send error must not tear down the
-        // tunnel; persistent socket death surfaces via the recv path.
+        // tunnel; a persistently dead send path surfaces through the engine's
+        // heartbeat-response timeout.
         if self.socket.send_to(frame, self.gateway).await.is_err() {
             #[cfg(feature = "defmt")]
             defmt::error!("KNX send failed");
+            return false;
         }
+        true
     }
 
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>) {

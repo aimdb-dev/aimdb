@@ -297,7 +297,7 @@ async fn main(spawner: Spawner) {
     info!("🔌 Initializing MQTT client...");
 
     // Create AimDB database with Embassy adapter
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new().unwrap());
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
 
     // Build MQTT broker URL
     use alloc::format;

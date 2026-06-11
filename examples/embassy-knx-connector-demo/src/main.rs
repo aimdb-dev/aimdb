@@ -244,7 +244,7 @@ async fn main(spawner: Spawner) {
 
     info!("🔌 Initializing KNX client...");
 
-    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new().unwrap());
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
 
     use alloc::format;
     let gateway_url = format!("knx://{}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);

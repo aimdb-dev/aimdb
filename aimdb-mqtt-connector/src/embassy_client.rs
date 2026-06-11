@@ -12,8 +12,10 @@
 //! like the Tokio half rides them. This crate contributes only the
 //! transport-specific bits: the broker **manager task** (mountain-mqtt's `run`),
 //! the [`MqttSink`]/[`MqttSource`] over its action/event channels, and the
-//! `MqttOperations`/`FromApplicationMessage` glue. No `unsafe`, no
-//! `SendFutureWrapper` — both live in the adapter spine.
+//! `MqttOperations`/`FromApplicationMessage` glue. The single `unsafe` block
+//! is the [`NetStack`](aimdb_embassy_adapter::connectors::NetStack)
+//! construction in [`MqttConnectorBuilder::new`], acknowledging the adapter's
+//! single-core executor invariant.
 //!
 //! # Usage
 //!
@@ -21,13 +23,14 @@
 //! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 //! use aimdb_core::AimDbBuilder;
 //!
+//! // `stack: &'static embassy_net::Stack<'static>` — the device's network stack.
 //! let db = AimDbBuilder::new()
 //!     .runtime(embassy_adapter)
 //!     .with_connector(
-//!         MqttConnectorBuilder::new("mqtt://192.168.1.100:1883")
+//!         MqttConnectorBuilder::new("mqtt://192.168.1.100:1883", stack)
 //!             .with_client_id("my-unique-device-id"),
 //!     )
-//!     .configure::<Temperature>(|reg| {
+//!     .configure::<Temperature>("temperature", |reg| {
 //!         reg.link_to("mqtt://sensors/temperature").finish();
 //!         reg.link_from("mqtt://commands/temperature").finish();
 //!     })

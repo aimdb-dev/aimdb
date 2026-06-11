@@ -23,28 +23,11 @@ use aimdb_core::session::{
     SessionConfig, SessionCtx, SessionLimits, TransportError, TransportResult,
 };
 
-/// Minimal [`RuntimeOps`](aimdb_executor::RuntimeOps) clock for the engine tests
-/// (aimdb-core can't depend on a runtime adapter — that would be a cycle).
-/// Backs the reconnect/keepalive seam with `tokio::time`; these tests run with
-/// `reconnect: false` and no keepalive, so it is never actually awaited.
-#[derive(Clone, Copy)]
-struct TestClock;
-
-impl aimdb_executor::RuntimeOps for TestClock {
-    fn name(&self) -> &'static str {
-        "test-clock"
-    }
-    fn now_nanos(&self) -> u64 {
-        0
-    }
-    fn unix_time(&self) -> Option<(u64, u32)> {
-        None
-    }
-    fn sleep(&self, d: Duration) -> aimdb_executor::BoxFuture {
-        Box::pin(tokio::time::sleep(d))
-    }
-    fn log(&self, _level: aimdb_executor::LogLevel, _msg: &str) {}
-}
+/// Engine-test clock (aimdb-core can't depend on a runtime adapter — that
+/// would be a cycle). These tests run with `reconnect: false` and no
+/// keepalive, so the clock seam is never awaited and the shared no-op stub
+/// suffices.
+use aimdb_executor::test_support::NoopRuntimeOps as TestClock;
 
 // ===========================================================================
 // Channel-backed transport (Layer 1)

@@ -191,7 +191,7 @@ Embassy time integration:
 use aimdb_embassy_adapter::EmbassyAdapter;
 use embassy_time::Duration;
 
-let adapter = EmbassyAdapter::new().unwrap();
+let adapter = EmbassyAdapter::new();
 
 // Get current instant
 let now = adapter.now();

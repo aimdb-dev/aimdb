@@ -674,10 +674,15 @@ impl AimDbBuilder {
         }
 
         // Ensure runtime is set — a missing runtime is a configuration
-        // mistake, reported from build() like every other (issue #133).
-        let runtime = self
-            .runtime
-            .ok_or_else(|| DbError::runtime_error("runtime not set (use .runtime())"))?;
+        // mistake, collected like every other so it never hides the rest of
+        // the findings (issue #133). The runtime is bound at the final check.
+        if self.runtime.is_none() {
+            errors.push(ConfigError::new(
+                "",
+                None,
+                "runtime not set (use .runtime())",
+            ));
+        }
 
         // Build the new index structures
         let record_count = self.records.len();
@@ -737,10 +742,13 @@ impl AimDbBuilder {
             }
         };
 
-        // All validation done — report every collected mistake at once.
-        if !errors.is_empty() {
-            return Err(DbError::InvalidConfiguration { errors });
-        }
+        // All validation done — report every collected mistake at once. The
+        // runtime binding lives here so a missing one is reported alongside
+        // every other finding instead of short-circuiting them (issue #133).
+        let runtime = match (self.runtime.take(), errors.is_empty()) {
+            (Some(rt), true) => rt,
+            _ => return Err(DbError::InvalidConfiguration { errors }),
+        };
 
         log_debug!(
             "Dependency graph built successfully ({} nodes, {} edges, topo order: {:?})",

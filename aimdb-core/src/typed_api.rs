@@ -9,15 +9,14 @@
 //! # Producer Example
 //!
 //! ```rust,ignore
-//! #[service]
-//! async fn temperature_producer<R: Runtime>(
-//!     ctx: RuntimeContext<R>,
+//! async fn temperature_producer(
+//!     ctx: RuntimeContext,
 //!     producer: Producer<Temperature>,
 //! ) {
 //!     loop {
 //!         let temp = read_sensor().await;
 //!         producer.produce(temp);
-//!         ctx.time().sleep(ctx.time().secs(1)).await;
+//!         ctx.time().sleep_secs(1).await;
 //!     }
 //! }
 //! ```
@@ -25,9 +24,8 @@
 //! # Consumer Example
 //!
 //! ```rust,ignore
-//! #[service]
-//! async fn temperature_monitor<R: Runtime>(
-//!     ctx: RuntimeContext<R>,
+//! async fn temperature_monitor(
+//!     ctx: RuntimeContext,
 //!     consumer: Consumer<Temperature>,
 //! ) {
 //!     let mut rx = consumer.subscribe();
@@ -41,9 +39,9 @@
 //!
 //! ```rust,ignore
 //! builder.configure::<Temperature>("sensors.outdoor", |reg| {
-//!     reg.buffer(buffer)
-//!        .source(|producer, ctx| temperature_service(ctx, producer))
-//!        .tap(|consumer| temperature_logger(consumer))
+//!     reg.buffer(cfg)
+//!        .source(temperature_producer)
+//!        .tap(temperature_monitor)
 //!        .link_to("mqtt://sensors/temp")
 //!        .with_serializer_raw(|t| serde_json::to_vec(t))
 //!        .finish();
@@ -1171,63 +1169,9 @@ mod tests {
     // Test infrastructure for InboundConnectorBuilder deserializer tests
     // ====================================================================
 
-    /// Minimal mock runtime for context tests
-    struct MockRuntime;
-
-    impl aimdb_executor::RuntimeAdapter for MockRuntime {
-        fn runtime_name() -> &'static str {
-            "mock"
-        }
-    }
-
-    impl aimdb_executor::TimeOps for MockRuntime {
-        type Instant = u64;
-        type Duration = u64;
-        fn now(&self) -> u64 {
-            0
-        }
-        fn duration_since(&self, _later: u64, _earlier: u64) -> Option<u64> {
-            Some(0)
-        }
-        fn millis(&self, ms: u64) -> u64 {
-            ms
-        }
-        fn secs(&self, secs: u64) -> u64 {
-            secs * 1000
-        }
-        fn micros(&self, micros: u64) -> u64 {
-            micros
-        }
-        fn sleep(&self, _duration: u64) -> impl Future<Output = ()> + Send {
-            core::future::ready(())
-        }
-        fn duration_as_nanos(&self, duration: u64) -> u64 {
-            duration
-        }
-    }
-
-    impl aimdb_executor::Logger for MockRuntime {
-        fn info(&self, _message: &str) {}
-        fn debug(&self, _message: &str) {}
-        fn warn(&self, _message: &str) {}
-        fn error(&self, _message: &str) {}
-    }
-
-    impl aimdb_executor::RuntimeOps for MockRuntime {
-        fn name(&self) -> &'static str {
-            "mock"
-        }
-        fn now_nanos(&self) -> u64 {
-            0
-        }
-        fn unix_time(&self) -> Option<(u64, u32)> {
-            None
-        }
-        fn sleep(&self, _d: core::time::Duration) -> aimdb_executor::BoxFuture {
-            Box::pin(core::future::ready(()))
-        }
-        fn log(&self, _level: aimdb_executor::LogLevel, _msg: &str) {}
-    }
+    /// Minimal mock runtime for context tests — the builder only needs the
+    /// dyn-safe `RuntimeOps` surface, supplied by the shared test stub.
+    use aimdb_executor::test_support::NoopRuntimeOps as MockRuntime;
 
     /// Minimal mock buffer so `has_buffer()` returns true
     struct MockBuffer;

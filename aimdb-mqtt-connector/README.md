@@ -106,17 +106,18 @@ use alloc::sync::Arc;
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // Initialize network stack
-    let stack = /* ... */;
-    
-    // Create runtime adapter with network stack access
-    let runtime = Arc::new(EmbassyAdapter::new_with_network(spawner, stack));
-    
-    // Build database with MQTT connector - background tasks spawn automatically
+    let stack: &'static embassy_net::Stack<'static> = /* ... */;
+
+    // The adapter is a stateless unit type; the connector takes the
+    // network stack at construction.
+    let runtime = Arc::new(EmbassyAdapter::new());
+
+    // Build database with MQTT connector
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883"));
-    
-    builder.configure::<SensorData>(|reg| {
+        .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883", stack));
+
+    builder.configure::<SensorData>("sensor-data", |reg| {
         reg.buffer_sized::<4, 1>(EmbassyBufferType::SingleLatest)
            .source(sensor_producer)
            // Outbound: Publish to MQTT

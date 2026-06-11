@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     
                     let _ = producer.produce(data).await;
-                    time.sleep(time.secs(1)).await;
+                    time.sleep_secs(1).await;
                 }
             })
             
@@ -211,7 +211,7 @@ struct ButtonPress {
 
 /// Button handler that produces events on button press
 async fn button_handler(
-    ctx: RuntimeContext<EmbassyAdapter>,
+    ctx: RuntimeContext,
     producer: Producer<ButtonPress>,
     mut button: Input<'static>,
 ) {
@@ -249,7 +249,7 @@ async fn main(_spawner: Spawner) {
     let button = Input::new(p.PIN_15, Pull::Up);
     
     // Create Embassy runtime adapter
-    let runtime = EmbassyAdapter::new();
+    let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
     
     // Build database
     let db = AimDbBuilder::new()

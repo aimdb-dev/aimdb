@@ -51,7 +51,7 @@
 //! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 //! use alloc::sync::Arc;
 //!
-//! let runtime = Arc::new(EmbassyAdapter::new().unwrap());
+//! let runtime = Arc::new(EmbassyAdapter::new());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)

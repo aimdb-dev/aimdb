@@ -418,7 +418,6 @@ pub fn generate_tasks_rs(state: &ArchitectureState, binary_name: &str) -> Option
 
     let file_tokens = quote! {
         use aimdb_core::{Consumer, DbResult, Producer, RuntimeContext};
-        use aimdb_tokio_adapter::TokioAdapter;
         use #common_crate::*;
 
         #(#task_fns)*
@@ -1725,7 +1724,6 @@ pub async fn {task_name}() {{\n\
 // This file is scaffolded once — it will not be overwritten on subsequent runs.\n\
 // Regenerate signatures: delete this file, then run `aimdb generate --hub`.\n\
 \n\
-use aimdb_tokio_adapter::TokioAdapter;\n\
 use {common_crate}::*;\n\
 \n\
 {fns}"

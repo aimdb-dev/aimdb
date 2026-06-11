@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`build()` reports a missing runtime alongside every other configuration error (issue #133 contract).** The missing-runtime check no longer short-circuits: it is collected as a `ConfigError` and returned in the one `DbError::InvalidConfiguration` with all other findings (previously the collected errors were silently dropped and only a `RuntimeError` surfaced). The error type for a runtime-less build changes accordingly from `DbError::RuntimeError` to `DbError::InvalidConfiguration`.
+
 ### Changed (breaking)
 
 - **Phase 3 — `R` removed from the object graph (Issue #131, [design doc §3.2/§3.3](../docs/design/034-technical-debt-review.md)).** The runtime travels as `Arc<dyn aimdb_executor::RuntimeOps>`; records (`T`) are the only generic surface left. `AimDb`, `AimDbBuilder` (no `NoRuntime` typestate), `TypedRecord<T>`, `RecordRegistrar<'a, T>`, `TransformBuilder<I, O>`, `JoinBuilder<O>`, `RecordT`, and `ConnectorBuilder` are all non-generic over the runtime; `RuntimeContext` is a concrete struct (`time().now()` → `u64` nanos, `sleep(core::time::Duration)` + `sleep_millis`/`sleep_secs`; `millis`/`secs`/`micros`/`duration_since`/`duration_as_nanos`/`extract_from_any` deleted). `source`/`tap`/`transform`/`transform_join` are inherent registrar methods (the `*_raw` variants and `ext_macros.rs` are deleted); connector consumer/producer factories take `&AimDb` (the `Arc<dyn Any>` downcast-or-panic dance is gone); context (de)serializers and `Router::route` receive the concrete `RuntimeContext`; `runtime_arc()` → `runtime_ops()` (+ new `runtime_ctx()`), `runtime_any()` deleted; `on_start` closures receive `RuntimeContext`; the `RuntimeForProfiling` marker is deleted (profiling clocks ride `RuntimeOps::now_nanos`); the session client engine clock is `Arc<dyn RuntimeOps>`. Multi-input join fan-in is one bounded `async-channel` queue in core (capacity 64 on `std` and wasm32 — matching the old tokio/WASM queues — and 16 on embedded `no_std`, up from Embassy's 8). **Close semantics changed on Embassy:** the queue now closes on *all* runtimes once every input forwarder exits, so a `no_std` join handler's `while let Ok(_) = rx.recv().await` loop ends instead of parking forever — treat `Err(QueueClosed)` as end-of-inputs. Input forwarders skip `BufferLagged` (SPMC-ring overflow) and keep forwarding, the same recoverable-lag policy as every other recv loop in core. The `JoinFanInRuntime` GAT family is gone from `aimdb-executor`.
@@ -15,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Session client keepalive is deadline-based.** Activity records a timestamp (one dyn clock read) and the boxed `RuntimeOps::sleep` future stays armed for a full idle window — re-created about once per keepalive interval instead of once per processed frame/command (each re-arm previously heap-allocated through the `dyn RuntimeOps` boundary). Wire behavior unchanged: a Ping still goes out once the link has been idle for `keepalive_interval` ms.
 - **`RecordRegistrar::source` closure bound relaxed: `Send + Sync` → `Send`.** The `FnOnce` is taken out of its slot exactly once, so `Sync` bought nothing (it was an artifact of the deleted `ext_macros.rs`); source closures may now capture `!Sync` state (e.g. `Cell`-based sensor state). `tap` already required only `Send`.
 
 ### Added

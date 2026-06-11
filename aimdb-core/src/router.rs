@@ -466,24 +466,9 @@ mod tests {
 
         let router = Router::new(routes);
 
-        // Provide a dummy context backed by a no-op RuntimeOps.
-        struct NoopOps;
-        impl aimdb_executor::RuntimeOps for NoopOps {
-            fn name(&self) -> &'static str {
-                "noop"
-            }
-            fn now_nanos(&self) -> u64 {
-                0
-            }
-            fn unix_time(&self) -> Option<(u64, u32)> {
-                None
-            }
-            fn sleep(&self, _d: core::time::Duration) -> aimdb_executor::BoxFuture {
-                Box::pin(core::future::ready(()))
-            }
-            fn log(&self, _level: aimdb_executor::LogLevel, _msg: &str) {}
-        }
-        let ctx = crate::RuntimeContext::new(Arc::new(NoopOps));
+        // Provide a dummy context backed by the shared no-op RuntimeOps.
+        let ctx =
+            crate::RuntimeContext::new(Arc::new(aimdb_executor::test_support::NoopRuntimeOps));
         router
             .route("ctx/resource", b"dummy", Some(&ctx))
             .await
