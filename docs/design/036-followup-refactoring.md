@@ -43,7 +43,7 @@ Remaining: the items below. §2 is work to schedule, §3 is assessment-only, §4
 
 **Risk notes.** Object-safe async readers are already solved in [connector.rs](../../aimdb-core/src/connector.rs) (manual boxed-future pattern — keep it). Context-aware serializers (026) need the `ConsumeContext`/`RuntimeContext` threaded as an argument rather than captured. This is a breaking change to the connector SPI; the window is already open (#131/#135 are breaking), so it should land in the **same release** as #140 if at all possible — otherwise it waits for the next breaking window.
 
-**Size:** L (the largest remaining core item). **File the issue when #140 merges** (per the 034 tracking note).
+**Size:** L (the largest remaining core item). **Status:** implemented in PR [#141](https://github.com/aimdb-dev/aimdb/pull/141) (no separate issue — went straight to PR in the post-#140 breaking window; ingest closure decided **sync**, `RuntimeContext` threaded in place of the sketched `ConsumeContext`, join left erased per the optional-scope note).
 
 ### W2 — Split the `AnyRecord` god-trait (034 §3.8)
 
@@ -140,7 +140,7 @@ Both protocols now ride the session engine (the hard part), but two subscribe/wr
 
 | Item | Issue | When to file |
 |---|---|---|
-| W1 data-plane de-`Any` | — | on #140 merge |
+| W1 data-plane de-`Any` | PR [#141](https://github.com/aimdb-dev/aimdb/pull/141) | done — no separate issue, direct PR |
 | W2 `AnyRecord` split | — | on #140 merge (same series as W1) |
 | W3 hardware matrix | — | none if run with #140; else a validation task |
 | W4 ACK-retransmit knob | — | on #140 merge |
