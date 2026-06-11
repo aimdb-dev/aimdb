@@ -26,9 +26,7 @@ extern crate alloc;
 
 use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
 use aimdb_data_contracts::{Simulatable, SimulationConfig, SimulationParams};
-use aimdb_embassy_adapter::{
-    EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt, EmbassyRecordRegistrarExtCustom,
-};
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 use defmt::*;
 use embassy_executor::Spawner;
