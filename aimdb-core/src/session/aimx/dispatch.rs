@@ -229,7 +229,15 @@ impl AimxSession {
             let record = self.db.inner().storage(id).ok_or(RpcError::NotFound)?;
             // `subscribe_json` fails if the record was not configured with
             // `.with_remote_access()`.
-            let reader = record.subscribe_json().map_err(map_db_err)?;
+            let reader = record
+                .json_access()
+                .ok_or_else(|| {
+                    map_db_err(DbError::runtime_error(alloc::format!(
+                        "Record '{name}' does not support JSON remote access"
+                    )))
+                })?
+                .subscribe_json()
+                .map_err(map_db_err)?;
             self.drain_readers.insert(name.to_string(), reader);
         }
 
