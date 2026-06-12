@@ -419,6 +419,89 @@ mod tests {
         frame
     }
 
+    /// TUNNELING_ACK from the gateway: header + connection header.
+    fn gateway_ack(channel_id: u8, seq: u8) -> Vec<u8> {
+        vec![
+            0x06, 0x10, 0x04, 0x21, 0x00, 0x0A, // header, total len 10
+            0x04, channel_id, seq, 0x00, // connection header, status OK
+        ]
+    }
+
+    /// W4: the gateway drops the first ACK; the client retransmits the
+    /// byte-identical TUNNELING_REQUEST (same sequence counter, KNXnet/IP
+    /// 3.8.4) after the ACK timeout, and the tunnel survives once the repeat
+    /// is ACKed. Real-time test: waits out the 3 s default ACK timeout.
+    #[tokio::test]
+    async fn dropped_ack_triggers_identical_retransmit() {
+        let gateway = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let gateway_port = gateway.local_addr().unwrap().port();
+
+        let (command_tx, mut telegram_rx, connection_future) =
+            KnxConnectorImpl::build_internal(&format!("knx://127.0.0.1:{}", gateway_port), 8)
+                .await
+                .unwrap();
+        let task = tokio::spawn(connection_future);
+
+        let mut buf = [0u8; 1024];
+        let (len, client_addr) = timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
+            .await
+            .expect("no CONNECT_REQUEST")
+            .unwrap();
+        assert_eq!(service_type_of(&buf[..len]), 0x0205);
+        gateway
+            .send_to(&connect_response(7, 0), client_addr)
+            .await
+            .unwrap();
+
+        // Outbound write; deliberately do NOT ACK the first request.
+        let mut data = heapless::Vec::new();
+        data.push(0x01).unwrap();
+        command_tx
+            .send(GroupWrite {
+                group_addr: "1/0/8".parse().unwrap(),
+                data,
+            })
+            .await
+            .unwrap();
+        let (len, _) = timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
+            .await
+            .expect("no TUNNELING_REQUEST")
+            .unwrap();
+        let first = buf[..len].to_vec();
+        assert_eq!(service_type_of(&first), 0x0420);
+
+        // The retransmit arrives after the ACK timeout, byte-identical.
+        let (len, _) = timeout(Duration::from_secs(8), gateway.recv_from(&mut buf))
+            .await
+            .expect("no retransmit after dropped ACK")
+            .unwrap();
+        assert_eq!(&buf[..len], &first[..]);
+
+        // ACK the repeat: the tunnel stays up — an inbound telegram still
+        // round-trips on the same channel (a disconnect would have produced
+        // a CONNECT_REQUEST here instead of an ACK).
+        gateway
+            .send_to(&gateway_ack(7, 0), client_addr)
+            .await
+            .unwrap();
+        gateway
+            .send_to(&inbound_group_write(7, 42), client_addr)
+            .await
+            .unwrap();
+        let (len, _) = timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
+            .await
+            .expect("no TUNNELING_ACK for inbound telegram")
+            .unwrap();
+        assert_eq!(service_type_of(&buf[..len]), 0x0421);
+        let (topic, _) = timeout(RECV_TIMEOUT, telegram_rx.recv())
+            .await
+            .expect("no telegram routed")
+            .unwrap();
+        assert_eq!(topic, "1/0/7");
+
+        task.abort();
+    }
+
     /// Full roundtrip against a scripted fake gateway on localhost UDP:
     /// handshake, inbound telegram → `KnxSource` channel, outbound command →
     /// TUNNELING_REQUEST on the wire (then ACKed).

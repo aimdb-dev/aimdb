@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Spec-conformant TUNNELING_REQUEST retransmission — `TunnelConfig::ack_retransmits` (036 W4, default `1`).** When a tracked outbound telegram's ACK does not arrive within `ack_timeout_ms`, the engine now retransmits the byte-identical frame (same sequence counter, buffered in the pending-ACK slot per KNXnet/IP 3.8.4) and, when the repeat also goes unanswered, reports `Action::AckTimeout` **and tears the connection down** — so subsequent commands queue for the re-handshake instead of being sent into a dead tunnel. Hardware-bench evidence motivating this: ten button-press writes issued during a link outage's heartbeat-detection window (up to ~65 s) were silently lost with only warnings; with retransmission the loss window shrinks to ~2× `ack_timeout_ms`. `ack_retransmits: 0` restores the previous expire-and-warn behavior (no retransmit, no disconnect, no frame buffering — though the 16-slot frame capacity, ~4.5 KiB, is statically reserved either way on `heapless`). The retransmit delay is `ack_timeout_ms` (default 3 s, the constant both pre-engine implementations used); set it to `1_000` for strict spec timing. Covered by engine unit tests and a fake-gateway test that drops the first ACK and asserts the identical repeat.
+
 ### Fixed
 
 - **Heartbeat-response liveness — a dead send path or expired gateway channel now reconnects (review follow-up to #135).** The engine tracks each CONNECTIONSTATE_REQUEST and drops the connection when the gateway's CONNECTIONSTATE_RESPONSE doesn't arrive within the new `TunnelConfig::heartbeat_response_timeout_ms` (default 10 s, the KNX spec timeout) or reports a non-zero status (e.g. the gateway expired the channel during an outage). This restores the old tokio client's recovery from silently-failing sends — the recv path of an unconnected UDP socket never errors, so without it a route flap left the tunnel `Connected` forever with a stale channel id — and adds genuine liveness detection on both runtimes.
