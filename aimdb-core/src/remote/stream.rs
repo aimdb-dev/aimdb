@@ -37,7 +37,14 @@ pub(crate) fn stream_record_updates(
     let record = inner
         .storage(id)
         .ok_or(DbError::InvalidRecordId { id: id.raw() })?;
-    let reader = record.subscribe_json()?;
+    let reader = record
+        .json_access()
+        .ok_or_else(|| {
+            DbError::runtime_error(alloc::format!(
+                "Record '{record_key}' does not support JSON remote access"
+            ))
+        })?
+        .subscribe_json()?;
 
     // Pair the reader with an owned copy of the record key so lag/error
     // logs identify which record fell behind — the previous mpsc-based

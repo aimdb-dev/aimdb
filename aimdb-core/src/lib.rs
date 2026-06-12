@@ -66,7 +66,11 @@ pub use typed_api::{
     Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
     RecordT, StageKind,
 };
-pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
+#[cfg(feature = "remote-access")]
+pub use typed_record::JsonRecordAccess;
+pub use typed_record::{
+    AnyRecord, AnyRecordExt, RecordIntrospect, RecordMetricsReset, TypedRecord,
+};
 
 // JSON codec (feature `json-serialize`, no_std + alloc compatible)
 #[cfg(feature = "json-serialize")]
