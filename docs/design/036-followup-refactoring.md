@@ -62,7 +62,7 @@ The registry keeps storing `Box<dyn AnyRecord>`; consumers upcast to the capabil
 
 **Payoff:** the core storage contract stops churning every time remote access or profiling evolves, and each consumer's dependency is visible in its signature. **Acceptance:** `AnyRecord` ≤ ~8 methods; no behavior change; rustdoc for each trait states its consumer.
 
-**Size:** M. Mechanical but wide. **File together with W1** (it touches the same files; do W2 first or in the same series — W2 shrinks the surface W1 has to move).
+**Size:** M. Mechanical but wide. **File together with W1** (it touches the same files; do W2 first or in the same series — W2 shrinks the surface W1 has to move). **Status:** implemented in PR [#142](https://github.com/aimdb-dev/aimdb/pull/142), stacked on #141 (W1 had already landed, so the "W2 first" ordering note was moot). Deviations from the sketch: the JSON trait's gate is `remote-access` — the actual gate on those methods — not `json-serialize`; the resets live on a `RecordMetricsReset` supertrait (default no-ops, so the supertrait list needs no cfg); the dead `outbound_connector_urls` (cfg `std`, zero callers in-tree and in aimdb-pro) was dropped rather than moved. Result: `AnyRecord` has 6 methods.
 
 ### W3 — Execute the KNX hardware validation matrix (035 §3)
 
@@ -141,7 +141,7 @@ Both protocols now ride the session engine (the hard part), but two subscribe/wr
 | Item | Issue | When to file |
 |---|---|---|
 | W1 data-plane de-`Any` | PR [#141](https://github.com/aimdb-dev/aimdb/pull/141) | done — no separate issue, direct PR |
-| W2 `AnyRecord` split | — | on #140 merge (same series as W1) |
+| W2 `AnyRecord` split | PR [#142](https://github.com/aimdb-dev/aimdb/pull/142) | done — stacked on #141, no separate issue |
 | W3 hardware matrix | — | none if run with #140; else a validation task |
 | W4 ACK-retransmit knob | — | on #140 merge |
 | W5 `StringKey` interner | — | opportunistic; file if not done by next release |
