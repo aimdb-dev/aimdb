@@ -90,13 +90,13 @@ The registry keeps storing `Box<dyn AnyRecord>`; consumers upcast to the capabil
 
 Explicitly rejected: a non-`Copy` `Arc<str>` key variant — it forks `RecordKey` into two shapes, which is the 034 §3.1 mistake again.
 
-**Size:** S. Independent of everything else; opportunistic.
+**Size:** S. Independent of everything else; opportunistic. **Status:** implemented in PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) (with W6, stacked on #142). As specified: dedup table behind the std/spin mutex pattern from typed_record, contract documented on `intern`, debug tripwire now counts distinct keys.
 
 ### W6 — `host_test_stubs!` macro for the defmt logger duplication (035 §2.4)
 
 **Current state (verified).** The no-op `#[defmt::global_logger]`/panic-handler/time-driver block exists in three places: [session_smoke.rs](../../aimdb-embassy-adapter/tests/session_smoke.rs), [buffer.rs](../../aimdb-embassy-adapter/src/buffer.rs) (test module), [embassy_smoke.rs](../../aimdb-serial-connector/tests/embassy_smoke.rs) — the third copy that 035 named as the trigger already exists.
 
-**Approach.** As specified in 035 §2.4: `#[macro_export] #[doc(hidden)] macro_rules! host_test_stubs` in `aimdb-embassy-adapter`, expanded once per test binary; delete the three copies and the serial-connector's standalone `defmt` dev-dependency if nothing else needs it. **Size:** S. Do it the next time any of those test files is touched, or fold into the W1/W2 series.
+**Approach.** As specified in 035 §2.4: `#[macro_export] #[doc(hidden)] macro_rules! host_test_stubs` in `aimdb-embassy-adapter`, expanded once per test binary; delete the three copies and the serial-connector's standalone `defmt` dev-dependency if nothing else needs it. **Size:** S. Do it the next time any of those test files is touched, or fold into the W1/W2 series. **Status:** implemented in PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) (with W5, stacked on #142). The time driver adopts the `wake_by_ref` superset variant from buffer.rs; the serial-connector `defmt`/`embassy-time-driver` dev-deps stay because the macro expansion references them at the invocation site — the "if nothing else needs it" condition does not hold.
 
 ### W7 — `aimdb-data-contracts` trait audit (034 §3.8, last unhandled row)
 
@@ -144,8 +144,8 @@ Both protocols now ride the session engine (the hard part), but two subscribe/wr
 | W2 `AnyRecord` split | PR [#142](https://github.com/aimdb-dev/aimdb/pull/142) | done — stacked on #141, no separate issue |
 | W3 hardware matrix | — | none if run with #140; else a validation task |
 | W4 ACK-retransmit knob | — | on #140 merge |
-| W5 `StringKey` interner | — | opportunistic; file if not done by next release |
-| W6 `host_test_stubs!` | — | opportunistic |
+| W5 `StringKey` interner | PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) | done — with W6, stacked on #142 |
+| W6 `host_test_stubs!` | PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) | done — with W5, stacked on #142 |
 | W7 data-contracts audit | — | opportunistic |
 | A1 / A2 | — | on trigger only |
 
