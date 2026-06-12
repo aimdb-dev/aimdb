@@ -13,25 +13,48 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```no_run
 //! use aimdb_persistence::{AimDbBuilderPersistExt, RecordRegistrarPersistExt, AimDbQueryExt};
-//! use aimdb_persistence_sqlite::SqliteBackend;
-//!
+//! // A real backend, e.g. `aimdb_persistence_sqlite::SqliteBackend`:
+//! # use aimdb_persistence::{BoxFuture, PersistenceBackend, PersistenceError, QueryParams, StoredValue};
+//! # struct SqliteBackend;
+//! # impl SqliteBackend { fn new(_p: &str) -> Result<Self, PersistenceError> { Ok(Self) } }
+//! # impl PersistenceBackend for SqliteBackend {
+//! #     fn store<'a>(
+//! #         &'a self, _n: &'a str, _v: &'a serde_json::Value, _t: u64,
+//! #     ) -> BoxFuture<'a, Result<(), PersistenceError>> { Box::pin(async { Ok(()) }) }
+//! #     fn query<'a>(
+//! #         &'a self, _p: &'a str, _q: QueryParams,
+//! #     ) -> BoxFuture<'a, Result<Vec<StoredValue>, PersistenceError>> { Box::pin(async { Ok(vec![]) }) }
+//! #     fn cleanup(&self, _t: u64) -> BoxFuture<'_, Result<u64, PersistenceError>> {
+//! #         Box::pin(async { Ok(0) })
+//! #     }
+//! # }
+//! # use aimdb_core::buffer::BufferCfg;
+//! # use aimdb_core::AimDbBuilder;
+//! # use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+//! # use std::sync::Arc;
+//! # use std::time::Duration;
+//! # #[derive(Clone, Debug, serde::Serialize)] struct MyRecord { value: f32 }
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+//! # let runtime = Arc::new(TokioAdapter::new()?);
 //! let backend = Arc::new(SqliteBackend::new("./data/history.db")?);
 //!
 //! let mut builder = AimDbBuilder::new()
 //!     .runtime(runtime)
 //!     .with_persistence(backend.clone(), Duration::from_secs(7 * 24 * 3600));
 //!
-//! builder.configure::<MyRecord>(key, |reg| {
+//! builder.configure::<MyRecord>("my.record", |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 500 })
-//!        .persist(key.to_string());
+//!        .persist("my.record");
 //! });
 //!
-//! let db = builder.build().await?;
+//! let (db, runner) = builder.build().await?;
 //!
-//! // Query historical data
-//! let latest: Vec<MyRecord> = db.query_latest("my_record::*", 1).await?;
+//! // Query historical data (any `DeserializeOwned` shape; `Value` shown here)
+//! let latest: Vec<serde_json::Value> = db.query_latest("my_record::*", 1).await?;
+//! # Ok(())
+//! # }
 //! ```
 
 pub mod backend;

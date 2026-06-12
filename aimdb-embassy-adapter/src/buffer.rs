@@ -332,6 +332,9 @@ impl<
     /// An async closure that can be passed to `embassy_executor::Spawner::spawn()`
     ///
     /// # Example
+    ///
+    /// Illustrative (not compiled: an `embassy_executor` task on a thumb target):
+    ///
     /// ```rust,ignore
     /// // In your Embassy application:
     /// #[embassy_executor::task]

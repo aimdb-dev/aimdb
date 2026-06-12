@@ -355,16 +355,6 @@ impl AimDbBuilder {
     /// must return a future that runs for as long as needed (e.g. an infinite
     /// cleanup loop). Tasks are spawned in registration order, after all
     /// record tasks and connectors have been started.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// builder.on_start(|ctx| async move {
-    ///     loop {
-    ///         do_cleanup().await;
-    ///         ctx.time().sleep_secs(3600).await;
-    ///     }
-    /// });
-    /// ```
     pub fn on_start<F, Fut>(&mut self, f: F) -> &mut Self
     where
         F: FnOnce(crate::RuntimeContext) -> Fut + Send + 'static,
@@ -396,12 +386,17 @@ impl AimDbBuilder {
     ///
     /// # Examples
     ///
+    /// Illustrative (not compiled: the connector types live in downstream
+    /// crates `aimdb-core` cannot depend on):
+    ///
     /// ```rust,ignore
     /// // (1) data-plane link to an MQTT topic
-    /// AimDbBuilder::new().runtime(rt)
-    ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"))
-    ///     .configure::<Temperature>(|r| { r.link_from("mqtt://commands/temp"); })
-    ///     .build().await?;
+    /// let mut b = AimDbBuilder::new().runtime(rt)
+    ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"));
+    /// b.configure::<Temperature>("commands.temp", |r| {
+    ///     r.link_from("mqtt://commands/temp").with_deserializer_raw(parse).finish();
+    /// });
+    /// b.build().await?;
     ///
     /// // (2a) remote-access SERVER — no links, just expose this db over UDS
     /// AimDbBuilder::new().runtime(rt)
@@ -409,10 +404,10 @@ impl AimDbBuilder {
     ///     .build().await?;
     ///
     /// // (2b) remote-access CLIENT — mirror a record to a peer over UDS
-    /// AimDbBuilder::new().runtime(rt)
-    ///     .with_connector(UdsClient::new("/run/aimdb.sock"))
-    ///     .configure::<Temp>(|r| { r.with_remote_access().link_to("uds://temp"); })
-    ///     .build().await?;
+    /// let mut b = AimDbBuilder::new().runtime(rt)
+    ///     .with_connector(UdsClient::new("/run/aimdb.sock"));
+    /// b.configure::<Temp>("temp", |r| { r.with_remote_access().link_to("uds://temp"); });
+    /// b.build().await?;
     /// ```
     pub fn with_connector(
         mut self,
@@ -441,15 +436,6 @@ impl AimDbBuilder {
     /// * `key` - A unique identifier for this record. Can be a string literal, `StringKey`,
     ///   or any type implementing `RecordKey` (including user-defined enum keys).
     /// * `f` - Configuration closure
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// // Using string literal
-    /// builder.configure::<Temperature>("sensor.temp.room1", |reg| { ... });
-    ///
-    /// // Using compile-time safe enum key
-    /// builder.configure::<Temperature>(SensorKey::TempRoom1, |reg| { ... });
-    /// ```
     pub fn configure<T>(
         &mut self,
         key: impl RecordKey,
@@ -569,22 +555,6 @@ impl AimDbBuilder {
     /// # Returns
     /// `DbResult<()>` — Ok once the database starts; the call then blocks until
     /// every future the runner is driving has completed (typically forever).
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[tokio::main]
-    /// async fn main() -> DbResult<()> {
-    ///     AimDbBuilder::new()
-    ///         .runtime(Arc::new(TokioAdapter::new()?))
-    ///         .configure::<MyData>(|reg| {
-    ///             reg.with_buffer(BufferCfg::SpmcRing { capacity: 100 })
-    ///                .with_source(my_producer)
-    ///                .with_tap(my_consumer);
-    ///         })
-    ///         .run().await  // Runs forever
-    /// }
-    /// ```
     pub async fn run(self) -> DbResult<()> {
         log_info!("Building database and spawning background tasks...");
 
@@ -626,19 +596,6 @@ impl AimDbBuilder {
     /// buffer, duplicate keys, dependency-graph cycles) is collected and
     /// returned as one [`DbError::InvalidConfiguration`] carrying **all**
     /// findings — one run surfaces every mistake.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let (db, runner) = AimDbBuilder::new()
-    ///     .runtime(runtime)
-    ///     .configure::<Temp>("temp", |reg| { /* … */ })
-    ///     .with_connector(mqtt_builder)
-    ///     .build().await?;
-    ///
-    /// let handle = db.clone();              // clone freely before runner.run()
-    /// runner.run().await;                   // drives everything to completion
-    /// ```
     pub async fn build(mut self) -> DbResult<(AimDb, AimDbRunner)> {
         use crate::error::ConfigError;
 
@@ -868,6 +825,9 @@ impl Default for AimDbBuilder {
 ///
 /// # Examples
 ///
+/// Illustrative (not compiled: the runtime adapter lives in a downstream
+/// crate `aimdb-core` cannot depend on):
+///
 /// ```rust,ignore
 /// use aimdb_tokio_adapter::TokioAdapter;
 ///
@@ -952,12 +912,6 @@ impl AimDb {
     ///
     /// External crates (e.g. `aimdb-persistence`) retrieve their typed state here
     /// to service query calls. The extensions are read-only on the live handle.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use aimdb_persistence::PersistenceState;
-    /// let state = db.extensions().get::<PersistenceState>().unwrap();
-    /// ```
     pub fn extensions(&self) -> &Extensions {
         &self.inner.extensions
     }
@@ -989,13 +943,6 @@ impl AimDb {
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
     /// * `value` - The value to produce
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// db.produce::<Temperature>("sensors.indoor", indoor_temp)?;
-    /// db.produce::<Temperature>("sensors.outdoor", outdoor_temp)?;
-    /// ```
     pub fn produce<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
     where
         T: Send + 'static + Debug + Clone,
@@ -1013,15 +960,6 @@ impl AimDb {
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let mut reader = db.subscribe::<Temperature>("sensors.indoor")?;
-    /// while let Ok(temp) = reader.recv().await {
-    ///     println!("Indoor: {:.1}°C", temp.celsius);
-    /// }
-    /// ```
     pub fn subscribe<T>(
         &self,
         key: impl AsRef<str>,
@@ -1039,17 +977,6 @@ impl AimDb {
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let indoor_producer = db.producer::<Temperature>("sensors.indoor");
-    /// let outdoor_producer = db.producer::<Temperature>("sensors.outdoor");
-    ///
-    /// // Each producer writes to its own record
-    /// indoor_producer.produce(indoor_temp);
-    /// outdoor_producer.produce(outdoor_temp);
-    /// ```
     pub fn producer<T>(
         &self,
         key: impl Into<alloc::string::String>,
@@ -1070,16 +997,6 @@ impl AimDb {
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let indoor_consumer = db.consumer::<Temperature>("sensors.indoor");
-    /// let outdoor_consumer = db.consumer::<Temperature>("sensors.outdoor");
-    ///
-    /// // Each consumer reads from its own record
-    /// let mut rx = indoor_consumer.subscribe();
-    /// ```
     pub fn consumer<T>(
         &self,
         key: impl Into<alloc::string::String>,
@@ -1102,14 +1019,6 @@ impl AimDb {
     /// Resolve a record key to its RecordId
     ///
     /// Useful for checking if a record exists before operations.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// if let Some(id) = db.resolve_key("sensors.temperature") {
-    ///     println!("Record exists with ID: {}", id);
-    /// }
-    /// ```
     pub fn resolve_key(&self, key: &str) -> Option<crate::record_id::RecordId> {
         self.inner.resolve_str(key)
     }
@@ -1118,13 +1027,6 @@ impl AimDb {
     ///
     /// Returns a slice of RecordIds for all records of type T.
     /// Useful for introspection when multiple records of the same type exist.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let temp_ids = db.records_of_type::<Temperature>();
-    /// println!("Found {} temperature records", temp_ids.len());
-    /// ```
     pub fn records_of_type<T: 'static>(&self) -> &[crate::record_id::RecordId] {
         self.inner.records_of_type::<T>()
     }
@@ -1149,14 +1051,6 @@ impl AimDb {
     ///
     /// Returns metadata for all registered records, useful for remote access introspection.
     /// Available only when the `std` feature is enabled.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let records = db.list_records();
-    /// for record in records {
-    ///     println!("Record: {} ({})", record.name, record.type_id);
-    /// }
-    /// ```
     #[cfg(feature = "remote-access")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.inner.list_records()
@@ -1210,11 +1104,6 @@ impl AimDb {
     ///
     /// # Returns
     /// `Ok(())` on success, error if record not found, has producers, or deserialization fails
-    ///
-    /// # Example (internal use)
-    /// ```rust,ignore
-    /// db.set_record_from_json("AppConfig", json!({"debug": true}))?;
-    /// ```
     #[cfg(feature = "remote-access")]
     pub fn set_record_from_json(
         &self,
@@ -1238,14 +1127,6 @@ impl AimDb {
     ///
     /// The topic is resolved dynamically if a `TopicResolverFn` is configured,
     /// otherwise the static topic from the URL is used.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// // In MqttConnector after db.build()
-    /// let routes = db.collect_inbound_routes("mqtt");
-    /// let router = RouterBuilder::from_routes(routes).build();
-    /// connector.set_router(router).await?;
-    /// ```
     pub fn collect_inbound_routes(
         &self,
         scheme: &str,

@@ -42,16 +42,17 @@ pub trait AimDbBuilderSyncExt {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use aimdb_sync::AimDbBuilderSyncExt;
     /// use std::sync::Arc;
     ///
+    /// # #[derive(Debug, Clone)] struct MyData { value: f32 }
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut builder = AimDbBuilder::new()
-    ///     .runtime(Arc::new(TokioAdapter));  // Create adapter (it's just a marker)
-    /// builder.configure::<MyData>(|reg| {
+    ///     .runtime(Arc::new(TokioAdapter::new()?));
+    /// builder.configure::<MyData>("my.data", |reg| {
     ///     // Configure buffer, sources, taps, etc.
     /// });
     /// let handle = builder.attach()?;  // Build happens in runtime thread
@@ -83,17 +84,12 @@ pub trait AimDbSyncExt {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_tokio_adapter::TokioAdapter;
+    /// ```no_run
+    /// use aimdb_core::AimDb;
     /// use aimdb_sync::AimDbSyncExt;
-    /// use std::sync::Arc;
     ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let db = AimDbBuilder::new()
-    ///     .runtime(Arc::new(TokioAdapter::new()?))
-    ///     .build()?;
-    ///
+    /// // `db` comes out of an async `AimDbBuilder::build()` elsewhere
+    /// # fn demo(db: AimDb) -> Result<(), Box<dyn std::error::Error>> {
     /// let handle = db.attach()?;
     /// # Ok(())
     /// # }
@@ -298,7 +294,7 @@ impl AimDbHandle {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```no_run
     /// # use aimdb_sync::*;
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,7 +368,7 @@ impl AimDbHandle {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```no_run
     /// # use aimdb_sync::*;
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Debug, Clone, Serialize, Deserialize)]

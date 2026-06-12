@@ -35,7 +35,7 @@ use crate::transport::WsDialer;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```no_run
 /// use aimdb_websocket_connector::WsClientConnector;
 ///
 /// let connector = WsClientConnector::new("wss://cloud.example.com/ws")
@@ -61,13 +61,6 @@ pub struct WsClientConnectorBuilder {
 
 impl WsClientConnectorBuilder {
     /// Create a new builder targeting the given WebSocket URL.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// WsClientConnector::new("wss://cloud.example.com/ws")
-    /// WsClientConnector::new("ws://192.168.1.100:8080/ws")
-    /// ```
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -115,9 +108,10 @@ impl WsClientConnectorBuilder {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```no_run
+    /// # use aimdb_websocket_connector::WsClientConnector;
     /// WsClientConnector::new("wss://cloud/ws")
-    ///     .with_subscribe_topics(["sensors/#", "config/#"])
+    ///     .with_subscribe_topics(["sensors/#", "config/#"]);
     /// ```
     pub fn with_subscribe_topics(
         mut self,

@@ -111,8 +111,10 @@ impl AuthError {
 ///
 /// # Example — Bearer token auth
 ///
-/// ```rust,ignore
-/// use aimdb_websocket_connector::auth::{AuthHandler, AuthRequest, AuthError, Permissions};
+/// ```no_run
+/// use aimdb_websocket_connector::{AuthHandler, AuthRequest, AuthError, Permissions};
+/// # use core::future::Future;
+/// # use core::pin::Pin;
 ///
 /// struct BearerAuth { valid_token: String }
 ///

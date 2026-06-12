@@ -18,14 +18,23 @@ use crate::Observable;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// use aimdb_data_contracts::log_tap;
-///
-/// builder.configure::<Temperature>(NodeKey::Alpha, |reg| {
-///     reg.buffer(BufferCfg::SingleLatest)
-///         .tap(|ctx, consumer| log_tap(ctx, consumer, "alpha"))
-///         .finish();
+/// # use aimdb_core::AimDbBuilder;
+/// # use aimdb_data_contracts::{Observable, SchemaType};
+/// # #[derive(Clone, Debug)]
+/// # struct Temperature { celsius: f32 }
+/// # impl SchemaType for Temperature { const NAME: &'static str = "temperature"; }
+/// # impl Observable for Temperature {
+/// #     type Signal = f32;
+/// #     fn signal(&self) -> f32 { self.celsius }
+/// # }
+/// # fn wire(builder: &mut AimDbBuilder) {
+/// builder.configure::<Temperature>("node.alpha", |reg| {
+///     // .buffer(BufferCfg::SingleLatest) — via your runtime adapter's ext trait
+///     reg.tap(|ctx, consumer| log_tap(ctx, consumer, "alpha"));
 /// });
+/// # }
 /// ```
 #[cfg(feature = "observable")]
 pub async fn log_tap<T>(

@@ -13,15 +13,17 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use aimdb_core::BufferCfg;
-//!
+//! ```no_run
+//! # use aimdb_core::AimDbBuilder;
+//! # #[derive(Clone, Debug)] struct WeatherAlert { level: u8 }
+//! # fn wire(builder: &mut AimDbBuilder) {
 //! builder.configure::<WeatherAlert>("weather.alert", |reg| {
-//!     reg.buffer(BufferCfg::SingleLatest)
-//!         .link_to("mqtt://alerts/weather")
-//!         .with_serializer_raw(|alert: &WeatherAlert| Ok(alert.to_json_vec()))
+//!     // .buffer(BufferCfg::SingleLatest) — via your runtime adapter's ext trait
+//!     reg.link_to("mqtt://alerts/weather")
+//!         .with_serializer_raw(|alert: &WeatherAlert| Ok(vec![alert.level]))
 //!         .finish();
 //! });
+//! # }
 //! ```
 
 use core::fmt::{self, Debug};
@@ -158,8 +160,9 @@ pub type SourceFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn SerializedSource> + Sen
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use aimdb_core::connector::TopicProvider;
+/// # #[derive(Clone, Debug)] struct Temperature { sensor_id: u32 }
 ///
 /// struct SensorTopicProvider;
 ///
@@ -613,6 +616,9 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 /// 2. Build phase: Connector collects routes from the database and initializes
 ///
 /// # Example
+///
+/// Illustrative sketch of a connector author's `build()` (not compiled: the
+/// client types are fictional — see `aimdb-mqtt-connector` for a real one):
 ///
 /// ```rust,ignore
 /// pub struct MqttConnectorBuilder {

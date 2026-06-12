@@ -289,26 +289,12 @@ where
     ///
     /// # Recommended Values
     ///
-    /// **For SPMC Ring Buffer:**
-    /// ```ignore
-    /// // Small buffer: 16 items, 2 consumers
-    /// reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
-    ///
-    /// // Large buffer: 64 items, 4 consumers  
-    /// reg.buffer_sized::<64, 4>(EmbassyBufferType::SpmcRing)
-    /// ```
-    ///
-    /// **For SingleLatest (only latest value stored):**
-    /// ```ignore
-    /// // 4 consumers watching the latest value
-    /// reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
-    /// ```
-    ///
-    /// **For Mailbox (single-slot overwrite):**
-    /// ```ignore
-    /// // Parameters are ignored, single slot
-    /// reg.buffer_sized::<1, 4>(EmbassyBufferType::Mailbox)
-    /// ```
+    /// - SPMC ring: `buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)` for a
+    ///   small buffer (16 items, 2 consumers); `::<64, 4>` for a large one.
+    /// - SingleLatest: `buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)`
+    ///   — only the latest value is stored, 4 consumers watch it.
+    /// - Mailbox: `buffer_sized::<1, 4>(EmbassyBufferType::Mailbox)` — single
+    ///   slot with overwrite; the parameters are ignored.
     ///
     /// # Counting CONSUMERS
     ///
@@ -336,6 +322,9 @@ where
     /// - `F`: Closure that takes (RuntimeContext, Producer, Context) and returns a Future
     ///
     /// # Example
+    ///
+    /// Illustrative (not compiled: uses device peripherals on a thumb target):
+    ///
     /// ```ignore
     /// use embassy_stm32::exti::ExtiInput;
     ///

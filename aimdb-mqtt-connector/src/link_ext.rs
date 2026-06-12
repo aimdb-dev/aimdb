@@ -7,14 +7,17 @@
 //! `("qos", …)` / `("retain", …)` option keys the MQTT clients have always
 //! read from `protocol_options` — wire behavior is unchanged.
 //!
-//! ```rust,ignore
+//! ```no_run
 //! use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};
+//! # #[derive(Clone, Debug)] struct Temperature { celsius: f32 }
+//! # fn wire(reg: &mut aimdb_core::RecordRegistrar<'_, Temperature>) {
 //!
 //! reg.link_to("mqtt://sensors/temp")
 //!     .with_qos(1)
 //!     .with_retain(true)
-//!     .with_serializer_raw(serialize)
+//!     .with_serializer_raw(|t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
 //!     .finish();
+//! # }
 //! ```
 
 use aimdb_core::{InboundConnectorBuilder, OutboundConnectorBuilder};

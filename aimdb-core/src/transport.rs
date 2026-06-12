@@ -132,6 +132,9 @@ impl std::error::Error for PublishError {}
 ///
 /// # Example Implementation
 ///
+/// Illustrative sketch (not compiled: the MQTT client types are fictional —
+/// see `aimdb-mqtt-connector` for a real implementation):
+///
 /// ```rust,ignore
 /// impl Connector for MqttConnector {
 ///     fn publish(

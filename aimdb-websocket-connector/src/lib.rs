@@ -17,47 +17,64 @@
 //!
 //! ## Server Quick Start
 //!
-//! ```rust,ignore
-//! use aimdb_tokio_adapter::TokioAdapter;
+//! ```no_run
+//! use aimdb_core::buffer::BufferCfg;
+//! use aimdb_core::AimDbBuilder;
+//! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use aimdb_websocket_connector::WebSocketConnector;
-//!
-//! let db = AimDbBuilder::new()
-//!     .runtime(TokioAdapter::new())
+//! # use std::sync::Arc;
+//! # #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+//! # struct Temperature { celsius: f32 }
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut builder = AimDbBuilder::new()
+//!     .runtime(Arc::new(TokioAdapter::new()?))
 //!     .with_connector(
 //!         WebSocketConnector::new()
 //!             .bind("0.0.0.0:8080")
 //!             .path("/ws")
 //!             .with_late_join(true),
-//!     )
-//!     .configure::<Temperature>(TempKey::Vienna, |reg| {
-//!         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
-//!             .link_to("ws://sensors/temperature/vienna")
-//!             .with_serializer_raw(|t| serde_json::to_vec(t).map_err(Into::into))
-//!             .finish();
-//!     })
-//!     .build().await?;
+//!     );
+//! builder.configure::<Temperature>("sensors.temp.vienna", |reg| {
+//!     reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
+//!         .link_to("ws://sensors/temperature/vienna")
+//!         .with_serializer_raw(|t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))
+//!         .finish();
+//! });
+//! let (db, runner) = builder.build().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Client Quick Start
 //!
-//! ```rust,ignore
+//! ```no_run
+//! use aimdb_core::buffer::BufferCfg;
+//! use aimdb_core::AimDbBuilder;
+//! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use aimdb_websocket_connector::WsClientConnector;
-//!
-//! let db = AimDbBuilder::new()
-//!     .runtime(TokioAdapter::new())
+//! # use std::sync::Arc;
+//! # #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+//! # struct Temperature { celsius: f32 }
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut builder = AimDbBuilder::new()
+//!     .runtime(Arc::new(TokioAdapter::new()?))
 //!     .with_connector(
 //!         WsClientConnector::new("wss://cloud.example.com/ws"),
-//!     )
-//!     .configure::<Temperature>("sensors/temp", |reg| {
-//!         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
-//!             .link_to("ws-client://sensors/temp")
-//!             .with_serializer_raw(|t| serde_json::to_vec(t).map_err(Into::into))
-//!             .finish()
-//!             .link_from("ws-client://config/threshold")
-//!             .with_deserializer_raw(|data| serde_json::from_slice(data))
-//!             .finish();
-//!     })
-//!     .build().await?;
+//!     );
+//! builder.configure::<Temperature>("sensors.temp", |reg| {
+//!     reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
+//!         .link_to("ws-client://sensors/temp")
+//!         .with_serializer_raw(|t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))
+//!         .finish()
+//!         .link_from("ws-client://config/threshold")
+//!         .with_deserializer_raw(|data| {
+//!             serde_json::from_slice::<Temperature>(data).map_err(|e| e.to_string())
+//!         })
+//!         .finish();
+//! });
+//! let (db, runner) = builder.build().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Wire Protocol

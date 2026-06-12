@@ -31,10 +31,11 @@
 //!
 //! ## Tokio Usage (Standard Library)
 //!
-//! ```rust,ignore
+//! ```no_run
+//! use aimdb_core::buffer::BufferCfg;
 //! use aimdb_core::AimDbBuilder;
-//! use aimdb_tokio_adapter::TokioAdapter;
 //! use aimdb_knx_connector::KnxConnector;
+//! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use std::sync::Arc;
 //!
 //! #[derive(Debug, Clone)]
@@ -42,31 +43,37 @@
 //!     is_on: bool,
 //! }
 //!
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = Arc::new(TokioAdapter::new()?);
 //!
-//! let db = AimDbBuilder::new()
+//! let mut builder = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(KnxConnector::new("knx://192.168.1.19:3671"))
-//!     .configure::<LightState>(|reg| {
-//!         reg.buffer(BufferCfg::SingleLatest)
-//!            // Inbound: Monitor KNX bus
-//!            .link_from("knx://1/0/7")
-//!            .with_deserializer_raw(|data: &[u8]| {
-//!                let is_on = data.get(0).map(|&b| b != 0).unwrap_or(false);
-//!                Ok(Box::new(LightState { is_on }))
-//!            })
-//!            .finish()
-//!            // Outbound: Send commands to KNX
-//!            .link_to("knx://1/0/8")
-//!            .with_serializer_raw(|state: &LightState| {
-//!                Ok(vec![if state.is_on { 1 } else { 0 }])
-//!            })
-//!            .finish();
-//!     })
-//!     .build().await?;
+//!     .with_connector(KnxConnector::new("knx://192.168.1.19:3671"));
+//! builder.configure::<LightState>("light.state", |reg| {
+//!     reg.buffer(BufferCfg::SingleLatest)
+//!        // Inbound: Monitor KNX bus
+//!        .link_from("knx://1/0/7")
+//!        .with_deserializer_raw(|data: &[u8]| {
+//!            let is_on = data.first().map(|&b| b != 0).unwrap_or(false);
+//!            Ok(LightState { is_on })
+//!        })
+//!        .finish()
+//!        // Outbound: Send commands to KNX
+//!        .link_to("knx://1/0/8")
+//!        .with_serializer_raw(|state: &LightState| {
+//!            Ok(vec![if state.is_on { 1 } else { 0 }])
+//!        })
+//!        .finish();
+//! });
+//! let (db, runner) = builder.build().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Embassy Usage (Embedded)
+//!
+//! Illustrative (not compiled: requires the `embassy-runtime` feature and a
+//! device network stack):
 //!
 //! ```rust,ignore
 //! use aimdb_core::AimDbBuilder;
@@ -106,19 +113,6 @@
 //! ## DPT Support
 //!
 //! This connector uses `knx-pico` for Data Point Type conversion:
-//!
-//! ```rust,ignore
-//! use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
-//!
-//! // DPT 1.001 - Boolean (switch)
-//! let is_on = Dpt1::Switch.decode(data)?;
-//!
-//! // DPT 5.001 - 8-bit unsigned (0-100%)
-//! let percentage = Dpt5::Percentage.decode(data)?;
-//!
-//! // DPT 9.001 - 2-byte float (temperature)
-//! let temp = Dpt9::Temperature.decode(data)?;
-//! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

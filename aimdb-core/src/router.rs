@@ -167,19 +167,6 @@ impl Router {
 /// Builder for constructing routers
 ///
 /// Provides a fluent API for adding routes before creating the router.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use aimdb_core::router::RouterBuilder;
-///
-/// // Ingest callbacks are normally built by `InboundConnectorBuilder::finish()`
-/// // and collected via `AimDb::collect_inbound_routes()`.
-/// let router = RouterBuilder::new()
-///     .add_route(Arc::from("sensors/temperature"), temperature_ingest)
-///     .add_route(Arc::from("sensors/humidity"), humidity_ingest)
-///     .build();
-/// ```
 pub struct RouterBuilder {
     routes: Vec<Route>,
 }
@@ -198,13 +185,6 @@ impl RouterBuilder {
     ///
     /// # Arguments
     /// * `routes` - Vector of (resource_id, ingest) tuples
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let routes = db.collect_inbound_routes("mqtt");
-    /// let router = RouterBuilder::from_routes(routes).build();
-    /// connector.set_router(router).await?;
-    /// ```
     pub fn from_routes(routes: Vec<(String, IngestFn)>) -> Self {
         let mut builder = Self::new();
         for (resource_id, ingest) in routes {

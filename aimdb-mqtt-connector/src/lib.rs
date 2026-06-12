@@ -13,37 +13,54 @@
 //!
 //! ## Tokio Usage (Standard Library)
 //!
-//! ```rust,ignore
+//! ```no_run
 //! use aimdb_core::AimDbBuilder;
-//! use aimdb_tokio_adapter::TokioAdapter;
 //! use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt, MqttOutboundLinkExt};
+//! use aimdb_tokio_adapter::TokioAdapter;
 //! use std::sync::Arc;
 //!
+//! # #[derive(Clone, Debug)] struct Temperature { celsius: f32 }
+//! # #[derive(Clone, Debug)] struct TempCommand { target: f32 }
+//! # async fn temperature_producer(
+//! #     ctx: aimdb_core::RuntimeContext,
+//! #     producer: aimdb_core::Producer<Temperature>,
+//! # ) {}
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = Arc::new(TokioAdapter::new()?);
 //!
-//! let db = AimDbBuilder::new()
+//! let mut builder = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(MqttConnector::new("mqtt://localhost:1883"))
-//!     .configure::<Temperature>(|reg| {
-//!         reg.source(temperature_producer)
-//!            // Outbound: Publish to MQTT (QoS/retain via MqttLinkExt traits)
-//!            .link_to("mqtt://sensors/temperature")
-//!            .with_qos(1)
-//!            .with_retain(false)
-//!            .with_serializer_raw(|t| {
-//!                serde_json::to_vec(t)
-//!                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
-//!            })
-//!            .finish()
-//!            // Inbound: Subscribe from MQTT
-//!            .link_from("mqtt://commands/temperature")
-//!            .with_deserializer_raw(|data| Temperature::from_json(data))
-//!            .finish();
-//!     })
-//!     .build().await?;
+//!     .with_connector(MqttConnector::new("mqtt://localhost:1883"));
+//!
+//! // Outbound: publish to MQTT (QoS/retain via the MqttLinkExt traits)
+//! builder.configure::<Temperature>("sensor.temp", |reg| {
+//!     reg.source(temperature_producer)
+//!        .link_to("mqtt://sensors/temperature")
+//!        .with_qos(1)
+//!        .with_retain(false)
+//!        .with_serializer_raw(|t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
+//!        .finish();
+//! });
+//!
+//! // Inbound: subscribe from MQTT
+//! builder.configure::<TempCommand>("command.temp", |reg| {
+//!     reg.link_from("mqtt://commands/temperature")
+//!        .with_deserializer_raw(|data| match data.try_into() {
+//!            Ok(bytes) => Ok(TempCommand { target: f32::from_be_bytes(bytes) }),
+//!            Err(_) => Err("bad frame".to_string()),
+//!        })
+//!        .finish();
+//! });
+//!
+//! let (db, runner) = builder.build().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Embassy Usage (Embedded)
+//!
+//! Illustrative (not compiled: requires the `embassy-runtime` feature and a
+//! device network stack):
 //!
 //! ```rust,ignore
 //! use aimdb_core::AimDbBuilder;
