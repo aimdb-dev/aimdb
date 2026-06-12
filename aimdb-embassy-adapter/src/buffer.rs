@@ -572,41 +572,13 @@ mod tests {
     // ── Host-test scaffolding ────────────────────────────────────────────
     // The crate links `defmt` (workspace dep) and embassy-time's
     // `defmt-timestamp-uptime`, but on the host neither a defmt logger nor a
-    // time driver exists. Provide no-op stubs so the test binary links. Run via
-    // the `test` Make target, or directly:
+    // time driver exists. `host_test_stubs!` provides no-op stubs so the test
+    // binary links (expanded here for the lib test binary; integration tests
+    // expand it themselves). Run via the `test` Make target, or directly:
     //   cargo test -p aimdb-embassy-adapter \
     //       --no-default-features --features "alloc,embassy-sync,embassy-time"
     // (`embassy-runtime` would pull the cortex-m executor, which can't host-build.)
-    #[defmt::global_logger]
-    struct TestLogger;
-
-    unsafe impl defmt::Logger for TestLogger {
-        fn acquire() {}
-        unsafe fn flush() {}
-        unsafe fn release() {}
-        unsafe fn write(_bytes: &[u8]) {}
-    }
-
-    #[defmt::panic_handler]
-    fn defmt_panic() -> ! {
-        core::panic!("defmt panic in host test")
-    }
-
-    // Trivial time driver so `_embassy_time_now` resolves on the host. The
-    // clock is pinned at 0; `schedule_wake` wakes immediately so an
-    // already-expired `Timer` (e.g. `sleep(Duration::ZERO)` in the RuntimeOps
-    // contract test) completes on its next poll. Non-zero sleeps would spin
-    // forever — host tests must not use them.
-    struct TestTimeDriver;
-    impl embassy_time_driver::Driver for TestTimeDriver {
-        fn now(&self) -> u64 {
-            0
-        }
-        fn schedule_wake(&self, _at: u64, waker: &core::task::Waker) {
-            waker.wake_by_ref();
-        }
-    }
-    embassy_time_driver::time_driver_impl!(static TEST_TIME_DRIVER: TestTimeDriver = TestTimeDriver);
+    crate::host_test_stubs!();
 
     // Note: Embassy tests typically run on actual embedded targets or with embassy-executor
     // For now, these are basic compilation tests. Integration tests would need embassy-executor.

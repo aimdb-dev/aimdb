@@ -83,14 +83,14 @@ tracing = { version = "0.1", optional = true }
 defmt = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Trivial host time driver so `embassy-time` links in the embassy smoke test.
-# (`aimdb-embassy-adapter` itself is the regular `embassy-runtime` optional dep —
-# keeping it out of dev-deps avoids a std/no_std unification clash with the tokio
-# tests, where it would otherwise compile against a std `aimdb-core`.)
+# The embassy smoke test expands `aimdb_embassy_adapter::host_test_stubs!()`
+# (no-op defmt logger + host time driver, 035 §2.4); the expansion references
+# `defmt` and `embassy-time-driver` at the invocation site, so both must stay
+# resolvable in the test binary. (`aimdb-embassy-adapter` itself is the regular
+# `embassy-runtime` optional dep — keeping it out of dev-deps avoids a
+# std/no_std unification clash with the tokio tests, where it would otherwise
+# compile against a std `aimdb-core`.)
 embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
-# No-op defmt logger stub for the embassy smoke test binary: the engine holds
-# the adapter as `Arc<dyn RuntimeOps>` (issue #131), whose vtable references
-# the defmt-backed `log` path.
 defmt = { workspace = true }
 tokio = { version = "1", features = [
     "rt-multi-thread",
