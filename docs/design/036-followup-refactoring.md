@@ -72,7 +72,9 @@ The registry keeps storing `Box<dyn AnyRecord>`; consumers upcast to the capabil
 
 **Size:** S (one bench session). No issue needed if run as part of #140; otherwise file as a validation task.
 
-**Prep done 2026-06-12:** the demo firmware builds clean (`cargo build -p embassy-knx-connector-demo --target thumbv8m.main-none-eabihf`); flash from the host via the demo's `flash.sh` (probe-rs, STM32H563ZITx), defmt over RTT; set `KNX_GATEWAY_IP` in the demo's `main.rs` first. Since #140 merged, 035's "run the matrix twice" guidance is moot — one run on a current `main` build is the bar (the open 036 PR stack does not touch the KNX connector, so `main` is the right baseline). The bench session itself is the remaining work.
+**Prep done 2026-06-12:** the demo firmware builds clean (`cargo build -p embassy-knx-connector-demo --target thumbv8m.main-none-eabihf`); flash from the host via the demo's `flash.sh` (probe-rs, STM32H563ZITx), defmt over RTT; set `KNX_GATEWAY_IP` in the demo's `main.rs` first. Since #140 merged, 035's "run the matrix twice" guidance is moot — one run is the bar. (The session actually ran on the 036 stack-tip build, which is fine — the stack's core changes ride under the connector and got hardware exposure for free.)
+
+**Bench findings so far (2026-06-12, partial):** baseline boot → DHCP → tunnel connect → inbound telegrams ✅; outbound button-press round trip with zero AckTimeouts on a healthy link ✅ (scenario 1 preview); reconnect after a gateway outage via the heartbeat path ✅ (link-bounce variant of scenario 3). The scenario-2 variant (writes during the undetected-outage window) showed **ten writes silently lost** — warn-only AckTimeouts, no retransmit, no re-queue — which fired W4's trigger; see W4. Remaining: the 30-min soak (1), scenario 2 re-run on the #144 build, stale-channel NACK (4), backoff pacing with Wireshark (5), inbound flood (7), and the switch-isolated scenario-3 variant for a clean ≤65 s detection number.
 
 ### W4 — KNX ACK-retransmit knob in `TunnelConfig` (from the #135 review)
 
@@ -84,7 +86,7 @@ The registry keeps storing `Box<dyn AnyRecord>`; consumers upcast to the capabil
 
 **Size:** S–M. File after #140 merges (touches `tunnel.rs` on the #140 baseline).
 
-**Status: deferred pending W3 bench data (decision 2026-06-12).** Scenario 1's AckTimeout observations were always meant to size this knob, no field failure motivates it (both previous implementations behaved identically), and scenario 1's pass bar is zero AckTimeout warnings — so the bench decides. Implement only if W3 shows AckTimeouts on healthy hardware or a lossy-link deployment appears. The (a)-vs-(b) design question is pre-decided for when the trigger fires: `GroupWrite.data` already carries a full 254-byte APDU buffer (`MAX_APDU`), so storing semantic content (b) saves only ~22 bytes per slot vs buffering the sent 278-byte frame (a) — ~350 B total at `PENDING_ACK_CAPACITY` 16. The RAM argument for (b) evaporates; **choose (a)** unless 035 §2.2's semantic-actions trigger has fired independently.
+**Status: implemented in PR [#144](https://github.com/aimdb-dev/aimdb/pull/144)** (stacked on #143). The item was first deferred pending W3 data (decision 2026-06-12, same day), and the trigger fired within hours: the W3 bench's scenario-2 variant showed ten button-press writes issued during a link outage's heartbeat-detection window (~65 s) silently lost with warn-only AckTimeouts. Design as pre-decided: option **(a)** — the pending-ACK slot buffers the sent 278-byte frame for byte-identical retransmit (`GroupWrite.data` already carries a full 254-byte APDU, so semantic-content storage (b) would save only ~350 B total at `PENDING_ACK_CAPACITY` 16; the RAM argument evaporated). `ack_retransmits` default `1` = retransmit once then disconnect (spec 3.8.4); `0` = the legacy expire-and-warn, pinned by tests. Retransmit delay is `ack_timeout_ms` (3 s, the pre-engine constant) rather than the spec's hardcoded 1 s — strict timing is one knob away. Hardware validation: re-run scenario 2 on the #144 build (expect reconnect within ~6 s and queued writes flushing after re-handshake).
 
 ### W5 — `StringKey::intern`: dedup interner + loud contract (034 §3.10)
 
@@ -149,7 +151,7 @@ Both protocols now ride the session engine (the hard part), but two subscribe/wr
 | W1 data-plane de-`Any` | PR [#141](https://github.com/aimdb-dev/aimdb/pull/141) | done — no separate issue, direct PR |
 | W2 `AnyRecord` split | PR [#142](https://github.com/aimdb-dev/aimdb/pull/142) | done — stacked on #141, no separate issue |
 | W3 hardware matrix | — | prep done 2026-06-12 (firmware build verified); bench session pending — the gate for closing 035 |
-| W4 ACK-retransmit knob | — | deferred 2026-06-12 — implement only on W3 AckTimeout evidence; design pre-decided (option a) |
+| W4 ACK-retransmit knob | PR [#144](https://github.com/aimdb-dev/aimdb/pull/144) | done — trigger fired same day via W3 scenario-2 evidence; stacked on #143 |
 | W5 `StringKey` interner | PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) | done — with W6, stacked on #142 |
 | W6 `host_test_stubs!` | PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) | done — with W5, stacked on #142 |
 | W7 data-contracts audit | — | skipped entirely (decision 2026-06-12) |
