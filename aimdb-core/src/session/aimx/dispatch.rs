@@ -29,7 +29,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 use crate::buffer::JsonBufferReader;
-use crate::remote::{AimxConfig, RecordMetadata, SecurityPolicy, WelcomeMessage};
+use crate::remote::{AimxConfig, RecordMetadata, SecurityPolicy, WelcomeMessage, PROTOCOL_VERSION};
 use crate::session::{
     AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, Session, SessionCtx,
 };
@@ -321,7 +321,7 @@ impl AimxSession {
             }
         };
         let welcome = WelcomeMessage {
-            version: "2.0".to_string(),
+            version: PROTOCOL_VERSION.to_string(),
             server: "aimdb".to_string(),
             permissions,
             writable_records,

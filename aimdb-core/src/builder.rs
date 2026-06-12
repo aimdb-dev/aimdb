@@ -871,11 +871,9 @@ impl Default for AimDbBuilder {
 /// ```rust,ignore
 /// use aimdb_tokio_adapter::TokioAdapter;
 ///
-/// let runtime = Arc::new(TokioAdapter);
-/// let (db, runner) = AimDbBuilder::new()
-///     .runtime(runtime)
-///     .register_record::<Temperature>(&TemperatureConfig)
-///     .build().await?;
+/// let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter::new()?));
+/// builder.register_record::<Temperature>(&TemperatureConfig);
+/// let (db, runner) = builder.build().await?;
 /// ```
 #[derive(Clone)]
 pub struct AimDb {

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AimX protocol doc rot cleaned up; `remote::PROTOCOL_VERSION` corrected to `"2.0"` and exported.** The `remote` module docs claimed "AimX v1" and linked a spec file that no longer exists; they now describe the v2 NDJSON tagged-frame wire and point at `crate::session::aimx` / `docs/design/remote-access-via-connectors.md`. The AimX dispatch's Welcome uses the constant instead of a hardcoded `"2.0"` (same bytes on the wire). The dead, never-exported v1 `Message` untagged envelope and its helpers were removed from `remote::protocol`. Also de-advertised Kafka/HTTP connector semantics from `ConnectorUrl` docs (the parser is scheme-agnostic; those connectors never existed) and updated the `connector` module docs from the removed `.link()` API to `.link_to()`/`.link_from()`.
 - **`build()` reports a missing runtime alongside every other configuration error (issue #133 contract).** The missing-runtime check no longer short-circuits: it is collected as a `ConfigError` and returned in the one `DbError::InvalidConfiguration` with all other findings (previously the collected errors were silently dropped and only a `RuntimeError` surfaced). The error type for a runtime-less build changes accordingly from `DbError::RuntimeError` to `DbError::InvalidConfiguration`.
 
 ### Changed (breaking)

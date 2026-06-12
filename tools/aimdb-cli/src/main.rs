@@ -1,7 +1,7 @@
 //! AimDB CLI - Command-line interface for AimDB introspection and management
 //!
 //! This tool provides commands to discover, inspect, and interact with running
-//! AimDB instances via the AimX v1 remote access protocol.
+//! AimDB instances via the AimX remote access protocol (v2 NDJSON wire).
 
 use clap::{Parser, Subcommand};
 use commands::{

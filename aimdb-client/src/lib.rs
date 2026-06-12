@@ -2,7 +2,7 @@
 //!
 //! This library provides a client implementation for the AimX remote access
 //! protocol, enabling connections to running AimDB instances via Unix domain
-//! sockets.
+//! sockets or serial.
 //!
 //! ## Overview
 //!
