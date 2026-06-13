@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rustup target *)",
+      "Bash(rustc --version)",
+      "Bash(cargo check *)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo fmt *)",
+      "Bash(git mv *)",
+      "Bash(make check *)",
+      "Bash(cargo build *)",
+      "Bash(git checkout *)",
+      "Bash(git fetch *)",
+      "Bash(gh pr *)",
+      "Bash(gh api *)",
+      "Bash(git reset *)",
+      "Bash(git stash *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'feat\\(executor\\): dyn-safe RuntimeOps capability trait \\(#130\\) *)",
+      "Bash(python3 -)",
+      "Bash(make clippy *)",
+      "Bash(make test *)",
+      "Bash(echo \"EXIT: $?\")"
+    ]
+  }
+}
