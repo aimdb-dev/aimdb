@@ -72,6 +72,10 @@ The registry keeps storing `Box<dyn AnyRecord>`; consumers upcast to the capabil
 
 **Size:** S (one bench session). No issue needed if run as part of #140; otherwise file as a validation task.
 
+**Prep done 2026-06-12:** the demo firmware builds clean (`cargo build -p embassy-knx-connector-demo --target thumbv8m.main-none-eabihf`); flash from the host via the demo's `flash.sh` (probe-rs, STM32H563ZITx), defmt over RTT; set `KNX_GATEWAY_IP` in the demo's `main.rs` first. Since #140 merged, 035's "run the matrix twice" guidance is moot — one run is the bar. (The session actually ran on the 036 stack-tip build, which is fine — the stack's core changes ride under the connector and got hardware exposure for free.)
+
+**Bench findings so far (2026-06-12, partial):** baseline boot → DHCP → tunnel connect → inbound telegrams ✅; outbound button-press round trip with zero AckTimeouts on a healthy link ✅ (scenario 1 preview); reconnect after a gateway outage via the heartbeat path ✅ (link-bounce variant of scenario 3). The scenario-2 variant (writes during the undetected-outage window) showed **ten writes silently lost** — warn-only AckTimeouts, no retransmit, no re-queue — which fired W4's trigger; see W4. **Re-run on the #144 build (same day):** a press during the outage produced exactly one AckTimeout ~7 s after the press (silent retransmit in between), disconnect, and reconnect attempts paced one CONNECT_REQUEST per backoff cycle (scenario 5's criterion, observed from defmt alone) — W4's detection + bounded-loss half validated on hardware. **Remaining, to run before the next release that ships the KNX connector (decision 2026-06-12):** the 30-min soak (1), scenario 2's queue-flush half (press *after* the AckTimeout warning, expect flush on re-handshake), stale-channel NACK (4), backoff pacing under Wireshark (5), inbound flood (7), and the switch-isolated scenario-3 variant for a clean ≤65 s detection number.
+
 ### W4 — KNX ACK-retransmit knob in `TunnelConfig` (from the #135 review)
 
 **Current state (verified).** When a `TunnelingRequest` is not ACKed within the timeout, the engine expires the pending slot and emits [`Action::AckTimeout`](../../aimdb-knx-connector/src/tunnel.rs#L94) (shims log a warning) — no retransmit, no disconnect. The KNXnet/IP tunneling spec (3.8.4) says: retransmit once after 1 s, then tear the connection down on the second miss.
@@ -82,6 +86,8 @@ The registry keeps storing `Box<dyn AnyRecord>`; consumers upcast to the capabil
 
 **Size:** S–M. File after #140 merges (touches `tunnel.rs` on the #140 baseline).
 
+**Status: implemented in PR [#144](https://github.com/aimdb-dev/aimdb/pull/144)** (stacked on #143). The item was first deferred pending W3 data (decision 2026-06-12, same day), and the trigger fired within hours: the W3 bench's scenario-2 variant showed ten button-press writes issued during a link outage's heartbeat-detection window (~65 s) silently lost with warn-only AckTimeouts. Design as pre-decided: option **(a)** — the pending-ACK slot buffers the sent 278-byte frame for byte-identical retransmit (`GroupWrite.data` already carries a full 254-byte APDU, so semantic-content storage (b) would save only ~350 B total at `PENDING_ACK_CAPACITY` 16; the RAM argument evaporated). `ack_retransmits` default `1` = retransmit once then disconnect (spec 3.8.4); `0` = the legacy expire-and-warn, pinned by tests. Retransmit delay is `ack_timeout_ms` (3 s, the pre-engine constant) rather than the spec's hardcoded 1 s — strict timing is one knob away. Hardware validation: re-run scenario 2 on the #144 build (expect reconnect within ~6 s and queued writes flushing after re-handshake).
+
 ### W5 — `StringKey::intern`: dedup interner + loud contract (034 §3.10)
 
 **Current state (verified).** [`StringKey::intern`](../../aimdb-core/src/record_id.rs#L284) still `Box::leak`s every call ([record_id.rs:297](../../aimdb-core/src/record_id.rs#L297)); re-interning the same key leaks again; guarded only by a debug-build counter (cap 1000).
@@ -90,19 +96,21 @@ The registry keeps storing `Box<dyn AnyRecord>`; consumers upcast to the capabil
 
 Explicitly rejected: a non-`Copy` `Arc<str>` key variant — it forks `RecordKey` into two shapes, which is the 034 §3.1 mistake again.
 
-**Size:** S. Independent of everything else; opportunistic.
+**Size:** S. Independent of everything else; opportunistic. **Status:** implemented in PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) (with W6, stacked on #142). As specified: dedup table behind the std/spin mutex pattern from typed_record, contract documented on `intern`, debug tripwire now counts distinct keys.
 
 ### W6 — `host_test_stubs!` macro for the defmt logger duplication (035 §2.4)
 
 **Current state (verified).** The no-op `#[defmt::global_logger]`/panic-handler/time-driver block exists in three places: [session_smoke.rs](../../aimdb-embassy-adapter/tests/session_smoke.rs), [buffer.rs](../../aimdb-embassy-adapter/src/buffer.rs) (test module), [embassy_smoke.rs](../../aimdb-serial-connector/tests/embassy_smoke.rs) — the third copy that 035 named as the trigger already exists.
 
-**Approach.** As specified in 035 §2.4: `#[macro_export] #[doc(hidden)] macro_rules! host_test_stubs` in `aimdb-embassy-adapter`, expanded once per test binary; delete the three copies and the serial-connector's standalone `defmt` dev-dependency if nothing else needs it. **Size:** S. Do it the next time any of those test files is touched, or fold into the W1/W2 series.
+**Approach.** As specified in 035 §2.4: `#[macro_export] #[doc(hidden)] macro_rules! host_test_stubs` in `aimdb-embassy-adapter`, expanded once per test binary; delete the three copies and the serial-connector's standalone `defmt` dev-dependency if nothing else needs it. **Size:** S. Do it the next time any of those test files is touched, or fold into the W1/W2 series. **Status:** implemented in PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) (with W5, stacked on #142). The time driver adopts the `wake_by_ref` superset variant from buffer.rs; the serial-connector `defmt`/`embassy-time-driver` dev-deps stay because the macro expansion references them at the invocation site — the "if nothing else needs it" condition does not hold.
 
 ### W7 — `aimdb-data-contracts` trait audit (034 §3.8, last unhandled row)
 
 **Current state (verified).** The crate still exports `SchemaType`, `Simulatable`, `Settable`, `Observable`, `Linkable`, `MigrationStep`, `MigrationChain`, `Streamable`; consumers remain the wasm adapter, the websocket connector, and the weather demo. Which traits have implementors outside examples has never been audited.
 
 **Approach.** One-time audit: for each trait, list in-tree implementors and external consumers (aimdb-pro included). Traits with zero non-demo implementors get a deprecation note or deletion in the next breaking window — per 034 root-cause 7, speculative surface is the habit to break, not an emergency. **Size:** S (audit) + S (deletions). Output is a short table appended to this doc or the issue.
+
+**Status: skipped entirely (decision 2026-06-12).** No audit will be run; the crate keeps its current surface. Re-open only if a data-contracts trait actively blocks other work.
 
 ---
 
@@ -142,11 +150,11 @@ Both protocols now ride the session engine (the hard part), but two subscribe/wr
 |---|---|---|
 | W1 data-plane de-`Any` | PR [#141](https://github.com/aimdb-dev/aimdb/pull/141) | done — no separate issue, direct PR |
 | W2 `AnyRecord` split | PR [#142](https://github.com/aimdb-dev/aimdb/pull/142) | done — stacked on #141, no separate issue |
-| W3 hardware matrix | — | none if run with #140; else a validation task |
-| W4 ACK-retransmit knob | — | on #140 merge |
-| W5 `StringKey` interner | — | opportunistic; file if not done by next release |
-| W6 `host_test_stubs!` | — | opportunistic |
-| W7 data-contracts audit | — | opportunistic |
+| W3 hardware matrix | — | prep done 2026-06-12 (firmware build verified); bench session pending — the gate for closing 035 |
+| W4 ACK-retransmit knob | PR [#144](https://github.com/aimdb-dev/aimdb/pull/144) | done — trigger fired same day via W3 scenario-2 evidence; stacked on #143 |
+| W5 `StringKey` interner | PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) | done — with W6, stacked on #142 |
+| W6 `host_test_stubs!` | PR [#143](https://github.com/aimdb-dev/aimdb/pull/143) | done — with W5, stacked on #142 |
+| W7 data-contracts audit | — | skipped entirely (decision 2026-06-12) |
 | A1 / A2 | — | on trigger only |
 
 Update this table with issue numbers as they are filed; when every row is filed or closed, this doc's status moves to Final and the live list is the issue tracker again.
