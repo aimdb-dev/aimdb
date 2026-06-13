@@ -80,6 +80,59 @@ pub mod send_wrapper;
 #[cfg(all(not(feature = "std"), feature = "connectors"))]
 pub mod connectors;
 
+/// Link stubs for **host** test binaries that touch the Embassy adapter
+/// (035 §2.4): a no-op `#[defmt::global_logger]` + `#[defmt::panic_handler]`
+/// and a pinned-at-0 embassy-time driver.
+///
+/// Coercing `EmbassyAdapter` to `Arc<dyn RuntimeOps>` instantiates a vtable
+/// whose `log` entry calls `defmt::*` unconditionally, so the `_defmt_*`
+/// extern symbols must resolve in every host test binary that links the
+/// adapter — and `#[global_logger]`/the time driver must be defined **once
+/// per binary**, so a shared `#[cfg(test)]` item cannot serve integration
+/// tests. This macro keeps the definition in one place; each test binary
+/// expands it exactly once at top level (or once in the lib's test module).
+///
+/// The invoking crate needs `defmt` and `embassy-time-driver` resolvable
+/// (dev-dependencies are enough).
+///
+/// The time driver pins the clock at 0 and `schedule_wake` wakes immediately,
+/// so an already-expired timer (e.g. `sleep(Duration::ZERO)`) completes on its
+/// next poll. Non-zero sleeps would spin forever — host tests must not use
+/// them.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! host_test_stubs {
+    () => {
+        #[defmt::global_logger]
+        struct HostTestLogger;
+
+        unsafe impl defmt::Logger for HostTestLogger {
+            fn acquire() {}
+            unsafe fn flush() {}
+            unsafe fn release() {}
+            unsafe fn write(_bytes: &[u8]) {}
+        }
+
+        #[defmt::panic_handler]
+        fn defmt_panic() -> ! {
+            core::panic!("defmt panic in host test")
+        }
+
+        struct HostTestTimeDriver;
+        impl embassy_time_driver::Driver for HostTestTimeDriver {
+            fn now(&self) -> u64 {
+                0
+            }
+            fn schedule_wake(&self, _at: u64, waker: &core::task::Waker) {
+                waker.wake_by_ref();
+            }
+        }
+        embassy_time_driver::time_driver_impl!(
+            static HOST_TEST_TIME_DRIVER: HostTestTimeDriver = HostTestTimeDriver
+        );
+    };
+}
+
 // Error handling exports
 #[cfg(not(feature = "std"))]
 pub use error::EmbassyErrorSupport;

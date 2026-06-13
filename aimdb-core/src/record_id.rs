@@ -50,19 +50,42 @@
 //! let producer = db.producer::<Temperature>(AppKey::TempIndoor);
 //! ```
 
-use alloc::{boxed::Box, string::ToString};
+use alloc::{boxed::Box, collections::BTreeSet, string::ToString};
 
 #[cfg(all(debug_assertions, feature = "std"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Counter for interned keys (debug builds only, std only)
+/// Counter for distinct interned keys (debug builds only, std only)
 #[cfg(all(debug_assertions, feature = "std"))]
 static INTERNED_KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Maximum expected interned keys before warning.
+/// Maximum expected distinct interned keys before warning.
 /// If exceeded, a debug assertion fires to catch potential misuse.
 #[cfg(all(debug_assertions, feature = "std"))]
 const MAX_EXPECTED_INTERNED_KEYS: usize = 1000;
+
+#[cfg(feature = "std")]
+type Mutex<T> = std::sync::Mutex<T>;
+#[cfg(not(feature = "std"))]
+type Mutex<T> = spin::Mutex<T>;
+
+/// Locks the intern table, hiding the std/spin API difference
+/// (`std::sync::Mutex::lock` returns a `LockResult`; `spin` returns the guard
+/// directly). A poisoned std mutex is unrecoverable here, so `.unwrap()` is
+/// the correct response. Same pattern as the `TypedRecord` field mutexes.
+#[cfg(feature = "std")]
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap()
+}
+#[cfg(not(feature = "std"))]
+fn lock<T>(m: &Mutex<T>) -> spin::MutexGuard<'_, T> {
+    m.lock()
+}
+
+/// Dedup table for interned keys: re-interning an already-known key returns
+/// the existing `'static` allocation instead of leaking a new one, bounding
+/// the leak by the number of *distinct* dynamic keys.
+static INTERNED_KEYS: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]
@@ -248,8 +271,9 @@ enum StringKeyInner {
     Static(&'static str),
     /// Interned runtime string (leaked into 'static lifetime)
     ///
-    /// Memory is intentionally leaked for O(1) cloning and comparison.
-    /// This is safe because keys are registered once at startup.
+    /// Memory is intentionally leaked for O(1) cloning and comparison; a
+    /// dedup table bounds the leak by the number of distinct dynamic keys.
+    /// See [`StringKey::intern`] for the contract.
     Interned(&'static str),
 }
 
@@ -267,34 +291,47 @@ impl StringKey {
     ///
     /// Use this for dynamic names (multi-tenant, config-driven, etc.).
     ///
-    /// # Memory
+    /// # Memory contract
     ///
-    /// The string is leaked into `'static` lifetime. This is intentional:
-    /// - Keys are registered once at startup
-    /// - Enables O(1) Copy/Clone
-    /// - Typical overhead: <4KB for 100 keys
+    /// Each **distinct** dynamic key allocates once for the lifetime of the
+    /// process (the string is leaked into `'static`); re-interning a known
+    /// key returns the existing allocation. This is what keeps `StringKey`
+    /// `Copy` with O(1) comparison — and it means every distinct key stays
+    /// resident forever. Do **not** derive keys from unbounded input (e.g.
+    /// per-request or per-message IDs). Typical overhead: <4KB for 100 keys.
     ///
     /// # Panics (debug builds only)
     ///
-    /// In debug builds with `std` feature, panics if more than 1000 keys are
-    /// interned. This catches accidental misuse (e.g., creating keys in a loop).
-    /// Production builds have no limit.
-    #[inline]
+    /// In debug builds with the `std` feature, panics if more than 1000
+    /// *distinct* keys are interned. This catches accidental misuse (e.g.,
+    /// deriving keys from unbounded input). Production builds have no limit.
     #[must_use]
     pub fn intern(s: impl AsRef<str>) -> Self {
+        let s = s.as_ref();
+
+        // Hold the lock across lookup + leak + insert so a race cannot leak
+        // two allocations for the same key.
+        let mut interned = lock(&INTERNED_KEYS);
+        if let Some(&existing) = interned.get(s) {
+            return Self(StringKeyInner::Interned(existing));
+        }
+
         #[cfg(all(debug_assertions, feature = "std"))]
         {
             let count = INTERNED_KEY_COUNT.fetch_add(1, Ordering::Relaxed);
             debug_assert!(
                 count < MAX_EXPECTED_INTERNED_KEYS,
-                "StringKey::intern() called {} times. This exceeds the expected limit of {}. \
-                 Interned keys leak memory and should only be created at startup. \
+                "StringKey::intern() created {} distinct keys. This exceeds the expected \
+                 limit of {}. Each distinct interned key leaks memory for process lifetime; \
+                 keys should only be created at startup, never derived from unbounded input. \
                  Use static string literals or enum keys for better performance.",
                 count + 1,
                 MAX_EXPECTED_INTERNED_KEYS
             );
         }
-        let leaked: &'static str = Box::leak(s.as_ref().to_string().into_boxed_str());
+
+        let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
+        interned.insert(leaked);
         Self(StringKeyInner::Interned(leaked))
     }
 
@@ -527,6 +564,19 @@ mod tests {
         assert!(!key.is_static());
         assert!(key.is_interned());
         assert_eq!(key.as_str(), "sensors.temperature");
+    }
+
+    #[test]
+    fn test_intern_dedup_returns_same_allocation() {
+        // Two separately built Strings with the same content must intern to
+        // the very same 'static allocation (leak bounded by distinct keys).
+        let a = StringKey::intern(["dedup", ".", "sensor"].concat());
+        let b = StringKey::intern(["dedup", ".", "sensor"].concat());
+        assert!(core::ptr::eq(a.as_str(), b.as_str()));
+
+        // A different key gets its own allocation.
+        let c = StringKey::intern(["dedup", ".", "other"].concat());
+        assert!(!core::ptr::eq(a.as_str(), c.as_str()));
     }
 
     #[test]
