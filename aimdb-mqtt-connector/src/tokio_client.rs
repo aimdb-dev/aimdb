@@ -23,22 +23,6 @@ use std::time::Duration;
 ///
 /// # Usage Pattern
 ///
-/// ```rust,ignore
-/// use aimdb_mqtt_connector::MqttConnector;
-///
-/// // Configure database with MQTT links
-/// let db = AimDbBuilder::new()
-///     .runtime(runtime)
-///     .with_connector(MqttConnector::new("mqtt://localhost:1883"))
-///     .configure::<Temperature>(|reg| {
-///         reg.link_from("mqtt://commands/temp")
-///            .with_deserializer(deserialize_temp)
-///            .with_buffer(BufferCfg::SingleLatest)
-///            .with_remote_access();
-///     })
-///     .build().await?;
-/// ```
-///
 /// The connector collects routes from the database during build() and
 /// automatically subscribes to all required MQTT topics.
 pub struct MqttConnectorBuilder {
@@ -55,12 +39,6 @@ impl MqttConnectorBuilder {
     ///
     /// # Arguments
     /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = MqttConnector::new("mqtt://localhost:1883");
-    /// ```
     pub fn new(broker_url: impl Into<String>) -> Self {
         Self {
             broker_url: broker_url.into(),
@@ -77,13 +55,6 @@ impl MqttConnectorBuilder {
     ///
     /// # Arguments
     /// * `client_id` - Unique identifier for this client
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = MqttConnector::new("mqtt://localhost:1883")
-    ///     .with_client_id("my-app-001");
-    /// ```
     pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
         self.client_id = Some(client_id.into());
         self

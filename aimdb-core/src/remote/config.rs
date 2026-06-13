@@ -92,9 +92,10 @@ impl AimxConfig {
     /// Sets the socket file permissions (Unix only)
     ///
     /// # Example
-    /// ```rust,ignore
-    /// config.socket_permissions(0o600)  // Owner only
-    /// config.socket_permissions(0o660)  // Owner + group
+    /// ```rust
+    /// # use aimdb_core::remote::AimxConfig;
+    /// let config = AimxConfig::uds_default()
+    ///     .socket_permissions(0o600); // Owner only (0o660: owner + group)
     /// ```
     pub fn socket_permissions(mut self, mode: u32) -> Self {
         self.socket_permissions = Some(mode);

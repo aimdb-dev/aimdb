@@ -43,32 +43,31 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,ignore
+//! ```no_run
 //! use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use aimdb_sync::AimDbBuilderSyncExt;
-//! use serde::{Serialize, Deserialize};
 //! use std::sync::Arc;
 //!
-//! #[derive(Debug, Clone, Serialize, Deserialize)]
+//! #[derive(Debug, Clone)]
 //! struct Temperature {
 //!     celsius: f32,
 //! }
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Build and attach database (NO #[tokio::main] NEEDED!)
-//! let adapter = Arc::new(TokioAdapter);
+//! let adapter = Arc::new(TokioAdapter::new()?);
 //! let mut builder = AimDbBuilder::new().runtime(adapter);
 //!
-//! builder.configure::<Temperature>(|reg| {
+//! builder.configure::<Temperature>("sensor.temp", |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
 //! });
 //!
 //! let handle = builder.attach()?;
 //!
 //! // Create producer and consumer
-//! let producer = handle.producer::<Temperature>()?;
-//! let consumer = handle.consumer::<Temperature>()?;
+//! let producer = handle.producer::<Temperature>("sensor.temp")?;
+//! let consumer = handle.consumer::<Temperature>("sensor.temp")?;
 //!
 //! // Producer: blocking operations
 //! producer.set(Temperature { celsius: 25.0 })?;
@@ -87,8 +86,11 @@
 //!
 //! Both `SyncProducer` and `SyncConsumer` can be cloned and shared across threads:
 //!
-//! ```rust,ignore
+//! ```no_run
 //! use std::thread;
+//! # use aimdb_sync::{SyncConsumer, SyncProducer};
+//! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
+//! # fn demo(producer: SyncProducer<Temperature>, consumer: SyncConsumer<Temperature>) {
 //!
 //! // Clone for use in another thread
 //! let producer_clone = producer.clone();
@@ -103,6 +105,7 @@
 //!         println!("Got: {:.1}°C", temp.celsius);
 //!     }
 //! });
+//! # }
 //! ```
 //!
 //! ## Independent Subscriptions
@@ -110,11 +113,16 @@
 //! Note: Cloning a `SyncConsumer` shares the same channel, so only one thread
 //! will receive each value. For independent subscriptions, create multiple consumers:
 //!
-//! ```rust,ignore
-//! let consumer1 = handle.consumer::<Temperature>()?;
-//! let consumer2 = handle.consumer::<Temperature>()?;
+//! ```no_run
+//! # use aimdb_sync::AimDbHandle;
+//! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
+//! # fn demo(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+//! let consumer1 = handle.consumer::<Temperature>("sensor.temp")?;
+//! let consumer2 = handle.consumer::<Temperature>("sensor.temp")?;
 //!
 //! // Both receive independent copies of all values
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Channel Capacity Configuration
@@ -122,15 +130,22 @@
 //! By default, both producers and consumers use a channel capacity of 100.
 //! You can customize this per record type using the `_with_capacity` methods:
 //!
-//! ```rust,ignore
+//! ```no_run
+//! # use aimdb_sync::AimDbHandle;
+//! # #[derive(Debug, Clone)] struct SensorData { value: f32 }
+//! # #[derive(Debug, Clone)] struct RareEvent { code: u8 }
+//! # #[derive(Debug, Clone)] struct LatestOnly { state: u8 }
+//! # fn demo(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
 //! // High-frequency sensor data needs larger buffer
-//! let producer = handle.producer_with_capacity::<SensorData>(1000)?;
+//! let producer = handle.producer_with_capacity::<SensorData>("sensor.fast", 1000)?;
 //!
 //! // Rare events can use smaller buffer
-//! let consumer = handle.consumer_with_capacity::<RareEvent>(10)?;
+//! let consumer = handle.consumer_with_capacity::<RareEvent>("events.rare", 10)?;
 //!
 //! // SingleLatest-like behavior: use capacity=1 to minimize queueing
-//! let consumer = handle.consumer_with_capacity::<LatestOnly>(1)?;
+//! let consumer = handle.consumer_with_capacity::<LatestOnly>("state.latest", 1)?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! **When to adjust capacity:**
@@ -151,14 +166,22 @@
 //! ### Solutions for SingleLatest Semantics
 //!
 //! 1. **Use `get_latest()`** - Drains the channel to get the most recent value:
-//!    ```rust,ignore
+//!    ```no_run
+//!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
+//!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> aimdb_core::DbResult<()> {
 //!    // Always get the latest value, skipping queued intermediates
 //!    let latest = consumer.get_latest()?;
+//!    # Ok(())
+//!    # }
 //!    ```
 //!
 //! 2. **Use capacity=1** - Minimize queueing:
-//!    ```rust,ignore
-//!    let consumer = handle.consumer_with_capacity::<T>(1)?;
+//!    ```no_run
+//!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
+//!    # fn demo(handle: &aimdb_sync::AimDbHandle) -> aimdb_core::DbResult<()> {
+//!    let consumer = handle.consumer_with_capacity::<Temperature>("sensor.temp", 1)?;
+//!    # Ok(())
+//!    # }
 //!    ```
 //!
 //! 3. **Use the async API directly** - For perfect semantic preservation.
@@ -197,13 +220,17 @@
 //!   and return any errors that occur in the async context
 //! - `try_set()` sends immediately without waiting for the produce result (fire-and-forget)
 //!
-//! ```rust,ignore
+//! ```no_run
+//! # use aimdb_sync::{DbError, SyncProducer};
+//! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
+//! # fn demo(producer: &SyncProducer<Temperature>, data: Temperature) {
 //! // Errors are properly propagated to the caller
 //! match producer.set(data) {
 //!     Ok(()) => println!("Successfully produced"),
-//!     Err(DbError::RecordNotFound { .. }) => eprintln!("Type not registered"),
+//!     Err(DbError::RecordKeyNotFound { .. }) => eprintln!("Record not registered"),
 //!     Err(e) => eprintln!("Production failed: {}", e),
 //! }
+//! # }
 //! ```
 //!
 //! ## Safety

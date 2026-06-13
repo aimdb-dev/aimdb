@@ -139,7 +139,10 @@ impl core::fmt::Display for MigrationError {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use aimdb_data_contracts::{MigrationError, MigrationStep};
+/// # struct TemperatureV1 { schema_version: u32, temp: f64, timestamp: u64, unit: String }
+/// # struct TemperatureV2 { schema_version: u32, celsius: f64, timestamp: u64 }
 /// struct TemperatureV1ToV2;
 /// impl MigrationStep for TemperatureV1ToV2 {
 ///     type Older = TemperatureV1;
@@ -211,6 +214,9 @@ pub trait MigrationChain: SchemaType + serde::de::DeserializeOwned + serde::Seri
 /// Validate the migration chain at compile time and generate `MigrationChain` impl.
 ///
 /// # Syntax
+///
+/// Grammar sketch with placeholder types (not compiled — see
+/// `examples/weather-mesh-demo`'s temperature contract for a compiled chain):
 ///
 /// ```rust,ignore
 /// migration_chain! {

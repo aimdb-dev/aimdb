@@ -3,7 +3,8 @@
 //! Two free functions that own the boilerplate a data-plane connector used to
 //! hand-roll. The author writes only the pure I/O adapter — a
 //! [`Connector`](crate::transport::Connector) (outbound) and a [`Source`]
-//! (inbound) — and composes the helpers in `build()`:
+//! (inbound) — and composes the helpers in `build()`
+//! (illustrative — `sink()`/`subscription()` are the author's own constructors):
 //!
 //! ```rust,ignore
 //! let mut f = pump_sink(db, "redis", self.sink().await?);          // outbound

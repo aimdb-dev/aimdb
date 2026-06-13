@@ -7,15 +7,21 @@
 //! modifying `aimdb-core`.
 //!
 //! # Example
-//! ```rust,ignore
+//! ```no_run
+//! # use aimdb_core::{AimDb, AimDbBuilder, RecordRegistrar};
+//! # struct MyState { flag: bool }
+//! # fn at_configure_time(builder: &mut AimDbBuilder) {
 //! // Storing a value (e.g. from an external "with_persistence" builder ext):
-//! builder.extensions_mut().insert(MyState { ... });
-//!
+//! builder.extensions_mut().insert(MyState { flag: true });
+//! # }
+//! # fn in_registrar(reg: &mut RecordRegistrar<'_, u32>) {
 //! // Retrieving it from a RecordRegistrar closure:
 //! let state = reg.extensions().get::<MyState>().expect("MyState not configured");
-//!
+//! # }
+//! # fn at_query_time(db: &AimDb) {
 //! // Retrieving it from a live AimDb handle (query time):
 //! let state = db.extensions().get::<MyState>().expect("MyState not configured");
+//! # }
 //! ```
 
 use alloc::boxed::Box;

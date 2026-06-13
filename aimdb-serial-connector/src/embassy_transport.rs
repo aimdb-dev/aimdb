@@ -130,7 +130,8 @@ impl SerialClient {
 
 /// Serves the full AimX toolset over a serial UART, so a host (or another board)
 /// can `record.list`/`get`/`set`/`subscribe`/`drain` this db over the wire.
-/// Register it directly with `with_connector`:
+/// Register it directly with `with_connector` (illustrative — the UART halves
+/// come from device init on a thumb target):
 ///
 /// ```ignore
 /// builder.with_connector(

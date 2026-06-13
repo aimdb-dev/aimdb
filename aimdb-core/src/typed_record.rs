@@ -343,16 +343,6 @@ pub trait JsonRecordAccess {
     /// Returns error if:
     /// - Record not configured with `.with_remote_access()`
     /// - Buffer subscription fails (shouldn't happen in practice)
-    ///
-    /// # Example (internal use)
-    /// ```rust,ignore
-    /// let record: &Box<dyn AnyRecord> = db.storage(id)?;
-    /// let mut json_reader = record.json_access().unwrap().subscribe_json()?;
-    ///
-    /// while let Ok(json_val) = json_reader.recv_json().await {
-    ///     // Forward to remote client...
-    /// }
-    /// ```
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>>;
 
     /// Sets a record value from JSON
@@ -378,14 +368,6 @@ pub trait JsonRecordAccess {
     /// - JSON deserialization fails (schema mismatch)
     /// - Record not configured with buffer
     /// - Record not configured with `.with_remote_access()`
-    ///
-    /// # Example (internal use)
-    /// ```rust,ignore
-    /// let record: &Box<dyn AnyRecord> = db.storage(id)?;
-    /// let json_val = serde_json::json!({"log_level": "debug"});
-    /// // Only works if producer_count == 0
-    /// record.json_access().unwrap().set_from_json(json_val)?;
-    /// ```
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
 }
 
@@ -670,17 +652,6 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     ///
     /// # Arguments
     /// * `f` - A function that takes the `RuntimeContext` and a `Consumer<T>`, and returns a Future
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// record.add_consumer(|ctx, consumer| async move {
-    ///     let mut rx = consumer.subscribe();
-    ///     while let Ok(value) = rx.recv().await {
-    ///         println!("Consumer: {:?}", value);
-    ///     }
-    /// });
-    /// ```
     pub fn add_consumer<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(crate::RuntimeContext, crate::Consumer<T>) -> Fut + Send + 'static,
@@ -1114,19 +1085,6 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// **Both std and no_std**: Direct access via `Deref`, `.get()`, `.into_inner()`
     ///
     /// **std only**: `.as_json()` (if `.with_remote_access()` configured)
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// // Direct access (std and no_std)
-    /// if let Some(value) = record.latest() {
-    ///     println!("Temp: {:.1}°C", value.celsius);
-    /// }
-    ///
-    /// // JSON serialization (std only)
-    /// if let Some(json) = record.latest()?.as_json() {
-    ///     println!("{}", json);
-    /// }
-    /// ```
     pub fn latest(&self) -> Option<RecordValue<T>> {
         // Read buffer-native storage via peek() (design 031). Records without
         // a buffer return None — see Breaking Changes in design 031.

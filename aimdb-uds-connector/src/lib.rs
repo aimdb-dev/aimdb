@@ -14,19 +14,35 @@
 //!   register it with `with_connector` to stand up remote access. Sugar over
 //!   [`SessionServerConnector`].
 //!
-//! ```rust,ignore
+//! ```no_run
+//! use aimdb_core::buffer::BufferCfg;
+//! use aimdb_core::AimDbBuilder;
 //! use aimdb_uds_connector::{UdsClient, UdsServer};
+//! # use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+//! # use std::sync::Arc;
+//! # #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+//! # struct Temp { celsius: f32 }
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+//! # let rt = Arc::new(TokioAdapter::new()?);
 //!
 //! // server: expose this db over a socket (no links)
-//! AimDbBuilder::new().runtime(rt)
+//! AimDbBuilder::new().runtime(rt.clone())
 //!     .with_connector(UdsServer::new("/run/aimdb.sock").max_connections(32))
 //!     .build().await?;
 //!
 //! // client: mirror a record to a peer over the socket
-//! AimDbBuilder::new().runtime(rt)
-//!     .with_connector(UdsClient::new("/run/aimdb.sock"))
-//!     .configure::<Temp>("temp", |r| { r.with_remote_access().link_to("uds://temp")...; })
-//!     .build().await?;
+//! let mut b = AimDbBuilder::new().runtime(rt)
+//!     .with_connector(UdsClient::new("/run/aimdb.sock"));
+//! b.configure::<Temp>("temp", |r| {
+//!     r.buffer(BufferCfg::SingleLatest)
+//!         .with_remote_access()
+//!         .link_to("uds://temp")
+//!         .with_serializer_raw(|t: &Temp| Ok(serde_json::to_vec(t).expect("serialize")))
+//!         .finish();
+//! });
+//! b.build().await?;
+//! # Ok(())
+//! # }
 //! ```
 
 mod transport;
@@ -83,8 +99,11 @@ impl UdsClient {
 /// Accepts AimX connections over a Unix-domain socket and serves the full AimX
 /// toolset. Register it via `with_connector` to stand up remote access:
 ///
-/// ```rust,ignore
-/// builder.with_connector(UdsServer::new("/run/aimdb.sock").max_connections(32))
+/// ```no_run
+/// # use aimdb_uds_connector::UdsServer;
+/// # fn demo(builder: aimdb_core::AimDbBuilder) {
+/// builder.with_connector(UdsServer::new("/run/aimdb.sock").max_connections(32));
+/// # }
 /// ```
 ///
 /// Unlike a data-plane connector, a server takes **no** `link_to`/`link_from` —

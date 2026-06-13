@@ -13,11 +13,14 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```no_run
 //! use aimdb_persistence_sqlite::SqliteBackend;
 //! use std::sync::Arc;
 //!
+//! # fn demo() -> Result<(), Box<dyn std::error::Error>> {
 //! let backend = Arc::new(SqliteBackend::new("./data/history.db")?);
+//! # Ok(())
+//! # }
 //! ```
 
 use std::path::Path;

@@ -19,6 +19,9 @@
 //!
 //! # Usage
 //!
+//! Illustrative (not compiled: requires the `embassy-runtime` feature and a
+//! device network stack):
+//!
 //! ```rust,ignore
 //! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 //! use aimdb_core::AimDbBuilder;

@@ -213,6 +213,10 @@ pub trait Observable: SchemaType {
 ///
 /// # Example
 ///
+/// Not compiled: the snippet needs `aimdb-core`'s builder, which this crate
+/// only depends on under the `observable` feature — `linkable` alone has no
+/// core dependency.
+///
 /// ```rust,ignore
 /// use aimdb_data_contracts::Linkable;
 /// use my_app::Temperature;  // user-defined type implementing Linkable

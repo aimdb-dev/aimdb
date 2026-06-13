@@ -23,6 +23,9 @@
 //!
 //! # Usage
 //!
+//! Illustrative (not compiled: requires the `embassy-runtime` feature and a
+//! device network stack):
+//!
 //! ```rust,ignore
 //! use aimdb_knx_connector::KnxConnectorBuilder;
 //! use aimdb_core::AimDbBuilder;

@@ -24,7 +24,8 @@
 //!
 //! Remote access is registered like any other connector — via `with_connector`
 //! using `aimdb_uds_connector::UdsServer` (this replaced the former
-//! `AimDbBuilder::with_remote_access(config)`):
+//! `AimDbBuilder::with_remote_access(config)`). Illustrative (not compiled:
+//! the connector lives in a downstream crate `aimdb-core` cannot depend on):
 //!
 //! ```rust,ignore
 //! use aimdb_core::remote::{AimxConfig, SecurityPolicy};

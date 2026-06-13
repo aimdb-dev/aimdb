@@ -163,15 +163,6 @@ pub trait BufferReader<T: Clone + Send>: Send {
 /// # Requirements
 /// - Record must be configured with `.with_remote_access()`
 /// - Only available with the `remote-access` feature (requires serde_json)
-///
-/// # Example
-/// ```rust,ignore
-/// // Internal use in remote access handler
-/// let json_reader: Box<dyn JsonBufferReader> = record.subscribe_json()?;
-/// while let Ok(json_val) = json_reader.recv_json().await {
-///     // Forward JSON value to remote client...
-/// }
-/// ```
 #[cfg(feature = "remote-access")]
 pub trait JsonBufferReader: Send {
     /// Receive the next value as JSON (async)
@@ -225,21 +216,6 @@ pub struct BufferMetricsSnapshot {
 ///
 /// Implemented by buffer types when the `metrics` feature is enabled.
 /// Provides counters for diagnosing producer-consumer imbalances.
-///
-/// # Example
-/// ```rust,ignore
-/// use aimdb_core::buffer::BufferMetrics;
-///
-/// // After enabling `metrics` feature
-/// let metrics = buffer.metrics();
-/// if metrics.produced_count > metrics.consumed_count + 1000 {
-///     println!("Warning: consumer is {} items behind",
-///              metrics.produced_count - metrics.consumed_count);
-/// }
-/// if metrics.dropped_count > 0 {
-///     println!("Warning: {} items dropped due to overflow", metrics.dropped_count);
-/// }
-/// ```
 #[cfg(feature = "metrics")]
 pub trait BufferMetrics {
     /// Get a snapshot of current buffer metrics

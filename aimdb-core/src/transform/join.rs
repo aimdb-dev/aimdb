@@ -89,23 +89,6 @@ impl JoinTrigger {
 /// Obtained as the first argument to the [`JoinBuilder::on_triggers`] closure.
 /// Call `.recv().await` in a loop to consume trigger events from all input forwarders.
 /// Returns `Err` when all input forwarders have exited and the channel is closed.
-///
-/// ```rust,ignore
-/// .on_triggers(|mut rx, producer| async move {
-///     let mut last_a: Option<f32> = None;
-///     let mut last_b: Option<f32> = None;
-///     while let Ok(trigger) = rx.recv().await {
-///         match trigger.index() {
-///             0 => last_a = trigger.as_input::<InputA>().copied(),
-///             1 => last_b = trigger.as_input::<InputB>().copied(),
-///             _ => {}
-///         }
-///         if let (Some(a), Some(b)) = (last_a, last_b) {
-///             producer.produce(compute(a, b));
-///         }
-///     }
-/// })
-/// ```
 pub struct JoinEventRx {
     inner: async_channel::Receiver<JoinTrigger>,
 }
@@ -232,6 +215,9 @@ where
     /// closure can freely hold borrows across `.await` points and maintain any state it needs.
     ///
     /// The task runs until all input forwarders close (i.e., all upstream records stop producing).
+    ///
+    /// Illustrative (not compiled: fragment of a `transform_join` pipeline with
+    /// user-defined input types):
     ///
     /// ```rust,ignore
     /// .on_triggers(|mut rx, producer| async move {

@@ -38,18 +38,21 @@
 //!
 //! # Example
 //!
+//! Illustrative (not compiled: `.buffer()` comes from your runtime adapter's
+//! registrar extension trait, which `aimdb-core` cannot depend on):
+//!
 //! ```rust,ignore
 //! use aimdb_core::buffer::BufferCfg;
 //!
 //! // High-frequency sensor data
 //! reg.buffer(BufferCfg::SpmcRing { capacity: 2048 })
-//!    .source(|em, data| async { ... })
-//!    .tap(|em, data| async { ... });
+//!    .source(|ctx, producer| async move { /* … */ })
+//!    .tap(|ctx, consumer| async move { /* … */ });
 //!
 //! // Configuration updates
 //! reg.buffer(BufferCfg::SingleLatest)
-//!    .source(|em, cfg| async { ... })
-//!    .tap(|em, cfg| async { ... });
+//!    .source(|ctx, producer| async move { /* … */ })
+//!    .tap(|ctx, consumer| async move { /* … */ });
 //! ```
 
 // Module structure

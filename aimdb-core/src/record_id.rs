@@ -35,6 +35,9 @@
 //!
 //! ## Enum Keys (compile-time safe, embedded)
 //!
+//! Illustrative (not compiled: the derive macro lives in `aimdb-derive`,
+//! behind the optional `derive` feature):
+//!
 //! ```rust,ignore
 //! use aimdb_derive::RecordKey;
 //!
@@ -47,7 +50,7 @@
 //! }
 //!
 //! // Compile-time typo detection!
-//! let producer = db.producer::<Temperature>(AppKey::TempIndoor);
+//! builder.configure::<Temperature>(AppKey::TempIndoor, |reg| { /* … */ });
 //! ```
 
 use alloc::{boxed::Box, collections::BTreeSet, string::ToString};
@@ -105,7 +108,8 @@ pub use aimdb_derive::RecordKey;
 ///
 /// # Implementing RecordKey
 ///
-/// The easiest way is to use the derive macro:
+/// The easiest way is to use the derive macro (illustrative, not compiled:
+/// the macro lives in `aimdb-derive`, behind the optional `derive` feature):
 ///
 /// ```rust,ignore
 /// #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +176,12 @@ pub use aimdb_derive::RecordKey;
 ///
 /// **Manual implementation:** Implement `Hash` by hashing `self.as_str()`:
 ///
-/// ```rust,ignore
+/// ```rust
+/// use core::hash::{Hash, Hasher};
+/// # pub enum MyKey { Temperature }
+/// # impl MyKey {
+/// #     fn as_str(&self) -> &'static str { "sensor.temp" }
+/// # }
 /// impl Hash for MyKey {
 ///     fn hash<H: Hasher>(&self, state: &mut H) {
 ///         self.as_str().hash(state);
@@ -189,23 +198,6 @@ pub trait RecordKey:
     ///
     /// Returns the URL/address to use with connectors (MQTT topics, KNX addresses, etc.).
     /// Use with `.link_to()` for outbound or `.link_from()` for inbound connections.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(RecordKey)]
-    /// pub enum SensorKey {
-    ///     #[key = "temp.indoor"]
-    ///     #[link_address = "mqtt://sensors/temp/indoor"]
-    ///     TempIndoor,
-    /// }
-    ///
-    /// // Use with link_to for outbound
-    /// reg.link_to(SensorKey::TempIndoor.link_address().unwrap())
-    ///
-    /// // Or with link_from for inbound
-    /// reg.link_from(SensorKey::TempIndoor.link_address().unwrap())
-    /// ```
     #[inline]
     fn link_address(&self) -> Option<&str> {
         None

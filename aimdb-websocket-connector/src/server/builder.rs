@@ -46,13 +46,16 @@ use aimdb_ws_protocol::TopicInfo;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```no_run
 /// use aimdb_websocket_connector::WebSocketConnector;
+/// # use aimdb_data_contracts::{SchemaType, Streamable};
+/// # #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+/// # struct Temperature { celsius: f32 }
+/// # impl SchemaType for Temperature { const NAME: &'static str = "temperature"; }
+/// # impl Streamable for Temperature {}
 ///
 /// let mut connector = WebSocketConnector::new();
 /// connector.register::<Temperature>();
-/// connector.register::<Humidity>();
-/// connector.register::<GpsLocation>();
 ///
 /// let connector = connector
 ///     .bind("0.0.0.0:8080")
@@ -119,13 +122,6 @@ impl WebSocketConnectorBuilder {
     }
 
     /// Set the TCP address to bind the WebSocket server to.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// .bind("0.0.0.0:9090")
-    /// .bind(([127, 0, 0, 1], 8765))
-    /// ```
     pub fn bind(mut self, addr: impl ToSocketAddrs) -> Self {
         self.bind_addr = addr
             .to_socket_addrs()
@@ -189,10 +185,11 @@ impl WebSocketConnectorBuilder {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```no_run
     /// use axum::{routing::get, Router};
+    /// # use aimdb_websocket_connector::WebSocketConnector;
     ///
-    /// let rest = Router::new().route("/api/status", get(status_handler));
+    /// let rest = Router::new().route("/api/status", get(|| async { "ok" }));
     /// let connector = WebSocketConnector::new().with_additional_routes(rest);
     /// ```
     pub fn with_additional_routes(mut self, router: AxumRouter) -> Self {
@@ -207,10 +204,10 @@ impl WebSocketConnectorBuilder {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```no_run
+    /// # use aimdb_websocket_connector::WebSocketConnector;
     /// WebSocketConnector::new()
-    ///     .with_auto_subscribe(["#"])          // push everything
-    ///     .with_auto_subscribe(["sensors/#"])  // only sensor topics
+    ///     .with_auto_subscribe(["sensors/#"]); // or ["#"] to push everything
     /// ```
     pub fn with_auto_subscribe(
         mut self,
@@ -246,19 +243,6 @@ impl WebSocketConnectorBuilder {
     /// Each call monomorphizes closures that capture `T` for serialization,
     /// deserialization, and routing. The serializer performs a `downcast_ref`
     /// on `&dyn Any` to recover the concrete type at dispatch.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_websocket_connector::WebSocketConnector;
-    ///
-    /// let mut connector = WebSocketConnector::new();
-    /// connector.register::<Temperature>();
-    /// connector.register::<Humidity>();
-    /// connector.register::<MyCustomSensor>();  // user's own type
-    ///
-    /// let connector = connector.bind("0.0.0.0:8080");
-    /// ```
     /// # Panics
     ///
     /// Panics if a *different* type has already been registered under the

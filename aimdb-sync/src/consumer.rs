@@ -19,7 +19,7 @@ use std::time::Duration;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```no_run
 /// # use aimdb_sync::*;
 /// # use serde::{Serialize, Deserialize};
 /// # #[derive(Debug, Clone, Serialize, Deserialize)]

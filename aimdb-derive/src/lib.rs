@@ -5,6 +5,10 @@
 //!
 //! # Example
 //!
+//! Illustrative (not compiled: the generated impl targets `aimdb_core`'s
+//! `RecordKey` trait, a circular dev-dependency for this proc-macro crate —
+//! compiled integration tests live in `aimdb-core`):
+//!
 //! ```rust,ignore
 //! use aimdb_derive::RecordKey;
 //!
@@ -37,6 +41,9 @@ use syn::{parse_macro_input, Data, DeriveInput, Error, Fields, Lit, Meta};
 /// URL/address with the key (MQTT topics, KNX group addresses, etc.):
 ///
 /// # Example
+///
+/// Illustrative (not compiled: see the crate-level note — compiled
+/// integration tests live in `aimdb-core`):
 ///
 /// ```rust,ignore
 /// // Note: Hash is auto-generated to satisfy the Borrow<str> contract

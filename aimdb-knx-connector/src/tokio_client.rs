@@ -34,22 +34,6 @@ use tokio::sync::mpsc;
 ///
 /// # Usage Pattern
 ///
-/// ```rust,ignore
-/// use aimdb_knx_connector::KnxConnector;
-///
-/// // Configure database with KNX links
-/// let db = AimDbBuilder::new()
-///     .runtime(runtime)
-///     .with_connector(KnxConnector::new("knx://192.168.1.19:3671"))
-///     .configure::<LightState>(|reg| {
-///         reg.link_from("knx://1/0/7")
-///            .with_deserializer(deserialize_light)
-///            .with_buffer(BufferCfg::SingleLatest)
-///            .finish();
-///     })
-///     .build().await?;
-/// ```
-///
 /// The connector collects routes from the database during build() and
 /// automatically monitors all required KNX group addresses.
 pub struct KnxConnectorBuilder {
@@ -64,12 +48,6 @@ impl KnxConnectorBuilder {
     ///
     /// # Arguments
     /// * `gateway_url` - Gateway URL (knx://host:port)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let builder = KnxConnector::new("knx://192.168.1.19:3671");
-    /// ```
     pub fn new(gateway_url: impl Into<String>) -> Self {
         Self {
             gateway_url: gateway_url.into(),

@@ -8,7 +8,10 @@
 //!
 //! # Producer Example
 //!
-//! ```rust,ignore
+//! ```no_run
+//! # use aimdb_core::{Producer, RuntimeContext};
+//! # #[derive(Clone, Debug)] struct Temperature { celsius: f32 }
+//! # async fn read_sensor() -> Temperature { Temperature { celsius: 21.0 } }
 //! async fn temperature_producer(
 //!     ctx: RuntimeContext,
 //!     producer: Producer<Temperature>,
@@ -23,7 +26,9 @@
 //!
 //! # Consumer Example
 //!
-//! ```rust,ignore
+//! ```no_run
+//! # use aimdb_core::{Consumer, RuntimeContext};
+//! # #[derive(Clone, Debug)] struct Temperature { celsius: f32 }
 //! async fn temperature_monitor(
 //!     ctx: RuntimeContext,
 //!     consumer: Consumer<Temperature>,
@@ -36,6 +41,9 @@
 //! ```
 //!
 //! # Record Registration Example
+//!
+//! Illustrative (not compiled: `.buffer()` comes from your runtime adapter's
+//! registrar extension trait, which `aimdb-core` cannot depend on):
 //!
 //! ```rust,ignore
 //! builder.configure::<Temperature>("sensors.outdoor", |reg| {
@@ -381,11 +389,6 @@ where
     ///
     /// The name shows up in stage profiling output. This method is always
     /// available; when the `profiling` feature is disabled it is a no-op.
-    ///
-    /// ```rust,ignore
-    /// reg.source(|ctx, producer| async move { /* ... */ })
-    ///    .with_name("sensor_reader");
-    /// ```
     pub fn with_name(&mut self, name: &str) -> &mut Self {
         #[cfg(feature = "profiling")]
         if let Some((kind, idx)) = self.last_stage {
@@ -401,15 +404,6 @@ where
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext)
     /// (time + logging capabilities) and a pre-resolved [`Producer<T>`]; it is
     /// collected at `build()` time and driven by the `AimDbRunner`.
-    ///
-    /// ```rust,ignore
-    /// reg.source(|ctx, producer| async move {
-    ///     loop {
-    ///         producer.produce(read_sensor().await);
-    ///         ctx.time().sleep_secs(1).await;
-    ///     }
-    /// });
-    /// ```
     pub fn source<F, Fut>(&mut self, f: F) -> &mut Self
     where
         F: FnOnce(crate::RuntimeContext, crate::Producer<T>) -> Fut + Send + 'static,
@@ -433,15 +427,6 @@ where
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) and a
     /// pre-resolved [`Consumer<T>`]; it is collected at `build()` time and
     /// driven by the `AimDbRunner`. Multiple taps per record are allowed.
-    ///
-    /// ```rust,ignore
-    /// reg.tap(|ctx, consumer| async move {
-    ///     let mut rx = consumer.subscribe();
-    ///     while let Ok(value) = rx.recv().await {
-    ///         ctx.log().info("observed value");
-    ///     }
-    /// });
-    /// ```
     pub fn tap<F, Fut>(&mut self, f: F) -> &mut Self
     where
         F: FnOnce(crate::RuntimeContext, crate::Consumer<T>) -> Fut + Send + 'static,
@@ -502,14 +487,6 @@ where
     /// / `set` / `subscribe` protocol. Requires `T: RemoteSerialize`
     /// (blanket-impl'd for every `Serialize + DeserializeOwned` type). Works on
     /// no_std + alloc.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// builder.configure::<Temperature>(|reg| {
-    ///     reg.buffer(BufferCfg::SingleLatest)
-    ///        .with_remote_access();  // Enable remote queries
-    /// });
-    /// ```
     #[cfg(feature = "json-serialize")]
     pub fn with_remote_access(&mut self) -> &mut Self
     where
@@ -568,17 +545,6 @@ where
     /// Link TO external system (outbound: AimDB → External)
     ///
     /// Subscribes to buffer updates and publishes them to an external system.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// builder.configure::<Temperature>(|reg| {
-    ///     reg.buffer(BufferCfg::SingleLatest)
-    ///        .link_to("mqtt://broker/sensors/temp")
-    ///            .with_serializer_raw(|t| serde_json::to_vec(t).unwrap())
-    ///            .finish()
-    /// });
-    /// ```
     pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T> {
         OutboundConnectorBuilder {
             registrar: self,
@@ -593,17 +559,6 @@ where
     /// Link FROM external system (inbound: External → AimDB)
     ///
     /// Subscribes to an external data source and produces values into this record's buffer.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// builder.configure::<LightState>(|reg| {
-    ///     reg.buffer(BufferCfg::SingleLatest)
-    ///        .link_from("mqtt://broker/lights/+/state")
-    ///            .with_deserializer(|_ctx, bytes: &[u8]| parse_light_state(bytes))
-    ///            .finish()
-    /// });
-    /// ```
     pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
         InboundConnectorBuilder {
             registrar: self,
@@ -662,17 +617,6 @@ where
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
     /// platform-independent timestamps and logging, plus the typed value being
     /// serialized.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// .link_to("mqtt://broker/sensors/temp")
-    ///     .with_serializer(|ctx, value: &Temperature| {
-    ///         ctx.log().debug("Serializing temperature for MQTT");
-    ///         value.to_bytes()
-    ///             .map_err(|_| SerializeError::InvalidData)
-    ///     })
-    /// ```
     pub fn with_serializer<F>(mut self, f: F) -> Self
     where
         F: Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
@@ -709,25 +653,6 @@ where
     /// The provider is type-checked at compile time against `T` and stays
     /// typed end-to-end: it is fused into the link's serialized source and
     /// called with `&T` per value (design 036 W1).
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use aimdb_core::connector::TopicProvider;
-    ///
-    /// struct SensorTopicProvider;
-    ///
-    /// impl TopicProvider<Temperature> for SensorTopicProvider {
-    ///     fn topic(&self, value: &Temperature) -> Option<String> {
-    ///         Some(format!("sensors/temp/{}", value.sensor_id))
-    ///     }
-    /// }
-    ///
-    /// reg.link_to("mqtt://sensors/default")
-    ///    .with_topic_provider(SensorTopicProvider)
-    ///    .with_serializer(...)
-    ///    .finish();
-    /// ```
     pub fn with_topic_provider<P>(mut self, provider: P) -> Self
     where
         P: crate::connector::TopicProvider<T> + 'static,
@@ -912,16 +837,6 @@ where
     /// Prefer `.with_deserializer(|ctx, data| ...)` for access to
     /// `RuntimeContext` (timestamps, logging). Use this raw variant
     /// only when context is unnecessary.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// .link_from("mqtt://broker/sensors/temp")
-    ///     .with_deserializer_raw(|bytes| {
-    ///         serde_json::from_slice::<Temperature>(bytes)
-    ///             .map_err(|e| e.to_string())
-    ///     })
-    /// ```
     pub fn with_deserializer_raw<F>(mut self, f: F) -> Self
     where
         F: Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static,
@@ -936,17 +851,6 @@ where
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
     /// platform-independent timestamps and logging, plus the raw bytes from
     /// the external system.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// .link_from("knx://gateway/9/1/0")
-    ///     .with_deserializer(|ctx, data: &[u8]| {
-    ///         let mut temp = from_knx(data, "9/1/0")?;
-    ///         temp.timestamp = ctx.time().now();
-    ///         Ok(temp)
-    ///     })
-    /// ```
     pub fn with_deserializer<F>(mut self, f: F) -> Self
     where
         F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
@@ -980,19 +884,6 @@ where
     /// - Topics determined from smart contracts at runtime
     /// - Service discovery integration
     /// - Environment-specific topic configuration
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// reg.link_from("mqtt://mesh/default/data")  // Fallback topic
-    ///    .with_topic_resolver(|| {
-    ///        // Read from smart contract, config service, etc.
-    ///        let node_id = smart_contract.get_producer_node_id()?;
-    ///        Some(format!("mesh/{}/data", node_id))
-    ///    })
-    ///    .with_deserializer(|_ctx, bytes: &[u8]| parse_sensor_data(bytes))
-    ///    .finish();
-    /// ```
     pub fn with_topic_resolver<F>(mut self, resolver: F) -> Self
     where
         F: Fn() -> Option<String> + Send + Sync + 'static,

@@ -322,6 +322,9 @@ impl WasmDb {
     /// generic type parameters cannot cross the WASM boundary. Typical usage
     /// is in a factory function that builds a pre-configured `WasmDb`:
     ///
+    /// Illustrative (not compiled: `#[wasm_bindgen]` exports only build for
+    /// the wasm32 target):
+    ///
     /// ```rust,ignore
     /// #[wasm_bindgen]
     /// pub fn create_db() -> WasmDb {

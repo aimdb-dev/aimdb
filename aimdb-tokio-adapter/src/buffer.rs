@@ -209,14 +209,6 @@ impl<T: Clone + Send + Sync + 'static> TokioBuffer<T> {
     ///
     /// # Returns
     /// A `tokio::task::JoinHandle` that can be used to await task completion
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let handle = buffer.spawn_dispatcher(|value| async move {
-    ///     println!("Processing: {:?}", value);
-    ///     // Call producer and consumers here
-    /// });
-    /// ```
     pub fn spawn_dispatcher<F, Fut>(&self, handler: F) -> tokio::task::JoinHandle<()>
     where
         F: Fn(T) -> Fut + Send + Sync + 'static,
