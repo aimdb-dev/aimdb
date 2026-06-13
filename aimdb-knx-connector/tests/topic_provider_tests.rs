@@ -398,55 +398,49 @@ async fn test_hvac_zone_routing() {
 }
 
 // ============================================================================
-// Test TopicProviderAny Type Erasure with KNX Types
+// Test TopicProvider as a typed trait object with KNX Types
 // ============================================================================
 
 #[test]
-fn test_knx_topic_provider_type_erasure() {
-    use aimdb_core::connector::{TopicProviderAny, TopicProviderWrapper};
-    use std::any::Any;
+fn test_knx_topic_provider_as_trait_object() {
+    use aimdb_core::connector::TopicProvider;
+    use std::sync::Arc;
 
-    let provider = TopicProviderWrapper::new(RoomBasedGroupAddressProvider::new(1, 0));
+    // Providers are stored as Arc<dyn TopicProvider<T>> and stay typed
+    // end-to-end (design 036 W1) — a wrong-type call is unrepresentable.
+    let provider: Arc<dyn TopicProvider<DimmerValue>> =
+        Arc::new(RoomBasedGroupAddressProvider::new(1, 0));
 
-    // Correct type
     let dimmer = DimmerValue::new("living", 128);
-    let dimmer_any: &dyn Any = &dimmer;
-    assert_eq!(provider.topic_any(dimmer_any), Some("knx://1/0/1".into()));
-
-    // Wrong type: should return None
-    let switch = SwitchState::new("zone-1", true);
-    let switch_any: &dyn Any = &switch;
-    assert_eq!(provider.topic_any(switch_any), None);
+    assert_eq!(provider.topic(&dimmer), Some("knx://1/0/1".into()));
 }
 
 // ============================================================================
 // Test: Simulate Connector Group Address Resolution Logic
 // ============================================================================
 //
-// These tests simulate EXACTLY what the KNX connector does internally:
+// These tests simulate EXACTLY what the fused outbound reader does internally
+// while it still holds the typed value (design 036 W1):
 // ```rust
-// let group_addr = topic_provider
-//     .as_ref()
-//     .and_then(|provider| provider.topic_any(&*value_any))
-//     .unwrap_or_else(|| default_group_addr.clone());
+// let dest = topic.as_ref().and_then(|p| p.topic(&value));
+// // ...later, in the pump:
+// let dest = msg.dest.unwrap_or_else(|| default_group_addr.clone());
 // ```
 
-/// Simulates the connector's group address resolution for outbound telegrams
-fn resolve_group_address_like_connector(
+/// Simulates the fused reader's group address resolution for outbound telegrams
+fn resolve_group_address_like_connector<T>(
     default_group_addr: &str,
-    topic_provider: Option<&dyn aimdb_core::connector::TopicProviderAny>,
-    value: &dyn std::any::Any,
+    topic_provider: Option<&dyn aimdb_core::connector::TopicProvider<T>>,
+    value: &T,
 ) -> String {
     topic_provider
-        .and_then(|provider| provider.topic_any(value))
+        .and_then(|provider| provider.topic(value))
         .unwrap_or_else(|| default_group_addr.to_string())
 }
 
 #[test]
 fn test_connector_group_address_resolution_room_based() {
-    use aimdb_core::connector::TopicProviderWrapper;
-
-    let provider = TopicProviderWrapper::new(RoomBasedGroupAddressProvider::new(1, 0));
+    let provider = RoomBasedGroupAddressProvider::new(1, 0);
     let default_addr = "knx://1/0/0";
 
     // Test 1: Living room dimmer
@@ -476,9 +470,7 @@ fn test_connector_group_address_resolution_room_based() {
 
 #[test]
 fn test_connector_group_address_resolution_hvac_zones() {
-    use aimdb_core::connector::TopicProviderWrapper;
-
-    let provider = TopicProviderWrapper::new(HvacZoneProvider);
+    let provider = HvacZoneProvider;
     let default_addr = "knx://5/0/0"; // Fallback for invalid zones
 
     // Test valid zones 1-16
@@ -504,9 +496,7 @@ fn test_connector_group_address_resolution_hvac_zones() {
 
 #[test]
 fn test_connector_group_address_resolution_emergency_switch() {
-    use aimdb_core::connector::TopicProviderWrapper;
-
-    let provider = TopicProviderWrapper::new(SwitchWithEmergencyProvider);
+    let provider = SwitchWithEmergencyProvider;
     let default_addr = "knx://1/1/0";
 
     // Test 1: Emergency switch → broadcast address

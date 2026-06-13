@@ -25,7 +25,6 @@ use hashbrown::HashMap;
 use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
 };
-use crate::connector::SerializerKind;
 use crate::router::RouterBuilder;
 use crate::AimDb;
 
@@ -526,40 +525,30 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
     // --- outbound: local record updates -> remote `write` ------------------
     for crate::OutboundRoute {
         topic: destination,
-        consumer,
-        serializer,
-        topic_provider,
+        source,
         ..
     } in db.collect_outbound_routes(scheme)
     {
         let handle = handle.clone();
         let ctx = ctx.clone();
         pumps.push(Box::pin(async move {
-            let mut reader = consumer.subscribe_any().await;
+            let mut reader = source.subscribe();
             loop {
-                let value = match reader.recv_any().await {
-                    Ok(v) => v,
+                // The fused reader yields destination + serialized payload
+                // (serialize failures are logged and skipped inside it).
+                let msg = match reader.recv(&ctx).await {
+                    Ok(m) => m,
                     // Lagged (ring overflow) — skip the gap, keep mirroring.
                     Err(crate::DbError::BufferLagged { .. }) => continue,
                     // Buffer closed — the record is gone; end this mirror.
                     Err(_) => break,
                 };
                 // Dynamic destination (topic provider) or the static link target.
-                let dest = topic_provider
-                    .as_ref()
-                    .and_then(|p| p.topic_any(&*value))
-                    .unwrap_or_else(|| destination.clone());
-                let bytes = match &serializer {
-                    SerializerKind::Raw(ser) => match ser(&*value) {
-                        Ok(b) => b,
-                        Err(_e) => continue,
-                    },
-                    SerializerKind::Context(ser) => match ser(ctx.clone(), &*value) {
-                        Ok(b) => b,
-                        Err(_e) => continue,
-                    },
-                };
-                if handle.write(dest, Payload::from(bytes.as_slice())).is_err() {
+                let dest = msg.dest.unwrap_or_else(|| destination.clone());
+                if handle
+                    .write(dest, Payload::from(msg.payload.as_slice()))
+                    .is_err()
+                {
                     break; // engine stopped — all handles dropped
                 }
             }
@@ -580,7 +569,7 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
                 Err(_e) => return,
             };
             while let Some(payload) = stream.next().await {
-                let _ = router.route(id.as_ref(), &payload, Some(&ctx)).await;
+                let _ = router.route(id.as_ref(), &payload, &ctx);
             }
         }));
     }

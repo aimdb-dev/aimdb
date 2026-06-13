@@ -1092,21 +1092,6 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             Some(RecordValue::new(value, None))
         }
     }
-
-    /// Creates a boxed ProducerTrait for this record type (std only)
-    ///
-    /// Returns a type-erased producer that implements ProducerTrait,
-    /// allowing inbound connectors to produce values without knowing the concrete type.
-    ///
-    /// Backed by a pre-resolved `WriteHandle` (design 029) — no db / key lookup
-    /// is performed on each `produce_any` call.
-    #[cfg(feature = "std")]
-    pub fn create_producer_trait(&self) -> Box<dyn crate::connector::ProducerTrait>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        Box::new(crate::typed_api::Producer::<T>::new(self.writer_handle()))
-    }
 }
 
 impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {

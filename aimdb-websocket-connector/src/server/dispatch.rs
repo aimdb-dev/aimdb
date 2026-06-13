@@ -33,7 +33,7 @@ pub struct WsDispatch {
     pub(crate) known_topics: Arc<Vec<TopicInfo>>,
     pub(crate) auth: Arc<dyn AuthHandler>,
     pub(crate) late_join: bool,
-    pub(crate) runtime_ctx: Option<aimdb_core::RuntimeContext>,
+    pub(crate) runtime_ctx: aimdb_core::RuntimeContext,
 }
 
 impl Dispatch for WsDispatch {
@@ -85,7 +85,7 @@ struct WsSession {
     known_topics: Arc<Vec<TopicInfo>>,
     auth: Arc<dyn AuthHandler>,
     late_join: bool,
-    runtime_ctx: Option<aimdb_core::RuntimeContext>,
+    runtime_ctx: aimdb_core::RuntimeContext,
     info: Arc<ClientInfo>,
     /// Decrements the live-connection count on drop.
     _conn_guard: ConnectionGuard,
@@ -168,8 +168,7 @@ impl Session for WsSession {
                 return Err(RpcError::Denied);
             }
             self.router
-                .route(topic, &payload, self.runtime_ctx.as_ref())
-                .await
+                .route(topic, &payload, &self.runtime_ctx)
                 .map_err(|_| RpcError::Internal)
         })
     }

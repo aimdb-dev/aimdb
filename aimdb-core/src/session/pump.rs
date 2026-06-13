@@ -20,7 +20,6 @@ use alloc::vec::Vec;
 
 use super::Source;
 use crate::builder::{AimDb, BoxFuture};
-use crate::connector::SerializerKind;
 use crate::router::RouterBuilder;
 use crate::transport::{Connector, ConnectorConfig};
 
@@ -28,11 +27,12 @@ use crate::transport::{Connector, ConnectorConfig};
 ///
 /// Extracts the consume-and-publish loop a data-plane connector used to write by
 /// hand. For each route from [`collect_outbound_routes`](AimDb::collect_outbound_routes),
-/// the returned future subscribes to the record (type-erased), serializes each
-/// value with the route's [`SerializerKind`], resolves the destination via the
-/// route's optional topic provider (falling back to the URL-derived default), and
-/// publishes through `sink`. Per-route configuration (`qos`/`retain`/…) is built
-/// once from the route's URL query via [`ConnectorConfig::from_query`].
+/// the returned future subscribes to the route's fused
+/// [`SerializedSource`](crate::connector::SerializedSource) — whose readers
+/// yield destination + serialized payload directly (no `Box<dyn Any>` per
+/// message, design 036 W1) — and publishes through `sink`. Per-route
+/// configuration (`qos`/`retain`/…) is built once from the route's URL query
+/// via [`ConnectorConfig::from_query`].
 ///
 /// The publisher future terminates when its subscription yields an error (e.g. the
 /// record buffer closed), matching the legacy hand-rolled loop.
@@ -42,10 +42,8 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
 
     for crate::OutboundRoute {
         topic: default_topic,
-        consumer,
-        serializer,
+        source,
         config,
-        topic_provider,
     } in routes
     {
         let sink = sink.clone();
@@ -53,8 +51,9 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
         let cfg = ConnectorConfig::from_query(&config);
 
         futures.push(Box::pin(async move {
-            // Subscribe to typed values (type-erased).
-            let mut reader = consumer.subscribe_any().await;
+            // Subscribe inside the pump future (not at collect time), so the
+            // ring-buffer cursor starts when the publisher actually runs.
+            let mut reader = source.subscribe();
 
             log_info!(
                 "pump_sink: publisher started for destination: {}",
@@ -62,8 +61,8 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
             );
 
             loop {
-                let value_any = match reader.recv_any().await {
-                    Ok(v) => v,
+                let msg = match reader.recv(&runtime_ctx).await {
+                    Ok(m) => m,
                     // SPMC-ring overflow: messages were missed, but the reader
                     // recovers (cursor resets to the oldest live value). Skip the
                     // gap and keep pumping — a transient lag must not permanently
@@ -82,40 +81,11 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
                         break;
                     }
                 };
-                // Resolve destination: dynamic (from provider) or default (from URL).
-                let dest = topic_provider
-                    .as_ref()
-                    .and_then(|provider| provider.topic_any(&*value_any))
-                    .unwrap_or_else(|| default_topic.clone());
-
-                // Serialize the type-erased value.
-                let bytes = match &serializer {
-                    SerializerKind::Raw(ser) => match ser(&*value_any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            log_error!(
-                                "pump_sink: failed to serialize for destination '{}': {:?}",
-                                dest,
-                                _e
-                            );
-                            continue;
-                        }
-                    },
-                    SerializerKind::Context(ser) => match ser(runtime_ctx.clone(), &*value_any) {
-                        Ok(b) => b,
-                        Err(_e) => {
-                            log_error!(
-                                "pump_sink: failed to serialize for destination '{}': {:?}",
-                                dest,
-                                _e
-                            );
-                            continue;
-                        }
-                    },
-                };
+                // Destination: dynamic (resolved by the source) or default (from URL).
+                let dest = msg.dest.unwrap_or_else(|| default_topic.clone());
 
                 // Publish through the connector's pure I/O adapter.
-                if let Err(_e) = sink.publish(&dest, &cfg, &bytes).await {
+                if let Err(_e) = sink.publish(&dest, &cfg, &msg.payload).await {
                     log_error!("pump_sink: failed to publish to '{}': {:?}", dest, _e);
                 } else {
                     log_debug!("pump_sink: published to: {}", dest);
@@ -156,9 +126,10 @@ pub fn pump_source(db: &AimDb, scheme: &str, mut src: impl Source + 'static) -> 
         );
 
         while let Some((topic, payload)) = src.next().await {
-            // `route` deserializes and fans out to producers; it drops + logs on a
-            // full producer buffer and never returns a fatal error.
-            if let Err(_e) = router.route(&topic, &payload, Some(&ctx)).await {
+            // `route` deserializes and fans out to producers (synchronously —
+            // the fused ingest path never awaits); it drops + logs on a full
+            // producer buffer and never returns a fatal error.
+            if let Err(_e) = router.route(&topic, &payload, &ctx) {
                 log_error!(
                     "pump_source: failed to route message on '{}': {}",
                     topic,

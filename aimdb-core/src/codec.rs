@@ -20,7 +20,7 @@
 //!   zero-sized [`SerdeJsonCodec`] implementation. A record stores
 //!   `Option<Arc<dyn JsonCodec<T>>>`; the AimX read/write/subscribe paths and
 //!   `RecordValue::as_json` route through it. This mirrors the connector
-//!   layer's `SerializerFn` / `DeserializerFn`.
+//!   layer's fused `SerializedSource` / `IngestFn` callbacks.
 
 use serde::{de::DeserializeOwned, Serialize};
 

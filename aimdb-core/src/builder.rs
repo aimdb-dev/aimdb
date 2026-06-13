@@ -36,17 +36,15 @@ use crate::{DbError, DbResult};
 
 /// One outbound route returned by [`AimDb::collect_outbound_routes`]
 pub struct OutboundRoute {
-    /// Default topic/destination from the URL path; used when no
-    /// `topic_provider` overrides it per value.
+    /// Default topic/destination from the URL path; used when the source
+    /// yields no per-value destination.
     pub topic: String,
-    /// Type-erased consumer for subscribing to record values
-    pub consumer: Box<dyn crate::connector::ConsumerTrait>,
-    /// User-provided serializer for the record type (raw or context-aware)
-    pub serializer: crate::connector::SerializerKind,
+    /// Fused wire-level source: its readers yield destination + serialized
+    /// payload directly (subscribe → recv → resolve topic → serialize, all
+    /// typed inside — no `Box<dyn Any>` per message, design 036 W1).
+    pub source: Box<dyn crate::connector::SerializedSource>,
     /// Configuration options from the URL query
     pub config: Vec<(String, String)>,
-    /// Optional dynamic topic provider
-    pub topic_provider: Option<crate::connector::TopicProviderFn>,
 }
 
 /// Internal database state
@@ -1224,13 +1222,14 @@ impl AimDb {
     /// Collects inbound connector routes for automatic router construction (std only)
     ///
     /// Iterates all records, filters their inbound_connectors by scheme,
-    /// and returns routes with producer creation callbacks.
+    /// and returns routes with fused ingest callbacks (deserialize + produce
+    /// in one typed closure — no `Box<dyn Any>` per message).
     ///
     /// # Arguments
     /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
     ///
     /// # Returns
-    /// Vector of tuples: (topic, producer_trait, deserializer)
+    /// Vector of tuples: (topic, ingest)
     ///
     /// The topic is resolved dynamically if a `TopicResolverFn` is configured,
     /// otherwise the static topic from the URL is used.
@@ -1245,11 +1244,7 @@ impl AimDb {
     pub fn collect_inbound_routes(
         &self,
         scheme: &str,
-    ) -> Vec<(
-        String,
-        Box<dyn crate::connector::ProducerTrait>,
-        crate::connector::DeserializerKind,
-    )> {
+    ) -> Vec<(String, crate::connector::IngestFn)> {
         let mut routes = Vec::new();
 
         for record in &self.inner.storages {
@@ -1264,10 +1259,8 @@ impl AimDb {
                 // Resolve topic: dynamic (from resolver) or static (from URL)
                 let topic = link.resolve_topic();
 
-                // Create producer using the stored factory
-                if let Some(producer) = link.create_producer(self) {
-                    routes.push((topic, producer, link.deserializer.clone()));
-                }
+                // Create the fused ingest callback using the stored factory
+                routes.push((topic, link.create_ingest(self)));
             }
         }
 
@@ -1282,31 +1275,6 @@ impl AimDb {
         routes
     }
 
-    /// Collects outbound routes for a specific protocol scheme
-    ///
-    /// Mirrors `collect_inbound_routes()` for symmetry. Iterates all records,
-    /// filters their outbound_connectors by scheme, and returns routes with
-    /// consumer creation callbacks.
-    ///
-    /// This method is called by connectors during their `build()` phase to
-    /// collect all configured outbound routes and spawn publisher tasks.
-    ///
-    /// # Arguments
-    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
-    ///
-    /// # Returns
-    /// Vector of tuples: (destination, consumer_trait, serializer, config)
-    ///
-    /// The config Vec contains protocol-specific options (e.g., qos, retain).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// // In MqttConnector::build()
-    /// let routes = db.collect_outbound_routes("mqtt");
-    /// for (topic, consumer, serializer, config) in routes {
-    ///     connector.spawn_publisher(topic, consumer, serializer, config)?;
-    /// }
-    /// ```
     /// Collect `(topic, TypeId)` pairs for all outbound routes matching `scheme`.
     ///
     /// Complements [`collect_outbound_routes`](Self::collect_outbound_routes) when
@@ -1332,6 +1300,20 @@ impl AimDb {
         result
     }
 
+    /// Collects outbound routes for a specific protocol scheme
+    ///
+    /// Mirrors `collect_inbound_routes()` for symmetry. Iterates all records,
+    /// filters their outbound_connectors by scheme, and returns
+    /// [`OutboundRoute`]s carrying fused serialized sources (subscribe →
+    /// recv → resolve topic → serialize, all typed inside — no
+    /// `Box<dyn Any>` per message).
+    ///
+    /// This method is called by connectors during their `build()` phase to
+    /// collect all configured outbound routes and spawn publisher tasks
+    /// (usually via `pump_sink`).
+    ///
+    /// # Arguments
+    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
         let mut routes = Vec::new();
 
@@ -1344,24 +1326,12 @@ impl AimDb {
                     continue;
                 }
 
-                let destination = link.url.resource_id();
-
-                // Skip links without serializer
-                let Some(serializer) = link.serializer.clone() else {
-                    log_warn!("Outbound link '{}' has no serializer, skipping", link.url);
-                    continue;
-                };
-
-                // Create consumer using the stored factory
-                if let Some(consumer) = link.create_consumer(self) {
-                    routes.push(OutboundRoute {
-                        topic: destination,
-                        consumer,
-                        serializer,
-                        config: link.config.clone(),
-                        topic_provider: link.topic_provider.clone(),
-                    });
-                }
+                // Create the fused source using the stored factory
+                routes.push(OutboundRoute {
+                    topic: link.url.resource_id(),
+                    source: link.create_source(self),
+                    config: link.config.clone(),
+                });
             }
         }
 
