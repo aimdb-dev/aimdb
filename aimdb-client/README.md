@@ -1,10 +1,14 @@
 # aimdb-client
 
-Internal client library for the AimX v1 protocol.
+Internal client library for the AimX remote access protocol (v2 NDJSON wire).
 
 ## Overview
 
-`aimdb-client` is an **internal library** that provides Rust client implementation for the AimX v1 remote access protocol. It enables programmatic connections to running AimDB instances via Unix domain sockets.
+`aimdb-client` is an **internal library** that provides the Rust client
+implementation for the AimX remote access protocol. It enables programmatic
+connections to running AimDB instances over a transport picked at runtime via
+a `scheme://` endpoint URL — Unix domain sockets (`unix://PATH` / `uds://PATH`,
+or a bare path) and serial (`serial://DEVICE?baud=N`).
 
 **This library is used by:**
 - `tools/aimdb-cli` - Command-line interface for AimDB
@@ -14,17 +18,17 @@ Internal client library for the AimX v1 protocol.
 
 ## Features
 
-- **Async Connection Management**: Non-blocking Unix socket communication
-- **Protocol Implementation**: Full AimX v1 handshake and message handling
-- **Instance Discovery**: Automatic detection of running AimDB instances
-- **Record Operations**: List, get, set, and subscribe to records
+- **Async Connection Management**: `AimxConnection` over the shared session engine
+- **Protocol Implementation**: AimX-v2 handshake plus RPC and streaming subscriptions
+- **Instance Discovery**: Automatic detection of running AimDB instances (UDS)
+- **Record Operations**: List, get, set, subscribe, drain, graph introspection, query
 - **Type-Safe**: Strongly typed API with serde integration
 
 ## API Overview
 
 ### Core Types
 
-- `AimxClient` - Main client for connecting to AimDB instances
+- `AimxConnection` - Main client for connecting to AimDB instances
 - `InstanceInfo` - Information about discovered instances
 - `RecordMetadata` - Metadata about registered records
 - `ClientError` - Error types for client operations
@@ -32,9 +36,10 @@ Internal client library for the AimX v1 protocol.
 ### Main Operations
 
 - **Discovery**: `discover_instances()`, `find_instance()`
-- **Connection**: `AimxClient::connect()`
-- **Records**: `list_records()`, `get_record()`, `set_record()`
-- **Subscriptions**: `subscribe()`, `unsubscribe()`, `receive_event()`
+- **Connection**: `AimxConnection::connect(endpoint)`, `connect_over(dialer)`
+- **Records**: `list_records()`, `get_record()`, `set_record()`, `drain_record()`
+- **Subscriptions**: `subscribe()` (returns a `Stream` of values)
+- **Introspection**: `graph_nodes()`, `graph_edges()`, `graph_topo_order()`, `query()`
 
 ### Discovery
 
@@ -42,23 +47,14 @@ Automatically scans for running AimDB instances:
 - `/tmp/*.sock`
 - `/var/run/aimdb/*.sock`
 
-### Error Types
-
-- `ClientError::NoInstancesFound` - No running instances discovered
-- `ClientError::ConnectionFailed` - Socket connection failed
-- `ClientError::ServerError` - Server returned error response
-- `ClientError::Io` - I/O operation failed
-- `ClientError::Json` - JSON serialization failed
-
 ## Protocol
 
-The client implements **AimX v1** protocol over Unix domain sockets:
+The client speaks the **AimX v2** wire: NDJSON (newline-delimited JSON) tagged
+frames mapping onto the session engine's role-neutral message set. It is not
+backward-compatible with the legacy AimX v1 framing.
 
-- **Transport**: Unix domain sockets
-- **Encoding**: NDJSON (Newline Delimited JSON)
-- **Pattern**: JSON-RPC 2.0 style request/response
-
-See `docs/design/008-M3-remote-access.md` for full protocol specification.
+See `docs/design/remote-access-via-connectors.md` for the architecture and
+`aimdb-core/src/session/aimx/` for the codec.
 
 ## Usage Examples
 
@@ -85,8 +81,6 @@ For detailed API documentation:
 ```bash
 cargo doc -p aimdb-client --open
 ```
-
-For protocol specification, see `docs/design/008-M3-remote-access.md`.
 
 ## License
 

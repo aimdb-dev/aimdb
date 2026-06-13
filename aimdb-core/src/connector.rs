@@ -1,8 +1,8 @@
 //! Connector infrastructure for external protocol integration
 //!
-//! Provides the `.link()` builder API for ergonomic connector setup with
-//! automatic client lifecycle management. Connectors bridge AimDB records
-//! to external systems (MQTT, Kafka, HTTP, etc.).
+//! Provides the `.link_to()` / `.link_from()` builder API for ergonomic
+//! connector setup with automatic client lifecycle management. Connectors
+//! bridge AimDB records to external systems (MQTT, KNX, WebSocket, …).
 //!
 //! # Design Philosophy
 //!
@@ -14,17 +14,14 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use aimdb_core::{RecordConfig, BufferCfg};
+//! use aimdb_core::BufferCfg;
 //!
-//! fn weather_alert_record() -> RecordConfig<WeatherAlert> {
-//!     RecordConfig::builder()
-//!         .buffer(BufferCfg::SingleLatest)
-//!         .link_to("mqtt://broker.example.com:1883")
-//!             .out::<WeatherAlert>(|reader, mqtt| {
-//!                 publish_alerts_to_mqtt(reader, mqtt)
-//!             })
-//!         .build()
-//! }
+//! builder.configure::<WeatherAlert>("weather.alert", |reg| {
+//!     reg.buffer(BufferCfg::SingleLatest)
+//!         .link_to("mqtt://alerts/weather")
+//!         .with_serializer_raw(|alert: &WeatherAlert| Ok(alert.to_json_vec()))
+//!         .finish();
+//! });
 //! ```
 
 use core::fmt::{self, Debug};
@@ -182,23 +179,25 @@ pub trait TopicProvider<T>: Send + Sync {
 
 /// Parsed connector URL with protocol, host, port, and credentials
 ///
-/// Supports multiple protocol schemes:
+/// The parser is scheme-agnostic: any `scheme://…` URL parses, and the scheme
+/// is matched against whatever connectors are registered on the builder.
+/// Connectors in this workspace use e.g.:
 /// - MQTT: `mqtt://host:port`, `mqtts://host:port`
-/// - Kafka: `kafka://broker1:port,broker2:port/topic`
-/// - HTTP: `http://host:port/path`, `https://host:port/path`
+/// - KNX: `knx://gateway:3671`
 /// - WebSocket: `ws://host:port/path`, `wss://host:port/path`
+/// - UDS / serial (session transports): `uds://topic`, `serial://topic`
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectorUrl {
-    /// Protocol scheme (mqtt, mqtts, kafka, http, https, ws, wss)
+    /// Protocol scheme (e.g. mqtt, mqtts, knx, ws, wss, uds, serial)
     pub scheme: String,
 
-    /// Host or comma-separated list of hosts (for Kafka)
+    /// Host, or a comma-separated host list (preserved verbatim)
     pub host: String,
 
     /// Port number (optional, protocol-specific defaults)
     pub port: Option<u16>,
 
-    /// Path component (for HTTP/WebSocket)
+    /// Path component (optional)
     pub path: Option<String>,
 
     /// Username for authentication (optional)
@@ -219,11 +218,12 @@ impl ConnectorUrl {
     /// - `mqtt://host:port`
     /// - `mqtt://user:pass@host:port`
     /// - `mqtts://host:port` (TLS)
-    /// - `kafka://broker1:9092,broker2:9092/topic`
-    /// - `http://host:port/path`
-    /// - `https://host:port/path?key=value`
-    /// - `ws://host:port/mqtt` (WebSocket)
-    /// - `wss://host:port/mqtt` (WebSocket Secure)
+    /// - `knx://gateway:3671`
+    /// - `ws://host:port/path?key=value` (WebSocket)
+    /// - `wss://host:port/path` (WebSocket Secure)
+    ///
+    /// Any other `scheme://…` parses the same way; comma-separated host
+    /// lists are preserved verbatim in [`host`](ConnectorUrl::host).
     ///
     /// # Example
     ///
@@ -281,7 +281,7 @@ impl ConnectorUrl {
     ///
     /// - `mqtt://commands/temperature` → `"commands/temperature"` (topic)
     /// - `mqtt://sensors/temp` → `"sensors/temp"` (topic)
-    /// - `kafka://events` → `"events"` (topic)
+    /// - `uds://events` → `"events"` (topic)
     ///
     /// The format is `scheme://resource` where resource = host + path combined.
     pub fn resource_id(&self) -> String {
@@ -665,7 +665,7 @@ pub trait ConnectorBuilder: Send + Sync {
 
     /// The URL scheme this connector handles
     ///
-    /// Returns the scheme (e.g., "mqtt", "kafka", "http") that this connector
+    /// Returns the scheme (e.g., "mqtt", "knx", "uds") that this connector
     /// will be registered under. Used for routing `.link_from()` and `.link_to()`
     /// declarations to the appropriate connector.
     fn scheme(&self) -> &str;

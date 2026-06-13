@@ -1,15 +1,19 @@
-//! AimX v1 Protocol Message Types
+//! AimX Protocol Message Types
 //!
-//! Defines request, response, and event types for the remote access protocol.
+//! Defines the method-level payloads for the remote access protocol: the
+//! hello/welcome handshake bodies and the request/response/event shapes.
+//! These ride the **AimX-v2** NDJSON envelope; the wire framing itself lives
+//! in [`crate::session::aimx`] (feature `connector-session`). See
+//! `docs/design/remote-access-via-connectors.md` for the architecture.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-// Allow dead code for now - these are part of the public API for future implementation
-#[allow(dead_code)]
-pub const PROTOCOL_VERSION: &str = "1.0";
+/// Version of the AimX wire protocol spoken by this crate (v2 NDJSON tagged
+/// frames; not backward-compatible with the legacy v1 framing).
+pub const PROTOCOL_VERSION: &str = "2.0";
 
 /// Client hello message
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,105 +161,23 @@ pub struct Event {
     pub dropped: Option<u64>,
 }
 
-/// Top-level message envelope for protocol communication
-#[allow(dead_code)] // Part of public API for future use
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Message {
-    /// Client hello
-    Hello { hello: HelloMessage },
-    /// Server welcome
-    Welcome { welcome: WelcomeMessage },
-    /// Client request
-    Request(Request),
-    /// Server response
-    Response(Response),
-    /// Server event
-    Event { event: Event },
-}
-
-#[allow(dead_code)] // Helper methods for future implementation
-impl Message {
-    /// Creates a hello message
-    pub fn hello(client: impl Into<String>) -> Self {
-        Self::Hello {
-            hello: HelloMessage {
-                version: PROTOCOL_VERSION.to_string(),
-                client: client.into(),
-                capabilities: None,
-                auth_token: None,
-            },
-        }
-    }
-
-    /// Creates a welcome message
-    pub fn welcome(server: impl Into<String>, permissions: Vec<String>) -> Self {
-        Self::Welcome {
-            welcome: WelcomeMessage {
-                version: PROTOCOL_VERSION.to_string(),
-                server: server.into(),
-                permissions,
-                writable_records: Vec::new(),
-                max_subscriptions: None,
-                authenticated: None,
-            },
-        }
-    }
-
-    /// Creates a request message
-    pub fn request(id: u64, method: impl Into<String>, params: Option<JsonValue>) -> Self {
-        Self::Request(Request {
-            id,
-            method: method.into(),
-            params,
-        })
-    }
-
-    /// Creates a success response message
-    pub fn response_success(id: u64, result: JsonValue) -> Self {
-        Self::Response(Response::success(id, result))
-    }
-
-    /// Creates an error response message
-    pub fn response_error(id: u64, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::Response(Response::error(id, code, message))
-    }
-
-    /// Creates an event message
-    pub fn event(
-        subscription_id: impl Into<String>,
-        sequence: u64,
-        data: JsonValue,
-        timestamp: impl Into<String>,
-    ) -> Self {
-        Self::Event {
-            event: Event {
-                subscription_id: subscription_id.into(),
-                sequence,
-                data,
-                timestamp: timestamp.into(),
-                dropped: None,
-            },
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use alloc::vec;
 
     #[test]
     fn test_hello_serialization() {
         let hello = HelloMessage {
-            version: "1.0".to_string(),
+            version: PROTOCOL_VERSION.to_string(),
             client: "test-client".to_string(),
             capabilities: Some(vec!["read".to_string()]),
             auth_token: None,
         };
 
         let json = serde_json::to_string(&hello).unwrap();
-        assert!(json.contains("\"version\":\"1.0\""));
+        assert!(json.contains("\"version\":\"2.0\""));
         assert!(json.contains("\"client\":\"test-client\""));
     }
 

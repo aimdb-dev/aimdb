@@ -8,10 +8,8 @@ use serde::{Deserialize, Serialize};
 // Re-export protocol types from aimdb-core
 pub use aimdb_core::remote::{
     ErrorObject, Event, HelloMessage, RecordMetadata, Request, Response, WelcomeMessage,
+    PROTOCOL_VERSION,
 };
-
-/// Protocol version supported by this client
-pub const PROTOCOL_VERSION: &str = "1.0";
 
 /// Client identifier
 pub const CLIENT_NAME: &str = "aimdb-cli";

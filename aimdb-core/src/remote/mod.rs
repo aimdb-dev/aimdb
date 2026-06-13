@@ -6,8 +6,12 @@
 //!
 //! # Protocol
 //!
-//! AimX v1 uses NDJSON (newline-delimited JSON) over Unix domain sockets.
-//! See `docs/design/remote-access/aimx-v1.md` for full specification.
+//! AimX v2 uses NDJSON (newline-delimited JSON) tagged frames over a session
+//! transport (Unix domain sockets via `aimdb-uds-connector`, serial via
+//! `aimdb-serial-connector`). The envelope codec lives in
+//! [`crate::session::aimx`]; see `docs/design/remote-access-via-connectors.md`
+//! for the architecture. The v2 wire is not backward-compatible with the
+//! legacy AimX v1 framing.
 //!
 //! # Security
 //!
@@ -32,10 +36,11 @@
 //!     .max_connections(16)
 //!     .max_subs_per_connection(32);
 //!
-//! let db = AimDbBuilder::new()
+//! let (db, runner) = AimDbBuilder::new()
 //!     .runtime(tokio_adapter)
 //!     .with_connector(UdsServer::from_config(config))
-//!     .build()?;
+//!     .build()
+//!     .await?;
 //! ```
 
 mod config;
@@ -47,7 +52,9 @@ mod query;
 pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
 pub use metadata::RecordMetadata;
-pub use protocol::{ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage};
+pub use protocol::{
+    ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage, PROTOCOL_VERSION,
+};
 pub use query::{QueryHandlerFn, QueryHandlerParams};
 
 // Internal exports for implementation
