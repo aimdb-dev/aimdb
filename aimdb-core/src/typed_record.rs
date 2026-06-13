@@ -184,10 +184,21 @@ type ConsumerServiceFn<T> =
 type ProducerServiceFn<T> =
     Box<dyn FnOnce(crate::RuntimeContext, crate::Producer<T>) -> BoxFuture<'static, ()> + Send>;
 
-/// Type-erased trait for records
+/// Type-erased trait for records — the storage and lifecycle contract.
 ///
 /// Allows storage of heterogeneous record types in a single collection
 /// while maintaining type safety through downcast operations.
+///
+/// Since the 036 W2 split this trait carries only the storage/lifecycle
+/// surface. The other capabilities live in dedicated traits, reachable from
+/// any `dyn AnyRecord`:
+/// - [`RecordIntrospect`] (supertrait) — graph/metadata introspection
+/// - [`RecordMetricsReset`] (supertrait) — profiling/metrics counter resets
+/// - [`JsonRecordAccess`] — JSON remote access, via [`AnyRecord::json_access`]
+///
+/// Consumers: `AimDbBuilder::build()` (validation, config-error draining,
+/// typed downcasts via [`AnyRecordExt`]) and connectors applying the
+/// remote-access security policy (`set_writable_erased`).
 ///
 /// # Thread Safety Requirements
 ///
@@ -207,7 +218,7 @@ type ProducerServiceFn<T> =
 /// **Migration:** If your record type `T` is not `Sync`, wrap non-`Sync` fields
 /// in `Arc<Mutex<_>>` or `Arc<RwLock<_>>` to achieve interior mutability with
 /// thread-safe sharing.
-pub trait AnyRecord: Send + Sync {
+pub trait AnyRecord: RecordIntrospect + RecordMetricsReset + Send + Sync {
     /// Validates that the record has correct producer/consumer setup
     ///
     /// Rules: Must have exactly one producer and at least one consumer.
@@ -219,17 +230,52 @@ pub trait AnyRecord: Send + Sync {
     /// Returns self as mutable Any for downcasting
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
+    /// Drains the configuration mistakes recorded during registration.
+    ///
+    /// Called by `AimDbBuilder::build()`, which fills in the record key and
+    /// reports every finding via
+    /// [`DbError::InvalidConfiguration`](crate::DbError::InvalidConfiguration).
+    fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError>;
+
+    /// Sets the writable flag for this record (type-erased)
+    ///
+    /// Used internally by the builder to apply security policy to records.
+    fn set_writable_erased(&self, writable: bool);
+
+    /// Returns the record's JSON remote-access surface, if it has one.
+    ///
+    /// This accessor is the single place the `remote-access` cfg-gate lives
+    /// for consumers: they query the capability here instead of cfg-gating
+    /// every call site. `TypedRecord` always returns `Some`; the runtime
+    /// "configured with `.with_remote_access()`" checks stay inside the
+    /// [`JsonRecordAccess`] methods.
+    #[cfg(feature = "remote-access")]
+    fn json_access(&self) -> Option<&dyn JsonRecordAccess> {
+        None
+    }
+}
+
+/// Graph and metadata introspection for type-erased records.
+///
+/// Supertrait of [`AnyRecord`], so every stored record exposes it and a
+/// `dyn AnyRecord` can be upcast to `&dyn RecordIntrospect` where only
+/// introspection is needed.
+///
+/// Consumers: `AimDbBuilder::build()` (link validation and the dependency
+/// graph fed to [`crate::graph`]), the builder's inbound/outbound route
+/// collection, and `AimDbInner::list_records` (remote introspection
+/// metadata).
+pub trait RecordIntrospect {
     /// Returns the number of registered outbound connectors
     fn outbound_connector_count(&self) -> usize;
-
-    /// Returns the outbound connector URLs as strings
-    #[cfg(feature = "std")]
-    fn outbound_connector_urls(&self) -> Vec<String>;
 
     /// Gets the outbound connector links
     ///
     /// Returns outbound connector configuration list for spawning logic.
     fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink];
+
+    /// Get the inbound connector links for this record
+    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
 
     /// Returns the number of registered consumers (tap observers)
     fn consumer_count(&self) -> usize;
@@ -239,13 +285,6 @@ pub trait AnyRecord: Send + Sync {
 
     /// Returns whether a buffer is configured
     fn has_buffer(&self) -> bool;
-
-    /// Drains the configuration mistakes recorded during registration.
-    ///
-    /// Called by `AimDbBuilder::build()`, which fills in the record key and
-    /// reports every finding via
-    /// [`DbError::InvalidConfiguration`](crate::DbError::InvalidConfiguration).
-    fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError>;
 
     /// Returns whether a transform is registered for this record
     fn has_transform(&self) -> bool;
@@ -261,11 +300,6 @@ pub trait AnyRecord: Send + Sync {
     /// Returns the transform input keys (if a transform is registered)
     fn transform_input_keys(&self) -> Option<Vec<String>>;
 
-    /// Sets the writable flag for this record (type-erased)
-    ///
-    /// Used internally by the builder to apply security policy to records.
-    fn set_writable_erased(&self, writable: bool);
-
     /// Collects metadata for this record
     #[cfg(feature = "remote-access")]
     fn collect_metadata(
@@ -274,12 +308,23 @@ pub trait AnyRecord: Send + Sync {
         key: crate::record_id::StringKey,
         id: crate::record_id::RecordId,
     ) -> crate::remote::RecordMetadata;
+}
 
-    /// Internal: Returns JSON for type-erased remote access
+/// Type-erased JSON read/subscribe/write for remote access.
+///
+/// Internal to the remote-access protocol — application code reads values
+/// via `record.latest()?.as_json()` instead. Obtained from a record through
+/// [`AnyRecord::json_access`], which is where the `remote-access` cfg-gate
+/// lives for consumers.
+///
+/// Consumers: `AimDbInner::try_latest_as_json` / `set_record_from_json`
+/// (`record.get` / `record.set`), the AimX session dispatch (`record.subscribe`
+/// value drain), and `remote::stream::stream_record_updates`.
+#[cfg(feature = "remote-access")]
+pub trait JsonRecordAccess {
+    /// Returns JSON for type-erased remote access
     ///
     /// Used internally by remote access protocol. **Users should use `record.latest()?.as_json()`.**
-    #[doc(hidden)]
-    #[cfg(feature = "remote-access")]
     fn latest_json(&self) -> Option<serde_json::Value>;
 
     /// Subscribe to record updates as JSON stream
@@ -301,16 +346,13 @@ pub trait AnyRecord: Send + Sync {
     ///
     /// # Example (internal use)
     /// ```rust,ignore
-    /// let type_id = TypeId::of::<Temperature>();
-    /// let record: &Box<dyn AnyRecord> = db.records.get(&type_id)?;
-    /// let mut json_reader = record.subscribe_json()?;
+    /// let record: &Box<dyn AnyRecord> = db.storage(id)?;
+    /// let mut json_reader = record.json_access().unwrap().subscribe_json()?;
     ///
     /// while let Ok(json_val) = json_reader.recv_json().await {
     ///     // Forward to remote client...
     /// }
     /// ```
-    #[doc(hidden)]
-    #[cfg(feature = "remote-access")]
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>>;
 
     /// Sets a record value from JSON
@@ -339,18 +381,24 @@ pub trait AnyRecord: Send + Sync {
     ///
     /// # Example (internal use)
     /// ```rust,ignore
-    /// let type_id = TypeId::of::<AppConfig>();
-    /// let record: &Box<dyn AnyRecord> = db.records.get(&type_id)?;
+    /// let record: &Box<dyn AnyRecord> = db.storage(id)?;
     /// let json_val = serde_json::json!({"log_level": "debug"});
-    /// record.set_from_json(json_val)?; // Only works if producer_count == 0
+    /// // Only works if producer_count == 0
+    /// record.json_access().unwrap().set_from_json(json_val)?;
     /// ```
-    #[doc(hidden)]
-    #[cfg(feature = "remote-access")]
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
+}
 
-    /// Get the inbound connector links for this record
-    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
-
+/// Observability counter resets (features `profiling` / `metrics`).
+///
+/// Supertrait of [`AnyRecord`] with no-op defaults, so the cfg-gated reset
+/// methods stay off the core storage contract while remaining callable on
+/// every stored record.
+///
+/// Consumers: `AimDb::reset_profiling` / `AimDb::reset_buffer_metrics`,
+/// driven by the AimX `control.reset_buffer_metrics` RPC and the MCP
+/// buffer-metrics tool.
+pub trait RecordMetricsReset {
     /// Resets this record's stage profiling counters (feature `profiling`).
     ///
     /// Default implementation is a no-op; `TypedRecord` overrides it.
@@ -1134,16 +1182,31 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         self
     }
 
-    fn outbound_connector_count(&self) -> usize {
-        self.outbound_connectors.len()
+    fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError> {
+        core::mem::take(&mut self.config_errors)
     }
 
-    #[cfg(feature = "std")]
-    fn outbound_connector_urls(&self) -> Vec<String> {
-        self.outbound_connectors
-            .iter()
-            .map(|link| format!("{}", link.url))
-            .collect()
+    fn set_writable_erased(&self, writable: bool) {
+        #[cfg(feature = "remote-access")]
+        {
+            self.writable
+                .store(writable, portable_atomic::Ordering::SeqCst);
+        }
+        #[cfg(not(feature = "remote-access"))]
+        {
+            let _ = writable; // Suppress unused warning
+        }
+    }
+
+    #[cfg(feature = "remote-access")]
+    fn json_access(&self) -> Option<&dyn JsonRecordAccess> {
+        Some(self)
+    }
+}
+
+impl<T: Send + Sync + 'static + Debug + Clone> RecordIntrospect for TypedRecord<T> {
+    fn outbound_connector_count(&self) -> usize {
+        self.outbound_connectors.len()
     }
 
     fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink] {
@@ -1162,10 +1225,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         TypedRecord::has_buffer(self)
     }
 
-    fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError> {
-        core::mem::take(&mut self.config_errors)
-    }
-
     fn has_transform(&self) -> bool {
         TypedRecord::has_transform(self)
     }
@@ -1182,16 +1241,8 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         TypedRecord::transform_input_keys(self)
     }
 
-    fn set_writable_erased(&self, writable: bool) {
-        #[cfg(feature = "remote-access")]
-        {
-            self.writable
-                .store(writable, portable_atomic::Ordering::SeqCst);
-        }
-        #[cfg(not(feature = "remote-access"))]
-        {
-            let _ = writable; // Suppress unused warning
-        }
+    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
+        &self.inbound_connectors
     }
 
     #[cfg(feature = "remote-access")]
@@ -1247,9 +1298,10 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
 
         metadata
     }
+}
 
-    #[doc(hidden)]
-    #[cfg(feature = "remote-access")]
+#[cfg(feature = "remote-access")]
+impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<T> {
     fn latest_json(&self) -> Option<serde_json::Value> {
         log_debug!(
             "latest_json called for type: {}",
@@ -1266,8 +1318,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         result
     }
 
-    #[doc(hidden)]
-    #[cfg(feature = "remote-access")]
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>> {
         use crate::DbError;
 
@@ -1302,8 +1352,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         Ok(Box::new(json_reader))
     }
 
-    #[doc(hidden)]
-    #[cfg(feature = "remote-access")]
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()> {
         use crate::DbError;
 
@@ -1370,11 +1418,9 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
 
         Ok(())
     }
+}
 
-    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
-        &self.inbound_connectors
-    }
-
+impl<T: Send + Sync + 'static + Debug + Clone> RecordMetricsReset for TypedRecord<T> {
     #[cfg(feature = "profiling")]
     fn reset_profiling(&self) {
         self.profiling.reset_all();

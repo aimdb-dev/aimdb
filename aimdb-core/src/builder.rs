@@ -232,7 +232,7 @@ impl AimDbInner {
     #[cfg(feature = "remote-access")]
     pub fn try_latest_as_json(&self, record_key: &str) -> Option<serde_json::Value> {
         let id = self.resolve_str(record_key)?;
-        self.storages.get(id.index())?.latest_json()
+        self.storages.get(id.index())?.json_access()?.latest_json()
     }
 
     /// Sets a record value from JSON (remote access API)
@@ -260,7 +260,14 @@ impl AimDbInner {
             .resolve_str(record_key)
             .ok_or_else(|| DbError::record_key_not_found(record_key.to_string()))?;
 
-        self.storages[id.index()].set_from_json(json_value)
+        self.storages[id.index()]
+            .json_access()
+            .ok_or_else(|| {
+                DbError::runtime_error(alloc::format!(
+                    "Record '{record_key}' does not support JSON remote access"
+                ))
+            })?
+            .set_from_json(json_value)
     }
 }
 
