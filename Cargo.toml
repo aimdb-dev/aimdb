@@ -36,6 +36,8 @@ members = [
     "examples/weather-mesh-demo/weather-station-gamma",
     "examples/hello-mailbox",
     "examples/hello-single-latest-async",
+    # Benchmarking infrastructure — host-only, excluded from default-members
+    "aimdb-bench",
 ]
 exclude = ["_external"]
 resolver = "2"

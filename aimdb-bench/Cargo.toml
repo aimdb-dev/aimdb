@@ -1,0 +1,51 @@
+[package]
+name = "aimdb-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Benchmarking infrastructure for AimDB — not for production use"
+
+[lib]
+name = "aimdb_bench"
+
+[[bench]]
+name = "b0_alloc_tokio"
+harness = false
+
+[[bench]]
+name = "b1_latency"
+harness = false
+
+[[bench]]
+name = "b2_throughput"
+harness = false
+
+[[bench]]
+name = "b_runner_pipeline"
+harness = false
+
+[[bench]]
+name = "b_alloc_pipeline"
+harness = false
+
+[dependencies]
+# Core AimDB types
+aimdb-core = { path = "../aimdb-core", features = ["std"] }
+
+# Tokio runtime adapter (the primary target for B0-B2)
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+] }
+
+# Async runtime — current-thread executor is used for noise reduction in B0
+tokio = { workspace = true }
+
+# JSON output for baseline snapshots
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Statistical benchmarking for B1/B2
+criterion = { version = "0.5", default-features = false, features = [
+    "cargo_bench_support",
+] }
