@@ -125,8 +125,8 @@ fn main() {
     // Persist results for baseline comparison.
     let reports = vec![telemetry_report, state_report, command_report];
     let json = serde_json::to_string_pretty(&reports).expect("failed to serialize reports");
-    let out_dir = "target/bench-results";
-    std::fs::create_dir_all(out_dir).ok();
+    let out_dir = "aimdb-bench/target/bench-results";
+    std::fs::create_dir_all(out_dir).expect("failed to create results directory");
     let out_path = format!("{out_dir}/b0_alloc_tokio.json");
     std::fs::write(&out_path, &json).expect("failed to write results");
     println!("\nResults written to {out_path}");
