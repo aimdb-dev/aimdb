@@ -164,7 +164,9 @@ fn bench_e2e_state(c: &mut Criterion) {
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
-                    harness.round_trip(state_msg((WARMUP_ITERS as u64) + i)).await;
+                    harness
+                        .round_trip(state_msg((WARMUP_ITERS as u64) + i))
+                        .await;
                 }
                 start.elapsed()
             })
@@ -198,7 +200,9 @@ fn bench_e2e_command(c: &mut Criterion) {
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
-                    harness.round_trip(command_msg((WARMUP_ITERS as u64) + i)).await;
+                    harness
+                        .round_trip(command_msg((WARMUP_ITERS as u64) + i))
+                        .await;
                 }
                 start.elapsed()
             })
