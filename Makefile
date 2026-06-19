@@ -106,6 +106,8 @@ build:
 	cargo build --package aimdb-serial-connector --no-default-features --features "tokio-runtime"
 	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
 	cargo build --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
+	@printf "$(YELLOW)  → Building benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
+	cargo build --package aimdb-bench --benches
 
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
@@ -262,6 +264,8 @@ clippy:
 	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
+	cargo clippy --package aimdb-bench --all-targets -- -D warnings
 
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"

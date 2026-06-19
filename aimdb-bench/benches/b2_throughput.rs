@@ -6,8 +6,9 @@
 //! **Fan-out safety rules (SpmcRing / broadcast):**
 //! - All readers are subscribed *before* any messages are pushed so each
 //!   reader holds its read position from the start.
-//! - `TELEMETRY_CAPACITY >= BATCH_SIZE` prevents `BufferLagged` within a
-//!   single Criterion iteration.
+//! - The loop is strict lockstep (1 push, then `recv` on every reader), so at
+//!   most one message is ever in flight; the ring capacity (`TELEMETRY_CAPACITY`)
+//!   is far more than enough to keep any reader from lagging within an iteration.
 //!
 //! **Mailbox throughput:** tight 1:1 push → recv loop.  Do NOT batch pushes
 //! ahead of the consumer — the single slot overwrites earlier values and
@@ -25,10 +26,9 @@
 
 use aimdb_bench::profiles::{
     command_buffer, command_msg, state_buffer, state_msg, telemetry_buffer, telemetry_msg,
-    BATCH_SIZE, TELEMETRY_CAPACITY,
+    WARMUP_ITERS,
 };
-use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
-use aimdb_tokio_adapter::TokioBuffer;
+use aimdb_core::buffer::{Buffer, BufferReader};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
 // ── Telemetry SPSC ────────────────────────────────────────────────────────────
@@ -47,6 +47,12 @@ fn bench_throughput_telemetry_spsc(c: &mut Criterion) {
                 // Subscribe before pushing — reader holds position from start.
                 let buf = telemetry_buffer();
                 let mut reader = buf.subscribe();
+
+                // Warmup — not timed.
+                for i in 0..WARMUP_ITERS {
+                    buf.push(telemetry_msg(i as u64));
+                    let _ = reader.recv().await;
+                }
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
@@ -80,15 +86,23 @@ fn bench_throughput_telemetry_fanout(c: &mut Criterion) {
     group.bench_function("telemetry_fanout_1x4", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
-                // All readers subscribed before first push (required for
-                // broadcast correctness: capacity >= iters avoids lag).
-                let buf = TokioBuffer::<_>::new(&BufferCfg::SpmcRing {
-                    capacity: TELEMETRY_CAPACITY.max(iters as usize + BATCH_SIZE),
-                });
+                // All readers subscribed before first push so each holds its
+                // read position from the start. Lockstep below keeps at most one
+                // message in flight, so the fixed ring capacity never lags.
+                let buf = telemetry_buffer();
                 let mut r0 = buf.subscribe();
                 let mut r1 = buf.subscribe();
                 let mut r2 = buf.subscribe();
                 let mut r3 = buf.subscribe();
+
+                // Warmup — not timed (mirrors B1 and the SPSC benches).
+                for i in 0..WARMUP_ITERS {
+                    buf.push(telemetry_msg(i as u64));
+                    let _ = r0.recv().await;
+                    let _ = r1.recv().await;
+                    let _ = r2.recv().await;
+                    let _ = r3.recv().await;
+                }
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
@@ -122,6 +136,12 @@ fn bench_throughput_state_spsc(c: &mut Criterion) {
                 let buf = state_buffer();
                 let mut reader = buf.subscribe();
 
+                // Warmup — not timed.
+                for i in 0..WARMUP_ITERS {
+                    buf.push(state_msg(i as u64));
+                    let _ = reader.recv().await;
+                }
+
                 let start = std::time::Instant::now();
                 for i in 0..iters {
                     buf.push(state_msg(i));
@@ -150,6 +170,12 @@ fn bench_throughput_command_mailbox(c: &mut Criterion) {
             rt.block_on(async {
                 let buf = command_buffer();
                 let mut reader = buf.subscribe();
+
+                // Warmup — not timed.
+                for i in 0..WARMUP_ITERS {
+                    buf.push(command_msg(i as u64));
+                    let _ = reader.recv().await;
+                }
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {

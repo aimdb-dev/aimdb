@@ -24,7 +24,8 @@
 //! cargo bench -p aimdb-bench --bench b0_alloc_tokio
 //! ```
 //!
-//! Results are written to `target/bench-results/b0_alloc_tokio.json`.
+//! Results are written to `aimdb-bench/target/bench-results/b0_alloc_tokio.json`
+//! (anchored to the crate dir, so the path is the same regardless of CWD).
 
 use aimdb_bench::{
     alloc::{reset, snapshot},
@@ -125,7 +126,7 @@ fn main() {
     // Persist results for baseline comparison.
     let reports = vec![telemetry_report, state_report, command_report];
     let json = serde_json::to_string_pretty(&reports).expect("failed to serialize reports");
-    let out_dir = "aimdb-bench/target/bench-results";
+    let out_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/bench-results");
     std::fs::create_dir_all(out_dir).expect("failed to create results directory");
     let out_path = format!("{out_dir}/b0_alloc_tokio.json");
     std::fs::write(&out_path, &json).expect("failed to write results");

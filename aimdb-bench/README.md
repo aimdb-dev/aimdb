@@ -70,7 +70,7 @@ Criterion writes HTML reports to `target/criterion/`.
 
 ## B0 — allocation gate
 
-`b0_alloc_tokio` does not use Criterion. It runs a fixed warmup + batch cycle and writes JSON results to `target/bench-results/b0_alloc_tokio.json`.
+`b0_alloc_tokio` does not use Criterion. It runs a fixed warmup + batch cycle and writes JSON results to `aimdb-bench/target/bench-results/b0_alloc_tokio.json` (the path is anchored to the crate dir, so it is the same regardless of the directory you run from).
 
 **Measurement model:**
 1. Create buffer + reader.
@@ -99,6 +99,7 @@ Use them as a comparison point, not a regression gate. If they regress, `b0_allo
 
 - All benches measure a single current-thread Tokio executor. Results do not predict multi-threaded or work-stealing scheduler behavior.
 - B0 is a counter, not a memory profiler. It reports allocation count and byte total; not per-call precision or heap fragmentation.
+- B0's `bytes_per_msg` measures the **boxed `recv()` future**, not the message payload. The single per-message allocation is the `Box::pin` in `TokioBufferReader::recv()`, and because all three buffer arms share one `async` block the future is a single type sized to its largest arm — so all three profiles report the same byte count regardless of payload size.
 - Criterion p99 can vary ±5–10% on noisy CI runners. Use p50 medians for trend comparisons.
 - Always specify `--release` or debug build consistently when comparing runs; optimizations differ by 5–50×.
 - `b_alloc_pipeline` uses a paced source: per-message pace tokens and notification channels. The coordination overhead is included in the measured window.

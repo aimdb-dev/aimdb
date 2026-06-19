@@ -20,7 +20,15 @@
 //! cargo bench -p aimdb-bench --bench b_alloc_pipeline
 //! ```
 //!
-//! Results are written to `target/bench-results/b_alloc_pipeline.json`.
+//! Results are written to `aimdb-bench/target/bench-results/b_alloc_pipeline.json`
+//! (anchored to the crate dir, so the path is the same regardless of CWD).
+//!
+//! **Executor dependency.** The source/tap pacing below uses a check-then-await
+//! pattern (load an atomic, and only `.notified().await` if there is no work).
+//! `Notify::notify_waiters()` does not store a permit, so this is only free of
+//! lost wakeups because the bench runs on a **current-thread** Tokio runtime:
+//! nothing can preempt between the atomic load and the `.await`. Do not port
+//! this harness to a multi-threaded executor without revisiting the pacing.
 
 use std::fmt::Debug;
 use std::sync::{
@@ -165,25 +173,19 @@ where
                         .send(())
                         .expect("failed to signal tap readiness");
 
-                    loop {
-                        match reader.recv().await {
-                            Ok(_value) => {
-                                let current_epoch = tap_state.target_epoch.load(Ordering::Acquire);
-                                let seen =
-                                    tap_state.consumed_in_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-                                let batch_size = tap_state.batch_size.load(Ordering::Acquire);
-                                if seen < batch_size {
-                                    tap_state.pace_tokens.fetch_add(1, Ordering::AcqRel);
-                                    tap_state.pace_notify.notify_waiters();
-                                }
-                                if seen == batch_size {
-                                    tap_state
-                                        .completed_epoch
-                                        .store(current_epoch, Ordering::Release);
-                                    tap_state.done_notify.notify_waiters();
-                                }
-                            }
-                            Err(_) => break,
+                    while let Ok(_value) = reader.recv().await {
+                        let current_epoch = tap_state.target_epoch.load(Ordering::Acquire);
+                        let seen = tap_state.consumed_in_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                        let batch_size = tap_state.batch_size.load(Ordering::Acquire);
+                        if seen < batch_size {
+                            tap_state.pace_tokens.fetch_add(1, Ordering::AcqRel);
+                            tap_state.pace_notify.notify_waiters();
+                        }
+                        if seen == batch_size {
+                            tap_state
+                                .completed_epoch
+                                .store(current_epoch, Ordering::Release);
+                            tap_state.done_notify.notify_waiters();
                         }
                     }
                 })
@@ -265,7 +267,7 @@ fn main() {
 
     let reports = vec![telemetry_report, state_report, command_report];
     let json = serde_json::to_string_pretty(&reports).expect("failed to serialize reports");
-    let out_dir = "aimdb-bench/target/bench-results";
+    let out_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/bench-results");
     std::fs::create_dir_all(out_dir).expect("failed to create results directory");
     let out_path = format!("{out_dir}/b_alloc_pipeline.json");
     std::fs::write(&out_path, &json).expect("failed to write results");
