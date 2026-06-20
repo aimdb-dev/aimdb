@@ -84,6 +84,11 @@ pub(crate) struct ProfilingBufferReader<T: Clone + Send> {
     clock: Clock,
     /// Wall-clock (ns) at which the last value was handed to the consumer.
     last_yield_ns: Option<u64>,
+    /// Wall-clock (ns) of the first poll of the current recv cycle — the moment
+    /// the consumer asked for the next value. Memoized across re-polls so a
+    /// `Pending` wait for the producer is not counted as consumer processing
+    /// time; cleared when the cycle completes (see `poll_recv`).
+    pending_since: Option<u64>,
 }
 
 impl<T: Clone + Send> ProfilingBufferReader<T> {
@@ -97,6 +102,7 @@ impl<T: Clone + Send> ProfilingBufferReader<T> {
             metrics,
             clock,
             last_yield_ns: None,
+            pending_since: None,
         }
     }
 
@@ -111,13 +117,22 @@ impl<T: Clone + Send> ProfilingBufferReader<T> {
 impl<T: Clone + Send> BufferReader<T> for ProfilingBufferReader<T> {
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
         // `started_ns` ≈ the moment the consumer finished processing the
-        // previous value and asked for the next one. Sampled per poll; only the
-        // poll that yields a value records the interval, matching the prior
-        // await-based behavior.
-        let started_ns = (self.clock)();
+        // previous value and asked for the next one — i.e. the *first* poll of
+        // this recv cycle. Memoized in `pending_since` so re-polls after a
+        // `Pending` (waiting on the producer) reuse it instead of resampling;
+        // this keeps the recorded interval equal to consumer processing time and
+        // matches the prior await-based `recv()`, which captured `started_ns`
+        // once when the future was first polled. (Clock is read once per cycle,
+        // not once per poll.)
+        let started_ns = *self.pending_since.get_or_insert_with(|| (self.clock)());
         let result = self.inner.poll_recv(cx);
-        if let Poll::Ready(Ok(_)) = &result {
-            self.on_yield(started_ns);
+        if result.is_ready() {
+            // The recv "future" completed (Ok or Err) — close out the cycle so
+            // the next ask resamples the clock.
+            self.pending_since = None;
+            if matches!(result, Poll::Ready(Ok(_))) {
+                self.on_yield(started_ns);
+            }
         }
         result
     }
