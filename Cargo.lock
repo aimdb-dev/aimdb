@@ -3390,11 +3390,11 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-be62608f8f93a21fe76c8f70c0fa9d30c9ab2503#46619beefd7015dffaa1f8e756f614718f0dd0bf"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-98c747c5a5eb2fe1bfa452d6375445a1c3c51628#ff0350aebb88f1498cbf5800305de327df02012c"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
- "defmt 0.3.100",
+ "defmt 1.0.1",
 ]
 
 [[package]]
