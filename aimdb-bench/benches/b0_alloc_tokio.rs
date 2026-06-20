@@ -35,7 +35,7 @@ use aimdb_bench::{
     },
     reports::AllocReport,
 };
-use aimdb_core::buffer::{Buffer, BufferReader};
+use aimdb_core::buffer::{Buffer, Reader};
 
 fn main() {
     // Current-thread executor — no work-stealing threads, minimal scheduler
@@ -55,7 +55,7 @@ fn main() {
     // start — a reader created after sends are in flight misses them.
     let telemetry_report = rt.block_on(async {
         let buf = telemetry_buffer();
-        let mut reader = buf.subscribe();
+        let mut reader = Reader::new(Box::new(buf.subscribe()));
 
         for i in 0..WARMUP_ITERS {
             buf.push(telemetry_msg(i as u64));
@@ -75,7 +75,7 @@ fn main() {
     // ── State: SingleLatest / watch ──────────────────────────────────────────
     let state_report = rt.block_on(async {
         let buf = state_buffer();
-        let mut reader = buf.subscribe();
+        let mut reader = Reader::new(Box::new(buf.subscribe()));
 
         for i in 0..WARMUP_ITERS {
             buf.push(state_msg(i as u64));
@@ -100,7 +100,7 @@ fn main() {
     // semantics with throughput measurement.
     let command_report = rt.block_on(async {
         let buf = command_buffer();
-        let mut reader = buf.subscribe();
+        let mut reader = Reader::new(Box::new(buf.subscribe()));
 
         for i in 0..WARMUP_ITERS {
             buf.push(command_msg(i as u64));

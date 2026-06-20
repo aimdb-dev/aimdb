@@ -25,7 +25,7 @@ use aimdb_bench::profiles::{
     command_buffer, command_msg, state_buffer, state_msg, telemetry_buffer, telemetry_msg,
     WARMUP_ITERS,
 };
-use aimdb_core::buffer::{Buffer, BufferReader};
+use aimdb_core::buffer::{Buffer, Reader};
 use criterion::{criterion_group, criterion_main, Criterion};
 
 // ── Telemetry: SpmcRing / broadcast ──────────────────────────────────────────
@@ -41,7 +41,7 @@ fn bench_latency_telemetry(c: &mut Criterion) {
         b.iter_custom(|iters| {
             rt.block_on(async {
                 let buf = telemetry_buffer();
-                let mut reader = buf.subscribe();
+                let mut reader = Reader::new(Box::new(buf.subscribe()));
 
                 // Warmup — not timed.
                 for i in 0..WARMUP_ITERS {
@@ -75,7 +75,7 @@ fn bench_latency_state(c: &mut Criterion) {
         b.iter_custom(|iters| {
             rt.block_on(async {
                 let buf = state_buffer();
-                let mut reader = buf.subscribe();
+                let mut reader = Reader::new(Box::new(buf.subscribe()));
 
                 for i in 0..WARMUP_ITERS {
                     buf.push(state_msg(i as u64));
@@ -109,7 +109,7 @@ fn bench_latency_command(c: &mut Criterion) {
         b.iter_custom(|iters| {
             rt.block_on(async {
                 let buf = command_buffer();
-                let mut reader = buf.subscribe();
+                let mut reader = Reader::new(Box::new(buf.subscribe()));
 
                 for i in 0..WARMUP_ITERS {
                     buf.push(command_msg(i as u64));

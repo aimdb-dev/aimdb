@@ -81,6 +81,8 @@ Criterion writes HTML reports to `target/criterion/`.
 
 The committed baseline lives in `data/baselines/b0_alloc_tokio.json`. When a change intentionally improves or changes allocation behaviour, re-run the bench and commit the updated JSON with a clear rationale in the commit message.
 
+> **W8 result (design 037).** Since the zero-allocation consume path landed, the baseline records **0 allocs/msg** across all three tokio profiles (down from 1 — the boxed `recv()` future is gone). The committed baseline is therefore the target value; any nonzero B0 on these profiles is a regression to investigate.
+
 **Noise reduction:** a `new_current_thread()` Tokio executor is used so there are no work-stealing threads and Tokio's scheduler does not allocate per-poll in the hot path.
 
 **Production isolation:** `#[global_allocator]` is a per-binary link-time declaration. `CountingAllocator` exists only in bench binaries. Nothing in the production dependency graph is affected.
@@ -99,7 +101,7 @@ Use them as a comparison point, not a regression gate. If they regress, `b0_allo
 
 - All benches measure a single current-thread Tokio executor. Results do not predict multi-threaded or work-stealing scheduler behavior.
 - B0 is a counter, not a memory profiler. It reports allocation count and byte total; not per-call precision or heap fragmentation.
-- B0's `bytes_per_msg` measures the **boxed `recv()` future**, not the message payload. The single per-message allocation is the `Box::pin` in `TokioBufferReader::recv()`, and because all three buffer arms share one `async` block the future is a single type sized to its largest arm — so all three profiles report the same byte count regardless of payload size.
+- B0's `bytes_per_msg` measures AimDB-added per-message heap allocations, not the message payload. Pre-W8 this was the `Box::pin` boxed `recv()` future (a single ~144 B type shared across all three buffer arms, hence identical byte counts); since design 037 / W8 the consume path is poll-based and this is **0 B/msg** on the clean path. A nonzero value flags a regression — e.g. the broadcast error path still allocates its `buffer_name` string, so a B0 run that triggers `BufferLagged`/`BufferClosed` will report > 0.
 - Criterion p99 can vary ±5–10% on noisy CI runners. Use p50 medians for trend comparisons.
 - Always specify `--release` or debug build consistently when comparing runs; optimizations differ by 5–50×.
 - `b_alloc_pipeline` uses a paced source: per-message pace tokens and notification channels. The coordination overhead is included in the measured window.

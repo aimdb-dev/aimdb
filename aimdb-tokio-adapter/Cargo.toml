@@ -18,7 +18,7 @@ default = ["std", "tokio-runtime"]
 std = ["aimdb-core/std"]
 
 # Runtime features
-tokio-runtime = ["tokio", "std"]
+tokio-runtime = ["tokio", "tokio-util", "std"]
 
 # Observability features
 tracing = ["aimdb-core/tracing", "dep:tracing"]
@@ -44,8 +44,14 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = fal
 tokio = { workspace = true, optional = true, features = [
     "time",
     "rt-multi-thread",
-    "sync",            # For broadcast, watch, Mutex, Notify
+    "sync",            # For broadcast, watch, Mutex
 ] }
+
+# ReusableBoxFuture for the broadcast/watch readers' poll_recv (design 037 / W8):
+# one heap box per subscriber lifetime, reused for every message — zero
+# per-message allocation. broadcast/watch expose no public poll API, so the
+# reader round-trips the receiver through a stored, reused future.
+tokio-util = { version = "0.7", optional = true, default-features = false }
 
 # Observability (optional)
 tracing = { workspace = true, optional = true }

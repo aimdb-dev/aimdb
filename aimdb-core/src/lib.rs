@@ -58,6 +58,9 @@ pub use extensions::Extensions;
 pub use aimdb_executor::{ExecutorError, ExecutorResult};
 
 // Producer-Consumer Pattern exports
+#[cfg(feature = "remote-access")]
+pub use buffer::JsonReader;
+pub use buffer::Reader;
 pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;

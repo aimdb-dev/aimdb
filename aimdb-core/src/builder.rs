@@ -960,10 +960,7 @@ impl AimDb {
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
-    pub fn subscribe<T>(
-        &self,
-        key: impl AsRef<str>,
-    ) -> DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>>
+    pub fn subscribe<T>(&self, key: impl AsRef<str>) -> DbResult<crate::buffer::Reader<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {

@@ -28,7 +28,7 @@ use aimdb_bench::profiles::{
     command_buffer, command_msg, state_buffer, state_msg, telemetry_buffer, telemetry_msg,
     WARMUP_ITERS,
 };
-use aimdb_core::buffer::{Buffer, BufferReader};
+use aimdb_core::buffer::{Buffer, Reader};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
 // ── Telemetry SPSC ────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ fn bench_throughput_telemetry_spsc(c: &mut Criterion) {
             rt.block_on(async {
                 // Subscribe before pushing — reader holds position from start.
                 let buf = telemetry_buffer();
-                let mut reader = buf.subscribe();
+                let mut reader = Reader::new(Box::new(buf.subscribe()));
 
                 // Warmup — not timed.
                 for i in 0..WARMUP_ITERS {
@@ -90,10 +90,10 @@ fn bench_throughput_telemetry_fanout(c: &mut Criterion) {
                 // read position from the start. Lockstep below keeps at most one
                 // message in flight, so the fixed ring capacity never lags.
                 let buf = telemetry_buffer();
-                let mut r0 = buf.subscribe();
-                let mut r1 = buf.subscribe();
-                let mut r2 = buf.subscribe();
-                let mut r3 = buf.subscribe();
+                let mut r0 = Reader::new(Box::new(buf.subscribe()));
+                let mut r1 = Reader::new(Box::new(buf.subscribe()));
+                let mut r2 = Reader::new(Box::new(buf.subscribe()));
+                let mut r3 = Reader::new(Box::new(buf.subscribe()));
 
                 // Warmup — not timed (mirrors B1 and the SPSC benches).
                 for i in 0..WARMUP_ITERS {
@@ -134,7 +134,7 @@ fn bench_throughput_state_spsc(c: &mut Criterion) {
         b.iter_custom(|iters| {
             rt.block_on(async {
                 let buf = state_buffer();
-                let mut reader = buf.subscribe();
+                let mut reader = Reader::new(Box::new(buf.subscribe()));
 
                 // Warmup — not timed.
                 for i in 0..WARMUP_ITERS {
@@ -169,7 +169,7 @@ fn bench_throughput_command_mailbox(c: &mut Criterion) {
         b.iter_custom(|iters| {
             rt.block_on(async {
                 let buf = command_buffer();
-                let mut reader = buf.subscribe();
+                let mut reader = Reader::new(Box::new(buf.subscribe()));
 
                 // Warmup — not timed.
                 for i in 0..WARMUP_ITERS {

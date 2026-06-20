@@ -24,9 +24,8 @@ pub use record_profiling::{RecordProfilingMetrics, StageEntry};
 pub use stage_metrics::StageMetrics;
 
 use alloc::{boxed::Box, sync::Arc};
-use core::future::Future;
-use core::pin::Pin;
 use core::sync::atomic::Ordering;
+use core::task::{Context, Poll};
 use portable_atomic::AtomicU64;
 
 use crate::buffer::BufferReader;
@@ -110,17 +109,17 @@ impl<T: Clone + Send> ProfilingBufferReader<T> {
 }
 
 impl<T: Clone + Send> BufferReader<T> for ProfilingBufferReader<T> {
-    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>> {
-        Box::pin(async move {
-            // `started_ns` ≈ the moment the consumer finished processing the
-            // previous value and asked for the next one.
-            let started_ns = (self.clock)();
-            let result = self.inner.recv().await;
-            if result.is_ok() {
-                self.on_yield(started_ns);
-            }
-            result
-        })
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
+        // `started_ns` ≈ the moment the consumer finished processing the
+        // previous value and asked for the next one. Sampled per poll; only the
+        // poll that yields a value records the interval, matching the prior
+        // await-based behavior.
+        let started_ns = (self.clock)();
+        let result = self.inner.poll_recv(cx);
+        if let Poll::Ready(Ok(_)) = &result {
+            self.on_yield(started_ns);
+        }
+        result
     }
 
     fn try_recv(&mut self) -> Result<T, DbError> {

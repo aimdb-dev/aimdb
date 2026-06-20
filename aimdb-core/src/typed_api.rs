@@ -215,19 +215,22 @@ where
 
     /// Subscribe to updates for this record type.
     ///
-    /// Returns a reader that yields values as they are produced.
+    /// Returns a [`Reader<T>`](crate::buffer::Reader) that yields values as they
+    /// are produced. Its `recv().await` is allocation-free (design 037 / W8).
     /// Infallible — the buffer is pre-resolved at `Consumer` construction.
-    pub fn subscribe(&self) -> Box<dyn crate::buffer::BufferReader<T> + Send> {
+    pub fn subscribe(&self) -> crate::buffer::Reader<T> {
         let reader = self.buffer.subscribe_boxed();
         #[cfg(feature = "profiling")]
         if let Some((metrics, clock)) = &self.profiling {
-            return Box::new(crate::profiling::ProfilingBufferReader::new(
-                reader,
-                metrics.clone(),
-                clock.clone(),
+            return crate::buffer::Reader::new(Box::new(
+                crate::profiling::ProfilingBufferReader::new(
+                    reader,
+                    metrics.clone(),
+                    clock.clone(),
+                ),
             ));
         }
-        reader
+        crate::buffer::Reader::new(reader)
     }
 }
 
@@ -281,8 +284,12 @@ where
 
 /// One subscription of a [`FusedSource`]: recv → resolve destination →
 /// serialize, all on the typed value.
+///
+/// The connector SPI keeps its boxed `RecvSerializedFuture` (BYOC stays stable,
+/// design 039 §2); only the *inner* per-message box is eliminated by reading
+/// through the allocation-free [`Reader<T>`](crate::buffer::Reader) (W8).
 struct FusedReader<T: Clone + Send + 'static> {
-    inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
+    inner: crate::buffer::Reader<T>,
     serialize: FusedSerializeFn<T>,
     topic: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
 }
@@ -1722,15 +1729,16 @@ mod tests {
     }
 
     impl crate::buffer::BufferReader<TestRecord> for ScriptedReader {
-        fn recv(
+        fn poll_recv(
             &mut self,
-        ) -> Pin<Box<dyn Future<Output = Result<TestRecord, crate::DbError>> + Send + '_>> {
+            _cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Result<TestRecord, crate::DbError>> {
             let next = if self.script.is_empty() {
                 Err(Self::closed())
             } else {
                 self.script.remove(0)
             };
-            Box::pin(async move { next })
+            core::task::Poll::Ready(next)
         }
         fn try_recv(&mut self) -> Result<TestRecord, crate::DbError> {
             unimplemented!("not needed for fused reader tests")
@@ -1750,7 +1758,7 @@ mod tests {
         topic: Option<Arc<dyn crate::connector::TopicProvider<TestRecord>>>,
     ) -> FusedReader<TestRecord> {
         FusedReader {
-            inner: Box::new(ScriptedReader { script }),
+            inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
             serialize,
             topic,
         }

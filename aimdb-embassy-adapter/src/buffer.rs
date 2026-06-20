@@ -43,13 +43,18 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::alloc::Layout;
+use core::future::Future;
+use core::pin::Pin;
+use core::ptr::{self, NonNull};
+use core::task::{Context, Poll};
 
 use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
 use aimdb_core::DbError;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_sync::pubsub::{PubSubChannel, WaitResult};
-use embassy_sync::watch::Watch;
+use embassy_sync::pubsub::{PubSubChannel, Subscriber, WaitResult};
+use embassy_sync::watch::{Receiver as WatchReceiver, Watch};
 
 #[cfg(feature = "metrics")]
 use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
@@ -76,8 +81,11 @@ use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 /// type MyBuffer = EmbassyBuffer<u32, 32, 4, 2, 4>;
 ///
 /// # async fn example() {
+/// use aimdb_core::buffer::Reader;
 /// let buffer: MyBuffer = MyBuffer::new_spmc();
-/// let mut reader = buffer.subscribe();
+/// // `subscribe()` yields the concrete reader; wrap it in the ergonomic,
+/// // allocation-free `Reader<T>` handle for `recv().await` (design 037 / W8).
+/// let mut reader = Reader::new(Box::new(buffer.subscribe()));
 /// buffer.push(42);
 /// let value = reader.recv().await.unwrap();
 /// # }
@@ -210,8 +218,8 @@ impl<
         // Clone the Arc for the reader
         EmbassyBufferReader {
             buffer: Arc::clone(&self.inner),
-            watch_receiver: None, // Will be initialized on first recv() for Watch buffers
-            spmc_subscriber: None, // Will be initialized on first recv() for SpmcRing buffers
+            watch_recv: None, // Lazily initialized on first poll for Watch buffers
+            spmc_recv: None,  // Lazily initialized on first poll for SpmcRing buffers
             #[cfg(feature = "metrics")]
             metrics: Arc::clone(&self.metrics),
         }
@@ -351,7 +359,9 @@ impl<
         F: Fn(T) -> Fut + Send + Sync,
         Fut: core::future::Future<Output = ()> + Send,
     {
-        let mut reader = self.subscribe();
+        // Wrap the concrete reader in the ergonomic, allocation-free
+        // `Reader<T>` handle so `recv().await` works (design 037 / W8).
+        let mut reader = aimdb_core::buffer::Reader::new(Box::new(self.subscribe()));
 
         loop {
             match reader.recv().await {
@@ -375,11 +385,173 @@ impl<
     }
 }
 
+// ============================================================================
+// Zero-allocation poll plumbing (design 037 / W8)
+// ============================================================================
+
+/// Persistent SpmcRing subscriber with a lifetime extended to `'static` (the
+/// owning `Arc<EmbassyBufferInner>` keeps the channel alive for the reader).
+type SpmcSub<T, const CAP: usize, const SUBS: usize, const PUBS: usize> =
+    Subscriber<'static, CriticalSectionRawMutex, T, CAP, SUBS, PUBS>;
+
+/// Persistent Watch receiver, `'static` for the same reason as [`SpmcSub`].
+type WatchRx<T, const WATCH_N: usize> = WatchReceiver<'static, CriticalSectionRawMutex, T, WATCH_N>;
+
+/// Output of the SpmcRing reusable future: the `next_message()` result paired
+/// with the subscriber handed back so the next future can reuse it.
+type SpmcRecvOutput<T, const CAP: usize, const SUBS: usize, const PUBS: usize> =
+    (WaitResult<T>, SpmcSub<T, CAP, SUBS, PUBS>);
+
+/// Output of the Watch reusable future: the changed value plus the receiver.
+type WatchRecvOutput<T, const WATCH_N: usize> = (T, WatchRx<T, WATCH_N>);
+
+/// Await the next SpmcRing message, returning the subscriber for reuse.
+///
+/// Uses the existing async `next_message()` so lag (`WaitResult::Lagged`) is
+/// surfaced exactly as before; the subscriber is round-tripped through the
+/// future so the reader can store it without self-referencing.
+async fn spmc_recv_fut<T: Clone, const CAP: usize, const SUBS: usize, const PUBS: usize>(
+    mut sub: SpmcSub<T, CAP, SUBS, PUBS>,
+) -> SpmcRecvOutput<T, CAP, SUBS, PUBS> {
+    let result = sub.next_message().await;
+    (result, sub)
+}
+
+/// Await the next Watch change, returning the receiver for reuse.
+async fn watch_recv_fut<T: Clone, const WATCH_N: usize>(
+    mut rx: WatchRx<T, WATCH_N>,
+) -> WatchRecvOutput<T, WATCH_N> {
+    let value = rx.changed().await;
+    (value, rx)
+}
+
+/// Create the persistent SpmcRing subscriber, extending its borrow to `'static`.
+///
+/// SAFETY: the `Arc<EmbassyBufferInner>` in the reader keeps the `PubSubChannel`
+/// alive for the reader's whole life, so the `'static` subscriber never outlives
+/// the channel. (Same invariant the pre-W8 code relied on.)
+fn make_spmc_sub<
+    T: Clone + Send + 'static,
+    const CAP: usize,
+    const SUBS: usize,
+    const PUBS: usize,
+>(
+    channel: &PubSubChannel<CriticalSectionRawMutex, T, CAP, SUBS, PUBS>,
+) -> Result<SpmcSub<T, CAP, SUBS, PUBS>, DbError> {
+    let channel_static: &'static PubSubChannel<CriticalSectionRawMutex, T, CAP, SUBS, PUBS> =
+        unsafe { &*(channel as *const _) };
+    channel_static.subscriber().map_err(|_| {
+        defmt::error!(
+            "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
+             Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
+             Count one slot per .tap(), .link_to() connector, and each transform_join input.",
+            SUBS
+        );
+        DbError::BufferClosed {
+            buffer_name: String::from("embassy spmc ring"),
+        }
+    })
+}
+
+/// Create the persistent Watch receiver, extending its borrow to `'static`.
+///
+/// SAFETY: see [`make_spmc_sub`] — the `Arc` keeps the `Watch` alive.
+fn make_watch_rx<T: Clone + Send + 'static, const WATCH_N: usize>(
+    watch: &Watch<CriticalSectionRawMutex, T, WATCH_N>,
+) -> Result<WatchRx<T, WATCH_N>, DbError> {
+    let watch_static: &'static Watch<CriticalSectionRawMutex, T, WATCH_N> =
+        unsafe { &*(watch as *const _) };
+    watch_static.receiver().ok_or(DbError::BufferClosed {
+        buffer_name: String::from("embassy watch"),
+    })
+}
+
+/// Minimal `no_std` port of `tokio_util::sync::ReusableBoxFuture`.
+///
+/// Stores a boxed future and, on [`set`](ReusableBoxFuture::set), reuses the
+/// existing heap allocation whenever the replacement future has the same layout
+/// — which it always does here, since each reader stores exactly one concrete
+/// async-fn future type. That is what makes the embassy consume path
+/// zero-allocation per message (design 037 / W8): the single box is allocated
+/// once per subscriber and reused for every message.
+///
+/// `unsafe` is confined to this type and mirrors the upstream tokio-util impl.
+struct ReusableBoxFuture<O> {
+    boxed: NonNull<dyn Future<Output = O> + Send + 'static>,
+}
+
+// SAFETY: the boxed future is owned exclusively and is itself `Send`.
+unsafe impl<O> Send for ReusableBoxFuture<O> {}
+
+impl<O> ReusableBoxFuture<O> {
+    fn new<F>(future: F) -> Self
+    where
+        F: Future<Output = O> + Send + 'static,
+    {
+        let boxed: Box<dyn Future<Output = O> + Send + 'static> = Box::new(future);
+        // SAFETY: `Box::into_raw` never yields a null pointer.
+        Self {
+            boxed: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
+        }
+    }
+
+    /// Replace the stored future, reusing the allocation when layouts match
+    /// (the common path) and reallocating only as a fallback.
+    fn set<F>(&mut self, future: F)
+    where
+        F: Future<Output = O> + Send + 'static,
+    {
+        if let Err(future) = self.try_set(future) {
+            *self = Self::new(future);
+        }
+    }
+
+    fn try_set<F>(&mut self, future: F) -> Result<(), F>
+    where
+        F: Future<Output = O> + Send + 'static,
+    {
+        // SAFETY: `self.boxed` is always a valid, owned boxed future.
+        let existing_layout = Layout::for_value(unsafe { self.boxed.as_ref() });
+        if Layout::new::<F>() != existing_layout {
+            return Err(future);
+        }
+        // SAFETY: same layout — drop the completed future in place, write the
+        // new one into the same allocation, and rebuild the fat pointer with
+        // `F`'s vtable. The previous future has already resolved (we only `set`
+        // after a poll returned `Ready`), so the pin contract is upheld.
+        unsafe {
+            let ptr = self.boxed.as_ptr();
+            ptr::drop_in_place(ptr);
+            let ptr = ptr as *mut F;
+            ptr::write(ptr, future);
+            self.boxed = NonNull::new_unchecked(ptr as *mut (dyn Future<Output = O> + Send));
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<O> {
+        // SAFETY: the future lives behind a stable heap allocation and is never
+        // moved while borrowed; `&mut self` guarantees unique access.
+        let fut = unsafe { Pin::new_unchecked(self.boxed.as_mut()) };
+        fut.poll(cx)
+    }
+}
+
+impl<O> Drop for ReusableBoxFuture<O> {
+    fn drop(&mut self) {
+        // SAFETY: reconstruct and drop the owning `Box`.
+        unsafe {
+            drop(Box::from_raw(self.boxed.as_ptr()));
+        }
+    }
+}
+
 /// Reader for Embassy buffers
 ///
-/// Holds persistent subscription state for each buffer type.
-/// For Watch buffers, stores a persistent Receiver to track which value has been seen.
-/// For SpmcRing buffers, stores a persistent Subscriber for cursor continuity.
+/// Holds persistent subscription state for each buffer type, driven through a
+/// reused boxed future so `poll_recv` allocates nothing per message (W8).
+/// For Watch buffers the future owns a persistent Receiver (tracks which value
+/// has been seen); for SpmcRing a persistent Subscriber (cursor continuity).
 pub struct EmbassyBufferReader<
     T: Clone + Send + 'static,
     const CAP: usize,
@@ -388,14 +560,11 @@ pub struct EmbassyBufferReader<
     const WATCH_N: usize,
 > {
     buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
-    /// Persistent Watch receiver. The 'static lifetime is safe because the Arc keeps the Watch alive.
-    watch_receiver:
-        Option<embassy_sync::watch::Receiver<'static, CriticalSectionRawMutex, T, WATCH_N>>,
-    /// Persistent SpmcRing subscriber (same pattern as watch_receiver).
-    /// The 'static lifetime is safe because the Arc keeps the PubSubChannel alive.
-    spmc_subscriber: Option<
-        embassy_sync::pubsub::Subscriber<'static, CriticalSectionRawMutex, T, CAP, SUBS, PUBS>,
-    >,
+    /// Reusable future round-tripping the persistent Watch receiver. Lazily
+    /// created on first poll (the receiver borrows the Arc-kept-alive Watch).
+    watch_recv: Option<ReusableBoxFuture<WatchRecvOutput<T, WATCH_N>>>,
+    /// Reusable future round-tripping the persistent SpmcRing subscriber.
+    spmc_recv: Option<ReusableBoxFuture<SpmcRecvOutput<T, CAP, SUBS, PUBS>>>,
     /// Shared counter state (cloned from the parent buffer at subscribe time).
     #[cfg(feature = "metrics")]
     metrics: Arc<BufferCounters>,
@@ -409,151 +578,123 @@ impl<
         const WATCH_N: usize,
     > BufferReader<T> for EmbassyBufferReader<T, CAP, SUBS, PUBS, WATCH_N>
 {
-    fn recv(
-        &mut self,
-    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<T, DbError>> + Send + '_>>
-    {
-        Box::pin(async move {
-            match &*self.buffer {
-                EmbassyBufferInner::SpmcRing(channel) => {
-                    // Lazily create persistent subscriber (same pattern as watch_receiver)
-                    if self.spmc_subscriber.is_none() {
-                        // SAFETY: The Arc in self.buffer keeps the PubSubChannel alive for this reader's lifetime.
-                        // We extend the lifetime to 'static to store the subscriber, which is safe because
-                        // the subscriber is dropped with the reader.
-                        let channel_static: &'static embassy_sync::pubsub::PubSubChannel<
-                            CriticalSectionRawMutex,
-                            T,
-                            CAP,
-                            SUBS,
-                            PUBS,
-                        > = unsafe { &*(channel as *const _) };
-                        self.spmc_subscriber = Some(
-                            channel_static.subscriber().map_err(|_| {
-                                defmt::error!(
-                                    "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
-                                     Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
-                                     Count one slot per .tap(), .link_to() connector, and each transform_join input.",
-                                    SUBS
-                                );
-                                DbError::BufferClosed {
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
+        match &*self.buffer {
+            EmbassyBufferInner::SpmcRing(channel) => {
+                // Lazily create the reusable future (allocates its single box
+                // once; reused for every message thereafter).
+                if self.spmc_recv.is_none() {
+                    match make_spmc_sub(channel) {
+                        Ok(sub) => {
+                            self.spmc_recv = Some(ReusableBoxFuture::new(spmc_recv_fut(sub)))
+                        }
+                        Err(e) => return Poll::Ready(Err(e)),
+                    }
+                }
+                let recv = self.spmc_recv.as_mut().unwrap();
+                match recv.poll(cx) {
+                    Poll::Ready((result, sub)) => {
+                        recv.set(spmc_recv_fut(sub));
+                        match result {
+                            WaitResult::Message(value) => {
+                                #[cfg(feature = "metrics")]
+                                self.metrics.increment_consumed();
+                                Poll::Ready(Ok(value))
+                            }
+                            WaitResult::Lagged(n) => {
+                                #[cfg(feature = "metrics")]
+                                self.metrics.add_dropped(n);
+                                Poll::Ready(Err(DbError::BufferLagged {
+                                    lag_count: n,
                                     buffer_name: String::from("embassy spmc ring"),
-                                }
-                            })?,
-                        );
-                    }
-                    match self.spmc_subscriber.as_mut().unwrap().next_message().await {
-                        WaitResult::Message(value) => {
-                            #[cfg(feature = "metrics")]
-                            self.metrics.increment_consumed();
-                            Ok(value)
-                        }
-                        WaitResult::Lagged(n) => {
-                            #[cfg(feature = "metrics")]
-                            self.metrics.add_dropped(n);
-                            Err(DbError::BufferLagged {
-                                lag_count: n,
-                                buffer_name: String::from("embassy spmc ring"),
-                            })
+                                }))
+                            }
                         }
                     }
-                }
-                EmbassyBufferInner::Watch(watch) => {
-                    // Watch requires a persistent receiver to track seen values.
-                    // Creating a new receiver each time causes infinite loops (always returns current value).
-                    if self.watch_receiver.is_none() {
-                        // SAFETY: The Arc in self.buffer keeps the Watch alive for this reader's lifetime.
-                        // We extend the lifetime to 'static to store the receiver, which is safe because
-                        // the receiver is just (&Watch, u64 counter) and will be dropped with the reader.
-                        let watch_static: &'static embassy_sync::watch::Watch<
-                            CriticalSectionRawMutex,
-                            T,
-                            WATCH_N,
-                        > = unsafe { &*(watch as *const _) };
-
-                        self.watch_receiver = watch_static.receiver();
-                        if self.watch_receiver.is_none() {
-                            return Err(DbError::BufferClosed {
-                                buffer_name: String::from("embassy watch"),
-                            });
-                        }
-                    }
-
-                    // Use the persistent receiver to detect changes
-                    if let Some(ref mut rx) = self.watch_receiver {
-                        let value = rx.changed().await;
-                        #[cfg(feature = "metrics")]
-                        self.metrics.increment_consumed();
-                        Ok(value)
-                    } else {
-                        Err(DbError::BufferClosed {
-                            buffer_name: String::from("embassy watch"),
-                        })
-                    }
-                }
-                EmbassyBufferInner::Mailbox(channel) => {
-                    let rx = channel.receiver();
-                    let value = rx.receive().await;
-                    #[cfg(feature = "metrics")]
-                    self.metrics.increment_consumed();
-                    Ok(value)
+                    Poll::Pending => Poll::Pending,
                 }
             }
-        })
+            EmbassyBufferInner::Watch(watch) => {
+                if self.watch_recv.is_none() {
+                    match make_watch_rx(watch) {
+                        Ok(rx) => {
+                            self.watch_recv = Some(ReusableBoxFuture::new(watch_recv_fut(rx)))
+                        }
+                        Err(e) => return Poll::Ready(Err(e)),
+                    }
+                }
+                let recv = self.watch_recv.as_mut().unwrap();
+                match recv.poll(cx) {
+                    Poll::Ready((value, rx)) => {
+                        recv.set(watch_recv_fut(rx));
+                        #[cfg(feature = "metrics")]
+                        self.metrics.increment_consumed();
+                        Poll::Ready(Ok(value))
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+            EmbassyBufferInner::Mailbox(channel) => match channel.poll_receive(cx) {
+                Poll::Ready(value) => {
+                    #[cfg(feature = "metrics")]
+                    self.metrics.increment_consumed();
+                    Poll::Ready(Ok(value))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+        }
     }
 
     fn try_recv(&mut self) -> Result<T, DbError> {
+        // `broadcast`/watch state lives inside the reusable future; poll it with
+        // a no-op waker for non-blocking semantics (mirrors the tokio adapter).
         match &*self.buffer {
             EmbassyBufferInner::SpmcRing(channel) => {
-                // Lazily create persistent subscriber (same as recv())
-                if self.spmc_subscriber.is_none() {
-                    let channel_static: &'static embassy_sync::pubsub::PubSubChannel<
-                        CriticalSectionRawMutex,
-                        T,
-                        CAP,
-                        SUBS,
-                        PUBS,
-                    > = unsafe { &*(channel as *const _) };
-                    self.spmc_subscriber = Some(
-                        channel_static.subscriber().map_err(|_| {
-                            defmt::error!(
-                                "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
-                                 Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
-                                 Count one slot per .tap(), .link_to() connector, and each transform_join input.",
-                                SUBS
-                            );
-                            DbError::BufferClosed {
-                                buffer_name: String::from("embassy spmc ring"),
-                            }
-                        })?,
-                    );
+                if self.spmc_recv.is_none() {
+                    self.spmc_recv = Some(ReusableBoxFuture::new(spmc_recv_fut(make_spmc_sub(
+                        channel,
+                    )?)));
                 }
-                match self
-                    .spmc_subscriber
-                    .as_mut()
-                    .unwrap()
-                    .try_next_message_pure()
-                {
-                    Some(value) => {
+                let recv = self.spmc_recv.as_mut().unwrap();
+                let mut cx = Context::from_waker(core::task::Waker::noop());
+                match recv.poll(&mut cx) {
+                    Poll::Ready((result, sub)) => {
+                        recv.set(spmc_recv_fut(sub));
+                        match result {
+                            WaitResult::Message(value) => {
+                                #[cfg(feature = "metrics")]
+                                self.metrics.increment_consumed();
+                                Ok(value)
+                            }
+                            WaitResult::Lagged(n) => {
+                                #[cfg(feature = "metrics")]
+                                self.metrics.add_dropped(n);
+                                Err(DbError::BufferLagged {
+                                    lag_count: n,
+                                    buffer_name: String::from("embassy spmc ring"),
+                                })
+                            }
+                        }
+                    }
+                    Poll::Pending => Err(DbError::BufferEmpty),
+                }
+            }
+            EmbassyBufferInner::Watch(watch) => {
+                if self.watch_recv.is_none() {
+                    self.watch_recv = Some(ReusableBoxFuture::new(watch_recv_fut(make_watch_rx(
+                        watch,
+                    )?)));
+                }
+                let recv = self.watch_recv.as_mut().unwrap();
+                let mut cx = Context::from_waker(core::task::Waker::noop());
+                match recv.poll(&mut cx) {
+                    Poll::Ready((value, rx)) => {
+                        recv.set(watch_recv_fut(rx));
                         #[cfg(feature = "metrics")]
                         self.metrics.increment_consumed();
                         Ok(value)
                     }
-                    None => Err(DbError::BufferEmpty),
-                }
-            }
-            EmbassyBufferInner::Watch(_) => {
-                if let Some(ref mut rx) = self.watch_receiver {
-                    match rx.try_changed() {
-                        Some(value) => {
-                            #[cfg(feature = "metrics")]
-                            self.metrics.increment_consumed();
-                            Ok(value)
-                        }
-                        None => Err(DbError::BufferEmpty),
-                    }
-                } else {
-                    Err(DbError::BufferEmpty)
+                    Poll::Pending => Err(DbError::BufferEmpty),
                 }
             }
             EmbassyBufferInner::Mailbox(channel) => match channel.try_receive() {

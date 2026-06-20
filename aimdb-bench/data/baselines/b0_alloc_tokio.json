@@ -2,28 +2,28 @@
   {
     "profile": "Telemetry",
     "buffer_type": "SpmcRing",
-    "total_allocs": 512,
-    "total_bytes": 73728,
+    "total_allocs": 0,
+    "total_bytes": 0,
     "batch_size": 512,
-    "allocs_per_msg": 1.0,
-    "bytes_per_msg": 144.0
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
   },
   {
     "profile": "State",
     "buffer_type": "SingleLatest",
-    "total_allocs": 512,
-    "total_bytes": 73728,
+    "total_allocs": 0,
+    "total_bytes": 0,
     "batch_size": 512,
-    "allocs_per_msg": 1.0,
-    "bytes_per_msg": 144.0
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
   },
   {
     "profile": "Command",
     "buffer_type": "Mailbox",
-    "total_allocs": 512,
-    "total_bytes": 73728,
+    "total_allocs": 0,
+    "total_bytes": 0,
     "batch_size": 512,
-    "allocs_per_msg": 1.0,
-    "bytes_per_msg": 144.0
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
   }
 ]

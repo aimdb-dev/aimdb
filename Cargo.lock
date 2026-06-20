@@ -313,6 +313,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing",
 ]
 

@@ -5,15 +5,21 @@
 //!
 //! - **SPMC Ring**: `tokio::sync::broadcast` for bounded multi-consumer queues
 //! - **SingleLatest**: `tokio::sync::watch` for latest-value semantics
-//! - **Mailbox**: `tokio::sync::Mutex` + `tokio::sync::Notify` for single-slot overwrite
+//! - **Mailbox**: `std::sync::Mutex` slot + a hand-rolled waker list for
+//!   single-slot overwrite (design 037 / W8 — no `Notify`, no per-message alloc)
+//!
+//! The broadcast/watch readers are poll-based ([`BufferReader::poll_recv`]) with
+//! no per-message heap allocation: each holds a [`ReusableBoxFuture`] that
+//! round-trips its receiver (these primitives expose no public poll API), so the
+//! single boxed future is allocated once per subscriber and reused per message.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::task::{Context, Poll, Waker};
 
 use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
 use aimdb_core::DbError;
-use tokio::sync::{broadcast, watch, Notify};
+use tokio::sync::{broadcast, watch};
+use tokio_util::sync::ReusableBoxFuture;
 
 #[cfg(feature = "metrics")]
 use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
@@ -25,6 +31,23 @@ pub struct TokioBuffer<T: Clone + Send + Sync + 'static> {
     metrics: Arc<BufferCounters>,
 }
 
+/// Shared state for the Mailbox (single-slot overwrite) buffer.
+///
+/// Replaces the pre-W8 `Notify` with an explicit waker list beside the slot, so
+/// `poll_recv` registers a waker on `Pending` and `push` wakes them — no
+/// `Notify` permit subtleties, no per-message allocation (design 037 / W8 §6).
+///
+/// `pub` only because it appears in the `pub` [`TokioBufferReader`] reader enum;
+/// it is an implementation detail and not part of the supported API.
+#[doc(hidden)]
+pub struct MailboxState<T> {
+    /// The single value slot; a new `push` overwrites any unconsumed value.
+    slot: Option<T>,
+    /// Parked readers, woken on `push`. Deduplicated on registration and drained
+    /// on wake, so capacity stabilizes after warmup (mirrors the WASM adapter).
+    wakers: Vec<Waker>,
+}
+
 /// Internal buffer variants using Tokio primitives
 enum TokioBufferInner<T: Clone + Send + Sync + 'static> {
     Broadcast {
@@ -33,9 +56,8 @@ enum TokioBufferInner<T: Clone + Send + Sync + 'static> {
     Watch {
         tx: watch::Sender<Option<T>>,
     },
-    Notify {
-        slot: Arc<StdMutex<Option<T>>>,
-        notify: Arc<Notify>,
+    Mailbox {
+        state: Arc<StdMutex<MailboxState<T>>>,
     },
 }
 
@@ -59,9 +81,11 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                 let (tx, _rx) = watch::channel(None);
                 TokioBufferInner::Watch { tx }
             }
-            BufferCfg::Mailbox => TokioBufferInner::Notify {
-                slot: Arc::new(StdMutex::new(None)),
-                notify: Arc::new(Notify::new()),
+            BufferCfg::Mailbox => TokioBufferInner::Mailbox {
+                state: Arc::new(StdMutex::new(MailboxState {
+                    slot: None,
+                    wakers: Vec::new(),
+                })),
             },
         };
 
@@ -87,9 +111,15 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                 // before any subscriber attaches.
                 tx.send_replace(Some(value));
             }
-            TokioBufferInner::Notify { slot, notify } => {
-                *slot.lock().unwrap() = Some(value);
-                notify.notify_waiters();
+            TokioBufferInner::Mailbox { state } => {
+                let mut guard = state.lock().unwrap();
+                guard.slot = Some(value);
+                // Wake-all: spurious wakeups are benign — losers re-poll to
+                // `Pending` and re-register (design 037 §6). Drain so the list
+                // does not accumulate stale wakers.
+                for waker in guard.wakers.drain(..) {
+                    waker.wake();
+                }
             }
         }
     }
@@ -97,18 +127,19 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
     fn subscribe(&self) -> Self::Reader {
         match &*self.inner {
             TokioBufferInner::Broadcast { tx } => TokioBufferReader::Broadcast {
-                rx: tx.subscribe(),
+                // Allocate the reusable future box once, here, capturing the
+                // freshly-subscribed receiver — reused for every message (W8).
+                recv: ReusableBoxFuture::new(broadcast_recv(tx.subscribe())),
                 #[cfg(feature = "metrics")]
                 metrics: Arc::clone(&self.metrics),
             },
             TokioBufferInner::Watch { tx } => TokioBufferReader::Watch {
-                rx: tx.subscribe(),
+                recv: ReusableBoxFuture::new(watch_recv(tx.subscribe())),
                 #[cfg(feature = "metrics")]
                 metrics: Arc::clone(&self.metrics),
             },
-            TokioBufferInner::Notify { slot, notify } => TokioBufferReader::Notify {
-                slot: Arc::clone(slot),
-                notify: Arc::clone(notify),
+            TokioBufferInner::Mailbox { state } => TokioBufferReader::Mailbox {
+                state: Arc::clone(state),
                 #[cfg(feature = "metrics")]
                 metrics: Arc::clone(&self.metrics),
             },
@@ -138,7 +169,7 @@ impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for Toki
             // watch::Sender::borrow() reads the slot non-destructively.
             TokioBufferInner::Watch { tx } => tx.borrow().clone(),
             // Same Mutex the Mailbox buffer already uses for the slot.
-            TokioBufferInner::Notify { slot, .. } => slot.lock().unwrap().clone(),
+            TokioBufferInner::Mailbox { state } => state.lock().unwrap().slot.clone(),
             // broadcast has no canonical latest — see design 031 §SPMC Ring.
             TokioBufferInner::Broadcast { .. } => None,
         }
@@ -176,9 +207,9 @@ impl<T: Clone + Send + Sync + 'static> BufferMetrics for TokioBuffer<T> {
                     1
                 }
             }
-            TokioBufferInner::Notify { slot, .. } => {
+            TokioBufferInner::Mailbox { state } => {
                 // Lock held only for is_some() check, released immediately.
-                if slot.lock().unwrap().is_some() {
+                if state.lock().unwrap().slot.is_some() {
                     1
                 } else {
                     0
@@ -214,7 +245,9 @@ impl<T: Clone + Send + Sync + 'static> TokioBuffer<T> {
         F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let mut reader = self.subscribe();
+        // Wrap the concrete reader in the ergonomic, allocation-free
+        // `Reader<T>` handle so `recv().await` works (design 037 / W8).
+        let mut reader = aimdb_core::buffer::Reader::new(Box::new(self.subscribe()));
 
         tokio::spawn(async move {
             loop {
@@ -258,153 +291,213 @@ impl<T: Clone + Send + Sync + 'static> TokioBuffer<T> {
     }
 }
 
+/// Output of the broadcast reader's reusable future: the `recv()` result paired
+/// with the receiver handed back so the next future can reuse it.
+type BroadcastRecvOutput<T> = (
+    Result<T, broadcast::error::RecvError>,
+    broadcast::Receiver<T>,
+);
+
+/// Output of the watch reader's reusable future. `Ok(Option<T>)` carries the
+/// borrowed-and-cloned latest value (`None` means the channel closed).
+type WatchRecvOutput<T> = (
+    Result<Option<T>, watch::error::RecvError>,
+    watch::Receiver<Option<T>>,
+);
+
+/// Await the next broadcast value, returning the receiver for reuse.
+///
+/// `broadcast::Receiver` exposes no public poll API, so the reader stores this
+/// future in a [`ReusableBoxFuture`] and round-trips the receiver through it —
+/// one allocation per subscriber, reused for every message (design 037 / W8).
+async fn broadcast_recv<T: Clone>(mut rx: broadcast::Receiver<T>) -> BroadcastRecvOutput<T> {
+    let res = rx.recv().await;
+    (res, rx)
+}
+
+/// Await the next watch change, returning the receiver for reuse. Mirrors the
+/// pre-W8 `changed().await` + `borrow().clone()` sequence.
+async fn watch_recv<T: Clone>(mut rx: watch::Receiver<Option<T>>) -> WatchRecvOutput<T> {
+    let res = match rx.changed().await {
+        Ok(()) => Ok(rx.borrow().clone()),
+        Err(e) => Err(e),
+    };
+    (res, rx)
+}
+
 /// Tokio-based buffer reader
 pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
     Broadcast {
-        rx: broadcast::Receiver<T>,
+        recv: ReusableBoxFuture<'static, BroadcastRecvOutput<T>>,
         #[cfg(feature = "metrics")]
         metrics: Arc<BufferCounters>,
     },
     Watch {
-        rx: watch::Receiver<Option<T>>,
+        recv: ReusableBoxFuture<'static, WatchRecvOutput<T>>,
         #[cfg(feature = "metrics")]
         metrics: Arc<BufferCounters>,
     },
-    Notify {
-        slot: Arc<StdMutex<Option<T>>>,
-        notify: Arc<Notify>,
+    Mailbox {
+        state: Arc<StdMutex<MailboxState<T>>>,
         #[cfg(feature = "metrics")]
         metrics: Arc<BufferCounters>,
     },
 }
 
-impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> {
-    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>> {
-        Box::pin(async move {
-            match self {
-                TokioBufferReader::Broadcast {
-                    rx,
-                    #[cfg(feature = "metrics")]
-                    metrics,
-                } => match rx.recv().await {
-                    Ok(value) => {
-                        #[cfg(feature = "metrics")]
-                        metrics.increment_consumed();
-                        Ok(value)
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        #[cfg(feature = "metrics")]
-                        metrics.add_dropped(n);
-                        Err(DbError::BufferLagged {
-                            lag_count: n,
-                            buffer_name: "broadcast".to_string(),
-                        })
-                    }
-                    Err(broadcast::error::RecvError::Closed) => Err(DbError::BufferClosed {
-                        buffer_name: "broadcast".to_string(),
-                    }),
-                },
-                TokioBufferReader::Watch {
-                    rx,
-                    #[cfg(feature = "metrics")]
-                    metrics,
-                } => {
-                    rx.changed().await.map_err(|_| DbError::BufferClosed {
-                        buffer_name: "watch".to_string(),
-                    })?;
+impl<T: Clone + Send + Sync + 'static> TokioBufferReader<T> {
+    /// Map a broadcast `recv()` result into the AimDB error space (and record
+    /// metrics). Shared by `poll_recv` and `try_recv`.
+    fn map_broadcast(
+        result: Result<T, broadcast::error::RecvError>,
+        #[cfg(feature = "metrics")] metrics: &BufferCounters,
+    ) -> Result<T, DbError> {
+        match result {
+            Ok(value) => {
+                #[cfg(feature = "metrics")]
+                metrics.increment_consumed();
+                Ok(value)
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                #[cfg(feature = "metrics")]
+                metrics.add_dropped(n);
+                Err(DbError::BufferLagged {
+                    lag_count: n,
+                    buffer_name: "broadcast".to_string(),
+                })
+            }
+            Err(broadcast::error::RecvError::Closed) => Err(DbError::BufferClosed {
+                buffer_name: "broadcast".to_string(),
+            }),
+        }
+    }
 
-                    let value = rx.borrow().clone();
-                    match value {
-                        Some(v) => {
-                            #[cfg(feature = "metrics")]
-                            metrics.increment_consumed();
-                            Ok(v)
-                        }
-                        None => Err(DbError::BufferClosed {
-                            buffer_name: "watch".to_string(),
-                        }),
-                    }
+    /// Map a watch `changed()` result into the AimDB error space.
+    fn map_watch(
+        result: Result<Option<T>, watch::error::RecvError>,
+        #[cfg(feature = "metrics")] metrics: &BufferCounters,
+    ) -> Result<T, DbError> {
+        match result {
+            Ok(Some(v)) => {
+                #[cfg(feature = "metrics")]
+                metrics.increment_consumed();
+                Ok(v)
+            }
+            Ok(None) | Err(_) => Err(DbError::BufferClosed {
+                buffer_name: "watch".to_string(),
+            }),
+        }
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> {
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
+        match self {
+            TokioBufferReader::Broadcast {
+                recv,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => match recv.poll(cx) {
+                Poll::Ready((result, rx)) => {
+                    // Re-arm the reusable future with the returned receiver
+                    // before handing back the value (no allocation — same future
+                    // type reuses the box).
+                    recv.set(broadcast_recv(rx));
+                    Poll::Ready(Self::map_broadcast(
+                        result,
+                        #[cfg(feature = "metrics")]
+                        metrics,
+                    ))
                 }
-                TokioBufferReader::Notify {
-                    slot,
-                    notify,
+                Poll::Pending => Poll::Pending,
+            },
+            TokioBufferReader::Watch {
+                recv,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => match recv.poll(cx) {
+                Poll::Ready((result, rx)) => {
+                    recv.set(watch_recv(rx));
+                    Poll::Ready(Self::map_watch(
+                        result,
+                        #[cfg(feature = "metrics")]
+                        metrics,
+                    ))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+            TokioBufferReader::Mailbox {
+                state,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => {
+                let mut guard = state.lock().unwrap();
+                if let Some(value) = guard.slot.take() {
                     #[cfg(feature = "metrics")]
-                    metrics,
-                } => {
-                    loop {
-                        // Check if there's already a value
-                        {
-                            let mut guard = slot.lock().unwrap();
-                            if let Some(value) = guard.take() {
-                                #[cfg(feature = "metrics")]
-                                metrics.increment_consumed();
-                                return Ok(value);
-                            }
-                        }
-                        // No value, wait for notification
-                        notify.notified().await;
+                    metrics.increment_consumed();
+                    Poll::Ready(Ok(value))
+                } else {
+                    // Register the waker (dedup so repeated polls without a push
+                    // don't grow the list — mirrors the WASM adapter).
+                    if !guard.wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                        guard.wakers.push(cx.waker().clone());
                     }
+                    Poll::Pending
                 }
             }
-        })
+        }
     }
 
     fn try_recv(&mut self) -> Result<T, DbError> {
         match self {
+            // `broadcast`/`watch` have no public poll API, and their receivers
+            // live inside the reusable future. Poll that future with a no-op
+            // waker: `Ready` means a value/error is available now (try-recv
+            // semantics); `Pending` means empty. On `Ready`, re-arm the future.
             TokioBufferReader::Broadcast {
-                rx,
-                #[cfg(feature = "metrics")]
-                metrics,
-            } => match rx.try_recv() {
-                Ok(value) => {
-                    #[cfg(feature = "metrics")]
-                    metrics.increment_consumed();
-                    Ok(value)
-                }
-                Err(broadcast::error::TryRecvError::Empty) => Err(DbError::BufferEmpty),
-                Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                    #[cfg(feature = "metrics")]
-                    metrics.add_dropped(n);
-                    Err(DbError::BufferLagged {
-                        lag_count: n,
-                        buffer_name: "broadcast".to_string(),
-                    })
-                }
-                Err(broadcast::error::TryRecvError::Closed) => Err(DbError::BufferClosed {
-                    buffer_name: "broadcast".to_string(),
-                }),
-            },
-            TokioBufferReader::Watch {
-                rx,
-                #[cfg(feature = "metrics")]
-                metrics,
-            } => match rx.has_changed() {
-                Err(_) => Err(DbError::BufferClosed {
-                    buffer_name: "watch".to_string(),
-                }),
-                Ok(false) => Err(DbError::BufferEmpty),
-                Ok(true) => {
-                    let val = rx.borrow_and_update().clone();
-                    match val {
-                        Some(v) => {
-                            #[cfg(feature = "metrics")]
-                            metrics.increment_consumed();
-                            Ok(v)
-                        }
-                        None => Err(DbError::BufferClosed {
-                            buffer_name: "watch".to_string(),
-                        }),
-                    }
-                }
-            },
-            TokioBufferReader::Notify {
-                slot,
-                notify: _,
+                recv,
                 #[cfg(feature = "metrics")]
                 metrics,
             } => {
-                let mut guard = slot.lock().unwrap();
-                match guard.take() {
+                let waker = Waker::noop();
+                let mut cx = Context::from_waker(waker);
+                match recv.poll(&mut cx) {
+                    Poll::Ready((result, rx)) => {
+                        recv.set(broadcast_recv(rx));
+                        Self::map_broadcast(
+                            result,
+                            #[cfg(feature = "metrics")]
+                            metrics,
+                        )
+                    }
+                    Poll::Pending => Err(DbError::BufferEmpty),
+                }
+            }
+            TokioBufferReader::Watch {
+                recv,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => {
+                let waker = Waker::noop();
+                let mut cx = Context::from_waker(waker);
+                match recv.poll(&mut cx) {
+                    Poll::Ready((result, rx)) => {
+                        recv.set(watch_recv(rx));
+                        Self::map_watch(
+                            result,
+                            #[cfg(feature = "metrics")]
+                            metrics,
+                        )
+                    }
+                    Poll::Pending => Err(DbError::BufferEmpty),
+                }
+            }
+            TokioBufferReader::Mailbox {
+                state,
+                #[cfg(feature = "metrics")]
+                metrics,
+            } => {
+                let mut guard = state.lock().unwrap();
+                match guard.slot.take() {
                     Some(val) => {
                         #[cfg(feature = "metrics")]
                         metrics.increment_consumed();
@@ -420,12 +513,19 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aimdb_core::buffer::Reader;
+
+    /// Wrap a concrete `TokioBufferReader` in the ergonomic `Reader<T>` so the
+    /// tests can keep exercising `recv().await` / `try_recv()` (design 037 / W8).
+    fn rdr<T: Clone + Send + Sync + 'static>(buffer: &TokioBuffer<T>) -> Reader<T> {
+        Reader::new(Box::new(buffer.subscribe()))
+    }
 
     #[tokio::test]
     async fn test_spmc_ring_basic() {
         let cfg = BufferCfg::SpmcRing { capacity: 10 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
         buffer.push(42);
         assert_eq!(reader.recv().await.unwrap(), 42);
     }
@@ -434,8 +534,8 @@ mod tests {
     async fn test_spmc_ring_multiple_consumers() {
         let cfg = BufferCfg::SpmcRing { capacity: 10 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader1 = buffer.subscribe();
-        let mut reader2 = buffer.subscribe();
+        let mut reader1 = rdr(&buffer);
+        let mut reader2 = rdr(&buffer);
         buffer.push(1);
         buffer.push(2);
         assert_eq!(reader1.recv().await.unwrap(), 1);
@@ -448,7 +548,7 @@ mod tests {
     async fn test_single_latest_basic() {
         let cfg = BufferCfg::SingleLatest;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
         buffer.push(42);
         assert_eq!(reader.recv().await.unwrap(), 42);
     }
@@ -457,7 +557,7 @@ mod tests {
     async fn test_single_latest_skip_intermediate() {
         let cfg = BufferCfg::SingleLatest;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
         buffer.push(1);
         buffer.push(2);
         buffer.push(3);
@@ -468,7 +568,7 @@ mod tests {
     async fn test_mailbox_basic() {
         let cfg = BufferCfg::Mailbox;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
         buffer.push(42);
         assert_eq!(reader.recv().await.unwrap(), 42);
     }
@@ -477,7 +577,7 @@ mod tests {
     async fn test_mailbox_overwrite() {
         let cfg = BufferCfg::Mailbox;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
         buffer.push(1);
         buffer.push(2);
         assert_eq!(reader.recv().await.unwrap(), 2);
@@ -564,7 +664,7 @@ mod tests {
         let cfg = BufferCfg::SpmcRing { capacity: 3 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
 
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Send more messages than capacity without reading
         // This will cause the slow reader to lag
@@ -607,9 +707,9 @@ mod tests {
         let buffer = TokioBuffer::<i32>::new(&cfg);
 
         // Create three independent readers
-        let mut reader1 = buffer.subscribe();
-        let mut reader2 = buffer.subscribe();
-        let mut reader3 = buffer.subscribe();
+        let mut reader1 = rdr(&buffer);
+        let mut reader2 = rdr(&buffer);
+        let mut reader3 = rdr(&buffer);
 
         // Send values
         for i in 0..5 {
@@ -631,7 +731,7 @@ mod tests {
         let cfg = BufferCfg::SingleLatest;
         let buffer = TokioBuffer::<i32>::new(&cfg);
 
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Send multiple values rapidly
         buffer.push(1);
@@ -659,8 +759,8 @@ mod tests {
         let buffer = TokioBuffer::<i32>::new(&cfg);
 
         // Create readers BEFORE sending values
-        let mut reader1 = buffer.subscribe();
-        let mut reader2 = buffer.subscribe();
+        let mut reader1 = rdr(&buffer);
+        let mut reader2 = rdr(&buffer);
 
         // Send values
         buffer.push(10);
@@ -681,7 +781,7 @@ mod tests {
         let cfg = BufferCfg::Mailbox;
         let buffer = TokioBuffer::<i32>::new(&cfg);
 
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Send first value
         buffer.push(1);
@@ -709,7 +809,7 @@ mod tests {
         let cfg = BufferCfg::Mailbox;
         let buffer = TokioBuffer::<i32>::new(&cfg);
 
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Send and immediately read
         buffer.push(10);
@@ -854,7 +954,7 @@ mod tests {
     async fn test_try_recv_broadcast_empty() {
         let cfg = BufferCfg::SpmcRing { capacity: 16 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // No values written — try_recv returns Empty
         assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
@@ -864,7 +964,7 @@ mod tests {
     async fn test_try_recv_broadcast_single_value() {
         let cfg = BufferCfg::SpmcRing { capacity: 16 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         buffer.push(42);
         assert_eq!(reader.try_recv().unwrap(), 42);
@@ -877,7 +977,7 @@ mod tests {
     async fn test_try_recv_broadcast_drains_all_pending() {
         let cfg = BufferCfg::SpmcRing { capacity: 16 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Write 5 values
         for i in 0..5 {
@@ -901,7 +1001,7 @@ mod tests {
     async fn test_try_recv_broadcast_handles_lag() {
         let cfg = BufferCfg::SpmcRing { capacity: 4 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Write 10 values into capacity-4 ring — reader falls behind
         for i in 0..10 {
@@ -936,7 +1036,7 @@ mod tests {
     async fn test_try_recv_watch_empty() {
         let cfg = BufferCfg::SingleLatest;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // No values written — try_recv returns Empty
         assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
@@ -946,7 +1046,7 @@ mod tests {
     async fn test_try_recv_watch_returns_latest() {
         let cfg = BufferCfg::SingleLatest;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         buffer.push(1);
         buffer.push(2);
@@ -968,7 +1068,7 @@ mod tests {
     async fn test_try_recv_mailbox_empty() {
         let cfg = BufferCfg::Mailbox;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // No values written — try_recv returns Empty
         assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
@@ -978,7 +1078,7 @@ mod tests {
     async fn test_try_recv_mailbox_takes_value() {
         let cfg = BufferCfg::Mailbox;
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         buffer.push(1);
         buffer.push(2); // overwrites
@@ -999,7 +1099,7 @@ mod tests {
     async fn test_try_recv_interleaved_push_and_drain() {
         let cfg = BufferCfg::SpmcRing { capacity: 16 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Push 3, drain all
         buffer.push(1);
@@ -1038,8 +1138,8 @@ mod tests {
     async fn test_try_recv_multiple_independent_readers() {
         let cfg = BufferCfg::SpmcRing { capacity: 16 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader_a = buffer.subscribe();
-        let mut reader_b = buffer.subscribe();
+        let mut reader_a = rdr(&buffer);
+        let mut reader_b = rdr(&buffer);
 
         // Push values
         for i in 0..5 {
@@ -1075,7 +1175,7 @@ mod tests {
     async fn test_try_recv_after_async_recv() {
         let cfg = BufferCfg::SpmcRing { capacity: 16 };
         let buffer = TokioBuffer::<i32>::new(&cfg);
-        let mut reader = buffer.subscribe();
+        let mut reader = rdr(&buffer);
 
         // Push 3 values
         buffer.push(10);
@@ -1104,6 +1204,7 @@ mod tests {
 
     mod peek_tests {
         use super::super::*;
+        use super::rdr;
         use aimdb_core::buffer::DynBuffer;
 
         #[tokio::test]
@@ -1127,7 +1228,7 @@ mod tests {
             // Subscribe BEFORE push so the receiver's version counter advances
             // on send_replace. (Watch receivers created after a push will only
             // wake on the *next* push — that's the gap peek() exists to fill.)
-            let mut reader = Buffer::subscribe(&buffer);
+            let mut reader = rdr(&buffer);
             DynBuffer::push(&buffer, 42);
 
             // Multiple peeks return the same value.
@@ -1169,7 +1270,7 @@ mod tests {
             DynBuffer::push(&buffer, 99);
             assert_eq!(buffer.peek(), Some(99));
             // Subscriber takes the slot.
-            let mut reader = Buffer::subscribe(&buffer);
+            let mut reader = rdr(&buffer);
             assert_eq!(reader.recv().await.unwrap(), 99);
             // After take(), peek sees the slot is empty.
             assert_eq!(buffer.peek(), None);
@@ -1228,7 +1329,7 @@ mod tests {
         async fn test_spmc_ring_consumed_count() {
             let cfg = BufferCfg::SpmcRing { capacity: 10 };
             let buffer = TokioBuffer::<i32>::new(&cfg);
-            let mut reader = buffer.subscribe();
+            let mut reader = rdr(&buffer);
 
             // Push and consume
             buffer.push(1);
@@ -1247,7 +1348,7 @@ mod tests {
         async fn test_spmc_ring_dropped_count_on_lag() {
             let cfg = BufferCfg::SpmcRing { capacity: 3 };
             let buffer = TokioBuffer::<i32>::new(&cfg);
-            let mut reader = buffer.subscribe();
+            let mut reader = rdr(&buffer);
 
             // Overfill buffer to cause lag
             for i in 0..10 {
@@ -1271,7 +1372,7 @@ mod tests {
         async fn test_metrics_reset() {
             let cfg = BufferCfg::SpmcRing { capacity: 10 };
             let buffer = TokioBuffer::<i32>::new(&cfg);
-            let mut reader = buffer.subscribe();
+            let mut reader = rdr(&buffer);
 
             // Generate some metrics
             buffer.push(1);
@@ -1295,7 +1396,7 @@ mod tests {
         async fn test_watch_buffer_metrics() {
             let cfg = BufferCfg::SingleLatest;
             let buffer = TokioBuffer::<i32>::new(&cfg);
-            let mut reader = buffer.subscribe();
+            let mut reader = rdr(&buffer);
 
             buffer.push(1);
             buffer.push(2);
@@ -1314,7 +1415,7 @@ mod tests {
         async fn test_mailbox_buffer_metrics() {
             let cfg = BufferCfg::Mailbox;
             let buffer = TokioBuffer::<i32>::new(&cfg);
-            let mut reader = buffer.subscribe();
+            let mut reader = rdr(&buffer);
 
             buffer.push(1);
             let _ = reader.recv().await.unwrap();
@@ -1350,7 +1451,7 @@ mod tests {
         async fn test_try_recv_tracks_consumed_metrics() {
             let cfg = BufferCfg::SpmcRing { capacity: 10 };
             let buffer = TokioBuffer::<i32>::new(&cfg);
-            let mut reader = buffer.subscribe();
+            let mut reader = rdr(&buffer);
 
             // Push and try_recv
             buffer.push(1);
@@ -1372,7 +1473,7 @@ mod tests {
         async fn test_try_recv_tracks_dropped_on_lag() {
             let cfg = BufferCfg::SpmcRing { capacity: 3 };
             let buffer = TokioBuffer::<i32>::new(&cfg);
-            let mut reader = buffer.subscribe();
+            let mut reader = rdr(&buffer);
 
             // Overfill to cause lag
             for i in 0..10 {
