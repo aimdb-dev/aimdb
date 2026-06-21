@@ -28,8 +28,13 @@ name = "aimdb-bench"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-embassy-adapter",
  "aimdb-tokio-adapter",
  "criterion",
+ "critical-section",
+ "defmt 1.0.1",
+ "embassy-time-driver",
+ "futures",
  "serde",
  "serde_json",
  "tokio",
@@ -1114,6 +1119,26 @@ name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+
+[[package]]
+name = "embassy-bench-stm32h5"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-embassy-adapter",
+ "cortex-m",
+ "cortex-m-rt",
+ "critical-section",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-alloc",
+ "panic-probe",
+]
 
 [[package]]
 name = "embassy-embedded-hal"

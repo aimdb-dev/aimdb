@@ -29,6 +29,18 @@ harness = false
 name = "b_alloc_pipeline"
 harness = false
 
+[[bench]]
+name = "b0_alloc_embassy"
+harness = false
+
+[[bench]]
+name = "b1_latency_embassy"
+harness = false
+
+[[bench]]
+name = "b2_throughput_embassy"
+harness = false
+
 [dependencies]
 # Core AimDB types
 aimdb-core = { path = "../aimdb-core", features = ["std"] }
@@ -36,6 +48,12 @@ aimdb-core = { path = "../aimdb-core", features = ["std"] }
 # Tokio runtime adapter (the primary target for B0-B2)
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
+] }
+
+aimdb-embassy-adapter = { path = "../aimdb-embassy-adapter", default-features = false, features = [
+    "alloc",
+    "embassy-sync",
+    "embassy-time",
 ] }
 
 # Async runtime — current-thread executor is used for noise reduction in B0
@@ -50,3 +68,15 @@ serde_json = { workspace = true }
 criterion = { version = "0.5", default-features = false, features = [
     "cargo_bench_support",
 ] }
+
+# Host driver for the Embassy buffer futures (matches the adapter's own host
+# tests, which also use `futures::executor::block_on`).
+futures = "0.3"
+
+# `critical-section` host impl for embassy-sync's `CriticalSectionRawMutex`.
+# Linked only into the embassy bench binaries; the lib rlib does not need it.
+critical-section = { version = "1.1", features = ["std"] }
+
+# defmt logger / panic-handler + embassy-time driver stubs for the host bench
+defmt = { workspace = true }
+embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }

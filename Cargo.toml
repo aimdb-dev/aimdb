@@ -27,6 +27,7 @@ members = [
     "examples/embassy-mqtt-connector-demo",
     "examples/embassy-knx-connector-demo",
     "examples/embassy-serial-connector-demo",
+    "examples/embassy-bench-stm32h5",
     "examples/sync-api-demo",
     "examples/remote-access-demo",
     "examples/weather-mesh-demo/weather-mesh-common",

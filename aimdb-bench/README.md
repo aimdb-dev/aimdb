@@ -12,7 +12,19 @@ Measures three classes of performance across three canonical workload profiles:
 
 Plus two informational benches that exercise the full runner-driven pipeline.
 
-**Adapters covered:** Tokio only. Embassy is a planned follow-up once it can be exercised through host-test stubs without pulling in `embassy-runtime`.
+**Adapters covered:**
+
+- **Tokio** — `b0_alloc_tokio`, `b1_latency`, `b2_throughput` (host).
+- **Embassy** — `b0_alloc_embassy`, `b1_latency_embassy`, `b2_throughput_embassy`
+  (host). These drive the real [`EmbassyBuffer`] backend via
+  `futures::executor::block_on` over embassy-sync's poll methods — no
+  `embassy-runtime`, no cortex-m executor, no hardware. The buffer constructors
+  live in [`profiles_embassy`](src/profiles_embassy.rs).
+- **Embassy on-target (B3)** — cycle-accurate per-message profiling (`DWT`
+  `CYCCNT`) on an STM32H563ZI lives in a separate hardware-only crate,
+  [`examples/embassy-bench-stm32h5`](../examples/embassy-bench-stm32h5), because
+  it cannot run on a host. It also re-validates 0 allocs/msg against the real
+  embedded allocator.
 
 ---
 
@@ -41,6 +53,11 @@ cargo bench -p aimdb-bench --bench b1_latency
 
 # B2 — throughput (Criterion)
 cargo bench -p aimdb-bench --bench b2_throughput
+
+# Embassy buffer backend (host) — same three classes
+cargo bench -p aimdb-bench --bench b0_alloc_embassy
+cargo bench -p aimdb-bench --bench b1_latency_embassy
+cargo bench -p aimdb-bench --bench b2_throughput_embassy
 
 # Informational: allocation count through the runner pipeline
 cargo bench -p aimdb-bench --bench b_alloc_pipeline
@@ -82,6 +99,10 @@ Criterion writes HTML reports to `target/criterion/`.
 The committed baseline lives in `data/baselines/b0_alloc_tokio.json`. When a change intentionally improves or changes allocation behaviour, re-run the bench and commit the updated JSON with a clear rationale in the commit message.
 
 > **W8 result (design 037).** Since the zero-allocation consume path landed, the baseline records **0 allocs/msg** across all three tokio profiles (down from 1 — the boxed `recv()` future is gone). The committed baseline is therefore the target value; any nonzero B0 on these profiles is a regression to investigate.
+
+`b0_alloc_embassy` mirrors this against the Embassy buffer backend and writes `data/baselines/b0_alloc_embassy.json` — also **0 allocs/msg** across all three profiles, confirming the Embassy `poll_recv` path is allocation-free on the host. The on-target B3 bench (`examples/embassy-bench-stm32h5`) re-checks the same 0-alloc claim against the real embedded allocator.
+
+> **Embassy priming.** Unlike Tokio's `broadcast`, an Embassy `SpmcRing` reader registers its embassy `Subscriber` *lazily, on first poll* — a message pushed before that first poll is missed, and the next `recv()` would block forever. The embassy benches call `profiles_embassy::prime()` on each reader before the first `push` to force registration (a no-op for Watch/Mailbox readers).
 
 **Noise reduction:** a `new_current_thread()` Tokio executor is used so there are no work-stealing threads and Tokio's scheduler does not allocate per-poll in the hot path.
 

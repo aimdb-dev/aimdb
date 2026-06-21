@@ -9,14 +9,22 @@
 //!
 //! # Bench entrypoints
 //!
-//! | File                            | Class | Purpose                                  |
-//! |---------------------------------|-------|------------------------------------------|
-//! | `benches/b0_alloc_tokio.rs`     | B0    | Per-message allocation (buffer layer)    |
-//! | `benches/b1_latency.rs`         | B1    | Push-to-recv latency (buffer layer)      |
-//! | `benches/b2_throughput.rs`      | B2    | Steady-state throughput (buffer layer)   |
-//! | `benches/b_alloc_pipeline.rs`   | info  | Per-message allocation (runner pipeline) |
-//! | `benches/b_runner_pipeline.rs`  | info  | Runner pipeline throughput (Criterion)   |
+//! | File                              | Class | Purpose                                  |
+//! |-----------------------------------|-------|------------------------------------------|
+//! | `benches/b0_alloc_tokio.rs`       | B0    | Per-message allocation (Tokio buffer)    |
+//! | `benches/b1_latency.rs`           | B1    | Push-to-recv latency (Tokio buffer)      |
+//! | `benches/b2_throughput.rs`        | B2    | Steady-state throughput (Tokio buffer)   |
+//! | `benches/b0_alloc_embassy.rs`     | B0    | Per-message allocation (Embassy buffer)  |
+//! | `benches/b1_latency_embassy.rs`   | B1    | Push-to-recv latency (Embassy buffer)    |
+//! | `benches/b2_throughput_embassy.rs`| B2    | Steady-state throughput (Embassy buffer) |
+//! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
+//! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
+//!
+//! On-target cycle profiling (B3) is a separate hardware-only crate,
+//! `examples/embassy-bench-stm32h5`, because DWT cycle counting cannot run on a
+//! host. See design doc 038 §Phase 4 / §B3.
 
 pub mod alloc;
 pub mod profiles;
+pub mod profiles_embassy;
 pub mod reports;
