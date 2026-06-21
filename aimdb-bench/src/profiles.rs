@@ -2,11 +2,11 @@
 //!
 //! Three profiles match the three buffer types:
 //!
-//! | Profile      | Buffer type   | Tokio primitive     | Payload   |
-//! |--------------|---------------|---------------------|-----------|
-//! | **Telemetry**| `SpmcRing`    | `broadcast`         | small     |
-//! | **State**    | `SingleLatest`| `watch`             | medium    |
-//! | **Command**  | `Mailbox`     | `Mutex + Notify`    | small     |
+//! | Profile       | Buffer type    | Tokio primitive           | Payload |
+//! |---------------|----------------|---------------------------|---------|
+//! | **Telemetry** | `SpmcRing`     | `broadcast`               | small   |
+//! | **State**     | `SingleLatest` | `watch`                   | medium  |
+//! | **Command**   | `Mailbox`      | `Mutex` slot + waker list | small   |
 //!
 //! Buffers are constructed from a `BufferCfg` via the `Buffer<T>` trait so
 //! the bench code tests exactly the same code path that production uses.
@@ -106,7 +106,7 @@ pub fn state_buffer() -> TokioBuffer<StateMsg> {
     TokioBuffer::new(&BufferCfg::SingleLatest)
 }
 
-/// Build a `TokioBuffer<CommandMsg>` backed by `Mailbox` (`Mutex + Notify`).
+/// Build a `TokioBuffer<CommandMsg>` backed by `Mailbox` (`Mutex` slot + waker list).
 pub fn command_buffer() -> TokioBuffer<CommandMsg> {
     TokioBuffer::new(&BufferCfg::Mailbox)
 }

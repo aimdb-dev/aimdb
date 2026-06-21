@@ -80,7 +80,7 @@ fn main() {
     });
     state_report.print();
 
-    // ── Command: Mailbox / Mutex + Notify ────────────────────────────────────
+    // ── Command: Mailbox / Mutex slot + waker list ───────────────────────────
     //
     // Tight 1:1 push → recv loop. Do NOT batch pushes ahead of the consumer:
     // the single slot overwrites earlier values, leaving only the last write.
