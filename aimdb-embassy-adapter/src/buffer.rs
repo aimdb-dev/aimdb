@@ -210,6 +210,14 @@ impl<
         }
     }
 
+    /// The embassy subscriber/receiver is created **lazily on first poll**, not
+    /// here (unlike the Tokio adapter, which registers eagerly).
+    /// This matters only for `SpmcRing`: any message produced in the gap between
+    /// `subscribe()` and that first poll is missed, because the reader only
+    /// receives messages sent after it starts listening. In normal use the
+    /// consumer spawns and loops on `recv()`, so the gap is harmless. If you must
+    /// produce before the consumer has polled, call `try_recv()` once first to
+    /// start listening early (this is what the B0/B2 benches' `prime()` does).
     fn subscribe(&self) -> Self::Reader {
         // Clone the Arc for the reader
         EmbassyBufferReader {
