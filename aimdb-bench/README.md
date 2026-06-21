@@ -10,12 +10,17 @@ Measures three classes of performance across three canonical workload profiles:
 | **B1** — push-to-recv latency | Criterion p50/p99 | trend tracking | no |
 | **B2** — steady-state throughput | Criterion msgs/sec | trend tracking | no |
 
+**B1 and B2 share one bench per adapter** (`b1_b2_tokio`, `b1_b2_embassy`). A throughput-annotated Criterion
+bench reports both the per-iteration time (**B1 latency**, the `time` column) and
+messages/second (**B2 throughput**, the `thrpt` column) from the same runs, so
+there is no separate `b1_latency` target.
+
 Plus two informational benches that exercise the full runner-driven pipeline.
 
 **Adapters covered:**
 
-- **Tokio** — `b0_alloc_tokio`, `b1_latency`, `b2_throughput` (host).
-- **Embassy** — `b0_alloc_embassy`, `b1_latency_embassy`, `b2_throughput_embassy`
+- **Tokio** — `b0_alloc_tokio`, `b1_b2_tokio` (host).
+- **Embassy** — `b0_alloc_embassy`, `b1_b2_embassy`
   (host). These drive the real [`EmbassyBuffer`] backend via
   `futures::executor::block_on` over embassy-sync's poll methods — no
   `embassy-runtime`, no cortex-m executor, no hardware. The buffer constructors
@@ -48,16 +53,12 @@ Always run from the workspace root (`/aimdb_ws/aimdb`).
 # B0 — allocation gate (buffer layer)
 cargo bench -p aimdb-bench --bench b0_alloc_tokio
 
-# B1 — latency (Criterion)
-cargo bench -p aimdb-bench --bench b1_latency
+# B1 + B2 — latency (time/iter) and throughput (msgs/sec), one Criterion suite
+cargo bench -p aimdb-bench --bench b1_b2_tokio
 
-# B2 — throughput (Criterion)
-cargo bench -p aimdb-bench --bench b2_throughput
-
-# Embassy buffer backend (host) — same three classes
+# Embassy buffer backend (host) — same classes
 cargo bench -p aimdb-bench --bench b0_alloc_embassy
-cargo bench -p aimdb-bench --bench b1_latency_embassy
-cargo bench -p aimdb-bench --bench b2_throughput_embassy
+cargo bench -p aimdb-bench --bench b1_b2_embassy
 
 # Informational: allocation count through the runner pipeline
 cargo bench -p aimdb-bench --bench b_alloc_pipeline
@@ -75,10 +76,10 @@ B1 and B2 use Criterion's built-in baseline system:
 
 ```sh
 # Save a named baseline before a change
-cargo bench -p aimdb-bench --bench b1_latency -- --save-baseline pre-w8
+cargo bench -p aimdb-bench --bench b1_b2_tokio -- --save-baseline pre-w8
 
 # Compare against it after
-cargo bench -p aimdb-bench --bench b1_latency -- --baseline pre-w8
+cargo bench -p aimdb-bench --bench b1_b2_tokio -- --baseline pre-w8
 ```
 
 Criterion writes HTML reports to `target/criterion/`.

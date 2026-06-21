@@ -13,12 +13,11 @@ name = "aimdb_bench"
 name = "b0_alloc_tokio"
 harness = false
 
+# Combined B1 (latency) + B2 (throughput) — a throughput-annotated Criterion
+# bench already reports per-iteration latency, so a separate b1_latency target
+# would be redundant. See design 038 §3–§4.
 [[bench]]
-name = "b1_latency"
-harness = false
-
-[[bench]]
-name = "b2_throughput"
+name = "b1_b2_tokio"
 harness = false
 
 [[bench]]
@@ -34,11 +33,7 @@ name = "b0_alloc_embassy"
 harness = false
 
 [[bench]]
-name = "b1_latency_embassy"
-harness = false
-
-[[bench]]
-name = "b2_throughput_embassy"
+name = "b1_b2_embassy"
 harness = false
 
 [dependencies]

@@ -12,11 +12,9 @@
 //! | File                              | Class | Purpose                                  |
 //! |-----------------------------------|-------|------------------------------------------|
 //! | `benches/b0_alloc_tokio.rs`       | B0    | Per-message allocation (Tokio buffer)    |
-//! | `benches/b1_latency.rs`           | B1    | Push-to-recv latency (Tokio buffer)      |
-//! | `benches/b2_throughput.rs`        | B2    | Steady-state throughput (Tokio buffer)   |
+//! | `benches/b1_b2_tokio.rs`          | B1+B2 | Latency (time/iter) + throughput (Tokio) |
 //! | `benches/b0_alloc_embassy.rs`     | B0    | Per-message allocation (Embassy buffer)  |
-//! | `benches/b1_latency_embassy.rs`   | B1    | Push-to-recv latency (Embassy buffer)    |
-//! | `benches/b2_throughput_embassy.rs`| B2    | Steady-state throughput (Embassy buffer) |
+//! | `benches/b1_b2_embassy.rs`        | B1+B2 | Latency (time/iter) + throughput (Embassy)|
 //! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
 //! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
 //!

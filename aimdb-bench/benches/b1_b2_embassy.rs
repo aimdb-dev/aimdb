@@ -1,14 +1,21 @@
-//! B2 — Steady-state throughput on the Embassy adapter (host-driven, Criterion).
+//! B1/B2 — Latency & throughput on the Embassy adapter (host-driven, Criterion).
 //!
-//! The Embassy companion to [`b2_throughput`]. Measures messages per second for
-//! SPSC (1 producer, 1 consumer) and 1→4 fan-out configurations against the
-//! **Embassy** buffer backend, driven on the host via
-//! `futures::executor::block_on` — no `embassy-runtime`, no cortex-m executor,
-//! no hardware.
+//! The Embassy companion to [`b1_b2_tokio`], capturing **both** the B1 and B2
+//! measurement classes from one set of runs against the **Embassy** buffer
+//! backend, driven on the host via `futures::executor::block_on` — no
+//! `embassy-runtime`, no cortex-m executor, no hardware:
 //!
-//! These are host throughput numbers for trend tracking and Tokio-vs-Embassy
-//! comparison; on-target throughput in CPU cycles is covered by the B3 STM32H5
-//! bench (`examples/embassy-bench-stm32h5`).
+//! - **B1 latency** — the per-iteration time Criterion reports for one
+//!   `buf.push(msg)` → `reader.recv()` cycle (the `time` column).
+//! - **B2 throughput** — messages/second, derived from that same timing via the
+//!   `Throughput::Elements(1)` annotation (the `thrpt` column).
+//!
+//! Covers SPSC (1 producer, 1 consumer) for all three profiles plus a 1→4
+//! telemetry fan-out.
+//!
+//! These are host wall-clock numbers for trend tracking and Tokio-vs-Embassy
+//! comparison; on-target latency/throughput in CPU cycles is covered by the B3
+//! STM32H5 bench (`examples/embassy-bench-stm32h5`).
 //!
 //! **Fan-out safety rules (SpmcRing / PubSubChannel):**
 //! - All readers are **primed** before any messages are pushed, so each holds
@@ -24,9 +31,9 @@
 //!
 //! Run:
 //! ```text
-//! cargo bench -p aimdb-bench --bench b2_throughput_embassy
-//! cargo bench -p aimdb-bench --bench b2_throughput_embassy -- --save-baseline main
-//! cargo bench -p aimdb-bench --bench b2_throughput_embassy -- --baseline main
+//! cargo bench -p aimdb-bench --bench b1_b2_embassy
+//! cargo bench -p aimdb-bench --bench b1_b2_embassy -- --save-baseline main
+//! cargo bench -p aimdb-bench --bench b1_b2_embassy -- --baseline main
 //! ```
 
 aimdb_embassy_adapter::host_test_stubs!();
@@ -39,8 +46,8 @@ use futures::executor::block_on;
 
 // ── Telemetry SPSC ────────────────────────────────────────────────────────────
 
-fn bench_throughput_telemetry_spsc(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B2-Throughput-Embassy");
+fn bench_b1_b2_telemetry_spsc(c: &mut Criterion) {
+    let mut group = c.benchmark_group("B1-B2-Embassy");
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("telemetry_spsc", |b| {
@@ -58,7 +65,7 @@ fn bench_throughput_telemetry_spsc(c: &mut Criterion) {
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
-                    buf.push(telemetry_msg(i));
+                    buf.push(telemetry_msg((WARMUP_ITERS as u64) + i));
                     let _ = reader.recv().await;
                 }
                 start.elapsed()
@@ -76,8 +83,8 @@ fn bench_throughput_telemetry_spsc(c: &mut Criterion) {
 // 4 readers. Lockstep keeps at most one message in flight, so the fixed CAP
 // never lags.
 
-fn bench_throughput_telemetry_fanout(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B2-Throughput-Embassy");
+fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
+    let mut group = c.benchmark_group("B1-B2-Embassy");
     // Each iteration produces 1 message observed by 4 consumers.
     group.throughput(Throughput::Elements(1));
 
@@ -106,7 +113,7 @@ fn bench_throughput_telemetry_fanout(c: &mut Criterion) {
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
-                    buf.push(telemetry_msg(i));
+                    buf.push(telemetry_msg((WARMUP_ITERS as u64) + i));
                     let _ = r0.recv().await;
                     let _ = r1.recv().await;
                     let _ = r2.recv().await;
@@ -122,8 +129,8 @@ fn bench_throughput_telemetry_fanout(c: &mut Criterion) {
 
 // ── State SPSC ────────────────────────────────────────────────────────────────
 
-fn bench_throughput_state_spsc(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B2-Throughput-Embassy");
+fn bench_b1_b2_state_spsc(c: &mut Criterion) {
+    let mut group = c.benchmark_group("B1-B2-Embassy");
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("state_spsc", |b| {
@@ -141,7 +148,7 @@ fn bench_throughput_state_spsc(c: &mut Criterion) {
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
-                    buf.push(state_msg(i));
+                    buf.push(state_msg((WARMUP_ITERS as u64) + i));
                     let _ = reader.recv().await;
                 }
                 start.elapsed()
@@ -154,8 +161,8 @@ fn bench_throughput_state_spsc(c: &mut Criterion) {
 
 // ── Command / Mailbox SPSC ────────────────────────────────────────────────────
 
-fn bench_throughput_command_mailbox(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B2-Throughput-Embassy");
+fn bench_b1_b2_command_mailbox(c: &mut Criterion) {
+    let mut group = c.benchmark_group("B1-B2-Embassy");
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("command_mailbox", |b| {
@@ -173,7 +180,7 @@ fn bench_throughput_command_mailbox(c: &mut Criterion) {
 
                 let start = std::time::Instant::now();
                 for i in 0..iters {
-                    buf.push(command_msg(i));
+                    buf.push(command_msg((WARMUP_ITERS as u64) + i));
                     let _ = reader.recv().await;
                 }
                 start.elapsed()
@@ -186,9 +193,9 @@ fn bench_throughput_command_mailbox(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_throughput_telemetry_spsc,
-    bench_throughput_telemetry_fanout,
-    bench_throughput_state_spsc,
-    bench_throughput_command_mailbox,
+    bench_b1_b2_telemetry_spsc,
+    bench_b1_b2_telemetry_fanout,
+    bench_b1_b2_state_spsc,
+    bench_b1_b2_command_mailbox,
 );
 criterion_main!(benches);
