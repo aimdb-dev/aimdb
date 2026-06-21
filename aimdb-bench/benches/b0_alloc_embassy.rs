@@ -6,10 +6,10 @@
 //! `futures::executor::block_on` over embassy-sync's poll methods — no
 //! `embassy-runtime`, no cortex-m executor, no hardware.
 //!
-//! After the zero-allocation consume path (design 037 / W8), the Embassy
-//! `poll_recv` drives embassy-sync's public `poll_*` methods directly with no
-//! per-message future box, so the target here is the same **0 allocs/msg** as
-//! the Tokio suite. The one-time `Box::new(reader)` and the lazy subscriber
+//! The Embassy `poll_recv` drives embassy-sync's public `poll_*` methods
+//! directly with no per-message future box, so the steady-state hot path is
+//! allocation-free — the expected result is **0 allocs/msg**, the same as the
+//! Tokio suite. The one-time `Box::new(reader)` and the lazy subscriber
 //! registration happen during setup/warmup, before the counters are reset.
 //!
 //! **Measurement model** (identical to `b0_alloc_tokio`):
@@ -119,7 +119,7 @@ fn main() {
     command_report.print();
 
     println!();
-    println!("Target: 0 allocs/msg (W8 zero-alloc consume path, same as the Tokio B0 suite).");
+    println!("Expected: 0 allocs/msg — allocation-free consume path, same as the Tokio B0 suite.");
 
     // Persist results for baseline comparison.
     let reports = vec![telemetry_report, state_report, command_report];

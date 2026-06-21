@@ -19,8 +19,8 @@
 //! Run:
 //! ```text
 //! cargo bench -p aimdb-bench --bench b1_latency_embassy
-//! cargo bench -p aimdb-bench --bench b1_latency_embassy -- --save-baseline pre-x
-//! cargo bench -p aimdb-bench --bench b1_latency_embassy -- --baseline pre-x
+//! cargo bench -p aimdb-bench --bench b1_latency_embassy -- --save-baseline main
+//! cargo bench -p aimdb-bench --bench b1_latency_embassy -- --baseline main
 //! ```
 
 aimdb_embassy_adapter::host_test_stubs!();

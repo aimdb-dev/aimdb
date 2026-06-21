@@ -16,9 +16,9 @@
 //! ```text
 //! cargo bench -p aimdb-bench --bench b1_latency
 //! # Save a named baseline:
-//! cargo bench -p aimdb-bench --bench b1_latency -- --save-baseline pre-w8
+//! cargo bench -p aimdb-bench --bench b1_latency -- --save-baseline main
 //! # Compare against that baseline:
-//! cargo bench -p aimdb-bench --bench b1_latency -- --baseline pre-w8
+//! cargo bench -p aimdb-bench --bench b1_latency -- --baseline main
 //! ```
 
 use aimdb_bench::profiles::{

@@ -20,8 +20,8 @@
 //! Run:
 //! ```text
 //! cargo bench -p aimdb-bench --bench b2_throughput
-//! cargo bench -p aimdb-bench --bench b2_throughput -- --save-baseline pre-w8
-//! cargo bench -p aimdb-bench --bench b2_throughput -- --baseline pre-w8
+//! cargo bench -p aimdb-bench --bench b2_throughput -- --save-baseline main
+//! cargo bench -p aimdb-bench --bench b2_throughput -- --baseline main
 //! ```
 
 use aimdb_bench::profiles::{

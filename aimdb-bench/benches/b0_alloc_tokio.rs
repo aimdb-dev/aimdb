@@ -3,9 +3,11 @@
 //! Measures per-message allocation cost for each workload profile using
 //! `TokioBuffer<T>` directly (not the full `AimDb` stack).
 //!
-//! **Pre-W8 baseline (expected):** 1 alloc/msg from the `Box::pin(async
-//! move { ... })` constructed inside `TokioBufferReader::recv()` on every
-//! call.  The target is **0 allocs/msg**.
+//! **Expected result: 0 allocs/msg.** The zero-allocation consume path drives
+//! the reader without boxing a future per `recv()`, so the steady-state hot
+//! path is allocation-free. This bench is the hard gate that keeps it that way:
+//! any per-message allocation that creeps back into the consume path shows up
+//! here as a non-zero `allocs/msg`.
 //!
 //! **Measurement model:**
 //! 1. Create buffer + reader.
@@ -118,10 +120,7 @@ fn main() {
     command_report.print();
 
     println!();
-    println!(
-        "Pre-W8 expectation: ~1 alloc/msg (Box::pin in recv()). \
-         Target: 0 allocs/msg."
-    );
+    println!("Expected: 0 allocs/msg — the consume path is allocation-free in steady state.");
 
     // Persist results for baseline comparison.
     let reports = vec![telemetry_report, state_report, command_report];

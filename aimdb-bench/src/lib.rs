@@ -22,7 +22,7 @@
 //!
 //! On-target cycle profiling (B3) is a separate hardware-only crate,
 //! `examples/embassy-bench-stm32h5`, because DWT cycle counting cannot run on a
-//! host. See design doc 038 §Phase 4 / §B3.
+//! host. See design doc 038 for the on-target B3 harness.
 
 pub mod alloc;
 pub mod profiles;
