@@ -1,11 +1,10 @@
-//! AimDB benchmarking infrastructure.
+//! AimDB benchmarking infrastructure. **Not for production use.**
 //!
-//! Provides reusable primitives for B0 (allocation counting), B1 (latency),
-//! and B2 (throughput) benchmarks.  **Not for production use.**
-//!
-//! The `alloc` module registers [`alloc::CountingAllocator`] as the
-//! `#[global_allocator]` for every bench binary that links this crate.
-//! Nothing in the production dependency graph depends on `aimdb-bench`.
+//! Reusable primitives for B0 (allocation counting), B1 (latency), and B2
+//! (throughput) benchmarks. The `alloc` module registers
+//! [`alloc::CountingAllocator`] as the `#[global_allocator]` for every bench
+//! binary that links this crate; nothing in the production dependency graph
+//! depends on `aimdb-bench`.
 //!
 //! # Bench entrypoints
 //!
@@ -18,9 +17,9 @@
 //! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
 //! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
 //!
-//! On-target cycle profiling (B3) is a separate hardware-only crate,
-//! `examples/embassy-bench-stm32h5`, because DWT cycle counting cannot run on a
-//! host. See design doc 038 for the on-target B3 harness.
+//! On-target cycle profiling (B3) lives in the hardware-only
+//! `examples/embassy-bench-stm32h5` crate, since DWT cycle counting cannot run
+//! on a host.
 
 pub mod alloc;
 pub mod profiles;

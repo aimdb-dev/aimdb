@@ -1,32 +1,22 @@
 //! B0 — Allocation counting on the Embassy adapter (host-driven).
 //!
-//! The Embassy companion to [`b0_alloc_tokio`]. Measures per-message
-//! allocation cost for each workload profile against the **Embassy** buffer
-//! backend ([`EmbassyBuffer`]), driven on the host via
-//! `futures::executor::block_on` over embassy-sync's poll methods — no
-//! `embassy-runtime`, no cortex-m executor, no hardware.
+//! The Embassy companion to [`b0_alloc_tokio`]. Measures per-message allocation
+//! cost for each workload profile against the **Embassy** buffer backend
+//! ([`EmbassyBuffer`]), driven on the host via `futures::executor::block_on`
+//! over embassy-sync's `poll_*` methods — no `embassy-runtime`, no cortex-m
+//! executor, no hardware. `poll_recv` drives those methods with no per-message
+//! future box, so the expected result is **0 allocs/msg**, same as the Tokio
+//! suite; the one-time `Box::new(reader)` and lazy subscriber registration
+//! happen during setup/warmup, before the counters are reset.
 //!
-//! The Embassy `poll_recv` drives embassy-sync's public `poll_*` methods
-//! directly with no per-message future box, so the steady-state hot path is
-//! allocation-free — the expected result is **0 allocs/msg**, the same as the
-//! Tokio suite. The one-time `Box::new(reader)` and the lazy subscriber
-//! registration happen during setup/warmup, before the counters are reset.
+//! **Measurement model** (identical to `b0_alloc_tokio`): create buffer +
+//! reader and **prime** it (forces lazy SpmcRing subscriber registration — see
+//! [`profiles_embassy`]), warm up `WARMUP_ITERS` cycles, `reset()`, run
+//! `BATCH_SIZE` cycles, then `snapshot()` and divide by `BATCH_SIZE`.
 //!
-//! **Measurement model** (identical to `b0_alloc_tokio`):
-//! 1. Create buffer + reader; **prime** the reader (forces lazy SpmcRing
-//!    subscriber registration — see [`profiles_embassy`]).
-//! 2. Warmup ≥ `WARMUP_ITERS` push → recv cycles (excluded from counters).
-//! 3. `reset()` allocation counters.
-//! 4. Run `BATCH_SIZE` push → recv cycles.
-//! 5. `snapshot()` counters; divide by `BATCH_SIZE` for per-message figures.
-//!
-//! Run:
-//! ```text
-//! cargo bench -p aimdb-bench --bench b0_alloc_embassy
-//! ```
-//!
-//! Results are written to `aimdb-bench/target/bench-results/b0_alloc_embassy.json`
-//! (anchored to the crate dir, so the path is the same regardless of CWD).
+//! Run `cargo bench -p aimdb-bench --bench b0_alloc_embassy`; results are
+//! written to `aimdb-bench/target/bench-results/b0_alloc_embassy.json` (anchored
+//! to the crate dir).
 
 // The Embassy adapter calls `defmt::*` unconditionally and links embassy-time;
 // on the host neither a logger nor a time driver exists. This expands no-op
@@ -50,9 +40,9 @@ fn main() {
 
     // ── Telemetry: SpmcRing / PubSubChannel ──────────────────────────────────
     //
-    // `prime()` is REQUIRED here: the SpmcRing subscriber is created on the
-    // reader's first poll, so without priming the first pushed message would be
-    // missed and the first `recv()` would block forever.
+    // `prime()` is REQUIRED: the SpmcRing subscriber is created on the reader's
+    // first poll, so without it the first pushed message is missed and `recv()`
+    // blocks forever.
     let telemetry_report = block_on(async {
         let buf = telemetry_buffer();
         let mut reader = Reader::new(Box::new(buf.subscribe()));

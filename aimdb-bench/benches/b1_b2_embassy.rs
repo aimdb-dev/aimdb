@@ -1,33 +1,30 @@
 //! B1/B2 — Latency & throughput on the Embassy adapter (host-driven, Criterion).
 //!
-//! The Embassy companion to [`b1_b2_tokio`], capturing **both** the B1 and B2
-//! measurement classes from one set of runs against the **Embassy** buffer
-//! backend, driven on the host via `futures::executor::block_on` — no
-//! `embassy-runtime`, no cortex-m executor, no hardware:
+//! The Embassy companion to [`b1_b2_tokio`], capturing **both** measurement
+//! classes from one set of runs against the **Embassy** buffer backend, driven
+//! on the host via `futures::executor::block_on` — no `embassy-runtime`, no
+//! cortex-m executor, no hardware:
 //!
-//! - **B1 latency** — the per-iteration time Criterion reports for one
-//!   `buf.push(msg)` → `reader.recv()` cycle (the `time` column).
-//! - **B2 throughput** — messages/second, derived from that same timing via the
-//!   `Throughput::Elements(1)` annotation (the `thrpt` column).
+//! - **B1 latency** — per-iteration time for one `buf.push(msg)` →
+//!   `reader.recv()` cycle (the `time` column).
+//! - **B2 throughput** — messages/second from that same timing via
+//!   `Throughput::Elements(1)` (the `thrpt` column).
 //!
 //! Covers SPSC (1 producer, 1 consumer) for all three profiles plus a 1→4
-//! telemetry fan-out.
-//!
-//! These are host wall-clock numbers for trend tracking and Tokio-vs-Embassy
-//! comparison; on-target latency/throughput in CPU cycles is covered by the B3
+//! telemetry fan-out. These are host wall-clock numbers for trend tracking and
+//! Tokio-vs-Embassy comparison; on-target cycle counts are covered by the B3
 //! STM32H5 bench (`examples/embassy-bench-stm32h5`).
 //!
-//! **Fan-out safety rules (SpmcRing / PubSubChannel):**
-//! - All readers are **primed** before any messages are pushed, so each holds
-//!   its read position from the start (the embassy `Subscriber` is otherwise
-//!   created lazily on first poll and would miss earlier messages).
-//! - `SUBS = 4` on [`TelemetryBuffer`](aimdb_bench::profiles_embassy::TelemetryBuffer)
-//!   provides exactly four subscriber slots for the fan-out.
-//! - The loop is strict lockstep (1 push, then `recv` on every reader), so at
-//!   most one message is ever in flight and the fixed `CAP` never lags.
+//! **Fan-out safety (SpmcRing / PubSubChannel):** all readers are **primed**
+//! before any push so each holds its read position from the start (the embassy
+//! `Subscriber` is otherwise created lazily on first poll and would miss earlier
+//! messages); `SUBS = 4` on
+//! [`TelemetryBuffer`](aimdb_bench::profiles_embassy::TelemetryBuffer) provides
+//! the four subscriber slots, and strict lockstep keeps the fixed `CAP` from
+//! lagging.
 //!
-//! **Mailbox throughput:** tight 1:1 push → recv loop. Do NOT batch pushes
-//! ahead of the consumer — the single slot overwrites earlier values.
+//! **Mailbox:** tight 1:1 push → recv loop. Do NOT batch pushes ahead of the
+//! consumer — the single slot overwrites earlier values.
 //!
 //! Run:
 //! ```text
@@ -78,10 +75,7 @@ fn bench_b1_b2_telemetry_spsc(c: &mut Criterion) {
 
 // ── Telemetry 1→4 fan-out ────────────────────────────────────────────────────
 //
-// All 4 readers are primed before any messages are pushed, so each registers
-// its subscriber at the current position. Each iteration: 1 push + recv on all
-// 4 readers. Lockstep keeps at most one message in flight, so the fixed CAP
-// never lags.
+// Each iteration: 1 push + recv on all 4 readers (see module fan-out rules).
 
 fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
     let mut group = c.benchmark_group("B1-B2-Embassy");

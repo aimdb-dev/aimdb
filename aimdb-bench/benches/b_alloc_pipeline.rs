@@ -1,34 +1,25 @@
 //! B0-Pipeline — Allocation counting for a live runner-driven pipeline.
 //!
 //! Measures per-message allocation cost for a real `.source()` -> buffer ->
-//! `.tap()` pipeline driven by `AimDbRunner`. Unlike `b0_alloc_tokio`, this is
-//! an integration-layer measurement: it includes runner/stage machinery in
-//! addition to the buffer consume path.
+//! `.tap()` pipeline driven by `AimDbRunner` — an integration-layer measurement
+//! that includes runner/stage machinery on top of the buffer consume path. The
+//! source generates each batch internally after a single start notification and
+//! the tap signals completion once the batch is consumed, so the measured window
+//! carries no per-message ingress or ack traffic.
 //!
-//! **Scope:** this bench intentionally minimizes harness-side noise. The source
-//! generates each batch internally after a single start notification, and the
-//! tap emits a single completion notification when the whole batch has been
-//! consumed. There is no per-message ingress or ack channel traffic in the
-//! measured window.
+//! Treat this as an informational companion to the raw-buffer B0 gate in
+//! `b0_alloc_tokio`: if it regresses, that gate still isolates whether the
+//! consume path itself is at fault.
 //!
-//! **Interpretation:** use this as an informational companion to the raw-buffer
-//! B0 gate in `b0_alloc_tokio`. If this regresses, the raw-buffer B0 still
-//! tells you whether the issue is in the consume path itself.
+//! Run `cargo bench -p aimdb-bench --bench b_alloc_pipeline`; results are written
+//! to `aimdb-bench/target/bench-results/b_alloc_pipeline.json` (anchored to the
+//! crate dir).
 //!
-//! Run:
-//! ```text
-//! cargo bench -p aimdb-bench --bench b_alloc_pipeline
-//! ```
-//!
-//! Results are written to `aimdb-bench/target/bench-results/b_alloc_pipeline.json`
-//! (anchored to the crate dir, so the path is the same regardless of CWD).
-//!
-//! **Executor dependency.** The source/tap pacing below uses a check-then-await
-//! pattern (load an atomic, and only `.notified().await` if there is no work).
-//! `Notify::notify_waiters()` does not store a permit, so this is only free of
-//! lost wakeups because the bench runs on a **current-thread** Tokio runtime:
-//! nothing can preempt between the atomic load and the `.await`. Do not port
-//! this harness to a multi-threaded executor without revisiting the pacing.
+//! **Executor dependency.** The source/tap pacing uses check-then-await (load an
+//! atomic, `.notified().await` only when there is no work). `notify_waiters()`
+//! stores no permit, so this avoids lost wakeups only because the bench runs on
+//! a **current-thread** runtime: nothing preempts between the load and the
+//! `.await`. Do not port to a multi-threaded executor without revisiting it.
 
 use std::fmt::Debug;
 use std::sync::{

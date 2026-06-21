@@ -1,23 +1,18 @@
 //! B-Runner-Pipeline — Runner-driven in-process pipeline throughput.
 //!
 //! Exercises the same three profiles as B0/B1/B2 through a real `AimDbRunner`
-//! path: `.source()` -> buffer -> `.tap()`.  This makes the benchmark measure
-//! stage wakeups and the runner-driven producer/consumer pipeline rather than
-//! direct `Producer<T>` / `Consumer<T>` calls from the bench body.
+//! path (`.source()` -> buffer -> `.tap()`), so it measures stage wakeups and
+//! the runner-driven producer/consumer pipeline rather than direct
+//! `Producer<T>` / `Consumer<T>` calls. It is in-process only — no outbound
+//! connectors, serialization, transport, or kernel I/O — and the timing window
+//! includes the handshakes that feed the source stage and observe completion at
+//! the tap stage.
 //!
-//! **Scope:** this is a real runner benchmark, but still in-process only.
-//! It does not include outbound connectors, serialization, transport, or
-//! kernel I/O. The timing window includes the coordination handshakes used to
-//! feed messages into the source stage and observe completion at the tap stage.
+//! One `AimDb` is built per bench group with its runner spawned once; Criterion
+//! samples push work into the source via an ingress channel and wait for the
+//! tap's completion signals.
 //!
-//! **Setup:** one `AimDb` instance is built per bench group, and its runner is
-//! spawned once. Criterion samples then push work into the source stage via an
-//! ingress channel and wait for completion signals emitted by the tap stage.
-//!
-//! Run:
-//! ```text
-//! cargo bench -p aimdb-bench --bench b_runner_pipeline
-//! ```
+//! Run `cargo bench -p aimdb-bench --bench b_runner_pipeline`.
 
 use std::fmt::Debug;
 use std::sync::Arc;

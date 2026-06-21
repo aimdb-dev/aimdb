@@ -1,16 +1,16 @@
 //! Embassy buffer constructors for the host-driven B0/B1/B2 suites.
 //!
-//! These reuse the same payload types and message factories as the Tokio
-//! profiles ([`crate::profiles`]) so the two adapters are measured against
-//! identical workloads. Only the buffer backend differs: here the buffers are
-//! [`EmbassyBuffer`]s built on embassy-sync primitives, driven on the host via
+//! Reuse the same payload types and message factories as the Tokio profiles
+//! ([`crate::profiles`]) so both adapters are measured against identical
+//! workloads; only the backend differs. These are [`EmbassyBuffer`]s on
+//! embassy-sync primitives, driven on the host via
 //! `futures::executor::block_on`.
 //!
 //! # Const-generic sizing
 //!
-//! Unlike Tokio's runtime-sized buffers, Embassy buffers are sized at
-//! compile time (`EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>`). The aliases
-//! below fix those parameters per profile:
+//! Embassy buffers are sized at compile time
+//! (`EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>`). The aliases below fix those
+//! parameters per profile:
 //!
 //! | Profile   | Backend        | CAP | SUBS | PUBS | WATCH_N | Notes                       |
 //! |-----------|----------------|-----|------|------|---------|-----------------------------|
@@ -18,18 +18,16 @@
 //! | State     | `SingleLatest` | 1   | 1    | 1    | 4       | only WATCH_N is used        |
 //! | Command   | `Mailbox`      | 1   | 1    | 1    | 1       | Channel capacity is fixed=1 |
 //!
-//! The lockstep push→recv loops in the benches keep at most one message in
-//! flight, so `CAP=16` for Telemetry is far more than enough to avoid lagging.
+//! Lockstep push→recv keeps at most one message in flight, so `CAP=16` for
+//! Telemetry never lags.
 //!
-//! # Lazy SpmcRing subscriber (important)
+//! # Lazy SpmcRing subscriber
 //!
-//! An [`EmbassyBuffer`] `SpmcRing` reader registers its underlying embassy
-//! `Subscriber` **lazily, on its first poll** — not at `subscribe()` time. A
-//! message published before that first poll is therefore missed, and a
-//! subsequent `recv()` would block forever. Benches must call
-//! [`prime`] on each reader *before* the first `push`, which forces subscriber
-//! registration via `try_recv`. This is a no-op for Watch/Mailbox readers, so
-//! it is safe (and clearer) to prime every reader uniformly.
+//! An `SpmcRing` reader registers its embassy `Subscriber` lazily, on its first
+//! poll — not at `subscribe()` time. A message published before that poll is
+//! missed and a later `recv()` blocks forever. Benches must [`prime`] each
+//! reader *before* the first `push` to force registration; priming is a no-op
+//! for Watch/Mailbox readers.
 
 use aimdb_core::buffer::Reader;
 use aimdb_embassy_adapter::EmbassyBuffer;
@@ -64,16 +62,15 @@ pub fn command_buffer() -> CommandBuffer {
 }
 
 /// Force lazy subscriber registration on an Embassy reader before the first
-/// `push`.
+/// `push` (see module docs).
 ///
-/// For an `SpmcRing` reader this registers the embassy `Subscriber` at the
-/// current queue position so it does not miss the first published message (see
-/// the module docs). For Watch/Mailbox readers it is a harmless empty read.
-/// Must be called *outside* the measured window — registration may allocate.
+/// For `SpmcRing` this registers the `Subscriber` at the current queue position
+/// so it does not miss the first message; for Watch/Mailbox it is a harmless
+/// empty read. Must be called *outside* the measured window — registration may
+/// allocate.
 #[inline]
 pub fn prime<T: Clone + Send>(reader: &mut Reader<T>) {
-    // `Reader<T>` exposes `try_recv`; the only expected error here is
-    // `BufferEmpty`, which we deliberately ignore — the point is the side
-    // effect of creating the subscriber, not the (absent) value.
+    // The `BufferEmpty` error is ignored: we want the side effect of creating
+    // the subscriber, not the (absent) value.
     let _ = reader.try_recv();
 }

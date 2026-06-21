@@ -1,30 +1,24 @@
 //! B1/B2 — Latency & throughput benchmarks (Criterion).
 //!
-//! A single Criterion suite that captures **both** the B1 and B2 measurement
-//! classes from one set of runs, using `TokioBuffer<T>` directly to isolate the
-//! buffer layer from `AimDb` initialization overhead:
+//! One Criterion suite capturing **both** measurement classes from a single set
+//! of runs, using `TokioBuffer<T>` directly to isolate the buffer layer from
+//! `AimDb` initialization overhead:
 //!
-//! - **B1 latency** — the per-iteration time Criterion reports for one
-//!   `buf.push(msg)` → `reader.recv()` cycle (the `time` column).
-//! - **B2 throughput** — messages/second, derived from that same timing via the
-//!   `Throughput::Elements(1)` annotation (the `thrpt` column).
+//! - **B1 latency** — per-iteration time for one `buf.push(msg)` →
+//!   `reader.recv()` cycle (the `time` column).
+//! - **B2 throughput** — messages/second from that same timing via
+//!   `Throughput::Elements(1)` (the `thrpt` column).
 //!
 //! Covers SPSC (1 producer, 1 consumer) for all three profiles plus a 1→4
-//! telemetry fan-out.
+//! telemetry fan-out, on a current-thread Tokio runtime (same as B0).
 //!
-//! **Fan-out safety rules (SpmcRing / broadcast):**
-//! - All readers are subscribed *before* any messages are pushed so each
-//!   reader holds its read position from the start.
-//! - The loop is strict lockstep (1 push, then `recv` on every reader), so at
-//!   most one message is ever in flight; the ring capacity (`TELEMETRY_CAPACITY`)
-//!   is far more than enough to keep any reader from lagging within an iteration.
+//! **Fan-out safety (SpmcRing / broadcast):** all readers subscribe *before*
+//! any push so each holds its read position from the start, and the loop is
+//! strict lockstep (1 push, then `recv` on every reader) so at most one message
+//! is in flight — `TELEMETRY_CAPACITY` never lags.
 //!
-//! **Mailbox throughput:** tight 1:1 push → recv loop.  Do NOT batch pushes
-//! ahead of the consumer — the single slot overwrites earlier values and
-//! only the last write survives, which conflates Mailbox overwrite semantics
-//! with throughput measurement.  See design 038 §4 for details.
-//!
-//! **Executor:** single current-thread Tokio runtime, same as B0.
+//! **Mailbox:** tight 1:1 push → recv loop. Do NOT batch pushes ahead of the
+//! consumer — the single slot overwrites earlier values, leaving only the last.
 //!
 //! Run:
 //! ```text
@@ -78,10 +72,7 @@ fn bench_b1_b2_telemetry_spsc(c: &mut Criterion) {
 
 // ── Telemetry 1→4 fan-out ────────────────────────────────────────────────────
 //
-// All 4 readers are subscribed before any messages are pushed.
-// Each iteration: 1 push + recv on all 4 readers (sequential in bench, as
-// they would all eventually converge on a current-thread executor).
-// TELEMETRY_CAPACITY >= BATCH_SIZE ensures no reader lags.
+// Each iteration: 1 push + recv on all 4 readers (see module fan-out rules).
 
 fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -95,9 +86,7 @@ fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
     group.bench_function("telemetry_fanout_1x4", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
-                // All readers subscribed before first push so each holds its
-                // read position from the start. Lockstep below keeps at most one
-                // message in flight, so the fixed ring capacity never lags.
+                // Subscribe all readers before the first push (see module docs).
                 let buf = telemetry_buffer();
                 let mut r0 = Reader::new(Box::new(buf.subscribe()));
                 let mut r1 = Reader::new(Box::new(buf.subscribe()));

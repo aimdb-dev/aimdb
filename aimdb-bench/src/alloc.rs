@@ -1,18 +1,10 @@
 //! Allocation counting for B0 benchmarks.
 //!
-//! Wraps the system allocator with atomic counters so B0 benchmarks can
-//! measure per-message allocation overhead precisely.
-//!
-//! **Production isolation.** `#[global_allocator]` is a per-binary
-//! link-time declaration.  `CountingAllocator` exists only in the bench
-//! binaries produced by `aimdb-bench`.  Nothing in the production
-//! dependency graph — `aimdb-core`, `aimdb-tokio-adapter`, application
-//! binaries — depends on `aimdb-bench`, so this has zero impact on
-//! production code.
-//!
-//! **Generic inner allocator.** `CountingAllocator<A>` is generic over the
-//! inner `GlobalAlloc` so a future embedded B3 target can swap `System` for
-//! `embedded-alloc` or similar without changing this module.
+//! Wraps an inner `GlobalAlloc` with atomic counters to measure per-message
+//! allocation overhead. `#[global_allocator]` is a per-binary, link-time
+//! declaration, so `CountingAllocator` affects only the bench binaries and has
+//! zero impact on production crates. It is generic over the inner allocator so
+//! an embedded target can swap `System` for `embedded-alloc`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};

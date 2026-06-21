@@ -1,33 +1,20 @@
 //! B0 — Allocation counting on the Tokio adapter.
 //!
-//! Measures per-message allocation cost for each workload profile using
-//! `TokioBuffer<T>` directly (not the full `AimDb` stack).
+//! Measures per-message allocation cost for each workload profile against
+//! `TokioBuffer<T>` directly (not the full `AimDb` stack). The consume path
+//! polls the reader without boxing a future per `recv()`, so the expected
+//! result is **0 allocs/msg**; a non-zero figure flags an allocation regression
+//! in the consume path.
 //!
-//! **Expected result: 0 allocs/msg.** The zero-allocation consume path drives
-//! the reader without boxing a future per `recv()`, so the steady-state hot
-//! path is allocation-free. This bench is the hard gate that keeps it that way:
-//! any per-message allocation that creeps back into the consume path shows up
-//! here as a non-zero `allocs/msg`.
+//! **Measurement model:** create buffer + reader, warm up `WARMUP_ITERS`
+//! push → recv cycles, `reset()` the counters, run `BATCH_SIZE` cycles, then
+//! `snapshot()` and divide by `BATCH_SIZE`. A current-thread Tokio runtime
+//! keeps scheduler allocation out of the hot path so the counter isolates
+//! AimDB's per-message contribution.
 //!
-//! **Measurement model:**
-//! 1. Create buffer + reader.
-//! 2. Warmup ≥ `WARMUP_ITERS` push → recv cycles (excluded from counters).
-//! 3. `reset()` allocation counters.
-//! 4. Run `BATCH_SIZE` push → recv cycles.
-//! 5. `snapshot()` counters; divide by `BATCH_SIZE` for per-message figures.
-//!
-//! **Noise reduction:** a current-thread Tokio runtime is used so there are
-//! no work-stealing threads and Tokio's scheduler does not allocate per-poll
-//! in the hot path.  The counter then cleanly isolates AimDB's per-message
-//! contribution.
-//!
-//! Run:
-//! ```text
-//! cargo bench -p aimdb-bench --bench b0_alloc_tokio
-//! ```
-//!
-//! Results are written to `aimdb-bench/target/bench-results/b0_alloc_tokio.json`
-//! (anchored to the crate dir, so the path is the same regardless of CWD).
+//! Run `cargo bench -p aimdb-bench --bench b0_alloc_tokio`; results are written
+//! to `aimdb-bench/target/bench-results/b0_alloc_tokio.json` (anchored to the
+//! crate dir).
 
 use aimdb_bench::{
     alloc::{reset, snapshot},
@@ -40,8 +27,7 @@ use aimdb_bench::{
 use aimdb_core::buffer::{Buffer, Reader};
 
 fn main() {
-    // Current-thread executor — no work-stealing threads, minimal scheduler
-    // overhead, clean allocation signal.
+    // Current-thread executor — no work-stealing threads, clean allocation signal.
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("failed to build current-thread Tokio runtime");
@@ -96,10 +82,8 @@ fn main() {
 
     // ── Command: Mailbox / Mutex + Notify ────────────────────────────────────
     //
-    // Tight 1:1 push → recv loop matches Mailbox semantics.  Do NOT batch
-    // pushes ahead of the consumer: the single slot overwrites earlier values,
-    // and only the last write survives — which would conflate Mailbox overwrite
-    // semantics with throughput measurement.
+    // Tight 1:1 push → recv loop. Do NOT batch pushes ahead of the consumer:
+    // the single slot overwrites earlier values, leaving only the last write.
     let command_report = rt.block_on(async {
         let buf = command_buffer();
         let mut reader = Reader::new(Box::new(buf.subscribe()));
