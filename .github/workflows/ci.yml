@@ -15,7 +15,7 @@ jobs:
     name: Format and Lint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
     
@@ -45,7 +45,7 @@ jobs:
     name: Build & Test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
     
@@ -74,7 +74,7 @@ jobs:
     name: Embedded Cross-compilation
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
     
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [format-and-lint, makefile-build, embedded-targets]
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
     
