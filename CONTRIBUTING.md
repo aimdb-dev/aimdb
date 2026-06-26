@@ -19,10 +19,15 @@ AimDB is an async, in-memory database designed for data synchronization across *
 
 ### Development Setup
 
-1. **Clone the repository:**
+1. **Clone the repository (with submodules):**
    ```bash
-   git clone https://github.com/aimdb-dev/aimdb.git
+   git clone --recursive https://github.com/aimdb-dev/aimdb.git
    cd aimdb
+   ```
+   The vendored Embassy fork lives in `_external/` as a git submodule and is
+   required to build. If you already cloned without `--recursive`, run:
+   ```bash
+   git submodule update --init --recursive
    ```
 
 2. **Quick development check:**
