@@ -84,6 +84,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "defmt 1.0.1",
+ "embassy",
  "futures",
  "futures-channel",
  "futures-core",
@@ -1018,6 +1019,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embassy"
+version = "0.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "902e14c8b21b6f56f8d21a1c5de34aa3423acc61b136e47ec591d0758c3e77be"
+
+[[package]]
 name = "embassy-embedded-hal"
 version = "0.6.0"
 dependencies = [
@@ -1811,6 +1818,15 @@ version = "1.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
+ "aimdb-tokio-adapter",
+ "tokio",
+]
+
+[[package]]
+name = "hello-mailbox-async"
+version = "1.1.0"
+dependencies = [
+ "aimdb-core",
  "aimdb-tokio-adapter",
  "tokio",
 ]
