@@ -1816,6 +1816,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hello-mailbox-async"
+version = "1.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-tokio-adapter",
+ "tokio",
+]
+
+[[package]]
 name = "hello-single-latest-async"
 version = "1.1.0"
 dependencies = [

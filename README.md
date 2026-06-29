@@ -126,7 +126,7 @@ docker compose up
 | --- | --- | --- |
 | **SPMC Ring** | Bounded stream with independent consumers | Sensor telemetry, event logs |
 | [**SingleLatest**](examples/hello-single-latest-async) | Only the current value matters | Feature flags, config, UI state |
-| [**Mailbox**](examples/hello-mailbox) | Latest instruction wins | Device commands, actuation, RPC |
+| [**Mailbox**](examples/hello-mailbox) / [**async Mailbox**](examples/hello-mailbox-async)| Latest instruction wins | Device commands, actuation, RPC |
 
 **Four capability traits** — opt-in, type-checked:
 

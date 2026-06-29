@@ -35,6 +35,7 @@ members = [
     "examples/weather-mesh-demo/weather-station-beta",
     "examples/weather-mesh-demo/weather-station-gamma",
     "examples/hello-mailbox",
+    "examples/hello-mailbox-async",
     "examples/hello-single-latest-async",
 ]
 exclude = ["_external"]
@@ -55,16 +56,10 @@ categories = ["database-implementations", "embedded", "asynchronous"]
 
 [workspace.dependencies]
 # Core async runtime
-tokio = { version = "1.47.1", default-features = false, features = [
-    "macros",
-    "rt-multi-thread",
-] }
+tokio = { version = "1.47.1", default-features = false, features = ["macros", "rt-multi-thread"] }
 
 # Serialization (no_std compatible by default)
-serde = { version = "1.0", default-features = false, features = [
-    "derive",
-    "alloc",
-] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # Error handling
 thiserror = "2.0.16"
@@ -85,9 +80,7 @@ tracing = { version = "0.1", default-features = false }
 
 # Async utilities
 futures = "0.3"
-futures-util = { version = "0.3", default-features = false, features = [
-    "alloc",
-] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # CLI (for aimdb-cli)
 clap = { version = "4.0", features = ["derive"] }
@@ -126,9 +119,7 @@ embassy-net = { version = "0.9.0", path = "./_external/embassy/embassy-net", fea
     "medium-ethernet",
     "proto-ipv6",
 ] }
-embassy-usb = { version = "0.6.0", path = "./_external/embassy/embassy-usb", features = [
-    "defmt",
-] }
+embassy-usb = { version = "0.6.0", path = "./_external/embassy/embassy-usb", features = ["defmt"] }
 embassy-futures = { version = "0.1.2", path = "./_external/embassy/embassy-futures" }
 
 # Embedded HAL for peripheral abstractions
@@ -143,10 +134,7 @@ embedded-nal-async = "0.8.0"
 embedded-storage = "0.3.1"
 
 # Embedded runtime and utilities
-cortex-m = { version = "0.7.6", features = [
-    "inline-asm",
-    "critical-section-single-core",
-] }
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7.0"
 critical-section = "1.1"
 static_cell = "2"
