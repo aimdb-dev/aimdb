@@ -114,6 +114,23 @@ pub enum TryProduceError<T> {
     Closed(T),
 }
 
+// `Display` describes the failure mode only; the rejected value is the payload,
+// not part of the message, so this carries no `T: Display` bound.
+impl<T> core::fmt::Display for TryProduceError<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Full(_) => f.write_str("buffer is at capacity and configured not to overwrite"),
+            Self::Closed(_) => f.write_str("buffer or record has been torn down"),
+        }
+    }
+}
+
+// `Error: Debug + Display`; the derived `Debug` needs `T: Debug`, which every
+// `Producer<T>` already requires. Gated on `std` to match the crate's other
+// local error types (`PublishError`, `SerializeError`).
+#[cfg(feature = "std")]
+impl<T: core::fmt::Debug> std::error::Error for TryProduceError<T> {}
+
 /// Write-side handle for a single record (design 029, M14).
 ///
 /// `Producer<T>` holds an `Arc<dyn WriteHandle<T>>` so it can be parameterised
@@ -343,7 +360,7 @@ mod tests {
         let _: &dyn DynBuffer<i32> = &buffer;
     }
 
-    // WriteHandle impl that always rejects with the buffer Full. used to verify that when
+    // WriteHandle impl that always rejects with the buffer full. Used to verify that when
     // try_push fails, it returns the value that it failed to push.
     struct FullWriteHandle;
 
@@ -351,6 +368,17 @@ mod tests {
         fn push(&self, _value: i32) {}
         fn try_push(&self, value: i32) -> Result<(), TryProduceError<i32>> {
             Err(TryProduceError::Full(value))
+        }
+    }
+
+    // WriteHandle impl that always rejects because the record is closed. Mirrors
+    // `FullWriteHandle` for the terminal arm.
+    struct ClosedWriteHandle;
+
+    impl WriteHandle<i32> for ClosedWriteHandle {
+        fn push(&self, _value: i32) {}
+        fn try_push(&self, value: i32) -> Result<(), TryProduceError<i32>> {
+            Err(TryProduceError::Closed(value))
         }
     }
 
@@ -362,6 +390,31 @@ mod tests {
         assert!(
             matches!(result, Err(TryProduceError::Full(42))),
             "expected Full(42), got {result:?}",
+        );
+    }
+
+    #[test]
+    fn try_push_closed_round_trips_value_through_producer() {
+        use alloc::sync::Arc;
+        let producer = crate::typed_api::Producer::new(Arc::new(ClosedWriteHandle));
+        let result = producer.try_produce(42_i32);
+        assert!(
+            matches!(result, Err(TryProduceError::Closed(42))),
+            "expected Closed(42), got {result:?}",
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn try_produce_error_displays_failure_mode_without_value() {
+        use alloc::string::ToString;
+        assert_eq!(
+            TryProduceError::Full(42_i32).to_string(),
+            "buffer is at capacity and configured not to overwrite",
+        );
+        assert_eq!(
+            TryProduceError::Closed(42_i32).to_string(),
+            "buffer or record has been torn down",
         );
     }
 }
