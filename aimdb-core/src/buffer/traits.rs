@@ -102,6 +102,18 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     fn reset_metrics(&self) {}
 }
 
+/// Non-blocking push error — carries the rejected value back to the caller.
+///
+/// Returned by [`Producer::try_produce`](crate::typed_api::Producer::try_produce).
+/// Both variants own the value so the caller can retry, escalate, or drop it.
+#[derive(Debug)]
+pub enum TryProduceError<T> {
+    /// Buffer is at capacity and configured not to overwrite. Transient.
+    Full(T),
+    /// Buffer / record has been torn down (e.g. shutdown). Terminal.
+    Closed(T),
+}
+
 /// Write-side handle for a single record (design 029, M14).
 ///
 /// `Producer<T>` holds an `Arc<dyn WriteHandle<T>>` so it can be parameterised
@@ -120,6 +132,14 @@ pub(crate) trait WriteHandle<T: Clone + Send + 'static>: Send + Sync {
     /// Infallible — all three operations are synchronous and lock-free or
     /// spin-locked.
     fn push(&self, value: T);
+
+    /// Default: delegate to `push` and return `Ok(())`. Overwriting buffers
+    /// cannot fail, so the value is always accepted. Bounded / non-overwriting
+    /// buffers override this to return `Full(value)` or `Closed(value)`.
+    fn try_push(&self, value: T) -> Result<(), TryProduceError<T>> {
+        self.push(value);
+        Ok(())
+    }
 }
 
 /// Reader trait for consuming values from a buffer
@@ -321,5 +341,27 @@ mod tests {
 
         // Should be able to use as DynBuffer
         let _: &dyn DynBuffer<i32> = &buffer;
+    }
+
+    // WriteHandle impl that always rejects with the buffer Full. used to verify that when
+    // try_push fails, it returns the value that it failed to push.
+    struct FullWriteHandle;
+
+    impl WriteHandle<i32> for FullWriteHandle {
+        fn push(&self, _value: i32) {}
+        fn try_push(&self, value: i32) -> Result<(), TryProduceError<i32>> {
+            Err(TryProduceError::Full(value))
+        }
+    }
+
+    #[test]
+    fn try_push_full_round_trips_value_through_producer() {
+        use alloc::sync::Arc;
+        let producer = crate::typed_api::Producer::new(Arc::new(FullWriteHandle));
+        let result = producer.try_produce(42_i32);
+        assert!(
+            matches!(result, Err(TryProduceError::Full(42))),
+            "expected Full(42), got {result:?}",
+        );
     }
 }
