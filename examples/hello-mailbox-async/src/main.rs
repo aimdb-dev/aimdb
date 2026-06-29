@@ -1,8 +1,6 @@
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 // Enum of colors for the LED
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +15,8 @@ enum Color {
 struct Led {
     color: Color,
 }
+
+// Main function
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== hello-mailbox-async: Mailbox buffer demo ===\n");
@@ -27,18 +27,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder.configure::<Led>("actuator.led", |reg| {
         reg.buffer(BufferCfg::Mailbox)
-            .source(|_ctx, producer| async move {
+            .source(|ctx, producer| async move {
+                // Produce quickly BEFORE creating the consumer
                 println!("Firing three rapid commands BEFORE consumer exists: Red → Green → Blue");
                 producer.produce(Led { color: Color::Red });
                 producer.produce(Led {
                     color: Color::Green,
                 });
                 producer.produce(Led { color: Color::Blue });
-                thread::sleep(Duration::from_millis(100));
+                ctx.time().sleep_millis(100).await;
             })
-            .tap(|_ctx, consumer| async move {
+            .tap(|ctx, consumer| async move {
+                // Now we create the consumer — it will only see the last value in the Mailbox
                 let mut reader = consumer.subscribe();
-                thread::sleep(Duration::from_millis(100));
+                ctx.time().sleep_millis(100).await;
 
                 match reader.recv().await {
                     Ok(msg) => println!("   ✓ Got: {:?}  ← only the latest survived", msg.color),
