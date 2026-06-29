@@ -64,7 +64,7 @@ mod writer;
 
 // Public API exports
 pub use cfg::BufferCfg;
-pub use traits::{Buffer, BufferReader, DynBuffer};
+pub use traits::{Buffer, BufferReader, DynBuffer, TryProduceError};
 
 // Crate-private — used by Producer<T> to push without per-call lookup
 pub(crate) use traits::WriteHandle;

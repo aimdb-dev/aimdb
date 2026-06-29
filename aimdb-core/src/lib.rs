@@ -58,6 +58,7 @@ pub use extensions::Extensions;
 pub use aimdb_executor::{ExecutorError, ExecutorResult};
 
 // Producer-Consumer Pattern exports
+pub use buffer::TryProduceError;
 pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
