@@ -13,6 +13,12 @@ AimDB is an async, in-memory database designed for data synchronization across *
 ### Prerequisites
 
 - **Rust**: Latest stable version (2021 edition)
+- **Rust cross-compilation targets**: required by `make check`/`make clippy`, which
+  cross-compile the embedded and wasm crates. The devcontainer installs these for
+  you; on a native setup add them manually:
+  ```bash
+  rustup target add thumbv7em-none-eabihf wasm32-unknown-unknown
+  ```
 - **Git**: For version control
 - **Make**: For build automation
 - **Docker**: For running integration tests (optional)
