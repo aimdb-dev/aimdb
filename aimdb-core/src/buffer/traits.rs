@@ -5,8 +5,7 @@
 //!
 //! See `aimdb-tokio-adapter` and `aimdb-embassy-adapter` for implementations.
 
-use core::future::Future;
-use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use alloc::boxed::Box;
 
@@ -161,22 +160,33 @@ pub(crate) trait WriteHandle<T: Clone + Send + 'static>: Send + Sync {
 
 /// Reader trait for consuming values from a buffer
 ///
-/// All read operations are async. Each reader is independent with its own state.
+/// This is the object-safe **service-provider interface** that runtime adapters
+/// implement. It is poll-based — and therefore object-safe and zero-allocation —
+/// rather than `async`: an `async fn` on an erased trait forces a
+/// `Pin<Box<dyn Future>>` heap allocation on every call (design 037 / W8).
+/// Consumers do not call this directly; they use the [`Reader<T>`](super::Reader)
+/// handle returned by `Consumer::subscribe`, whose `recv()` is `async` and wraps
+/// [`poll_recv`](BufferReader::poll_recv) via `core::future::poll_fn` with no
+/// allocation.
+///
+/// Each reader is independent with its own state.
 ///
 /// # Error Handling
 /// - `Ok(value)` - Successfully received a value
 /// - `Err(BufferLagged)` - Missed messages (SPMC ring only, can continue)
 /// - `Err(BufferClosed)` - Buffer closed (graceful shutdown)
 pub trait BufferReader<T: Clone + Send>: Send {
-    /// Receive the next value (async)
+    /// Poll for the next value.
     ///
-    /// Waits for the next available value. Returns immediately if buffered.
+    /// Returns `Poll::Ready(Ok(value))` when a value is available,
+    /// `Poll::Ready(Err(..))` on lag/closure, or `Poll::Pending` after
+    /// registering `cx.waker()` to be woken when the next value arrives.
     ///
     /// # Behavior by Buffer Type
     /// - **SPMC Ring**: Returns next value, or `Lagged(n)` if fell behind
     /// - **SingleLatest**: Waits for value change, returns most recent
     /// - **Mailbox**: Waits for slot value, takes and clears it
-    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>>;
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>>;
 
     /// Non-blocking receive — returns immediately.
     ///
@@ -195,25 +205,30 @@ pub trait BufferReader<T: Clone + Send>: Send {
 /// `serde_json::Value`. Used by remote access protocol for subscriptions.
 ///
 /// This trait enables subscribing to a buffer without knowing the concrete type `T`
-/// at compile time, by serializing values to JSON on each `recv_json()` call.
+/// at compile time, by serializing values to JSON on each poll.
+///
+/// Object-safe and poll-based for the same reason as [`BufferReader`] (design
+/// 037 / W8). Consumers use the [`JsonReader`](super::JsonReader) handle, whose
+/// `recv_json()` is `async` and wraps [`poll_recv_json`](JsonBufferReader::poll_recv_json)
+/// with no allocation.
 ///
 /// # Requirements
 /// - Record must be configured with `.with_remote_access()`
 /// - Only available with the `remote-access` feature (requires serde_json)
 #[cfg(feature = "remote-access")]
 pub trait JsonBufferReader: Send {
-    /// Receive the next value as JSON (async)
+    /// Poll for the next value, serialized to JSON.
     ///
-    /// Waits for the next value from the underlying buffer and serializes it to JSON.
+    /// Returns `Poll::Ready(Ok(json))` when a value is available and
+    /// serializes successfully, `Poll::Ready(Err(..))` on lag/closure/serialize
+    /// failure, or `Poll::Pending` after registering `cx.waker()`.
     ///
     /// # Returns
     /// - `Ok(JsonValue)` - Successfully received and serialized value
     /// - `Err(BufferLagged)` - Missed messages (can continue reading)
     /// - `Err(BufferClosed)` - Buffer closed (graceful shutdown)
     /// - `Err(SerializationFailed)` - Failed to serialize value to JSON
-    fn recv_json(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, DbError>> + Send + '_>>;
+    fn poll_recv_json(&mut self, cx: &mut Context<'_>) -> Poll<Result<serde_json::Value, DbError>>;
 
     /// Non-blocking receive as JSON — returns immediately.
     ///
@@ -324,13 +339,11 @@ mod tests {
     }
 
     impl<T: Clone + Send> BufferReader<T> for MockReader<T> {
-        fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>> {
-            Box::pin(async {
-                // Return closed for testing
-                Err(DbError::BufferClosed {
-                    buffer_name: "mock".to_string(),
-                })
-            })
+        fn poll_recv(&mut self, _cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
+            // Return closed for testing
+            Poll::Ready(Err(DbError::BufferClosed {
+                buffer_name: "mock".to_string(),
+            }))
         }
 
         fn try_recv(&mut self) -> Result<T, DbError> {

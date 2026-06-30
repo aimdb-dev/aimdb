@@ -1,0 +1,62 @@
+[package]
+edition = "2024"
+name = "embassy-bench-stm32h5"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "AimDB B3 on-target benchmark: cycle & allocation profiling of the Embassy buffer consume path on an STM32H563ZI (design 038 §B3)"
+
+[features]
+default = ["embassy-runtime"]
+embassy-runtime = []
+
+[dependencies]
+# AimDB — buffer layer only (no full AimDb stack), isolated like the host B0/B1/B2.
+aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
+    "alloc",
+] }
+aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
+    "embassy-runtime",
+] }
+
+# Embassy ecosystem - STM32H563ZI (same board/clock as the other H563 demos)
+embassy-stm32 = { workspace = true, features = [
+    "defmt",
+    "stm32h563zi",
+    "memory-x",
+    "time-driver-any",
+    "unstable-pac",
+] }
+embassy-sync = { workspace = true, features = ["defmt"] }
+embassy-executor = { workspace = true, features = [
+    "platform-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-time = { workspace = true, features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+    "tick-hz-32_768",
+    "generic-queue-16",
+] }
+embassy-futures = { workspace = true }
+
+# Embedded debugging and logging
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+
+# Cortex-M runtime + DWT cycle counter access
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+# Provides the on-target `critical-section` impl that embassy-sync's
+# `CriticalSectionRawMutex` (used by every `EmbassyBuffer`) links against.
+critical-section = { workspace = true }
+
+# Counting allocator wraps this heap to validate 0 allocs/msg on real hardware.
+embedded-alloc = { version = "0.6", features = ["llff"] }
+
+[package.metadata.embassy]
+build = [
+    { target = "thumbv8m.main-none-eabihf", artifact-dir = "out/examples/embassy-bench-stm32h5" },
+]

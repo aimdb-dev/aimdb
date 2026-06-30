@@ -27,6 +27,7 @@ members = [
     "examples/embassy-mqtt-connector-demo",
     "examples/embassy-knx-connector-demo",
     "examples/embassy-serial-connector-demo",
+    "examples/embassy-bench-stm32h5",
     "examples/sync-api-demo",
     "examples/remote-access-demo",
     "examples/weather-mesh-demo/weather-mesh-common",
@@ -37,6 +38,8 @@ members = [
     "examples/hello-mailbox",
     "examples/hello-mailbox-async",
     "examples/hello-single-latest-async",
+    # Benchmarking infrastructure — host-only, excluded from default-members
+    "aimdb-bench",
 ]
 exclude = ["_external"]
 resolver = "2"
