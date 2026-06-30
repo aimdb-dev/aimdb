@@ -32,4 +32,5 @@ cargo run -p hello-mailbox
    ✓ Got: Green  ← only the latest survived (Green)
 3. Shutting down...
    ✓ Done.
+
 ```

@@ -61,6 +61,7 @@ pub use aimdb_executor::{ExecutorError, ExecutorResult};
 #[cfg(feature = "remote-access")]
 pub use buffer::JsonReader;
 pub use buffer::Reader;
+pub use buffer::TryProduceError;
 pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;

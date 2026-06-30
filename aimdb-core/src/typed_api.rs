@@ -67,7 +67,7 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::buffer::{DynBuffer, WriteHandle};
+use crate::buffer::{DynBuffer, TryProduceError, WriteHandle};
 use crate::typed_record::TypedRecord;
 use crate::AimDb;
 
@@ -133,18 +133,56 @@ where
         )));
     }
 
-    /// Produce a value of type T
+    /// Push a value. Infallible — overwrite-on-overflow buffers cannot reject.
+    /// Use this for fire-and-forget telemetry.
     ///
-    /// Push to the record's buffer; consumer tasks and outbound link connectors
-    /// observe it from there. Synchronous and infallible — the underlying
-    /// `WriteHandle::push` cannot fail.
+    /// Forwards the value to the record's buffer, the latest-snapshot slot,
+    /// and the metadata tracker in a single synchronous call.
     ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use aimdb_core::{Producer, RuntimeContext};
+    /// # #[derive(Clone, Debug)] struct Telemetry { celsius: f32 }
+    /// # async fn read_sensor() -> Telemetry { Telemetry { celsius: 21.0 } }
+    /// async fn sensor_loop(ctx: RuntimeContext, producer: Producer<Telemetry>) {
+    ///     loop {
+    ///         producer.produce(read_sensor().await);
+    ///         ctx.time().sleep_secs(1).await;
+    ///     }
+    /// }
+    /// ```
     pub fn produce(&self, value: T) {
         #[cfg(feature = "profiling")]
         if let Some(state) = &self.profiling {
             state.record_produce();
         }
         self.write.push(value);
+    }
+
+    /// Non-blocking push. Returns the value back via [`TryProduceError::Full`]
+    /// if a bounded buffer is at capacity, or [`TryProduceError::Closed`] if
+    /// the record is shutting down. Use when the caller has a meaningful
+    /// response to backpressure.
+    ///
+    /// Overwriting buffers (`SpmcRing`, `SingleLatest`, `Mailbox`) always
+    /// return `Ok(())`. Use [`produce`](Self::produce) for those.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use aimdb_core::{Producer, TryProduceError};
+    /// # #[derive(Clone, Debug)] struct Command { id: u32 }
+    /// fn send_command(producer: &Producer<Command>, cmd: Command) {
+    ///     match producer.try_produce(cmd) {
+    ///         Ok(()) => {}
+    ///         Err(TryProduceError::Full(_)) => { /* backpressure: retry later */ }
+    ///         Err(TryProduceError::Closed(_)) => { /* record shut down */ }
+    ///     }
+    /// }
+    /// ```
+    pub fn try_produce(&self, value: T) -> Result<(), TryProduceError<T>> {
+        self.write.try_push(value)
     }
 }
 

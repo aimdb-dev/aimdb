@@ -64,22 +64,14 @@ defmt = ["dep:defmt"]     # Embedded logging via probe (no_std)
 # Independent of `profiling`; works in no_std (only needs heap + atomics).
 # `portable-atomic/critical-section` provides the 64-bit-atomic fallback on
 # targets without native 64-bit atomics (e.g. thumbv7em); no-op elsewhere.
-metrics = [
-    "alloc",
-    "portable-atomic/fallback",
-    "portable-atomic/critical-section",
-]
+metrics = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
 
 # Automatic stage profiling (.source()/.tap()/.link() timing).
 # Independent of `metrics`; works in no_std (only needs heap + a runtime clock).
 # `portable-atomic/critical-section` provides the 64-bit-atomic fallback on targets
 # without native 64-bit atomics (e.g. thumbv7em); it's a no-op where native atomics
 # exist, and embedded binaries already supply a `critical-section` impl.
-profiling = [
-    "alloc",
-    "portable-atomic/fallback",
-    "portable-atomic/critical-section",
-]
+profiling = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
 
 # Testing features
 test-utils = ["std"]
@@ -104,9 +96,7 @@ futures-util = { version = "0.3", default-features = false, features = [
 # Runtime-neutral `oneshot` for the session engines (alloc-backed, no_std-ready).
 # `futures-channel`'s `mpsc` is std-only, so the engines use `async-channel` for
 # that (below); only its `oneshot` is used here.
-futures-channel = { version = "0.3", default-features = false, features = [
-    "alloc",
-] }
+futures-channel = { version = "0.3", default-features = false, features = ["alloc"] }
 # Runtime-neutral mpsc (bounded + unbounded) for the session engines — one
 # alloc-backed implementation for every runtime (tokio + Embassy). Owned,
 # cloneable `Arc`-based senders (so the `'static` per-connection/-subscription
@@ -133,15 +123,10 @@ tracing = { workspace = true, optional = true }
 defmt = { workspace = true, optional = true }
 
 # Synchronization primitives for no_std
-spin = { version = "0.9", default-features = false, features = [
-    "mutex",
-    "spin_mutex",
-] }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 
 # Hash map for no_std (same implementation as std::collections::HashMap)
-hashbrown = { version = "0.15", default-features = false, features = [
-    "default-hasher",
-] }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 
 [dev-dependencies]
 # For no_std testing
