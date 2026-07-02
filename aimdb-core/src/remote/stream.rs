@@ -37,14 +37,16 @@ pub(crate) fn stream_record_updates(
     let record = inner
         .storage(id)
         .ok_or(DbError::InvalidRecordId { id: id.raw() })?;
-    let reader = record
-        .json_access()
-        .ok_or_else(|| {
-            DbError::runtime_error(alloc::format!(
-                "Record '{record_key}' does not support JSON remote access"
-            ))
-        })?
-        .subscribe_json()?;
+    let reader = crate::buffer::JsonReader::new(
+        record
+            .json_access()
+            .ok_or_else(|| {
+                DbError::runtime_error(alloc::format!(
+                    "Record '{record_key}' does not support JSON remote access"
+                ))
+            })?
+            .subscribe_json()?,
+    );
 
     // Pair the reader with an owned copy of the record key so lag/error
     // logs identify which record fell behind — the previous mpsc-based
@@ -81,9 +83,9 @@ pub(crate) fn stream_record_updates(
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use crate::buffer::JsonBufferReader;
+    use crate::buffer::{JsonBufferReader, JsonReader};
+    use core::task::{Context, Poll};
     use futures_util::StreamExt;
-    use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -95,25 +97,21 @@ mod tests {
     }
 
     impl JsonBufferReader for FakeReader {
-        fn recv_json(
+        fn poll_recv_json(
             &mut self,
-        ) -> Pin<
-            Box<dyn std::future::Future<Output = Result<serde_json::Value, DbError>> + Send + '_>,
-        > {
-            let step = self.step.clone();
-            Box::pin(async move {
-                let s = step.fetch_add(1, Ordering::SeqCst);
-                match s {
-                    0 => Ok(serde_json::json!({"v": 1})),
-                    1 => Err(DbError::BufferLagged {
-                        buffer_name: "test".to_string(),
-                        lag_count: 7,
-                    }),
-                    2 => Ok(serde_json::json!({"v": 2})),
-                    _ => Err(DbError::BufferClosed {
-                        buffer_name: "test".to_string(),
-                    }),
-                }
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<serde_json::Value, DbError>> {
+            let s = self.step.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(match s {
+                0 => Ok(serde_json::json!({"v": 1})),
+                1 => Err(DbError::BufferLagged {
+                    buffer_name: "test".to_string(),
+                    lag_count: 7,
+                }),
+                2 => Ok(serde_json::json!({"v": 2})),
+                _ => Err(DbError::BufferClosed {
+                    buffer_name: "test".to_string(),
+                }),
             })
         }
 
@@ -124,9 +122,9 @@ mod tests {
 
     #[tokio::test]
     async fn unfold_skips_lag_and_terminates_on_closed() {
-        let reader: Box<dyn JsonBufferReader + Send> = Box::new(FakeReader {
+        let reader = JsonReader::new(Box::new(FakeReader {
             step: Arc::new(AtomicUsize::new(0)),
-        });
+        }));
 
         let stream = unfold(reader, |mut reader| async move {
             loop {

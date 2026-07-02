@@ -1,0 +1,49 @@
+{
+  "bench": "b3_cycles_embassy_stm32h5",
+  "description": "On-target DWT CYCCNT cycles/msg + allocs/msg for the Embassy buffer consume path. Produced by examples/embassy-bench-stm32h5 (cannot run on a host).",
+  "target": "STM32H563ZI (Cortex-M33)",
+  "clock_hz": 250000000,
+  "build_profile": "release",
+  "warmup": 200,
+  "batch": 512,
+  "captured": "2026-06-21",
+  "note": "First capture on a Nucleo-H563ZI rig (release). Single run; re-run 2-3x and update if a stable average differs.",
+  "results": [
+    {
+      "profile": "Telemetry",
+      "buffer_type": "SpmcRing",
+      "deliveries_per_msg": 1,
+      "cycles_per_msg": 2013,
+      "total_cycles": 1030839,
+      "allocs_per_msg": 0,
+      "allocs_total": 0
+    },
+    {
+      "profile": "State",
+      "buffer_type": "SingleLatest",
+      "deliveries_per_msg": 1,
+      "cycles_per_msg": 2009,
+      "total_cycles": 1029028,
+      "allocs_per_msg": 0,
+      "allocs_total": 0
+    },
+    {
+      "profile": "Command",
+      "buffer_type": "Mailbox",
+      "deliveries_per_msg": 1,
+      "cycles_per_msg": 1661,
+      "total_cycles": 850440,
+      "allocs_per_msg": 0,
+      "allocs_total": 0
+    },
+    {
+      "profile": "Telemetry",
+      "buffer_type": "SpmcRing(1->4)",
+      "deliveries_per_msg": 4,
+      "cycles_per_msg": 6239,
+      "total_cycles": 3194799,
+      "allocs_per_msg": 0,
+      "allocs_total": 0
+    }
+  ]
+}

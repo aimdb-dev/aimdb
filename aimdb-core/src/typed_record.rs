@@ -19,6 +19,8 @@
 
 use core::any::Any;
 use core::fmt::Debug;
+#[cfg(feature = "remote-access")]
+use core::task::{Context, Poll};
 
 use alloc::{
     boxed::Box,
@@ -134,24 +136,21 @@ struct JsonReaderAdapter<T: Clone + Send + 'static> {
 
 #[cfg(feature = "remote-access")]
 impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAdapter<T> {
-    fn recv_json(
+    fn poll_recv_json(
         &mut self,
-    ) -> core::pin::Pin<
-        Box<
-            dyn core::future::Future<Output = Result<serde_json::Value, crate::DbError>>
-                + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async move {
-            // Receive typed value from buffer
-            let value = self.inner.recv().await?;
-
-            // Serialize to JSON
-            self.codec
-                .encode(&value)
-                .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
-        })
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<serde_json::Value, crate::DbError>> {
+        // Poll the inner typed reader (allocation-free), then serialize on the
+        // ready value — the pre-W8 outer + inner double box are both gone.
+        match self.inner.poll_recv(cx) {
+            Poll::Ready(Ok(value)) => {
+                Poll::Ready(self.codec.encode(&value).ok_or_else(|| {
+                    crate::DbError::runtime_error("Failed to serialize value to JSON")
+                }))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn try_recv_json(&mut self) -> Result<serde_json::Value, crate::DbError> {
@@ -861,15 +860,18 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
     /// Subscribes to the buffer for this record type
     ///
+    /// Returns an ergonomic, allocation-free [`Reader<T>`](crate::buffer::Reader)
+    /// handle (design 037 / W8).
+    ///
     /// # Errors
     /// Returns `DbError::MissingConfiguration` if no buffer configured
-    pub fn subscribe(&self) -> crate::DbResult<Box<dyn crate::buffer::BufferReader<T> + Send>> {
+    pub fn subscribe(&self) -> crate::DbResult<crate::buffer::Reader<T>> {
         let buffer = self
             .buffer
             .as_ref()
             .ok_or_else(|| crate::DbError::missing_configuration("buffer"))?;
 
-        Ok(buffer.subscribe_boxed())
+        Ok(crate::buffer::Reader::new(buffer.subscribe_boxed()))
     }
 
     /// Adds an outbound connector link for external system integration
@@ -1293,12 +1295,17 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             ))
         })?;
 
-        // 2. Subscribe to the buffer (get Box<dyn BufferReader<T>>)
-        let reader = self.subscribe()?;
+        // 2. Subscribe to the buffer (the adapter polls the erased reader
+        //    directly, so it takes the boxed reader rather than the ergonomic
+        //    `Reader<T>` wrapper).
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or_else(|| DbError::missing_configuration("buffer"))?;
 
         // 3. Wrap in JsonReaderAdapter
         let json_reader = JsonReaderAdapter {
-            inner: reader,
+            inner: buffer.subscribe_boxed(),
             codec,
         };
 

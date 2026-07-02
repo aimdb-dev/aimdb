@@ -20,8 +20,6 @@ use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
-use core::future::Future;
-use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader, DynBuffer};
@@ -206,8 +204,38 @@ enum ReaderState {
 }
 
 impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
-    fn recv(&mut self) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + '_>> {
-        Box::pin(WasmRecvFuture { reader: self })
+    /// Poll for the next value (design 037 / W8).
+    ///
+    /// On each poll:
+    /// 1. Try to read a value (non-blocking).
+    /// 2. If available, return `Poll::Ready(Ok(value))`.
+    /// 3. If not, register the waker and return `Poll::Pending`.
+    ///
+    /// The waker is woken when [`WasmBuffer::push()`](WasmBuffer) fires. This is
+    /// allocation-free — the pre-W8 `Box::pin(WasmRecvFuture { .. })` existed
+    /// solely to satisfy the old async trait signature.
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
+        // Try non-blocking read first
+        match self.try_recv() {
+            Ok(value) => Poll::Ready(Ok(value)),
+            Err(e @ DbError::BufferLagged { .. }) => Poll::Ready(Err(e)),
+            Err(DbError::BufferEmpty) => {
+                // Register waker so we get woken on next push
+                let mut inner = self.buffer.borrow_mut();
+                let wakers = match &mut *inner {
+                    WasmBufferInner::SpmcRing { wakers, .. } => wakers,
+                    WasmBufferInner::SingleLatest { wakers, .. } => wakers,
+                    WasmBufferInner::Mailbox { wakers, .. } => wakers,
+                };
+                // Deduplicate: only add if no existing waker will wake the same task.
+                // Prevents unbounded growth when a single reader is polled repeatedly.
+                if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                    wakers.push(cx.waker().clone());
+                }
+                Poll::Pending
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
     }
 
     fn try_recv(&mut self) -> Result<T, DbError> {
@@ -260,55 +288,6 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
                 slot.take().ok_or(DbError::BufferEmpty)
             }
             _ => unreachable!("reader state mismatch"),
-        }
-    }
-}
-
-// ============================================================================
-// Async recv future
-// ============================================================================
-
-/// Future returned by `WasmBufferReader::recv()`.
-///
-/// On each poll:
-/// 1. Try to read a value (non-blocking).
-/// 2. If available, return `Poll::Ready(Ok(value))`.
-/// 3. If not, register the waker and return `Poll::Pending`.
-///
-/// The waker is woken when `WasmBuffer::push()` fires.
-struct WasmRecvFuture<'a, T> {
-    reader: &'a mut WasmBufferReader<T>,
-}
-
-// SAFETY: wasm32 is single-threaded
-unsafe impl<T> Send for WasmRecvFuture<'_, T> {}
-
-impl<T: Clone + Send + 'static> Future for WasmRecvFuture<'_, T> {
-    type Output = Result<T, DbError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-
-        // Try non-blocking read first
-        match this.reader.try_recv() {
-            Ok(value) => Poll::Ready(Ok(value)),
-            Err(e @ DbError::BufferLagged { .. }) => Poll::Ready(Err(e)),
-            Err(DbError::BufferEmpty) => {
-                // Register waker so we get woken on next push
-                let mut inner = this.reader.buffer.borrow_mut();
-                let wakers = match &mut *inner {
-                    WasmBufferInner::SpmcRing { wakers, .. } => wakers,
-                    WasmBufferInner::SingleLatest { wakers, .. } => wakers,
-                    WasmBufferInner::Mailbox { wakers, .. } => wakers,
-                };
-                // Deduplicate: only add if no existing waker will wake the same task.
-                // Prevents unbounded growth when a single reader is polled repeatedly.
-                if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
-                    wakers.push(cx.waker().clone());
-                }
-                Poll::Pending
-            }
-            Err(e) => Poll::Ready(Err(e)),
         }
     }
 }
