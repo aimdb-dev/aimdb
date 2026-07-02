@@ -38,6 +38,7 @@ members = [
     "examples/hello-mailbox",
     "examples/hello-mailbox-async",
     "examples/hello-single-latest-async",
+    "examples/readme-quickstart",
     # Benchmarking infrastructure — host-only, excluded from default-members
     "aimdb-bench",
 ]

@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check readme-check codegen-drift
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -40,6 +40,8 @@ help:
 	@printf "    check                Comprehensive development check (fmt + clippy + all tests)\n"
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
+	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
+	@printf "    codegen-drift        Compile codegen output against the workspace API\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
 	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
@@ -396,6 +398,8 @@ examples:
 	cargo build --package hello-mailbox-async
 	@printf "$(YELLOW)  → Building hello-single-latest-async$(NC)\n"
 	cargo build --package hello-single-latest-async
+	@printf "$(YELLOW)  → Building readme-quickstart (compiled README example)$(NC)\n"
+	cargo build --package readme-quickstart
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Security & Quality commands
@@ -526,8 +530,27 @@ publish:
 	@printf "$(GREEN)✓ All 18 crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
 
+## Drift guards
+# The README quickstart is compiled as examples/readme-quickstart; this target
+# fails when the README code block and the example diverge, or when the
+# example no longer compiles (design 038 §2.6/§3.13).
+readme-check:
+	@printf "$(GREEN)Checking README quickstart against examples/readme-quickstart...$(NC)\n"
+	@awk '/^```rust$$/{f=1;next} f&&/^```$$/{exit} f' README.md \
+		| diff -u - examples/readme-quickstart/src/main.rs \
+		|| { printf "$(RED)README quickstart drifted from examples/readme-quickstart/src/main.rs$(NC)\n"; exit 1; }
+	cargo check --package readme-quickstart
+	@printf "$(GREEN)✓ README quickstart is in sync and compiles$(NC)\n"
+
+# Compiles aimdb-codegen's generated output (common crate, hub crate, flat
+# schema) against the local workspace so template drift against the real API
+# breaks loudly (design 038 §3.10 decision).
+codegen-drift:
+	@printf "$(GREEN)Checking codegen templates against the workspace API...$(NC)\n"
+	./tools/scripts/codegen-drift-check.sh
+
 ## Convenience commands
-check: fmt-check clippy test test-embedded test-wasm deny
+check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
@@ -535,6 +558,8 @@ check: fmt-check clippy test test-embedded test-wasm deny
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ WASM target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ Dependencies verified (deny)$(NC)\n"
+	@printf "$(BLUE)✓ README quickstart in sync and compiling$(NC)\n"
+	@printf "$(BLUE)✓ Codegen output compiles against the workspace$(NC)\n"
 
 ## WASM commands
 wasm:

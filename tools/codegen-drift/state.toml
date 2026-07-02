@@ -1,0 +1,91 @@
+# Fixture for `make codegen-drift`.
+#
+# CI generates a common crate, a hub crate, and a flat schema file from this
+# state and compiles them against the local workspace, so codegen template
+# drift against the real AimDB API breaks loudly instead of silently
+# (design 038 §3.10 decision).
+#
+# The records deliberately exercise the template surface: an outbound MQTT
+# link (serializer path), an inbound MQTT link (deserializer path), an
+# observable record, and a bufferless mailbox record.
+
+[project]
+name = "drift-check"
+edition = "2021"
+
+[meta]
+aimdb_version = "1.1.0"
+created_at = "2026-07-02T00:00:00Z"
+last_modified = "2026-07-02T00:00:00Z"
+
+[[records]]
+name = "TemperatureReading"
+buffer = "SpmcRing"
+capacity = 64
+key_prefix = "sensors.temp."
+key_variants = ["indoor", "outdoor"]
+producers = ["sensor_task"]
+consumers = ["dashboard_task"]
+
+[records.observable]
+signal_field = "celsius"
+icon = "thermometer"
+unit = "°C"
+
+[[records.fields]]
+name = "celsius"
+type = "f64"
+description = "Temperature in degrees Celsius"
+
+[[records.fields]]
+name = "timestamp"
+type = "u64"
+description = "Unix timestamp in milliseconds"
+
+[[records.connectors]]
+protocol = "mqtt"
+direction = "outbound"
+url = "mqtt://sensors/temp/{variant}"
+
+[[records]]
+name = "OtaCommand"
+buffer = "Mailbox"
+key_prefix = "device.ota."
+key_variants = ["gateway01"]
+producers = ["cloud_ota_service"]
+consumers = ["device_update_task"]
+
+[[records.fields]]
+name = "action"
+type = "String"
+description = "Command action"
+
+[[records.connectors]]
+protocol = "mqtt"
+direction = "inbound"
+url = "mqtt://device/ota/{variant}"
+
+[[tasks]]
+name = "sensor_task"
+task_type = "source"
+description = "Reads the temperature sensor and produces TemperatureReading values"
+
+[[tasks.outputs]]
+record = "TemperatureReading"
+
+[[tasks]]
+name = "dashboard_task"
+task_type = "tap"
+description = "Logs TemperatureReading values"
+
+[[tasks.inputs]]
+record = "TemperatureReading"
+
+[[binaries]]
+name = "drift-check-hub"
+tasks = ["sensor_task", "dashboard_task"]
+
+[[binaries.external_connectors]]
+protocol = "mqtt"
+env_var = "MQTT_BROKER"
+default = "localhost"

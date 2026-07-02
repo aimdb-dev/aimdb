@@ -79,18 +79,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.configure::<Temperature>("temp.indoor", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .source(|ctx, producer| async move {
+                let time = ctx.time();
                 for celsius in [21.0, 22.5, 24.1] {
-                    producer.produce(Temperature { celsius }).await.ok();
-                    ctx.time().sleep(ctx.time().secs(1)).await;
+                    producer.produce(Temperature { celsius });
+                    time.sleep_secs(1).await;
                 }
             })
             .tap(|ctx, consumer| async move {
-                let mut reader = consumer.subscribe().unwrap();
+                let mut reader = consumer.subscribe();
                 while let Ok(t) = reader.recv().await {
                     ctx.log().info(&format!("temp: {:.1}°C", t.celsius));
                 }
-            })
-            .finish();
+            });
     });
 
     // `.run()` builds the database, collects every producer/consumer/transform

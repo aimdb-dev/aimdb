@@ -556,6 +556,7 @@ fn emit_imports(state: &ArchitectureState) -> TokenStream {
         use aimdb_core::builder::AimDbBuilder;
         use aimdb_core::RecordKey;
         use aimdb_data_contracts::{#(#contract_traits),*};
+        use aimdb_tokio_adapter::TokioRecordRegistrarExt;
         use serde::{Deserialize, Serialize};
     }
 }
@@ -895,7 +896,7 @@ fn emit_connector_chain(
                     chain = quote! {
                         #chain
                             .link_from(#addr_var)
-                            .with_deserializer(#value_type::from_bytes)
+                            .with_deserializer_raw(#value_type::from_bytes)
                             .finish()
                     };
                 }
@@ -1566,11 +1567,19 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
     quote! { #(#per_variant)* }
 }
 
-/// Build the `.transform(...)` or `.transform_join(...)` call for one variant.
+/// Build the `.source(...)`, `.transform(...)`, or `.transform_join(...)`
+/// call for one variant.
 ///
+/// - 0 inputs → `.source(task)` (matches the 0-input stub in tasks.rs)
 /// - 1 input  → `.transform::<InputValue, _>(InputKey::Variant, |b| b.map(task_transform))`
 /// - N inputs → `.transform_join(|j| j.input::<...>(Key::Variant)....on_trigger(task_handler))`
 fn build_transform_call(task: &TaskDef, variant_ident: &syn::Ident) -> TokenStream {
+    if task.inputs.is_empty() {
+        // No inputs → the task is a source; tasks.rs generates
+        // `async fn task(RuntimeContext, Producer<O>)` for this shape.
+        let task_ident = format_ident!("{}", task.name);
+        return quote! { .source(#task_ident) };
+    }
     if task.inputs.len() != 1 {
         // Multi-input → transform_join
         let handler_ident = format_ident!("{}_handler", task.name);
@@ -1979,8 +1988,8 @@ url = "mqtt://ota/cmd/{variant}"
             "Missing link_from call:\n{out}"
         );
         assert!(
-            out.contains("with_deserializer(OtaCommandValue::from_bytes)"),
-            "Missing with_deserializer call:\n{out}"
+            out.contains("with_deserializer_raw(OtaCommandValue::from_bytes)"),
+            "Missing with_deserializer_raw call:\n{out}"
         );
     }
 
@@ -2172,8 +2181,8 @@ url = "sensors/{variant}/observation"
     fn configure_schema_with_real_deserializer() {
         let out = extended_generated();
         assert!(
-            out.contains("with_deserializer(WeatherObservationValue::from_bytes)"),
-            "Missing with_deserializer for inbound connector:\n{out}"
+            out.contains("with_deserializer_raw(WeatherObservationValue::from_bytes)"),
+            "Missing with_deserializer_raw for inbound connector:\n{out}"
         );
     }
 
