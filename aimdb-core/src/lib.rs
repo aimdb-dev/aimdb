@@ -28,6 +28,7 @@ pub mod codec;
 pub mod connector;
 pub mod context;
 mod error;
+pub mod executor;
 pub mod extensions;
 pub mod graph;
 #[cfg(feature = "profiling")]
@@ -38,7 +39,6 @@ pub mod remote;
 pub mod router;
 #[cfg(feature = "connector-session")]
 pub mod session;
-pub mod time;
 pub mod transform;
 pub mod transport;
 pub mod typed_api;
@@ -49,13 +49,9 @@ pub use context::RuntimeContext;
 pub use error::{ConfigError, DbError, DbResult};
 pub use extensions::Extensions;
 
-// Error/result re-exports from aimdb-executor. The generic runtime trait
-// family (`RuntimeAdapter`, `Runtime`, `TimeOps`, `Logger`, `RuntimeInfo`) is
-// no longer consumed by core — the runtime travels as
-// `Arc<dyn aimdb_executor::RuntimeOps>` (issue #131) — so it is not
-// re-exported here; import those traits from `aimdb_executor` directly if an
-// adapter still needs them.
-pub use aimdb_executor::{ExecutorError, ExecutorResult};
+// Runtime capability surface: the runtime travels as `Arc<dyn RuntimeOps>`,
+// the one trait an adapter implements.
+pub use executor::{BoxFuture, ExecutorError, ExecutorResult, LogLevel, RuntimeOps};
 
 // Producer-Consumer Pattern exports
 #[cfg(feature = "remote-access")]

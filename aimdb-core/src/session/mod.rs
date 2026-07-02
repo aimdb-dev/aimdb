@@ -18,7 +18,7 @@ use core::pin::Pin;
 
 use futures_core::Stream;
 
-// The engines are runtime-neutral (`futures` channels + the adapter's `TimeOps`
+// The engines are runtime-neutral (`futures` channels + the adapter's `RuntimeOps`
 // clock, no `tokio`/`embassy-*`), so they cross-compile to `no_std + alloc`.
 #[cfg(feature = "connector-session")]
 mod client;

@@ -241,7 +241,7 @@ mod tests {
 
     /// A `RuntimeContext` backed by the shared no-op RuntimeOps.
     fn test_ctx() -> crate::RuntimeContext {
-        crate::RuntimeContext::new(Arc::new(aimdb_executor::test_support::NoopRuntimeOps))
+        crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps))
     }
 
     /// Ingest callback that counts successful invocations.

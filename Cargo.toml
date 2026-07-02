@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "aimdb-executor",
     "aimdb-derive",
     "aimdb-data-contracts",
     "aimdb-core",

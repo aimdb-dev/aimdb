@@ -663,20 +663,13 @@ pub type DbResult<T> = Result<T, DbError>;
 
 /// Convert executor errors to database errors
 ///
-/// This allows runtime adapters to return `ExecutorError` while the core
+/// This allows engine plumbing to return `ExecutorError` while the core
 /// database works with `DbError` for consistency across the API.
-impl From<aimdb_executor::ExecutorError> for DbError {
-    fn from(err: aimdb_executor::ExecutorError) -> Self {
-        use aimdb_executor::ExecutorError;
+impl From<crate::executor::ExecutorError> for DbError {
+    fn from(err: crate::executor::ExecutorError) -> Self {
+        use crate::executor::ExecutorError;
 
-        // `ExecutorError`'s `message` field is `String` on std and
-        // `&'static str` on no_std; `.into()` is required for the latter.
-        #[allow(clippy::useless_conversion)]
         match err {
-            ExecutorError::RuntimeUnavailable { message }
-            | ExecutorError::TaskJoinFailed { message } => DbError::RuntimeError {
-                message: message.into(),
-            },
             ExecutorError::QueueClosed => DbError::runtime_error("join queue closed"),
         }
     }

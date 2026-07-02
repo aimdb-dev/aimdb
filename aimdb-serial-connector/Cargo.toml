@@ -61,8 +61,6 @@ _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
 # AimX protocol (codec + dispatch) and the generic session connectors live in
 # core; this crate contributes only the serial transport triple + sugar.
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
-aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
-
 # Shared framing (no_std). `alloc` enables the `encode_vec`/`decode_vec` helpers.
 cobs = { workspace = true, features = ["alloc"] }
 

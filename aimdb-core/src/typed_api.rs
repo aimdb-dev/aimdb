@@ -1131,7 +1131,7 @@ mod tests {
 
     /// Minimal mock runtime for context tests — the builder only needs the
     /// dyn-safe `RuntimeOps` surface, supplied by the shared test stub.
-    use aimdb_executor::test_support::NoopRuntimeOps as MockRuntime;
+    use crate::executor::test_support::NoopRuntimeOps as MockRuntime;
 
     /// Minimal mock buffer so `has_buffer()` returns true
     struct MockBuffer;

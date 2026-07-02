@@ -9,7 +9,7 @@ use alloc::{
     vec::Vec,
 };
 
-use aimdb_executor::{ExecutorError, ExecutorResult};
+use crate::executor::{ExecutorError, ExecutorResult};
 
 use crate::transform::{CollectedTransform, TransformDescriptor};
 use crate::typed_record::BoxFuture;

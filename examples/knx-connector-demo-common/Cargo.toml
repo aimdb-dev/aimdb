@@ -8,7 +8,7 @@ description = "Shared business logic for KNX demos - runs on MCU, edge, and clou
 
 [features]
 default = []
-std = ["alloc", "aimdb-core/std", "aimdb-executor/std", "serde"]
+std = ["alloc", "aimdb-core/std", "serde"]
 alloc = ["aimdb-core/alloc"]
 derive = ["aimdb-core/derive"]
 # serde derive on the shared types — works in `no_std + alloc` too, so an
@@ -21,8 +21,6 @@ defmt = ["dep:defmt"]
 [dependencies]
 # Core AimDB - runtime agnostic
 aimdb-core = { path = "../../aimdb-core", default-features = false }
-aimdb-executor = { path = "../../aimdb-executor", default-features = false }
-
 # KNX DPT types (no runtime features needed for types only)
 aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = false }
 

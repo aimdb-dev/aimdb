@@ -18,8 +18,8 @@ use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
 
 /// Shorthand for a heap-pinned, `Send`, `'static` future — the unit of work
-/// the `AimDbRunner` drives. Canonical definition lives in `aimdb-executor`.
-pub type BoxFuture = aimdb_executor::BoxFuture;
+/// the `AimDbRunner` drives. Canonical definition lives in `crate::executor`.
+pub type BoxFuture = crate::executor::BoxFuture;
 
 /// `on_start` task stored in `AimDbBuilder::start_fns`, invoked at `build()`.
 type StartFnType = Box<dyn FnOnce(crate::RuntimeContext) -> BoxFuture + Send>;
@@ -285,7 +285,7 @@ pub struct AimDbBuilder {
     record_index: HashMap<StringKey, usize>,
 
     /// Runtime capabilities, held as a value (issue #131)
-    runtime: Option<Arc<dyn aimdb_executor::RuntimeOps>>,
+    runtime: Option<Arc<dyn crate::executor::RuntimeOps>>,
 
     /// Connector builders that will be invoked during build()
     connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder>>,
@@ -327,10 +327,10 @@ impl AimDbBuilder {
     /// Sets the runtime adapter.
     ///
     /// Accepts any adapter implementing the dyn-safe
-    /// [`RuntimeOps`](aimdb_executor::RuntimeOps) capability surface
+    /// [`RuntimeOps`](crate::executor::RuntimeOps) capability surface
     /// (`TokioAdapter`, `EmbassyAdapter`, `WasmAdapter`); the builder stores it
     /// as a value — no runtime type parameter (issue #131).
-    pub fn runtime(mut self, rt: Arc<impl aimdb_executor::RuntimeOps + 'static>) -> Self {
+    pub fn runtime(mut self, rt: Arc<impl crate::executor::RuntimeOps + 'static>) -> Self {
         self.runtime = Some(rt);
         self
     }
@@ -841,7 +841,7 @@ pub struct AimDb {
     inner: Arc<AimDbInner>,
 
     /// Runtime capabilities, held as a value
-    runtime: Arc<dyn aimdb_executor::RuntimeOps>,
+    runtime: Arc<dyn crate::executor::RuntimeOps>,
 
     /// Shared wall clock for stage profiling, built from the runtime at `build()` time.
     #[cfg(feature = "profiling")]
@@ -924,7 +924,7 @@ impl AimDb {
 
     /// Builds a database with a closure-based builder pattern
     pub async fn build_with(
-        rt: Arc<impl aimdb_executor::RuntimeOps + 'static>,
+        rt: Arc<impl crate::executor::RuntimeOps + 'static>,
         f: impl FnOnce(&mut AimDbBuilder),
     ) -> DbResult<()> {
         let mut b = AimDbBuilder::new().runtime(rt);
@@ -1033,7 +1033,7 @@ impl AimDb {
     /// Connectors that hand the runtime to a `'static` engine future (e.g. the
     /// session client engine, which needs the clock for reconnect
     /// backoff/keepalive) clone it through here.
-    pub fn runtime_ops(&self) -> Arc<dyn aimdb_executor::RuntimeOps> {
+    pub fn runtime_ops(&self) -> Arc<dyn crate::executor::RuntimeOps> {
         self.runtime.clone()
     }
 

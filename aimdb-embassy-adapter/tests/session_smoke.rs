@@ -1,5 +1,5 @@
 //! Embassy smoke — the runtime-neutral session **client engine** runs on the
-//! Embassy adapter's [`TimeOps`](aimdb_executor::TimeOps) clock.
+//! Embassy adapter's [`RuntimeOps`](aimdb_core::RuntimeOps) clock.
 //!
 //! `run_client` is parametrized over the runtime clock (its only runtime
 //! dependency, for reconnect backoff / keepalive). This test instantiates it with

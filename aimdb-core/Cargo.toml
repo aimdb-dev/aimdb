@@ -23,7 +23,6 @@ std = [
     "serde",
     "anyhow",
     "remote-access",
-    "aimdb-executor/std",
     # AimX remote access now rides the shared session engine: `with_remote_access`
     # builds the `session::aimx` server, so std pulls in the connector-session module.
     "connector-session",
@@ -79,9 +78,6 @@ test-utils = ["std"]
 [dependencies]
 # Derive macros (optional)
 aimdb-derive = { version = "0.1.0", path = "../aimdb-derive", optional = true }
-
-# Executor traits (always available)
-aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }

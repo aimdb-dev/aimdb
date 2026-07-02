@@ -11,7 +11,6 @@ default = ["server"]
 # Server: accepts incoming WebSocket connections (Axum-based)
 server = [
     "aimdb-core/std",
-    "aimdb-executor/std",
     "dep:tokio",
     "dep:axum",
     "dep:tower-http",
@@ -21,7 +20,6 @@ server = [
 # Client: connects out to a remote WebSocket server
 client = [
     "aimdb-core/std",
-    "aimdb-executor/std",
     "dep:tokio",
     "dep:tokio-tungstenite",
 ]
@@ -36,7 +34,6 @@ tracing = ["dep:tracing"]
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
 aimdb-data-contracts = { version = "0.1.1", path = "../aimdb-data-contracts", default-features = false }
-aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
 aimdb-ws-protocol = { version = "0.1.0", path = "../aimdb-ws-protocol" }
 
 # Async runtime

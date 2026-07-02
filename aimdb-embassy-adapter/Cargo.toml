@@ -43,9 +43,6 @@ metrics = ["aimdb-core/metrics", "embassy-runtime"]
 profiling = ["aimdb-core/profiling", "embassy-runtime"]
 
 [dependencies]
-# Executor traits
-aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
-
 # Core AimDB types - no_std for Embassy (requires alloc for typed APIs)
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false, features = [
     "alloc",

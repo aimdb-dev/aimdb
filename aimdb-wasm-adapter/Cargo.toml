@@ -26,9 +26,6 @@ wasm-runtime = [
 ]
 
 [dependencies]
-# Executor traits (no_std compatible)
-aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
-
 # Core AimDB types (alloc only — no std, no tokio)
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false, features = [
     "alloc",

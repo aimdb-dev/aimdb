@@ -29,12 +29,6 @@ profiling = ["aimdb-core/profiling", "tokio-runtime"]
 test-utils = ["aimdb-core/test-utils", "tokio-runtime"]
 
 [dependencies]
-# Executor traits
-aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false, features = [
-    "std",
-    "tokio-types",
-] }
-
 # Core AimDB types - std version for Tokio (for DbError integration)
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false, features = [
     "std",

@@ -25,7 +25,6 @@ aimdb-embassy-adapter = { path = "../../../aimdb-embassy-adapter", default-featu
     "alloc",
     "embassy-runtime",
 ] }
-aimdb-executor = { path = "../../../aimdb-executor", default-features = false }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false, features = [
     "simulatable",
 ] }

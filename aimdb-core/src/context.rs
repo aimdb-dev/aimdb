@@ -4,7 +4,7 @@
 //! as a concrete value wrapping `Arc<dyn RuntimeOps>` — no runtime type
 //! parameter (issue #131, design doc 034 §3.2/§3.3).
 
-use aimdb_executor::{BoxFuture, LogLevel, RuntimeOps};
+use crate::executor::{BoxFuture, LogLevel, RuntimeOps};
 use alloc::sync::Arc;
 
 /// Unified runtime context for AimDB services

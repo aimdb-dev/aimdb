@@ -8,7 +8,7 @@
 //! * **tap / link** — wall-clock interval from a buffer read yielding a value to
 //!   the next read (≈ the user's per-value processing time).
 //!
-//! Timing uses the runtime's own clock ([`aimdb_executor::TimeOps`]), so the
+//! Timing uses the runtime's own clock ([`crate::executor::RuntimeOps`]), so the
 //! feature works on `no_std` targets too (it only needs heap + a clock).
 //!
 //! Measured time is **wall-clock**, including `.await` points / I/O / sleeps — it
@@ -38,7 +38,7 @@ use crate::DbError;
 pub(crate) type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Builds a [`Clock`] from the dyn-safe runtime capabilities.
-pub(crate) fn make_clock(rt: Arc<dyn aimdb_executor::RuntimeOps>) -> Clock {
+pub(crate) fn make_clock(rt: Arc<dyn crate::executor::RuntimeOps>) -> Clock {
     let epoch = rt.now_nanos();
     Arc::new(move || rt.now_nanos().saturating_sub(epoch))
 }

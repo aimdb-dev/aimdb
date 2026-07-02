@@ -19,9 +19,6 @@ aimdb-core = { path = "../../aimdb-core", default-features = false }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
 ] }
-aimdb-executor = { path = "../../aimdb-executor", default-features = false, features = [
-    "embassy-types",
-] }
 aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", default-features = false, features = [
     "embassy-runtime",
 ] }
