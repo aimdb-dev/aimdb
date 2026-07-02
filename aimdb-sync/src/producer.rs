@@ -1,6 +1,7 @@
 //! Synchronous producer for typed records.
 
-use aimdb_core::{DbError, DbResult};
+use crate::{SyncError, SyncResult};
+use aimdb_core::DbResult;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,7 +72,7 @@ where
     }
 
     /// Internal helper: send value and wait for result with optional timeout
-    fn send_internal(&self, value: T, timeout: Option<Duration>) -> DbResult<()> {
+    fn send_internal(&self, value: T, timeout: Option<Duration>) -> SyncResult<()> {
         let (result_tx, result_rx) = oneshot::channel();
         let tx = self.tx.clone();
 
@@ -91,13 +92,13 @@ where
                     };
 
                     match recv_result {
-                        Ok(Ok(result)) => result,
-                        Ok(Err(_)) => Err(DbError::RuntimeShutdown),
-                        Err(_) => Err(DbError::SetTimeout),
+                        Ok(Ok(result)) => result.map_err(SyncError::from),
+                        Ok(Err(_)) => Err(SyncError::RuntimeShutdown),
+                        Err(_) => Err(SyncError::SetTimeout),
                     }
                 }
-                Ok(Err(_)) => Err(DbError::RuntimeShutdown),
-                Err(_) => Err(DbError::SetTimeout),
+                Ok(Err(_)) => Err(SyncError::RuntimeShutdown),
+                Err(_) => Err(SyncError::SetTimeout),
             }
         })
     }
@@ -109,7 +110,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns `DbError::RuntimeShutdown` if the runtime thread has been detached.
+    /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
     /// Returns any error from the underlying `produce()` operation (e.g., record not registered,
     /// buffer full, etc.).
     ///
@@ -132,7 +133,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn set(&self, value: T) -> DbResult<()> {
+    pub fn set(&self, value: T) -> SyncResult<()> {
         self.send_internal(value, None)
     }
 
@@ -143,9 +144,9 @@ where
     ///
     /// # Errors
     ///
-    /// Returns `DbError::SetTimeout` if the timeout expires before the value can be sent
+    /// Returns `SyncError::SetTimeout` if the timeout expires before the value can be sent
     /// or if waiting for the produce result exceeds the timeout.
-    /// Returns `DbError::RuntimeShutdown` if the runtime thread has been detached.
+    /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
     /// Returns any error from the underlying `produce()` operation.
     ///
     /// # Example
@@ -168,7 +169,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn set_with_timeout(&self, value: T, timeout: Duration) -> DbResult<()> {
+    pub fn set_with_timeout(&self, value: T, timeout: Duration) -> SyncResult<()> {
         self.send_internal(value, Some(timeout))
     }
 
@@ -183,8 +184,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns `DbError::SetTimeout` if the channel is full.
-    /// Returns `DbError::RuntimeShutdown` if the runtime thread has been detached.
+    /// Returns `SyncError::SetTimeout` if the channel is full.
+    /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
     ///
     /// # Example
     ///
@@ -208,13 +209,13 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn try_set(&self, value: T) -> DbResult<()> {
+    pub fn try_set(&self, value: T) -> SyncResult<()> {
         // Create a oneshot channel but don't wait for the result
         let (result_tx, _result_rx) = oneshot::channel();
 
         self.tx.try_send((value, result_tx)).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => DbError::SetTimeout,
-            mpsc::error::TrySendError::Closed(_) => DbError::RuntimeShutdown,
+            mpsc::error::TrySendError::Full(_) => SyncError::SetTimeout,
+            mpsc::error::TrySendError::Closed(_) => SyncError::RuntimeShutdown,
         })
     }
 }

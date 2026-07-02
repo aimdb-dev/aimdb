@@ -64,7 +64,7 @@ pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
 pub use typed_api::{
     Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
-    RecordT, StageKind,
+    StageKind,
 };
 #[cfg(feature = "remote-access")]
 pub use typed_record::JsonRecordAccess;

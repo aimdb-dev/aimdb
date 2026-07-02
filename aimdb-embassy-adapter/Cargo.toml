@@ -60,11 +60,6 @@ embassy-time = { workspace = true, optional = true }
 embassy-sync = { workspace = true, optional = true }
 embassy-net = { workspace = true, optional = true }
 
-# Embedded HAL for peripheral abstractions
-embedded-hal = { workspace = true }
-embedded-hal-async = { workspace = true }
-embedded-hal-nb = { workspace = true }
-
 # Logging for embedded
 defmt = { workspace = true }
 

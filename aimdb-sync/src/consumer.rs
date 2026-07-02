@@ -1,6 +1,6 @@
 //! Synchronous consumer for typed records.
 
-use aimdb_core::{DbError, DbResult};
+use crate::{SyncError, SyncResult};
 use std::fmt::Debug;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -75,7 +75,7 @@ where
     ///
     /// # Errors
     ///
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -97,9 +97,9 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get(&self) -> DbResult<T> {
+    pub fn get(&self) -> SyncResult<T> {
         let rx = self.rx.lock().unwrap();
-        rx.recv().map_err(|_| DbError::RuntimeShutdown)
+        rx.recv().map_err(|_| SyncError::RuntimeShutdown)
     }
 
     /// Get a value with a timeout.
@@ -112,8 +112,8 @@ where
     ///
     /// # Errors
     ///
-    /// - `DbError::GetTimeout` if the timeout expires
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::GetTimeout` if the timeout expires
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -138,11 +138,11 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_with_timeout(&self, timeout: Duration) -> DbResult<T> {
+    pub fn get_with_timeout(&self, timeout: Duration) -> SyncResult<T> {
         let rx = self.rx.lock().unwrap();
         rx.recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => DbError::GetTimeout,
-            mpsc::RecvTimeoutError::Disconnected => DbError::RuntimeShutdown,
+            mpsc::RecvTimeoutError::Timeout => SyncError::GetTimeout,
+            mpsc::RecvTimeoutError::Disconnected => SyncError::RuntimeShutdown,
         })
     }
 
@@ -153,8 +153,8 @@ where
     ///
     /// # Errors
     ///
-    /// - `DbError::GetTimeout` if no data is available (non-blocking)
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::GetTimeout` if no data is available (non-blocking)
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -178,11 +178,11 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn try_get(&self) -> DbResult<T> {
+    pub fn try_get(&self) -> SyncResult<T> {
         let rx = self.rx.lock().unwrap();
         rx.try_recv().map_err(|e| match e {
-            mpsc::TryRecvError::Empty => DbError::GetTimeout,
-            mpsc::TryRecvError::Disconnected => DbError::RuntimeShutdown,
+            mpsc::TryRecvError::Empty => SyncError::GetTimeout,
+            mpsc::TryRecvError::Disconnected => SyncError::RuntimeShutdown,
         })
     }
 
@@ -201,7 +201,7 @@ where
     ///
     /// # Errors
     ///
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -225,11 +225,11 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest(&self) -> DbResult<T> {
+    pub fn get_latest(&self) -> SyncResult<T> {
         let rx = self.rx.lock().unwrap();
 
         // First, block until we have at least one value
-        let mut latest = rx.recv().map_err(|_| DbError::RuntimeShutdown)?;
+        let mut latest = rx.recv().map_err(|_| SyncError::RuntimeShutdown)?;
 
         // Then drain all remaining values to get the most recent
         while let Ok(value) = rx.try_recv() {
@@ -251,8 +251,8 @@ where
     ///
     /// # Errors
     ///
-    /// - `DbError::GetTimeout` if the timeout expires before any value arrives
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::GetTimeout` if the timeout expires before any value arrives
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -279,13 +279,13 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest_with_timeout(&self, timeout: Duration) -> DbResult<T> {
+    pub fn get_latest_with_timeout(&self, timeout: Duration) -> SyncResult<T> {
         let rx = self.rx.lock().unwrap();
 
         // First, block with timeout until we have at least one value
         let mut latest = rx.recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => DbError::GetTimeout,
-            mpsc::RecvTimeoutError::Disconnected => DbError::RuntimeShutdown,
+            mpsc::RecvTimeoutError::Timeout => SyncError::GetTimeout,
+            mpsc::RecvTimeoutError::Disconnected => SyncError::RuntimeShutdown,
         })?;
 
         // Then drain all remaining values to get the most recent

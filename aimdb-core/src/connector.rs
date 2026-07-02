@@ -380,12 +380,6 @@ impl ConnectorLink {
         }
     }
 
-    /// Adds a configuration option
-    pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.config.push((key.into(), value.into()));
-        self
-    }
-
     /// Creates the fused serialized source using the stored factory.
     ///
     /// Runs once at route-collection time; the readers it hands out are the

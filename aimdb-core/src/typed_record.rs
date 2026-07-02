@@ -102,13 +102,6 @@ impl<T> RecordValue<T> {
     }
 }
 
-impl<T: Clone> RecordValue<T> {
-    /// Clone the underlying value
-    pub fn cloned(&self) -> T {
-        self.value.clone()
-    }
-}
-
 impl<T> core::ops::Deref for RecordValue<T> {
     type Target = T;
 
@@ -265,9 +258,6 @@ pub trait AnyRecord: RecordIntrospect + RecordMetricsReset + Send + Sync {
 /// collection, and `AimDbInner::list_records` (remote introspection
 /// metadata).
 pub trait RecordIntrospect {
-    /// Returns the number of registered outbound connectors
-    fn outbound_connector_count(&self) -> usize;
-
     /// Gets the outbound connector links
     ///
     /// Returns outbound connector configuration list for spawning logic.
@@ -913,14 +903,6 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         &self.outbound_connectors
     }
 
-    /// Returns the number of registered outbound connectors
-    ///
-    /// # Returns
-    /// The count of outbound connectors
-    pub fn outbound_connector_count(&self) -> usize {
-        self.outbound_connectors.len()
-    }
-
     /// Returns all inbound connector links (External → AimDB)
     ///
     /// # Returns
@@ -1165,10 +1147,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
 }
 
 impl<T: Send + Sync + 'static + Debug + Clone> RecordIntrospect for TypedRecord<T> {
-    fn outbound_connector_count(&self) -> usize {
-        self.outbound_connectors.len()
-    }
-
     fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink] {
         &self.outbound_connectors
     }
@@ -1235,7 +1213,7 @@ impl<T: Send + Sync + 'static + Debug + Clone> RecordIntrospect for TypedRecord<
             if self.has_producer() { 1 } else { 0 },
             self.consumer_count(),
             self.writable.load(portable_atomic::Ordering::SeqCst),
-            self.outbound_connector_count(),
+            self.outbound_connectors.len(),
         );
 
         // Add buffer metrics if available

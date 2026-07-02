@@ -1070,22 +1070,6 @@ where
     }
 }
 
-// ============================================================================
-// RecordT - Self-registering record trait
-// ============================================================================
-
-/// Self-registering record trait
-///
-/// Records implementing this trait register their producer and consumer
-/// functions, encapsulating behavior with their type.
-pub trait RecordT: Send + Sync + 'static + Debug + Clone {
-    /// Configuration type for this record
-    type Config;
-
-    /// Registers producer and consumer functions
-    fn register(reg: &mut RecordRegistrar<'_, Self>, cfg: &Self::Config);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

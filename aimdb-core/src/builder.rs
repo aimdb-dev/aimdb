@@ -30,7 +30,7 @@ type StartFnType = Box<dyn FnOnce(crate::RuntimeContext) -> BoxFuture + Send>;
 /// `Vec<BoxFuture>` is appended to the runner's accumulator.
 type SpawnFnType = Box<dyn FnOnce(&Arc<AimDb>, RecordId) -> DbResult<Vec<BoxFuture>> + Send>;
 use crate::record_id::{RecordId, RecordKey, StringKey};
-use crate::typed_api::{RecordRegistrar, RecordT};
+use crate::typed_api::RecordRegistrar;
 use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
 use crate::{DbError, DbResult};
 
@@ -520,30 +520,6 @@ impl AimDbBuilder {
         self
     }
 
-    /// Registers a self-registering record type
-    ///
-    /// The record type must implement `RecordT`.
-    ///
-    /// Uses the type name as the default key. For custom keys, use `configure()` directly.
-    pub fn register_record<T>(&mut self, cfg: &T::Config) -> &mut Self
-    where
-        T: RecordT,
-    {
-        // Default key is the full type name for backward compatibility
-        let key = StringKey::new(core::any::type_name::<T>());
-        self.configure::<T>(key, |reg| T::register(reg, cfg))
-    }
-
-    /// Registers a self-registering record type with a custom key
-    ///
-    /// The record type must implement `RecordT`.
-    pub fn register_record_with_key<T>(&mut self, key: impl RecordKey, cfg: &T::Config) -> &mut Self
-    where
-        T: RecordT,
-    {
-        self.configure::<T>(key, |reg| T::register(reg, cfg))
-    }
-
     /// Builds the database and drives every collected future to completion.
     ///
     /// Convenience wrapper for the common case: call `build()`, then immediately
@@ -621,7 +597,7 @@ impl AimDbBuilder {
             // Connector links subscribe to / produce into the record's buffer;
             // a linked record without one only surfaced at spawn time before.
             let has_links =
-                record.outbound_connector_count() > 0 || !record.inbound_connectors().is_empty();
+                !record.outbound_connectors().is_empty() || !record.inbound_connectors().is_empty();
             if has_links && !record.has_buffer() {
                 let url = record
                     .outbound_connectors()
@@ -695,7 +671,7 @@ impl AimDbBuilder {
                     buffer_type,
                     buffer_capacity,
                     tap_count: record.consumer_count(),
-                    has_outbound_link: record.outbound_connector_count() > 0,
+                    has_outbound_link: !record.outbound_connectors().is_empty(),
                 }
             })
             .collect();

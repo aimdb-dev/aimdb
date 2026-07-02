@@ -1,5 +1,6 @@
 //! AimDB handle for managing the sync API runtime thread.
 
+use crate::{SyncError, SyncResult};
 use aimdb_core::{AimDb, AimDbBuilder, DbError, DbResult};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -38,7 +39,7 @@ pub trait AimDbBuilderSyncExt {
     /// # Errors
     ///
     /// - `DbError::RuntimeError` if the database fails to build
-    /// - `DbError::AttachFailed` if the runtime thread fails to start
+    /// - `SyncError::AttachFailed` if the runtime thread fails to start
     ///
     /// # Example
     ///
@@ -59,11 +60,11 @@ pub trait AimDbBuilderSyncExt {
     /// # Ok(())
     /// # }
     /// ```
-    fn attach(self) -> DbResult<AimDbHandle>;
+    fn attach(self) -> SyncResult<AimDbHandle>;
 }
 
 impl AimDbBuilderSyncExt for AimDbBuilder {
-    fn attach(self) -> DbResult<AimDbHandle> {
+    fn attach(self) -> SyncResult<AimDbHandle> {
         AimDbHandle::new_from_builder(self)
     }
 }
@@ -80,7 +81,7 @@ pub trait AimDbSyncExt {
     ///
     /// # Errors
     ///
-    /// - `DbError::AttachFailed` if the runtime thread fails to start
+    /// - `SyncError::AttachFailed` if the runtime thread fails to start
     ///
     /// # Example
     ///
@@ -94,11 +95,11 @@ pub trait AimDbSyncExt {
     /// # Ok(())
     /// # }
     /// ```
-    fn attach(self) -> DbResult<AimDbHandle>;
+    fn attach(self) -> SyncResult<AimDbHandle>;
 }
 
 impl AimDbSyncExt for AimDb {
-    fn attach(self) -> DbResult<AimDbHandle> {
+    fn attach(self) -> SyncResult<AimDbHandle> {
         AimDbHandle::new(self)
     }
 }
@@ -139,7 +140,7 @@ struct ShutdownSignal;
 
 impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
-    pub(crate) fn new_from_builder(builder: AimDbBuilder) -> DbResult<Self> {
+    pub(crate) fn new_from_builder(builder: AimDbBuilder) -> SyncResult<Self> {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
@@ -195,21 +196,23 @@ impl AimDbHandle {
                     }
                 });
             })
-            .map_err(|e| DbError::AttachFailed {
+            .map_err(|e| SyncError::AttachFailed {
                 message: format!("Failed to spawn runtime thread: {}", e),
             })?;
 
         // Wait for runtime handle to be available
         let runtime_handle = handle_rx
             .blocking_recv()
-            .ok_or_else(|| DbError::AttachFailed {
+            .ok_or_else(|| SyncError::AttachFailed {
                 message: "Runtime thread failed to send handle".to_string(),
             })?;
 
         // Wait for database to be built
-        let db = db_rx.blocking_recv().ok_or_else(|| DbError::AttachFailed {
-            message: "Runtime thread failed to build database".to_string(),
-        })?;
+        let db = db_rx
+            .blocking_recv()
+            .ok_or_else(|| SyncError::AttachFailed {
+                message: "Runtime thread failed to build database".to_string(),
+            })?;
 
         Ok(Self {
             thread_handle: Some(thread_handle),
@@ -221,7 +224,7 @@ impl AimDbHandle {
 
     /// Create a new handle from an already-built database (legacy method).
     #[allow(dead_code)]
-    pub(crate) fn new(db: AimDb) -> DbResult<Self> {
+    pub(crate) fn new(db: AimDb) -> SyncResult<Self> {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
@@ -256,7 +259,7 @@ impl AimDbHandle {
                     // When shutdown signal is received, we exit and drop the database
                 });
             })
-            .map_err(|e| DbError::AttachFailed {
+            .map_err(|e| SyncError::AttachFailed {
                 message: format!("Failed to spawn runtime thread: {}", e),
             })?;
 
@@ -290,7 +293,7 @@ impl AimDbHandle {
     /// # Errors
     ///
     /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -305,7 +308,7 @@ impl AimDbHandle {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn producer<T>(&self, key: impl AsRef<str>) -> DbResult<crate::SyncProducer<T>>
+    pub fn producer<T>(&self, key: impl AsRef<str>) -> SyncResult<crate::SyncProducer<T>>
     where
         T: Send + 'static + Debug + Clone,
     {
@@ -325,7 +328,7 @@ impl AimDbHandle {
     /// # Errors
     ///
     /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -340,7 +343,7 @@ impl AimDbHandle {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn consumer<T>(&self, key: impl AsRef<str>) -> DbResult<crate::SyncConsumer<T>>
+    pub fn consumer<T>(&self, key: impl AsRef<str>) -> SyncResult<crate::SyncConsumer<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
@@ -364,7 +367,7 @@ impl AimDbHandle {
     /// # Errors
     ///
     /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -384,7 +387,7 @@ impl AimDbHandle {
         &self,
         key: impl AsRef<str>,
         capacity: usize,
-    ) -> DbResult<crate::SyncProducer<T>>
+    ) -> SyncResult<crate::SyncProducer<T>>
     where
         T: Send + 'static + Debug + Clone,
     {
@@ -426,7 +429,7 @@ impl AimDbHandle {
     /// # Errors
     ///
     /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `DbError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
     ///
     /// # Example
     ///
@@ -446,7 +449,7 @@ impl AimDbHandle {
         &self,
         key: impl AsRef<str>,
         capacity: usize,
-    ) -> DbResult<crate::SyncConsumer<T>>
+    ) -> SyncResult<crate::SyncConsumer<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
@@ -517,7 +520,7 @@ impl AimDbHandle {
         // Wait for subscription to complete (with timeout)
         ready_rx
             .blocking_recv()
-            .map_err(|_| DbError::AttachFailed {
+            .map_err(|_| SyncError::AttachFailed {
                 message: format!("Failed to subscribe to {}", std::any::type_name::<T>()),
             })?;
 
@@ -532,7 +535,7 @@ impl AimDbHandle {
     ///
     /// # Errors
     ///
-    /// - `DbError::DetachFailed` if shutdown fails or times out
+    /// - `SyncError::DetachFailed` if shutdown fails or times out
     ///
     /// # Example
     ///
@@ -543,7 +546,7 @@ impl AimDbHandle {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn detach(mut self) -> DbResult<()> {
+    pub fn detach(mut self) -> SyncResult<()> {
         self.detach_internal(None)
     }
 
@@ -558,7 +561,7 @@ impl AimDbHandle {
     ///
     /// # Errors
     ///
-    /// - `DbError::DetachFailed` if shutdown fails or times out
+    /// - `SyncError::DetachFailed` if shutdown fails or times out
     ///
     /// # Example
     ///
@@ -570,12 +573,12 @@ impl AimDbHandle {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn detach_timeout(mut self, timeout: Duration) -> DbResult<()> {
+    pub fn detach_timeout(mut self, timeout: Duration) -> SyncResult<()> {
         self.detach_internal(Some(timeout))
     }
 
     /// Internal detach implementation.
-    fn detach_internal(&mut self, timeout: Option<Duration>) -> DbResult<()> {
+    fn detach_internal(&mut self, timeout: Option<Duration>) -> SyncResult<()> {
         // Send shutdown signal
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             // Try to send shutdown signal (non-blocking)
@@ -598,7 +601,7 @@ impl AimDbHandle {
                             break;
                         }
                         if start.elapsed() > duration {
-                            return Err(DbError::DetachFailed {
+                            return Err(SyncError::DetachFailed {
                                 message: format!(
                                     "Runtime thread did not shut down within {:?}",
                                     duration
@@ -611,16 +614,16 @@ impl AimDbHandle {
                     // Retrieve the result
                     handle_thread
                         .join()
-                        .map_err(|_| DbError::DetachFailed {
+                        .map_err(|_| SyncError::DetachFailed {
                             message: "Failed to join helper thread".to_string(),
                         })?
-                        .map_err(|_| DbError::DetachFailed {
+                        .map_err(|_| SyncError::DetachFailed {
                             message: "Runtime thread panicked".to_string(),
                         })?;
                 }
                 None => {
                     // Join without timeout
-                    thread_handle.join().map_err(|_| DbError::DetachFailed {
+                    thread_handle.join().map_err(|_| SyncError::DetachFailed {
                         message: "Runtime thread panicked during shutdown".to_string(),
                     })?;
                 }

@@ -4,6 +4,7 @@
 
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, DbError};
 use aimdb_sync::AimDbBuilderSyncExt;
+use aimdb_sync::SyncError;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -168,7 +169,7 @@ fn test_timeout_operations() {
 
     // Test get_timeout on empty buffer (should timeout)
     let result = consumer.get_with_timeout(Duration::from_millis(100));
-    assert!(matches!(result, Err(DbError::GetTimeout)));
+    assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     // Produce a value
     let test_value = TestData {
@@ -215,7 +216,7 @@ fn test_non_blocking_operations() {
 
     // Try get on empty buffer (should fail)
     let result = consumer.try_get();
-    assert!(matches!(result, Err(DbError::GetTimeout)));
+    assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     // Try set (should succeed immediately)
     let test_value = TestData {
@@ -235,7 +236,7 @@ fn test_non_blocking_operations() {
 
     // Now try_get on empty buffer again (should fail)
     let result = consumer.try_get();
-    assert!(matches!(result, Err(DbError::GetTimeout)));
+    assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     handle.detach().expect("Failed to detach");
 }
@@ -325,12 +326,12 @@ fn test_runtime_shutdown_error() {
     };
 
     let result = producer.set(test_value);
-    assert!(matches!(result, Err(DbError::RuntimeShutdown)));
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 
     let result = consumer.get_with_timeout(Duration::from_millis(100));
     assert!(matches!(
         result,
-        Err(DbError::RuntimeShutdown) | Err(DbError::GetTimeout)
+        Err(SyncError::RuntimeShutdown) | Err(SyncError::GetTimeout)
     ));
 }
 
@@ -446,7 +447,7 @@ fn test_single_latest_semantics() {
     // Verify channel is now empty
     let result = consumer.try_get();
     assert!(
-        matches!(result, Err(DbError::GetTimeout)),
+        matches!(result, Err(SyncError::GetTimeout)),
         "Channel should be empty after get_latest()"
     );
 
@@ -478,7 +479,7 @@ fn test_get_latest_with_timeout() {
 
     // Test timeout on empty buffer
     let result = consumer.get_latest_with_timeout(Duration::from_millis(50));
-    assert!(matches!(result, Err(DbError::GetTimeout)));
+    assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     // Produce values rapidly
     for i in 1..=3 {
@@ -533,7 +534,7 @@ fn test_error_propagation() {
 
     // Verify it's the correct error type (now RecordKeyNotFound with key-based API)
     match result {
-        Err(DbError::RecordKeyNotFound { .. }) => {
+        Err(SyncError::Db(DbError::RecordKeyNotFound { .. })) => {
             // Expected error
         }
         other => panic!("Expected RecordKeyNotFound error, got: {:?}", other),
