@@ -103,7 +103,7 @@ The committed baseline lives in `data/baselines/b0_alloc_tokio.json`. When a cha
 
 `b0_alloc_embassy` mirrors this against the Embassy buffer backend and writes `data/baselines/b0_alloc_embassy.json` — also **0 allocs/msg** across all three profiles, confirming the Embassy `poll_recv` path is allocation-free on the host. The on-target B3 bench (`examples/embassy-bench-stm32h5`) re-checks the same 0-alloc claim against the real embedded allocator.
 
-> **Embassy priming.** Unlike Tokio's `broadcast`, an Embassy `SpmcRing` reader registers its embassy `Subscriber` *lazily, on first poll* — a message pushed before that first poll is missed, and the next `recv()` would block forever. The embassy benches call `profiles_embassy::prime()` on each reader before the first `push` to force registration (a no-op for Watch/Mailbox readers).
+> **Embassy eager registration (design 039 F8/F9).** An Embassy `SpmcRing` reader registers its embassy `Subscriber` eagerly, at `subscribe()` time — matching Tokio's `broadcast` — so no separate priming step is needed before the first `push`.
 
 **Noise reduction:** a `new_current_thread()` Tokio executor is used so there are no work-stealing threads and Tokio's scheduler does not allocate per-poll in the hot path.
 

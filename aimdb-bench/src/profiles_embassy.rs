@@ -1,7 +1,7 @@
 //! Embassy buffer constructors for the host-driven B0/B1/B2 suites.
 //!
 //! Reuse the same payload types and message factories as the Tokio profiles
-//! ([`crate::profiles`]) so both adapters are measured against identical
+//! ([`crate::payloads`]) so both adapters are measured against identical
 //! workloads; only the backend differs. These are [`EmbassyBuffer`]s on
 //! embassy-sync primitives, driven on the host via
 //! `futures::executor::block_on`.
@@ -21,18 +21,17 @@
 //! Lockstep push→recv keeps at most one message in flight, so `CAP=16` for
 //! Telemetry never lags.
 //!
-//! # Lazy SpmcRing subscriber
+//! # Eager SpmcRing subscriber (design 039 F8/F9)
 //!
-//! An `SpmcRing` reader registers its embassy `Subscriber` lazily, on its first
-//! poll — not at `subscribe()` time. A message published before that poll is
-//! missed and a later `recv()` blocks forever. Benches must [`prime`] each
-//! reader *before* the first `push` to force registration; priming is a no-op
-//! for Watch/Mailbox readers.
+//! An `SpmcRing` reader registers its embassy `Subscriber` **eagerly, at
+//! `subscribe()` time** — not lazily on first poll. Earlier versions of this
+//! module required benches to call a `prime()` helper on each reader before
+//! the first `push` to force registration early; that helper is gone, and no
+//! priming step is needed anymore.
 
-use aimdb_core::buffer::Reader;
 use aimdb_embassy_adapter::EmbassyBuffer;
 
-use crate::profiles::{CommandMsg, StateMsg, TelemetryMsg};
+use crate::payloads::{CommandMsg, StateMsg, TelemetryMsg};
 
 /// SpmcRing capacity for the Telemetry profile (compile-time const generic).
 pub const TELEMETRY_CAP: usize = 16;
@@ -59,18 +58,4 @@ pub fn state_buffer() -> StateBuffer {
 /// Build a Command `Mailbox` Embassy buffer.
 pub fn command_buffer() -> CommandBuffer {
     EmbassyBuffer::new_mailbox()
-}
-
-/// Force lazy subscriber registration on an Embassy reader before the first
-/// `push` (see module docs).
-///
-/// For `SpmcRing` this registers the `Subscriber` at the current queue position
-/// so it does not miss the first message; for Watch/Mailbox it is a harmless
-/// empty read. Must be called *outside* the measured window — registration may
-/// allocate.
-#[inline]
-pub fn prime<T: Clone + Send>(reader: &mut Reader<T>) {
-    // The `BufferEmpty` error is ignored: we want the side effect of creating
-    // the subscriber, not the (absent) value.
-    let _ = reader.try_recv();
 }

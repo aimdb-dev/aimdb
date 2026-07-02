@@ -1,13 +1,23 @@
 //! Allocation counting for B0 benchmarks.
 //!
 //! Wraps an inner `GlobalAlloc` with atomic counters to measure per-message
-//! allocation overhead. `#[global_allocator]` is a per-binary, link-time
-//! declaration, so `CountingAllocator` affects only the bench binaries and has
-//! zero impact on production crates. It is generic over the inner allocator so
-//! an embedded target can swap `System` for `embedded-alloc`.
+//! allocation overhead. It is generic over the inner allocator so an embedded
+//! target can swap `System` for `embedded-alloc`.
+//!
+//! `no_std`-clean (`portable_atomic` covers targets without native 64-bit
+//! atomics) so the stm32h5 B3 example can reuse it directly instead of
+//! hand-forking its own counting allocator (design 039 F12).
+//!
+//! `#[global_allocator]` is **not** declared here — it's a per-binary,
+//! link-time declaration, so each host bench binary (and the stm32h5
+//! example) declares its own `static GLOBAL: CountingAllocator<...> = ...`
+//! (design 039 F12: previously declared once in this module for `System`,
+//! which forced the stm32h5 example — which needs `embedded_alloc::LlffHeap`,
+//! not `System` — to hand-fork this whole file instead of depending on it).
+//! Nothing in the production dependency graph links `aimdb-bench` either way.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, Ordering};
+use core::alloc::{GlobalAlloc, Layout};
+use portable_atomic::{AtomicU64, Ordering};
 
 /// Total allocation call count (since last [`reset`]).
 pub static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -34,13 +44,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         unsafe { self.0.dealloc(ptr, layout) }
     }
 }
-
-/// The global allocator used by all bench binaries.
-///
-/// Applies to every bench binary that links `aimdb-bench` — not to any
-/// production crate.
-#[global_allocator]
-static GLOBAL: CountingAllocator<System> = CountingAllocator(System);
 
 /// Reset both counters to zero.
 ///

@@ -22,11 +22,11 @@
 //!   * **cycles/msg** — `DWT::cycle_count()` delta over the measured batch,
 //!   * **allocs/msg** — global-allocator call count over the measured batch.
 //!
-//! The measured window excludes a warmup phase; the one-time reader boxing and
-//! lazy `SpmcRing` subscriber registration happen during warmup. As with the
-//! host B1/B2 suites, payload construction is inside the timed loop, so the
-//! figure is the end-to-end per-message consume cost, not the buffer call in
-//! isolation.
+//! The measured window excludes a warmup phase; the one-time reader boxing
+//! happens during warmup (SpmcRing subscriber registration is eager, at
+//! `subscribe()` time — design 039 F8/F9). As with the host B1/B2 suites,
+//! payload construction is inside the timed loop, so the figure is the
+//! end-to-end per-message consume cost, not the buffer call in isolation.
 //!
 //! ## Running
 //!
@@ -42,9 +42,11 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicU32, Ordering};
 
+use aimdb_bench::alloc::CountingAllocator;
+use aimdb_bench::payloads::{
+    CommandMsg, StateMsg, TelemetryMsg, command_msg, state_msg, telemetry_msg,
+};
 use aimdb_core::buffer::{Buffer, Reader};
 use aimdb_embassy_adapter::EmbassyBuffer;
 use cortex_m::peripheral::DWT;
@@ -55,104 +57,27 @@ use {defmt_rtt as _, panic_probe as _};
 
 // ── Allocation-counting heap ─────────────────────────────────────────────────
 //
-// Wraps `embedded-alloc`'s `LlffHeap` so the B3 run can confirm 0 allocs/msg on
-// real hardware — the embedded analogue of the host `CountingAllocator<System>`
-// in `aimdb-bench` (design 038 §4 anticipated swapping `System` for an embedded
-// allocator without reworking the counter).
-
-static ALLOC_COUNT: AtomicU32 = AtomicU32::new(0);
-
-struct CountingHeap(embedded_alloc::LlffHeap);
-
-// SAFETY: every call is delegated unchanged to the inner heap; the only added
-// side effect is the relaxed atomic increment.
-unsafe impl GlobalAlloc for CountingHeap {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        unsafe { self.0.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { self.0.dealloc(ptr, layout) }
-    }
-}
+// The embedded analogue of the host `CountingAllocator<System>` in
+// `aimdb-bench` — same type, wrapping `embedded-alloc`'s `LlffHeap` instead of
+// `std::alloc::System` (design 039 F12: previously a hand-forked copy here,
+// since `alloc::CountingAllocator` used to come bundled with a crate-wide
+// `#[global_allocator]` declaration for `System` that a `no_std` binary
+// couldn't reuse; now each binary declares its own).
 
 #[global_allocator]
-static HEAP: CountingHeap = CountingHeap(embedded_alloc::LlffHeap::empty());
+static HEAP: CountingAllocator<embedded_alloc::LlffHeap> =
+    CountingAllocator(embedded_alloc::LlffHeap::empty());
 
 #[inline]
 fn reset_allocs() {
-    ALLOC_COUNT.store(0, Ordering::Relaxed);
+    aimdb_bench::alloc::reset();
 }
 
+/// Allocation count since the last [`reset_allocs`] (the shared counter also
+/// tracks bytes allocated; this report only needs the count).
 #[inline]
 fn allocs() -> u32 {
-    ALLOC_COUNT.load(Ordering::Relaxed)
-}
-
-// ── Workload payloads ────────────────────────────────────────────────────────
-//
-// Mirror `aimdb_bench::profiles` exactly so B3 cycle numbers line up with the
-// host B0/B1/B2 figures for the same payload shapes. Kept in sync by hand — the
-// host crate is `std`-only and cannot be a dependency of this `no_std` binary.
-
-// The benchmark never reads these fields — they are payload "ballast" whose
-// size/shape matches the host profiles, so the per-message `clone` cost (and
-// thus the cycle count) is comparable. Hence `dead_code` is expected.
-#[derive(Clone)]
-#[allow(dead_code)]
-struct TelemetryMsg {
-    sensor_id: u32,
-    value: f64,
-    sequence: u64,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-struct StateMsg {
-    device_id: u32,
-    temperature: f64,
-    humidity: f64,
-    pressure: f64,
-    sequence: u64,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-struct CommandMsg {
-    command_id: u32,
-    target: u32,
-    value: f64,
-    sequence: u64,
-}
-
-#[inline]
-fn telemetry_msg(i: u64) -> TelemetryMsg {
-    TelemetryMsg {
-        sensor_id: (i % 16) as u32,
-        value: i as f64 * 0.1,
-        sequence: i,
-    }
-}
-
-#[inline]
-fn state_msg(i: u64) -> StateMsg {
-    StateMsg {
-        device_id: (i % 8) as u32,
-        temperature: 20.0 + i as f64 * 0.01,
-        humidity: 50.0 + i as f64 * 0.005,
-        pressure: 1013.25 + i as f64 * 0.001,
-        sequence: i,
-    }
-}
-
-#[inline]
-fn command_msg(i: u64) -> CommandMsg {
-    CommandMsg {
-        command_id: (i % 256) as u32,
-        target: (i % 4) as u32,
-        value: i as f64,
-        sequence: i,
-    }
+    aimdb_bench::alloc::snapshot().0 as u32
 }
 
 // ── Buffer type aliases ──────────────────────────────────────────────────────
@@ -184,15 +109,27 @@ macro_rules! measure {
     }};
 }
 
+/// Reports raw allocation totals (not divided by `BATCH`) — integer division
+/// masked any regression of 1..511 allocs/window as a rounded-to-zero
+/// "0 allocs/msg" (design 039 F7). The `assert!` is the actual pass/fail
+/// gate: a regression panics the run (via the linked `panic-probe` handler)
+/// instead of silently printing a misleading zero.
 fn report(profile: &str, buffer: &str, cycles: u32, allocs: u32) {
     info!(
-        "[B3] {=str} {=str}: {=u32} cycles/msg, {=u32} allocs/msg  ({=u32} cycles total, batch={=u32})",
+        "[B3] {=str} {=str}: {=u32} cycles/msg ({=u32} allocs TOTAL in {=u32} msgs) ({=u32} cycles total, batch={=u32})",
         profile,
         buffer,
         cycles / BATCH,
-        allocs / BATCH,
+        allocs,
+        BATCH,
         cycles,
         BATCH,
+    );
+    assert!(
+        allocs == 0,
+        "allocation regression: {} allocs in {} msgs",
+        allocs,
+        BATCH
     );
 }
 
@@ -257,12 +194,11 @@ async fn main(_spawner: Spawner) {
 
     // ── Telemetry: SpmcRing / PubSubChannel ──────────────────────────────────
     //
-    // `try_recv` primes the lazily-created SpmcRing subscriber before the first
-    // push, otherwise the first message is missed and `recv` blocks forever.
+    // `subscribe()` registers the SpmcRing Subscriber eagerly (design 039
+    // F8/F9), so no priming call is needed before the first push.
     {
         let buf: TelemetryBuffer = EmbassyBuffer::new_spmc();
         let mut reader = Reader::new(Box::new(buf.subscribe()));
-        let _ = reader.try_recv();
         for i in 0..WARMUP {
             buf.push(telemetry_msg(i as u64));
             let _ = block_on(reader.recv());
@@ -275,7 +211,6 @@ async fn main(_spawner: Spawner) {
     {
         let buf: StateBuffer = EmbassyBuffer::new_watch();
         let mut reader = Reader::new(Box::new(buf.subscribe()));
-        let _ = reader.try_recv();
         for i in 0..WARMUP {
             buf.push(state_msg(i as u64));
             let _ = block_on(reader.recv());
@@ -288,7 +223,6 @@ async fn main(_spawner: Spawner) {
     {
         let buf: CommandBuffer = EmbassyBuffer::new_mailbox();
         let mut reader = Reader::new(Box::new(buf.subscribe()));
-        let _ = reader.try_recv();
         for i in 0..WARMUP {
             buf.push(command_msg(i as u64));
             let _ = block_on(reader.recv());
@@ -307,10 +241,6 @@ async fn main(_spawner: Spawner) {
         let mut r1 = Reader::new(Box::new(buf.subscribe()));
         let mut r2 = Reader::new(Box::new(buf.subscribe()));
         let mut r3 = Reader::new(Box::new(buf.subscribe()));
-        let _ = r0.try_recv();
-        let _ = r1.try_recv();
-        let _ = r2.try_recv();
-        let _ = r3.try_recv();
         for i in 0..WARMUP {
             buf.push(telemetry_msg(i as u64));
             let _ = block_on(r0.recv());
@@ -330,11 +260,18 @@ async fn main(_spawner: Spawner) {
         let cycles = DWT::cycle_count().wrapping_sub(start);
         let n_allocs = allocs();
         info!(
-            "[B3] Telemetry SpmcRing(1->4): {=u32} cycles/msg, {=u32} allocs/msg  (4 deliveries/msg, {=u32} cycles total, batch={=u32})",
+            "[B3] Telemetry SpmcRing(1->4): {=u32} cycles/msg ({=u32} allocs TOTAL in {=u32} msgs) (4 deliveries/msg, {=u32} cycles total, batch={=u32})",
             cycles / BATCH,
-            n_allocs / BATCH,
+            n_allocs,
+            BATCH,
             cycles,
             BATCH,
+        );
+        assert!(
+            n_allocs == 0,
+            "allocation regression: {} allocs in {} msgs",
+            n_allocs,
+            BATCH
         );
     }
 

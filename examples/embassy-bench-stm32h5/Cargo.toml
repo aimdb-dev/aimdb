@@ -18,6 +18,11 @@ aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
 ] }
+# Shared payload types/factories + `CountingAllocator` (design 039 F12) — the
+# `no_std` half of aimdb-bench (`payloads`/`alloc`; `--no-default-features`
+# so the `std`-only `profiles`/`reports`/tokio surface never enters this
+# `no_std` binary's dependency graph).
+aimdb-bench = { path = "../../aimdb-bench", default-features = false }
 
 # Embassy ecosystem - STM32H563ZI (same board/clock as the other H563 demos)
 embassy-stm32 = { workspace = true, features = [

@@ -15,11 +15,14 @@
 //! to `aimdb-bench/target/bench-results/b_alloc_pipeline.json` (anchored to the
 //! crate dir).
 //!
-//! **Executor dependency.** The source/tap pacing uses check-then-await (load an
-//! atomic, `.notified().await` only when there is no work). `notify_waiters()`
-//! stores no permit, so this avoids lost wakeups only because the bench runs on
-//! a **current-thread** runtime: nothing preempts between the load and the
-//! `.await`. Do not port to a multi-threaded executor without revisiting it.
+//! **Pacing (design 039 F15).** Batch start/completion use `tokio::sync::watch`
+//! (permit-carrying: `changed()`/`borrow_and_update()` cannot miss a value the
+//! way `Notify::notified()` can when `notify_waiters()` fires before the
+//! waiter starts listening — same primitive the F3 fix uses for the same
+//! reason). Per-message pacing uses `tokio::sync::Semaphore`, the standard
+//! counting-permit primitive, in place of a hand-rolled atomic token count +
+//! `Notify`. Both are lost-wakeup-free on any executor — no current-thread
+//! requirement, unlike the check-then-await pattern this replaces.
 
 use std::fmt::Debug;
 use std::sync::{
@@ -33,36 +36,44 @@ use aimdb_bench::{
         command_msg, state_msg, telemetry_msg, CommandMsg, StateMsg, TelemetryMsg, BATCH_SIZE,
         TELEMETRY_CAPACITY, WARMUP_ITERS,
     },
-    reports::AllocReport,
+    reports::{write_reports, AllocReport},
 };
 use aimdb_core::{buffer::BufferCfg, AimDb, AimDbBuilder};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{oneshot, watch, Semaphore};
+
+// One `#[global_allocator]` per bench binary (design 039 F12).
+#[global_allocator]
+static GLOBAL: aimdb_bench::alloc::CountingAllocator<std::alloc::System> =
+    aimdb_bench::alloc::CountingAllocator(std::alloc::System);
 
 struct BatchState {
-    start_epoch: AtomicU64,
-    completed_epoch: AtomicU64,
+    /// Published by `run_batch` when a new batch starts; the source task
+    /// awaits changes on its own receiver.
+    start_epoch_tx: watch::Sender<u64>,
+    /// Published by the tap when it finishes consuming a batch;
+    /// `run_batch` awaits changes on its own receiver.
+    completed_epoch_tx: watch::Sender<u64>,
     batch_size: AtomicUsize,
     target_epoch: AtomicU64,
     consumed_in_epoch: AtomicUsize,
-    start_notify: Notify,
-    pace_tokens: AtomicUsize,
-    pace_notify: Notify,
-    done_notify: Notify,
+    /// One permit per message the source is allowed to produce without
+    /// waiting for the tap to catch up — `run_batch` grants the first,
+    /// the tap grants each subsequent one after consuming a message.
+    pace: Semaphore,
 }
 
 impl BatchState {
     fn new() -> Self {
+        let (start_epoch_tx, _) = watch::channel(0u64);
+        let (completed_epoch_tx, _) = watch::channel(0u64);
         Self {
-            start_epoch: AtomicU64::new(0),
-            completed_epoch: AtomicU64::new(0),
+            start_epoch_tx,
+            completed_epoch_tx,
             batch_size: AtomicUsize::new(0),
             target_epoch: AtomicU64::new(0),
             consumed_in_epoch: AtomicUsize::new(0),
-            start_notify: Notify::new(),
-            pace_tokens: AtomicUsize::new(0),
-            pace_notify: Notify::new(),
-            done_notify: Notify::new(),
+            pace: Semaphore::new(0),
         }
     }
 }
@@ -70,29 +81,31 @@ impl BatchState {
 struct PipelineHarness {
     _db: AimDb,
     state: Arc<BatchState>,
+    completed_epoch_rx: watch::Receiver<u64>,
 }
 
 impl PipelineHarness {
-    async fn warmup(&self, batch_size: usize) {
+    async fn warmup(&mut self, batch_size: usize) {
         self.run_batch(batch_size).await;
     }
 
-    async fn measure(&self, batch_size: usize) {
+    async fn measure(&mut self, batch_size: usize) {
         self.run_batch(batch_size).await;
     }
 
-    async fn run_batch(&self, batch_size: usize) {
-        let epoch = self.state.start_epoch.load(Ordering::Acquire) + 1;
+    async fn run_batch(&mut self, batch_size: usize) {
+        let epoch = *self.state.start_epoch_tx.borrow() + 1;
         self.state.batch_size.store(batch_size, Ordering::Release);
         self.state.consumed_in_epoch.store(0, Ordering::Release);
         self.state.target_epoch.store(epoch, Ordering::Release);
-        self.state.pace_tokens.store(1, Ordering::Release);
-        self.state.start_epoch.store(epoch, Ordering::Release);
-        self.state.start_notify.notify_waiters();
-        self.state.pace_notify.notify_waiters();
+        self.state.pace.add_permits(1);
+        let _ = self.state.start_epoch_tx.send(epoch);
 
-        while self.state.completed_epoch.load(Ordering::Acquire) < epoch {
-            self.state.done_notify.notified().await;
+        while *self.completed_epoch_rx.borrow_and_update() < epoch {
+            self.completed_epoch_rx
+                .changed()
+                .await
+                .expect("pipeline tap task exited");
         }
     }
 }
@@ -107,6 +120,7 @@ where
     Make: Fn(u64) -> T + Send + Sync + Clone + 'static,
 {
     let state = Arc::new(BatchState::new());
+    let completed_epoch_rx = state.completed_epoch_tx.subscribe();
     let (tap_ready_tx, tap_ready_rx) = oneshot::channel::<()>();
 
     let adapter = Arc::new(TokioAdapter);
@@ -118,38 +132,29 @@ where
             let tap_state = Arc::clone(&state);
             let mut tap_ready_tx = Some(tap_ready_tx);
             let make_value = make_value.clone();
+            let mut start_epoch_rx = source_state.start_epoch_tx.subscribe();
 
             reg.buffer(cfg)
                 .source(move |_ctx, producer| async move {
                     let mut next_value_index = 0u64;
                     let mut seen_epoch = 0u64;
                     loop {
-                        while source_state.start_epoch.load(Ordering::Acquire) == seen_epoch {
-                            source_state.start_notify.notified().await;
+                        while *start_epoch_rx.borrow_and_update() == seen_epoch {
+                            start_epoch_rx
+                                .changed()
+                                .await
+                                .expect("pipeline harness dropped");
                         }
+                        seen_epoch = *start_epoch_rx.borrow();
 
-                        seen_epoch = source_state.start_epoch.load(Ordering::Acquire);
                         let batch_size = source_state.batch_size.load(Ordering::Acquire);
                         for _ in 0..batch_size {
-                            loop {
-                                let available = source_state.pace_tokens.load(Ordering::Acquire);
-                                if available > 0 {
-                                    if source_state
-                                        .pace_tokens
-                                        .compare_exchange(
-                                            available,
-                                            available - 1,
-                                            Ordering::AcqRel,
-                                            Ordering::Acquire,
-                                        )
-                                        .is_ok()
-                                    {
-                                        break;
-                                    }
-                                } else {
-                                    source_state.pace_notify.notified().await;
-                                }
-                            }
+                            source_state
+                                .pace
+                                .acquire()
+                                .await
+                                .expect("pace semaphore closed")
+                                .forget();
                             producer.produce(make_value(next_value_index));
                             next_value_index += 1;
                         }
@@ -169,14 +174,10 @@ where
                         let seen = tap_state.consumed_in_epoch.fetch_add(1, Ordering::AcqRel) + 1;
                         let batch_size = tap_state.batch_size.load(Ordering::Acquire);
                         if seen < batch_size {
-                            tap_state.pace_tokens.fetch_add(1, Ordering::AcqRel);
-                            tap_state.pace_notify.notify_waiters();
+                            tap_state.pace.add_permits(1);
                         }
                         if seen == batch_size {
-                            tap_state
-                                .completed_epoch
-                                .store(current_epoch, Ordering::Release);
-                            tap_state.done_notify.notify_waiters();
+                            let _ = tap_state.completed_epoch_tx.send(current_epoch);
                         }
                     }
                 })
@@ -193,7 +194,11 @@ where
         .await
         .expect("pipeline tap exited before signalling readiness");
 
-    PipelineHarness { _db: db, state }
+    PipelineHarness {
+        _db: db,
+        state,
+        completed_epoch_rx,
+    }
 }
 
 fn main() {
@@ -207,7 +212,7 @@ fn main() {
     println!();
 
     let telemetry_report = rt.block_on(async {
-        let harness = build_pipeline_harness::<TelemetryMsg, _>(
+        let mut harness = build_pipeline_harness::<TelemetryMsg, _>(
             "bench::telemetry",
             BufferCfg::SpmcRing {
                 capacity: TELEMETRY_CAPACITY,
@@ -225,7 +230,7 @@ fn main() {
     telemetry_report.print();
 
     let state_report = rt.block_on(async {
-        let harness = build_pipeline_harness::<StateMsg, _>(
+        let mut harness = build_pipeline_harness::<StateMsg, _>(
             "bench::state",
             BufferCfg::SingleLatest,
             state_msg,
@@ -241,7 +246,7 @@ fn main() {
     state_report.print();
 
     let command_report = rt.block_on(async {
-        let harness = build_pipeline_harness::<CommandMsg, _>(
+        let mut harness = build_pipeline_harness::<CommandMsg, _>(
             "bench::command",
             BufferCfg::Mailbox,
             command_msg,
@@ -256,11 +261,8 @@ fn main() {
     });
     command_report.print();
 
-    let reports = vec![telemetry_report, state_report, command_report];
-    let json = serde_json::to_string_pretty(&reports).expect("failed to serialize reports");
-    let out_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/bench-results");
-    std::fs::create_dir_all(out_dir).expect("failed to create results directory");
-    let out_path = format!("{out_dir}/b_alloc_pipeline.json");
-    std::fs::write(&out_path, &json).expect("failed to write results");
-    println!("\nResults written to {out_path}");
+    write_reports(
+        "b_alloc_pipeline",
+        &[telemetry_report, state_report, command_report],
+    );
 }

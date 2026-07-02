@@ -175,6 +175,29 @@ pub(crate) trait WriteHandle<T: Clone + Send + 'static>: Send + Sync {
 /// - `Ok(value)` - Successfully received a value
 /// - `Err(BufferLagged)` - Missed messages (SPMC ring only, can continue)
 /// - `Err(BufferClosed)` - Buffer closed (graceful shutdown)
+///
+/// # Contract (poll/try_recv interleaving and cancellation)
+///
+/// Promised as an open action item by design 037 §98 and closed out by design
+/// 039 F11; every implementation in this workspace (tokio/embassy/wasm
+/// adapters) already conforms — this section makes the contract explicit for
+/// future implementors.
+///
+/// 1. `try_recv` MAY be called between `Pending` `poll_recv` calls;
+///    implementations MUST NOT lose values or wakeups across the
+///    interleaving.
+/// 2. A value claimed internally just before caller cancellation MUST be
+///    delivered on the next `poll_recv`/`try_recv` call — this is why, e.g.,
+///    the tokio broadcast/watch readers keep a persistent `ReusableBoxFuture`
+///    across calls rather than dropping and recreating it per call (design
+///    037 §6 risk notes).
+/// 3. `poll_recv` MUST register the *latest* waker on every `Pending`
+///    return; spurious wakes are permitted (a registered waker firing with
+///    no corresponding new value is not a bug — callers must re-poll and
+///    tolerate a no-op).
+/// 4. Lag MUST surface as `Err(DbError::BufferLagged)` plus a metrics
+///    `add_dropped` call on **both** `poll_recv` and `try_recv` (design 039
+///    F10 closed the one adapter that didn't).
 pub trait BufferReader<T: Clone + Send>: Send {
     /// Poll for the next value.
     ///

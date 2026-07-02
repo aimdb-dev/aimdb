@@ -36,15 +36,37 @@ harness = false
 name = "b1_b2_embassy"
 harness = false
 
-[dependencies]
-# Core AimDB types
-aimdb-core = { path = "../aimdb-core", features = ["std"] }
+[features]
+default = ["std"]
+# Gates `profiles`/`reports`/`harness` and their criterion/serde_json/
+# std::fs/tokio surface (design 039 F12) — off only when a `no_std` consumer
+# (the stm32h5 B3 example) depends on this crate for `payloads`/`alloc` alone
+# via `default-features = false`.
+std = [
+    "dep:aimdb-tokio-adapter",
+    "dep:tokio",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:criterion",
+    "dep:futures",
+    "aimdb-core/std",
+]
 
-# Tokio runtime adapter (the primary target for B0-B2)
-aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
-    "tokio-runtime",
+[dependencies]
+# Core AimDB types — `alloc` only by default; `std` feature unions in
+# `aimdb-core/std` (design 039 F12, so this crate can build `no_std`).
+aimdb-core = { path = "../aimdb-core", default-features = false, features = [
+    "alloc",
 ] }
 
+# Tokio runtime adapter (the primary target for B0-B2) — std-only, so
+# optional/gated behind this crate's own `std` feature.
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+], optional = true }
+
+# Already no_std-compatible as declared — stays a mandatory dependency
+# (needed by `profiles_embassy`, which is not std-gated).
 aimdb-embassy-adapter = { path = "../aimdb-embassy-adapter", default-features = false, features = [
     "alloc",
     "embassy-sync",
@@ -52,22 +74,37 @@ aimdb-embassy-adapter = { path = "../aimdb-embassy-adapter", default-features = 
 ] }
 
 # Async runtime — current-thread executor is used for noise reduction in B0
-tokio = { workspace = true }
+tokio = { workspace = true, optional = true }
 
 # JSON output for baseline snapshots
-serde = { workspace = true }
-serde_json = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
-[dev-dependencies]
-# Statistical benchmarking for B1/B2
+# Statistical benchmarking for B1/B2 — `harness::bench_spsc` (design 039
+# F13) references `criterion::Criterion` in its public signature, so this
+# must be a regular (if optional/std-gated) dependency, not a dev-dependency:
+# dev-dependencies aren't visible to the library's own compilation.
 criterion = { version = "0.5", default-features = false, features = [
     "cargo_bench_support",
+], optional = true }
+
+# Host driver for the Embassy buffer futures — same reasoning as `criterion`:
+# `harness::FuturesBlockOn` needs it from library code, not just from a bench
+# binary.
+futures = { version = "0.3", optional = true }
+
+# no_std-compatible atomics for `alloc::CountingAllocator` (design 039 F12) —
+# already a transitive dependency via `aimdb-core`; added directly here so
+# `payloads`/`alloc` don't rely on that transitive edge. `fallback` +
+# `critical-section` provide the 64-bit-atomic fallback on targets without
+# native 64-bit atomics (e.g. Cortex-M4/M7 `thumbv7em`) — same combination
+# `aimdb-core` uses for its own `metrics`/`profiling` features.
+portable-atomic = { version = "1.9", default-features = false, features = [
+    "fallback",
+    "critical-section",
 ] }
 
-# Host driver for the Embassy buffer futures (matches the adapter's own host
-# tests, which also use `futures::executor::block_on`).
-futures = "0.3"
-
+[dev-dependencies]
 # `critical-section` host impl for embassy-sync's `CriticalSectionRawMutex`.
 # Linked only into the embassy bench binaries; the lib rlib does not need it.
 critical-section = { version = "1.1", features = ["std"] }

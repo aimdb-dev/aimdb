@@ -95,6 +95,37 @@ jobs:
     - name: Test embedded cross-compilation
       run: make test-embedded
 
+  # Miri: catches undefined behavior (e.g. use-after-free) in the embassy
+  # adapter's unsafe 'static lifetime extension (design 039 F1). Scoped to
+  # aimdb-embassy-adapter's host-std sync tests only — Miri is slow and can't
+  # drive the embassy-executor async tests.
+  miri:
+    name: Miri (aimdb-embassy-adapter)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Install Rust nightly with Miri
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: miri
+
+    - name: Cache dependencies
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-miri-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run Miri on aimdb-embassy-adapter
+      run: |
+        cargo +nightly miri test -p aimdb-embassy-adapter \
+          --no-default-features --features "alloc,embassy-sync,embassy-time"
+
   # Comprehensive validation using Makefile
   comprehensive-check:
     name: Comprehensive Development Check

@@ -39,6 +39,11 @@ pub enum BufferCfg {
     ///
     /// Only most recent value is kept. Consumers always get latest state.
     /// Intermediate updates are collapsed. Use when history doesn't matter.
+    ///
+    /// A reader that subscribes after a value has already been produced
+    /// observes that value once, as if it had been pushed after subscription
+    /// — a late subscriber to state wants the current state, not just future
+    /// changes (design 039 D1; unifies tokio and embassy adapter behavior).
     SingleLatest,
 
     /// Single-slot mailbox with overwrite

@@ -15,7 +15,8 @@
       "deliveries_per_msg": 1,
       "cycles_per_msg": 2013,
       "total_cycles": 1030839,
-      "allocs_per_msg": 0
+      "allocs_per_msg": 0,
+      "allocs_total": 0
     },
     {
       "profile": "State",
@@ -23,7 +24,8 @@
       "deliveries_per_msg": 1,
       "cycles_per_msg": 2009,
       "total_cycles": 1029028,
-      "allocs_per_msg": 0
+      "allocs_per_msg": 0,
+      "allocs_total": 0
     },
     {
       "profile": "Command",
@@ -31,7 +33,8 @@
       "deliveries_per_msg": 1,
       "cycles_per_msg": 1661,
       "total_cycles": 850440,
-      "allocs_per_msg": 0
+      "allocs_per_msg": 0,
+      "allocs_total": 0
     },
     {
       "profile": "Telemetry",
@@ -39,7 +42,8 @@
       "deliveries_per_msg": 4,
       "cycles_per_msg": 6239,
       "total_cycles": 3194799,
-      "allocs_per_msg": 0
+      "allocs_per_msg": 0,
+      "allocs_total": 0
     }
   ]
 }

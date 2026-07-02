@@ -43,9 +43,26 @@ pub struct TokioBuffer<T: Clone + Send + Sync + 'static> {
 pub struct MailboxState<T> {
     /// The single value slot; a new `push` overwrites any unconsumed value.
     slot: Option<T>,
-    /// Parked readers, woken on `push`. Deduplicated on registration and drained
-    /// on wake, so capacity stabilizes after warmup (mirrors the WASM adapter).
-    wakers: Vec<Waker>,
+    /// Set when the producer-side [`TokioBuffer`] is dropped (design 039 F6).
+    /// A parked reader observing `closed && slot.is_none()` resolves to
+    /// `BufferClosed` instead of hanging forever.
+    closed: bool,
+    /// Parked readers, keyed by a per-reader `waker_key` (design 039 F5) so a
+    /// dropped reader can remove exactly its own entry instead of the list
+    /// growing unboundedly across repeated subscribe→park→drop cycles.
+    wakers: Vec<(usize, Waker)>,
+    /// Always empty when not mid-`push`; `push` swaps it with `wakers` so it
+    /// can wake outside the lock (design 039 F4) without reallocating
+    /// `wakers` from scratch every call — the design doc's own alternative:
+    /// "drains into a scratch Vec kept in the state to stay zero-alloc".
+    /// Both vecs' capacities stabilize after the first few pushes and are
+    /// then just swapped back and forth, preserving W8's
+    /// zero-allocs-in-steady-state property that a plain `mem::take` would
+    /// break (a freshly-taken empty `Vec` has no capacity, so the next
+    /// reader registration would have to reallocate).
+    wake_scratch: Vec<(usize, Waker)>,
+    /// Monotonic counter handing out the next `waker_key`.
+    next_key: usize,
 }
 
 /// Internal buffer variants using Tokio primitives
@@ -84,7 +101,10 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
             BufferCfg::Mailbox => TokioBufferInner::Mailbox {
                 state: Arc::new(StdMutex::new(MailboxState {
                     slot: None,
+                    closed: false,
                     wakers: Vec::new(),
+                    wake_scratch: Vec::new(),
+                    next_key: 0,
                 })),
             },
         };
@@ -112,14 +132,35 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                 tx.send_replace(Some(value));
             }
             TokioBufferInner::Mailbox { state } => {
-                let mut guard = state.lock().unwrap();
-                guard.slot = Some(value);
+                // Swap `wakers` with the (always-empty-when-idle)
+                // `wake_scratch` and let the guard drop *before* waking
+                // (design 039 F4) — `Waker::wake()` can run arbitrary
+                // callback code (e.g. re-entrant `try_recv()` on this same
+                // buffer), which must not happen while this
+                // `std::sync::Mutex` is still held. Swapping (not
+                // `mem::take`) keeps `wakers`' allocated capacity in place
+                // for the next reader registration, and `wake_scratch`'s
+                // capacity (from the previous push) is what the wake list
+                // below reuses — steady state is zero-alloc either way, per
+                // `MailboxState::wake_scratch`'s doc.
+                let mut to_wake = {
+                    let mut guard = state.lock().unwrap();
+                    guard.slot = Some(value);
+                    let state = &mut *guard;
+                    std::mem::swap(&mut state.wakers, &mut state.wake_scratch);
+                    std::mem::take(&mut state.wake_scratch)
+                };
                 // Wake-all: spurious wakeups are benign — losers re-poll to
-                // `Pending` and re-register (design 037 §6). Drain so the list
-                // does not accumulate stale wakers.
-                for waker in guard.wakers.drain(..) {
-                    waker.wake();
+                // `Pending` and re-register (design 037 §6). `wake_by_ref`
+                // (not `wake`) so `to_wake` can be cleared and recycled
+                // below instead of being consumed here.
+                for (_, waker) in &to_wake {
+                    waker.wake_by_ref();
                 }
+                // Recycle the drained (capacity-retaining) buffer back into
+                // `wake_scratch` for the next push's swap.
+                to_wake.clear();
+                state.lock().unwrap().wake_scratch = to_wake;
             }
         }
     }
@@ -133,13 +174,25 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                 #[cfg(feature = "metrics")]
                 metrics: Arc::clone(&self.metrics),
             },
-            TokioBufferInner::Watch { tx } => TokioBufferReader::Watch {
-                recv: ReusableBoxFuture::new(watch_recv(tx.subscribe())),
-                #[cfg(feature = "metrics")]
-                metrics: Arc::clone(&self.metrics),
-            },
+            TokioBufferInner::Watch { tx } => {
+                // D1 (design 039): a fresh subscriber observes the current
+                // value once, as if it had been pushed after subscription —
+                // matches embassy's native watch::Receiver behavior.
+                // `mark_changed()` forces the first `changed()` to fire even
+                // if nothing new is pushed; `watch_recv` handles the
+                // nothing-pushed-yet case (slot still `None`) by looping
+                // instead of returning a spurious empty value.
+                let mut rx = tx.subscribe();
+                rx.mark_changed();
+                TokioBufferReader::Watch {
+                    recv: ReusableBoxFuture::new(watch_recv(rx)),
+                    #[cfg(feature = "metrics")]
+                    metrics: Arc::clone(&self.metrics),
+                }
+            }
             TokioBufferInner::Mailbox { state } => TokioBufferReader::Mailbox {
                 state: Arc::clone(state),
+                waker_key: None,
                 #[cfg(feature = "metrics")]
                 metrics: Arc::clone(&self.metrics),
             },
@@ -298,10 +351,11 @@ type BroadcastRecvOutput<T> = (
     broadcast::Receiver<T>,
 );
 
-/// Output of the watch reader's reusable future. `Ok(Option<T>)` carries the
-/// borrowed-and-cloned latest value (`None` means the channel closed).
+/// Output of the watch reader's reusable future. `watch_recv` loops internally
+/// past an empty (`None`) slot (design 039 D1/F3), so `Ok` here always carries
+/// a real value — no `Option` wrapping needed.
 type WatchRecvOutput<T> = (
-    Result<Option<T>, watch::error::RecvError>,
+    Result<T, watch::error::RecvError>,
     watch::Receiver<Option<T>>,
 );
 
@@ -315,14 +369,62 @@ async fn broadcast_recv<T: Clone>(mut rx: broadcast::Receiver<T>) -> BroadcastRe
     (res, rx)
 }
 
-/// Await the next watch change, returning the receiver for reuse. Mirrors the
-/// pre-W8 `changed().await` + `borrow().clone()` sequence.
+/// Await the next watch change, returning the receiver for reuse.
+///
+/// Uses `borrow_and_update()` (not a bare `borrow()`) so the receiver's "seen"
+/// marker advances atomically with the read — a `changed()` that resolves
+/// followed by a separate `borrow()` leaves a window where a concurrent `push`
+/// can land between the two calls, so the borrow observes a *newer* value than
+/// the one that woke `changed()` without clearing its change marker, causing
+/// the next `changed()` to fire again for a value already delivered (design
+/// 039 F3).
+///
+/// Loops past an `Ok(())` with an empty (`None`) slot: `subscribe()` calls
+/// `mark_changed()` on freshly-subscribed receivers so a late subscriber
+/// observes the current value once (design 039 D1); if nothing has been
+/// pushed yet, that manufactured "changed" event has no value to deliver, and
+/// looping (not erroring) is what makes `poll_recv` correctly resolve to
+/// `Pending`/`BufferEmpty` rather than the spurious `BufferClosed` `map_watch`
+/// would otherwise report for `Ok(None)`.
 async fn watch_recv<T: Clone>(mut rx: watch::Receiver<Option<T>>) -> WatchRecvOutput<T> {
-    let res = match rx.changed().await {
-        Ok(()) => Ok(rx.borrow().clone()),
-        Err(e) => Err(e),
-    };
-    (res, rx)
+    loop {
+        match rx.changed().await {
+            Ok(()) => {
+                // Bind to an owned value first — the `Ref` guard
+                // `borrow_and_update()` returns must drop before `rx` can be
+                // moved out in the `return` below.
+                let value = rx.borrow_and_update().clone();
+                if let Some(v) = value {
+                    return (Ok(v), rx);
+                }
+                // Fake-changed with nothing pushed yet — keep waiting.
+            }
+            Err(e) => return (Err(e), rx),
+        }
+    }
+}
+
+/// Poll a reusable round-trip future, re-arming it with the returned
+/// receiver *before* handing back the result — the shared shape behind
+/// `poll_recv`/`try_recv`'s Broadcast and Watch arms (design 039 F14). The
+/// re-arm-before-return invariant (losing it drops the receiver and stalls
+/// the reader forever) now lives in exactly one place instead of being
+/// guarded by convention at 4 call sites.
+fn poll_rearm<O, R, F>(
+    recv: &mut ReusableBoxFuture<'static, (O, R)>,
+    cx: &mut Context<'_>,
+    make: fn(R) -> F,
+) -> Poll<O>
+where
+    F: std::future::Future<Output = (O, R)> + Send + 'static,
+{
+    match recv.poll(cx) {
+        Poll::Ready((result, rx)) => {
+            recv.set(make(rx));
+            Poll::Ready(result)
+        }
+        Poll::Pending => Poll::Pending,
+    }
 }
 
 /// Tokio-based buffer reader
@@ -339,6 +441,10 @@ pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
     },
     Mailbox {
         state: Arc<StdMutex<MailboxState<T>>>,
+        /// This reader's key into `MailboxState::wakers`, once it has
+        /// registered one (design 039 F5). `None` until the first `Pending`
+        /// `poll_recv`; used by `Drop` to remove exactly this reader's entry.
+        waker_key: Option<usize>,
         #[cfg(feature = "metrics")]
         metrics: Arc<BufferCounters>,
     },
@@ -373,16 +479,16 @@ impl<T: Clone + Send + Sync + 'static> TokioBufferReader<T> {
 
     /// Map a watch `changed()` result into the AimDB error space.
     fn map_watch(
-        result: Result<Option<T>, watch::error::RecvError>,
+        result: Result<T, watch::error::RecvError>,
         #[cfg(feature = "metrics")] metrics: &BufferCounters,
     ) -> Result<T, DbError> {
         match result {
-            Ok(Some(v)) => {
+            Ok(v) => {
                 #[cfg(feature = "metrics")]
                 metrics.increment_consumed();
                 Ok(v)
             }
-            Ok(None) | Err(_) => Err(DbError::BufferClosed {
+            Err(_) => Err(DbError::BufferClosed {
                 buffer_name: "watch".to_string(),
             }),
         }
@@ -396,37 +502,29 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                 recv,
                 #[cfg(feature = "metrics")]
                 metrics,
-            } => match recv.poll(cx) {
-                Poll::Ready((result, rx)) => {
-                    // Re-arm the reusable future with the returned receiver
-                    // before handing back the value (no allocation — same future
-                    // type reuses the box).
-                    recv.set(broadcast_recv(rx));
-                    Poll::Ready(Self::map_broadcast(
-                        result,
-                        #[cfg(feature = "metrics")]
-                        metrics,
-                    ))
-                }
+            } => match poll_rearm(recv, cx, broadcast_recv) {
+                Poll::Ready(result) => Poll::Ready(Self::map_broadcast(
+                    result,
+                    #[cfg(feature = "metrics")]
+                    metrics,
+                )),
                 Poll::Pending => Poll::Pending,
             },
             TokioBufferReader::Watch {
                 recv,
                 #[cfg(feature = "metrics")]
                 metrics,
-            } => match recv.poll(cx) {
-                Poll::Ready((result, rx)) => {
-                    recv.set(watch_recv(rx));
-                    Poll::Ready(Self::map_watch(
-                        result,
-                        #[cfg(feature = "metrics")]
-                        metrics,
-                    ))
-                }
+            } => match poll_rearm(recv, cx, watch_recv) {
+                Poll::Ready(result) => Poll::Ready(Self::map_watch(
+                    result,
+                    #[cfg(feature = "metrics")]
+                    metrics,
+                )),
                 Poll::Pending => Poll::Pending,
             },
             TokioBufferReader::Mailbox {
                 state,
+                waker_key,
                 #[cfg(feature = "metrics")]
                 metrics,
             } => {
@@ -435,11 +533,36 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                     #[cfg(feature = "metrics")]
                     metrics.increment_consumed();
                     Poll::Ready(Ok(value))
+                } else if guard.closed {
+                    // Producer-side buffer dropped while this reader was
+                    // parked (design 039 F6) — resolve instead of hanging.
+                    Poll::Ready(Err(DbError::BufferClosed {
+                        buffer_name: "mailbox".to_string(),
+                    }))
                 } else {
-                    // Register the waker (dedup so repeated polls without a push
-                    // don't grow the list — mirrors the WASM adapter).
-                    if !guard.wakers.iter().any(|w| w.will_wake(cx.waker())) {
-                        guard.wakers.push(cx.waker().clone());
+                    // Keyed upsert (design 039 F5): replace this reader's own
+                    // entry in place if it already registered one, instead of
+                    // a `will_wake` scan over every parked reader's waker.
+                    //
+                    // `push` drains *every* entry out of `wakers` on every
+                    // call (`mem::take`, design 039 F4), which invalidates
+                    // every outstanding key — including this reader's, if it
+                    // was woken by that push and is back here Pending again
+                    // with a now-stale `waker_key`. Falling through to
+                    // register fresh (instead of silently doing nothing when
+                    // the key lookup misses) is what makes this self-healing:
+                    // without it, a reader can return `Pending` with no
+                    // waker actually registered anywhere, and hang forever.
+                    let existing =
+                        waker_key.and_then(|key| guard.wakers.iter().position(|(k, _)| *k == key));
+                    match existing {
+                        Some(idx) => guard.wakers[idx].1 = cx.waker().clone(),
+                        None => {
+                            let key = guard.next_key;
+                            guard.next_key += 1;
+                            guard.wakers.push((key, cx.waker().clone()));
+                            *waker_key = Some(key);
+                        }
                     }
                     Poll::Pending
                 }
@@ -460,15 +583,12 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
             } => {
                 let waker = Waker::noop();
                 let mut cx = Context::from_waker(waker);
-                match recv.poll(&mut cx) {
-                    Poll::Ready((result, rx)) => {
-                        recv.set(broadcast_recv(rx));
-                        Self::map_broadcast(
-                            result,
-                            #[cfg(feature = "metrics")]
-                            metrics,
-                        )
-                    }
+                match poll_rearm(recv, &mut cx, broadcast_recv) {
+                    Poll::Ready(result) => Self::map_broadcast(
+                        result,
+                        #[cfg(feature = "metrics")]
+                        metrics,
+                    ),
                     Poll::Pending => Err(DbError::BufferEmpty),
                 }
             }
@@ -479,15 +599,12 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
             } => {
                 let waker = Waker::noop();
                 let mut cx = Context::from_waker(waker);
-                match recv.poll(&mut cx) {
-                    Poll::Ready((result, rx)) => {
-                        recv.set(watch_recv(rx));
-                        Self::map_watch(
-                            result,
-                            #[cfg(feature = "metrics")]
-                            metrics,
-                        )
-                    }
+                match poll_rearm(recv, &mut cx, watch_recv) {
+                    Poll::Ready(result) => Self::map_watch(
+                        result,
+                        #[cfg(feature = "metrics")]
+                        metrics,
+                    ),
                     Poll::Pending => Err(DbError::BufferEmpty),
                 }
             }
@@ -495,6 +612,7 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                 state,
                 #[cfg(feature = "metrics")]
                 metrics,
+                ..
             } => {
                 let mut guard = state.lock().unwrap();
                 match guard.slot.take() {
@@ -503,8 +621,55 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                         metrics.increment_consumed();
                         Ok(val)
                     }
+                    // Matches how Broadcast/Watch already surface closure on
+                    // both APIs (design 039 F6).
+                    None if guard.closed => Err(DbError::BufferClosed {
+                        buffer_name: "mailbox".to_string(),
+                    }),
                     None => Err(DbError::BufferEmpty),
                 }
+            }
+        }
+    }
+}
+
+/// Removes this reader's own waker entry from `MailboxState` on drop (design
+/// 039 F5) — without this, repeated subscribe→park→drop cycles would grow
+/// `MailboxState::wakers` unboundedly, since nothing else ever prunes a
+/// parked-but-abandoned reader's entry. Broadcast/Watch need no action: their
+/// `ReusableBoxFuture` (and the receiver it owns) cleans up on its own drop.
+impl<T: Clone + Send + Sync + 'static> Drop for TokioBufferReader<T> {
+    fn drop(&mut self) {
+        if let TokioBufferReader::Mailbox {
+            state,
+            waker_key: Some(key),
+            ..
+        } = self
+        {
+            state.lock().unwrap().wakers.retain(|(k, _)| k != key);
+        }
+    }
+}
+
+/// Signals Mailbox closure to any parked readers when the producer-side
+/// buffer is dropped (design 039 F6) — without this, a reader parked in
+/// `poll_recv` (registered a waker, returned `Pending`) would hang forever,
+/// since nothing would ever wake it again. Broadcast/Watch need no explicit
+/// `Drop`: dropping the last `Sender` already signals closure through tokio's
+/// own `Closed` error path (see `map_broadcast`/`map_watch`).
+impl<T: Clone + Send + Sync + 'static> Drop for TokioBuffer<T> {
+    fn drop(&mut self) {
+        if let TokioBufferInner::Mailbox { state } = &*self.inner {
+            // Same drain-then-wake-outside-the-lock discipline as `push`
+            // (design 039 F4) — do not call `Waker::wake()` while holding
+            // this `std::sync::Mutex`.
+            let to_wake = {
+                let mut guard = state.lock().unwrap();
+                guard.closed = true;
+                std::mem::take(&mut guard.wakers)
+            };
+            for (_, waker) in to_wake {
+                waker.wake();
             }
         }
     }
@@ -1064,6 +1229,70 @@ mod tests {
         assert_eq!(reader.try_recv().unwrap(), 4);
     }
 
+    // ── F3 / D1 regression tests (design 039) ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_watch_try_recv_no_duplicate() {
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = rdr(&buffer);
+
+        buffer.push(1);
+        assert_eq!(reader.try_recv().unwrap(), 1);
+        // A second try_recv with no intervening push must not redeliver the
+        // same value — `borrow_and_update()` (not a bare `borrow()`) is what
+        // guarantees this.
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+    }
+
+    #[tokio::test]
+    async fn test_watch_fresh_subscriber_sees_current_value() {
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        // Push happens *before* subscribe.
+        buffer.push(42);
+        let mut reader = rdr(&buffer);
+
+        // D1: a fresh subscriber observes the current value once, without
+        // requiring a second push.
+        assert_eq!(reader.try_recv().unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_watch_fresh_subscriber_no_push_yet_does_not_error() {
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = rdr(&buffer);
+
+        // `subscribe()` calls `mark_changed()` unconditionally (D1), but with
+        // nothing pushed yet that must resolve to "no value", not the
+        // spurious `BufferClosed` an unhandled `Ok(None)` would produce.
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+
+        buffer.push(7);
+        assert_eq!(reader.try_recv().unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn test_watch_fresh_subscriber_no_push_yet_poll_recv_pending() {
+        use tokio::time::{timeout, Duration};
+
+        let cfg = BufferCfg::SingleLatest;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = rdr(&buffer);
+
+        // `recv().await` (poll_recv under the hood) must stay Pending, not
+        // resolve to `Err(BufferClosed)`, for a fresh subscriber with nothing
+        // pushed yet.
+        assert!(timeout(Duration::from_millis(20), reader.recv())
+            .await
+            .is_err());
+
+        buffer.push(3);
+        assert_eq!(reader.recv().await.unwrap(), 3);
+    }
+
     #[tokio::test]
     async fn test_try_recv_mailbox_empty() {
         let cfg = BufferCfg::Mailbox;
@@ -1089,6 +1318,139 @@ mod tests {
 
         // Slot is now empty
         assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
+    }
+
+    // ── F4/F5/F6 regression tests (design 039) ──────────────────────────────
+    // These reach into `TokioBufferReader::Mailbox`'s private fields directly
+    // — allowed since `tests` is a descendant of the `buffer` module that
+    // defines them.
+
+    #[test]
+    fn test_mailbox_push_does_not_wake_under_lock() {
+        use std::task::Wake;
+
+        struct ReentrantWaker {
+            state: Arc<StdMutex<MailboxState<i32>>>,
+        }
+        impl Wake for ReentrantWaker {
+            fn wake(self: Arc<Self>) {
+                // If `push` still held the Mailbox lock while calling this,
+                // `try_lock()` would fail (design 039 F4).
+                assert!(
+                    self.state.try_lock().is_ok(),
+                    "push must not hold the Mailbox lock while waking parked readers"
+                );
+            }
+        }
+
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = buffer.subscribe();
+
+        let state = match &reader {
+            TokioBufferReader::Mailbox { state, .. } => Arc::clone(state),
+            _ => unreachable!(),
+        };
+        let waker = std::task::Waker::from(Arc::new(ReentrantWaker { state }));
+        let mut cx = Context::from_waker(&waker);
+
+        // Register the waker via a Pending poll.
+        assert!(reader.poll_recv(&mut cx).is_pending());
+
+        // Push wakes the parked reader; the assertion inside `wake()` fails
+        // the test if the lock was still held.
+        buffer.push(1);
+    }
+
+    #[test]
+    fn test_mailbox_waker_pruned_on_reader_drop() {
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+
+        // Grab a handle to the shared state via one throwaway subscribe (not
+        // polled, so it never registers a waker itself).
+        let throwaway = buffer.subscribe();
+        let state = match &throwaway {
+            TokioBufferReader::Mailbox { state, .. } => Arc::clone(state),
+            _ => unreachable!(),
+        };
+        drop(throwaway);
+
+        let waker = Waker::noop();
+        for _ in 0..1000 {
+            let mut reader = buffer.subscribe();
+            let mut cx = Context::from_waker(waker);
+            assert!(reader.poll_recv(&mut cx).is_pending());
+            drop(reader);
+        }
+
+        assert_eq!(
+            state.lock().unwrap().wakers.len(),
+            0,
+            "dropped readers must prune their own waker entry, not leak it"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_drop_buffer_wakes_parked_reader_closed() {
+        use tokio::time::{sleep, Duration};
+
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = rdr(&buffer);
+
+        let handle = tokio::spawn(async move { reader.recv().await });
+
+        // Give the spawned task a chance to park in poll_recv.
+        sleep(Duration::from_millis(10)).await;
+
+        drop(buffer);
+
+        let result = handle.await.unwrap();
+        assert!(
+            matches!(result, Err(DbError::BufferClosed { .. })),
+            "parked reader must resolve to BufferClosed when the producer drops, not hang"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_repeated_recv_cycles_does_not_hang() {
+        use tokio::time::{timeout, Duration};
+
+        // Regression for a bug introduced by the F5 keyed-waker rewrite
+        // itself: `push` drains *every* entry out of `wakers` on every call
+        // (F4's `mem::take`), which invalidates every outstanding key —
+        // including the reader that push is about to wake. If that reader's
+        // very next `poll_recv` goes `Pending` again before another push,
+        // its stale `waker_key` no longer matches anything in `wakers`, and
+        // a naive keyed upsert would silently fail to re-register — the
+        // reader returns `Pending` with no waker anywhere, and the next
+        // `push` has nothing to wake. One push/recv cycle (as in the other
+        // Mailbox tests) can't see this; it needs a persistent reader
+        // parking and being woken repeatedly, mirroring a real consumer
+        // loop (e.g. `AimDbRunner`'s `.tap()` pump).
+        let cfg = BufferCfg::Mailbox;
+        let buffer = TokioBuffer::<i32>::new(&cfg);
+        let mut reader = rdr(&buffer);
+
+        let handle = tokio::spawn(async move {
+            for i in 0..50 {
+                let v = reader.recv().await.unwrap();
+                assert_eq!(v, i);
+            }
+        });
+
+        for i in 0..50 {
+            // Yield so the reader task actually parks (Pending) before each
+            // push, exercising the re-registration path every cycle.
+            tokio::task::yield_now().await;
+            buffer.push(i);
+        }
+
+        timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("reader hung — stale waker_key after push drained wakers")
+            .unwrap();
     }
 
     // ========================================================================

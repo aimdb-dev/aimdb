@@ -59,3 +59,22 @@ impl AllocReport {
         );
     }
 }
+
+/// Serialize `reports` as pretty JSON and write to
+/// `aimdb-bench/target/bench-results/<name>.json` (anchored to the crate
+/// dir regardless of the caller's working directory) — collapses the
+/// `to_string_pretty` + `create_dir_all` + `write` tail that used to be
+/// hand-rolled at the end of every B0 bench binary (design 039 F13).
+///
+/// # Panics
+/// Panics if serialization or the filesystem write fails — a bench binary
+/// with unwritable results is a setup bug worth failing loudly on, not
+/// silently continuing past.
+pub fn write_reports(name: &str, reports: &[AllocReport]) {
+    let json = serde_json::to_string_pretty(reports).expect("failed to serialize reports");
+    let out_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/bench-results");
+    std::fs::create_dir_all(out_dir).expect("failed to create results directory");
+    let out_path = format!("{out_dir}/{name}.json");
+    std::fs::write(&out_path, &json).expect("failed to write results");
+    println!("\nResults written to {out_path}");
+}

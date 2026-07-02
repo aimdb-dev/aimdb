@@ -10,15 +10,16 @@
 //! - **B2 throughput** — messages/second from that same timing via
 //!   `Throughput::Elements(1)` (the `thrpt` column).
 //!
-//! Covers SPSC (1 producer, 1 consumer) for all three profiles plus a 1→4
-//! telemetry fan-out. These are host wall-clock numbers for trend tracking and
-//! Tokio-vs-Embassy comparison; on-target cycle counts are covered by the B3
-//! STM32H5 bench (`examples/embassy-bench-stm32h5`).
+//! Covers SPSC (1 producer, 1 consumer) for all three profiles, via
+//! [`aimdb_bench::harness::bench_spsc`], plus a 1→4 telemetry fan-out. These
+//! are host wall-clock numbers for trend tracking and Tokio-vs-Embassy
+//! comparison; on-target cycle counts are covered by the B3 STM32H5 bench
+//! (`examples/embassy-bench-stm32h5`).
 //!
-//! **Fan-out safety (SpmcRing / PubSubChannel):** all readers are **primed**
-//! before any push so each holds its read position from the start (the embassy
-//! `Subscriber` is otherwise created lazily on first poll and would miss earlier
-//! messages); `SUBS = 4` on
+//! **Fan-out safety (SpmcRing / PubSubChannel):** each reader's embassy
+//! `Subscriber` is registered eagerly at `subscribe()` time (design 039
+//! F8/F9), so every reader holds its read position from the start with no
+//! separate priming step; `SUBS = 4` on
 //! [`TelemetryBuffer`](aimdb_bench::profiles_embassy::TelemetryBuffer) provides
 //! the four subscriber slots, and strict lockstep keeps the fixed `CAP` from
 //! lagging.
@@ -35,76 +36,79 @@
 
 aimdb_embassy_adapter::host_test_stubs!();
 
+use aimdb_bench::harness::{bench_spsc, FuturesBlockOn};
 use aimdb_bench::profiles::{command_msg, state_msg, telemetry_msg, WARMUP_ITERS};
-use aimdb_bench::profiles_embassy::{command_buffer, prime, state_buffer, telemetry_buffer};
+use aimdb_bench::profiles_embassy::{command_buffer, state_buffer, telemetry_buffer};
 use aimdb_core::buffer::{Buffer, Reader};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use futures::executor::block_on;
 
-// ── Telemetry SPSC ────────────────────────────────────────────────────────────
+const GROUP: &str = "B1-B2-Embassy";
 
 fn bench_b1_b2_telemetry_spsc(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B1-B2-Embassy");
-    group.throughput(Throughput::Elements(1));
+    bench_spsc(
+        c,
+        GROUP,
+        "telemetry_spsc",
+        telemetry_buffer,
+        telemetry_msg,
+        &FuturesBlockOn,
+    );
+}
 
-    group.bench_function("telemetry_spsc", |b| {
-        b.iter_custom(|iters| {
-            block_on(async {
-                let buf = telemetry_buffer();
-                let mut reader = Reader::new(Box::new(buf.subscribe()));
-                prime(&mut reader);
+fn bench_b1_b2_state_spsc(c: &mut Criterion) {
+    bench_spsc(
+        c,
+        GROUP,
+        "state_spsc",
+        state_buffer,
+        state_msg,
+        &FuturesBlockOn,
+    );
+}
 
-                // Warmup — not timed.
-                for i in 0..WARMUP_ITERS {
-                    buf.push(telemetry_msg(i as u64));
-                    let _ = reader.recv().await;
-                }
-
-                let start = std::time::Instant::now();
-                for i in 0..iters {
-                    buf.push(telemetry_msg((WARMUP_ITERS as u64) + i));
-                    let _ = reader.recv().await;
-                }
-                start.elapsed()
-            })
-        });
-    });
-
-    group.finish();
+fn bench_b1_b2_command_mailbox(c: &mut Criterion) {
+    bench_spsc(
+        c,
+        GROUP,
+        "command_mailbox",
+        command_buffer,
+        command_msg,
+        &FuturesBlockOn,
+    );
 }
 
 // ── Telemetry 1→4 fan-out ────────────────────────────────────────────────────
 //
-// Each iteration: 1 push + recv on all 4 readers (see module fan-out rules).
+// Each iteration: 1 push + recv on all 4 readers. Structurally different from
+// the SPSC shape above (4 readers, not 1), so it stays bespoke rather than
+// forced into `bench_spsc`.
 
 fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B1-B2-Embassy");
+    let buf = telemetry_buffer();
+    let mut r0 = Reader::new(Box::new(buf.subscribe()));
+    let mut r1 = Reader::new(Box::new(buf.subscribe()));
+    let mut r2 = Reader::new(Box::new(buf.subscribe()));
+    let mut r3 = Reader::new(Box::new(buf.subscribe()));
+
+    // Warmup once, before any Criterion sample (design 039 F13).
+    block_on(async {
+        for i in 0..WARMUP_ITERS {
+            buf.push(telemetry_msg(i as u64));
+            let _ = r0.recv().await;
+            let _ = r1.recv().await;
+            let _ = r2.recv().await;
+            let _ = r3.recv().await;
+        }
+    });
+
+    let mut group = c.benchmark_group(GROUP);
     // Each iteration produces 1 message observed by 4 consumers.
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("telemetry_fanout_1x4", |b| {
         b.iter_custom(|iters| {
             block_on(async {
-                let buf = telemetry_buffer();
-                let mut r0 = Reader::new(Box::new(buf.subscribe()));
-                let mut r1 = Reader::new(Box::new(buf.subscribe()));
-                let mut r2 = Reader::new(Box::new(buf.subscribe()));
-                let mut r3 = Reader::new(Box::new(buf.subscribe()));
-                // Prime all four BEFORE the first push (registers 4 subscribers).
-                prime(&mut r0);
-                prime(&mut r1);
-                prime(&mut r2);
-                prime(&mut r3);
-
-                // Warmup — not timed.
-                for i in 0..WARMUP_ITERS {
-                    buf.push(telemetry_msg(i as u64));
-                    let _ = r0.recv().await;
-                    let _ = r1.recv().await;
-                    let _ = r2.recv().await;
-                    let _ = r3.recv().await;
-                }
-
                 let start = std::time::Instant::now();
                 for i in 0..iters {
                     buf.push(telemetry_msg((WARMUP_ITERS as u64) + i));
@@ -112,70 +116,6 @@ fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
                     let _ = r1.recv().await;
                     let _ = r2.recv().await;
                     let _ = r3.recv().await;
-                }
-                start.elapsed()
-            })
-        });
-    });
-
-    group.finish();
-}
-
-// ── State SPSC ────────────────────────────────────────────────────────────────
-
-fn bench_b1_b2_state_spsc(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B1-B2-Embassy");
-    group.throughput(Throughput::Elements(1));
-
-    group.bench_function("state_spsc", |b| {
-        b.iter_custom(|iters| {
-            block_on(async {
-                let buf = state_buffer();
-                let mut reader = Reader::new(Box::new(buf.subscribe()));
-                prime(&mut reader);
-
-                // Warmup — not timed.
-                for i in 0..WARMUP_ITERS {
-                    buf.push(state_msg(i as u64));
-                    let _ = reader.recv().await;
-                }
-
-                let start = std::time::Instant::now();
-                for i in 0..iters {
-                    buf.push(state_msg((WARMUP_ITERS as u64) + i));
-                    let _ = reader.recv().await;
-                }
-                start.elapsed()
-            })
-        });
-    });
-
-    group.finish();
-}
-
-// ── Command / Mailbox SPSC ────────────────────────────────────────────────────
-
-fn bench_b1_b2_command_mailbox(c: &mut Criterion) {
-    let mut group = c.benchmark_group("B1-B2-Embassy");
-    group.throughput(Throughput::Elements(1));
-
-    group.bench_function("command_mailbox", |b| {
-        b.iter_custom(|iters| {
-            block_on(async {
-                let buf = command_buffer();
-                let mut reader = Reader::new(Box::new(buf.subscribe()));
-                prime(&mut reader);
-
-                // Warmup — not timed.
-                for i in 0..WARMUP_ITERS {
-                    buf.push(command_msg(i as u64));
-                    let _ = reader.recv().await;
-                }
-
-                let start = std::time::Instant::now();
-                for i in 0..iters {
-                    buf.push(command_msg((WARMUP_ITERS as u64) + i));
-                    let _ = reader.recv().await;
                 }
                 start.elapsed()
             })

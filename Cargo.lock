@@ -35,6 +35,7 @@ dependencies = [
  "defmt 1.0.1",
  "embassy-time-driver",
  "futures",
+ "portable-atomic",
  "serde",
  "serde_json",
  "tokio",
@@ -1124,6 +1125,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 name = "embassy-bench-stm32h5"
 version = "0.1.0"
 dependencies = [
+ "aimdb-bench",
  "aimdb-core",
  "aimdb-embassy-adapter",
  "cortex-m",
