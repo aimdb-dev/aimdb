@@ -274,7 +274,7 @@ async fn test_topic_provider_with_connector_registration() {
             )
             .link_to("mqtt://sensors/temp/default") // Fallback topic
             .with_topic_provider(SensorIdTopicProvider) // Dynamic routing!
-            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -332,7 +332,7 @@ async fn test_mixed_static_and_dynamic_topics() {
                 },
             )
             .link_to("mqtt://sensors/temp/static-topic")
-            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -346,7 +346,7 @@ async fn test_mixed_static_and_dynamic_topics() {
             )
             .link_to("mqtt://sensors/temp/fallback")
             .with_topic_provider(SensorIdTopicProvider)
-            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 

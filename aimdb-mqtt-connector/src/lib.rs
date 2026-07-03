@@ -38,14 +38,14 @@
 //!        .link_to("mqtt://sensors/temperature")
 //!        .with_qos(1)
 //!        .with_retain(false)
-//!        .with_serializer_raw(|t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
+//!        .with_serializer(|_ctx, t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
 //!        .finish();
 //! });
 //!
 //! // Inbound: subscribe from MQTT
 //! builder.configure::<TempCommand>("command.temp", |reg| {
 //!     reg.link_from("mqtt://commands/temperature")
-//!        .with_deserializer_raw(|data| match data.try_into() {
+//!        .with_deserializer(|_ctx, data| match data.try_into() {
 //!            Ok(bytes) => Ok(TempCommand { target: f32::from_be_bytes(bytes) }),
 //!            Err(_) => Err("bad frame".to_string()),
 //!        })
@@ -78,11 +78,11 @@
 //!            .source(sensor_producer)
 //!            // Outbound: Publish to MQTT
 //!            .link_to("mqtt://sensors/data")
-//!            .with_serializer_raw(|data| postcard::to_vec(data).map_err(|_| /* ... */))
+//!            .with_serializer(|_ctx, data| postcard::to_vec(data).map_err(|_| /* ... */))
 //!            .finish()
 //!            // Inbound: Subscribe from MQTT
 //!            .link_from("mqtt://commands/sensor")
-//!            .with_deserializer_raw(|data| SensorCommand::from_bytes(data))
+//!            .with_deserializer(|_ctx, data| SensorCommand::from_bytes(data))
 //!            .finish();
 //!     })
 //!     .build().await?;

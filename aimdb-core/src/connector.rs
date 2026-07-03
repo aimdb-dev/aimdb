@@ -20,7 +20,7 @@
 //! builder.configure::<WeatherAlert>("weather.alert", |reg| {
 //!     // .buffer(BufferCfg::SingleLatest) — via your runtime adapter's ext trait
 //!     reg.link_to("mqtt://alerts/weather")
-//!         .with_serializer_raw(|alert: &WeatherAlert| Ok(vec![alert.level]))
+//!         .with_serializer(|_ctx, alert: &WeatherAlert| Ok(vec![alert.level]))
 //!         .finish();
 //! });
 //! # }

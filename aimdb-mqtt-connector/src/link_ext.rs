@@ -15,7 +15,7 @@
 //! reg.link_to("mqtt://sensors/temp")
 //!     .with_qos(1)
 //!     .with_retain(true)
-//!     .with_serializer_raw(|t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
+//!     .with_serializer(|_ctx, t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
 //!     .finish();
 //! # }
 //! ```

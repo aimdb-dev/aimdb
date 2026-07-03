@@ -154,7 +154,7 @@ async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
             .with_remote_access()
             .link_to("ws://_") // overridden per-value by the topic provider
             .with_topic_provider(InjectTopic)
-            .with_serializer_raw(|m: &Inject| {
+            .with_serializer(|_ctx, m: &Inject| {
                 Ok(serde_json::to_vec(&m.payload).expect("serialize payload"))
             })
             .finish();
@@ -338,7 +338,7 @@ async fn server_query_and_list_topics() {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://temp")
-            .with_serializer_raw(|t: &Temp| Ok(serde_json::to_vec(t).unwrap()))
+            .with_serializer(|_ctx, t: &Temp| Ok(serde_json::to_vec(t).unwrap()))
             .finish();
     });
     let (_db, runner) = sb.build().await.expect("build db");

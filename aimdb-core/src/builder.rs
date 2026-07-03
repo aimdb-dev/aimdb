@@ -378,7 +378,7 @@ impl AimDbBuilder {
     /// let mut b = AimDbBuilder::new().runtime(rt)
     ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"));
     /// b.configure::<Temperature>("commands.temp", |r| {
-    ///     r.link_from("mqtt://commands/temp").with_deserializer_raw(parse).finish();
+    ///     r.link_from("mqtt://commands/temp").with_deserializer(parse).finish();
     /// });
     /// b.build().await?;
     ///

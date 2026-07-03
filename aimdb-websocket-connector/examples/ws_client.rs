@@ -46,7 +46,7 @@ async fn main() {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws-client://counter")
-            .with_deserializer_raw(|d: &[u8]| {
+            .with_deserializer(|_ctx, d: &[u8]| {
                 serde_json::from_slice::<Counter>(d).map_err(|e| e.to_string())
             })
             .finish();
@@ -57,7 +57,7 @@ async fn main() {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws-client://echo")
-            .with_serializer_raw(|e: &Echo| Ok(serde_json::to_vec(e).unwrap()))
+            .with_serializer(|_ctx, e: &Echo| Ok(serde_json::to_vec(e).unwrap()))
             .finish();
     });
 

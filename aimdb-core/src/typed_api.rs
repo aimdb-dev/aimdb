@@ -51,7 +51,7 @@
 //!        .source(temperature_producer)
 //!        .tap(temperature_monitor)
 //!        .link_to("mqtt://sensors/temp")
-//!        .with_serializer_raw(|t| serde_json::to_vec(t))
+//!        .with_serializer(|_ctx, t| serde_json::to_vec(t))
 //!        .finish();
 //! });
 //! ```
@@ -367,10 +367,6 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
 // RecordRegistrar - Fluent registration API
 // ============================================================================
 
-/// Type alias for typed serializer callbacks
-type TypedSerializerFn<T> =
-    Arc<dyn Fn(&T) -> Result<Vec<u8>, crate::connector::SerializeError> + Send + Sync + 'static>;
-
 /// Type alias for typed context-aware serializer callbacks
 ///
 /// Stays typed until `finish()` fuses it with the consumer — no per-message
@@ -595,7 +591,6 @@ where
             registrar: self,
             url: url.to_string(),
             config: Vec::new(),
-            serializer: None,
             context_serializer: None,
             topic_provider: None,
         }
@@ -609,7 +604,6 @@ where
             registrar: self,
             url: url.to_string(),
             config: Vec::new(),
-            deserializer: None,
             context_deserializer: None,
             topic_resolver: None,
         }
@@ -628,7 +622,6 @@ pub struct OutboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + C
     registrar: &'r mut RecordRegistrar<'a, T>,
     url: String,
     config: Vec<(String, String)>,
-    serializer: Option<TypedSerializerFn<T>>,
     context_serializer: Option<TypedContextSerializerFn<T>>,
     topic_provider: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
 }
@@ -643,25 +636,12 @@ where
         self
     }
 
-    /// Sets a raw serialization callback (value only, no context)
-    ///
-    /// Prefer `.with_serializer(|ctx, value| ...)` for access to
-    /// `RuntimeContext` (timestamps, logging). Use this raw variant
-    /// only when context is unnecessary.
-    pub fn with_serializer_raw<F>(mut self, f: F) -> Self
-    where
-        F: Fn(&T) -> Result<Vec<u8>, crate::connector::SerializeError> + Send + Sync + 'static,
-    {
-        self.serializer = Some(Arc::new(f));
-        self.context_serializer = None; // mutually exclusive
-        self
-    }
-
-    /// Sets a context-aware serialization callback
+    /// Sets the serialization callback
     ///
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
     /// platform-independent timestamps and logging, plus the typed value being
-    /// serialized.
+    /// serialized. Ignore the context parameter (`|_ctx, value| …`) when it is
+    /// not needed.
     pub fn with_serializer<F>(mut self, f: F) -> Self
     where
         F: Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
@@ -670,7 +650,6 @@ where
             + 'static,
     {
         self.context_serializer = Some(Arc::new(f));
-        self.serializer = None; // mutually exclusive
         self
     }
 
@@ -736,21 +715,16 @@ where
         let url_string = url.to_string();
         let scheme = url.scheme().to_string();
 
-        // Unify the serializer variants (mutually exclusive) into one typed
-        // closure — the raw/context split collapses into what it captures
-        // (only the context variant pays the per-message ctx clone). Stays
+        // Adapt the stored serializer to the fused calling convention. Stays
         // typed: fused with the consumer below, no `Box<dyn Any>` per message
         // (design 036 W1).
-        let serialize: FusedSerializeFn<T> = if let Some(ctx_ser) = self.context_serializer {
-            Arc::new(move |ctx: &crate::RuntimeContext, value: &T| ctx_ser(ctx.clone(), value))
-        } else if let Some(raw_ser) = self.serializer {
-            Arc::new(move |_ctx: &crate::RuntimeContext, value: &T| raw_ser(value))
+        let serialize: FusedSerializeFn<T> = if let Some(ser) = self.context_serializer {
+            Arc::new(move |ctx: &crate::RuntimeContext, value: &T| ser(ctx.clone(), value))
         } else {
             self.registrar.rec.push_config_error(ConfigError::new(
                 record_key,
                 Some(self.url),
-                "Outbound connector requires a serializer. \
-                 Call .with_serializer() or .with_serializer_raw()",
+                "Outbound connector requires a serializer. Call .with_serializer()",
             ));
             return self.registrar;
         };
@@ -844,9 +818,6 @@ where
 // InboundConnectorBuilder - Fluent inbound connector configuration
 // ============================================================================
 
-/// Type alias for typed deserializer callbacks
-type TypedDeserializerFn<T> = Arc<dyn Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static>;
-
 /// Type alias for typed context-aware deserializer callbacks
 ///
 /// Stays typed until `finish()` fuses it with the producer — no per-message
@@ -862,7 +833,6 @@ pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Cl
     registrar: &'r mut RecordRegistrar<'a, T>,
     url: String,
     config: Vec<(String, String)>,
-    deserializer: Option<TypedDeserializerFn<T>>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
@@ -877,31 +847,17 @@ where
         self
     }
 
-    /// Sets a raw deserialization callback (bytes only, no context)
-    ///
-    /// Prefer `.with_deserializer(|ctx, data| ...)` for access to
-    /// `RuntimeContext` (timestamps, logging). Use this raw variant
-    /// only when context is unnecessary.
-    pub fn with_deserializer_raw<F>(mut self, f: F) -> Self
-    where
-        F: Fn(&[u8]) -> Result<T, String> + Send + Sync + 'static,
-    {
-        self.deserializer = Some(Arc::new(f));
-        self.context_deserializer = None; // mutually exclusive
-        self
-    }
-
-    /// Sets a context-aware deserialization callback
+    /// Sets the deserialization callback
     ///
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
     /// platform-independent timestamps and logging, plus the raw bytes from
-    /// the external system.
+    /// the external system. Ignore the context parameter (`|_ctx, data| …`)
+    /// when it is not needed.
     pub fn with_deserializer<F>(mut self, f: F) -> Self
     where
         F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
     {
         self.context_deserializer = Some(Arc::new(f));
-        self.deserializer = None; // mutually exclusive
         self
     }
 
@@ -972,27 +928,21 @@ where
         // Mutual exclusion with local producers (.source()/.transform()) is
         // validated once, in build(), where the record key is known.
 
-        // Unify the deserializer variants (mutually exclusive) into one typed
-        // closure — the raw/context split collapses into what it captures
-        // (only the context variant pays the per-message ctx clone). Stays
+        // Adapt the stored deserializer to the fused calling convention. Stays
         // typed: fused with the producer below, no `Box<dyn Any>` per message
         // (design 036 W1).
         type UnifiedDeserializeFn<T> =
             Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync>;
-        let deserialize: UnifiedDeserializeFn<T> =
-            if let Some(ctx_deser) = self.context_deserializer {
-                Arc::new(move |ctx, bytes| ctx_deser(ctx.clone(), bytes))
-            } else if let Some(raw_deser) = self.deserializer {
-                Arc::new(move |_ctx, bytes| raw_deser(bytes))
-            } else {
-                self.registrar.rec.push_config_error(ConfigError::new(
-                    record_key,
-                    Some(self.url),
-                    "Inbound connector requires a deserializer. \
-                     Call .with_deserializer() or .with_deserializer_raw()",
-                ));
-                return self.registrar;
-            };
+        let deserialize: UnifiedDeserializeFn<T> = if let Some(deser) = self.context_deserializer {
+            Arc::new(move |ctx, bytes| deser(ctx.clone(), bytes))
+        } else {
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Inbound connector requires a deserializer. Call .with_deserializer()",
+            ));
+            return self.registrar;
+        };
 
         // Validation: Connector builder must be registered
         let has_connector = self
@@ -1168,7 +1118,7 @@ mod tests {
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
         reg.link_from("mqtt://broker/topic")
-            .with_deserializer_raw(|bytes: &[u8]| {
+            .with_deserializer(|_ctx, bytes: &[u8]| {
                 Ok(TestRecord {
                     value: bytes.len() as i32,
                 })
@@ -1232,7 +1182,7 @@ mod tests {
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
 
         reg.link_to("mqtt://broker/topic")
-            .with_serializer_raw(|record: &TestRecord| Ok(record.value.to_le_bytes().to_vec()))
+            .with_serializer(|_ctx, record: &TestRecord| Ok(record.value.to_le_bytes().to_vec()))
             .finish();
 
         assert_eq!(rec.outbound_connectors().len(), 1);
@@ -1280,7 +1230,7 @@ mod tests {
 
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
         reg.link_to("mqtt://broker/topic")
-            .with_serializer_raw(|r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
+            .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
             .finish();
 
         assert!(rec.outbound_connectors().is_empty());
@@ -1327,7 +1277,7 @@ mod tests {
 
         let mut reg = make_registrar(&mut rec, &builders, &extensions);
         reg.link_from("mqtt://broker/topic")
-            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
 
         assert!(rec.has_producer());
@@ -1372,16 +1322,16 @@ mod tests {
 
         // Chained via finish() → &mut RecordRegistrar …
         reg.link_from("mqtt://broker/topic-a")
-            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish()
             .link_from("mqtt://broker/topic-b")
-            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
 
         // … and as separate statements: each call takes a fresh borrow, so
         // the registrar is reusable after a chain ends (issue #130).
         reg.link_from("mqtt://broker/topic-c")
-            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+            .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
         reg.with_name("third-link");
 
@@ -1483,7 +1433,7 @@ mod tests {
 
         builder.configure::<TestRecord>("rec.x", |reg| {
             reg.link_from("mqtt://broker/x")
-                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+                .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
                 .finish();
             // Buffer configured AFTER the link — order-independent.
             reg.buffer_raw(Box::new(MockBuffer));
@@ -1502,7 +1452,7 @@ mod tests {
 
         builder.configure::<TestRecord>("rec.x", |reg| {
             reg.link_from("mqtt://broker/x")
-                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
+                .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
                 .finish();
         });
 
@@ -1561,7 +1511,7 @@ mod tests {
                 count: buf_count,
             }));
             reg.link_from("mqtt://cmd/in")
-                .with_deserializer_raw(|bytes: &[u8]| {
+                .with_deserializer(|_ctx, bytes: &[u8]| {
                     if bytes.is_empty() {
                         return Err("empty payload".to_string());
                     }
@@ -1606,7 +1556,7 @@ mod tests {
                 count: buf_count,
             }));
             reg.link_from("mqtt://cmd/in")
-                .with_deserializer_raw(|_bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
                 .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
                     Ok(TestRecord { value: 99 })
                 })
@@ -1639,7 +1589,7 @@ mod tests {
                 .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
                     Ok(TestRecord { value: 0 })
                 })
-                .with_deserializer_raw(|_bytes: &[u8]| Ok(TestRecord { value: 7 }))
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 7 }))
                 .finish();
         });
         let (db, _runner) = builder.build().await.expect("build must succeed");
@@ -1818,7 +1768,7 @@ mod tests {
             // enum is gone; mutual exclusion is behavior now).
             reg.link_to("mqtt://tele/out")
                 .with_topic_provider(FixedTopic)
-                .with_serializer_raw(|_r: &TestRecord| Ok(vec![0]))
+                .with_serializer(|_ctx, _r: &TestRecord| Ok(vec![0]))
                 .with_serializer(|_ctx: crate::RuntimeContext, r: &TestRecord| {
                     Ok(r.value.to_le_bytes().to_vec())
                 })

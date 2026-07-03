@@ -896,7 +896,7 @@ fn emit_connector_chain(
                     chain = quote! {
                         #chain
                             .link_from(#addr_var)
-                            .with_deserializer_raw(#value_type::from_bytes)
+                            .with_deserializer(|_ctx, bytes| #value_type::from_bytes(bytes))
                             .finish()
                     };
                 }
@@ -904,7 +904,7 @@ fn emit_connector_chain(
                     chain = quote! {
                         #chain
                             .link_to(#addr_var)
-                            .with_serializer_raw(|v: &#value_type| {
+                            .with_serializer(|_ctx, v: &#value_type| {
                                 v.to_bytes()
                                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
                             })
@@ -1513,7 +1513,7 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
     let outbound_chain = if has_outbound {
         quote! {
             .link_to(addr)
-            .with_serializer_raw(|v: &#value_type| {
+            .with_serializer(|_ctx, v: &#value_type| {
                 v.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
             })
@@ -1988,8 +1988,8 @@ url = "mqtt://ota/cmd/{variant}"
             "Missing link_from call:\n{out}"
         );
         assert!(
-            out.contains("with_deserializer_raw(OtaCommandValue::from_bytes)"),
-            "Missing with_deserializer_raw call:\n{out}"
+            out.contains("with_deserializer(") && out.contains("OtaCommandValue::from_bytes"),
+            "Missing with_deserializer call:\n{out}"
         );
     }
 
@@ -2181,8 +2181,9 @@ url = "sensors/{variant}/observation"
     fn configure_schema_with_real_deserializer() {
         let out = extended_generated();
         assert!(
-            out.contains("with_deserializer_raw(WeatherObservationValue::from_bytes)"),
-            "Missing with_deserializer_raw for inbound connector:\n{out}"
+            out.contains("with_deserializer(")
+                && out.contains("WeatherObservationValue::from_bytes"),
+            "Missing with_deserializer for inbound connector:\n{out}"
         );
     }
 
