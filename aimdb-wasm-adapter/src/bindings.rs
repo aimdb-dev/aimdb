@@ -544,7 +544,7 @@ where
     let val: T = serde_wasm_bindgen::from_value(value)
         .map_err(|e| JsError::new(&format!("Contract violation: {e}")))?;
 
-    // Single write path via Producer<T> (design 031).
+    // Single write path via Producer<T>.
     db.producer::<T>(key)
         .map_err(|e| JsError::new(&format!("{e:?}")))?
         .produce(val);

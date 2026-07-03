@@ -7,7 +7,7 @@
 //! executor, no hardware. `poll_recv` drives those methods with no per-message
 //! future box, so the expected result is **0 allocs/msg**, same as the Tokio
 //! suite; the one-time `Box::new(reader)` and (eager, at `subscribe()` —
-//! design 039 F9) subscriber registration happen during setup/warmup, before
+//! eager subscriber registration) happen during setup/warmup, before
 //! the counters are reset.
 //!
 //! **Measurement model** (identical to `b0_alloc_tokio`, via
@@ -32,7 +32,7 @@ use aimdb_bench::{
 };
 use futures::executor::block_on;
 
-// One `#[global_allocator]` per bench binary (design 039 F12).
+// One `#[global_allocator]` per bench binary.
 #[global_allocator]
 static GLOBAL: aimdb_bench::alloc::CountingAllocator<std::alloc::System> =
     aimdb_bench::alloc::CountingAllocator(std::alloc::System);

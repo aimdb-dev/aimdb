@@ -139,7 +139,7 @@ impl KnxConnectorBuilder {
     /// # Arguments
     /// * `gateway_url` - KNX gateway URL (e.g., "knx://192.168.1.19:3671")
     /// * `stack` - The device's network stack (the runtime travels as
-    ///   `Arc<dyn RuntimeOps>` since issue #131 and cannot surface it)
+    ///   `Arc<dyn RuntimeOps>` and cannot surface it)
     pub fn new(gateway_url: &str, stack: &'static Stack<'static>) -> Self {
         Self {
             gateway_url: heapless::String::try_from(gateway_url)

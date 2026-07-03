@@ -1,7 +1,6 @@
 //! Multi-Instance Record Tests
 //!
-//! Tests for Issue #60: RecordId + RecordKey architecture
-//! Validates the ability to have multiple records of the same Rust type
+//! Validates the RecordId + RecordKey architecture: the ability to have multiple records of the same Rust type
 //! with different keys.
 
 use aimdb_core::buffer::BufferCfg;
@@ -78,8 +77,7 @@ async fn test_producer() {
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
 
-    // Get key-bound producers. Post-M14 these resolve the typed record up front
-    // (Producer<T> no longer carries `R` and no longer exposes `.key()`).
+    // Key-bound producers resolve the typed record up front.
     let producer_a = db.producer::<Temperature>("sensor.a").unwrap();
     let producer_b = db.producer::<Temperature>("sensor.b").unwrap();
 
@@ -106,8 +104,7 @@ async fn test_consumer() {
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
 
-    // Get key-bound consumers. Post-M14 these resolve the typed record up front
-    // (Consumer<T> no longer carries `R` and no longer exposes `.key()`).
+    // Key-bound consumers resolve the typed record up front.
     let consumer_north = db.consumer::<Temperature>("zone.north").unwrap();
     let consumer_south = db.consumer::<Temperature>("zone.south").unwrap();
 
@@ -198,7 +195,7 @@ async fn test_type_mismatch_error() {
 }
 
 /// Test: Re-registering a key with a different type is collected by
-/// configure() and reported from build() (issue #133 — builder methods never
+/// configure() and reported from build() (builder methods never
 /// panic on user mistakes).
 #[tokio::test]
 async fn test_duplicate_key_error() {
@@ -226,7 +223,7 @@ async fn test_duplicate_key_error() {
 
 /// Test: conflicting writers (.source() + .transform()) on one record are
 /// validated once, in build(), and reported with the record key attached
-/// (design 038 §3.6 — the setters only catch same-stage duplicates).
+/// (the setters only catch same-stage duplicates).
 #[tokio::test]
 async fn test_conflicting_writers_reported_from_build() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());

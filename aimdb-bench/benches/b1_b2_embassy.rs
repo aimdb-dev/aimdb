@@ -17,8 +17,8 @@
 //! (`examples/embassy-bench-stm32h5`).
 //!
 //! **Fan-out safety (SpmcRing / PubSubChannel):** each reader's embassy
-//! `Subscriber` is registered eagerly at `subscribe()` time (design 039
-//! F8/F9), so every reader holds its read position from the start with no
+//! `Subscriber` is registered eagerly at `subscribe()` time, so every
+//! reader holds its read position from the start with no
 //! separate priming step; `SUBS = 4` on
 //! [`TelemetryBuffer`](aimdb_bench::profiles_embassy::TelemetryBuffer) provides
 //! the four subscriber slots, and strict lockstep keeps the fixed `CAP` from
@@ -91,7 +91,7 @@ fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
     let mut r2 = Reader::new(Box::new(buf.subscribe()));
     let mut r3 = Reader::new(Box::new(buf.subscribe()));
 
-    // Warmup once, before any Criterion sample (design 039 F13).
+    // Warmup once, before any Criterion sample.
     block_on(async {
         for i in 0..WARMUP_ITERS {
             buf.push(telemetry_msg(i as u64));

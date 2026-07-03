@@ -2,7 +2,7 @@
 #![no_main]
 
 //! B3 — On-target cycle & allocation profiling of the AimDB Embassy buffer
-//! consume path (design 038 §B3 / §Phase 4).
+//! consume path.
 //!
 //! This is the part of the Embassy benchmark suite that **cannot run on a
 //! host**: it reads the Cortex-M **DWT cycle counter** (`CYCCNT`) to measure the
@@ -10,7 +10,7 @@
 //! buffer profile on an STM32H563ZI (Cortex-M33 @ 250 MHz). The host
 //! `aimdb-bench` suite covers B0 (allocations), B1 (wall-clock latency) and B2
 //! (throughput) for the same Embassy buffer backend; this binary adds the
-//! cycle-accurate B3 numbers and re-validates the W8 zero-allocation claim
+//! cycle-accurate B3 numbers and re-validates the zero-allocation claim
 //! against the real embedded allocator (`embedded-alloc`), wrapped here in a
 //! counting allocator.
 //!
@@ -24,7 +24,7 @@
 //!
 //! The measured window excludes a warmup phase; the one-time reader boxing
 //! happens during warmup (SpmcRing subscriber registration is eager, at
-//! `subscribe()` time — design 039 F8/F9). As with the host B1/B2 suites,
+//! `subscribe()` time). As with the host B1/B2 suites,
 //! payload construction is inside the timed loop, so the figure is the
 //! end-to-end per-message consume cost, not the buffer call in isolation.
 //!
@@ -37,7 +37,7 @@
 //!
 //! Results stream over RTT (SWD) as defmt logs. `--release` is strongly
 //! recommended; debug vs release cycle counts differ by an order of magnitude
-//! (design 038 §15.8), so always record the build profile with a baseline.
+//!, so always record the build profile with a baseline.
 
 extern crate alloc;
 
@@ -59,7 +59,7 @@ use {defmt_rtt as _, panic_probe as _};
 //
 // The embedded analogue of the host `CountingAllocator<System>` in
 // `aimdb-bench` — same type, wrapping `embedded-alloc`'s `LlffHeap` instead of
-// `std::alloc::System` (design 039 F12: previously a hand-forked copy here,
+// `std::alloc::System` (previously a hand-forked copy here,
 // since `alloc::CountingAllocator` used to come bundled with a crate-wide
 // `#[global_allocator]` declaration for `System` that a `no_std` binary
 // couldn't reuse; now each binary declares its own).
@@ -111,7 +111,7 @@ macro_rules! measure {
 
 /// Reports raw allocation totals (not divided by `BATCH`) — integer division
 /// masked any regression of 1..511 allocs/window as a rounded-to-zero
-/// "0 allocs/msg" (design 039 F7). The `assert!` is the actual pass/fail
+/// "0 allocs/msg". The `assert!` is the actual pass/fail
 /// gate: a regression panics the run (via the linked `panic-probe` handler)
 /// instead of silently printing a misleading zero.
 fn report(profile: &str, buffer: &str, cycles: u32, allocs: u32) {
@@ -194,8 +194,8 @@ async fn main(_spawner: Spawner) {
 
     // ── Telemetry: SpmcRing / PubSubChannel ──────────────────────────────────
     //
-    // `subscribe()` registers the SpmcRing Subscriber eagerly (design 039
-    // F8/F9), so no priming call is needed before the first push.
+    // `subscribe()` registers the SpmcRing Subscriber eagerly, so no
+    // priming call is needed before the first push.
     {
         let buf: TelemetryBuffer = EmbassyBuffer::new_spmc();
         let mut reader = Reader::new(Box::new(buf.subscribe()));

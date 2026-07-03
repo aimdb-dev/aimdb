@@ -37,8 +37,8 @@ pub mod send_wrapper;
 #[cfg(all(not(feature = "std"), feature = "connectors"))]
 pub mod connectors;
 
-/// Link stubs for **host** test binaries that touch the Embassy adapter
-/// (035 §2.4): a no-op `#[defmt::global_logger]` + `#[defmt::panic_handler]`
+/// Link stubs for **host** test binaries that touch the Embassy adapter:
+/// a no-op `#[defmt::global_logger]` + `#[defmt::panic_handler]`
 /// and a pinned-at-0 embassy-time driver.
 ///
 /// Coercing `EmbassyAdapter` to `Arc<dyn RuntimeOps>` instantiates a vtable
@@ -164,7 +164,7 @@ pub async fn yield_now() {
 /// Buffer-construction extension for [`aimdb_core::RecordRegistrar`].
 ///
 /// Buffer construction is the one genuinely adapter-specific registration
-/// step left after issue #131 — `source()` / `tap()` / `transform()` are
+/// step that is genuinely adapter-specific — `source()` / `tap()` / `transform()` are
 /// inherent methods on the registrar. This trait adds `.buffer(cfg)` backed
 /// by [`EmbassyBuffer`] with conservative default const generics
 /// (`CAP=16`, `SUBS=4`, `PUBS=4`, `WATCH_N=1`); use

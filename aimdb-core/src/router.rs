@@ -74,7 +74,7 @@ impl Router {
     /// Route a message to the appropriate record(s)
     ///
     /// Synchronous: the ingest callback deserializes and produces in place
-    /// (`Producer::produce` is sync and infallible, design 029) — nothing on
+    /// (`Producer::produce` is sync and infallible) — nothing on
     /// this path awaits.
     ///
     /// # Arguments

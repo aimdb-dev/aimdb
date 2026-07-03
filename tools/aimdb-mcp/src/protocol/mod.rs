@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0 and MCP protocol types
 //!
-//! Manual implementation (no external JSON-RPC crate) as per design doc.
+//! Manual implementation (no external JSON-RPC crate).
 
 pub mod jsonrpc;
 pub mod mcp;

@@ -43,7 +43,7 @@ pub enum BufferCfg {
     /// A reader that subscribes after a value has already been produced
     /// observes that value once, as if it had been pushed after subscription
     /// — a late subscriber to state wants the current state, not just future
-    /// changes (design 039 D1; unifies tokio and embassy adapter behavior).
+    /// changes (identical on the tokio and embassy adapters).
     SingleLatest,
 
     /// Single-slot mailbox with overwrite

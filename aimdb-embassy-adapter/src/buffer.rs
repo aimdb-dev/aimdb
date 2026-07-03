@@ -79,7 +79,7 @@ use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 /// use aimdb_core::buffer::Reader;
 /// let buffer: MyBuffer = MyBuffer::new_spmc();
 /// // `subscribe()` yields the concrete reader; wrap it in the ergonomic,
-/// // allocation-free `Reader<T>` handle for `recv().await` (design 037 / W8).
+/// // allocation-free `Reader<T>` handle for `recv().await`.
 /// let mut reader = Reader::new(Box::new(buffer.subscribe()));
 /// buffer.push(42);
 /// let value = reader.recv().await.unwrap();
@@ -216,7 +216,7 @@ impl<
     }
 
     /// The embassy subscriber/receiver is created **eagerly, here**, matching
-    /// the Tokio adapter (design 039 F8/F9). Previously this was lazy (deferred
+    /// the Tokio adapter. Previously this was lazy (deferred
     /// to the first poll), which left a subscribe→first-poll window where a
     /// message produced before that first poll was silently missed for
     /// `SpmcRing` (no replay semantics — a subscriber only sees messages sent
@@ -281,7 +281,8 @@ impl<
             // removing it (the slot is drained once a consumer receives).
             // Mirrors the Tokio Mailbox arm.
             EmbassyBufferInner::Mailbox(channel) => channel.try_peek().ok(),
-            // PubSub has no canonical latest — see design 031 §SPMC Ring.
+            // PubSub has no canonical latest: readers consume a stream,
+            // there is no single "current value" slot to peek.
             EmbassyBufferInner::SpmcRing(_) => None,
         }
     }
@@ -343,21 +344,21 @@ impl<
 }
 
 // ============================================================================
-// Poll plumbing (design 037 / W8)
+// Poll plumbing
 // ============================================================================
 //
 // `poll_recv` drives embassy-sync's *public* poll methods directly —
 // `Subscriber::poll_next_message`, `Receiver::poll_changed`, and
 // `Channel::poll_receive` — so there is zero allocation per message and no
 // per-message future box. The reader stores the subscriber/receiver, created
-// eagerly at `subscribe()` time (design 039 F8/F9); `try_recv` uses the
+// eagerly at `subscribe()` time; `try_recv` uses the
 // matching `try_*` methods. No `unsafe` beyond the pre-existing `'static`
 // borrow extension in the `make_*` helpers (the `Arc` keeps the primitive
 // alive).
 
 /// Buffer-name strings used both in [`make_spmc_sub`]'s/[`make_watch_rx`]'s
-/// own error and in `poll_recv`/`try_recv`'s reconstructed one (design 039
-/// F8/F9) — kept as constants so the two can't drift apart.
+/// own error and in `poll_recv`/`try_recv`'s reconstructed one — kept as
+/// constants so the two can't drift apart.
 const SPMC_BUFFER_NAME: &str = "embassy spmc ring";
 const WATCH_BUFFER_NAME: &str = "embassy watch";
 
@@ -421,7 +422,7 @@ fn make_watch_rx<T: Clone + Send + 'static, const WATCH_N: usize>(
 }
 
 /// Reader for Embassy buffers — one variant per buffer kind, each holding
-/// only the state it needs (design 039 F8/F9; mirrors `TokioBufferReader`'s
+/// only the state it needs (mirrors `TokioBufferReader`'s
 /// existing enum shape on the tokio adapter).
 ///
 /// The persistent Subscriber/Receiver is registered **eagerly, at
@@ -568,7 +569,7 @@ impl<
                         buffer_name: String::from(SPMC_BUFFER_NAME),
                     });
                 };
-                // Lag-honest (design 039 F10): `try_next_message` (not the
+                // Lag-honest: `try_next_message` (not the
                 // `_pure` variant) surfaces `WaitResult::Lagged` instead of
                 // silently discarding it, mirroring `poll_recv` above.
                 match sub.try_next_message() {
@@ -671,7 +672,7 @@ mod tests {
     }
 
     // ========================================================================
-    // F1 regression: reader field drop order (design 039)
+    // Regression: reader field drop order
     //
     // `spmc_subscriber`/`watch_receiver` hold `&'static` refs pointer-extended
     // into `buffer: Arc<..>` (see make_spmc_sub / make_watch_rx SAFETY
@@ -696,7 +697,7 @@ mod tests {
         ] {
             // Buffer dropped first, reader (holding the last Arc) dropped
             // after forcing lazy state creation — the order that was UAF
-            // before the F1 field reorder.
+            // before the field reorder.
             let buffer = make();
             let mut reader = buffer.subscribe();
             drop(buffer);
@@ -714,7 +715,7 @@ mod tests {
     }
 
     // ========================================================================
-    // F8/F9/F10 regression tests (design 039) — eager subscribe-time
+    // Regression tests — eager subscribe-time
     // registration, slot exhaustion surfaced on first use, lag-honest
     // try_recv. Synchronous (try_recv only), no embassy executor needed.
     // ========================================================================
@@ -731,9 +732,9 @@ mod tests {
         Buffer::push(&buffer, 2);
 
         // A registered before the first push, so it sees both messages — the
-        // subscribe→first-poll loss window (F9) is gone. B only sees the
+        // subscribe→first-poll loss window is gone. B only sees the
         // message pushed after it subscribed (no replay — standard SPMC
-        // cursor semantics, distinct from Watch's D1 behavior).
+        // cursor semantics, distinct from Watch's fresh-subscriber replay).
         assert_eq!(reader_a.try_recv().unwrap(), 1);
         assert_eq!(reader_a.try_recv().unwrap(), 2);
         assert_eq!(reader_b.try_recv().unwrap(), 2);
@@ -772,7 +773,7 @@ mod tests {
         }
 
         // Lag must surface as `BufferLagged`, not be silently dropped
-        // (design 039 F10 — `try_next_message`, not `_pure`).
+        // (`try_next_message`, not `_pure`).
         let first = reader.try_recv();
         assert!(
             matches!(first, Err(DbError::BufferLagged { .. })),
@@ -794,7 +795,7 @@ mod tests {
     }
 
     // ========================================================================
-    // peek() Tests — non-destructive buffer-native reads (design 031)
+    // peek() Tests — non-destructive buffer-native reads
     //
     // push()/peek() are synchronous and lock a CriticalSectionRawMutex; the
     // `critical-section` std impl in dev-dependencies provides the host-side
@@ -856,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_peek_spmc_ring_returns_none() {
-        // PubSub has no canonical latest — see design 031 §SPMC Ring.
+        // PubSub has no canonical latest (see peek() above).
         let buffer: PeekBuffer = PeekBuffer::new_spmc();
         assert_eq!(DynBuffer::peek(&buffer), None);
         DynBuffer::push(&buffer, 1);

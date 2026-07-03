@@ -87,7 +87,7 @@ use crate::AimDb;
 /// Pre-binds the record's buffer, latest-snapshot slot, and metadata tracker
 /// (via an internal `Arc<dyn WriteHandle<T>>`), so `produce()` is a single
 /// virtual call rather than a `HashMap` lookup + downcast on each invocation
-/// (design 029).
+///.
 ///
 /// # Benefits
 ///
@@ -254,7 +254,7 @@ where
     /// Subscribe to updates for this record type.
     ///
     /// Returns a [`Reader<T>`](crate::buffer::Reader) that yields values as they
-    /// are produced. Its `recv().await` is allocation-free (design 037 / W8).
+    /// are produced. Its `recv().await` is allocation-free.
     /// Infallible — the buffer is pre-resolved at `Consumer` construction.
     pub fn subscribe(&self) -> crate::buffer::Reader<T> {
         let reader = self.buffer.subscribe_boxed();
@@ -284,7 +284,7 @@ impl<T> Clone for Consumer<T> {
 }
 
 // ============================================================================
-// Fused outbound source (design 036 W1)
+// Fused outbound source
 // ============================================================================
 
 /// Type alias for the unified typed serializer captured by [`FusedSource`]
@@ -300,7 +300,7 @@ type FusedSerializeFn<T> = Arc<
 /// The [`SerializedSource`](crate::connector::SerializedSource) built by
 /// `OutboundConnectorBuilder::finish()` — holds the typed consumer,
 /// serializer, and optional topic provider, so every per-message step stays
-/// typed (no `Box<dyn Any>`, design 036 W1).
+/// typed (no `Box<dyn Any>`).
 struct FusedSource<T: Send + Sync + 'static + Debug + Clone> {
     consumer: Consumer<T>,
     serialize: FusedSerializeFn<T>,
@@ -323,9 +323,9 @@ where
 /// One subscription of a [`FusedSource`]: recv → resolve destination →
 /// serialize, all on the typed value.
 ///
-/// The connector SPI keeps its boxed `RecvSerializedFuture` (BYOC stays stable,
-/// design 039 §2); only the *inner* per-message box is eliminated by reading
-/// through the allocation-free [`Reader<T>`](crate::buffer::Reader) (W8).
+/// The connector SPI keeps its boxed `RecvSerializedFuture` (BYOC stays
+/// stable); only the *inner* per-message box is eliminated by reading through
+/// the allocation-free [`Reader<T>`](crate::buffer::Reader).
 struct FusedReader<T: Clone + Send + 'static> {
     inner: crate::buffer::Reader<T>,
     serialize: FusedSerializeFn<T>,
@@ -370,7 +370,7 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
 /// Type alias for typed context-aware serializer callbacks
 ///
 /// Stays typed until `finish()` fuses it with the consumer — no per-message
-/// erasure (design 036 W1).
+/// erasure.
 type TypedContextSerializerFn<T> = Arc<
     dyn Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
         + Send
@@ -676,7 +676,7 @@ where
     ///
     /// The provider is type-checked at compile time against `T` and stays
     /// typed end-to-end: it is fused into the link's serialized source and
-    /// called with `&T` per value (design 036 W1).
+    /// called with `&T` per value.
     pub fn with_topic_provider<P>(mut self, provider: P) -> Self
     where
         P: crate::connector::TopicProvider<T> + 'static,
@@ -717,7 +717,7 @@ where
 
         // Adapt the stored serializer to the fused calling convention. Stays
         // typed: fused with the consumer below, no `Box<dyn Any>` per message
-        // (design 036 W1).
+        //.
         let serialize: FusedSerializeFn<T> = if let Some(ser) = self.context_serializer {
             Arc::new(move |ctx: &crate::RuntimeContext, value: &T| ser(ctx.clone(), value))
         } else {
@@ -765,7 +765,7 @@ where
         // Resolves the record at route-collection time (not per-message) and
         // constructs a `Consumer<T>` bound to a pre-resolved buffer handle —
         // same pattern as the build-time path in
-        // `TypedRecord::collect_consumer_futures` (design 029). The serializer
+        // `TypedRecord::collect_consumer_futures`. The serializer
         // and topic provider ride along typed, so the readers handed to the
         // pumps yield destination + payload with no erasure crossing.
         //
@@ -821,7 +821,7 @@ where
 /// Type alias for typed context-aware deserializer callbacks
 ///
 /// Stays typed until `finish()` fuses it with the producer — no per-message
-/// erasure (design 036 W1).
+/// erasure.
 type TypedContextDeserializerFn<T> =
     Arc<dyn Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static>;
 
@@ -930,7 +930,7 @@ where
 
         // Adapt the stored deserializer to the fused calling convention. Stays
         // typed: fused with the producer below, no `Box<dyn Any>` per message
-        // (design 036 W1).
+        //.
         type UnifiedDeserializeFn<T> =
             Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync>;
         let deserialize: UnifiedDeserializeFn<T> = if let Some(deser) = self.context_deserializer {
@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     // ====================================================================
-    // Inbound link registration tests (fused ingest — design 036 W1)
+    // Inbound link registration tests (fused ingest)
     // ====================================================================
 
     #[test]
@@ -1165,7 +1165,7 @@ mod tests {
     }
 
     // ====================================================================
-    // Outbound link registration tests (fused source — design 036 W1)
+    // Outbound link registration tests (fused source)
     // ====================================================================
 
     #[test]
@@ -1329,7 +1329,7 @@ mod tests {
             .finish();
 
         // … and as separate statements: each call takes a fresh borrow, so
-        // the registrar is reusable after a chain ends (issue #130).
+        // the registrar is reusable after a chain ends.
         reg.link_from("mqtt://broker/topic-c")
             .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
@@ -1338,7 +1338,7 @@ mod tests {
         assert_eq!(rec.inbound_connectors().len(), 3);
     }
 
-    /// Registrar methods take fresh borrows (issue #130): separate
+    /// Registrar methods take fresh borrows: separate
     /// statements in a configure-style closure must compile.
     #[test]
     fn registrar_allows_separate_statements() {
@@ -1357,7 +1357,7 @@ mod tests {
     }
 
     // ====================================================================
-    // build()-level validation tests (issue #133)
+    // build()-level validation tests
     // ====================================================================
 
     #[derive(Debug, Clone)]
@@ -1386,7 +1386,7 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion (issue #133): a builder with three distinct
+    /// Acceptance criterion: a builder with three distinct
     /// mistakes reports all three from one `build()` call.
     #[tokio::test]
     async fn build_reports_all_configuration_mistakes_at_once() {
@@ -1469,7 +1469,7 @@ mod tests {
     }
 
     // ====================================================================
-    // Fused ingest roundtrip tests (design 036 W1)
+    // Fused ingest roundtrip tests
     // ====================================================================
 
     use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
@@ -1601,7 +1601,7 @@ mod tests {
     }
 
     // ====================================================================
-    // Fused outbound reader tests (design 036 W1)
+    // Fused outbound reader tests
     // ====================================================================
 
     use crate::connector::SerializedReader as _;

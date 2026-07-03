@@ -1,5 +1,5 @@
-//! Shared measurement harness for the B0/B1/B2 host bench suites (design 039
-//! F13) — collapses the near-identical setup/warmup/measure shape that used
+//! Shared measurement harness for the B0/B1/B2 host bench suites —
+//! collapses the near-identical setup/warmup/measure shape that used
 //! to be hand-copied across `b0_alloc_{tokio,embassy}.rs` and
 //! `b1_b2_{tokio,embassy}.rs`.
 
@@ -78,7 +78,7 @@ where
 /// Embassy suite `"B1-B2-Embassy"` — kept distinct so existing
 /// `--save-baseline`/`--baseline` comparisons keep working). Warmup runs
 /// **once**, before Criterion's first sample, not on every `iter_custom`
-/// call (design 039 F13 — redoing it per sample was wasteful and could
+/// call (redoing it per sample was wasteful and could
 /// itself perturb the steady-state numbers via repeated allocator/cache
 /// warm-state resets).
 pub fn bench_spsc<T, B>(

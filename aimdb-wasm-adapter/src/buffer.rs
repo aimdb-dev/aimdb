@@ -204,7 +204,7 @@ enum ReaderState {
 }
 
 impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
-    /// Poll for the next value (design 037 / W8).
+    /// Poll for the next value.
     ///
     /// On each poll:
     /// 1. Try to read a value (non-blocking).
@@ -212,7 +212,7 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
     /// 3. If not, register the waker and return `Poll::Pending`.
     ///
     /// The waker is woken when [`WasmBuffer::push()`](WasmBuffer) fires. This is
-    /// allocation-free — the pre-W8 `Box::pin(WasmRecvFuture { .. })` existed
+    /// allocation-free — a per-message `Box::pin(WasmRecvFuture { .. })` existed
     /// solely to satisfy the old async trait signature.
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
         // Try non-blocking read first

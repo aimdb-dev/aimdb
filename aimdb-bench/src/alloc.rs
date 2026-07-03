@@ -6,12 +6,12 @@
 //!
 //! `no_std`-clean (`portable_atomic` covers targets without native 64-bit
 //! atomics) so the stm32h5 B3 example can reuse it directly instead of
-//! hand-forking its own counting allocator (design 039 F12).
+//! hand-forking its own counting allocator.
 //!
 //! `#[global_allocator]` is **not** declared here — it's a per-binary,
 //! link-time declaration, so each host bench binary (and the stm32h5
 //! example) declares its own `static GLOBAL: CountingAllocator<...> = ...`
-//! (design 039 F12: previously declared once in this module for `System`,
+//! (previously declared once in this module for `System`,
 //! which forced the stm32h5 example — which needs `embedded_alloc::LlffHeap`,
 //! not `System` — to hand-fork this whole file instead of depending on it).
 //! Nothing in the production dependency graph links `aimdb-bench` either way.

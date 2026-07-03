@@ -1,7 +1,6 @@
 //! Tests for the MQTT link extension traits (`MqttLinkExt` / `MqttOutboundLinkExt`)
 //!
-//! Issue #134 moved `with_qos`/`with_retain` out of core's generic link
-//! builders into this crate. These tests pin down the wire-compat contract:
+//! `with_qos`/`with_retain` live outside core's generic link builders into this crate. These tests pin down the wire-compat contract:
 //! the extension methods push exactly the `("qos", …)` / `("retain", …)`
 //! option keys the MQTT clients read from `protocol_options`.
 

@@ -364,7 +364,7 @@ fn test_topic_provider_as_trait_object() {
     use std::sync::Arc;
 
     // Providers are stored as Arc<dyn TopicProvider<T>> and stay typed
-    // end-to-end (design 036 W1) — a wrong-type call is unrepresentable.
+    // end-to-end — a wrong-type call is unrepresentable.
     let provider: Arc<dyn TopicProvider<Temperature>> = Arc::new(SensorIdTopicProvider);
 
     let temp = Temperature::new("kitchen", 22.0);
@@ -376,7 +376,7 @@ fn test_topic_provider_as_trait_object() {
 // ============================================================================
 //
 // These tests simulate EXACTLY what the fused outbound reader does internally
-// while it still holds the typed value (design 036 W1):
+// while it still holds the typed value:
 // ```rust
 // let dest = topic.as_ref().and_then(|p| p.topic(&value));
 // // ...later, in the pump:

@@ -1,8 +1,8 @@
 //! WasmAdapter struct.
 //!
-//! Single-threaded WASM runtime. After issue #88 there is no `Spawn` impl —
-//! all database futures are driven by `AimDbRunner::run()`, which is awaited
-//! at the WASM entry point.
+//! Single-threaded WASM runtime. There is no `Spawn` impl — all database
+//! futures are driven by `AimDbRunner::run()`, which is awaited at the WASM
+//! entry point.
 
 /// WASM runtime adapter for AimDB.
 ///

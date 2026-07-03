@@ -95,7 +95,7 @@ fn bench_b1_b2_telemetry_fanout(c: &mut Criterion) {
     let mut r2 = Reader::new(Box::new(buf.subscribe()));
     let mut r3 = Reader::new(Box::new(buf.subscribe()));
 
-    // Warmup once, before any Criterion sample (design 039 F13).
+    // Warmup once, before any Criterion sample.
     rt.block_on(async {
         for i in 0..WARMUP_ITERS {
             buf.push(telemetry_msg(i as u64));

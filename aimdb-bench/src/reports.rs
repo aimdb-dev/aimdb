@@ -64,7 +64,7 @@ impl AllocReport {
 /// `aimdb-bench/target/bench-results/<name>.json` (anchored to the crate
 /// dir regardless of the caller's working directory) — collapses the
 /// `to_string_pretty` + `create_dir_all` + `write` tail that used to be
-/// hand-rolled at the end of every B0 bench binary (design 039 F13).
+/// hand-rolled at the end of every B0 bench binary.
 ///
 /// # Panics
 /// Panics if serialization or the filesystem write fails — a bench binary

@@ -1,4 +1,4 @@
-//! Build-time validation for `.with_remote_access()` records (design 031).
+//! Build-time validation for `.with_remote_access()` records.
 //!
 //! Removing `latest_snapshot` means a remote-access record reads and writes
 //! straight through its buffer. With no buffer there is no storage to serve:
@@ -22,7 +22,8 @@ async fn bufferless_remote_access_record_fails_build() {
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
 
     builder.configure::<Config>("test::Config", |reg| {
-        // .with_remote_access() but no .buffer(...) — invalid since design 031.
+        // .with_remote_access() but no .buffer(...) — invalid: remote reads
+        // and writes go straight to the buffer.
         reg.with_remote_access();
     });
 

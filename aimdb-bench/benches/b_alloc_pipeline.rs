@@ -15,10 +15,10 @@
 //! to `aimdb-bench/target/bench-results/b_alloc_pipeline.json` (anchored to the
 //! crate dir).
 //!
-//! **Pacing (design 039 F15).** Batch start/completion use `tokio::sync::watch`
+//! **Pacing.** Batch start/completion use `tokio::sync::watch`
 //! (permit-carrying: `changed()`/`borrow_and_update()` cannot miss a value the
 //! way `Notify::notified()` can when `notify_waiters()` fires before the
-//! waiter starts listening — same primitive the F3 fix uses for the same
+//! waiter starts listening — same primitive the watch reader uses for the same
 //! reason). Per-message pacing uses `tokio::sync::Semaphore`, the standard
 //! counting-permit primitive, in place of a hand-rolled atomic token count +
 //! `Notify`. Both are lost-wakeup-free on any executor — no current-thread
@@ -42,7 +42,7 @@ use aimdb_core::{buffer::BufferCfg, AimDb, AimDbBuilder};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use tokio::sync::{oneshot, watch, Semaphore};
 
-// One `#[global_allocator]` per bench binary (design 039 F12).
+// One `#[global_allocator]` per bench binary.
 #[global_allocator]
 static GLOBAL: aimdb_bench::alloc::CountingAllocator<std::alloc::System> =
     aimdb_bench::alloc::CountingAllocator(std::alloc::System);

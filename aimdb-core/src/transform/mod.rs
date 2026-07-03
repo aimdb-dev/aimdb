@@ -51,7 +51,7 @@ where
     ///   consumers at startup time.
     /// - `&str` — the output record's key, threaded through so the transform
     ///   task can include it in tracing messages even though `Producer<T>` no
-    ///   longer carries a `.key()` accessor (design 029, M14). Important when
+    ///   longer carries a `.key()` accessor. Important when
     ///   multiple records share type `T` under different keys.
     #[allow(clippy::type_complexity)]
     pub build_fn:

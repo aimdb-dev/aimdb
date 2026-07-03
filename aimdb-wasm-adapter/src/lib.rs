@@ -53,7 +53,7 @@ pub use buffer::{WasmBuffer, WasmBufferReader};
 /// Buffer-construction extension for [`aimdb_core::RecordRegistrar`].
 ///
 /// Buffer construction is the one genuinely adapter-specific registration
-/// step left after issue #131 — `source()` / `tap()` / `transform()` are
+/// step that is genuinely adapter-specific — `source()` / `tap()` / `transform()` are
 /// inherent methods on the registrar. This trait adds `.buffer(cfg)` backed
 /// by [`WasmBuffer`].
 pub trait WasmRecordRegistrarExt<T>

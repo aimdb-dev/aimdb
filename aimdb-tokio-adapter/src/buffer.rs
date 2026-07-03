@@ -6,7 +6,7 @@
 //! - **SPMC Ring**: `tokio::sync::broadcast` for bounded multi-consumer queues
 //! - **SingleLatest**: `tokio::sync::watch` for latest-value semantics
 //! - **Mailbox**: `std::sync::Mutex` slot + a hand-rolled waker list for
-//!   single-slot overwrite (design 037 / W8 — no `Notify`, no per-message alloc)
+//!   single-slot overwrite (no `Notify`, no per-message alloc)
 //!
 //! The broadcast/watch readers are poll-based ([`BufferReader::poll_recv`]) with
 //! no per-message heap allocation: each holds a [`ReusableBoxFuture`] that
@@ -33,9 +33,9 @@ pub struct TokioBuffer<T: Clone + Send + Sync + 'static> {
 
 /// Shared state for the Mailbox (single-slot overwrite) buffer.
 ///
-/// Replaces the pre-W8 `Notify` with an explicit waker list beside the slot, so
+/// An explicit waker list beside the slot (rather than a `Notify`), so
 /// `poll_recv` registers a waker on `Pending` and `push` wakes them — no
-/// `Notify` permit subtleties, no per-message allocation (design 037 / W8 §6).
+/// `Notify` permit subtleties, no per-message allocation.
 ///
 /// `pub` only because it appears in the `pub` [`TokioBufferReader`] reader enum;
 /// it is an implementation detail and not part of the supported API.
@@ -43,20 +43,18 @@ pub struct TokioBuffer<T: Clone + Send + Sync + 'static> {
 pub struct MailboxState<T> {
     /// The single value slot; a new `push` overwrites any unconsumed value.
     slot: Option<T>,
-    /// Set when the producer-side [`TokioBuffer`] is dropped (design 039 F6).
+    /// Set when the producer-side [`TokioBuffer`] is dropped.
     /// A parked reader observing `closed && slot.is_none()` resolves to
     /// `BufferClosed` instead of hanging forever.
     closed: bool,
-    /// Parked readers, keyed by a per-reader `waker_key` (design 039 F5) so a
+    /// Parked readers, keyed by a per-reader `waker_key` so a
     /// dropped reader can remove exactly its own entry instead of the list
     /// growing unboundedly across repeated subscribe→park→drop cycles.
     wakers: Vec<(usize, Waker)>,
     /// Always empty when not mid-`push`; `push` swaps it with `wakers` so it
-    /// can wake outside the lock (design 039 F4) without reallocating
-    /// `wakers` from scratch every call — the design doc's own alternative:
-    /// "drains into a scratch Vec kept in the state to stay zero-alloc".
+    /// can wake outside the lock without reallocating
     /// Both vecs' capacities stabilize after the first few pushes and are
-    /// then just swapped back and forth, preserving W8's
+    /// then just swapped back and forth, preserving the
     /// zero-allocs-in-steady-state property that a plain `mem::take` would
     /// break (a freshly-taken empty `Vec` has no capacity, so the next
     /// reader registration would have to reallocate).
@@ -134,7 +132,7 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
             TokioBufferInner::Mailbox { state } => {
                 // Swap `wakers` with the (always-empty-when-idle)
                 // `wake_scratch` and let the guard drop *before* waking
-                // (design 039 F4) — `Waker::wake()` can run arbitrary
+                // — `Waker::wake()` can run arbitrary
                 // callback code (e.g. re-entrant `try_recv()` on this same
                 // buffer), which must not happen while this
                 // `std::sync::Mutex` is still held. Swapping (not
@@ -151,7 +149,7 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                     std::mem::take(&mut state.wake_scratch)
                 };
                 // Wake-all: spurious wakeups are benign — losers re-poll to
-                // `Pending` and re-register (design 037 §6). `wake_by_ref`
+                // `Pending` and re-register. `wake_by_ref`
                 // (not `wake`) so `to_wake` can be cleared and recycled
                 // below instead of being consumed here.
                 for (_, waker) in &to_wake {
@@ -169,13 +167,13 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
         match &*self.inner {
             TokioBufferInner::Broadcast { tx } => TokioBufferReader::Broadcast {
                 // Allocate the reusable future box once, here, capturing the
-                // freshly-subscribed receiver — reused for every message (W8).
+                // freshly-subscribed receiver — reused for every message.
                 recv: ReusableBoxFuture::new(broadcast_recv(tx.subscribe())),
                 #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
             TokioBufferInner::Watch { tx } => {
-                // D1 (design 039): a fresh subscriber observes the current
+                // A fresh subscriber observes the current
                 // value once, as if it had been pushed after subscription —
                 // matches embassy's native watch::Receiver behavior.
                 // `mark_changed()` forces the first `changed()` to fire even
@@ -223,7 +221,8 @@ impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for Toki
             TokioBufferInner::Watch { tx } => tx.borrow().clone(),
             // Same Mutex the Mailbox buffer already uses for the slot.
             TokioBufferInner::Mailbox { state } => state.lock().unwrap().slot.clone(),
-            // broadcast has no canonical latest — see design 031 §SPMC Ring.
+            // broadcast has no canonical latest: readers consume a stream,
+            // there is no single "current value" slot to peek.
             TokioBufferInner::Broadcast { .. } => None,
         }
     }
@@ -287,7 +286,7 @@ type BroadcastRecvOutput<T> = (
 );
 
 /// Output of the watch reader's reusable future. `watch_recv` loops internally
-/// past an empty (`None`) slot (design 039 D1/F3), so `Ok` here always carries
+/// past an empty (`None`) slot, so `Ok` here always carries
 /// a real value — no `Option` wrapping needed.
 type WatchRecvOutput<T> = (
     Result<T, watch::error::RecvError>,
@@ -298,7 +297,7 @@ type WatchRecvOutput<T> = (
 ///
 /// `broadcast::Receiver` exposes no public poll API, so the reader stores this
 /// future in a [`ReusableBoxFuture`] and round-trips the receiver through it —
-/// one allocation per subscriber, reused for every message (design 037 / W8).
+/// one allocation per subscriber, reused for every message.
 async fn broadcast_recv<T: Clone>(mut rx: broadcast::Receiver<T>) -> BroadcastRecvOutput<T> {
     let res = rx.recv().await;
     (res, rx)
@@ -311,12 +310,11 @@ async fn broadcast_recv<T: Clone>(mut rx: broadcast::Receiver<T>) -> BroadcastRe
 /// followed by a separate `borrow()` leaves a window where a concurrent `push`
 /// can land between the two calls, so the borrow observes a *newer* value than
 /// the one that woke `changed()` without clearing its change marker, causing
-/// the next `changed()` to fire again for a value already delivered (design
-/// 039 F3).
+/// the next `changed()` to fire again for a value already delivered.
 ///
 /// Loops past an `Ok(())` with an empty (`None`) slot: `subscribe()` calls
 /// `mark_changed()` on freshly-subscribed receivers so a late subscriber
-/// observes the current value once (design 039 D1); if nothing has been
+/// observes the current value once; if nothing has been
 /// pushed yet, that manufactured "changed" event has no value to deliver, and
 /// looping (not erroring) is what makes `poll_recv` correctly resolve to
 /// `Pending`/`BufferEmpty` rather than the spurious `BufferClosed` `map_watch`
@@ -341,7 +339,7 @@ async fn watch_recv<T: Clone>(mut rx: watch::Receiver<Option<T>>) -> WatchRecvOu
 
 /// Poll a reusable round-trip future, re-arming it with the returned
 /// receiver *before* handing back the result — the shared shape behind
-/// `poll_recv`/`try_recv`'s Broadcast and Watch arms (design 039 F14). The
+/// `poll_recv`/`try_recv`'s Broadcast and Watch arms. The
 /// re-arm-before-return invariant (losing it drops the receiver and stalls
 /// the reader forever) now lives in exactly one place instead of being
 /// guarded by convention at 4 call sites.
@@ -377,7 +375,7 @@ pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
     Mailbox {
         state: Arc<StdMutex<MailboxState<T>>>,
         /// This reader's key into `MailboxState::wakers`, once it has
-        /// registered one (design 039 F5). `None` until the first `Pending`
+        /// registered one. `None` until the first `Pending`
         /// `poll_recv`; used by `Drop` to remove exactly this reader's entry.
         waker_key: Option<usize>,
         #[cfg(feature = "observability")]
@@ -470,17 +468,17 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                     Poll::Ready(Ok(value))
                 } else if guard.closed {
                     // Producer-side buffer dropped while this reader was
-                    // parked (design 039 F6) — resolve instead of hanging.
+                    // parked — resolve instead of hanging.
                     Poll::Ready(Err(DbError::BufferClosed {
                         buffer_name: "mailbox".to_string(),
                     }))
                 } else {
-                    // Keyed upsert (design 039 F5): replace this reader's own
+                    // Keyed upsert: replace this reader's own
                     // entry in place if it already registered one, instead of
                     // a `will_wake` scan over every parked reader's waker.
                     //
                     // `push` drains *every* entry out of `wakers` on every
-                    // call (`mem::take`, design 039 F4), which invalidates
+                    // call (`mem::take`), which invalidates
                     // every outstanding key — including this reader's, if it
                     // was woken by that push and is back here Pending again
                     // with a now-stale `waker_key`. Falling through to
@@ -557,7 +555,7 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                         Ok(val)
                     }
                     // Matches how Broadcast/Watch already surface closure on
-                    // both APIs (design 039 F6).
+                    // both APIs.
                     None if guard.closed => Err(DbError::BufferClosed {
                         buffer_name: "mailbox".to_string(),
                     }),
@@ -568,8 +566,8 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
     }
 }
 
-/// Removes this reader's own waker entry from `MailboxState` on drop (design
-/// 039 F5) — without this, repeated subscribe→park→drop cycles would grow
+/// Removes this reader's own waker entry from `MailboxState` on drop —
+/// without this, repeated subscribe→park→drop cycles would grow
 /// `MailboxState::wakers` unboundedly, since nothing else ever prunes a
 /// parked-but-abandoned reader's entry. Broadcast/Watch need no action: their
 /// `ReusableBoxFuture` (and the receiver it owns) cleans up on its own drop.
@@ -587,7 +585,7 @@ impl<T: Clone + Send + Sync + 'static> Drop for TokioBufferReader<T> {
 }
 
 /// Signals Mailbox closure to any parked readers when the producer-side
-/// buffer is dropped (design 039 F6) — without this, a reader parked in
+/// buffer is dropped — without this, a reader parked in
 /// `poll_recv` (registered a waker, returned `Pending`) would hang forever,
 /// since nothing would ever wake it again. Broadcast/Watch need no explicit
 /// `Drop`: dropping the last `Sender` already signals closure through tokio's
@@ -596,7 +594,7 @@ impl<T: Clone + Send + Sync + 'static> Drop for TokioBuffer<T> {
     fn drop(&mut self) {
         if let TokioBufferInner::Mailbox { state } = &*self.inner {
             // Same drain-then-wake-outside-the-lock discipline as `push`
-            // (design 039 F4) — do not call `Waker::wake()` while holding
+            // — do not call `Waker::wake()` while holding
             // this `std::sync::Mutex`.
             let to_wake = {
                 let mut guard = state.lock().unwrap();
@@ -616,7 +614,7 @@ mod tests {
     use aimdb_core::buffer::Reader;
 
     /// Wrap a concrete `TokioBufferReader` in the ergonomic `Reader<T>` so the
-    /// tests can keep exercising `recv().await` / `try_recv()` (design 037 / W8).
+    /// tests can keep exercising `recv().await` / `try_recv()`.
     fn rdr<T: Clone + Send + Sync + 'static>(buffer: &TokioBuffer<T>) -> Reader<T> {
         Reader::new(Box::new(buffer.subscribe()))
     }
@@ -979,7 +977,7 @@ mod tests {
         assert_eq!(reader.try_recv().unwrap(), 4);
     }
 
-    // ── F3 / D1 regression tests (design 039) ──────────────────────────────
+    // ── watch fresh-subscriber / change-marker regression tests ──────────────────────────────
 
     #[tokio::test]
     async fn test_watch_try_recv_no_duplicate() {
@@ -1004,7 +1002,7 @@ mod tests {
         buffer.push(42);
         let mut reader = rdr(&buffer);
 
-        // D1: a fresh subscriber observes the current value once, without
+        // A fresh subscriber observes the current value once, without
         // requiring a second push.
         assert_eq!(reader.try_recv().unwrap(), 42);
     }
@@ -1015,7 +1013,7 @@ mod tests {
         let buffer = TokioBuffer::<i32>::new(&cfg);
         let mut reader = rdr(&buffer);
 
-        // `subscribe()` calls `mark_changed()` unconditionally (D1), but with
+        // `subscribe()` calls `mark_changed()` unconditionally, but with
         // nothing pushed yet that must resolve to "no value", not the
         // spurious `BufferClosed` an unhandled `Ok(None)` would produce.
         assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
@@ -1070,7 +1068,7 @@ mod tests {
         assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
     }
 
-    // ── F4/F5/F6 regression tests (design 039) ──────────────────────────────
+    // ── mailbox waker-list regression tests ──────────────────────────────
     // These reach into `TokioBufferReader::Mailbox`'s private fields directly
     // — allowed since `tests` is a descendant of the `buffer` module that
     // defines them.
@@ -1085,7 +1083,7 @@ mod tests {
         impl Wake for ReentrantWaker {
             fn wake(self: Arc<Self>) {
                 // If `push` still held the Mailbox lock while calling this,
-                // `try_lock()` would fail (design 039 F4).
+                // `try_lock()` would fail.
                 assert!(
                     self.state.try_lock().is_ok(),
                     "push must not hold the Mailbox lock while waking parked readers"
@@ -1167,9 +1165,9 @@ mod tests {
     async fn test_mailbox_repeated_recv_cycles_does_not_hang() {
         use tokio::time::{timeout, Duration};
 
-        // Regression for a bug introduced by the F5 keyed-waker rewrite
+        // Regression for a bug introduced by the keyed-waker rewrite
         // itself: `push` drains *every* entry out of `wakers` on every call
-        // (F4's `mem::take`), which invalidates every outstanding key —
+        // (a `mem::take` of the list), which invalidates every outstanding key —
         // including the reader that push is about to wake. If that reader's
         // very next `poll_recv` goes `Pending` again before another push,
         // its stale `waker_key` no longer matches anything in `wakers`, and
@@ -1311,7 +1309,7 @@ mod tests {
     }
 
     // ========================================================================
-    // peek() Tests — non-destructive buffer-native reads (design 031)
+    // peek() Tests — non-destructive buffer-native reads
     // ========================================================================
 
     mod peek_tests {
@@ -1356,7 +1354,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_peek_single_latest_works_without_subscriber() {
-            // The exact case the design 031 snapshot was originally added for:
+            // The case a fallback latest-snapshot would have covered:
             // a producer pushes before anyone subscribes. peek() must see it.
             let buffer = TokioBuffer::<i32>::new(&BufferCfg::SingleLatest);
             DynBuffer::push(&buffer, 17);
@@ -1398,7 +1396,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_peek_spmc_ring_returns_none() {
-            // Broadcast has no canonical latest — see design 031 §SPMC Ring.
+            // Broadcast has no canonical latest (see peek() above).
             let buffer = TokioBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 8 });
             assert_eq!(buffer.peek(), None);
             DynBuffer::push(&buffer, 1);

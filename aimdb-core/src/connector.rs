@@ -103,12 +103,12 @@ pub type RecvSerializedFuture<'a> =
 
 /// A subscription to one record, fused with destination resolution and
 /// serialization at registration time — no `dyn Any` crosses this boundary
-/// (design 036 W1).
+///.
 pub trait SerializedReader: Send {
     /// Yield the next successfully serialized value.
     ///
     /// `ctx` is threaded per call (not captured) for context-aware
-    /// serializers (design 026). Buffer errors propagate unchanged:
+    /// serializers. Buffer errors propagate unchanged:
     /// `DbError::BufferLagged` means values were skipped but the reader
     /// recovered; any other error means the buffer is gone. Serialization
     /// failures are logged and skipped inside the reader.
@@ -118,12 +118,12 @@ pub trait SerializedReader: Send {
 /// A record's outbound wire interface, built where the record type `T` is
 /// known (`OutboundConnectorBuilder::finish`) and consumed by the pumps as
 /// bytes. Replaces the erased `ConsumerTrait` + serializer + topic-provider
-/// triple (design 036 W1).
+/// triple.
 pub trait SerializedSource: Send + Sync {
     /// Subscribe to the record's updates.
     ///
     /// Synchronous and infallible — the buffer handle is pre-resolved at
-    /// construction (design 029).
+    /// construction.
     fn subscribe(&self) -> Box<dyn SerializedReader>;
 }
 
@@ -152,7 +152,7 @@ pub type SourceFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn SerializedSource> + Sen
 /// The trait is generic over `T`, providing compile-time type safety
 /// at the implementation site. The provider stays typed end-to-end: it is
 /// fused into the link's [`SerializedSource`] at registration time and
-/// called with `&T` while the value is in hand (design 036 W1).
+/// called with `&T` while the value is in hand.
 ///
 /// # no_std Compatibility
 ///
@@ -426,7 +426,7 @@ impl ConnectorLink {
     /// Creates the fused serialized source using the stored factory.
     ///
     /// Runs once at route-collection time; the readers it hands out are the
-    /// per-message path (no `Box<dyn Any>`, design 036 W1).
+    /// per-message path (no `Box<dyn Any>`).
     ///
     /// Available in both `std` and `no_std + alloc` environments.
     pub fn create_source(&self, db: &AimDb) -> Box<dyn SerializedSource> {
@@ -441,11 +441,11 @@ impl ConnectorLink {
 /// captures the typed producer and deserializer; callers only see bytes.
 ///
 /// Synchronous by design: `Producer<T>::produce` is sync and infallible
-/// (design 029, pre-resolved write handle), so the only failure is the user
+///, so the only failure is the user
 /// deserializer's — reported as the same `String` the deserializer API uses.
 ///
 /// The [`RuntimeContext`](crate::RuntimeContext) is threaded per call (not
-/// captured) for context-aware deserializers (design 026).
+/// captured) for context-aware deserializers.
 pub type IngestFn = Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<(), String> + Send + Sync>;
 
 /// Type alias for ingest factory callback (alloc feature)
@@ -848,7 +848,7 @@ mod tests {
     #[test]
     fn test_topic_provider_as_trait_object() {
         // Providers are stored as Arc<dyn TopicProvider<T>> — typed, no
-        // erasure (design 036 W1).
+        // erasure.
         let provider: Arc<dyn super::TopicProvider<TestTemperature>> = Arc::new(TestTopicProvider);
         let temp = TestTemperature {
             sensor_id: "kitchen-001".into(),

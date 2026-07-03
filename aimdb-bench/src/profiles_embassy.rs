@@ -21,7 +21,7 @@
 //! Lockstep push→recv keeps at most one message in flight, so `CAP=16` for
 //! Telemetry never lags.
 //!
-//! # Eager SpmcRing subscriber (design 039 F8/F9)
+//! # Eager SpmcRing subscriber
 //!
 //! An `SpmcRing` reader registers its embassy `Subscriber` **eagerly, at
 //! `subscribe()` time** — not lazily on first poll. Earlier versions of this

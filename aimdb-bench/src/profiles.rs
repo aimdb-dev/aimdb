@@ -1,5 +1,5 @@
 //! Canonical workload profiles — Tokio buffer constructors over the shared
-//! [`crate::payloads`] (design 039 F12: payload types/factories moved there
+//! [`crate::payloads`] (payload types/factories moved there
 //! so they're `no_std`-shareable with the stm32h5 B3 example).
 //!
 //! Three profiles match the three buffer types:

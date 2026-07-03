@@ -134,7 +134,7 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
         cx: &mut Context<'_>,
     ) -> Poll<Result<serde_json::Value, crate::DbError>> {
         // Poll the inner typed reader (allocation-free), then serialize on the
-        // ready value — the pre-W8 outer + inner double box are both gone.
+        // ready value — no per-message boxing.
         match self.inner.poll_recv(cx) {
             Poll::Ready(Ok(value)) => {
                 Poll::Ready(self.codec.encode(&value).ok_or_else(|| {
@@ -181,7 +181,7 @@ type ProducerServiceFn<T> =
 /// Allows storage of heterogeneous record types in a single collection
 /// while maintaining type safety through downcast operations.
 ///
-/// Since the 036 W2 split this trait carries only the storage/lifecycle
+/// This trait carries the storage/lifecycle
 /// surface, plus graph/metadata introspection and observability counter
 /// resets. JSON remote access is the one genuinely optional capability and
 /// lives in [`JsonRecordAccess`], reachable via [`AnyRecord::json_access`].
@@ -470,7 +470,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// When present, produce() enqueues to buffer instead of direct call
     ///
     /// Stored as `Arc` (not `Box`) so `Producer<T>` and `Consumer<T>` can hold
-    /// a pre-resolved handle to the same buffer — design 029 hot-path change.
+    /// a pre-resolved handle to the same buffer.
     buffer: Option<Arc<dyn DynBuffer<T>>>,
 
     /// Buffer configuration cached for metadata / dependency-graph reporting.
@@ -508,7 +508,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     remote_codec: Option<RecordCodec<T>>,
 
     /// Configuration mistakes recorded during registration instead of
-    /// panicking (issue #133). Drained by `AimDbBuilder::build()`, which fills
+    /// panicking. Drained by `AimDbBuilder::build()`, which fills
     /// in the record key and reports all of them via
     /// [`DbError::InvalidConfiguration`](crate::DbError::InvalidConfiguration).
     config_errors: Vec<crate::error::ConfigError>,
@@ -780,7 +780,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
     /// Returns a fresh `Arc<dyn WriteHandle<T>>` bound to this record's buffer.
     /// Used at build time by the spawn machinery to pre-resolve `Producer<T>`
-    /// handles (design 029).
+    /// handles.
     pub(crate) fn writer_handle(&self) -> Arc<dyn crate::buffer::WriteHandle<T>>
     where
         T: Send + Clone + 'static,
@@ -797,7 +797,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Subscribes to the buffer for this record type
     ///
     /// Returns an ergonomic, allocation-free [`Reader<T>`](crate::buffer::Reader)
-    /// handle (design 037 / W8).
+    /// handle.
     ///
     /// # Errors
     /// Returns `DbError::MissingConfiguration` if no buffer configured
@@ -1000,8 +1000,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     ///
     /// **std only**: `.as_json()` (if `.with_remote_access()` configured)
     pub fn latest(&self) -> Option<RecordValue<T>> {
-        // Read buffer-native storage via peek() (design 031). Records without
-        // a buffer return None — see Breaking Changes in design 031.
+        // Read buffer-native storage via peek(). Records without
+        // a buffer return None.
         let value = self.buffer.as_ref()?.peek()?;
         #[cfg(feature = "remote")]
         {
@@ -1037,8 +1037,8 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         #[allow(unused_mut)]
         let mut errors = core::mem::take(&mut self.config_errors);
 
-        // A remote-access record has no fallback storage since design 031
-        // removed latest_snapshot: reads/writes go straight to the buffer. With
+        // A remote-access record has no fallback storage — reads/writes go
+        // straight to the buffer. With
         // no buffer, `record.get`/`latest()` return not_found and `record.set`
         // silently discards the value. Fail at build() so the buffer is added
         // explicitly instead of surfacing as a silent runtime no-op.
@@ -1183,8 +1183,8 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             core::any::type_name::<T>()
         );
 
-        // Read buffer-native storage via peek() (design 031). Records without
-        // a buffer return None — see Breaking Changes in design doc.
+        // Read buffer-native storage via peek(). Records without
+        // a buffer return None.
         let value = self.buffer.as_ref()?.peek()?;
         let result = self.remote_codec.as_ref()?.encode(&value);
 
@@ -1287,7 +1287,7 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             core::any::type_name::<T>()
         );
 
-        // Push through the unified write path (design 031). This also marks
+        // Push through the unified write path. This also marks
         // metadata as updated — previously skipped on this path.
         self.writer_handle().push(value);
 

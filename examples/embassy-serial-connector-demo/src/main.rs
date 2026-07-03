@@ -3,7 +3,7 @@
 
 //! AimX over serial on an STM32H563ZI Nucleo — the board *serves* the AimX toolset
 //! over a UART, so a host can `record.list` / `record.get` it across the wire.
-//! This exercises the `no_std` AimX server dispatch (Issue #120) over the real
+//! This exercises the `no_std` AimX server dispatch over the real
 //! `aimdb-serial-connector` Embassy transport (COBS over `embedded-io-async`).
 //!
 //! ## Wiring (no extra cabling on a Nucleo-H563ZI)

@@ -1,4 +1,4 @@
-//! `RecordWriter<T>` — the sole implementor of `WriteHandle<T>` (design 029).
+//! `RecordWriter<T>` — the sole implementor of `WriteHandle<T>`.
 //!
 //! Pre-binds the buffer so `Producer<T>` can push values without holding an
 //! `Arc<AimDb<R>>` or running a `HashMap` lookup per call.

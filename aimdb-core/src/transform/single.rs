@@ -155,7 +155,7 @@ pub(crate) async fn run_single_transform<I, O, S>(
     O: Send + Sync + Clone + Debug + 'static,
     S: Send + 'static,
 {
-    // `Producer<O>` no longer exposes a `.key()` accessor (design 029) — the
+    // `Producer<O>` no longer exposes a `.key()` accessor — the
     // output key is threaded in by the transform descriptor so diagnostics
     // remain unambiguous when multiple records share type `O`.
     log_info!("🔄 Transform started: '{}' → '{}'", input_key, output_key);

@@ -1,6 +1,6 @@
 //! Canonical workload payloads and deterministic message factories.
 //!
-//! `no_std`-clean (design 039 F12) so both the host `aimdb-bench` suites and
+//! `no_std`-clean so both the host `aimdb-bench` suites and
 //! the `no_std` `examples/embassy-bench-stm32h5` B3 rig share one definition
 //! instead of the stm32h5 example hand-forking its own copy "kept in sync by
 //! hand." Three profiles match the three buffer types:

@@ -41,7 +41,7 @@ pub struct OutboundRoute {
     pub topic: String,
     /// Fused wire-level source: its readers yield destination + serialized
     /// payload directly (subscribe → recv → resolve topic → serialize, all
-    /// typed inside — no `Box<dyn Any>` per message, design 036 W1).
+    /// typed inside — no `Box<dyn Any>` per message).
     pub source: Box<dyn crate::connector::SerializedSource>,
     /// Configuration options from the URL query
     pub config: Vec<(String, String)>,
@@ -259,7 +259,7 @@ impl AimDbInner {
 ///
 /// Provides a fluent API for constructing databases with type-safe record registration.
 /// Set the runtime via `.runtime()`; a missing runtime is reported by `build()`
-/// like any other configuration mistake (issue #133 contract).
+/// like any other configuration mistake.
 pub struct AimDbBuilder {
     /// Registered records with their keys (order matters for RecordId assignment)
     records: Vec<(StringKey, TypeId, Box<dyn AnyRecord>)>,
@@ -268,7 +268,7 @@ pub struct AimDbBuilder {
     /// key without scanning the vec.
     record_index: HashMap<StringKey, usize>,
 
-    /// Runtime capabilities, held as a value (issue #131)
+    /// Runtime capabilities, held as a value
     runtime: Option<Arc<dyn crate::executor::RuntimeOps>>,
 
     /// Connector builders that will be invoked during build()
@@ -313,7 +313,7 @@ impl AimDbBuilder {
     /// Accepts any adapter implementing the dyn-safe
     /// [`RuntimeOps`](crate::executor::RuntimeOps) capability surface
     /// (`TokioAdapter`, `EmbassyAdapter`, `WasmAdapter`); the builder stores it
-    /// as a value — no runtime type parameter (issue #131).
+    /// as a value — no runtime type parameter.
     pub fn runtime(mut self, rt: Arc<impl crate::executor::RuntimeOps + 'static>) -> Self {
         self.runtime = Some(rt);
         self
@@ -560,7 +560,7 @@ impl AimDbBuilder {
         use crate::error::ConfigError;
 
         // ── Validation pass: collect every configuration mistake before any
-        // effectful phase runs (issue #133). Nothing returns early here.
+        // effectful phase runs. Nothing returns early here.
         let mut errors = core::mem::take(&mut self.config_errors);
 
         for (key, _, record) in self.records.iter_mut() {
@@ -628,7 +628,7 @@ impl AimDbBuilder {
 
         // Ensure runtime is set — a missing runtime is a configuration
         // mistake, collected like every other so it never hides the rest of
-        // the findings (issue #133). The runtime is bound at the final check.
+        // the findings. The runtime is bound at the final check.
         if self.runtime.is_none() {
             errors.push(ConfigError::new(
                 "",
@@ -689,7 +689,7 @@ impl AimDbBuilder {
 
         // All validation done — report every collected mistake at once. The
         // runtime binding lives here so a missing one is reported alongside
-        // every other finding instead of short-circuiting them (issue #133).
+        // every other finding instead of short-circuiting them.
         let runtime = match (self.runtime.take(), errors.is_empty()) {
             (Some(rt), true) => rt,
             _ => return Err(DbError::InvalidConfiguration { errors }),
@@ -751,9 +751,9 @@ impl AimDbBuilder {
         // transport, applies the security policy's writable marking, and drives
         // the shared session engine. See `with_connector`'s docs.
 
-        // Collect connector futures. After issue #88 connector builders return
-        // a `Vec<BoxFuture>` instead of an `Arc<dyn Connector>` (which previously
-        // was discarded anyway — see design doc 028 §"The dropped Arc<dyn Connector> object").
+        // Collect connector futures. Connector builders return a
+        // `Vec<BoxFuture>` for the runner to drive — there is no connector
+        // object to keep.
         for builder in self.connector_builders {
             log_debug!("Building connector for scheme: {}", builder.scheme());
 
@@ -793,7 +793,7 @@ impl Default for AimDbBuilder {
 ///
 /// A database instance with type-safe record registration and cross-record
 /// communication via the Emitter pattern. The runtime is held as a value
-/// (`Arc<dyn RuntimeOps>`) — records are the only generic surface (issue #131).
+/// (`Arc<dyn RuntimeOps>`) — records are the only generic surface.
 ///
 /// See `examples/` for usage.
 ///
@@ -921,7 +921,7 @@ impl AimDb {
     where
         T: Send + 'static + Debug + Clone,
     {
-        // Single write path via WriteHandle (design 031). For hot paths,
+        // Single write path via WriteHandle. For hot paths,
         // prefer `db.producer::<T>(key)` once and reuse the returned handle.
         let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
         typed_rec.writer_handle().push(value);
@@ -976,7 +976,7 @@ impl AimDb {
         T: Send + Sync + 'static + Debug + Clone,
     {
         // Pre-resolve the buffer Arc so the returned Consumer subscribes
-        // through a direct virtual call (design 029). A `.consumer()` without
+        // through a direct virtual call. A `.consumer()` without
         // a configured buffer surfaces as `MissingConfiguration` here rather
         // than panicking later inside `subscribe()`.
         let key_str: alloc::string::String = key.into();

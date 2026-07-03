@@ -140,7 +140,7 @@ async fn main() -> DbResult<()> {
 
     // Temperature sensors (outbound to MQTT) - using link_address() from key metadata.
     // The MQTT knobs come from the connector crate's MqttLinkExt/
-    // MqttOutboundLinkExt extension traits (design 034 §3.6); QoS 1 / no
+    // MqttOutboundLinkExt extension traits; QoS 1 / no
     // retain matches the connector defaults.
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })

@@ -1,4 +1,4 @@
-//! Crate-private logging macros (design 034 / #132).
+//! Crate-private logging macros.
 //!
 //! `log_debug!`/`log_info!`/`log_warn!`/`log_error!` forward to the matching
 //! `tracing` event macro when the `tracing` feature is enabled; otherwise they
