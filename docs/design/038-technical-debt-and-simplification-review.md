@@ -1,6 +1,6 @@
 # 038 — Technical Debt & Simplification Review (breaking changes allowed)
 
-**Status:** Reviewed — owner decisions of 2026-07-01 are recorded inline as **Decision** blocks; see also the status column in §3.14
+**Status:** Implemented (accepted items) — owner decisions of 2026-07-01 are recorded inline as **Decision** blocks; see also the status column in §3.14. The accepted clusters (§3.1, §3.3–§3.8, §3.11, D10, and the §3.10/§2.6 CI drift guards) were implemented 2026-07-03 (branch `claude/design-doc-38-plan-fpcajb`), removing a net ~2,540 lines. Implementation notes vs. this doc: the wasm adapter's `time.rs` held the live `RuntimeOps` impl and was slimmed rather than deleted; `ResourceUnavailable`/`HardwareError` were deleted outright instead of relocated (their "only user", `EmbassyErrorSupport::from_nb_error`, itself had no production callers); `RecordGraphInfo` was collapsed into `GraphNode` (field-for-field duplicate); the link-address half of the `ConnectorUrl` split is the new `LinkAddress` type. Deferred items (§3.2 buffers, §3.9 protocol, §3.10 extraction, D1/D12 data contracts) remain open with tracking issues.
 **Scope:** Whole workspace (~55,000 lines of Rust across 19 library crates, 2 tools, 20 example/bench crates)
 **Goal:** Keep every current capability, but with a simpler implementation and materially less code. Unlike review 034 — which was constrained to be functionality-preserving at the API level — **breaking API changes are explicitly on the table** here. The question asked of every subsystem is: *if we rebuilt this today, knowing what we know, what would we not build?*
 
@@ -241,16 +241,16 @@ Respecting the 034 Phase-4 decision to stay monolithic: at minimum move the 5-cr
 
 ### 3.14 Estimated totals and review status
 
-| Cluster | Est. lines removed | Breaking? | Risk | Status (2026-07-01) |
+| Cluster | Est. lines removed | Breaking? | Risk | Status (2026-07-03) |
 |---|---:|---|---|---|
-| §3.1 runtime abstractions | ~700 | trivial | low | accepted |
+| §3.1 runtime abstractions | ~700 | trivial | low | **implemented** |
 | §3.2 portable buffers | ~2,000 (full) / ~1,100 (middle path) | adapter authors | medium (perf parity) | **deferred** — needs tokio bench evidence + own design doc |
-| §3.3 DbError diet | ~450 | match sites | low | accepted |
-| §3.4–§3.6 registry/traits/validation | ~520 | no | low | accepted |
-| §3.7–§3.8 API pruning | ~450 | mechanical | low | accepted |
+| §3.3 DbError diet | ~450 | match sites | low | **implemented** |
+| §3.4–§3.6 registry/traits/validation | ~520 | no | low | **implemented** |
+| §3.7–§3.8 API pruning | ~450 | mechanical | low | **implemented** |
 | §3.9 one protocol | ~1,500 | browser clients | medium–high | open (no decision yet; needs design doc) |
-| §3.10 extract agent | ~4,000 (relocated) | no | organizational | **deferred** — CI drift check instead |
-| §3.11 features | (gates, not lines) | feature selectors | low | accepted as amended |
+| §3.10 extract agent | ~4,000 (relocated) | no | organizational | **deferred** — CI drift check implemented instead |
+| §3.11 features | (gates, not lines) | feature selectors | low | **implemented** as amended |
 | §3.12 examples/workspace | (build time) | no | low | **discarded for now** |
 
 ---
