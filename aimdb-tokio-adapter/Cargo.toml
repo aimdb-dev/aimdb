@@ -47,6 +47,9 @@ tokio = { workspace = true, optional = true, features = [
 # reader round-trips the receiver through a stored, reused future.
 tokio-util = { version = "0.7", optional = true, default-features = false }
 
+# `RuntimeOps::log` forwards to the `log` facade; the binary picks the backend.
+log = "0.4"
+
 # Observability (optional)
 tracing = { workspace = true, optional = true }
 

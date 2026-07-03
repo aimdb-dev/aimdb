@@ -224,6 +224,39 @@ async fn test_duplicate_key_error() {
     assert!(errors[0].message.contains("different type"));
 }
 
+/// Test: conflicting writers (.source() + .transform()) on one record are
+/// validated once, in build(), and reported with the record key attached
+/// (design 038 §3.6 — the setters only catch same-stage duplicates).
+#[tokio::test]
+async fn test_conflicting_writers_reported_from_build() {
+    let runtime = Arc::new(TokioAdapter::new().unwrap());
+
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+
+    builder.configure::<Temperature>("t.input", |reg| {
+        reg.buffer(BufferCfg::SingleLatest);
+    });
+
+    builder.configure::<Temperature>("t.conflicted", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .source(|_ctx, _producer| async move {})
+            .transform::<Temperature, _>("t.input", |b| b.map(|t: &Temperature| Some(t.clone())));
+    });
+
+    let Err(DbError::InvalidConfiguration { errors }) = builder.build().await else {
+        panic!("build() must fail with InvalidConfiguration");
+    };
+    assert_eq!(errors.len(), 1, "got: {errors:?}");
+    assert_eq!(errors[0].record_key, "t.conflicted");
+    assert!(
+        errors[0].message.contains("conflicting writers"),
+        "got: {}",
+        errors[0].message
+    );
+    assert!(errors[0].message.contains(".source()"));
+    assert!(errors[0].message.contains(".transform()"));
+}
+
 /// Test: RecordId remains stable and can be used for O(1) access
 #[tokio::test]
 async fn test_record_id_stability() {

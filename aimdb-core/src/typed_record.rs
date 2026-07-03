@@ -182,15 +182,15 @@ type ProducerServiceFn<T> =
 /// while maintaining type safety through downcast operations.
 ///
 /// Since the 036 W2 split this trait carries only the storage/lifecycle
-/// surface. The other capabilities live in dedicated traits, reachable from
-/// any `dyn AnyRecord`:
-/// - [`RecordIntrospect`] (supertrait) — graph/metadata introspection
-/// - [`RecordMetricsReset`] (supertrait) — profiling/metrics counter resets
-/// - [`JsonRecordAccess`] — JSON remote access, via [`AnyRecord::json_access`]
+/// surface, plus graph/metadata introspection and observability counter
+/// resets. JSON remote access is the one genuinely optional capability and
+/// lives in [`JsonRecordAccess`], reachable via [`AnyRecord::json_access`].
 ///
-/// Consumers: `AimDbBuilder::build()` (validation, config-error draining,
-/// typed downcasts via [`AnyRecordExt`]) and connectors applying the
-/// remote-access security policy (`set_writable_erased`).
+/// Consumers: `AimDbBuilder::build()` (config-error draining, the dependency
+/// graph fed to [`crate::graph`], typed downcasts via [`AnyRecordExt`]),
+/// the builder's inbound/outbound route collection, `AimDbInner::list_records`
+/// (remote introspection metadata), and connectors applying the remote-access
+/// security policy (`set_writable_erased`).
 ///
 /// # Thread Safety Requirements
 ///
@@ -210,19 +210,15 @@ type ProducerServiceFn<T> =
 /// **Migration:** If your record type `T` is not `Sync`, wrap non-`Sync` fields
 /// in `Arc<Mutex<_>>` or `Arc<RwLock<_>>` to achieve interior mutability with
 /// thread-safe sharing.
-pub trait AnyRecord: RecordIntrospect + RecordMetricsReset + Send + Sync {
-    /// Validates that the record has correct producer/consumer setup
-    ///
-    /// Rules: Must have exactly one producer and at least one consumer.
-    fn validate(&self) -> Result<(), &'static str>;
-
+pub trait AnyRecord: Send + Sync {
     /// Returns self as Any for downcasting
     fn as_any(&self) -> &dyn Any;
 
     /// Returns self as mutable Any for downcasting
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
-    /// Drains the configuration mistakes recorded during registration.
+    /// Drains the configuration mistakes recorded during registration, plus
+    /// build-time consistency findings (e.g. remote access without a buffer).
     ///
     /// Called by `AimDbBuilder::build()`, which fills in the record key and
     /// reports every finding via
@@ -245,19 +241,9 @@ pub trait AnyRecord: RecordIntrospect + RecordMetricsReset + Send + Sync {
     fn json_access(&self) -> Option<&dyn JsonRecordAccess> {
         None
     }
-}
 
-/// Graph and metadata introspection for type-erased records.
-///
-/// Supertrait of [`AnyRecord`], so every stored record exposes it and a
-/// `dyn AnyRecord` can be upcast to `&dyn RecordIntrospect` where only
-/// introspection is needed.
-///
-/// Consumers: `AimDbBuilder::build()` (link validation and the dependency
-/// graph fed to [`crate::graph`]), the builder's inbound/outbound route
-/// collection, and `AimDbInner::list_records` (remote introspection
-/// metadata).
-pub trait RecordIntrospect {
+    // ── Graph and metadata introspection ────────────────────────────────
+
     /// Gets the outbound connector links
     ///
     /// Returns outbound connector configuration list for spawning logic.
@@ -297,6 +283,22 @@ pub trait RecordIntrospect {
         key: crate::record_id::StringKey,
         id: crate::record_id::RecordId,
     ) -> crate::remote::RecordMetadata;
+
+    // ── Observability counter resets ─────────────────────────────────────
+
+    /// Resets this record's stage profiling counters (feature `profiling`).
+    ///
+    /// Default implementation is a no-op; `TypedRecord` overrides it.
+    /// Consumers: `AimDb::reset_profiling`, driven by the AimX
+    /// `control.reset_buffer_metrics` RPC and the MCP buffer-metrics tool.
+    #[cfg(feature = "profiling")]
+    fn reset_profiling(&self) {}
+
+    /// Resets this record's buffer introspection counters (feature `metrics`).
+    ///
+    /// Default implementation is a no-op; `TypedRecord` overrides it.
+    #[cfg(feature = "metrics")]
+    fn reset_buffer_metrics(&self) {}
 }
 
 /// Type-erased JSON read/subscribe/write for remote access.
@@ -358,29 +360,6 @@ pub trait JsonRecordAccess {
     /// - Record not configured with buffer
     /// - Record not configured with `.with_remote_access()`
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
-}
-
-/// Observability counter resets (features `profiling` / `metrics`).
-///
-/// Supertrait of [`AnyRecord`] with no-op defaults, so the cfg-gated reset
-/// methods stay off the core storage contract while remaining callable on
-/// every stored record.
-///
-/// Consumers: `AimDb::reset_profiling` / `AimDb::reset_buffer_metrics`,
-/// driven by the AimX `control.reset_buffer_metrics` RPC and the MCP
-/// buffer-metrics tool.
-pub trait RecordMetricsReset {
-    /// Resets this record's stage profiling counters (feature `profiling`).
-    ///
-    /// Default implementation is a no-op; `TypedRecord` overrides it.
-    #[cfg(feature = "profiling")]
-    fn reset_profiling(&self) {}
-
-    /// Resets this record's buffer introspection counters (feature `metrics`).
-    ///
-    /// Default implementation is a no-op; `TypedRecord` overrides it.
-    #[cfg(feature = "metrics")]
-    fn reset_buffer_metrics(&self) {}
 }
 
 // Helper extension trait for type-safe downcasting
@@ -593,26 +572,9 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         F: FnOnce(crate::RuntimeContext, crate::Producer<T>) -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
-        // Check for existing transform (mutual exclusion)
-        if lock(&self.transform).is_some() {
-            self.push_config_error(crate::error::ConfigError::new(
-                "",
-                None,
-                "Record already has a .transform(); cannot also have a .source().",
-            ));
-            return;
-        }
-
-        if !self.inbound_connectors.is_empty() {
-            self.push_config_error(crate::error::ConfigError::new(
-                "",
-                None,
-                "Record already has a .link_from(); cannot also have a .source().",
-            ));
-            return;
-        }
-
-        // Check if already set
+        // Same-stage duplicate: a second .source() would silently overwrite
+        // the first. Cross-stage exclusivity (.source()/.transform()/
+        // .link_from()) is validated once, in build().
         if lock(&self.producer).is_some() {
             self.push_config_error(crate::error::ConfigError::new(
                 "",
@@ -660,29 +622,13 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     ///
     /// A transform is mutually exclusive with `.source()` and with any
     /// `.link_from()` inbound connector — all three write to the same buffer
-    /// and would race as last-writer-wins. Violations (including a second
-    /// transform) are recorded — not panicked — and reported from `build()`;
-    /// the conflicting registration is skipped.
+    /// and would race as last-writer-wins. That exclusivity is validated in
+    /// `build()`; a duplicate transform is recorded here — not panicked — and
+    /// reported from `build()` with the conflicting registration skipped.
     pub(crate) fn set_transform(&mut self, descriptor: crate::transform::TransformDescriptor<T>) {
-        // Enforce mutual exclusion with .source()
-        if lock(&self.producer).is_some() {
-            self.push_config_error(crate::error::ConfigError::new(
-                "",
-                None,
-                "Record already has a .source(); cannot also have a .transform().",
-            ));
-            return;
-        }
-
-        if !self.inbound_connectors.is_empty() {
-            self.push_config_error(crate::error::ConfigError::new(
-                "",
-                None,
-                "Record already has a .link_from(); cannot also have a .transform().",
-            ));
-            return;
-        }
-
+        // Same-stage duplicate: only one transform per record. Cross-stage
+        // exclusivity (.source()/.transform()/.link_from()) is validated
+        // once, in build().
         if lock(&self.transform).is_some() {
             self.push_config_error(crate::error::ConfigError::new(
                 "",
@@ -723,7 +669,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         // Check for inbound connector (link)
         if let Some(first_link) = self.inbound_connectors.first() {
             return crate::graph::RecordOrigin::Link {
-                protocol: first_link.url.scheme.clone(),
+                protocol: first_link.url.scheme().to_string(),
                 address: first_link.url.to_string(),
             };
         }
@@ -921,24 +867,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// reported from `build()`; the conflicting registration is skipped.
     /// Multiple inbound connectors on the same record are permitted (fan-in).
     pub fn add_inbound_connector(&mut self, link: crate::connector::InboundConnectorLink) {
-        if lock(&self.producer).is_some() {
-            self.push_config_error(crate::error::ConfigError::new(
-                "",
-                Some(alloc::format!("{}", link.url)),
-                "Record already has a .source(); cannot also have a .link_from().",
-            ));
-            return;
-        }
-
-        if lock(&self.transform).is_some() {
-            self.push_config_error(crate::error::ConfigError::new(
-                "",
-                Some(alloc::format!("{}", link.url)),
-                "Record already has a .transform(); cannot also have a .link_from().",
-            ));
-            return;
-        }
-
+        // Cross-stage exclusivity with .source()/.transform() is validated
+        // once, in build().
         self.inbound_connectors.push(link);
     }
 
@@ -1095,27 +1025,6 @@ impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {
 // in the bidirectional routing system. The Sync bound propagates from AnyRecord
 // trait and ensures thread-safe sharing of record values.
 impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
-    fn validate(&self) -> Result<(), &'static str> {
-        // Producer service is optional - some records are driven by external events
-        // Consumer is also optional - records can be accessed via:
-        // - Explicit consumers (tap, link)
-        // - Remote access (AimX protocol)
-        // - Direct producer/consumer API
-
-        // A remote-access record has no fallback storage since design 031
-        // removed latest_snapshot: reads/writes go straight to the buffer. With
-        // no buffer, `record.get`/`latest()` return not_found and `record.set`
-        // silently discards the value. Fail at build() so the buffer is added
-        // explicitly instead of surfacing as a silent runtime no-op.
-        #[cfg(feature = "json-serialize")]
-        if self.remote_codec.is_some() && !self.has_buffer() {
-            return Err("record has .with_remote_access() but no buffer; \
-                 add a buffer (e.g. .buffer(BufferCfg::SingleLatest)) so record.get/set work");
-        }
-
-        Ok(())
-    }
-
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -1125,7 +1034,25 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     }
 
     fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError> {
-        core::mem::take(&mut self.config_errors)
+        #[allow(unused_mut)]
+        let mut errors = core::mem::take(&mut self.config_errors);
+
+        // A remote-access record has no fallback storage since design 031
+        // removed latest_snapshot: reads/writes go straight to the buffer. With
+        // no buffer, `record.get`/`latest()` return not_found and `record.set`
+        // silently discards the value. Fail at build() so the buffer is added
+        // explicitly instead of surfacing as a silent runtime no-op.
+        #[cfg(feature = "json-serialize")]
+        if self.remote_codec.is_some() && !self.has_buffer() {
+            errors.push(crate::error::ConfigError::new(
+                "",
+                None,
+                "record has .with_remote_access() but no buffer; \
+                 add a buffer (e.g. .buffer(BufferCfg::SingleLatest)) so record.get/set work",
+            ));
+        }
+
+        errors
     }
 
     fn set_writable_erased(&self, writable: bool) {
@@ -1144,11 +1071,13 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     fn json_access(&self) -> Option<&dyn JsonRecordAccess> {
         Some(self)
     }
-}
 
-impl<T: Send + Sync + 'static + Debug + Clone> RecordIntrospect for TypedRecord<T> {
     fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink] {
         &self.outbound_connectors
+    }
+
+    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
+        &self.inbound_connectors
     }
 
     fn consumer_count(&self) -> usize {
@@ -1177,10 +1106,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> RecordIntrospect for TypedRecord<
 
     fn transform_input_keys(&self) -> Option<Vec<String>> {
         TypedRecord::transform_input_keys(self)
-    }
-
-    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink] {
-        &self.inbound_connectors
     }
 
     #[cfg(feature = "remote-access")]
@@ -1235,6 +1160,18 @@ impl<T: Send + Sync + 'static + Debug + Clone> RecordIntrospect for TypedRecord<
         let metadata = metadata.with_stage_profiling(self.profiling.snapshot());
 
         metadata
+    }
+
+    #[cfg(feature = "profiling")]
+    fn reset_profiling(&self) {
+        self.profiling.reset_all();
+    }
+
+    #[cfg(feature = "metrics")]
+    fn reset_buffer_metrics(&self) {
+        if let Some(buf) = &self.buffer {
+            buf.reset_metrics();
+        }
     }
 }
 
@@ -1360,19 +1297,5 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
         );
 
         Ok(())
-    }
-}
-
-impl<T: Send + Sync + 'static + Debug + Clone> RecordMetricsReset for TypedRecord<T> {
-    #[cfg(feature = "profiling")]
-    fn reset_profiling(&self) {
-        self.profiling.reset_all();
-    }
-
-    #[cfg(feature = "metrics")]
-    fn reset_buffer_metrics(&self) {
-        if let Some(buf) = &self.buffer {
-            buf.reset_metrics();
-        }
     }
 }

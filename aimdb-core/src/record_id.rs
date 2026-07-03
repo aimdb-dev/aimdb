@@ -55,18 +55,6 @@
 
 use alloc::{boxed::Box, collections::BTreeSet, string::ToString};
 
-#[cfg(all(debug_assertions, feature = "std"))]
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-/// Counter for distinct interned keys (debug builds only, std only)
-#[cfg(all(debug_assertions, feature = "std"))]
-static INTERNED_KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-/// Maximum expected distinct interned keys before warning.
-/// If exceeded, a debug assertion fires to catch potential misuse.
-#[cfg(all(debug_assertions, feature = "std"))]
-const MAX_EXPECTED_INTERNED_KEYS: usize = 1000;
-
 #[cfg(feature = "std")]
 type Mutex<T> = std::sync::Mutex<T>;
 #[cfg(not(feature = "std"))]
@@ -292,11 +280,6 @@ impl StringKey {
     /// resident forever. Do **not** derive keys from unbounded input (e.g.
     /// per-request or per-message IDs). Typical overhead: <4KB for 100 keys.
     ///
-    /// # Panics (debug builds only)
-    ///
-    /// In debug builds with the `std` feature, panics if more than 1000
-    /// *distinct* keys are interned. This catches accidental misuse (e.g.,
-    /// deriving keys from unbounded input). Production builds have no limit.
     #[must_use]
     pub fn intern(s: impl AsRef<str>) -> Self {
         let s = s.as_ref();
@@ -306,20 +289,6 @@ impl StringKey {
         let mut interned = lock(&INTERNED_KEYS);
         if let Some(&existing) = interned.get(s) {
             return Self(StringKeyInner::Interned(existing));
-        }
-
-        #[cfg(all(debug_assertions, feature = "std"))]
-        {
-            let count = INTERNED_KEY_COUNT.fetch_add(1, Ordering::Relaxed);
-            debug_assert!(
-                count < MAX_EXPECTED_INTERNED_KEYS,
-                "StringKey::intern() created {} distinct keys. This exceeds the expected \
-                 limit of {}. Each distinct interned key leaks memory for process lifetime; \
-                 keys should only be created at startup, never derived from unbounded input. \
-                 Use static string literals or enum keys for better performance.",
-                count + 1,
-                MAX_EXPECTED_INTERNED_KEYS
-            );
         }
 
         let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());

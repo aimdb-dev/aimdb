@@ -180,15 +180,90 @@ pub trait TopicProvider<T>: Send + Sync {
     fn topic(&self, value: &T) -> Option<String>;
 }
 
-/// Parsed connector URL with protocol, host, port, and credentials
+/// Address of a record link: `scheme://resource` (e.g. `mqtt://sensors/temp`).
 ///
-/// The parser is scheme-agnostic: any `scheme://…` URL parses, and the scheme
-/// is matched against whatever connectors are registered on the builder.
-/// Connectors in this workspace use e.g.:
+/// A link address names a topic/resource on a connector's already-configured
+/// endpoint — it is *not* a URL: there is no host, port, or credential
+/// component (the connector constructor takes the endpoint
+/// [`ConnectorUrl`]). The scheme selects which registered connector serves
+/// the link; the resource is passed to it verbatim (e.g. an MQTT topic, a
+/// KNX group address).
+///
+/// A trailing `?key=value` query is accepted and ignored; per-link options
+/// are passed via `.with_config()` / `.with_timeout_ms()`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkAddress {
+    scheme: String,
+    resource: String,
+}
+
+impl LinkAddress {
+    /// Parses a `scheme://resource` link address.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use aimdb_core::connector::LinkAddress;
+    ///
+    /// let addr = LinkAddress::parse("mqtt://sensors/temp").unwrap();
+    /// assert_eq!(addr.scheme(), "mqtt");
+    /// assert_eq!(addr.resource_id(), "sensors/temp");
+    /// ```
+    pub fn parse(s: &str) -> DbResult<Self> {
+        use crate::DbError;
+
+        let (scheme, rest) = s
+            .split_once("://")
+            .ok_or_else(|| DbError::InvalidOperation {
+                operation: "LinkAddress::parse".into(),
+                reason: alloc::format!("link address '{s}' missing '://' separator"),
+            })?;
+
+        // Per-link options travel via .with_config(); a query here is legal
+        // input but carries no meaning — strip it.
+        let resource = rest.split_once('?').map(|(r, _)| r).unwrap_or(rest);
+        let resource = resource.trim_start_matches('/');
+
+        if scheme.is_empty() || resource.is_empty() {
+            return Err(DbError::InvalidOperation {
+                operation: "LinkAddress::parse".into(),
+                reason: alloc::format!("link address '{s}' needs both a scheme and a resource"),
+            });
+        }
+
+        Ok(Self {
+            scheme: scheme.to_string(),
+            resource: resource.to_string(),
+        })
+    }
+
+    /// Returns the scheme (selects the registered connector, e.g. `"mqtt"`).
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
+    /// Returns the resource identifier the connector addresses (topic, group
+    /// address, path — passed to the connector verbatim).
+    pub fn resource_id(&self) -> &str {
+        &self.resource
+    }
+}
+
+impl fmt::Display for LinkAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}://{}", self.scheme, self.resource)
+    }
+}
+
+/// Parsed connector *endpoint* URL with protocol, host, port, and credentials
+///
+/// This is the URL a connector is constructed with (broker/gateway/server
+/// endpoint) — record links use the far simpler [`LinkAddress`] instead.
+/// The parser is scheme-agnostic: any `scheme://…` URL parses. Connectors in
+/// this workspace use e.g.:
 /// - MQTT: `mqtt://host:port`, `mqtts://host:port`
 /// - KNX: `knx://gateway:3671`
 /// - WebSocket: `ws://host:port/path`, `wss://host:port/path`
-/// - UDS / serial (session transports): `uds://topic`, `serial://topic`
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectorUrl {
     /// Protocol scheme (e.g. mqtt, mqtts, knx, ws, wss, uds, serial)
@@ -248,9 +323,6 @@ impl ConnectorUrl {
         match self.scheme.as_str() {
             "mqtt" | "ws" => Some(1883),
             "mqtts" | "wss" => Some(8883),
-            "kafka" => Some(9092),
-            "http" => Some(80),
-            "https" => Some(443),
             _ => None,
         }
     }
@@ -273,35 +345,6 @@ impl ConnectorUrl {
     /// Returns the path component, or "/" if not specified
     pub fn path(&self) -> &str {
         self.path.as_deref().unwrap_or("/")
-    }
-
-    /// Returns the resource identifier for protocols where the URL specifies a topic/key
-    ///
-    /// This is designed for the simplified connector model where each connector manages
-    /// a single broker/server connection, and URLs only specify the resource (topic, key, path).
-    ///
-    /// # Examples
-    ///
-    /// - `mqtt://commands/temperature` → `"commands/temperature"` (topic)
-    /// - `mqtt://sensors/temp` → `"sensors/temp"` (topic)
-    /// - `uds://events` → `"events"` (topic)
-    ///
-    /// The format is `scheme://resource` where resource = host + path combined.
-    pub fn resource_id(&self) -> String {
-        let path = self.path().trim_start_matches('/');
-
-        // Combine host and path to form the complete resource identifier
-        // For mqtt://commands/temperature: host="commands", path="/temperature"
-        // Result: "commands/temperature"
-        if !self.host.is_empty() && !path.is_empty() {
-            alloc::format!("{}/{}", self.host, path)
-        } else if !self.host.is_empty() {
-            self.host.clone()
-        } else if !path.is_empty() {
-            path.to_string()
-        } else {
-            String::new()
-        }
     }
 }
 
@@ -341,8 +384,8 @@ impl fmt::Display for ConnectorUrl {
 /// happens during the build phase.
 #[derive(Clone)]
 pub struct ConnectorLink {
-    /// Parsed connector URL
-    pub url: ConnectorUrl,
+    /// Parsed link address (`scheme://resource`)
+    pub url: LinkAddress,
 
     /// Additional configuration options (protocol-specific)
     pub config: Vec<(String, String)>,
@@ -371,8 +414,8 @@ impl Debug for ConnectorLink {
 }
 
 impl ConnectorLink {
-    /// Creates a new connector link from a URL and source factory
-    pub fn new(url: ConnectorUrl, source_factory: SourceFactoryFn) -> Self {
+    /// Creates a new connector link from a link address and source factory
+    pub fn new(url: LinkAddress, source_factory: SourceFactoryFn) -> Self {
         Self {
             url,
             config: Vec::new(),
@@ -440,8 +483,8 @@ pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 /// deserialize+produce later without needing PhantomData or type parameters.
 #[derive(Clone)]
 pub struct InboundConnectorLink {
-    /// Parsed connector URL
-    pub url: ConnectorUrl,
+    /// Parsed link address (`scheme://resource`)
+    pub url: LinkAddress,
 
     /// Additional configuration options (protocol-specific)
     pub config: Vec<(String, String)>,
@@ -481,8 +524,8 @@ impl Debug for InboundConnectorLink {
 }
 
 impl InboundConnectorLink {
-    /// Creates a new inbound connector link from a URL and ingest factory
-    pub fn new(url: ConnectorUrl, ingest_factory: IngestFactoryFn) -> Self {
+    /// Creates a new inbound connector link from a link address and ingest factory
+    pub fn new(url: LinkAddress, ingest_factory: IngestFactoryFn) -> Self {
         Self {
             url,
             config: Vec::new(),
@@ -511,7 +554,7 @@ impl InboundConnectorLink {
         self.topic_resolver
             .as_ref()
             .and_then(|resolver| resolver())
-            .unwrap_or_else(|| self.url.resource_id())
+            .unwrap_or_else(|| self.url.resource_id().to_string())
     }
 }
 
@@ -725,9 +768,12 @@ mod tests {
         assert_eq!(mqtt.default_port(), Some(1883));
         assert_eq!(mqtt.effective_port(), Some(1883));
 
-        let https = ConnectorUrl::parse("https://api.example.com").unwrap();
-        assert_eq!(https.default_port(), Some(443));
-        assert_eq!(https.effective_port(), Some(443));
+        let mqtts = ConnectorUrl::parse("mqtts://broker.local").unwrap();
+        assert_eq!(mqtts.default_port(), Some(8883));
+
+        // No connector, no default: unknown schemes carry no port opinion.
+        let knx = ConnectorUrl::parse("knx://gateway.local").unwrap();
+        assert_eq!(knx.default_port(), None);
     }
 
     #[test]
@@ -891,9 +937,9 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_default() {
-        use super::{ConnectorUrl, InboundConnectorLink};
+        use super::{InboundConnectorLink, LinkAddress};
 
-        let url = ConnectorUrl::parse("mqtt://sensors/temperature").unwrap();
+        let url = LinkAddress::parse("mqtt://sensors/temperature").unwrap();
         let link = InboundConnectorLink::new(url, dummy_ingest_factory());
 
         // No resolver configured, should return static topic from URL
@@ -902,9 +948,9 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_dynamic() {
-        use super::{ConnectorUrl, InboundConnectorLink};
+        use super::{InboundConnectorLink, LinkAddress};
 
-        let url = ConnectorUrl::parse("mqtt://sensors/default").unwrap();
+        let url = LinkAddress::parse("mqtt://sensors/default").unwrap();
         let mut link = InboundConnectorLink::new(url, dummy_ingest_factory());
 
         // Configure dynamic resolver
@@ -916,9 +962,9 @@ mod tests {
 
     #[test]
     fn test_inbound_connector_link_resolve_topic_fallback() {
-        use super::{ConnectorUrl, InboundConnectorLink};
+        use super::{InboundConnectorLink, LinkAddress};
 
-        let url = ConnectorUrl::parse("mqtt://sensors/fallback").unwrap();
+        let url = LinkAddress::parse("mqtt://sensors/fallback").unwrap();
         let mut link = InboundConnectorLink::new(url, dummy_ingest_factory());
 
         // Configure resolver that returns None

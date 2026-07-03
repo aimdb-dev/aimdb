@@ -294,6 +294,7 @@ dependencies = [
  "aimdb-core",
  "aimdb-uds-connector",
  "futures",
+ "log",
  "serde",
  "serde_json",
  "tokio",

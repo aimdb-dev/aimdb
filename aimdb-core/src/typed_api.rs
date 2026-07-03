@@ -719,12 +719,12 @@ where
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_to()` is fine).
     pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
-        use crate::connector::{ConnectorLink, ConnectorUrl};
+        use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
 
         let record_key = self.registrar.record_key.clone();
 
-        let Ok(url) = ConnectorUrl::parse(&self.url) else {
+        let Ok(url) = LinkAddress::parse(&self.url) else {
             self.registrar.rec.push_config_error(ConfigError::new(
                 record_key,
                 Some(self.url),
@@ -950,12 +950,12 @@ where
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_from()` is fine).
     pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
-        use crate::connector::{ConnectorUrl, InboundConnectorLink};
+        use crate::connector::{InboundConnectorLink, LinkAddress};
         use crate::error::ConfigError;
 
         let record_key = self.registrar.record_key.clone();
 
-        let Ok(url) = ConnectorUrl::parse(&self.url) else {
+        let Ok(url) = LinkAddress::parse(&self.url) else {
             self.registrar.rec.push_config_error(ConfigError::new(
                 record_key,
                 Some(self.url),
@@ -969,26 +969,8 @@ where
         // NOTE: the buffer requirement is validated by `build()`, not here —
         // `.buffer()` may legitimately be called after `.link_from()`.
 
-        // Mutual exclusion with local producers — both write to the same
-        // buffer and would race as last-writer-wins. The check here carries
-        // the URL; `add_inbound_connector` enforces the same invariant from
-        // the other direction.
-        if self.registrar.rec.has_transform() {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Record already has a .transform(); cannot also have a .link_from().",
-            ));
-            return self.registrar;
-        }
-        if self.registrar.rec.has_producer() {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Record already has a .source(); cannot also have a .link_from().",
-            ));
-            return self.registrar;
-        }
+        // Mutual exclusion with local producers (.source()/.transform()) is
+        // validated once, in build(), where the record key is known.
 
         // Unify the deserializer variants (mutually exclusive) into one typed
         // closure — the raw/context split collapses into what it captures
@@ -1086,27 +1068,25 @@ mod tests {
     }
 
     #[test]
-    fn test_destination_extraction_simple() {
-        use crate::connector::ConnectorUrl;
-        let url = ConnectorUrl::parse("mqtt://sensors").unwrap();
-        assert_eq!(url.host, "sensors");
-        assert_eq!(url.path, None);
+    fn test_link_address_simple() {
+        use crate::connector::LinkAddress;
+        let addr = LinkAddress::parse("mqtt://sensors").unwrap();
+        assert_eq!(addr.scheme(), "mqtt");
+        assert_eq!(addr.resource_id(), "sensors");
     }
 
     #[test]
-    fn test_destination_extraction_multi_level() {
-        use crate::connector::ConnectorUrl;
-        let url = ConnectorUrl::parse("mqtt://sensors/temperature").unwrap();
-        assert_eq!(url.host, "sensors");
-        assert_eq!(url.path, Some("/temperature".to_string()));
+    fn test_link_address_multi_level() {
+        use crate::connector::LinkAddress;
+        let addr = LinkAddress::parse("mqtt://sensors/temperature").unwrap();
+        assert_eq!(addr.resource_id(), "sensors/temperature");
     }
 
     #[test]
-    fn test_destination_extraction_deep() {
-        use crate::connector::ConnectorUrl;
-        let url = ConnectorUrl::parse("mqtt://factory/floor1/sensors/temp").unwrap();
-        assert_eq!(url.host, "factory");
-        assert_eq!(url.path, Some("/floor1/sensors/temp".to_string()));
+    fn test_link_address_deep() {
+        use crate::connector::LinkAddress;
+        let addr = LinkAddress::parse("mqtt://factory/floor1/sensors/temp").unwrap();
+        assert_eq!(addr.resource_id(), "factory/floor1/sensors/temp");
     }
 
     // ====================================================================
@@ -1330,7 +1310,11 @@ mod tests {
     }
 
     #[test]
-    fn link_from_after_source_records_error() {
+    fn cross_stage_registrations_record_without_setter_errors() {
+        // Cross-stage exclusivity (.source()/.transform()/.link_from()) is
+        // validated by build(), not by the setters: conflicting registrations
+        // are all recorded so build() can report the conflict with the record
+        // key attached.
         let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
         rec.set_buffer(Box::new(MockBuffer));
         rec.set_producer(|_ctx, _p| async move {});
@@ -1346,96 +1330,32 @@ mod tests {
             .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
             .finish();
 
-        assert!(rec.inbound_connectors().is_empty());
-        let errors = drain_errors(&mut rec);
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0]
-            .message
-            .contains("Record already has a .source(); cannot also have a .link_from()."));
-        assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/topic"));
-    }
-
-    #[test]
-    fn link_from_after_transform_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
-        rec.set_buffer(Box::new(MockBuffer));
-        rec.set_transform(dummy_transform_descriptor());
-
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
-            vec![Box::new(MockConnectorBuilder {
-                scheme: "mqtt".to_string(),
-            })];
-        let extensions = crate::extensions::Extensions::new();
-
-        let mut reg = make_registrar(&mut rec, &builders, &extensions);
-        reg.link_from("mqtt://broker/topic")
-            .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
-            .finish();
-
-        assert!(rec.inbound_connectors().is_empty());
-        let errors = drain_errors(&mut rec);
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0]
-            .message
-            .contains("Record already has a .transform(); cannot also have a .link_from()."));
-        assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/topic"));
-    }
-
-    #[test]
-    fn source_after_link_from_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
-        rec.set_buffer(Box::new(MockBuffer));
-
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
-            vec![Box::new(MockConnectorBuilder {
-                scheme: "mqtt".to_string(),
-            })];
-        let extensions = crate::extensions::Extensions::new();
-        {
-            let mut reg = make_registrar(&mut rec, &builders, &extensions);
-            reg.link_from("mqtt://broker/topic")
-                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
-                .finish();
-        }
-
-        rec.set_producer(|_ctx, _p| async move {});
-
-        assert!(!rec.has_producer(), "conflicting producer must be skipped");
-        let errors = drain_errors(&mut rec);
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0]
-            .message
-            .contains("Record already has a .link_from(); cannot also have a .source()."));
-    }
-
-    #[test]
-    fn transform_after_link_from_records_error() {
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
-        rec.set_buffer(Box::new(MockBuffer));
-
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
-            vec![Box::new(MockConnectorBuilder {
-                scheme: "mqtt".to_string(),
-            })];
-        let extensions = crate::extensions::Extensions::new();
-        {
-            let mut reg = make_registrar(&mut rec, &builders, &extensions);
-            reg.link_from("mqtt://broker/topic")
-                .with_deserializer_raw(|_b: &[u8]| Ok(TestRecord { value: 0 }))
-                .finish();
-        }
-
-        rec.set_transform(dummy_transform_descriptor());
-
+        assert!(rec.has_producer());
+        assert_eq!(rec.inbound_connectors().len(), 1);
         assert!(
-            !rec.has_transform(),
-            "conflicting transform must be skipped"
+            drain_errors(&mut rec).is_empty(),
+            "no setter-level cross-stage errors; build() reports the conflict"
         );
+    }
+
+    #[test]
+    fn duplicate_source_and_transform_record_errors() {
+        // Same-stage duplicates are still caught at registration time: a
+        // second .source()/.transform() would silently overwrite the first.
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+
+        rec.set_producer(|_ctx, _p| async move {});
+        rec.set_producer(|_ctx, _p| async move {});
+        rec.set_transform(dummy_transform_descriptor());
+        rec.set_transform(dummy_transform_descriptor());
+
         let errors = drain_errors(&mut rec);
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0]
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].message.contains("already has a producer service"));
+        assert!(errors[1]
             .message
-            .contains("Record already has a .link_from(); cannot also have a .transform()."));
+            .contains("already has a .transform(); only one is allowed"));
     }
 
     #[test]

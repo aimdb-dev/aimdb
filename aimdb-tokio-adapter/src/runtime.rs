@@ -76,14 +76,27 @@ impl RuntimeOps for TokioAdapter {
     }
 
     fn log(&self, level: LogLevel, msg: &str) {
-        match level {
-            LogLevel::Info => println!("ℹ️  {}", msg),
-            LogLevel::Debug => {
-                #[cfg(debug_assertions)]
-                println!("🔍 {}", msg);
+        // Forward to the `log` facade so the binary chooses the backend
+        // (env_logger, tracing-log, …). When no backend is configured,
+        // `log::max_level()` is still `Off`; fall back to plain stdout so
+        // demos and quickstarts show output without any logger setup. (The
+        // fallback cannot distinguish "no backend" from a backend configured
+        // with everything filtered off — configure a backend if you need
+        // full silence.)
+        if log::max_level() == log::LevelFilter::Off {
+            match level {
+                LogLevel::Debug => {}
+                LogLevel::Info => println!("[info] {}", msg),
+                LogLevel::Warn => println!("[warn] {}", msg),
+                LogLevel::Error => eprintln!("[error] {}", msg),
             }
-            LogLevel::Warn => println!("⚠️  {}", msg),
-            LogLevel::Error => eprintln!("❌ {}", msg),
+            return;
+        }
+        match level {
+            LogLevel::Debug => log::debug!(target: "aimdb", "{msg}"),
+            LogLevel::Info => log::info!(target: "aimdb", "{msg}"),
+            LogLevel::Warn => log::warn!(target: "aimdb", "{msg}"),
+            LogLevel::Error => log::error!(target: "aimdb", "{msg}"),
         }
     }
 }

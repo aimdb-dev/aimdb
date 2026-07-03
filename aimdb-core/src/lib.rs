@@ -68,9 +68,7 @@ pub use typed_api::{
 };
 #[cfg(feature = "remote-access")]
 pub use typed_record::JsonRecordAccess;
-pub use typed_record::{
-    AnyRecord, AnyRecordExt, RecordIntrospect, RecordMetricsReset, TypedRecord,
-};
+pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
 // JSON codec (feature `json-serialize`, no_std + alloc compatible)
 #[cfg(feature = "json-serialize")]
@@ -92,7 +90,7 @@ pub use profiling::{RecordProfilingMetrics, StageMetrics, StageProfilingInfo};
 // Connector Infrastructure exports
 pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
-pub use connector::{ConnectorLink, ConnectorUrl, SerializeError};
+pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
 pub use connector::{IngestFactoryFn, IngestFn};
 pub use connector::{SerializedReader, SerializedSource, SerializedValue, SourceFactoryFn};
 
@@ -103,7 +101,7 @@ pub use router::{Route, Router, RouterBuilder};
 pub use record_id::{RecordId, RecordKey, StringKey};
 
 // Graph exports (dependency graph for record topology)
-pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo, RecordOrigin};
+pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordOrigin};
 
 // Transform API exports
 pub use transform::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
