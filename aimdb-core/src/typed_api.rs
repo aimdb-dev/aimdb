@@ -100,7 +100,7 @@ pub struct Producer<T> {
     /// Pre-resolved write handle to the record's buffer/snapshot/metadata.
     write: Arc<dyn WriteHandle<T>>,
     /// Stage profiling state (set by the spawn machinery for `.source()` stages).
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     profiling: Option<Arc<crate::profiling::ProducerProfilingState>>,
     // `fn() -> T` carries T without forcing Producer's Send/Sync to depend on T.
     // T is only a type-system marker here — it is never stored or referenced.
@@ -115,14 +115,14 @@ where
     pub(crate) fn new(write: Arc<dyn WriteHandle<T>>) -> Self {
         Self {
             write,
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             profiling: None,
             _phantom: PhantomData,
         }
     }
 
     /// Attaches stage profiling state. Internal — called by the spawn machinery.
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     pub(crate) fn set_profiling(
         &mut self,
         metrics: Arc<crate::profiling::StageMetrics>,
@@ -153,7 +153,7 @@ where
     /// }
     /// ```
     pub fn produce(&self, value: T) {
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         if let Some(state) = &self.profiling {
             state.record_produce();
         }
@@ -190,7 +190,7 @@ impl<T> Clone for Producer<T> {
     fn clone(&self) -> Self {
         Self {
             write: self.write.clone(),
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             profiling: self.profiling.clone(),
             _phantom: PhantomData,
         }
@@ -221,7 +221,7 @@ pub struct Consumer<T> {
     /// Pre-resolved buffer handle to the record's buffer.
     buffer: Arc<dyn DynBuffer<T>>,
     /// Stage profiling state (set by the spawn machinery for `.tap()` / `.link_to()`).
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     profiling: Option<(Arc<crate::profiling::StageMetrics>, crate::profiling::Clock)>,
     // See Producer<T>: `fn() -> T` keeps Send/Sync independent of T.
     _phantom: PhantomData<fn() -> T>,
@@ -235,14 +235,14 @@ where
     pub(crate) fn new(buffer: Arc<dyn DynBuffer<T>>) -> Self {
         Self {
             buffer,
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             profiling: None,
             _phantom: PhantomData,
         }
     }
 
     /// Attaches stage profiling state. Internal — called by the spawn machinery.
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     pub(crate) fn set_profiling(
         &mut self,
         metrics: Arc<crate::profiling::StageMetrics>,
@@ -258,7 +258,7 @@ where
     /// Infallible — the buffer is pre-resolved at `Consumer` construction.
     pub fn subscribe(&self) -> crate::buffer::Reader<T> {
         let reader = self.buffer.subscribe_boxed();
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         if let Some((metrics, clock)) = &self.profiling {
             return crate::buffer::Reader::new(Box::new(
                 crate::profiling::ProfilingBufferReader::new(
@@ -276,7 +276,7 @@ impl<T> Clone for Consumer<T> {
     fn clone(&self) -> Self {
         Self {
             buffer: self.buffer.clone(),
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             profiling: self.profiling.clone(),
             _phantom: PhantomData,
         }
@@ -407,8 +407,8 @@ pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     /// `aimdb-persistence`) to retrieve typed state inside `.persist()`.
     pub(crate) extensions: &'a crate::extensions::Extensions,
     /// The most recently registered stage, so `.with_name()` knows what to name.
-    /// Tracked even when the `profiling` feature is off (then it's just unused).
-    #[cfg_attr(not(feature = "profiling"), allow(dead_code))]
+    /// Tracked even when the `observability` feature is off (then it's just unused).
+    #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) last_stage: Option<(StageKind, usize)>,
 }
 
@@ -429,13 +429,13 @@ where
     /// this call (the most recent `.source()`, `.tap()`, or `.link_to()`).
     ///
     /// The name shows up in stage profiling output. This method is always
-    /// available; when the `profiling` feature is disabled it is a no-op.
+    /// available; when the `observability` feature is disabled it is a no-op.
     pub fn with_name(&mut self, name: &str) -> &mut Self {
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         if let Some((kind, idx)) = self.last_stage {
             self.rec.profiling_mut().set_stage_name(kind, idx, name);
         }
-        #[cfg(not(feature = "profiling"))]
+        #[cfg(not(feature = "observability"))]
         let _ = name;
         self
     }
@@ -451,12 +451,12 @@ where
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.rec.set_producer(f);
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         {
             let (idx, _) = self.rec.profiling_mut().push_source();
             self.last_stage = Some((StageKind::Source, idx));
         }
-        #[cfg(not(feature = "profiling"))]
+        #[cfg(not(feature = "observability"))]
         {
             self.last_stage = Some((StageKind::Source, 0));
         }
@@ -475,12 +475,12 @@ where
         T: Sync,
     {
         self.rec.add_consumer(f);
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         {
             let (idx, _) = self.rec.profiling_mut().push_tap();
             self.last_stage = Some((StageKind::Tap, idx));
         }
-        #[cfg(not(feature = "profiling"))]
+        #[cfg(not(feature = "observability"))]
         {
             self.last_stage = Some((StageKind::Tap, 0));
         }
@@ -522,13 +522,13 @@ where
         self
     }
 
-    /// Installs the JSON codec for this record (feature `json-serialize`)
+    /// Installs the JSON codec for this record (feature `remote`)
     ///
     /// Enables `record.latest()?.as_json()`, and on `std` the AimX `record.get`
     /// / `set` / `subscribe` protocol. Requires `T: RemoteSerialize`
     /// (blanket-impl'd for every `Serialize + DeserializeOwned` type). Works on
     /// no_std + alloc.
-    #[cfg(feature = "json-serialize")]
+    #[cfg(feature = "remote")]
     pub fn with_remote_access(&mut self) -> &mut Self
     where
         T: crate::codec::RemoteSerialize + 'static,
@@ -749,13 +749,13 @@ where
 
         // Register the link as a profiling stage (so `.with_name()` can name it
         // and the consumer it creates can be timed).
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         let link_metrics = {
             let (idx, metrics) = self.registrar.rec.profiling_mut().push_link();
             self.registrar.last_stage = Some((StageKind::Link, idx));
             metrics
         };
-        #[cfg(not(feature = "profiling"))]
+        #[cfg(not(feature = "observability"))]
         {
             self.registrar.last_stage = Some((StageKind::Link, 0));
         }
@@ -794,7 +794,7 @@ where
 
                 #[allow(unused_mut)]
                 let mut consumer = Consumer::<T>::new(buffer);
-                #[cfg(feature = "profiling")]
+                #[cfg(feature = "observability")]
                 consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
                 Box::new(FusedSource {
                     consumer,

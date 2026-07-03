@@ -2,11 +2,11 @@
 //! ride for AimX remote access.
 //!
 //! - [`AimxCodec`] — the symmetric NDJSON [`EnvelopeCodec`](crate::session::EnvelopeCodec),
-//!   `no_std + alloc` (features `connector-session` + `json-serialize`); used by
+//!   `no_std + alloc` (features `connector-session` + `remote`); used by
 //!   both the `run_client` and `serve` engines.
 //! - [`AimxDispatch`] — the server method semantics, `no_std + alloc` (features
-//!   `connector-session` + `remote-access`); it reaches into core's
-//!   `record.list` / JSON API, which are gated on `remote-access` too.
+//!   `connector-session` + `remote`); it reaches into core's
+//!   `record.list` / JSON API, which are gated on `remote` too.
 //!
 //! The transport (UDS) lives in a separate connector crate
 //! (`aimdb-uds-connector`); core keeps only the protocol plus the generic
@@ -16,7 +16,7 @@
 mod codec;
 pub use codec::AimxCodec;
 
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 mod dispatch;
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub use dispatch::AimxDispatch;

@@ -30,17 +30,12 @@ tracing = ["aimdb-core/tracing", "dep:tracing"]
 # This provides clear error messages when accidentally enabled
 std = []
 
-# Buffer introspection counters (produced/consumed/dropped/occupancy).
-# Backed by `aimdb-core`'s portable-atomic-based `BufferCounters` so it works on
-# no_std targets (the final binary must provide a `critical-section` impl —
-# cortex-m / embassy HALs do, same as `profiling`).
-metrics = ["aimdb-core/metrics", "embassy-runtime"]
-
-# Automatic stage profiling. Uses portable-atomic (with the `critical-section`
-# fallback for 64-bit atomics, pulled in via aimdb-core/profiling) plus the Embassy
-# clock, so it works on no_std targets. The final binary must provide a
-# `critical-section` implementation (cortex-m / embassy HALs do).
-profiling = ["aimdb-core/profiling", "embassy-runtime"]
+# Observability: buffer introspection counters plus automatic stage profiling.
+# Backed by `aimdb-core`'s portable-atomic-based counters (with the
+# `critical-section` fallback for 64-bit atomics) plus the Embassy clock, so it
+# works on no_std targets. The final binary must provide a `critical-section`
+# implementation (cortex-m / embassy HALs do).
+observability = ["aimdb-core/observability", "embassy-runtime"]
 
 [dependencies]
 # Core AimDB types - no_std for Embassy (requires alloc for typed APIs)

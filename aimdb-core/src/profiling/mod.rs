@@ -1,4 +1,4 @@
-//! Automatic stage profiling (feature `profiling`).
+//! Automatic stage profiling (feature `observability`).
 //!
 //! AimDB owns the execution boundary for user callbacks (`.source()`, `.tap()`,
 //! `.link()`), so it can measure their wall-clock execution time without any

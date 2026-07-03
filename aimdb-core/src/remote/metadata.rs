@@ -1,4 +1,4 @@
-//! Record metadata types for remote introspection (feature `remote-access`).
+//! Record metadata types for remote introspection (feature `remote`).
 //!
 //! [`RecordMetadata`] describes a registered record's runtime state — buffer
 //! configuration, producer/consumer counts, the `writable` flag, and
@@ -8,7 +8,7 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
-#[cfg(feature = "profiling")]
+#[cfg(feature = "observability")]
 use alloc::vec::Vec;
 use core::any::TypeId;
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ use crate::record_id::{RecordId, RecordKey};
 /// Provides information for remote introspection, including buffer
 /// configuration and producer/consumer counts.
 ///
-/// When the `metrics` feature is enabled, additional fields are included
+/// When the `observability` feature is enabled, additional fields are included
 /// for buffer-level statistics (produced_count, consumed_count, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordMetadata {
@@ -61,29 +61,29 @@ pub struct RecordMetadata {
 
     // ===== Buffer metrics (feature-gated) =====
     /// Total items pushed to the buffer (metrics feature only)
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub produced_count: Option<u64>,
 
     /// Total items consumed from the buffer (metrics feature only)
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consumed_count: Option<u64>,
 
     /// Total items dropped due to overflow/lag (metrics feature only)
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dropped_count: Option<u64>,
 
     /// Current buffer occupancy: (items, capacity) (metrics feature only)
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occupancy: Option<(usize, usize)>,
 
     // ===== Stage profiling (feature-gated) =====
     /// Per-stage timing metrics (`.source()`/`.tap()`/`.link()`), if the
-    /// `profiling` feature is enabled and any stage has been registered.
-    #[cfg(feature = "profiling")]
+    /// `observability` feature is enabled and any stage has been registered.
+    #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_profiling: Option<Vec<crate::profiling::StageProfilingInfo>>,
 }
@@ -129,15 +129,15 @@ impl RecordMetadata {
             consumer_count,
             writable,
             outbound_connector_count,
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             produced_count: None,
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             consumed_count: None,
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             dropped_count: None,
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             occupancy: None,
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             stage_profiling: None,
         }
     }
@@ -146,7 +146,7 @@ impl RecordMetadata {
     ///
     /// Populates produced_count, consumed_count, dropped_count, and occupancy
     /// from the provided metrics snapshot.
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     pub fn with_buffer_metrics(mut self, snapshot: crate::buffer::BufferMetricsSnapshot) -> Self {
         self.produced_count = Some(snapshot.produced_count);
         self.consumed_count = Some(snapshot.consumed_count);
@@ -159,7 +159,7 @@ impl RecordMetadata {
     }
 
     /// Attaches a stage profiling snapshot (profiling feature only).
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     pub fn with_stage_profiling(
         mut self,
         stages: Vec<crate::profiling::StageProfilingInfo>,

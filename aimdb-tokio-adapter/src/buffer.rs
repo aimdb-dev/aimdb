@@ -21,13 +21,13 @@ use aimdb_core::DbError;
 use tokio::sync::{broadcast, watch};
 use tokio_util::sync::ReusableBoxFuture;
 
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 
 /// Tokio buffer implementation
 pub struct TokioBuffer<T: Clone + Send + Sync + 'static> {
     inner: Arc<TokioBufferInner<T>>,
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     metrics: Arc<BufferCounters>,
 }
 
@@ -82,7 +82,7 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
     type Reader = TokioBufferReader<T>;
 
     fn new(cfg: &BufferCfg) -> Self {
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         let capacity = match cfg {
             BufferCfg::SpmcRing { capacity } => *capacity,
             BufferCfg::SingleLatest => 1, // Conceptually holds 1 value
@@ -111,13 +111,13 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
 
         Self {
             inner: Arc::new(inner),
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             metrics: Arc::new(BufferCounters::new(capacity)),
         }
     }
 
     fn push(&self, value: T) {
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         self.metrics.increment_produced();
 
         match &*self.inner {
@@ -171,7 +171,7 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                 // Allocate the reusable future box once, here, capturing the
                 // freshly-subscribed receiver — reused for every message (W8).
                 recv: ReusableBoxFuture::new(broadcast_recv(tx.subscribe())),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
             TokioBufferInner::Watch { tx } => {
@@ -186,14 +186,14 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
                 rx.mark_changed();
                 TokioBufferReader::Watch {
                     recv: ReusableBoxFuture::new(watch_recv(rx)),
-                    #[cfg(feature = "metrics")]
+                    #[cfg(feature = "observability")]
                     metrics: Arc::clone(&self.metrics),
                 }
             }
             TokioBufferInner::Mailbox { state } => TokioBufferReader::Mailbox {
                 state: Arc::clone(state),
                 waker_key: None,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
         }
@@ -202,7 +202,7 @@ impl<T: Clone + Send + Sync + 'static> Buffer<T> for TokioBuffer<T> {
 
 /// Explicit DynBuffer implementation for TokioBuffer
 ///
-/// When the `metrics` feature is enabled, `metrics_snapshot()` returns actual
+/// When the `observability` feature is enabled, `metrics_snapshot()` returns actual
 /// buffer statistics. Otherwise it returns `None`.
 impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for TokioBuffer<T> {
     fn push(&self, value: T) {
@@ -228,19 +228,19 @@ impl<T: Clone + Send + Sync + 'static> aimdb_core::buffer::DynBuffer<T> for Toki
         }
     }
 
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         Some(<Self as BufferMetrics>::metrics(self))
     }
 
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn reset_metrics(&self) {
         <Self as BufferMetrics>::reset_metrics(self);
     }
 }
 
 /// Implementation of BufferMetrics for TokioBuffer (metrics feature only)
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 impl<T: Clone + Send + Sync + 'static> BufferMetrics for TokioBuffer<T> {
     fn metrics(&self) -> BufferMetricsSnapshot {
         // Calculate current occupancy based on buffer type
@@ -366,12 +366,12 @@ where
 pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
     Broadcast {
         recv: ReusableBoxFuture<'static, BroadcastRecvOutput<T>>,
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
     Watch {
         recv: ReusableBoxFuture<'static, WatchRecvOutput<T>>,
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
     Mailbox {
@@ -380,7 +380,7 @@ pub enum TokioBufferReader<T: Clone + Send + Sync + 'static> {
         /// registered one (design 039 F5). `None` until the first `Pending`
         /// `poll_recv`; used by `Drop` to remove exactly this reader's entry.
         waker_key: Option<usize>,
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
 }
@@ -390,16 +390,16 @@ impl<T: Clone + Send + Sync + 'static> TokioBufferReader<T> {
     /// metrics). Shared by `poll_recv` and `try_recv`.
     fn map_broadcast(
         result: Result<T, broadcast::error::RecvError>,
-        #[cfg(feature = "metrics")] metrics: &BufferCounters,
+        #[cfg(feature = "observability")] metrics: &BufferCounters,
     ) -> Result<T, DbError> {
         match result {
             Ok(value) => {
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics.increment_consumed();
                 Ok(value)
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics.add_dropped(n);
                 Err(DbError::BufferLagged {
                     lag_count: n,
@@ -415,11 +415,11 @@ impl<T: Clone + Send + Sync + 'static> TokioBufferReader<T> {
     /// Map a watch `changed()` result into the AimDB error space.
     fn map_watch(
         result: Result<T, watch::error::RecvError>,
-        #[cfg(feature = "metrics")] metrics: &BufferCounters,
+        #[cfg(feature = "observability")] metrics: &BufferCounters,
     ) -> Result<T, DbError> {
         match result {
             Ok(v) => {
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics.increment_consumed();
                 Ok(v)
             }
@@ -435,24 +435,24 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
         match self {
             TokioBufferReader::Broadcast {
                 recv,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => match poll_rearm(recv, cx, broadcast_recv) {
                 Poll::Ready(result) => Poll::Ready(Self::map_broadcast(
                     result,
-                    #[cfg(feature = "metrics")]
+                    #[cfg(feature = "observability")]
                     metrics,
                 )),
                 Poll::Pending => Poll::Pending,
             },
             TokioBufferReader::Watch {
                 recv,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => match poll_rearm(recv, cx, watch_recv) {
                 Poll::Ready(result) => Poll::Ready(Self::map_watch(
                     result,
-                    #[cfg(feature = "metrics")]
+                    #[cfg(feature = "observability")]
                     metrics,
                 )),
                 Poll::Pending => Poll::Pending,
@@ -460,12 +460,12 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
             TokioBufferReader::Mailbox {
                 state,
                 waker_key,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => {
                 let mut guard = state.lock().unwrap();
                 if let Some(value) = guard.slot.take() {
-                    #[cfg(feature = "metrics")]
+                    #[cfg(feature = "observability")]
                     metrics.increment_consumed();
                     Poll::Ready(Ok(value))
                 } else if guard.closed {
@@ -513,7 +513,7 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
             // semantics); `Pending` means empty. On `Ready`, re-arm the future.
             TokioBufferReader::Broadcast {
                 recv,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => {
                 let waker = Waker::noop();
@@ -521,7 +521,7 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                 match poll_rearm(recv, &mut cx, broadcast_recv) {
                     Poll::Ready(result) => Self::map_broadcast(
                         result,
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics,
                     ),
                     Poll::Pending => Err(DbError::BufferEmpty),
@@ -529,7 +529,7 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
             }
             TokioBufferReader::Watch {
                 recv,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => {
                 let waker = Waker::noop();
@@ -537,7 +537,7 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
                 match poll_rearm(recv, &mut cx, watch_recv) {
                     Poll::Ready(result) => Self::map_watch(
                         result,
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics,
                     ),
                     Poll::Pending => Err(DbError::BufferEmpty),
@@ -545,14 +545,14 @@ impl<T: Clone + Send + Sync + 'static> BufferReader<T> for TokioBufferReader<T> 
             }
             TokioBufferReader::Mailbox {
                 state,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
                 let mut guard = state.lock().unwrap();
                 match guard.slot.take() {
                     Some(val) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Ok(val)
                     }
@@ -1411,7 +1411,7 @@ mod tests {
     // Metrics Tests (feature-gated)
     // ========================================================================
 
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     mod metrics_tests {
         use super::*;
 

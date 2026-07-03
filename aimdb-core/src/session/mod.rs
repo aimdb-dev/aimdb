@@ -32,7 +32,7 @@ mod server;
 // Concrete AimX protocol substrate. The transport lives in a separate connector
 // crate (`aimdb-uds-connector`) — core keeps the protocol plus the generic
 // [`SessionClientConnector`] / [`SessionServerConnector`] spine.
-#[cfg(all(feature = "connector-session", feature = "json-serialize"))]
+#[cfg(all(feature = "connector-session", feature = "remote"))]
 pub mod aimx;
 
 #[cfg(feature = "connector-session")]

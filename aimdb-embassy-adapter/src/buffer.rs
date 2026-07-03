@@ -51,7 +51,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber, WaitResult};
 use embassy_sync::watch::{Receiver as WatchReceiver, Watch};
 
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 
 /// Embassy buffer implementation that wraps the appropriate Embassy primitive
@@ -93,7 +93,7 @@ pub struct EmbassyBuffer<
     const WATCH_N: usize,
 > {
     inner: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     metrics: Arc<BufferCounters>,
 }
 
@@ -136,7 +136,7 @@ impl<
     pub fn new_spmc() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::SpmcRing(PubSubChannel::new())),
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             metrics: Arc::new(BufferCounters::new(CAP)),
         }
     }
@@ -145,7 +145,7 @@ impl<
     pub fn new_watch() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::Watch(Watch::new())),
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             metrics: Arc::new(BufferCounters::new(1)),
         }
     }
@@ -154,7 +154,7 @@ impl<
     pub fn new_mailbox() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::Mailbox(Channel::new())),
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             metrics: Arc::new(BufferCounters::new(1)),
         }
     }
@@ -189,7 +189,7 @@ impl<
     }
 
     fn push(&self, value: T) {
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         self.metrics.increment_produced();
 
         match &*self.inner {
@@ -231,18 +231,18 @@ impl<
             EmbassyBufferInner::SpmcRing(channel) => EmbassyBufferReader::SpmcRing {
                 subscriber: make_spmc_sub(channel).ok(),
                 buffer: Arc::clone(&self.inner),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
             EmbassyBufferInner::Watch(watch) => EmbassyBufferReader::Watch {
                 receiver: make_watch_rx(watch).ok(),
                 buffer: Arc::clone(&self.inner),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
             EmbassyBufferInner::Mailbox(_) => EmbassyBufferReader::Mailbox {
                 buffer: Arc::clone(&self.inner),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
         }
@@ -286,12 +286,12 @@ impl<
         }
     }
 
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         Some(<Self as BufferMetrics>::metrics(self))
     }
 
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn reset_metrics(&self) {
         <Self as BufferMetrics>::reset_metrics(self);
     }
@@ -305,7 +305,7 @@ impl<
 /// - `Watch`: `(1, 1)` once a value has been published (tracked via the
 ///   `produced` counter — embassy's `Watch` doesn't expose state), else `(0, 1)`.
 /// - `Mailbox`: `(1, 1)` if the slot is occupied, else `(0, 1)`.
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 impl<
         T: Clone + Send + 'static,
         const CAP: usize,
@@ -457,7 +457,7 @@ pub enum EmbassyBufferReader<
         subscriber: Option<SpmcSub<T, CAP, SUBS, PUBS>>,
         buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
         /// Shared counter state (cloned from the parent buffer at subscribe time).
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
     Watch {
@@ -465,12 +465,12 @@ pub enum EmbassyBufferReader<
         // make_watch_rx's SAFETY comment.
         receiver: Option<WatchRx<T, WATCH_N>>,
         buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
     Mailbox {
         buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
 }
@@ -487,7 +487,7 @@ impl<
         match self {
             EmbassyBufferReader::SpmcRing {
                 subscriber,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -500,12 +500,12 @@ impl<
                 // (no future box, no allocation per message; lag preserved).
                 match sub.poll_next_message(cx) {
                     Poll::Ready(WaitResult::Message(value)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Poll::Ready(Ok(value))
                     }
                     Poll::Ready(WaitResult::Lagged(n)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.add_dropped(n);
                         Poll::Ready(Err(DbError::BufferLagged {
                             lag_count: n,
@@ -517,7 +517,7 @@ impl<
             }
             EmbassyBufferReader::Watch {
                 receiver,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -528,7 +528,7 @@ impl<
                 };
                 match rx.poll_changed(cx) {
                     Poll::Ready(value) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Poll::Ready(Ok(value))
                     }
@@ -537,7 +537,7 @@ impl<
             }
             EmbassyBufferReader::Mailbox {
                 buffer,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => {
                 let EmbassyBufferInner::Mailbox(channel) = &**buffer else {
@@ -545,7 +545,7 @@ impl<
                 };
                 match channel.poll_receive(cx) {
                     Poll::Ready(value) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Poll::Ready(Ok(value))
                     }
@@ -559,7 +559,7 @@ impl<
         match self {
             EmbassyBufferReader::SpmcRing {
                 subscriber,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -573,12 +573,12 @@ impl<
                 // silently discarding it, mirroring `poll_recv` above.
                 match sub.try_next_message() {
                     Some(WaitResult::Message(value)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Ok(value)
                     }
                     Some(WaitResult::Lagged(n)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.add_dropped(n);
                         Err(DbError::BufferLagged {
                             lag_count: n,
@@ -590,7 +590,7 @@ impl<
             }
             EmbassyBufferReader::Watch {
                 receiver,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -601,7 +601,7 @@ impl<
                 };
                 match rx.try_changed() {
                     Some(value) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Ok(value)
                     }
@@ -610,7 +610,7 @@ impl<
             }
             EmbassyBufferReader::Mailbox {
                 buffer,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => {
                 let EmbassyBufferInner::Mailbox(channel) = &**buffer else {
@@ -618,7 +618,7 @@ impl<
                 };
                 match channel.try_receive() {
                     Ok(val) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Ok(val)
                     }

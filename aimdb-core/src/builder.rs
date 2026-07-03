@@ -186,8 +186,8 @@ impl AimDbInner {
     /// Collects metadata for all registered records
     ///
     /// Returns a vector of `RecordMetadata` for remote introspection.
-    /// Available only when the `remote-access` feature is enabled.
-    #[cfg(feature = "remote-access")]
+    /// Available only when the `remote` feature is enabled.
+    #[cfg(feature = "remote")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.storages
             .iter()
@@ -208,7 +208,7 @@ impl AimDbInner {
     ///
     /// # Returns
     /// `Some(JsonValue)` with the current record value, or `None`
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn try_latest_as_json(&self, record_key: &str) -> Option<serde_json::Value> {
         let id = self.resolve_str(record_key)?;
         self.storages
@@ -233,7 +233,7 @@ impl AimDbInner {
     /// # Returns
     /// - `Ok(())` - Successfully set the value
     /// - `Err(DbError)` - If record not found, has producers, or deserialization fails
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn set_record_from_json(
         &self,
         record_key: &str,
@@ -709,13 +709,13 @@ impl AimDbBuilder {
             extensions: self.extensions,
         });
 
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         let profiling_clock = crate::profiling::make_clock(runtime.clone());
 
         let db = Arc::new(AimDb {
             inner: inner.clone(),
             runtime: runtime.clone(),
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             profiling_clock,
         });
 
@@ -818,7 +818,7 @@ pub struct AimDb {
     runtime: Arc<dyn crate::executor::RuntimeOps>,
 
     /// Shared wall clock for stage profiling, built from the runtime at `build()` time.
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     profiling_clock: crate::profiling::Clock,
 }
 
@@ -891,7 +891,7 @@ impl AimDb {
     }
 
     /// Shared wall clock used by stage profiling (nanoseconds since an arbitrary epoch).
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     pub(crate) fn profiling_clock(&self) -> &crate::profiling::Clock {
         &self.profiling_clock
     }
@@ -1022,21 +1022,21 @@ impl AimDb {
     ///
     /// Returns metadata for all registered records, useful for remote access introspection.
     /// Available only when the `std` feature is enabled.
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.inner.list_records()
     }
 
-    /// Resets stage profiling counters for every record (feature `profiling`).
-    #[cfg(feature = "profiling")]
+    /// Resets stage profiling counters for every record (feature `observability`).
+    #[cfg(feature = "observability")]
     pub fn reset_stage_profiling(&self) {
         for entry in &self.inner.storages {
             entry.record.reset_profiling();
         }
     }
 
-    /// Resets buffer introspection counters for every record (feature `metrics`).
-    #[cfg(feature = "metrics")]
+    /// Resets buffer introspection counters for every record (feature `observability`).
+    #[cfg(feature = "observability")]
     pub fn reset_buffer_metrics(&self) {
         for entry in &self.inner.storages {
             entry.record.reset_buffer_metrics();
@@ -1057,7 +1057,7 @@ impl AimDb {
     /// with no single "current value"; read it via a subscriber or `record.drain`,
     /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
     /// for state you want to read latest-value style.
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)
     }
@@ -1075,7 +1075,7 @@ impl AimDb {
     ///
     /// # Returns
     /// `Ok(())` on success, error if record not found, has producers, or deserialization fails
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn set_record_from_json(
         &self,
         record_name: &str,

@@ -57,7 +57,7 @@
 
 // Module structure
 mod cfg;
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 mod counters;
 mod reader;
 mod traits;
@@ -73,15 +73,15 @@ pub(crate) use traits::WriteHandle;
 pub(crate) use writer::RecordWriter;
 
 // JSON streaming support
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub use reader::JsonReader;
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub use traits::JsonBufferReader;
 
 // Buffer metrics (feature-gated; works in no_std with portable-atomic)
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 pub use counters::BufferCounters;
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 pub use traits::{BufferMetrics, BufferMetricsSnapshot};
 
 // Re-export buffer-specific errors from core error module

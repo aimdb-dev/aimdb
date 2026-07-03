@@ -25,7 +25,7 @@ std = [
 tokio-runtime = [
     "std",
     "aimdb-core/connector-session",
-    "aimdb-core/remote-access",
+    "aimdb-core/remote",
     "dep:tokio",
     "dep:tokio-serial",
 ]
@@ -37,7 +37,7 @@ tokio-runtime = [
 embassy-runtime = [
     "aimdb-core/alloc",
     "aimdb-core/connector-session",
-    "aimdb-core/remote-access",
+    "aimdb-core/remote",
     "dep:aimdb-embassy-adapter",
     "aimdb-embassy-adapter/connector-io",
     # `embassy-time`/`-sync` give the `EmbassyAdapter` clock the smoke test runs on.

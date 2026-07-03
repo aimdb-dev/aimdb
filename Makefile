@@ -69,21 +69,15 @@ build:
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
-	cargo build --package aimdb-core --features "std,tracing,metrics"
-	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + profiling)$(NC)\n"
-	cargo build --package aimdb-core --no-default-features --features "alloc,profiling"
-	@printf "$(YELLOW)  → Building aimdb-core (std + profiling)$(NC)\n"
-	cargo build --package aimdb-core --features "std,tracing,profiling"
-	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + metrics)$(NC)\n"
-	cargo build --package aimdb-core --no-default-features --features "alloc,metrics"
+	cargo build --package aimdb-core --features "std,tracing,observability"
+	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + observability)$(NC)\n"
+	cargo build --package aimdb-core --no-default-features --features "alloc,observability"
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + connector-session contracts)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features "alloc,connector-session"
 	@printf "$(YELLOW)  → Building aimdb-core (std + connector-session engines)$(NC)\n"
 	cargo build --package aimdb-core --features "std,connector-session"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
-	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
-	@printf "$(YELLOW)  → Building tokio adapter (with profiling)$(NC)\n"
-	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
+	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
@@ -119,18 +113,12 @@ test:
 	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
 	cargo test --package aimdb-core --features "std,tracing"
-	@printf "$(YELLOW)  → Testing aimdb-core (std + metrics)$(NC)\n"
-	cargo test --package aimdb-core --features "std,tracing,metrics"
-	@printf "$(YELLOW)  → Testing aimdb-core (std + profiling)$(NC)\n"
-	cargo test --package aimdb-core --features "std,tracing,profiling"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + profiling)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,profiling"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + metrics)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,metrics"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + json-serialize value codec)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,json-serialize"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + remote-access data model)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,remote-access"
+	@printf "$(YELLOW)  → Testing aimdb-core (std + observability)$(NC)\n"
+	cargo test --package aimdb-core --features "std,tracing,observability"
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + observability)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features --features "alloc,observability"
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + remote)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features --features "alloc,remote"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
 	@printf "$(YELLOW)  → Testing aimdb-core connector-session (contracts object-safety)$(NC)\n"
@@ -143,10 +131,8 @@ test:
 	cargo test --package aimdb-client --no-default-features --features "transport-serial"
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
-	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"
-	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
-	@printf "$(YELLOW)  → Testing tokio adapter (with profiling)$(NC)\n"
-	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
+	@printf "$(YELLOW)  → Testing tokio adapter (with observability)$(NC)\n"
+	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, connector spine, doctests)$(NC)\n"
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
@@ -212,14 +198,12 @@ clippy:
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + json-serialize value codec)$(NC)\n"
-	cargo clippy --package aimdb-core --no-default-features --features "alloc,json-serialize" --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + remote-access data model)$(NC)\n"
-	cargo clippy --package aimdb-core --no-default-features --features "alloc,remote-access" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + remote)$(NC)\n"
+	cargo clippy --package aimdb-core --no-default-features --features "alloc,remote" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
-	cargo clippy --package aimdb-core --features "std,tracing,metrics" --all-targets -- -D warnings
+	cargo clippy --package aimdb-core --features "std,tracing,observability" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
-	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --all-targets -- -D warnings
+	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter with network support$(NC)\n"
@@ -276,8 +260,8 @@ doc:
 	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
 	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --no-deps
-	cargo doc --package aimdb-core --features "std,tracing,metrics" --no-deps
-	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
+	cargo doc --package aimdb-core --features "std,tracing,observability" --no-deps
+	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --no-deps
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --features "std,tokio-runtime" --no-deps
@@ -324,26 +308,20 @@ test-embedded:
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
-	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + json-serialize value codec) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,json-serialize"
-	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + remote-access data model) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,remote-access"
+	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + remote) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,remote"
 	@printf "$(YELLOW)  → Checking aimdb-core session engines (no_std + connector-session) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session"
-	@printf "$(YELLOW)  → Checking aimdb-core AimX codec (no_std client path: connector-session + json-serialize) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,json-serialize"
-	@printf "$(YELLOW)  → Checking aimdb-core AimX codec + dispatch (full no_std AimX server: connector-session + remote-access) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,remote-access"
+	@printf "$(YELLOW)  → Checking aimdb-core AimX codec + dispatch (full no_std AimX server: connector-session + remote) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,remote"
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with network support on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,embassy-net-support"
-	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with profiling on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,profiling"
-	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with metrics on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,metrics"
+	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with observability on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,observability"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter connector spine (connector-io) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,connector-io"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"

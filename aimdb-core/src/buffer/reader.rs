@@ -15,7 +15,7 @@ use core::future::poll_fn;
 use crate::buffer::BufferReader;
 use crate::DbError;
 
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 use crate::buffer::JsonBufferReader;
 
 /// Owned, ergonomic handle over an erased [`BufferReader`].
@@ -59,12 +59,12 @@ impl<T: Clone + Send> Reader<T> {
 /// Returned by `subscribe_json`. Awaiting `recv_json` is allocation-free: it
 /// wraps [`poll_recv_json`](JsonBufferReader::poll_recv_json) via
 /// `core::future::poll_fn`, so the pre-W8 remote-access double box is gone.
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub struct JsonReader {
     inner: Box<dyn JsonBufferReader + Send>,
 }
 
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 impl JsonReader {
     /// Wrap an erased JSON reader in an ergonomic handle.
     pub fn new(inner: Box<dyn JsonBufferReader + Send>) -> Self {

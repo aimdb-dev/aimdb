@@ -87,7 +87,7 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     ///
     /// Returns `Some(snapshot)` if the buffer implementation supports metrics,
     /// `None` otherwise. Default implementation returns `None`.
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         None
     }
@@ -97,7 +97,7 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     /// Default implementation is a no-op so buffers without metrics support are
     /// safe to call. Implementations that track counters should override this
     /// to zero them.
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn reset_metrics(&self) {}
 }
 
@@ -237,8 +237,8 @@ pub trait BufferReader<T: Clone + Send>: Send {
 ///
 /// # Requirements
 /// - Record must be configured with `.with_remote_access()`
-/// - Only available with the `remote-access` feature (requires serde_json)
-#[cfg(feature = "remote-access")]
+/// - Only available with the `remote` feature (requires serde_json)
+#[cfg(feature = "remote")]
 pub trait JsonBufferReader: Send {
     /// Poll for the next value, serialized to JSON.
     ///
@@ -263,7 +263,7 @@ pub trait JsonBufferReader: Send {
 ///
 /// Used for introspection and diagnostics. All counters are monotonically
 /// increasing (except after reset).
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 #[derive(Debug, Clone, Default)]
 pub struct BufferMetricsSnapshot {
     /// Total items pushed to this buffer since creation
@@ -289,9 +289,9 @@ pub struct BufferMetricsSnapshot {
 
 /// Optional buffer metrics for introspection (std only, feature-gated)
 ///
-/// Implemented by buffer types when the `metrics` feature is enabled.
+/// Implemented by buffer types when the `observability` feature is enabled.
 /// Provides counters for diagnosing producer-consumer imbalances.
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 pub trait BufferMetrics {
     /// Get a snapshot of current buffer metrics
     ///
@@ -355,7 +355,7 @@ mod tests {
             self
         }
 
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
             None // Mock doesn't track metrics
         }

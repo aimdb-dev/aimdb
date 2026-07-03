@@ -23,7 +23,7 @@ mod log;
 
 pub mod buffer;
 pub mod builder;
-#[cfg(feature = "json-serialize")]
+#[cfg(feature = "remote")]
 pub mod codec;
 pub mod connector;
 pub mod context;
@@ -31,10 +31,10 @@ mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
-#[cfg(feature = "profiling")]
+#[cfg(feature = "observability")]
 pub mod profiling;
 pub mod record_id;
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub mod remote;
 pub mod router;
 #[cfg(feature = "connector-session")]
@@ -54,7 +54,7 @@ pub use extensions::Extensions;
 pub use executor::{BoxFuture, ExecutorError, ExecutorResult, LogLevel, RuntimeOps};
 
 // Producer-Consumer Pattern exports
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub use buffer::JsonReader;
 pub use buffer::Reader;
 pub use buffer::TryProduceError;
@@ -66,12 +66,12 @@ pub use typed_api::{
     Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
     StageKind,
 };
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub use typed_record::JsonRecordAccess;
 pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
-// JSON codec (feature `json-serialize`, no_std + alloc compatible)
-#[cfg(feature = "json-serialize")]
+// JSON codec (feature `remote`, no_std + alloc compatible)
+#[cfg(feature = "remote")]
 pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 
 // connector-session contracts (feature `connector-session`, no_std + alloc
@@ -84,7 +84,7 @@ pub use session::{
 };
 
 // Stage profiling exports (feature-gated)
-#[cfg(feature = "profiling")]
+#[cfg(feature = "observability")]
 pub use profiling::{RecordProfilingMetrics, StageMetrics, StageProfilingInfo};
 
 // Connector Infrastructure exports
