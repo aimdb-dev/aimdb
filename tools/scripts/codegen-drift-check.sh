@@ -42,6 +42,14 @@ name = "drift-check-flat"
 version = "0.1.0"
 edition = "2021"
 
+# The flat-mode Linkable impls are gated on `#[cfg(feature = "std")]` (shared
+# with the no_std common-crate emitters), so this wrapper crate declares its
+# own "std" feature to match — otherwise rustc's check-cfg lint flags the
+# generated code as referencing an unknown feature.
+[features]
+default = ["std"]
+std = []
+
 [dependencies]
 aimdb-core = { path = "$REPO/aimdb-core", features = ["std"] }
 aimdb-data-contracts = { path = "$REPO/aimdb-data-contracts", features = ["std", "linkable", "observable"] }

@@ -1473,10 +1473,12 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
 
 /// Hub-specific record configure block.
 ///
-/// For records produced by a `[[tasks]]`-defined hub task, emits per-variant
-/// individual `builder.configure(...)` calls using `.transform()` or
-/// `.transform_join()`. For all other records (inbound connector or external
-/// source) falls back to the regular loop-based configure block.
+/// For records produced and/or tapped by `[[tasks]]`-defined hub tasks, emits
+/// per-variant individual `builder.configure(...)` calls using `.source()` /
+/// `.transform()` / `.transform_join()` for the producing task (if any) and
+/// `.tap()` for each pure-consumer task. For all other records (inbound
+/// connector or external source with no local task) falls back to the
+/// regular loop-based configure block.
 fn emit_hub_record_configure_block(rec: &RecordDef, state: &ArchitectureState) -> TokenStream {
     if rec.key_variants.is_empty() {
         let msg = format!("TODO: {}: no key variants defined yet", rec.name);
@@ -1489,18 +1491,32 @@ fn emit_hub_record_configure_block(rec: &RecordDef, state: &ArchitectureState) -
         .iter()
         .find(|t| t.outputs.iter().any(|o| o.record == rec.name));
 
-    match producing_task {
-        Some(task) => emit_transform_configure_block(rec, task),
-        None => emit_record_configure_block(rec),
+    // Find pure-consumer ("tap") tasks: no outputs, reading this record
+    let tap_tasks: Vec<&TaskDef> = state
+        .tasks
+        .iter()
+        .filter(|t| t.outputs.is_empty() && t.inputs.iter().any(|i| i.record == rec.name))
+        .collect();
+
+    if producing_task.is_some() || !tap_tasks.is_empty() {
+        emit_transform_configure_block(rec, producing_task, &tap_tasks)
+    } else {
+        emit_record_configure_block(rec)
     }
 }
 
-/// Emit per-variant configure blocks for a hub-task-produced record.
+/// Emit per-variant configure blocks for a hub-task-produced and/or -tapped record.
 ///
 /// Generates individual (non-loop) `builder.configure(...)` calls so that
 /// each variant can reference its specific input keys for `.transform()` /
-/// `.transform_join()`.
-fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStream {
+/// `.transform_join()`, followed by a `.tap()` call for each pure-consumer
+/// task (matching the `.source() → .tap() → .link_to()` ordering documented
+/// on `RecordRegistrar`).
+fn emit_transform_configure_block(
+    rec: &RecordDef,
+    task: Option<&TaskDef>,
+    tap_tasks: &[&TaskDef],
+) -> TokenStream {
     let value_type = format_ident!("{}Value", rec.name);
     let key_type = format_ident!("{}Key", rec.name);
     let buffer_tokens = rec.buffer.to_tokens(rec.capacity);
@@ -1523,6 +1539,14 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
         quote! {}
     };
 
+    let tap_calls: TokenStream = tap_tasks
+        .iter()
+        .map(|t| {
+            let tap_ident = format_ident!("{}", t.name);
+            quote! { .tap(#tap_ident) }
+        })
+        .collect();
+
     let variant_idents: Vec<syn::Ident> = rec
         .key_variants
         .iter()
@@ -1532,7 +1556,10 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
     let per_variant: Vec<TokenStream> = variant_idents
         .iter()
         .map(|variant_ident| {
-            let transform_call = build_transform_call(task, variant_ident);
+            let transform_call = task
+                .map(|t| build_transform_call(t, variant_ident))
+                .unwrap_or_default();
+            let taps = tap_calls.clone();
 
             if has_outbound {
                 let outbound = outbound_chain.clone();
@@ -1545,10 +1572,12 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
                             if let Some(addr) = link_addr.as_deref() {
                                 reg.buffer(#buffer_tokens)
                                     #transform_call
+                                    #taps
                                     #outbound;
                             } else {
                                 reg.buffer(#buffer_tokens)
-                                    #transform_call;
+                                    #transform_call
+                                    #taps;
                             }
                         });
                     }
@@ -1557,7 +1586,8 @@ fn emit_transform_configure_block(rec: &RecordDef, task: &TaskDef) -> TokenStrea
                 quote! {
                     builder.configure::<#value_type>(#key_type::#variant_ident, |reg| {
                         reg.buffer(#buffer_tokens)
-                            #transform_call;
+                            #transform_call
+                            #taps;
                     });
                 }
             }
@@ -2239,6 +2269,77 @@ url = "sensors/{variant}/observation"
         assert!(
             !out.contains("@generated"),
             "schema.rs should not have @generated header:\n{out}"
+        );
+    }
+
+    const HUB_TOML: &str = r#"
+[project]
+name = "drift-check"
+
+[meta]
+aimdb_version = "1.1.0"
+created_at = "2026-07-02T00:00:00Z"
+last_modified = "2026-07-02T00:00:00Z"
+
+[[records]]
+name = "TemperatureReading"
+buffer = "SpmcRing"
+capacity = 64
+key_prefix = "sensors.temp."
+key_variants = ["indoor"]
+producers = ["sensor_task"]
+consumers = ["dashboard_task"]
+
+[[records.fields]]
+name = "celsius"
+type = "f64"
+description = "Temperature in degrees Celsius"
+
+[[tasks]]
+name = "sensor_task"
+task_type = "source"
+description = "Reads the temperature sensor"
+
+[[tasks.outputs]]
+record = "TemperatureReading"
+
+[[tasks]]
+name = "dashboard_task"
+task_type = "tap"
+description = "Logs TemperatureReading values"
+
+[[tasks.inputs]]
+record = "TemperatureReading"
+
+[[binaries]]
+name = "drift-check-hub"
+tasks = ["sensor_task", "dashboard_task"]
+"#;
+
+    fn hub_state() -> ArchitectureState {
+        ArchitectureState::from_toml(HUB_TOML).unwrap()
+    }
+
+    #[test]
+    fn hub_main_wires_tap_consumer_task() {
+        let out = generate_hub_main_rs(&hub_state());
+        assert!(
+            out.contains(".tap(dashboard_task)"),
+            "Pure-consumer task should be wired via .tap():\n{out}"
+        );
+        assert!(
+            out.contains(".source(sensor_task)"),
+            "Producing task should still be wired via .source():\n{out}"
+        );
+    }
+
+    #[test]
+    fn hub_tasks_rs_generates_typed_consumer_stub() {
+        let out = generate_hub_tasks_rs(&hub_state());
+        assert!(
+            out.contains("pub async fn dashboard_task(")
+                && out.contains("aimdb_core::Consumer<TemperatureReadingValue>"),
+            "Expected typed Consumer stub for dashboard_task:\n{out}"
         );
     }
 }

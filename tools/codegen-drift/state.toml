@@ -81,6 +81,14 @@ description = "Logs TemperatureReading values"
 [[tasks.inputs]]
 record = "TemperatureReading"
 
+[[tasks]]
+name = "device_update_task"
+task_type = "tap"
+description = "Applies OtaCommand values received from the cloud"
+
+[[tasks.inputs]]
+record = "OtaCommand"
+
 [[binaries]]
 name = "drift-check-hub"
 tasks = ["sensor_task", "dashboard_task"]
