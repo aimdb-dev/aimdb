@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "aimdb-executor",
     "aimdb-derive",
     "aimdb-data-contracts",
     "aimdb-core",
@@ -38,6 +37,7 @@ members = [
     "examples/hello-mailbox",
     "examples/hello-mailbox-async",
     "examples/hello-single-latest-async",
+    "examples/readme-quickstart",
     # Benchmarking infrastructure — host-only, excluded from default-members
     "aimdb-bench",
 ]

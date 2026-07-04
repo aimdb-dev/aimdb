@@ -1,7 +1,7 @@
 //! MQTT-specific knobs for the generic link builders
 //!
 //! Core's `OutboundConnectorBuilder`/`InboundConnectorBuilder` know schemes
-//! and key/value options, never protocol semantics (design 034 §3.6). The
+//! and key/value options, never protocol semantics. The
 //! MQTT knobs live here as extension traits: importing them makes the MQTT
 //! intent explicit at the call site, and the impls push the exact same
 //! `("qos", …)` / `("retain", …)` option keys the MQTT clients have always
@@ -15,7 +15,7 @@
 //! reg.link_to("mqtt://sensors/temp")
 //!     .with_qos(1)
 //!     .with_retain(true)
-//!     .with_serializer_raw(|t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
+//!     .with_serializer(|_ctx, t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec()))
 //!     .finish();
 //! # }
 //! ```

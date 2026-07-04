@@ -18,8 +18,8 @@ use crate::extensions::Extensions;
 use crate::graph::DependencyGraph;
 
 /// Shorthand for a heap-pinned, `Send`, `'static` future — the unit of work
-/// the `AimDbRunner` drives. Canonical definition lives in `aimdb-executor`.
-pub type BoxFuture = aimdb_executor::BoxFuture;
+/// the `AimDbRunner` drives. Canonical definition lives in `crate::executor`.
+pub type BoxFuture = crate::executor::BoxFuture;
 
 /// `on_start` task stored in `AimDbBuilder::start_fns`, invoked at `build()`.
 type StartFnType = Box<dyn FnOnce(crate::RuntimeContext) -> BoxFuture + Send>;
@@ -30,7 +30,7 @@ type StartFnType = Box<dyn FnOnce(crate::RuntimeContext) -> BoxFuture + Send>;
 /// `Vec<BoxFuture>` is appended to the runner's accumulator.
 type SpawnFnType = Box<dyn FnOnce(&Arc<AimDb>, RecordId) -> DbResult<Vec<BoxFuture>> + Send>;
 use crate::record_id::{RecordId, RecordKey, StringKey};
-use crate::typed_api::{RecordRegistrar, RecordT};
+use crate::typed_api::RecordRegistrar;
 use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
 use crate::{DbError, DbResult};
 
@@ -41,47 +41,35 @@ pub struct OutboundRoute {
     pub topic: String,
     /// Fused wire-level source: its readers yield destination + serialized
     /// payload directly (subscribe → recv → resolve topic → serialize, all
-    /// typed inside — no `Box<dyn Any>` per message, design 036 W1).
+    /// typed inside — no `Box<dyn Any>` per message).
     pub source: Box<dyn crate::connector::SerializedSource>,
     /// Configuration options from the URL query
     pub config: Vec<(String, String)>,
 }
 
+/// One registered record: its key, concrete type, and type-erased storage.
+struct RecordEntry {
+    key: StringKey,
+    type_id: TypeId,
+    record: Box<dyn AnyRecord>,
+}
+
 /// Internal database state
 ///
-/// Holds the registry of typed records with multiple index structures for
-/// efficient access patterns:
-///
-/// - **`storages`**: Vec for O(1) hot-path access by RecordId
-/// - **`by_key`**: HashMap for O(1) lookup by stable RecordKey
-/// - **`by_type`**: HashMap for introspection (find all records of type T)
-/// - **`types`**: Vec for runtime type validation during downcasts
-/// - **`dependency_graph`**: DAG of record relationships (immutable after build)
+/// The registry is immutable after `build()` and holds tens of records, so
+/// it needs exactly two structures: the entries in registration order
+/// (indexed by `RecordId`) and a key → id map for name resolution. The hot
+/// path (produce/consume) uses pre-resolved handles and never touches the
+/// registry; everything else here is control-plane/introspection.
 pub struct AimDbInner {
-    /// Record storage (hot path - indexed by RecordId)
-    ///
-    /// Order matches registration order. Immutable after build().
-    storages: Vec<Box<dyn AnyRecord>>,
+    /// Record entries, indexed by `RecordId`. Order matches registration
+    /// order. Immutable after build().
+    storages: Vec<RecordEntry>,
 
     /// Name → RecordId lookup (control plane)
     ///
-    /// Used by remote access, CLI, MCP for O(1) name resolution.
+    /// Used by remote access, CLI, MCP for name resolution.
     by_key: HashMap<StringKey, RecordId>,
-
-    /// TypeId → RecordIds lookup (introspection)
-    ///
-    /// Enables "find all Temperature records" queries.
-    by_type: HashMap<TypeId, Vec<RecordId>>,
-
-    /// RecordId → TypeId lookup (type safety assertions)
-    ///
-    /// Used to validate downcasts at runtime.
-    types: Vec<TypeId>,
-
-    /// RecordId → StringKey lookup (reverse mapping)
-    ///
-    /// Used to get the key for a given record ID.
-    keys: Vec<StringKey>,
 
     /// Dependency graph (immutable after build)
     ///
@@ -115,21 +103,27 @@ impl AimDbInner {
     /// Get storage by RecordId (hot path - O(1))
     #[inline]
     pub fn storage(&self, id: RecordId) -> Option<&dyn AnyRecord> {
-        self.storages.get(id.index()).map(|b| b.as_ref())
+        self.storages.get(id.index()).map(|e| e.record.as_ref())
     }
 
     /// Get the StringKey for a given RecordId
     #[inline]
     pub fn key_for(&self, id: RecordId) -> Option<&StringKey> {
-        self.keys.get(id.index())
+        self.storages.get(id.index()).map(|e| &e.key)
     }
 
     /// Get all RecordIds for a type (introspection)
-    pub fn records_of_type<T: 'static>(&self) -> &[RecordId] {
-        self.by_type
-            .get(&TypeId::of::<T>())
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+    ///
+    /// Linear scan — the registry is immutable after `build()`, holds tens of
+    /// records, and this is called from introspection paths only.
+    pub fn records_of_type<T: 'static>(&self) -> Vec<RecordId> {
+        let wanted = TypeId::of::<T>();
+        self.storages
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.type_id == wanted)
+            .map(|(i, _)| RecordId::new(i as u32))
+            .collect()
     }
 
     /// Get the number of registered records
@@ -174,48 +168,33 @@ impl AimDbInner {
     {
         use crate::typed_record::AnyRecordExt;
 
-        // Validate RecordId is in bounds
-        if id.index() >= self.storages.len() {
-            return Err(DbError::InvalidRecordId { id: id.raw() });
-        }
+        let entry = self
+            .storages
+            .get(id.index())
+            .ok_or(DbError::InvalidRecordId { id: id.raw() })?;
 
-        // Validate TypeId matches
-        let expected = TypeId::of::<T>();
-        let actual = self.types[id.index()];
-        if expected != actual {
-            return Err(DbError::TypeMismatch {
+        // The downcast is the type check; keep the descriptive error on failure.
+        entry
+            .record
+            .as_typed::<T>()
+            .ok_or_else(|| DbError::TypeMismatch {
                 record_id: id.raw(),
                 expected_type: core::any::type_name::<T>().to_string(),
-            });
-        }
-
-        // Safe to downcast (type validated above)
-        let record = &self.storages[id.index()];
-
-        let typed_record = record
-            .as_typed::<T>()
-            .ok_or_else(|| DbError::InvalidOperation {
-                operation: "get_typed_record_by_id".to_string(),
-                reason: "type mismatch during downcast".to_string(),
-            })?;
-
-        Ok(typed_record)
+            })
     }
 
     /// Collects metadata for all registered records
     ///
     /// Returns a vector of `RecordMetadata` for remote introspection.
-    /// Available only when the `remote-access` feature is enabled.
-    #[cfg(feature = "remote-access")]
+    /// Available only when the `remote` feature is enabled.
+    #[cfg(feature = "remote")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.storages
             .iter()
             .enumerate()
-            .map(|(i, record)| {
+            .map(|(i, e)| {
                 let id = RecordId::new(i as u32);
-                let type_id = self.types[i];
-                let key = self.keys[i];
-                record.collect_metadata(type_id, key, id)
+                e.record.collect_metadata(e.type_id, e.key, id)
             })
             .collect()
     }
@@ -229,10 +208,14 @@ impl AimDbInner {
     ///
     /// # Returns
     /// `Some(JsonValue)` with the current record value, or `None`
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn try_latest_as_json(&self, record_key: &str) -> Option<serde_json::Value> {
         let id = self.resolve_str(record_key)?;
-        self.storages.get(id.index())?.json_access()?.latest_json()
+        self.storages
+            .get(id.index())?
+            .record
+            .json_access()?
+            .latest_json()
     }
 
     /// Sets a record value from JSON (remote access API)
@@ -250,7 +233,7 @@ impl AimDbInner {
     /// # Returns
     /// - `Ok(())` - Successfully set the value
     /// - `Err(DbError)` - If record not found, has producers, or deserialization fails
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn set_record_from_json(
         &self,
         record_key: &str,
@@ -261,6 +244,7 @@ impl AimDbInner {
             .ok_or_else(|| DbError::record_key_not_found(record_key.to_string()))?;
 
         self.storages[id.index()]
+            .record
             .json_access()
             .ok_or_else(|| {
                 DbError::runtime_error(alloc::format!(
@@ -275,7 +259,7 @@ impl AimDbInner {
 ///
 /// Provides a fluent API for constructing databases with type-safe record registration.
 /// Set the runtime via `.runtime()`; a missing runtime is reported by `build()`
-/// like any other configuration mistake (issue #133 contract).
+/// like any other configuration mistake.
 pub struct AimDbBuilder {
     /// Registered records with their keys (order matters for RecordId assignment)
     records: Vec<(StringKey, TypeId, Box<dyn AnyRecord>)>,
@@ -284,8 +268,8 @@ pub struct AimDbBuilder {
     /// key without scanning the vec.
     record_index: HashMap<StringKey, usize>,
 
-    /// Runtime capabilities, held as a value (issue #131)
-    runtime: Option<Arc<dyn aimdb_executor::RuntimeOps>>,
+    /// Runtime capabilities, held as a value
+    runtime: Option<Arc<dyn crate::executor::RuntimeOps>>,
 
     /// Connector builders that will be invoked during build()
     connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder>>,
@@ -327,10 +311,10 @@ impl AimDbBuilder {
     /// Sets the runtime adapter.
     ///
     /// Accepts any adapter implementing the dyn-safe
-    /// [`RuntimeOps`](aimdb_executor::RuntimeOps) capability surface
+    /// [`RuntimeOps`](crate::executor::RuntimeOps) capability surface
     /// (`TokioAdapter`, `EmbassyAdapter`, `WasmAdapter`); the builder stores it
-    /// as a value — no runtime type parameter (issue #131).
-    pub fn runtime(mut self, rt: Arc<impl aimdb_executor::RuntimeOps + 'static>) -> Self {
+    /// as a value — no runtime type parameter.
+    pub fn runtime(mut self, rt: Arc<impl crate::executor::RuntimeOps + 'static>) -> Self {
         self.runtime = Some(rt);
         self
     }
@@ -394,7 +378,7 @@ impl AimDbBuilder {
     /// let mut b = AimDbBuilder::new().runtime(rt)
     ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"));
     /// b.configure::<Temperature>("commands.temp", |r| {
-    ///     r.link_from("mqtt://commands/temp").with_deserializer_raw(parse).finish();
+    ///     r.link_from("mqtt://commands/temp").with_deserializer(parse).finish();
     /// });
     /// b.build().await?;
     ///
@@ -520,30 +504,6 @@ impl AimDbBuilder {
         self
     }
 
-    /// Registers a self-registering record type
-    ///
-    /// The record type must implement `RecordT`.
-    ///
-    /// Uses the type name as the default key. For custom keys, use `configure()` directly.
-    pub fn register_record<T>(&mut self, cfg: &T::Config) -> &mut Self
-    where
-        T: RecordT,
-    {
-        // Default key is the full type name for backward compatibility
-        let key = StringKey::new(core::any::type_name::<T>());
-        self.configure::<T>(key, |reg| T::register(reg, cfg))
-    }
-
-    /// Registers a self-registering record type with a custom key
-    ///
-    /// The record type must implement `RecordT`.
-    pub fn register_record_with_key<T>(&mut self, key: impl RecordKey, cfg: &T::Config) -> &mut Self
-    where
-        T: RecordT,
-    {
-        self.configure::<T>(key, |reg| T::register(reg, cfg))
-    }
-
     /// Builds the database and drives every collected future to completion.
     ///
     /// Convenience wrapper for the common case: call `build()`, then immediately
@@ -600,7 +560,7 @@ impl AimDbBuilder {
         use crate::error::ConfigError;
 
         // ── Validation pass: collect every configuration mistake before any
-        // effectful phase runs (issue #133). Nothing returns early here.
+        // effectful phase runs. Nothing returns early here.
         let mut errors = core::mem::take(&mut self.config_errors);
 
         for (key, _, record) in self.records.iter_mut() {
@@ -613,15 +573,40 @@ impl AimDbBuilder {
                 errors.push(e);
             }
 
-            // Record-level validation (e.g. remote access without a buffer).
-            if let Err(msg) = record.validate() {
-                errors.push(ConfigError::new(key.as_str(), None, msg));
+            // Writer exclusivity: .source(), .transform(), and .link_from()
+            // all write into the record's buffer and would race as
+            // last-writer-wins — at most one origin kind per record. Validated
+            // once here (the setters only catch same-stage duplicates).
+            let mut writers: Vec<&str> = Vec::new();
+            if record.has_producer() {
+                writers.push(".source()");
+            }
+            if record.has_transform() {
+                writers.push(".transform()");
+            }
+            if !record.inbound_connectors().is_empty() {
+                writers.push(".link_from()");
+            }
+            if writers.len() > 1 {
+                let url = record
+                    .inbound_connectors()
+                    .first()
+                    .map(|l| l.url.to_string());
+                errors.push(ConfigError::new(
+                    key.as_str(),
+                    url,
+                    alloc::format!(
+                        "conflicting writers: record has {}; these are mutually \
+                         exclusive (all write the same buffer)",
+                        writers.join(" + ")
+                    ),
+                ));
             }
 
             // Connector links subscribe to / produce into the record's buffer;
             // a linked record without one only surfaced at spawn time before.
             let has_links =
-                record.outbound_connector_count() > 0 || !record.inbound_connectors().is_empty();
+                !record.outbound_connectors().is_empty() || !record.inbound_connectors().is_empty();
             if has_links && !record.has_buffer() {
                 let url = record
                     .outbound_connectors()
@@ -643,7 +628,7 @@ impl AimDbBuilder {
 
         // Ensure runtime is set — a missing runtime is a configuration
         // mistake, collected like every other so it never hides the rest of
-        // the findings (issue #133). The runtime is bound at the final check.
+        // the findings. The runtime is bound at the final check.
         if self.runtime.is_none() {
             errors.push(ConfigError::new(
                 "",
@@ -652,13 +637,10 @@ impl AimDbBuilder {
             ));
         }
 
-        // Build the new index structures
+        // Build the registry
         let record_count = self.records.len();
-        let mut storages: Vec<Box<dyn AnyRecord>> = Vec::with_capacity(record_count);
+        let mut storages: Vec<RecordEntry> = Vec::with_capacity(record_count);
         let mut by_key: HashMap<StringKey, RecordId> = HashMap::with_capacity(record_count);
-        let mut by_type: HashMap<TypeId, Vec<RecordId>> = HashMap::new();
-        let mut types: Vec<TypeId> = Vec::with_capacity(record_count);
-        let mut keys: Vec<StringKey> = Vec::with_capacity(record_count);
 
         for (key, type_id, record) in self.records.into_iter() {
             // Duplicate keys (should not happen if configure() is used
@@ -668,41 +650,36 @@ impl AimDbBuilder {
                 continue;
             }
 
-            // Build index structures
             let id = RecordId::new(storages.len() as u32);
-            storages.push(record);
+            storages.push(RecordEntry {
+                key,
+                type_id,
+                record,
+            });
             by_key.insert(key, id);
-            by_type.entry(type_id).or_default().push(id);
-            types.push(type_id);
-            keys.push(key);
         }
 
-        // Build dependency graph from record information
-        // Collect RecordGraphInfo for each record
-        let record_infos: Vec<crate::graph::RecordGraphInfo> = storages
+        // Build dependency graph nodes straight from the records.
+        let graph_nodes: Vec<crate::graph::GraphNode> = storages
             .iter()
-            .enumerate()
-            .map(|(idx, record)| {
-                let key = keys[idx].as_str().to_string();
-                let origin = record.record_origin();
-
-                // Get buffer type and capacity from the record
+            .map(|e| {
+                let record = &e.record;
                 let (buffer_type, buffer_capacity) = record.buffer_info();
 
-                crate::graph::RecordGraphInfo {
-                    key,
-                    origin,
+                crate::graph::GraphNode {
+                    key: e.key.as_str().to_string(),
+                    origin: record.record_origin(),
                     buffer_type,
                     buffer_capacity,
                     tap_count: record.consumer_count(),
-                    has_outbound_link: record.outbound_connector_count() > 0,
+                    has_outbound_link: !record.outbound_connectors().is_empty(),
                 }
             })
             .collect();
 
         // Build and validate the dependency graph; fold its findings (cycles,
         // unregistered transform inputs) into the collected errors.
-        let dependency_graph = match DependencyGraph::build_and_validate(&record_infos) {
+        let dependency_graph = match DependencyGraph::build_and_validate(graph_nodes) {
             Ok(graph) => graph,
             Err(e) => {
                 errors.push(ConfigError::new("", None, alloc::format!("{e}")));
@@ -712,7 +689,7 @@ impl AimDbBuilder {
 
         // All validation done — report every collected mistake at once. The
         // runtime binding lives here so a missing one is reported alongside
-        // every other finding instead of short-circuiting them (issue #133).
+        // every other finding instead of short-circuiting them.
         let runtime = match (self.runtime.take(), errors.is_empty()) {
             (Some(rt), true) => rt,
             _ => return Err(DbError::InvalidConfiguration { errors }),
@@ -728,20 +705,17 @@ impl AimDbBuilder {
         let inner = Arc::new(AimDbInner {
             storages,
             by_key,
-            by_type,
-            types,
-            keys,
             dependency_graph,
             extensions: self.extensions,
         });
 
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "observability")]
         let profiling_clock = crate::profiling::make_clock(runtime.clone());
 
         let db = Arc::new(AimDb {
             inner: inner.clone(),
             runtime: runtime.clone(),
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             profiling_clock,
         });
 
@@ -777,9 +751,9 @@ impl AimDbBuilder {
         // transport, applies the security policy's writable marking, and drives
         // the shared session engine. See `with_connector`'s docs.
 
-        // Collect connector futures. After issue #88 connector builders return
-        // a `Vec<BoxFuture>` instead of an `Arc<dyn Connector>` (which previously
-        // was discarded anyway — see design doc 028 §"The dropped Arc<dyn Connector> object").
+        // Collect connector futures. Connector builders return a
+        // `Vec<BoxFuture>` for the runner to drive — there is no connector
+        // object to keep.
         for builder in self.connector_builders {
             log_debug!("Building connector for scheme: {}", builder.scheme());
 
@@ -819,7 +793,7 @@ impl Default for AimDbBuilder {
 ///
 /// A database instance with type-safe record registration and cross-record
 /// communication via the Emitter pattern. The runtime is held as a value
-/// (`Arc<dyn RuntimeOps>`) — records are the only generic surface (issue #131).
+/// (`Arc<dyn RuntimeOps>`) — records are the only generic surface.
 ///
 /// See `examples/` for usage.
 ///
@@ -841,10 +815,10 @@ pub struct AimDb {
     inner: Arc<AimDbInner>,
 
     /// Runtime capabilities, held as a value
-    runtime: Arc<dyn aimdb_executor::RuntimeOps>,
+    runtime: Arc<dyn crate::executor::RuntimeOps>,
 
     /// Shared wall clock for stage profiling, built from the runtime at `build()` time.
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     profiling_clock: crate::profiling::Clock,
 }
 
@@ -917,14 +891,14 @@ impl AimDb {
     }
 
     /// Shared wall clock used by stage profiling (nanoseconds since an arbitrary epoch).
-    #[cfg(feature = "profiling")]
+    #[cfg(feature = "observability")]
     pub(crate) fn profiling_clock(&self) -> &crate::profiling::Clock {
         &self.profiling_clock
     }
 
     /// Builds a database with a closure-based builder pattern
     pub async fn build_with(
-        rt: Arc<impl aimdb_executor::RuntimeOps + 'static>,
+        rt: Arc<impl crate::executor::RuntimeOps + 'static>,
         f: impl FnOnce(&mut AimDbBuilder),
     ) -> DbResult<()> {
         let mut b = AimDbBuilder::new().runtime(rt);
@@ -947,7 +921,7 @@ impl AimDb {
     where
         T: Send + 'static + Debug + Clone,
     {
-        // Single write path via WriteHandle (design 031). For hot paths,
+        // Single write path via WriteHandle. For hot paths,
         // prefer `db.producer::<T>(key)` once and reuse the returned handle.
         let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
         typed_rec.writer_handle().push(value);
@@ -1002,7 +976,7 @@ impl AimDb {
         T: Send + Sync + 'static + Debug + Clone,
     {
         // Pre-resolve the buffer Arc so the returned Consumer subscribes
-        // through a direct virtual call (design 029). A `.consumer()` without
+        // through a direct virtual call. A `.consumer()` without
         // a configured buffer surfaces as `MissingConfiguration` here rather
         // than panicking later inside `subscribe()`.
         let key_str: alloc::string::String = key.into();
@@ -1024,7 +998,7 @@ impl AimDb {
     ///
     /// Returns a slice of RecordIds for all records of type T.
     /// Useful for introspection when multiple records of the same type exist.
-    pub fn records_of_type<T: 'static>(&self) -> &[crate::record_id::RecordId] {
+    pub fn records_of_type<T: 'static>(&self) -> Vec<crate::record_id::RecordId> {
         self.inner.records_of_type::<T>()
     }
 
@@ -1033,7 +1007,7 @@ impl AimDb {
     /// Connectors that hand the runtime to a `'static` engine future (e.g. the
     /// session client engine, which needs the clock for reconnect
     /// backoff/keepalive) clone it through here.
-    pub fn runtime_ops(&self) -> Arc<dyn aimdb_executor::RuntimeOps> {
+    pub fn runtime_ops(&self) -> Arc<dyn crate::executor::RuntimeOps> {
         self.runtime.clone()
     }
 
@@ -1048,24 +1022,24 @@ impl AimDb {
     ///
     /// Returns metadata for all registered records, useful for remote access introspection.
     /// Available only when the `std` feature is enabled.
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn list_records(&self) -> Vec<crate::remote::RecordMetadata> {
         self.inner.list_records()
     }
 
-    /// Resets stage profiling counters for every record (feature `profiling`).
-    #[cfg(feature = "profiling")]
+    /// Resets stage profiling counters for every record (feature `observability`).
+    #[cfg(feature = "observability")]
     pub fn reset_stage_profiling(&self) {
-        for record in &self.inner.storages {
-            record.reset_profiling();
+        for entry in &self.inner.storages {
+            entry.record.reset_profiling();
         }
     }
 
-    /// Resets buffer introspection counters for every record (feature `metrics`).
-    #[cfg(feature = "metrics")]
+    /// Resets buffer introspection counters for every record (feature `observability`).
+    #[cfg(feature = "observability")]
     pub fn reset_buffer_metrics(&self) {
-        for record in &self.inner.storages {
-            record.reset_buffer_metrics();
+        for entry in &self.inner.storages {
+            entry.record.reset_buffer_metrics();
         }
     }
 
@@ -1083,7 +1057,7 @@ impl AimDb {
     /// with no single "current value"; read it via a subscriber or `record.drain`,
     /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
     /// for state you want to read latest-value style.
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)
     }
@@ -1101,7 +1075,7 @@ impl AimDb {
     ///
     /// # Returns
     /// `Ok(())` on success, error if record not found, has producers, or deserialization fails
-    #[cfg(feature = "remote-access")]
+    #[cfg(feature = "remote")]
     pub fn set_record_from_json(
         &self,
         record_name: &str,
@@ -1130,8 +1104,8 @@ impl AimDb {
     ) -> Vec<(String, crate::connector::IngestFn)> {
         let mut routes = Vec::new();
 
-        for record in &self.inner.storages {
-            let inbound_links = record.inbound_connectors();
+        for entry in &self.inner.storages {
+            let inbound_links = entry.record.inbound_connectors();
 
             for link in inbound_links {
                 // Filter by scheme
@@ -1169,14 +1143,14 @@ impl AimDb {
     pub fn collect_outbound_topic_type_ids(&self, scheme: &str) -> Vec<(String, TypeId)> {
         let mut result = Vec::new();
 
-        for (idx, record) in self.inner.storages.iter().enumerate() {
-            let type_id = self.inner.types[idx];
+        for entry in self.inner.storages.iter() {
+            let type_id = entry.type_id;
 
-            for link in record.outbound_connectors() {
+            for link in entry.record.outbound_connectors() {
                 if link.url.scheme() != scheme {
                     continue;
                 }
-                result.push((link.url.resource_id(), type_id));
+                result.push((link.url.resource_id().to_string(), type_id));
             }
         }
 
@@ -1200,8 +1174,8 @@ impl AimDb {
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
         let mut routes = Vec::new();
 
-        for record in &self.inner.storages {
-            let outbound_links = record.outbound_connectors();
+        for entry in &self.inner.storages {
+            let outbound_links = entry.record.outbound_connectors();
 
             for link in outbound_links {
                 // Filter by scheme
@@ -1211,7 +1185,7 @@ impl AimDb {
 
                 // Create the fused source using the stored factory
                 routes.push(OutboundRoute {
-                    topic: link.url.resource_id(),
+                    topic: link.url.resource_id().to_string(),
                     source: link.create_source(self),
                     config: link.config.clone(),
                 });

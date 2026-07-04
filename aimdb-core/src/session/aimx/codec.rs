@@ -1,5 +1,5 @@
 //! AimX-v2 NDJSON envelope codec (`no_std + alloc`, features `connector-session`
-//! + `json-serialize`).
+//! + `remote`).
 //!
 //! One JSON object per line, tagged by a `"t"` field, mapping onto the engine's
 //! role-neutral [`Inbound`]/[`Outbound`] message set. This is **not**

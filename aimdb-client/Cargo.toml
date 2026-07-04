@@ -11,8 +11,7 @@ categories = ["database", "network-programming"]
 
 [features]
 default = ["transport-uds"]
-metrics = ["aimdb-core/metrics"]
-profiling = ["aimdb-core/profiling"]
+observability = ["aimdb-core/observability"]
 
 # Transports the endpoint resolver (`crate::endpoint`) can dial. Each gates its
 # connector dep + the matching `dial`/`parse` arm; an endpoint whose scheme isn't

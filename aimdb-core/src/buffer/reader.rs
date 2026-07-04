@@ -1,4 +1,4 @@
-//! Consumer-facing reader handles (design 037 / W8).
+//! Consumer-facing reader handles.
 //!
 //! The [`BufferReader`] / [`JsonBufferReader`] SPIs are object-safe and
 //! poll-based so adapters can implement them without a per-message
@@ -15,14 +15,14 @@ use core::future::poll_fn;
 use crate::buffer::BufferReader;
 use crate::DbError;
 
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 use crate::buffer::JsonBufferReader;
 
 /// Owned, ergonomic handle over an erased [`BufferReader`].
 ///
 /// Returned by `Consumer::subscribe`. This is the "boxed lane": one indirect
 /// call per `recv`, zero AimDB-added heap allocations per message. (The generic
-/// monomorphized `Reader<T, B>` fast lane remains dormant — see design 037 §7.)
+/// monomorphized `Reader<T, B>` fast lane remains dormant.)
 pub struct Reader<T: Clone + Send> {
     inner: Box<dyn BufferReader<T> + Send>,
 }
@@ -58,13 +58,13 @@ impl<T: Clone + Send> Reader<T> {
 ///
 /// Returned by `subscribe_json`. Awaiting `recv_json` is allocation-free: it
 /// wraps [`poll_recv_json`](JsonBufferReader::poll_recv_json) via
-/// `core::future::poll_fn`, so the pre-W8 remote-access double box is gone.
-#[cfg(feature = "remote-access")]
+/// `core::future::poll_fn` — no extra per-message box.
+#[cfg(feature = "remote")]
 pub struct JsonReader {
     inner: Box<dyn JsonBufferReader + Send>,
 }
 
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 impl JsonReader {
     /// Wrap an erased JSON reader in an ergonomic handle.
     pub fn new(inner: Box<dyn JsonBufferReader + Send>) -> Self {

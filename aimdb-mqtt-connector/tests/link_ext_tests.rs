@@ -1,7 +1,6 @@
 //! Tests for the MQTT link extension traits (`MqttLinkExt` / `MqttOutboundLinkExt`)
 //!
-//! Issue #134 moved `with_qos`/`with_retain` out of core's generic link
-//! builders into this crate. These tests pin down the wire-compat contract:
+//! `with_qos`/`with_retain` live outside core's generic link builders into this crate. These tests pin down the wire-compat contract:
 //! the extension methods push exactly the `("qos", …)` / `("retain", …)`
 //! option keys the MQTT clients read from `protocol_options`.
 
@@ -31,7 +30,7 @@ async fn outbound_knobs_push_exact_config_keys() {
             .link_to("mqtt://sensors/reading")
             .with_qos(2)
             .with_retain(true)
-            .with_serializer_raw(|_r: &Reading| Ok(vec![0u8]))
+            .with_serializer(|_ctx, _r: &Reading| Ok(vec![0u8]))
             .finish();
     });
 
@@ -62,7 +61,7 @@ async fn inbound_qos_pushes_exact_config_key() {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://commands/reading")
             .with_qos(0)
-            .with_deserializer_raw(|_b: &[u8]| Ok(Reading { value: 0.0 }))
+            .with_deserializer(|_ctx, _b: &[u8]| Ok(Reading { value: 0.0 }))
             .finish();
     });
 

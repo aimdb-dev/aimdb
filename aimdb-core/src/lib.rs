@@ -23,22 +23,22 @@ mod log;
 
 pub mod buffer;
 pub mod builder;
-#[cfg(feature = "json-serialize")]
+#[cfg(feature = "remote")]
 pub mod codec;
 pub mod connector;
 pub mod context;
 mod error;
+pub mod executor;
 pub mod extensions;
 pub mod graph;
-#[cfg(feature = "profiling")]
+#[cfg(feature = "observability")]
 pub mod profiling;
 pub mod record_id;
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub mod remote;
 pub mod router;
 #[cfg(feature = "connector-session")]
 pub mod session;
-pub mod time;
 pub mod transform;
 pub mod transport;
 pub mod typed_api;
@@ -49,16 +49,12 @@ pub use context::RuntimeContext;
 pub use error::{ConfigError, DbError, DbResult};
 pub use extensions::Extensions;
 
-// Error/result re-exports from aimdb-executor. The generic runtime trait
-// family (`RuntimeAdapter`, `Runtime`, `TimeOps`, `Logger`, `RuntimeInfo`) is
-// no longer consumed by core — the runtime travels as
-// `Arc<dyn aimdb_executor::RuntimeOps>` (issue #131) — so it is not
-// re-exported here; import those traits from `aimdb_executor` directly if an
-// adapter still needs them.
-pub use aimdb_executor::{ExecutorError, ExecutorResult};
+// Runtime capability surface: the runtime travels as `Arc<dyn RuntimeOps>`,
+// the one trait an adapter implements.
+pub use executor::{BoxFuture, ExecutorError, ExecutorResult, LogLevel, RuntimeOps};
 
 // Producer-Consumer Pattern exports
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub use buffer::JsonReader;
 pub use buffer::Reader;
 pub use buffer::TryProduceError;
@@ -68,16 +64,14 @@ pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
 pub use typed_api::{
     Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
-    RecordT, StageKind,
+    StageKind,
 };
-#[cfg(feature = "remote-access")]
+#[cfg(feature = "remote")]
 pub use typed_record::JsonRecordAccess;
-pub use typed_record::{
-    AnyRecord, AnyRecordExt, RecordIntrospect, RecordMetricsReset, TypedRecord,
-};
+pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 
-// JSON codec (feature `json-serialize`, no_std + alloc compatible)
-#[cfg(feature = "json-serialize")]
+// JSON codec (feature `remote`, no_std + alloc compatible)
+#[cfg(feature = "remote")]
 pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 
 // connector-session contracts (feature `connector-session`, no_std + alloc
@@ -90,13 +84,13 @@ pub use session::{
 };
 
 // Stage profiling exports (feature-gated)
-#[cfg(feature = "profiling")]
+#[cfg(feature = "observability")]
 pub use profiling::{RecordProfilingMetrics, StageMetrics, StageProfilingInfo};
 
 // Connector Infrastructure exports
 pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
-pub use connector::{ConnectorLink, ConnectorUrl, SerializeError};
+pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
 pub use connector::{IngestFactoryFn, IngestFn};
 pub use connector::{SerializedReader, SerializedSource, SerializedValue, SourceFactoryFn};
 
@@ -107,7 +101,7 @@ pub use router::{Route, Router, RouterBuilder};
 pub use record_id::{RecordId, RecordKey, StringKey};
 
 // Graph exports (dependency graph for record topology)
-pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordGraphInfo, RecordOrigin};
+pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordOrigin};
 
 // Transform API exports
 pub use transform::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};

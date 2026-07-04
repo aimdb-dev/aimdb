@@ -75,7 +75,7 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     /// no value has been produced yet.
     ///
     /// This is the buffer-native point-in-time read used by AimX `record.get`
-    /// (design 031). Implementations must not advance any reader position.
+    ///. Implementations must not advance any reader position.
     ///
     /// The default returns `None`, which is the correct behaviour for buffers
     /// without a canonical latest value.
@@ -87,7 +87,7 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     ///
     /// Returns `Some(snapshot)` if the buffer implementation supports metrics,
     /// `None` otherwise. Default implementation returns `None`.
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         None
     }
@@ -97,7 +97,7 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     /// Default implementation is a no-op so buffers without metrics support are
     /// safe to call. Implementations that track counters should override this
     /// to zero them.
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn reset_metrics(&self) {}
 }
 
@@ -130,7 +130,7 @@ impl<T> core::fmt::Display for TryProduceError<T> {
 #[cfg(feature = "std")]
 impl<T: core::fmt::Debug> std::error::Error for TryProduceError<T> {}
 
-/// Write-side handle for a single record (design 029, M14).
+/// Write-side handle for a single record.
 ///
 /// `Producer<T>` holds an `Arc<dyn WriteHandle<T>>` so it can be parameterised
 /// over `T` alone — no runtime adapter `R` and no per-call record-key string
@@ -163,7 +163,7 @@ pub(crate) trait WriteHandle<T: Clone + Send + 'static>: Send + Sync {
 /// This is the object-safe **service-provider interface** that runtime adapters
 /// implement. It is poll-based — and therefore object-safe and zero-allocation —
 /// rather than `async`: an `async fn` on an erased trait forces a
-/// `Pin<Box<dyn Future>>` heap allocation on every call (design 037 / W8).
+/// `Pin<Box<dyn Future>>` heap allocation on every call.
 /// Consumers do not call this directly; they use the [`Reader<T>`](super::Reader)
 /// handle returned by `Consumer::subscribe`, whose `recv()` is `async` and wraps
 /// [`poll_recv`](BufferReader::poll_recv) via `core::future::poll_fn` with no
@@ -178,10 +178,9 @@ pub(crate) trait WriteHandle<T: Clone + Send + 'static>: Send + Sync {
 ///
 /// # Contract (poll/try_recv interleaving and cancellation)
 ///
-/// Promised as an open action item by design 037 §98 and closed out by design
-/// 039 F11; every implementation in this workspace (tokio/embassy/wasm
-/// adapters) already conforms — this section makes the contract explicit for
-/// future implementors.
+/// Every implementation in this workspace (tokio/embassy/wasm adapters)
+/// conforms — this section makes the contract explicit for future
+/// implementors.
 ///
 /// 1. `try_recv` MAY be called between `Pending` `poll_recv` calls;
 ///    implementations MUST NOT lose values or wakeups across the
@@ -189,15 +188,13 @@ pub(crate) trait WriteHandle<T: Clone + Send + 'static>: Send + Sync {
 /// 2. A value claimed internally just before caller cancellation MUST be
 ///    delivered on the next `poll_recv`/`try_recv` call — this is why, e.g.,
 ///    the tokio broadcast/watch readers keep a persistent `ReusableBoxFuture`
-///    across calls rather than dropping and recreating it per call (design
-///    037 §6 risk notes).
+///    across calls rather than dropping and recreating it per call.
 /// 3. `poll_recv` MUST register the *latest* waker on every `Pending`
 ///    return; spurious wakes are permitted (a registered waker firing with
 ///    no corresponding new value is not a bug — callers must re-poll and
 ///    tolerate a no-op).
 /// 4. Lag MUST surface as `Err(DbError::BufferLagged)` plus a metrics
-///    `add_dropped` call on **both** `poll_recv` and `try_recv` (design 039
-///    F10 closed the one adapter that didn't).
+///    `add_dropped` call on **both** `poll_recv` and `try_recv`.
 pub trait BufferReader<T: Clone + Send>: Send {
     /// Poll for the next value.
     ///
@@ -230,15 +227,15 @@ pub trait BufferReader<T: Clone + Send>: Send {
 /// This trait enables subscribing to a buffer without knowing the concrete type `T`
 /// at compile time, by serializing values to JSON on each poll.
 ///
-/// Object-safe and poll-based for the same reason as [`BufferReader`] (design
-/// 037 / W8). Consumers use the [`JsonReader`](super::JsonReader) handle, whose
+/// Object-safe and poll-based for the same reason as [`BufferReader`].
+/// Consumers use the [`JsonReader`](super::JsonReader) handle, whose
 /// `recv_json()` is `async` and wraps [`poll_recv_json`](JsonBufferReader::poll_recv_json)
 /// with no allocation.
 ///
 /// # Requirements
 /// - Record must be configured with `.with_remote_access()`
-/// - Only available with the `remote-access` feature (requires serde_json)
-#[cfg(feature = "remote-access")]
+/// - Only available with the `remote` feature (requires serde_json)
+#[cfg(feature = "remote")]
 pub trait JsonBufferReader: Send {
     /// Poll for the next value, serialized to JSON.
     ///
@@ -263,7 +260,7 @@ pub trait JsonBufferReader: Send {
 ///
 /// Used for introspection and diagnostics. All counters are monotonically
 /// increasing (except after reset).
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 #[derive(Debug, Clone, Default)]
 pub struct BufferMetricsSnapshot {
     /// Total items pushed to this buffer since creation
@@ -289,9 +286,9 @@ pub struct BufferMetricsSnapshot {
 
 /// Optional buffer metrics for introspection (std only, feature-gated)
 ///
-/// Implemented by buffer types when the `metrics` feature is enabled.
+/// Implemented by buffer types when the `observability` feature is enabled.
 /// Provides counters for diagnosing producer-consumer imbalances.
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 pub trait BufferMetrics {
     /// Get a snapshot of current buffer metrics
     ///
@@ -355,7 +352,7 @@ mod tests {
             self
         }
 
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
             None // Mock doesn't track metrics
         }

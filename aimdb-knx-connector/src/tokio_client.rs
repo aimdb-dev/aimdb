@@ -136,7 +136,7 @@ impl KnxConnectorImpl {
 
         // Validate the gateway address here so a typo'd IP (or a hostname —
         // never resolved) surfaces as a build() error instead of a parked
-        // connection task, matching the Embassy shim (issue #133 contract).
+        // connection task, matching the Embassy shim.
         let gateway_addr: SocketAddr = format!("{}:{}", gateway_ip, gateway_port)
             .parse()
             .map_err(|_| {
@@ -405,7 +405,7 @@ mod tests {
         ]
     }
 
-    /// W4: the gateway drops the first ACK; the client retransmits the
+    /// Scenario: the gateway drops the first ACK; the client retransmits the
     /// byte-identical TUNNELING_REQUEST (same sequence counter, KNXnet/IP
     /// 3.8.4) after the ACK timeout, and the tunnel survives once the repeat
     /// is ACKed. Real-time test: waits out the 3 s default ACK timeout.
@@ -600,7 +600,7 @@ mod tests {
     async fn test_connector_rejects_hostname_at_build() {
         // Hostnames are never resolved (`SocketAddr::parse` only accepts IP
         // addresses), so this must fail from build() instead of producing a
-        // connector whose task can never reach a gateway (issue #133).
+        // connector whose task can never reach a gateway.
         let connector = KnxConnectorImpl::build_internal("knx://gateway.local:3672", 32).await;
         assert!(connector.is_err());
     }

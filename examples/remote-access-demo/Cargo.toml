@@ -16,14 +16,12 @@ path = "src/client.rs"
 aimdb-core = { path = "../../aimdb-core", features = [
     "std",
     "tracing",
-    "profiling",
-    "metrics",
+    "observability",
 ] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
     "tracing",
-    "profiling",
-    "metrics",
+    "observability",
 ] }
 aimdb-client = { path = "../../aimdb-client" }
 aimdb-uds-connector = { path = "../../aimdb-uds-connector" }

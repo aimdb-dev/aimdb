@@ -98,7 +98,6 @@ name = "aimdb-core"
 version = "1.1.0"
 dependencies = [
  "aimdb-derive",
- "aimdb-executor",
  "anyhow",
  "async-channel",
  "defmt 1.0.1",
@@ -122,7 +121,6 @@ name = "aimdb-data-contracts"
 version = "0.1.1"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "rand 0.10.1",
  "serde",
  "serde_json",
@@ -142,7 +140,6 @@ name = "aimdb-embassy-adapter"
 version = "0.6.0"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "critical-section",
  "defmt 1.0.1",
  "embassy-executor",
@@ -150,9 +147,6 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-time-driver",
- "embedded-hal 0.2.7",
- "embedded-hal-async",
- "embedded-hal-nb",
  "embedded-io-async 0.7.0",
  "futures",
  "futures-core",
@@ -163,22 +157,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "aimdb-executor"
-version = "0.2.0"
-dependencies = [
- "embassy-executor",
- "futures-util",
- "thiserror 2.0.17",
- "tokio",
-]
-
-[[package]]
 name = "aimdb-knx-connector"
 version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
- "aimdb-executor",
  "aimdb-tokio-adapter",
  "async-stream",
  "defmt 1.0.1",
@@ -226,7 +209,6 @@ version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
- "aimdb-executor",
  "aimdb-tokio-adapter",
  "async-stream",
  "defmt 1.0.1",
@@ -253,7 +235,6 @@ name = "aimdb-persistence"
 version = "0.1.1"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "aimdb-tokio-adapter",
  "serde",
  "serde_json",
@@ -279,7 +260,6 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
- "aimdb-executor",
  "aimdb-tokio-adapter",
  "cobs",
  "defmt 1.0.1",
@@ -312,9 +292,9 @@ version = "0.6.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
- "aimdb-executor",
  "aimdb-uds-connector",
  "futures",
+ "log",
  "serde",
  "serde_json",
  "tokio",
@@ -328,7 +308,6 @@ name = "aimdb-uds-connector"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "aimdb-tokio-adapter",
  "serde",
  "serde_json",
@@ -342,7 +321,6 @@ version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
- "aimdb-executor",
  "aimdb-ws-protocol",
  "futures-channel",
  "futures-util",
@@ -362,7 +340,6 @@ version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
- "aimdb-executor",
  "aimdb-tokio-adapter",
  "aimdb-ws-protocol",
  "axum",
@@ -1208,7 +1185,6 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
- "aimdb-executor",
  "aimdb-knx-connector",
  "aimdb-serial-connector",
  "cortex-m",
@@ -1242,7 +1218,6 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
- "aimdb-executor",
  "aimdb-mqtt-connector",
  "aimdb-serial-connector",
  "cortex-m",
@@ -1299,7 +1274,6 @@ version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
- "aimdb-executor",
  "aimdb-serial-connector",
  "cortex-m",
  "cortex-m-rt",
@@ -2322,7 +2296,6 @@ name = "knx-connector-demo-common"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "aimdb-knx-connector",
  "defmt 1.0.1",
  "serde",
@@ -2533,7 +2506,6 @@ name = "mqtt-connector-demo-common"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "defmt 1.0.1",
  "serde",
  "serde_json",
@@ -2886,6 +2858,15 @@ name = "rand_core"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
+
+[[package]]
+name = "readme-quickstart"
+version = "1.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-tokio-adapter",
+ "tokio",
+]
 
 [[package]]
 name = "redox_syscall"
@@ -3669,7 +3650,6 @@ name = "tokio-knx-connector-demo"
 version = "1.1.0"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "aimdb-knx-connector",
  "aimdb-tokio-adapter",
  "aimdb-uds-connector",
@@ -3697,7 +3677,6 @@ name = "tokio-mqtt-connector-demo"
 version = "1.1.0"
 dependencies = [
  "aimdb-core",
- "aimdb-executor",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
  "mqtt-connector-demo-common",
@@ -4380,7 +4359,6 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
- "aimdb-executor",
  "aimdb-mqtt-connector",
  "cortex-m",
  "cortex-m-rt",

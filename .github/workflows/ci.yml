@@ -65,9 +65,15 @@ jobs:
     
     - name: Build all valid feature combinations
       run: make build
-    
+
     - name: Test all valid feature combinations
       run: make test
+
+    - name: Check README quickstart drift
+      run: make readme-check
+
+    - name: Check codegen template drift
+      run: make codegen-drift
 
   # Embedded target testing
   embedded-targets:

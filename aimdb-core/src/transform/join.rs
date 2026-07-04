@@ -9,7 +9,7 @@ use alloc::{
     vec::Vec,
 };
 
-use aimdb_executor::{ExecutorError, ExecutorResult};
+use crate::executor::{ExecutorError, ExecutorResult};
 
 use crate::transform::{CollectedTransform, TransformDescriptor};
 use crate::typed_record::BoxFuture;
@@ -52,7 +52,7 @@ fn join_channel() -> (
 /// # Why this carries `Box<dyn Any>`
 ///
 /// This is the one deliberate exception to the data-plane de-erasure
-/// (design 036 W1): a join fans N *differently-typed* inputs into a single
+/// A join fans N *differently-typed* inputs into a single
 /// trigger channel, and the user's `on_triggers` closure branches on them
 /// via [`JoinTrigger::as_input`] — the erasure *is* the public API here, not
 /// an implementation accident. Removing it would mean N channels or a
@@ -289,7 +289,7 @@ where
     Fut: core::future::Future<Output = ()> + Send + 'static,
 {
     // Output key is threaded in from the descriptor so diagnostics stay
-    // unambiguous when multiple records share output type `O` (design 029).
+    // unambiguous when multiple records share output type `O`.
     // Owned copies are build-time, one-shot allocations.
     let output_key = output_key.to_string();
     let input_keys: Vec<String> = inputs.iter().map(|(k, _)| k.clone()).collect();

@@ -10,7 +10,6 @@
 //! - **Synchronized** — browser instance mirrors server records.
 //! - **Hybrid** — works offline with local records, syncs when connected.
 //!
-//! See design doc §7 for full details.
 
 extern crate alloc;
 
@@ -32,7 +31,7 @@ use aimdb_core::builder::AimDb;
 
 // ─── Connection status ────────────────────────────────────────────────────
 
-/// Observable connection state (matches design doc §7.1).
+/// Observable connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -752,7 +751,7 @@ where
 {
     match serde_json::from_value::<T>(json) {
         Ok(val) => {
-            // Single write path via Producer<T> (design 031).
+            // Single write path via Producer<T>.
             match db.producer::<T>(key) {
                 Ok(producer) => {
                     producer.produce(val);

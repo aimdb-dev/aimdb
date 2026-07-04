@@ -40,7 +40,6 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::task::{Context, Poll};
@@ -52,7 +51,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::pubsub::{PubSubChannel, Subscriber, WaitResult};
 use embassy_sync::watch::{Receiver as WatchReceiver, Watch};
 
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 
 /// Embassy buffer implementation that wraps the appropriate Embassy primitive
@@ -80,7 +79,7 @@ use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 /// use aimdb_core::buffer::Reader;
 /// let buffer: MyBuffer = MyBuffer::new_spmc();
 /// // `subscribe()` yields the concrete reader; wrap it in the ergonomic,
-/// // allocation-free `Reader<T>` handle for `recv().await` (design 037 / W8).
+/// // allocation-free `Reader<T>` handle for `recv().await`.
 /// let mut reader = Reader::new(Box::new(buffer.subscribe()));
 /// buffer.push(42);
 /// let value = reader.recv().await.unwrap();
@@ -94,7 +93,7 @@ pub struct EmbassyBuffer<
     const WATCH_N: usize,
 > {
     inner: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     metrics: Arc<BufferCounters>,
 }
 
@@ -137,7 +136,7 @@ impl<
     pub fn new_spmc() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::SpmcRing(PubSubChannel::new())),
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             metrics: Arc::new(BufferCounters::new(CAP)),
         }
     }
@@ -146,7 +145,7 @@ impl<
     pub fn new_watch() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::Watch(Watch::new())),
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             metrics: Arc::new(BufferCounters::new(1)),
         }
     }
@@ -155,7 +154,7 @@ impl<
     pub fn new_mailbox() -> Self {
         Self {
             inner: Arc::new(EmbassyBufferInner::Mailbox(Channel::new())),
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             metrics: Arc::new(BufferCounters::new(1)),
         }
     }
@@ -190,7 +189,7 @@ impl<
     }
 
     fn push(&self, value: T) {
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         self.metrics.increment_produced();
 
         match &*self.inner {
@@ -217,7 +216,7 @@ impl<
     }
 
     /// The embassy subscriber/receiver is created **eagerly, here**, matching
-    /// the Tokio adapter (design 039 F8/F9). Previously this was lazy (deferred
+    /// the Tokio adapter. Previously this was lazy (deferred
     /// to the first poll), which left a subscribe→first-poll window where a
     /// message produced before that first poll was silently missed for
     /// `SpmcRing` (no replay semantics — a subscriber only sees messages sent
@@ -232,18 +231,18 @@ impl<
             EmbassyBufferInner::SpmcRing(channel) => EmbassyBufferReader::SpmcRing {
                 subscriber: make_spmc_sub(channel).ok(),
                 buffer: Arc::clone(&self.inner),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
             EmbassyBufferInner::Watch(watch) => EmbassyBufferReader::Watch {
                 receiver: make_watch_rx(watch).ok(),
                 buffer: Arc::clone(&self.inner),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
             EmbassyBufferInner::Mailbox(_) => EmbassyBufferReader::Mailbox {
                 buffer: Arc::clone(&self.inner),
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics: Arc::clone(&self.metrics),
             },
         }
@@ -282,17 +281,18 @@ impl<
             // removing it (the slot is drained once a consumer receives).
             // Mirrors the Tokio Mailbox arm.
             EmbassyBufferInner::Mailbox(channel) => channel.try_peek().ok(),
-            // PubSub has no canonical latest — see design 031 §SPMC Ring.
+            // PubSub has no canonical latest: readers consume a stream,
+            // there is no single "current value" slot to peek.
             EmbassyBufferInner::SpmcRing(_) => None,
         }
     }
 
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
         Some(<Self as BufferMetrics>::metrics(self))
     }
 
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "observability")]
     fn reset_metrics(&self) {
         <Self as BufferMetrics>::reset_metrics(self);
     }
@@ -306,7 +306,7 @@ impl<
 /// - `Watch`: `(1, 1)` once a value has been published (tracked via the
 ///   `produced` counter — embassy's `Watch` doesn't expose state), else `(0, 1)`.
 /// - `Mailbox`: `(1, 1)` if the slot is occupied, else `(0, 1)`.
-#[cfg(feature = "metrics")]
+#[cfg(feature = "observability")]
 impl<
         T: Clone + Send + 'static,
         const CAP: usize,
@@ -343,88 +343,22 @@ impl<
     }
 }
 
-impl<
-        T: Clone + Send + 'static,
-        const CAP: usize,
-        const SUBS: usize,
-        const PUBS: usize,
-        const WATCH_N: usize,
-    > EmbassyBuffer<T, CAP, SUBS, PUBS, WATCH_N>
-{
-    /// Creates a dispatcher task closure for use with Embassy executors
-    ///
-    /// This method returns an async closure that can be spawned as an Embassy task.
-    /// Unlike Tokio's `spawn_dispatcher` which immediately spawns the task, this
-    /// method returns the task for you to spawn with your Embassy executor.
-    ///
-    /// # Arguments
-    /// * `handler` - Async function called for each buffered value
-    ///
-    /// # Returns
-    /// An async closure that can be passed to `embassy_executor::Spawner::spawn()`
-    ///
-    /// # Example
-    ///
-    /// Illustrative (not compiled: an `embassy_executor` task on a thumb target):
-    ///
-    /// ```rust,ignore
-    /// // In your Embassy application:
-    /// #[embassy_executor::task]
-    /// async fn buffer_dispatcher(buffer: &'static EmbassyBuffer<i32, 32, 4, 1, 1>) {
-    ///     let task = buffer.dispatcher_task(|value| async move {
-    ///         // Process value
-    ///         defmt::info!("Received: {}", value);
-    ///     });
-    ///     task.await;
-    /// }
-    /// ```
-    pub async fn dispatcher_task<F, Fut>(&'static self, handler: F)
-    where
-        F: Fn(T) -> Fut + Send + Sync,
-        Fut: core::future::Future<Output = ()> + Send,
-    {
-        // Wrap the concrete reader in the ergonomic, allocation-free
-        // `Reader<T>` handle so `recv().await` works (design 037 / W8).
-        let mut reader = aimdb_core::buffer::Reader::new(Box::new(self.subscribe()));
-
-        loop {
-            match reader.recv().await {
-                Ok(value) => {
-                    handler(value).await;
-                }
-                Err(DbError::BufferLagged { .. }) => {
-                    // Continue processing after lag
-                    continue;
-                }
-                Err(DbError::BufferClosed { .. }) => {
-                    // Buffer closed, exit gracefully
-                    break;
-                }
-                Err(_) => {
-                    // Unexpected error, exit
-                    break;
-                }
-            }
-        }
-    }
-}
-
 // ============================================================================
-// Poll plumbing (design 037 / W8)
+// Poll plumbing
 // ============================================================================
 //
 // `poll_recv` drives embassy-sync's *public* poll methods directly —
 // `Subscriber::poll_next_message`, `Receiver::poll_changed`, and
 // `Channel::poll_receive` — so there is zero allocation per message and no
 // per-message future box. The reader stores the subscriber/receiver, created
-// eagerly at `subscribe()` time (design 039 F8/F9); `try_recv` uses the
+// eagerly at `subscribe()` time; `try_recv` uses the
 // matching `try_*` methods. No `unsafe` beyond the pre-existing `'static`
 // borrow extension in the `make_*` helpers (the `Arc` keeps the primitive
 // alive).
 
 /// Buffer-name strings used both in [`make_spmc_sub`]'s/[`make_watch_rx`]'s
-/// own error and in `poll_recv`/`try_recv`'s reconstructed one (design 039
-/// F8/F9) — kept as constants so the two can't drift apart.
+/// own error and in `poll_recv`/`try_recv`'s reconstructed one — kept as
+/// constants so the two can't drift apart.
 const SPMC_BUFFER_NAME: &str = "embassy spmc ring";
 const WATCH_BUFFER_NAME: &str = "embassy watch";
 
@@ -488,7 +422,7 @@ fn make_watch_rx<T: Clone + Send + 'static, const WATCH_N: usize>(
 }
 
 /// Reader for Embassy buffers — one variant per buffer kind, each holding
-/// only the state it needs (design 039 F8/F9; mirrors `TokioBufferReader`'s
+/// only the state it needs (mirrors `TokioBufferReader`'s
 /// existing enum shape on the tokio adapter).
 ///
 /// The persistent Subscriber/Receiver is registered **eagerly, at
@@ -524,7 +458,7 @@ pub enum EmbassyBufferReader<
         subscriber: Option<SpmcSub<T, CAP, SUBS, PUBS>>,
         buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
         /// Shared counter state (cloned from the parent buffer at subscribe time).
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
     Watch {
@@ -532,12 +466,12 @@ pub enum EmbassyBufferReader<
         // make_watch_rx's SAFETY comment.
         receiver: Option<WatchRx<T, WATCH_N>>,
         buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
     Mailbox {
         buffer: Arc<EmbassyBufferInner<T, CAP, SUBS, PUBS, WATCH_N>>,
-        #[cfg(feature = "metrics")]
+        #[cfg(feature = "observability")]
         metrics: Arc<BufferCounters>,
     },
 }
@@ -554,7 +488,7 @@ impl<
         match self {
             EmbassyBufferReader::SpmcRing {
                 subscriber,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -567,12 +501,12 @@ impl<
                 // (no future box, no allocation per message; lag preserved).
                 match sub.poll_next_message(cx) {
                     Poll::Ready(WaitResult::Message(value)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Poll::Ready(Ok(value))
                     }
                     Poll::Ready(WaitResult::Lagged(n)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.add_dropped(n);
                         Poll::Ready(Err(DbError::BufferLagged {
                             lag_count: n,
@@ -584,7 +518,7 @@ impl<
             }
             EmbassyBufferReader::Watch {
                 receiver,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -595,7 +529,7 @@ impl<
                 };
                 match rx.poll_changed(cx) {
                     Poll::Ready(value) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Poll::Ready(Ok(value))
                     }
@@ -604,7 +538,7 @@ impl<
             }
             EmbassyBufferReader::Mailbox {
                 buffer,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => {
                 let EmbassyBufferInner::Mailbox(channel) = &**buffer else {
@@ -612,7 +546,7 @@ impl<
                 };
                 match channel.poll_receive(cx) {
                     Poll::Ready(value) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Poll::Ready(Ok(value))
                     }
@@ -626,7 +560,7 @@ impl<
         match self {
             EmbassyBufferReader::SpmcRing {
                 subscriber,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -635,17 +569,17 @@ impl<
                         buffer_name: String::from(SPMC_BUFFER_NAME),
                     });
                 };
-                // Lag-honest (design 039 F10): `try_next_message` (not the
+                // Lag-honest: `try_next_message` (not the
                 // `_pure` variant) surfaces `WaitResult::Lagged` instead of
                 // silently discarding it, mirroring `poll_recv` above.
                 match sub.try_next_message() {
                     Some(WaitResult::Message(value)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Ok(value)
                     }
                     Some(WaitResult::Lagged(n)) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.add_dropped(n);
                         Err(DbError::BufferLagged {
                             lag_count: n,
@@ -657,7 +591,7 @@ impl<
             }
             EmbassyBufferReader::Watch {
                 receiver,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
                 ..
             } => {
@@ -668,7 +602,7 @@ impl<
                 };
                 match rx.try_changed() {
                     Some(value) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Ok(value)
                     }
@@ -677,7 +611,7 @@ impl<
             }
             EmbassyBufferReader::Mailbox {
                 buffer,
-                #[cfg(feature = "metrics")]
+                #[cfg(feature = "observability")]
                 metrics,
             } => {
                 let EmbassyBufferInner::Mailbox(channel) = &**buffer else {
@@ -685,7 +619,7 @@ impl<
                 };
                 match channel.try_receive() {
                     Ok(val) => {
-                        #[cfg(feature = "metrics")]
+                        #[cfg(feature = "observability")]
                         metrics.increment_consumed();
                         Ok(val)
                     }
@@ -738,7 +672,7 @@ mod tests {
     }
 
     // ========================================================================
-    // F1 regression: reader field drop order (design 039)
+    // Regression: reader field drop order
     //
     // `spmc_subscriber`/`watch_receiver` hold `&'static` refs pointer-extended
     // into `buffer: Arc<..>` (see make_spmc_sub / make_watch_rx SAFETY
@@ -763,7 +697,7 @@ mod tests {
         ] {
             // Buffer dropped first, reader (holding the last Arc) dropped
             // after forcing lazy state creation — the order that was UAF
-            // before the F1 field reorder.
+            // before the field reorder.
             let buffer = make();
             let mut reader = buffer.subscribe();
             drop(buffer);
@@ -781,7 +715,7 @@ mod tests {
     }
 
     // ========================================================================
-    // F8/F9/F10 regression tests (design 039) — eager subscribe-time
+    // Regression tests — eager subscribe-time
     // registration, slot exhaustion surfaced on first use, lag-honest
     // try_recv. Synchronous (try_recv only), no embassy executor needed.
     // ========================================================================
@@ -798,9 +732,9 @@ mod tests {
         Buffer::push(&buffer, 2);
 
         // A registered before the first push, so it sees both messages — the
-        // subscribe→first-poll loss window (F9) is gone. B only sees the
+        // subscribe→first-poll loss window is gone. B only sees the
         // message pushed after it subscribed (no replay — standard SPMC
-        // cursor semantics, distinct from Watch's D1 behavior).
+        // cursor semantics, distinct from Watch's fresh-subscriber replay).
         assert_eq!(reader_a.try_recv().unwrap(), 1);
         assert_eq!(reader_a.try_recv().unwrap(), 2);
         assert_eq!(reader_b.try_recv().unwrap(), 2);
@@ -839,7 +773,7 @@ mod tests {
         }
 
         // Lag must surface as `BufferLagged`, not be silently dropped
-        // (design 039 F10 — `try_next_message`, not `_pure`).
+        // (`try_next_message`, not `_pure`).
         let first = reader.try_recv();
         assert!(
             matches!(first, Err(DbError::BufferLagged { .. })),
@@ -861,7 +795,7 @@ mod tests {
     }
 
     // ========================================================================
-    // peek() Tests — non-destructive buffer-native reads (design 031)
+    // peek() Tests — non-destructive buffer-native reads
     //
     // push()/peek() are synchronous and lock a CriticalSectionRawMutex; the
     // `critical-section` std impl in dev-dependencies provides the host-side
@@ -923,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_peek_spmc_ring_returns_none() {
-        // PubSub has no canonical latest — see design 031 §SPMC Ring.
+        // PubSub has no canonical latest (see peek() above).
         let buffer: PeekBuffer = PeekBuffer::new_spmc();
         assert_eq!(DynBuffer::peek(&buffer), None);
         DynBuffer::push(&buffer, 1);

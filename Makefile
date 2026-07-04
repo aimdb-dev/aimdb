@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check readme-check codegen-drift
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -40,6 +40,8 @@ help:
 	@printf "    check                Comprehensive development check (fmt + clippy + all tests)\n"
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
+	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
+	@printf "    codegen-drift        Compile codegen output against the workspace API\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
 	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
@@ -67,21 +69,15 @@ build:
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
-	cargo build --package aimdb-core --features "std,tracing,metrics"
-	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + profiling)$(NC)\n"
-	cargo build --package aimdb-core --no-default-features --features "alloc,profiling"
-	@printf "$(YELLOW)  → Building aimdb-core (std + profiling)$(NC)\n"
-	cargo build --package aimdb-core --features "std,tracing,profiling"
-	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + metrics)$(NC)\n"
-	cargo build --package aimdb-core --no-default-features --features "alloc,metrics"
+	cargo build --package aimdb-core --features "std,tracing,observability"
+	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + observability)$(NC)\n"
+	cargo build --package aimdb-core --no-default-features --features "alloc,observability"
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc + connector-session contracts)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features "alloc,connector-session"
 	@printf "$(YELLOW)  → Building aimdb-core (std + connector-session engines)$(NC)\n"
 	cargo build --package aimdb-core --features "std,connector-session"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
-	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
-	@printf "$(YELLOW)  → Building tokio adapter (with profiling)$(NC)\n"
-	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
+	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
@@ -117,18 +113,12 @@ test:
 	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
 	cargo test --package aimdb-core --features "std,tracing"
-	@printf "$(YELLOW)  → Testing aimdb-core (std + metrics)$(NC)\n"
-	cargo test --package aimdb-core --features "std,tracing,metrics"
-	@printf "$(YELLOW)  → Testing aimdb-core (std + profiling)$(NC)\n"
-	cargo test --package aimdb-core --features "std,tracing,profiling"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + profiling)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,profiling"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + metrics)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,metrics"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + json-serialize value codec)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,json-serialize"
-	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + remote-access data model)$(NC)\n"
-	cargo test --package aimdb-core --no-default-features --features "alloc,remote-access"
+	@printf "$(YELLOW)  → Testing aimdb-core (std + observability)$(NC)\n"
+	cargo test --package aimdb-core --features "std,tracing,observability"
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + observability)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features --features "alloc,observability"
+	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + remote)$(NC)\n"
+	cargo test --package aimdb-core --no-default-features --features "alloc,remote"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
 	@printf "$(YELLOW)  → Testing aimdb-core connector-session (contracts object-safety)$(NC)\n"
@@ -141,10 +131,8 @@ test:
 	cargo test --package aimdb-client --no-default-features --features "transport-serial"
 	@printf "$(YELLOW)  → Testing tokio adapter$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
-	@printf "$(YELLOW)  → Testing tokio adapter (with metrics)$(NC)\n"
-	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics"
-	@printf "$(YELLOW)  → Testing tokio adapter (with profiling)$(NC)\n"
-	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,profiling"
+	@printf "$(YELLOW)  → Testing tokio adapter (with observability)$(NC)\n"
+	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, connector spine, doctests)$(NC)\n"
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
@@ -178,7 +166,7 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest-async aimdb-bench; do \
+	@for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -187,7 +175,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-executor aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest-async aimdb-bench; do \
+	for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest-async aimdb-bench; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -210,14 +198,12 @@ clippy:
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + json-serialize value codec)$(NC)\n"
-	cargo clippy --package aimdb-core --no-default-features --features "alloc,json-serialize" --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + remote-access data model)$(NC)\n"
-	cargo clippy --package aimdb-core --no-default-features --features "alloc,remote-access" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + remote)$(NC)\n"
+	cargo clippy --package aimdb-core --no-default-features --features "alloc,remote" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
-	cargo clippy --package aimdb-core --features "std,tracing,metrics" --all-targets -- -D warnings
+	cargo clippy --package aimdb-core --features "std,tracing,observability" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
-	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --all-targets -- -D warnings
+	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter with network support$(NC)\n"
@@ -274,8 +260,8 @@ doc:
 	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
 	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --no-deps
-	cargo doc --package aimdb-core --features "std,tracing,metrics" --no-deps
-	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,metrics" --no-deps
+	cargo doc --package aimdb-core --features "std,tracing,observability" --no-deps
+	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --no-deps
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --features "std,tokio-runtime" --no-deps
@@ -322,26 +308,20 @@ test-embedded:
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
-	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + json-serialize value codec) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,json-serialize"
-	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + remote-access data model) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,remote-access"
+	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + remote) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,remote"
 	@printf "$(YELLOW)  → Checking aimdb-core session engines (no_std + connector-session) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session"
-	@printf "$(YELLOW)  → Checking aimdb-core AimX codec (no_std client path: connector-session + json-serialize) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,json-serialize"
-	@printf "$(YELLOW)  → Checking aimdb-core AimX codec + dispatch (full no_std AimX server: connector-session + remote-access) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,remote-access"
+	@printf "$(YELLOW)  → Checking aimdb-core AimX codec + dispatch (full no_std AimX server: connector-session + remote) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,remote"
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with network support on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,embassy-net-support"
-	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with profiling on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,profiling"
-	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with metrics on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,metrics"
+	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with observability on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,observability"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter connector spine (connector-io) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,connector-io"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
@@ -396,6 +376,8 @@ examples:
 	cargo build --package hello-mailbox-async
 	@printf "$(YELLOW)  → Building hello-single-latest-async$(NC)\n"
 	cargo build --package hello-single-latest-async
+	@printf "$(YELLOW)  → Building readme-quickstart (compiled README example)$(NC)\n"
+	cargo build --package readme-quickstart
 	@printf "$(GREEN)All examples built successfully!$(NC)\n"
 
 ## Security & Quality commands
@@ -428,12 +410,12 @@ security: deny audit
 publish-check:
 	@printf "$(GREEN)Testing crates.io publish readiness...$(NC)\n"
 	@printf "$(YELLOW)Note: cargo package requires dependencies to exist on crates.io.$(NC)\n"
-	@printf "$(YELLOW)      Only aimdb-executor (no deps) will fully validate before first publish.$(NC)\n"
+	@printf "$(YELLOW)      Only aimdb-derive (no deps) will fully validate before first publish.$(NC)\n"
 	@printf "$(YELLOW)      This is expected behavior - actual publish will work in order.$(NC)\n"
 	@printf "\n"
-	@printf "$(YELLOW)  → Testing aimdb-executor (full validation)$(NC)\n"
-	@cargo publish --dry-run -p aimdb-executor
-	@printf "$(GREEN)✓ aimdb-executor is ready to publish!$(NC)\n"
+	@printf "$(YELLOW)  → Testing aimdb-derive (full validation)$(NC)\n"
+	@cargo publish --dry-run -p aimdb-derive
+	@printf "$(GREEN)✓ aimdb-derive is ready to publish!$(NC)\n"
 	@printf "\n"
 	@printf "$(BLUE)ℹ  Other crates cannot be fully validated until dependencies are published.$(NC)\n"
 	@printf "$(BLUE)   Run 'make publish' to publish all crates in dependency order.$(NC)\n"
@@ -453,81 +435,96 @@ publish:
 	else \
 		printf "$(BLUE)Running in CI mode - skipping confirmation$(NC)\n"; \
 	fi
-	@printf "$(YELLOW)  → Publishing aimdb-executor (1/18)$(NC)\n"
-	@cargo publish -p aimdb-executor
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-derive (2/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-derive (1/17)$(NC)\n"
 	@cargo publish -p aimdb-derive
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-codegen (3/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-codegen (2/17)$(NC)\n"
 	@cargo publish -p aimdb-codegen
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-core (4/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-core (3/17)$(NC)\n"
 	@cargo publish -p aimdb-core
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-data-contracts (5/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-data-contracts (4/17)$(NC)\n"
 	@cargo publish -p aimdb-data-contracts
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (6/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (5/17)$(NC)\n"
 	@cargo publish -p aimdb-tokio-adapter
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (7/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (6/17)$(NC)\n"
 	@cargo publish -p aimdb-embassy-adapter --no-verify
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-client (8/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-client (7/17)$(NC)\n"
 	@cargo publish -p aimdb-client
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-sync (9/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-sync (8/17)$(NC)\n"
 	@cargo publish -p aimdb-sync
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence (10/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-persistence (9/17)$(NC)\n"
 	@cargo publish -p aimdb-persistence
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence-sqlite (11/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-persistence-sqlite (10/17)$(NC)\n"
 	@cargo publish -p aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (12/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (11/17)$(NC)\n"
 	@cargo publish -p aimdb-mqtt-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-knx-connector (13/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-knx-connector (12/17)$(NC)\n"
 	@cargo publish -p aimdb-knx-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-ws-protocol (14/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-ws-protocol (13/17)$(NC)\n"
 	@cargo publish -p aimdb-ws-protocol
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-websocket-connector (15/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-websocket-connector (14/17)$(NC)\n"
 	@cargo publish -p aimdb-websocket-connector
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-wasm-adapter (16/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-wasm-adapter (15/17)$(NC)\n"
 	@cargo publish -p aimdb-wasm-adapter --no-verify
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-cli (17/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-cli (16/17)$(NC)\n"
 	@cargo publish -p aimdb-cli
 	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
 	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mcp (18/18)$(NC)\n"
+	@printf "$(YELLOW)  → Publishing aimdb-mcp (17/17)$(NC)\n"
 	@cargo publish -p aimdb-mcp
-	@printf "$(GREEN)✓ All 18 crates published successfully!$(NC)\n"
+	@printf "$(GREEN)✓ All 17 crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
 
+## Drift guards
+# The README quickstart is compiled as examples/readme-quickstart; this target
+# fails when the README code block and the example diverge, or when the
+# example no longer compiles (design 038 §2.6/§3.13).
+readme-check:
+	@printf "$(GREEN)Checking README quickstart against examples/readme-quickstart...$(NC)\n"
+	@awk '/^```rust$$/{f=1;next} f&&/^```$$/{exit} f' README.md \
+		| diff -u - examples/readme-quickstart/src/main.rs \
+		|| { printf "$(RED)README quickstart drifted from examples/readme-quickstart/src/main.rs$(NC)\n"; exit 1; }
+	cargo check --package readme-quickstart
+	@printf "$(GREEN)✓ README quickstart is in sync and compiles$(NC)\n"
+
+# Compiles aimdb-codegen's generated output (common crate, hub crate, flat
+# schema) against the local workspace so template drift against the real API
+# breaks loudly (design 038 §3.10 decision).
+codegen-drift:
+	@printf "$(GREEN)Checking codegen templates against the workspace API...$(NC)\n"
+	./tools/scripts/codegen-drift-check.sh
+
 ## Convenience commands
-check: fmt-check clippy test test-embedded test-wasm deny
+check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
@@ -535,6 +532,8 @@ check: fmt-check clippy test test-embedded test-wasm deny
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ WASM target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ Dependencies verified (deny)$(NC)\n"
+	@printf "$(BLUE)✓ README quickstart in sync and compiling$(NC)\n"
+	@printf "$(BLUE)✓ Codegen output compiles against the workspace$(NC)\n"
 
 ## WASM commands
 wasm:

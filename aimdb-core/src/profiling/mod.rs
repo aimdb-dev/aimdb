@@ -1,4 +1,4 @@
-//! Automatic stage profiling (feature `profiling`).
+//! Automatic stage profiling (feature `observability`).
 //!
 //! AimDB owns the execution boundary for user callbacks (`.source()`, `.tap()`,
 //! `.link()`), so it can measure their wall-clock execution time without any
@@ -8,7 +8,7 @@
 //! * **tap / link** — wall-clock interval from a buffer read yielding a value to
 //!   the next read (≈ the user's per-value processing time).
 //!
-//! Timing uses the runtime's own clock ([`aimdb_executor::TimeOps`]), so the
+//! Timing uses the runtime's own clock ([`crate::executor::RuntimeOps`]), so the
 //! feature works on `no_std` targets too (it only needs heap + a clock).
 //!
 //! Measured time is **wall-clock**, including `.await` points / I/O / sleeps — it
@@ -38,7 +38,7 @@ use crate::DbError;
 pub(crate) type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Builds a [`Clock`] from the dyn-safe runtime capabilities.
-pub(crate) fn make_clock(rt: Arc<dyn aimdb_executor::RuntimeOps>) -> Clock {
+pub(crate) fn make_clock(rt: Arc<dyn crate::executor::RuntimeOps>) -> Clock {
     let epoch = rt.now_nanos();
     Arc::new(move || rt.now_nanos().saturating_sub(epoch))
 }
@@ -89,7 +89,7 @@ pub(crate) struct ProfilingBufferReader<T: Clone + Send> {
     /// `Pending` wait for the producer is not counted as consumer processing
     /// time; cleared when the cycle completes (see `poll_recv`/`try_recv`).
     ///
-    /// Residual gap (design 039 F2): if `poll_recv` returns `Pending` and the
+    /// Residual gap: if `poll_recv` returns `Pending` and the
     /// caller's future is dropped (cancelled) with no intervening yield, this
     /// timestamp is *not* cleared and gets reused by the next `poll_recv` —
     /// "pending since first ask" is still a defensible interpretation in that
@@ -136,7 +136,7 @@ impl<T: Clone + Send> BufferReader<T> for ProfilingBufferReader<T> {
         // not once per poll.)
         //
         // A memoized `pending_since` older than `last_yield_ns` belongs to a
-        // cycle a `try_recv` already closed out (design 039 F2) — resample
+        // cycle a `try_recv` already closed out — resample
         // instead of reusing it.
         let started_ns = match self.pending_since {
             Some(t) if self.last_yield_ns.is_none_or(|ly| t >= ly) => t,
@@ -165,7 +165,7 @@ impl<T: Clone + Send> BufferReader<T> for ProfilingBufferReader<T> {
             // A completed receive ends the cycle regardless of which API
             // completed it — clear so a subsequent `poll_recv` resamples
             // rather than reusing a `pending_since` from before this
-            // try_recv (design 039 F2).
+            // try_recv.
             self.pending_since = None;
             self.on_yield(started_ns);
         }
@@ -231,7 +231,7 @@ mod tests {
         t.store(1_000_000, Ordering::Relaxed);
 
         // 3. The consumer switches to try_recv instead, and a value is now
-        // available. Before the F2 fix, try_recv never cleared
+        // available. Previously, try_recv never cleared
         // `pending_since`, so the stale `Some(0)` would bleed into the next
         // cycle's sample.
         slot.store(7, Ordering::Relaxed);

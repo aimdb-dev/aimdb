@@ -74,7 +74,7 @@ impl Router {
     /// Route a message to the appropriate record(s)
     ///
     /// Synchronous: the ingest callback deserializes and produces in place
-    /// (`Producer::produce` is sync and infallible, design 029) — nothing on
+    /// (`Producer::produce` is sync and infallible) — nothing on
     /// this path awaits.
     ///
     /// # Arguments
@@ -241,7 +241,7 @@ mod tests {
 
     /// A `RuntimeContext` backed by the shared no-op RuntimeOps.
     fn test_ctx() -> crate::RuntimeContext {
-        crate::RuntimeContext::new(Arc::new(aimdb_executor::test_support::NoopRuntimeOps))
+        crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps))
     }
 
     /// Ingest callback that counts successful invocations.

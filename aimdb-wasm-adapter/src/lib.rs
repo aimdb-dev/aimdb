@@ -5,12 +5,9 @@
 //!
 //! # Architecture
 //!
-//! This crate implements the four executor traits from `aimdb-executor`:
-//!
-//! - [`RuntimeAdapter`] — Platform identity (`"wasm"`)
-//! - [`Spawn`] — Task spawning via `wasm_bindgen_futures::spawn_local`
-//! - [`TimeOps`] — `Performance.now()` + `setTimeout` for async sleep
-//! - [`Logger`] — Maps to `console.log/debug/warn/error`
+//! This crate implements `aimdb_core::RuntimeOps` — the one trait a runtime
+//! adapter provides: identity (`"wasm"`), time (`Performance.now()` +
+//! `setTimeout` sleep), and logging (`console.log/debug/warn/error`).
 //!
 //! # Single-Threaded Safety
 //!
@@ -35,7 +32,6 @@
 extern crate alloc;
 
 pub mod buffer;
-pub mod logger;
 pub mod runtime;
 pub mod time;
 
@@ -51,21 +47,13 @@ pub mod ws_bridge;
 // Re-export the adapter type at crate root
 pub use runtime::WasmAdapter;
 
-// Re-export executor traits for convenience
-pub use aimdb_executor::{
-    ExecutorError, ExecutorResult, Logger as LoggerTrait, Runtime, RuntimeAdapter, TimeOps,
-};
-
 // Re-export buffer types
 pub use buffer::{WasmBuffer, WasmBufferReader};
-
-// Re-export time types
-pub use time::{WasmDuration, WasmInstant};
 
 /// Buffer-construction extension for [`aimdb_core::RecordRegistrar`].
 ///
 /// Buffer construction is the one genuinely adapter-specific registration
-/// step left after issue #131 — `source()` / `tap()` / `transform()` are
+/// step that is genuinely adapter-specific — `source()` / `tap()` / `transform()` are
 /// inherent methods on the registrar. This trait adds `.buffer(cfg)` backed
 /// by [`WasmBuffer`].
 pub trait WasmRecordRegistrarExt<T>

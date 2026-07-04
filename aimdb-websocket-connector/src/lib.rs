@@ -37,7 +37,7 @@
 //! builder.configure::<Temperature>("sensors.temp.vienna", |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
 //!         .link_to("ws://sensors/temperature/vienna")
-//!         .with_serializer_raw(|t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))
+//!         .with_serializer(|_ctx, t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))
 //!         .finish();
 //! });
 //! let (db, runner) = builder.build().await?;
@@ -64,10 +64,10 @@
 //! builder.configure::<Temperature>("sensors.temp", |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
 //!         .link_to("ws-client://sensors/temp")
-//!         .with_serializer_raw(|t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))
+//!         .with_serializer(|_ctx, t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))
 //!         .finish()
 //!         .link_from("ws-client://config/threshold")
-//!         .with_deserializer_raw(|data| {
+//!         .with_deserializer(|_ctx, data| {
 //!             serde_json::from_slice::<Temperature>(data).map_err(|e| e.to_string())
 //!         })
 //!         .finish();

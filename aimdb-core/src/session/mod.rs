@@ -18,7 +18,7 @@ use core::pin::Pin;
 
 use futures_core::Stream;
 
-// The engines are runtime-neutral (`futures` channels + the adapter's `TimeOps`
+// The engines are runtime-neutral (`futures` channels + the adapter's `RuntimeOps`
 // clock, no `tokio`/`embassy-*`), so they cross-compile to `no_std + alloc`.
 #[cfg(feature = "connector-session")]
 mod client;
@@ -32,7 +32,7 @@ mod server;
 // Concrete AimX protocol substrate. The transport lives in a separate connector
 // crate (`aimdb-uds-connector`) — core keeps the protocol plus the generic
 // [`SessionClientConnector`] / [`SessionServerConnector`] spine.
-#[cfg(all(feature = "connector-session", feature = "json-serialize"))]
+#[cfg(all(feature = "connector-session", feature = "remote"))]
 pub mod aimx;
 
 #[cfg(feature = "connector-session")]

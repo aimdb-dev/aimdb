@@ -168,7 +168,7 @@
 //! 1. **Use `get_latest()`** - Drains the channel to get the most recent value:
 //!    ```no_run
 //!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> aimdb_core::DbResult<()> {
+//!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> aimdb_sync::SyncResult<()> {
 //!    // Always get the latest value, skipping queued intermediates
 //!    let latest = consumer.get_latest()?;
 //!    # Ok(())
@@ -178,7 +178,7 @@
 //! 2. **Use capacity=1** - Minimize queueing:
 //!    ```no_run
 //!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(handle: &aimdb_sync::AimDbHandle) -> aimdb_core::DbResult<()> {
+//!    # fn demo(handle: &aimdb_sync::AimDbHandle) -> aimdb_sync::SyncResult<()> {
 //!    let consumer = handle.consumer_with_capacity::<Temperature>("sensor.temp", 1)?;
 //!    # Ok(())
 //!    # }
@@ -203,15 +203,16 @@
 //!
 //! ## Error Handling
 //!
-//! All operations return `DbResult<T>` which wraps standard `DbError` variants:
+//! All operations return [`SyncResult<T>`] with facade-specific [`SyncError`]
+//! variants:
 //!
 //! - `RuntimeShutdown`: The runtime thread stopped
 //! - `SetTimeout`: Producer timeout expired
 //! - `GetTimeout`: Consumer timeout expired or no data (try_get)
 //! - `AttachFailed`: Failed to start runtime thread
 //! - `DetachFailed`: Failed to stop runtime thread
-//! - `RecordNotFound`: Attempted to produce/consume unregistered type
-//! - Plus any other errors from the underlying `produce()` operation
+//! - `Db(DbError)`: Any error from the underlying database (e.g. record not
+//!   registered), wrapped unchanged
 //!
 //! ### Error Propagation
 //!
@@ -221,13 +222,13 @@
 //! - `try_set()` sends immediately without waiting for the produce result (fire-and-forget)
 //!
 //! ```no_run
-//! # use aimdb_sync::{DbError, SyncProducer};
+//! # use aimdb_sync::{DbError, SyncError, SyncProducer};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
 //! # fn demo(producer: &SyncProducer<Temperature>, data: Temperature) {
 //! // Errors are properly propagated to the caller
 //! match producer.set(data) {
 //!     Ok(()) => println!("Successfully produced"),
-//!     Err(DbError::RecordKeyNotFound { .. }) => eprintln!("Record not registered"),
+//!     Err(SyncError::Db(DbError::RecordKeyNotFound { .. })) => eprintln!("Record not registered"),
 //!     Err(e) => eprintln!("Production failed: {}", e),
 //! }
 //! # }
@@ -243,6 +244,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod consumer;
+mod error;
 mod handle;
 mod producer;
 
@@ -250,5 +252,7 @@ pub use consumer::SyncConsumer;
 pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt, DEFAULT_SYNC_CHANNEL_CAPACITY};
 pub use producer::SyncProducer;
 
-// Re-export error types from aimdb-core
+pub use error::{SyncError, SyncResult};
+
+// Re-export the database error types for matching on [`SyncError::Db`].
 pub use aimdb_core::{DbError, DbResult};

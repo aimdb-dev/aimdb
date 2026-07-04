@@ -147,7 +147,7 @@ where
 /// `&'static Stack`. Network connectors (MQTT, KNX) take the stack at
 /// construction and wrap it here — keeping the single-core `unsafe` in this
 /// audited module instead of in every connector crate. Replaces the deleted
-/// `EmbassyNetwork` runtime trait (issue #131: the runtime travels as
+/// `EmbassyNetwork` runtime trait (the runtime travels as
 /// `Arc<dyn RuntimeOps>`, which cannot surface adapter-specific capabilities).
 #[cfg(feature = "embassy-net-support")]
 #[derive(Clone, Copy)]

@@ -1,5 +1,5 @@
 //! Embassy smoke — the runtime-neutral session **client engine** runs on the
-//! Embassy adapter's [`TimeOps`](aimdb_executor::TimeOps) clock.
+//! Embassy adapter's [`RuntimeOps`](aimdb_core::RuntimeOps) clock.
 //!
 //! `run_client` is parametrized over the runtime clock (its only runtime
 //! dependency, for reconnect backoff / keepalive). This test instantiates it with
@@ -25,7 +25,7 @@ use aimdb_core::session::{
 use aimdb_embassy_adapter::EmbassyAdapter;
 
 // No-op defmt logger + host time driver so the binary links: the engine holds
-// the adapter as `Arc<dyn RuntimeOps>` (issue #131), whose vtable references
+// the adapter as `Arc<dyn RuntimeOps>`, whose vtable references
 // the `log` path (`defmt` on Embassy) even though this smoke never logs.
 aimdb_embassy_adapter::host_test_stubs!();
 

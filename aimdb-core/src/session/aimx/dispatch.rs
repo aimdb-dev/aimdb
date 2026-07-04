@@ -1,9 +1,9 @@
 //! AimX server dispatch (`no_std + alloc`; features `connector-session` +
-//! `remote-access`) — the method semantics of AimX remote access, served on the
+//! `remote`) — the method semantics of AimX remote access, served on the
 //! shared session engine (`serve`/`run_session`).
 //!
 //! Reaches into core's `record.list` / JSON API (the `AnyRecord` JSON + metadata
-//! methods), which are gated on `remote-access` and de-std'd alongside this
+//! methods), which are gated on `remote` and de-std'd alongside this
 //! dispatch, so a board can serve a host over serial. A transport pairs this
 //! dispatch with the generic
 //! [`SessionServerConnector`](crate::session::SessionServerConnector) — see
@@ -149,13 +149,13 @@ impl AimxSession {
             "graph.nodes" => Ok(json!(self.db.inner().dependency_graph().nodes)),
             "graph.edges" => Ok(json!(self.db.inner().dependency_graph().edges)),
             "graph.topo_order" => Ok(json!(self.db.inner().dependency_graph().topo_order())),
-            #[cfg(feature = "profiling")]
+            #[cfg(feature = "observability")]
             "profiling.reset" => {
                 self.ensure_write_permission()?;
                 self.db.reset_stage_profiling();
                 Ok(json!({ "reset": true }))
             }
-            #[cfg(feature = "metrics")]
+            #[cfg(feature = "observability")]
             "buffer_metrics.reset" => {
                 self.ensure_write_permission()?;
                 self.db.reset_buffer_metrics();
@@ -342,7 +342,7 @@ impl AimxSession {
     }
 
     /// Deny under a ReadOnly policy (used by the `*.reset` admin methods).
-    #[cfg(any(feature = "profiling", feature = "metrics"))]
+    #[cfg(feature = "observability")]
     fn ensure_write_permission(&self) -> Result<(), RpcError> {
         match self.config.security_policy {
             SecurityPolicy::ReadOnly => Err(RpcError::Denied),

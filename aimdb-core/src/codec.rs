@@ -1,10 +1,10 @@
-//! JSON codec for records (feature `json-serialize`, no_std + alloc compatible).
+//! JSON codec for records (feature `remote`, no_std + alloc compatible).
 //!
 //! A record's value `T` often has to cross a type-erasure boundary into a wire
 //! format. AimX (std) crosses into `serde_json::Value`; so can a no_std
 //! connector or a local `record.latest()?.as_json()` call. This module
 //! provides that bridge without requiring `std` — `serde_json` runs on `alloc`
-//! alone, so embedded targets can opt in via the `json-serialize` feature.
+//! alone, so embedded targets can opt in via the `remote` feature.
 //!
 //! Two layers:
 //!

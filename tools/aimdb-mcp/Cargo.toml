@@ -33,14 +33,12 @@ transport-serial = ["aimdb-client/transport-serial"]
 [dependencies]
 # AimDB dependencies
 aimdb-client = { version = "0.6.0", path = "../../aimdb-client", features = [
-    "metrics",
-    "profiling",
+    "observability",
 ] }
 aimdb-codegen = { version = "0.2.0", path = "../../aimdb-codegen" }
 aimdb-core = { version = "1.1.0", path = "../../aimdb-core", features = [
     "std",
-    "profiling",
-    "metrics",
+    "observability",
 ] }
 
 # Async runtime

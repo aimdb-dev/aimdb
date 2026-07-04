@@ -6,7 +6,7 @@
 //! B3 example) — not by this crate — so nothing in the production dependency
 //! graph is affected either way.
 //!
-//! `payloads` and `alloc` are `no_std`-clean (design 039 F12) so the `no_std`
+//! `payloads` and `alloc` are `no_std`-clean so the `no_std`
 //! `examples/embassy-bench-stm32h5` B3 rig can depend on this crate with
 //! `default-features = false` and share them, instead of hand-forking its own
 //! copies. `profiles`/`profiles_embassy`/`reports` — and the `criterion`/

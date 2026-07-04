@@ -27,7 +27,7 @@ use aimdb_core::session::{
 /// would be a cycle). These tests run with `reconnect: false` and no
 /// keepalive, so the clock seam is never awaited and the shared no-op stub
 /// suffices.
-use aimdb_executor::test_support::NoopRuntimeOps as TestClock;
+use aimdb_core::executor::test_support::NoopRuntimeOps as TestClock;
 
 // ===========================================================================
 // Channel-backed transport (Layer 1)

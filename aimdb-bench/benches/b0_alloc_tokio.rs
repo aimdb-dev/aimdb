@@ -25,7 +25,7 @@ use aimdb_bench::{
     reports::write_reports,
 };
 
-// One `#[global_allocator]` per bench binary (design 039 F12) — `alloc.rs`
+// One `#[global_allocator]` per bench binary — `alloc.rs`
 // itself no longer declares one, so each binary picks its own inner
 // allocator (here, `std::alloc::System`).
 #[global_allocator]

@@ -7,7 +7,7 @@
 //!
 //! The whole module compiles to nothing without `--features profiling`.
 
-#![cfg(feature = "profiling")]
+#![cfg(feature = "observability")]
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::AimDbBuilder;

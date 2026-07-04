@@ -1,7 +1,6 @@
 //! Multi-Instance Record Tests
 //!
-//! Tests for Issue #60: RecordId + RecordKey architecture
-//! Validates the ability to have multiple records of the same Rust type
+//! Validates the RecordId + RecordKey architecture: the ability to have multiple records of the same Rust type
 //! with different keys.
 
 use aimdb_core::buffer::BufferCfg;
@@ -78,8 +77,7 @@ async fn test_producer() {
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
 
-    // Get key-bound producers. Post-M14 these resolve the typed record up front
-    // (Producer<T> no longer carries `R` and no longer exposes `.key()`).
+    // Key-bound producers resolve the typed record up front.
     let producer_a = db.producer::<Temperature>("sensor.a").unwrap();
     let producer_b = db.producer::<Temperature>("sensor.b").unwrap();
 
@@ -106,8 +104,7 @@ async fn test_consumer() {
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
 
-    // Get key-bound consumers. Post-M14 these resolve the typed record up front
-    // (Consumer<T> no longer carries `R` and no longer exposes `.key()`).
+    // Key-bound consumers resolve the typed record up front.
     let consumer_north = db.consumer::<Temperature>("zone.north").unwrap();
     let consumer_south = db.consumer::<Temperature>("zone.south").unwrap();
 
@@ -198,7 +195,7 @@ async fn test_type_mismatch_error() {
 }
 
 /// Test: Re-registering a key with a different type is collected by
-/// configure() and reported from build() (issue #133 — builder methods never
+/// configure() and reported from build() (builder methods never
 /// panic on user mistakes).
 #[tokio::test]
 async fn test_duplicate_key_error() {
@@ -222,6 +219,39 @@ async fn test_duplicate_key_error() {
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].record_key, "shared.key");
     assert!(errors[0].message.contains("different type"));
+}
+
+/// Test: conflicting writers (.source() + .transform()) on one record are
+/// validated once, in build(), and reported with the record key attached
+/// (the setters only catch same-stage duplicates).
+#[tokio::test]
+async fn test_conflicting_writers_reported_from_build() {
+    let runtime = Arc::new(TokioAdapter::new().unwrap());
+
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+
+    builder.configure::<Temperature>("t.input", |reg| {
+        reg.buffer(BufferCfg::SingleLatest);
+    });
+
+    builder.configure::<Temperature>("t.conflicted", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .source(|_ctx, _producer| async move {})
+            .transform::<Temperature, _>("t.input", |b| b.map(|t: &Temperature| Some(t.clone())));
+    });
+
+    let Err(DbError::InvalidConfiguration { errors }) = builder.build().await else {
+        panic!("build() must fail with InvalidConfiguration");
+    };
+    assert_eq!(errors.len(), 1, "got: {errors:?}");
+    assert_eq!(errors[0].record_key, "t.conflicted");
+    assert!(
+        errors[0].message.contains("conflicting writers"),
+        "got: {}",
+        errors[0].message
+    );
+    assert!(errors[0].message.contains(".source()"));
+    assert!(errors[0].message.contains(".transform()"));
 }
 
 /// Test: RecordId remains stable and can be used for O(1) access

@@ -170,7 +170,7 @@ impl ClientHandle {
 /// `ClientHandle` clones are dropped (graceful stop) — or, with
 /// [`ClientConfig::reconnect`] off, until the first disconnect.
 ///
-/// `clock` is the adapter's dyn-safe [`RuntimeOps`](aimdb_executor::RuntimeOps)
+/// `clock` is the adapter's dyn-safe [`RuntimeOps`](crate::executor::RuntimeOps)
 /// (e.g. `db.runtime_ops()`); the engine uses it for the reconnect backoff and
 /// keepalive — the *only* runtime dependency, so the rest of the engine is
 /// runtime-neutral.
@@ -178,7 +178,7 @@ pub fn run_client<D, C>(
     dialer: D,
     codec: C,
     config: ClientConfig,
-    clock: Arc<dyn aimdb_executor::RuntimeOps>,
+    clock: Arc<dyn crate::executor::RuntimeOps>,
 ) -> (ClientHandle, BoxFut<'static, ()>)
 where
     D: Dialer + 'static,
@@ -230,7 +230,7 @@ async fn client_loop<D, C>(
     codec: C,
     config: ClientConfig,
     cmd_rx: Receiver<ClientCmd>,
-    clock: Arc<dyn aimdb_executor::RuntimeOps>,
+    clock: Arc<dyn crate::executor::RuntimeOps>,
 ) where
     D: Dialer,
     C: EnvelopeCodec,
@@ -273,7 +273,7 @@ async fn reconnect_after(
     attempt: &mut usize,
     config: &ClientConfig,
     cmd_rx: &Receiver<ClientCmd>,
-    clock: &dyn aimdb_executor::RuntimeOps,
+    clock: &dyn crate::executor::RuntimeOps,
 ) -> bool {
     if !config.reconnect {
         return false;
@@ -305,7 +305,7 @@ async fn drive_connection<C>(
     codec: &C,
     cmd_rx: &Receiver<ClientCmd>,
     config: &ClientConfig,
-    clock: &dyn aimdb_executor::RuntimeOps,
+    clock: &dyn crate::executor::RuntimeOps,
 ) -> Ended
 where
     C: EnvelopeCodec + ?Sized,

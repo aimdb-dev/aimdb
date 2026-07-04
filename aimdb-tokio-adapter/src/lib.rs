@@ -3,26 +3,12 @@
 //! This crate provides Tokio-specific extensions for AimDB, enabling the database
 //! to run on standard library environments using the Tokio async runtime.
 //!
-//! # Features
+//! The adapter provides two things on top of aimdb-core:
 //!
-//! - **Tokio Integration**: Seamless integration with Tokio async executor
-//! - **Time Support**: Timestamp, sleep, and delayed task capabilities with `tokio::time`
-//! - **Error Handling**: Tokio-specific error conversions and handling
-//! - **Std Compatible**: Designed for environments with full standard library
-//!
-//! # Architecture
-//!
-//! Tokio is a std async runtime, so this adapter is designed for standard
-//! environments and works with the std version of aimdb-core by default.
-//!
-//! The adapter extends AimDB's core functionality without requiring tokio
-//! dependencies in the core crate. It provides:
-//!
-//!
-//! - **Runtime Module**: Core async task spawning with `RuntimeAdapter`
-//! - **Time Module**: Time-related capabilities like timestamps and sleep
-//! - **Error Module**: Runtime error constructors and conversions
-//! - Rich error descriptions leveraging std formatting capabilities
+//! - **Runtime**: [`TokioAdapter`] implements `aimdb_core::RuntimeOps`
+//!   (clock, sleep, logging) over `std::time` + `tokio::time`.
+//! - **Buffers**: [`TokioBuffer`] implements the three buffer semantics over
+//!   tokio primitives, registered via [`TokioRecordRegistrarExt::buffer`].
 //!
 //! See the repository examples for complete usage patterns.
 
@@ -31,12 +17,9 @@
 compile_error!("tokio-adapter requires the std feature");
 
 pub mod buffer;
-pub mod error;
 pub mod runtime;
-pub mod time;
 
 pub use buffer::TokioBuffer;
-pub use error::TokioErrorSupport;
 
 #[cfg(feature = "tokio-runtime")]
 pub use runtime::TokioAdapter;
@@ -44,7 +27,7 @@ pub use runtime::TokioAdapter;
 /// Buffer-construction extension for [`aimdb_core::RecordRegistrar`].
 ///
 /// Buffer construction is the one genuinely adapter-specific registration
-/// step left after issue #131 — `source()` / `tap()` / `transform()` are
+/// step that is genuinely adapter-specific — `source()` / `tap()` / `transform()` are
 /// inherent methods on the registrar. This trait adds `.buffer(cfg)` backed
 /// by [`TokioBuffer`].
 pub trait TokioRecordRegistrarExt<T>

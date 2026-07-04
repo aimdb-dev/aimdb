@@ -1,0 +1,12 @@
+[package]
+name = "readme-quickstart"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The README quickstart, compiled in CI so the front-door example cannot drift"
+publish = false
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = ["tokio-runtime"] }
+tokio = { workspace = true, features = ["time"] }

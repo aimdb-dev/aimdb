@@ -1,4 +1,4 @@
-//! Shared atomic counter state for buffer introspection (`metrics` feature).
+//! Shared atomic counter state for buffer introspection (`observability` feature).
 //!
 //! Embedded in adapter buffers (`TokioBuffer`, `EmbassyBuffer`) so the same
 //! `produced`/`consumed`/`dropped` accounting is reused across runtimes.

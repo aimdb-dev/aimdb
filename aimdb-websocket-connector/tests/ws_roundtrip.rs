@@ -63,14 +63,14 @@ async fn ws_mirrors_record_both_directions() {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://tele")
-            .with_serializer_raw(|m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
+            .with_serializer(|_ctx, m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
             .finish();
     });
     sb.configure::<Msg>("cfg", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws://cfg")
-            .with_deserializer_raw(|d: &[u8]| {
+            .with_deserializer(|_ctx, d: &[u8]| {
                 serde_json::from_slice::<Msg>(d).map_err(|e| e.to_string())
             })
             .finish();
@@ -90,14 +90,14 @@ async fn ws_mirrors_record_both_directions() {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws-client://cfg")
-            .with_serializer_raw(|m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
+            .with_serializer(|_ctx, m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
             .finish();
     });
     cb.configure::<Msg>("tele", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws-client://tele")
-            .with_deserializer_raw(|d: &[u8]| {
+            .with_deserializer(|_ctx, d: &[u8]| {
                 serde_json::from_slice::<Msg>(d).map_err(|e| e.to_string())
             })
             .finish();

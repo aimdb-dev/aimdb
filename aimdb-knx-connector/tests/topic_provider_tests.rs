@@ -331,7 +331,7 @@ async fn test_knx_topic_provider_with_connector_registration() {
             )
             .link_to("knx://1/0/0") // Fallback group address
             .with_topic_provider(RoomBasedGroupAddressProvider::new(1, 0))
-            .with_serializer_raw(|dimmer: &DimmerValue| Ok(dimmer.to_knx_bytes()))
+            .with_serializer(|_ctx, dimmer: &DimmerValue| Ok(dimmer.to_knx_bytes()))
             .finish();
     });
 
@@ -390,7 +390,7 @@ async fn test_hvac_zone_routing() {
             )
             .link_to("knx://5/0/0") // Fallback for invalid zones
             .with_topic_provider(HvacZoneProvider)
-            .with_serializer_raw(|sp: &TemperatureSetpoint| Ok(sp.to_knx_bytes()))
+            .with_serializer(|_ctx, sp: &TemperatureSetpoint| Ok(sp.to_knx_bytes()))
             .finish();
     });
 
@@ -407,7 +407,7 @@ fn test_knx_topic_provider_as_trait_object() {
     use std::sync::Arc;
 
     // Providers are stored as Arc<dyn TopicProvider<T>> and stay typed
-    // end-to-end (design 036 W1) — a wrong-type call is unrepresentable.
+    // end-to-end — a wrong-type call is unrepresentable.
     let provider: Arc<dyn TopicProvider<DimmerValue>> =
         Arc::new(RoomBasedGroupAddressProvider::new(1, 0));
 
@@ -420,7 +420,7 @@ fn test_knx_topic_provider_as_trait_object() {
 // ============================================================================
 //
 // These tests simulate EXACTLY what the fused outbound reader does internally
-// while it still holds the typed value (design 036 W1):
+// while it still holds the typed value:
 // ```rust
 // let dest = topic.as_ref().and_then(|p| p.topic(&value));
 // // ...later, in the pump:

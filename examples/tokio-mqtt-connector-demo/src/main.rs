@@ -140,7 +140,7 @@ async fn main() -> DbResult<()> {
 
     // Temperature sensors (outbound to MQTT) - using link_address() from key metadata.
     // The MQTT knobs come from the connector crate's MqttLinkExt/
-    // MqttOutboundLinkExt extension traits (design 034 §3.6); QoS 1 / no
+    // MqttOutboundLinkExt extension traits; QoS 1 / no
     // retain matches the connector defaults.
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
@@ -149,7 +149,7 @@ async fn main() -> DbResult<()> {
             .link_to(SensorKey::TempIndoor.link_address().unwrap())
             .with_qos(1)
             .with_retain(false)
-            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -158,7 +158,7 @@ async fn main() -> DbResult<()> {
             .source(outdoor_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempOutdoor.link_address().unwrap())
-            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -167,7 +167,7 @@ async fn main() -> DbResult<()> {
             .source(server_room_temp_producer)
             .tap(temperature_logger)
             .link_to(SensorKey::TempServerRoom.link_address().unwrap())
-            .with_serializer_raw(|temp: &Temperature| Ok(temp.to_json_vec()))
+            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
 
@@ -177,7 +177,7 @@ async fn main() -> DbResult<()> {
             .tap(command_consumer)
             .link_from(CommandKey::TempIndoor.link_address().unwrap())
             .with_qos(1) // subscribe QoS via MqttLinkExt
-            .with_deserializer_raw(|data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 
@@ -185,7 +185,7 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
             .link_from(CommandKey::TempOutdoor.link_address().unwrap())
-            .with_deserializer_raw(|data: &[u8]| TemperatureCommand::from_json(data))
+            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
             .finish();
     });
 

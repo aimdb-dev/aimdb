@@ -22,8 +22,7 @@ std = [
     "alloc",              # std includes alloc
     "serde",
     "anyhow",
-    "remote-access",
-    "aimdb-executor/std",
+    "remote",
     # AimX remote access now rides the shared session engine: `with_remote_access`
     # builds the `session::aimx` server, so std pulls in the connector-session module.
     "connector-session",
@@ -32,20 +31,15 @@ std = [
 # Heap allocation in no_std environments
 alloc = ["serde"] # Enable heap in no_std
 
-# JSON *value* codec (`crate::codec`): serde_json-backed `RemoteSerialize` /
-# `JsonCodec`, plus `RecordValue::as_json()`. no_std-compatible (serde_json runs
-# on alloc); opt in on embedded targets to get `record.latest()?.as_json()`
-# without any remote-access machinery. The `remote-access` feature builds on it.
-json-serialize = ["alloc", "serde_json"]
-
-# AimX remote-access data model (`crate::remote`): record metadata +
-# introspection (`RecordMetadata`, `AimDb::list_records`), the JSON
-# read/write/subscribe API (`try_latest_as_json` / `set_record_from_json` /
-# `JsonBufferReader`), and the wire protocol/config/security/error types. Builds
-# on the `json-serialize` value codec. The AimX *server* dispatch
+# Remote access: the serde_json-backed JSON value codec (`crate::codec`,
+# `RecordValue::as_json()`) plus the AimX remote-access data model
+# (`crate::remote`): record metadata + introspection (`RecordMetadata`,
+# `AimDb::list_records`), the JSON read/write/subscribe API
+# (`try_latest_as_json` / `set_record_from_json` / `JsonBufferReader`), and
+# the wire protocol/config/security/error types. The AimX *server* dispatch
 # (`session::aimx`) additionally needs `connector-session`. All compiles on
 # `no_std + alloc`.
-remote-access = ["json-serialize"]
+remote = ["alloc", "serde_json"]
 
 # The connector-session substrate (`crate::session`): the dyn-safe trait set
 # (Connection/Listener/Dialer, Dispatch/EnvelopeCodec, Source + shared types) and
@@ -60,18 +54,14 @@ connector-session = ["alloc"]
 # Observability features (available on both std/no_std)
 tracing = ["dep:tracing"] # Works in both std and no_std environments
 defmt = ["dep:defmt"]     # Embedded logging via probe (no_std)
-# Buffer introspection counters (produced/consumed/dropped/occupancy).
-# Independent of `profiling`; works in no_std (only needs heap + atomics).
+# Observability: buffer introspection counters (produced/consumed/dropped/
+# occupancy) plus automatic stage profiling (.source()/.tap()/.link() timing).
+# Works in no_std (heap + atomics + a runtime clock).
 # `portable-atomic/critical-section` provides the 64-bit-atomic fallback on
-# targets without native 64-bit atomics (e.g. thumbv7em); no-op elsewhere.
-metrics = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
-
-# Automatic stage profiling (.source()/.tap()/.link() timing).
-# Independent of `metrics`; works in no_std (only needs heap + a runtime clock).
-# `portable-atomic/critical-section` provides the 64-bit-atomic fallback on targets
-# without native 64-bit atomics (e.g. thumbv7em); it's a no-op where native atomics
-# exist, and embedded binaries already supply a `critical-section` impl.
-profiling = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
+# targets without native 64-bit atomics (e.g. thumbv7em); it's a no-op where
+# native atomics exist, and embedded binaries already supply a
+# `critical-section` impl.
+observability = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
 
 # Testing features
 test-utils = ["std"]
@@ -79,9 +69,6 @@ test-utils = ["std"]
 [dependencies]
 # Derive macros (optional)
 aimdb-derive = { version = "0.1.0", path = "../aimdb-derive", optional = true }
-
-# Executor traits (always available)
-aimdb-executor = { version = "0.2.0", path = "../aimdb-executor", default-features = false }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
@@ -112,7 +99,7 @@ anyhow = { workspace = true, optional = true }
 # `raw_value` lets the connector-session `EnvelopeCodec` splice an already-
 # serialized record-value `Payload` into a JSON envelope without re-escaping
 # (037 Decision 1). Only compiled when `serde_json` is pulled in (std /
-# json-serialize); the no_std `connector-session` contracts build never sees it.
+# remote); the no_std `connector-session` contracts build never sees it.
 serde_json = { workspace = true, optional = true, features = ["raw_value"] }
 
 # Atomic operations for all platforms

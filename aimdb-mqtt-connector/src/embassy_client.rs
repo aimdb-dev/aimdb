@@ -285,7 +285,7 @@ impl MqttConnectorBuilder {
     /// # Arguments
     /// * `broker_url` - Broker URL in format `mqtt://host:port`
     /// * `stack` - The device's network stack (the runtime travels as
-    ///   `Arc<dyn RuntimeOps>` since issue #131 and cannot surface it)
+    ///   `Arc<dyn RuntimeOps>` and cannot surface it)
     pub fn new(broker_url: impl Into<String>, stack: &'static embassy_net::Stack<'static>) -> Self {
         Self {
             broker_url: broker_url.into(),

@@ -31,7 +31,7 @@ use crate::transport::{Connector, ConnectorConfig};
 /// the returned future subscribes to the route's fused
 /// [`SerializedSource`](crate::connector::SerializedSource) — whose readers
 /// yield destination + serialized payload directly (no `Box<dyn Any>` per
-/// message, design 036 W1) — and publishes through `sink`. Per-route
+/// message) — and publishes through `sink`. Per-route
 /// configuration (`qos`/`retain`/…) is built once from the route's URL query
 /// via [`ConnectorConfig::from_query`].
 ///

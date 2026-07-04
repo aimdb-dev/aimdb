@@ -1,4 +1,4 @@
-//! Sans-io KNX/IP tunneling state machine (issue #135, design doc 034 §3.7)
+//! Sans-io KNX/IP tunneling state machine
 //!
 //! One implementation of the tunneling lifecycle — CONNECT_REQUEST/RESPONSE
 //! handshake, TUNNELING_REQUEST/ACK sequence bookkeeping, keepalive

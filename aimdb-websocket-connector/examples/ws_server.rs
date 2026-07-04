@@ -55,7 +55,7 @@ async fn main() {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://counter")
-            .with_serializer_raw(|c: &Counter| Ok(serde_json::to_vec(c).unwrap()))
+            .with_serializer(|_ctx, c: &Counter| Ok(serde_json::to_vec(c).unwrap()))
             .finish();
     });
     // Inbound: clients may `write` to it.
@@ -63,7 +63,7 @@ async fn main() {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws://echo")
-            .with_deserializer_raw(|d: &[u8]| {
+            .with_deserializer(|_ctx, d: &[u8]| {
                 serde_json::from_slice::<Echo>(d).map_err(|e| e.to_string())
             })
             .finish();

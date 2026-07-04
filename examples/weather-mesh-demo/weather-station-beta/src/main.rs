@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
             })
             .link_to(dew_point_topic)
-            .with_serializer_raw(|d: &DewPoint| {
+            .with_serializer(|_ctx, d: &DewPoint| {
                 d.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
             })

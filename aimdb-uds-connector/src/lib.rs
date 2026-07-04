@@ -37,7 +37,7 @@
 //!     r.buffer(BufferCfg::SingleLatest)
 //!         .with_remote_access()
 //!         .link_to("uds://temp")
-//!         .with_serializer_raw(|t: &Temp| Ok(serde_json::to_vec(t).expect("serialize")))
+//!         .with_serializer(|_ctx, t: &Temp| Ok(serde_json::to_vec(t).expect("serialize")))
 //!         .finish();
 //! });
 //! b.build().await?;

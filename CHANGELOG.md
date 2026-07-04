@@ -10,7 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [aimdb-codegen/CHANGELOG.md](aimdb-codegen/CHANGELOG.md)
 > - [aimdb-data-contracts/CHANGELOG.md](aimdb-data-contracts/CHANGELOG.md)
 > - [aimdb-derive/CHANGELOG.md](aimdb-derive/CHANGELOG.md)
-> - [aimdb-executor/CHANGELOG.md](aimdb-executor/CHANGELOG.md)
 > - [aimdb-tokio-adapter/CHANGELOG.md](aimdb-tokio-adapter/CHANGELOG.md)
 > - [aimdb-embassy-adapter/CHANGELOG.md](aimdb-embassy-adapter/CHANGELOG.md)
 > - [aimdb-mqtt-connector/CHANGELOG.md](aimdb-mqtt-connector/CHANGELOG.md)
@@ -28,6 +27,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
 
 ## [Unreleased]
+
+### Changed — Design 038 simplification pass (breaking)
+
+Implementation of the accepted items of [design 038](docs/design/038-technical-debt-and-simplification-review.md)
+(§3.1, §3.3–§3.8, §3.11, D10, plus the CI drift guards). Net −2,500 lines across the
+library crates with no capability loss. Breaking changes and migrations:
+
+- **`aimdb-executor` is retired (§3.1).** `RuntimeOps`, `LogLevel`, `BoxFuture`, and
+  `ExecutorError`/`ExecutorResult` now live in `aimdb_core::executor` (re-exported at the
+  crate root). The superseded generic trait family (`RuntimeAdapter`, `TimeOps`, `Logger`,
+  `Runtime`, `RuntimeInfo`), `aimdb_core::time` (`TimestampProvider`/`SleepCapable`), and
+  the pre-runner spawn surface (`TokioAdapter::spawn_task`, `TokioBuffer::spawn_dispatcher`,
+  `EmbassyBuffer::dispatcher_task`) are deleted. *Migration:* `use aimdb_executor::X` →
+  `use aimdb_core::X`; adapters implement one trait (`RuntimeOps`) instead of four.
+- **`DbError` diet (§3.3).** Deleted with zero production consumers: `with_context()`,
+  `into_anyhow()`, the ten `is_*()` predicates, the numeric `error_code()`/`error_category()`
+  registry, `RESOURCE_TYPE_*`, and the never-constructed `AmbiguousType`,
+  `DuplicateRecordKey`, `ResourceUnavailable`, and `HardwareError` variants (with the dead
+  `EmbassyErrorSupport`/`TokioErrorSupport` traits). Blocking-facade errors move to the new
+  **`aimdb_sync::SyncError`** (`AttachFailed`, `DetachFailed`, `SetTimeout`, `GetTimeout`,
+  `RuntimeShutdown`, `Db(DbError)`); all aimdb-sync APIs return `SyncResult<T>`.
+- **Dead API pruned (§3.8).** `RecordT` + `register_record(_with_key)` (self-registering
+  records; `configure()` is the API), `ConnectorLink::with_config`, `RecordValue::cloned`,
+  and the `outbound_connector_count` trait method (use `outbound_connectors().len()`).
+- **Internal consolidation (§3.4–§3.6).** The registry collapses to one `Vec<RecordEntry>` +
+  key map (`records_of_type` now returns `Vec<RecordId>`); `RecordIntrospect` and
+  `RecordMetricsReset` fold into `AnyRecord` (`JsonRecordAccess` stays); `AnyRecord::validate()`
+  is gone; writer exclusivity (`.source()`/`.transform()`/`.link_from()`) is validated once,
+  in `build()`, reported as `"conflicting writers: …"` with the record key attached.
+- **`LinkAddress` replaces `ConnectorUrl` for record links (§3.13/D5).** `.link_to()`/
+  `.link_from()` addresses parse as plain `scheme://resource` — no host/port/credential
+  parsing; `ConnectorUrl` remains the connector-constructor endpoint URL. Phantom
+  `default_port` entries (kafka/http/https) are gone.
+- **Tokio log backend (§3.13).** `TokioAdapter` forwards `ctx.log()` to the `log` facade —
+  the binary picks the backend (env_logger, tracing-log, …). With no backend configured it
+  falls back to plain `[info]`-style stdout so demos work without setup; the emoji
+  `println!` backend is gone.
+- **Serializer API (§3.7).** `with_serializer_raw`/`with_deserializer_raw` are gone.
+  *Migration:* `.with_serializer_raw(|v| …)` → `.with_serializer(|_ctx, v| …)` (deserializer
+  likewise).
+- **Feature collapse (§3.11).** `observability` = the old `metrics` + `profiling`;
+  `remote` = the old `json-serialize` + `remote-access`; `connector-session` stays
+  independent. *Migration:* rename the features; there are no aliases.
+- **CI drift guards (§2.6/§3.10).** `make readme-check` compiles the README quickstart
+  verbatim (`examples/readme-quickstart`) and diffs it against the README;
+  `make codegen-drift` compiles aimdb-codegen's generated output (common crate, hub crate,
+  flat schema) against the workspace. Both run in CI. The README quickstart itself and three
+  already-drifted codegen templates (0-input source tasks, inbound deserializer arity, the
+  flat schema's missing registrar-ext import) are fixed.
+- **D10 docs cleanup.** ~170 provenance-narration comment sites ("design 036 W1",
+  "issue #133", "pre-W8") rewritten to state the invariant directly; history lives in git
+  blame and docs/design/.
 
 ### Added
 
