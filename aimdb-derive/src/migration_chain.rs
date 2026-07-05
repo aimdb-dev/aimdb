@@ -245,10 +245,10 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
                 const MIN_VERSION: u32 = 1;
 
                 fn migrate_from_bytes(data: &[u8]) -> Result<Self, ::aimdb_data_contracts::MigrationError> {
-                    // Two-pass, tree-free version scan (design 039 PR3): pass 1 reads
-                    // just the version field via a tiny probe struct (peak allocation
-                    // O(concrete struct), not O(payload tree)); pass 2 re-parses the
-                    // same bytes directly into the matched concrete type below.
+                    // Two-pass, tree-free version scan: pass 1 reads just the version
+                    // field via a tiny probe struct (peak allocation O(concrete struct),
+                    // not O(payload tree)); pass 2 re-parses the same bytes directly
+                    // into the matched concrete type below.
                     #[derive(::serde::Deserialize)]
                     struct __VersionProbe {
                         #[serde(rename = #version_field)]

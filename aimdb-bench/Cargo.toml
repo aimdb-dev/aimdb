@@ -85,9 +85,8 @@ tokio = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
-# migration_chain! for the b0_alloc_migration bench (design 039 PR3) —
-# std-gated like criterion/serde_json above, since that's the only bench
-# that needs it.
+# migration_chain! for the b0_alloc_migration bench — std-gated like
+# criterion/serde_json above, since that's the only bench that needs it.
 aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
     "alloc",
     "migratable",

@@ -1,11 +1,10 @@
-//! Round-trip behavioral coverage for `migration_chain!` at the current
-//! arities (1-, 2-, and 3-step). This is the regression pin design 039's
-//! PR2 proc-macro rewrite must reproduce unchanged, and PR2/PR3 extend
-//! (4-/5-step chains, error paths) without touching these cases.
+//! Round-trip behavioral coverage for `migration_chain!` at 1- through
+//! 5-step chain arities, plus error paths. This is the regression pin the
+//! proc-macro implementation must reproduce unchanged as chain length grows.
 //!
 //! Lives under `tests/` (a separate crate) rather than `#[cfg(test)] mod
-//! tests` inside `src/migratable.rs`: after the PR2 rewrite the macro emits
-//! absolute `::aimdb_data_contracts::...` paths (matching the `RecordKey` /
+//! tests` inside `src/migratable.rs`: the macro emits absolute
+//! `::aimdb_data_contracts::...` paths (matching the `RecordKey` /
 //! `aimdb_core` precedent in `aimdb-derive`), which only resolve from
 //! outside the defining crate.
 
@@ -629,7 +628,7 @@ fn error_on_target_version_too_new() {
 
 // ═══════════════════════════════════════════════════════════════════
 // 4-step chain: Sprocket v1 -> v2 -> v3 -> v4 -> v5
-// (design 039 PR2/W8 — proves migration_chain! arity is unbounded)
+// (proves migration_chain! arity is unbounded)
 // ═══════════════════════════════════════════════════════════════════
 
 macro_rules! sprocket_version {

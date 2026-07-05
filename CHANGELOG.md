@@ -80,12 +80,11 @@ library crates with no capability loss. Breaking changes and migrations:
   "issue #133", "pre-W8") rewritten to state the invariant directly; history lives in git
   blame and docs/design/.
 
-### Changed — Design 039: no_std typed migrations
+### Changed — no_std typed migrations
 
-Implementation of [design 039](docs/design/039-no-std-migrations.md): schema
-migration is the last capability trait freed from `std`, so a versioned contract
-can migrate old payloads on a bare-metal target (e.g. Embassy on an MCU), not
-just under `std`. Verified on `thumbv7em-none-eabihf` in CI, with a
+Schema migration is the last capability trait freed from `std`, so a versioned
+contract can migrate old payloads on a bare-metal target (e.g. Embassy on an MCU),
+not just under `std`. Verified on `thumbv7em-none-eabihf` in CI, with a
 multi-step migration round-trip suite and a trybuild compile-fail harness.
 
 - **`migratable` no longer requires `std` (breaking).** The feature is now

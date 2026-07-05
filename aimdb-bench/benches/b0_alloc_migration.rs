@@ -1,12 +1,11 @@
 //! B0 — Allocation counting for `migration_chain!`'s tree-free version
-//! probe (design 039 PR3).
+//! probe.
 //!
 //! Measures per-call allocation cost of `migrate_from_bytes` upgrading a
-//! v1 payload to the current schema version. This is the bench that
-//! records PR3's win: the two-pass probe scan (peak allocation O(concrete
-//! struct)) replaces a full `serde_json::Value` tree parse (peak
-//! allocation O(payload tree)) — a regression here means the tree-free
-//! path stopped being tree-free.
+//! v1 payload to the current schema version. The two-pass probe scan
+//! (peak allocation O(concrete struct)) replaces a full `serde_json::Value`
+//! tree parse (peak allocation O(payload tree)) — a regression here means
+//! the tree-free path stopped being tree-free.
 //!
 //! **Measurement model:** warm up `WARMUP_ITERS` calls, `reset()` the
 //! counters, run `BATCH_SIZE` more calls, then `snapshot()` and divide by
