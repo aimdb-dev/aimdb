@@ -1001,7 +1001,8 @@ mod tests {
             TokioBuffer::<i32>::new(&BufferCfg::SingleLatest)
         })
         .await;
-        test_support::assert_mailbox_contract(|| TokioBuffer::<i32>::new(&BufferCfg::Mailbox)).await;
+        test_support::assert_mailbox_contract(|| TokioBuffer::<i32>::new(&BufferCfg::Mailbox))
+            .await;
         test_support::assert_spmc_ring_contract(|| {
             TokioBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 4 })
         })
