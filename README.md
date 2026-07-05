@@ -130,12 +130,12 @@ docker compose up
 
 **Four capability traits** — opt-in, type-checked:
 
-| Trait | What it unlocks |
-| --- | --- |
-| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | Crossing WASM / WebSocket / CLI boundaries |
-| [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | Typed schema evolution across deployed fleets |
-| `Observable` | Automatic per-record metrics |
-| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | Wire-format connectors |
+| Trait | What it unlocks | Runtimes |
+| --- | --- | --- |
+| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | Crossing WASM / WebSocket / CLI boundaries | std, no_std |
+| [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | Typed schema evolution across deployed fleets | std, no_std |
+| `Observable` | Automatic per-record metrics | std, no_std |
+| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | Wire-format connectors | std, no_std |
 
 **One async API across runtimes.** Tokio, Embassy, WASM — swap the runtime adapter, keep the code. → [How the runtime abstraction works](https://aimdb.dev/blog/building-aimdb-one-async-api)
 

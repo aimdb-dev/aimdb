@@ -108,7 +108,8 @@ pub use migratable::{MigrationChain, MigrationError, MigrationStep};
 /// | Add required field | ⚠️ Migration | Use `MigrationStep` + `migration_chain!` |
 ///
 /// For breaking changes, implement `MigrationStep` and use `migration_chain!` (requires `migratable` feature)
-/// to provide runtime transformation of older data formats.
+/// to provide runtime transformation of older data formats. `migratable` only requires `alloc` — schema
+/// migration works identically on `no_std` targets (e.g. Embassy on an MCU) and on `std`.
 pub trait SchemaType: Sized {
     /// Unique identifier for this schema (e.g., "temperature", "humidity")
     const NAME: &'static str;
