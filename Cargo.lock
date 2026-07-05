@@ -28,6 +28,7 @@ name = "aimdb-bench"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-embassy-adapter",
  "aimdb-tokio-adapter",
  "criterion",

@@ -36,6 +36,10 @@ harness = false
 name = "b1_b2_embassy"
 harness = false
 
+[[bench]]
+name = "b0_alloc_migration"
+harness = false
+
 [features]
 default = ["std"]
 # Gates `profiles`/`reports`/`harness` and their criterion/serde_json/
@@ -49,6 +53,7 @@ std = [
     "dep:serde_json",
     "dep:criterion",
     "dep:futures",
+    "dep:aimdb-data-contracts",
     "aimdb-core/std",
 ]
 
@@ -79,6 +84,14 @@ tokio = { workspace = true, optional = true }
 # JSON output for baseline snapshots
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+
+# migration_chain! for the b0_alloc_migration bench (design 039 PR3) —
+# std-gated like criterion/serde_json above, since that's the only bench
+# that needs it.
+aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
+    "alloc",
+    "migratable",
+], optional = true }
 
 # Statistical benchmarking for B1/B2 — `harness::bench_spsc` (design 039
 # F13) references `criterion::Criterion` in its public signature, so this
