@@ -213,7 +213,7 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
 
         from_arms.push(quote! {
             #k_lit => {
-                let older: #older_ty = ::aimdb_data_contracts::__private::serde_json::from_value(raw).map_err(|_| {
+                let older: #older_ty = ::aimdb_data_contracts::__private::serde_json::from_slice(data).map_err(|_| {
                     ::aimdb_data_contracts::MigrationError::DeserializationFailed(concat!(
                         "failed to parse as ", stringify!(#older_ty)
                     ))
@@ -245,15 +245,27 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
                 const MIN_VERSION: u32 = 1;
 
                 fn migrate_from_bytes(data: &[u8]) -> Result<Self, ::aimdb_data_contracts::MigrationError> {
-                    let raw: ::aimdb_data_contracts::__private::serde_json::Value =
-                        ::aimdb_data_contracts::__private::serde_json::from_slice(data).map_err(|_| {
-                            ::aimdb_data_contracts::MigrationError::DeserializationFailed("invalid JSON")
-                        })?;
+                    // Two-pass, tree-free version scan (design 039 PR3): pass 1 reads
+                    // just the version field via a tiny probe struct (peak allocation
+                    // O(concrete struct), not O(payload tree)); pass 2 re-parses the
+                    // same bytes directly into the matched concrete type below.
+                    #[derive(::serde::Deserialize)]
+                    struct __VersionProbe {
+                        #[serde(rename = #version_field)]
+                        version: u32,
+                    }
 
-                    let version = raw
-                        .get(#version_field)
-                        .and_then(|v| v.as_u64())
-                        .ok_or(::aimdb_data_contracts::MigrationError::MissingVersion)? as u32;
+                    let version = match ::aimdb_data_contracts::__private::serde_json::from_slice::<__VersionProbe>(data) {
+                        Ok(probe) => probe.version,
+                        Err(e) if e.is_data() => {
+                            return Err(::aimdb_data_contracts::MigrationError::MissingVersion);
+                        }
+                        Err(_) => {
+                            return Err(::aimdb_data_contracts::MigrationError::DeserializationFailed(
+                                "invalid JSON",
+                            ));
+                        }
+                    };
 
                     if version > <#current as ::aimdb_data_contracts::SchemaType>::VERSION {
                         return Err(::aimdb_data_contracts::MigrationError::VersionTooNew {
@@ -265,7 +277,7 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
                     match version {
                         #(#from_arms)*
                         v if v == <#current as ::aimdb_data_contracts::SchemaType>::VERSION => {
-                            ::aimdb_data_contracts::__private::serde_json::from_value(raw).map_err(|_| {
+                            ::aimdb_data_contracts::__private::serde_json::from_slice(data).map_err(|_| {
                                 ::aimdb_data_contracts::MigrationError::DeserializationFailed(concat!(
                                     "failed to parse as ", stringify!(#current)
                                 ))
