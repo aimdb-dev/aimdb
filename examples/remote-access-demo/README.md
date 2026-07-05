@@ -5,10 +5,11 @@ This example demonstrates the AimX v1 remote access protocol with `record.list` 
 ## What It Does
 
 **Server** (`server.rs`):
-- Creates an AimDB instance with 5 record types (Temperature, SystemStatus, UserEvent, Config, AppSettings)
+- Creates an AimDB instance with 6 record types (Temperature, TemperatureFahrenheit, SystemStatus, UserEvent, Config, AppSettings)
 - Enables remote access on Unix domain socket `/tmp/aimdb-demo.sock`
 - Uses ReadWrite security policy (`server::AppSettings` is the only writable key)
 - Drives `Temperature` and `SystemStatus` from in-AimDB `.source()` tasks with named `.tap()` consumers, so the `profiling` feature can time every stage automatically (see [Stage Profiling](#stage-profiling) below)
+- Derives `TemperatureFahrenheit` from `Temperature` via `.transform()`, so the `profiling` feature also times single-input transform stages
 
 **Client** (`client.rs`):
 - Connects to the server via Unix domain socket
@@ -99,12 +100,29 @@ named via `.with_name("...")`:
 | Temperature    | `temp_simulator`     | `temp_logger` (fast)                         |
 | SystemStatus   | `status_simulator`   | `slow_status_processor` (sleeps 100 ms each) |
 
+`TemperatureFahrenheit` is derived from `Temperature` via `.transform()` instead —
+it has no `.source()` of its own:
+
+| Record                 | Transform stage        |
+|------------------------|-------------------------|
+| TemperatureFahrenheit  | `celsius_to_fahrenheit` |
+
+`.source()`/`.tap()` stages are timed as the wall-clock interval *between* calls
+(the actual callback loops internally, so AimDB times the gap between
+`produce()`/`recv()` calls). A single-input `.transform()` stage is timed
+differently: AimDB owns the call boundary directly, so it wraps the transform
+closure itself — `celsius_to_fahrenheit`'s `avg_time_ns` is the per-call cost of
+converting one `Temperature` into one `TemperatureFahrenheit`, not the gap
+between conversions.
+
 Once the server has been running for a few seconds, query stage profiling via the
 `aimdb-mcp` server using the `get_stage_profiling` tool with `record_key="SystemStatus"`.
 The result is a list of `{call_count, avg_time_ns, min_time_ns, max_time_ns, name, ...}`
 entries plus a `bottleneck` field — for SystemStatus the bottleneck will point at
-`slow_status_processor` with an average around 100 ms. Reset the counters between
-windows with the `reset_stage_profiling` tool.
+`slow_status_processor` with an average around 100 ms. Query
+`record_key="TemperatureFahrenheit"` to see the `celsius_to_fahrenheit` transform
+stage reported the same way, with `stage_type: "transform"`. Reset the counters
+between windows with the `reset_stage_profiling` tool.
 
 You can also call the raw RPC method directly:
 

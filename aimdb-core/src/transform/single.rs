@@ -8,7 +8,7 @@ use alloc::{
     vec,
 };
 
-use crate::transform::{CollectedTransform, TransformDescriptor};
+use crate::transform::{CollectedTransform, TransformDescriptor, TransformProfiling};
 
 // ============================================================================
 // TransformBuilder → TransformPipeline
@@ -124,17 +124,20 @@ where
 
     TransformDescriptor {
         input_keys,
-        build_fn: Box::new(move |producer, db, output_key| CollectedTransform {
-            task_future: Box::pin(run_single_transform::<I, O, S>(
-                db,
-                input_key_clone,
-                output_key.to_string(),
-                producer,
-                initial_state,
-                transform_fn,
-            )),
-            fanin_futures: alloc::vec::Vec::new(),
-        }),
+        build_fn: Box::new(
+            move |producer, db, output_key, profiling| CollectedTransform {
+                task_future: Box::pin(run_single_transform::<I, O, S>(
+                    db,
+                    input_key_clone,
+                    output_key.to_string(),
+                    producer,
+                    initial_state,
+                    transform_fn,
+                    profiling,
+                )),
+                fanin_futures: alloc::vec::Vec::new(),
+            },
+        ),
     }
 }
 
@@ -150,6 +153,7 @@ pub(crate) async fn run_single_transform<I, O, S>(
     producer: crate::Producer<O>,
     mut state: S,
     transform_fn: impl Fn(&I, &mut S) -> Option<O> + Send + Sync + 'static,
+    profiling: TransformProfiling,
 ) where
     I: Send + Sync + Clone + Debug + 'static,
     O: Send + Sync + Clone + Debug + 'static,
@@ -183,8 +187,22 @@ pub(crate) async fn run_single_transform<I, O, S>(
     loop {
         match reader.recv().await {
             Ok(input_value) => {
-                if let Some(output_value) = transform_fn(&input_value, &mut state) {
-                    producer.produce(output_value);
+                #[cfg(feature = "observability")]
+                {
+                    let started_ns = profiling.as_ref().map(|(_, clock)| clock());
+                    let output_value = transform_fn(&input_value, &mut state);
+                    if let (Some((metrics, clock)), Some(started_ns)) = (&profiling, started_ns) {
+                        metrics.record(clock().saturating_sub(started_ns));
+                    }
+                    if let Some(output_value) = output_value {
+                        producer.produce(output_value);
+                    }
+                }
+                #[cfg(not(feature = "observability"))]
+                {
+                    if let Some(output_value) = transform_fn(&input_value, &mut state) {
+                        producer.produce(output_value);
+                    }
                 }
             }
             Err(crate::DbError::BufferLagged { .. }) => {
