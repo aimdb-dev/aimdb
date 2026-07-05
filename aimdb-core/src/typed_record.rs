@@ -714,9 +714,33 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             );
 
             // Create Producer<T> bound to a pre-resolved write handle for this record.
-            let producer = crate::typed_api::Producer::new(self.writer_handle());
+            #[allow(unused_mut)]
+            let mut producer = crate::typed_api::Producer::new(self.writer_handle());
 
-            let collected = (desc.build_fn)(producer, db.clone(), record_key);
+            #[cfg(feature = "observability")]
+            let profiling_arg = {
+                let is_single_input = desc.input_keys.len() == 1;
+
+                let profiling_entry = self.profiling.transforms().first();
+
+                if !is_single_input {
+                    // Join: producer cadence is the throughput proxy — attach it directly.
+                    if let Some(entry) = profiling_entry {
+                        producer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
+                    }
+                }
+
+                if is_single_input {
+                    profiling_entry
+                        .map(|entry| (entry.metrics.clone(), db.profiling_clock().clone()))
+                } else {
+                    None
+                }
+            };
+            #[cfg(not(feature = "observability"))]
+            let profiling_arg: crate::transform::TransformProfiling = ();
+
+            let collected = (desc.build_fn)(producer, db.clone(), record_key, profiling_arg);
 
             let mut out = Vec::with_capacity(1 + collected.fanin_futures.len());
             out.push(collected.task_future);

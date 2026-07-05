@@ -247,7 +247,7 @@ where
         JoinPipeline {
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
-                build_fn: Box::new(move |producer, db, output_key| {
+                build_fn: Box::new(move |producer, db, output_key, _profiling| {
                     build_join_collected(db, inputs, producer, handler, output_key)
                 }),
             }),

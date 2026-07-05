@@ -56,6 +56,7 @@ impl RecordProfilingMetrics {
             ("source", self.sources()),
             ("tap", self.taps()),
             ("link", self.links()),
+            ("transform", self.transforms()),
         ] {
             for (i, entry) in stages.iter().enumerate() {
                 out.push(StageProfilingInfo::from_entry(kind, i, entry));

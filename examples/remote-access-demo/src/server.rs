@@ -28,6 +28,16 @@ struct Temperature {
     timestamp: f64, // Unix timestamp as f64 (seconds since epoch with fractional nanoseconds, e.g., 1730379296.123456789)
 }
 
+/// Temperature reading converted to Fahrenheit — derived from `Temperature` via
+/// `.transform()`, demonstrating that single-input transform stages are timed
+/// automatically too (see [Stage Profiling](../README.md#stage-profiling)).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TemperatureFahrenheit {
+    sensor_id: String,
+    fahrenheit: f64,
+    timestamp: f64,
+}
+
 /// System status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SystemStatus {
@@ -115,6 +125,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_name("temp_logger");
     });
 
+    // TemperatureFahrenheit is derived from Temperature via `.transform()` — no
+    // `.source()` of its own. `.transform()` stages are timed per-call (the
+    // transform closure itself), unlike `.source()`/`.tap()` which time the
+    // interval between calls — see `get_stage_profiling`.
+    builder.configure::<TemperatureFahrenheit>("server::TemperatureFahrenheit", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
+            .with_remote_access()
+            .transform::<Temperature, _>("server::Temperature", |b| {
+                b.map(|t: &Temperature| {
+                    Some(TemperatureFahrenheit {
+                        sensor_id: t.sensor_id.clone(),
+                        fahrenheit: t.celsius * 9.0 / 5.0 + 32.0,
+                        timestamp: t.timestamp,
+                    })
+                })
+            })
+            .with_name("celsius_to_fahrenheit");
+    });
+
     builder.configure::<SystemStatus>("server::SystemStatus", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 50 })
             .with_remote_access()
@@ -142,8 +171,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (db, runner) = builder.build().await?;
     tokio::spawn(runner.run());
 
-    info!("✅ Database initialized with 5 record types");
+    info!("✅ Database initialized with 6 record types");
     info!("   - Temperature (SpmcRing×100, has producer — drainable 🔄)");
+    info!("   - TemperatureFahrenheit (SpmcRing×100, derived via .transform())");
     info!("   - SystemStatus (SpmcRing×50, has producer — drainable 🔄)");
     info!("   - UserEvent (SpmcRing×100, no data)");
     info!("   - Config (SingleLatest, has producer, NOT writable)");
@@ -188,8 +218,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   SystemStatus: every 5 seconds");
     info!("");
     info!("📈 Stage profiling is enabled. Query it via the aimdb-mcp tools:");
-    info!("   get_stage_profiling   record_key=\"Temperature\"   → per-stage timing");
-    info!("   reset_stage_profiling                              → clear counters");
+    info!("   get_stage_profiling   record_key=\"Temperature\"           → per-stage timing");
+    info!("   get_stage_profiling   record_key=\"TemperatureFahrenheit\" → transform stage timing");
+    info!("   reset_stage_profiling                                      → clear counters");
     info!("");
     info!("📊 Buffer metrics are enabled. Query via the aimdb-mcp tools:");
     info!("   get_buffer_metrics    record_key=\"SystemStatus\"  → produced/consumed/dropped");

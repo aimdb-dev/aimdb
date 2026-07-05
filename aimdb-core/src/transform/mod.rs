@@ -22,6 +22,8 @@ pub mod single;
 // Public re-exports
 pub use single::{StatefulTransformBuilder, TransformBuilder, TransformPipeline};
 
+#[cfg(feature = "observability")]
+use crate::{profiling::Clock, StageMetrics};
 pub use join::{JoinBuilder, JoinEventRx, JoinPipeline, JoinTrigger};
 
 // ============================================================================
@@ -36,6 +38,12 @@ pub(crate) struct CollectedTransform {
     pub task_future: BoxFuture<'static, ()>,
     pub fanin_futures: Vec<BoxFuture<'static, ()>>,
 }
+
+#[cfg(feature = "observability")]
+pub(crate) type TransformProfiling = Option<(Arc<StageMetrics>, Clock)>;
+
+#[cfg(not(feature = "observability"))]
+pub(crate) type TransformProfiling = ();
 
 pub(crate) struct TransformDescriptor<T>
 where
@@ -54,6 +62,13 @@ where
     ///   longer carries a `.key()` accessor. Important when
     ///   multiple records share type `T` under different keys.
     #[allow(clippy::type_complexity)]
-    pub build_fn:
-        Box<dyn FnOnce(crate::Producer<T>, Arc<crate::AimDb>, &str) -> CollectedTransform + Send>,
+    pub build_fn: Box<
+        dyn FnOnce(
+                crate::Producer<T>,
+                Arc<crate::AimDb>,
+                &str,
+                TransformProfiling,
+            ) -> CollectedTransform
+            + Send,
+    >,
 }
