@@ -22,8 +22,6 @@
 //! # Example
 //!
 //! ```rust
-//! extern crate alloc;
-//!
 //! use aimdb_data_contracts::{SchemaType, MigrationStep, MigrationChain, MigrationError};
 //! use aimdb_data_contracts::migration_chain;
 //! use serde::{Deserialize, Serialize};
@@ -269,7 +267,7 @@ macro_rules! migration_chain {
             const MIN_VERSION: u32 = 1;
 
             fn migrate_from_bytes(data: &[u8]) -> Result<Self, $crate::MigrationError> {
-                let raw: serde_json::Value = serde_json::from_slice(data)
+                let raw: $crate::__private::serde_json::Value = $crate::__private::serde_json::from_slice(data)
                     .map_err(|_| $crate::MigrationError::DeserializationFailed("invalid JSON"))?;
 
                 let version = raw
@@ -286,7 +284,7 @@ macro_rules! migration_chain {
 
                 match version {
                     1 => {
-                        let older: $older1 = serde_json::from_value(raw).map_err(|_| {
+                        let older: $older1 = $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($older1)
@@ -295,7 +293,7 @@ macro_rules! migration_chain {
                         <$step1 as $crate::MigrationStep>::up(older)
                     }
                     v if v == <$current as $crate::SchemaType>::VERSION => {
-                        serde_json::from_value(raw).map_err(|_| {
+                        $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($current)
@@ -312,7 +310,7 @@ macro_rules! migration_chain {
             fn migrate_to_version(
                 &self,
                 target_version: u32,
-            ) -> Result<alloc::vec::Vec<u8>, $crate::MigrationError> {
+            ) -> Result<$crate::__private::alloc::vec::Vec<u8>, $crate::MigrationError> {
                 if target_version < Self::MIN_VERSION {
                     return Err($crate::MigrationError::VersionTooOld {
                         target: target_version,
@@ -329,14 +327,14 @@ macro_rules! migration_chain {
                 match target_version {
                     1 => {
                         let older = <$step1 as $crate::MigrationStep>::down(self.clone())?;
-                        serde_json::to_vec(&older).map_err(|_| {
+                        $crate::__private::serde_json::to_vec(&older).map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
                                 stringify!($older1)
                             ))
                         })
                     }
-                    v if v == <$current as $crate::SchemaType>::VERSION => serde_json::to_vec(self)
+                    v if v == <$current as $crate::SchemaType>::VERSION => $crate::__private::serde_json::to_vec(self)
                         .map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
@@ -393,7 +391,7 @@ macro_rules! migration_chain {
             const MIN_VERSION: u32 = 1;
 
             fn migrate_from_bytes(data: &[u8]) -> Result<Self, $crate::MigrationError> {
-                let raw: serde_json::Value = serde_json::from_slice(data)
+                let raw: $crate::__private::serde_json::Value = $crate::__private::serde_json::from_slice(data)
                     .map_err(|_| $crate::MigrationError::DeserializationFailed("invalid JSON"))?;
 
                 let version = raw
@@ -410,7 +408,7 @@ macro_rules! migration_chain {
 
                 match version {
                     1 => {
-                        let v1: $older1 = serde_json::from_value(raw).map_err(|_| {
+                        let v1: $older1 = $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($older1)
@@ -420,7 +418,7 @@ macro_rules! migration_chain {
                         <$step2 as $crate::MigrationStep>::up(v2)
                     }
                     2 => {
-                        let v2: $older2 = serde_json::from_value(raw).map_err(|_| {
+                        let v2: $older2 = $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($older2)
@@ -429,7 +427,7 @@ macro_rules! migration_chain {
                         <$step2 as $crate::MigrationStep>::up(v2)
                     }
                     v if v == <$current as $crate::SchemaType>::VERSION => {
-                        serde_json::from_value(raw).map_err(|_| {
+                        $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($current)
@@ -446,7 +444,7 @@ macro_rules! migration_chain {
             fn migrate_to_version(
                 &self,
                 target_version: u32,
-            ) -> Result<alloc::vec::Vec<u8>, $crate::MigrationError> {
+            ) -> Result<$crate::__private::alloc::vec::Vec<u8>, $crate::MigrationError> {
                 if target_version < Self::MIN_VERSION {
                     return Err($crate::MigrationError::VersionTooOld {
                         target: target_version,
@@ -464,7 +462,7 @@ macro_rules! migration_chain {
                     1 => {
                         let v2 = <$step2 as $crate::MigrationStep>::down(self.clone())?;
                         let v1 = <$step1 as $crate::MigrationStep>::down(v2)?;
-                        serde_json::to_vec(&v1).map_err(|_| {
+                        $crate::__private::serde_json::to_vec(&v1).map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
                                 stringify!($older1)
@@ -473,14 +471,14 @@ macro_rules! migration_chain {
                     }
                     2 => {
                         let v2 = <$step2 as $crate::MigrationStep>::down(self.clone())?;
-                        serde_json::to_vec(&v2).map_err(|_| {
+                        $crate::__private::serde_json::to_vec(&v2).map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
                                 stringify!($older2)
                             ))
                         })
                     }
-                    v if v == <$current as $crate::SchemaType>::VERSION => serde_json::to_vec(self)
+                    v if v == <$current as $crate::SchemaType>::VERSION => $crate::__private::serde_json::to_vec(self)
                         .map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
@@ -544,7 +542,7 @@ macro_rules! migration_chain {
             const MIN_VERSION: u32 = 1;
 
             fn migrate_from_bytes(data: &[u8]) -> Result<Self, $crate::MigrationError> {
-                let raw: serde_json::Value = serde_json::from_slice(data)
+                let raw: $crate::__private::serde_json::Value = $crate::__private::serde_json::from_slice(data)
                     .map_err(|_| $crate::MigrationError::DeserializationFailed("invalid JSON"))?;
 
                 let version = raw
@@ -561,7 +559,7 @@ macro_rules! migration_chain {
 
                 match version {
                     1 => {
-                        let v1: $older1 = serde_json::from_value(raw).map_err(|_| {
+                        let v1: $older1 = $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($older1)
@@ -572,7 +570,7 @@ macro_rules! migration_chain {
                         <$step3 as $crate::MigrationStep>::up(v3)
                     }
                     2 => {
-                        let v2: $older2 = serde_json::from_value(raw).map_err(|_| {
+                        let v2: $older2 = $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($older2)
@@ -582,7 +580,7 @@ macro_rules! migration_chain {
                         <$step3 as $crate::MigrationStep>::up(v3)
                     }
                     3 => {
-                        let v3: $older3 = serde_json::from_value(raw).map_err(|_| {
+                        let v3: $older3 = $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($older3)
@@ -591,7 +589,7 @@ macro_rules! migration_chain {
                         <$step3 as $crate::MigrationStep>::up(v3)
                     }
                     v if v == <$current as $crate::SchemaType>::VERSION => {
-                        serde_json::from_value(raw).map_err(|_| {
+                        $crate::__private::serde_json::from_value(raw).map_err(|_| {
                             $crate::MigrationError::DeserializationFailed(concat!(
                                 "failed to parse as ",
                                 stringify!($current)
@@ -608,7 +606,7 @@ macro_rules! migration_chain {
             fn migrate_to_version(
                 &self,
                 target_version: u32,
-            ) -> Result<alloc::vec::Vec<u8>, $crate::MigrationError> {
+            ) -> Result<$crate::__private::alloc::vec::Vec<u8>, $crate::MigrationError> {
                 if target_version < Self::MIN_VERSION {
                     return Err($crate::MigrationError::VersionTooOld {
                         target: target_version,
@@ -627,7 +625,7 @@ macro_rules! migration_chain {
                         let v3 = <$step3 as $crate::MigrationStep>::down(self.clone())?;
                         let v2 = <$step2 as $crate::MigrationStep>::down(v3)?;
                         let v1 = <$step1 as $crate::MigrationStep>::down(v2)?;
-                        serde_json::to_vec(&v1).map_err(|_| {
+                        $crate::__private::serde_json::to_vec(&v1).map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
                                 stringify!($older1)
@@ -637,7 +635,7 @@ macro_rules! migration_chain {
                     2 => {
                         let v3 = <$step3 as $crate::MigrationStep>::down(self.clone())?;
                         let v2 = <$step2 as $crate::MigrationStep>::down(v3)?;
-                        serde_json::to_vec(&v2).map_err(|_| {
+                        $crate::__private::serde_json::to_vec(&v2).map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
                                 stringify!($older2)
@@ -646,14 +644,14 @@ macro_rules! migration_chain {
                     }
                     3 => {
                         let v3 = <$step3 as $crate::MigrationStep>::down(self.clone())?;
-                        serde_json::to_vec(&v3).map_err(|_| {
+                        $crate::__private::serde_json::to_vec(&v3).map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",
                                 stringify!($older3)
                             ))
                         })
                     }
-                    v if v == <$current as $crate::SchemaType>::VERSION => serde_json::to_vec(self)
+                    v if v == <$current as $crate::SchemaType>::VERSION => $crate::__private::serde_json::to_vec(self)
                         .map_err(|_| {
                             $crate::MigrationError::SerializationFailed(concat!(
                                 "failed to serialize as ",

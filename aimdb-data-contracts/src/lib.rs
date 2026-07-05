@@ -44,6 +44,16 @@ extern crate std;
 
 extern crate alloc;
 
+/// Re-exports used by macro-generated code, kept out of the crate's own
+/// namespace so a caller's own `serde_json`/`alloc` (if any) never shadows
+/// or gets shadowed by them — see `migration_chain!`'s expansion.
+#[doc(hidden)]
+pub mod __private {
+    pub extern crate alloc;
+    #[cfg(any(feature = "linkable", feature = "migratable"))]
+    pub use serde_json;
+}
+
 mod streamable;
 pub use streamable::Streamable;
 
