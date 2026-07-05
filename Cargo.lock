@@ -320,11 +320,12 @@ dependencies = [
 
 [[package]]
 name = "aimdb-wasm-adapter"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-ws-protocol",
+ "futures",
  "futures-channel",
  "futures-util",
  "js-sys",
