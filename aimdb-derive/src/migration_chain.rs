@@ -283,9 +283,12 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
                                 ))
                             })
                         }
-                        _ => Err(::aimdb_data_contracts::MigrationError::VersionTooNew {
-                            source: version,
-                            current: <#current as ::aimdb_data_contracts::SchemaType>::VERSION,
+                        // Only reachable for a version below MIN_VERSION (the
+                        // `> VERSION` guard above and the `1..=VERSION` arms cover
+                        // everything else), so this is a too-old version, not too-new.
+                        _ => Err(::aimdb_data_contracts::MigrationError::VersionTooOld {
+                            target: version,
+                            minimum: Self::MIN_VERSION,
                         }),
                     }
                 }

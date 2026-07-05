@@ -577,6 +577,21 @@ fn error_on_version_too_new() {
 }
 
 #[test]
+fn error_on_source_version_too_old() {
+    // A payload version below MIN_VERSION (1) is too old, not too new — it
+    // must report VersionTooOld, mirroring the migrate_to_version path.
+    let payload = br#"{"schema_version": 0, "label": "ancient"}"#;
+    let err = GizmoV4::migrate_from_bytes(payload).unwrap_err();
+    assert_eq!(
+        err,
+        MigrationError::VersionTooOld {
+            target: 0,
+            minimum: 1
+        }
+    );
+}
+
+#[test]
 fn error_on_target_version_too_old() {
     let current = GizmoV4 {
         schema_version: 4,
