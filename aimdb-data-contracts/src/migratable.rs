@@ -204,3 +204,160 @@ pub trait MigrationChain: SchemaType + serde::de::DeserializeOwned + serde::Seri
         target_version: u32,
     ) -> Result<alloc::vec::Vec<u8>, MigrationError>;
 }
+
+/// Compile-only proof that `migration_chain!` arity is unbounded — a 4-step
+/// chain (5 schema versions), not itself a test. Runtime correctness for
+/// chains beyond the historical 3-step ceiling is proven on host by
+/// `tests/migration_roundtrip.rs`; this module exists purely so the
+/// `thumbv7em-none-eabihf` check lane (which can't compile `tests/*.rs` —
+/// no `std` test harness on a bare-metal target) still exercises a >3-step
+/// chain. Lives inside this crate (not `tests/`), so it needs
+/// `extern crate self as aimdb_data_contracts;` (see `lib.rs`) for the
+/// macro's generated `::aimdb_data_contracts::...` absolute paths to
+/// resolve.
+#[allow(dead_code)]
+mod arity_check {
+    use crate::{MigrationError, MigrationStep, SchemaType};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct V1 {
+        schema_version: u32,
+        n: u32,
+    }
+    impl SchemaType for V1 {
+        const NAME: &'static str = "arity_check";
+        const VERSION: u32 = 1;
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct V2 {
+        schema_version: u32,
+        n: u32,
+    }
+    impl SchemaType for V2 {
+        const NAME: &'static str = "arity_check";
+        const VERSION: u32 = 2;
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct V3 {
+        schema_version: u32,
+        n: u32,
+    }
+    impl SchemaType for V3 {
+        const NAME: &'static str = "arity_check";
+        const VERSION: u32 = 3;
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct V4 {
+        schema_version: u32,
+        n: u32,
+    }
+    impl SchemaType for V4 {
+        const NAME: &'static str = "arity_check";
+        const VERSION: u32 = 4;
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct V5 {
+        schema_version: u32,
+        n: u32,
+    }
+    impl SchemaType for V5 {
+        const NAME: &'static str = "arity_check";
+        const VERSION: u32 = 5;
+    }
+
+    struct Step1;
+    impl MigrationStep for Step1 {
+        type Older = V1;
+        type Newer = V2;
+        const FROM_VERSION: u32 = 1;
+        const TO_VERSION: u32 = 2;
+        fn up(v: V1) -> Result<V2, MigrationError> {
+            Ok(V2 {
+                schema_version: 2,
+                n: v.n,
+            })
+        }
+        fn down(v: V2) -> Result<V1, MigrationError> {
+            Ok(V1 {
+                schema_version: 1,
+                n: v.n,
+            })
+        }
+    }
+
+    struct Step2;
+    impl MigrationStep for Step2 {
+        type Older = V2;
+        type Newer = V3;
+        const FROM_VERSION: u32 = 2;
+        const TO_VERSION: u32 = 3;
+        fn up(v: V2) -> Result<V3, MigrationError> {
+            Ok(V3 {
+                schema_version: 3,
+                n: v.n,
+            })
+        }
+        fn down(v: V3) -> Result<V2, MigrationError> {
+            Ok(V2 {
+                schema_version: 2,
+                n: v.n,
+            })
+        }
+    }
+
+    struct Step3;
+    impl MigrationStep for Step3 {
+        type Older = V3;
+        type Newer = V4;
+        const FROM_VERSION: u32 = 3;
+        const TO_VERSION: u32 = 4;
+        fn up(v: V3) -> Result<V4, MigrationError> {
+            Ok(V4 {
+                schema_version: 4,
+                n: v.n,
+            })
+        }
+        fn down(v: V4) -> Result<V3, MigrationError> {
+            Ok(V3 {
+                schema_version: 3,
+                n: v.n,
+            })
+        }
+    }
+
+    struct Step4;
+    impl MigrationStep for Step4 {
+        type Older = V4;
+        type Newer = V5;
+        const FROM_VERSION: u32 = 4;
+        const TO_VERSION: u32 = 5;
+        fn up(v: V4) -> Result<V5, MigrationError> {
+            Ok(V5 {
+                schema_version: 5,
+                n: v.n,
+            })
+        }
+        fn down(v: V5) -> Result<V4, MigrationError> {
+            Ok(V4 {
+                schema_version: 4,
+                n: v.n,
+            })
+        }
+    }
+
+    crate::migration_chain! {
+        type Current = V5;
+        version_field = "schema_version";
+        steps {
+            Step1: V1 => V2,
+            Step2: V2 => V3,
+            Step3: V3 => V4,
+            Step4: V4 => V5,
+        }
+    }
+}

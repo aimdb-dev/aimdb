@@ -611,3 +611,209 @@ fn error_on_target_version_too_new() {
         }
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// 4-step chain: Sprocket v1 -> v2 -> v3 -> v4 -> v5
+// (design 039 PR2/W8 — proves migration_chain! arity is unbounded)
+// ═══════════════════════════════════════════════════════════════════
+
+macro_rules! sprocket_version {
+    ($name:ident, $version:literal) => {
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+        struct $name {
+            #[serde(default = "sprocket_default_version")]
+            schema_version: u32,
+            teeth: u32,
+        }
+        impl SchemaType for $name {
+            const NAME: &'static str = "sprocket";
+            const VERSION: u32 = $version;
+        }
+    };
+}
+fn sprocket_default_version() -> u32 {
+    0
+}
+
+sprocket_version!(SprocketV1, 1);
+sprocket_version!(SprocketV2, 2);
+sprocket_version!(SprocketV3, 3);
+sprocket_version!(SprocketV4, 4);
+sprocket_version!(SprocketV5, 5);
+
+macro_rules! sprocket_step {
+    ($step:ident, $older:ident, $newer:ident, $to_version:literal) => {
+        struct $step;
+        impl MigrationStep for $step {
+            type Older = $older;
+            type Newer = $newer;
+            const FROM_VERSION: u32 = $to_version - 1;
+            const TO_VERSION: u32 = $to_version;
+            fn up(v: $older) -> Result<$newer, MigrationError> {
+                Ok($newer {
+                    schema_version: $to_version,
+                    teeth: v.teeth,
+                })
+            }
+            fn down(v: $newer) -> Result<$older, MigrationError> {
+                Ok($older {
+                    schema_version: $to_version - 1,
+                    teeth: v.teeth,
+                })
+            }
+        }
+    };
+}
+
+sprocket_step!(SprocketV1ToV2, SprocketV1, SprocketV2, 2);
+sprocket_step!(SprocketV2ToV3, SprocketV2, SprocketV3, 3);
+sprocket_step!(SprocketV3ToV4, SprocketV3, SprocketV4, 4);
+sprocket_step!(SprocketV4ToV5, SprocketV4, SprocketV5, 5);
+
+migration_chain! {
+    type Current = SprocketV5;
+    version_field = "schema_version";
+    steps {
+        SprocketV1ToV2: SprocketV1 => SprocketV2,
+        SprocketV2ToV3: SprocketV2 => SprocketV3,
+        SprocketV3ToV4: SprocketV3 => SprocketV4,
+        SprocketV4ToV5: SprocketV4 => SprocketV5,
+    }
+}
+
+#[test]
+fn sprocket_upgrades_from_every_historical_version() {
+    for (version, teeth) in [(1u32, 10u32), (2, 11), (3, 12), (4, 13), (5, 14)] {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema_version": version,
+            "teeth": teeth,
+        }))
+        .unwrap();
+        let current = SprocketV5::migrate_from_bytes(&bytes).unwrap();
+        assert_eq!(
+            current,
+            SprocketV5 {
+                schema_version: 5,
+                teeth
+            }
+        );
+    }
+}
+
+#[test]
+fn sprocket_downgrades_to_every_target_version() {
+    let current = SprocketV5 {
+        schema_version: 5,
+        teeth: 20,
+    };
+    for target in 1u32..=5 {
+        let bytes = current.migrate_to_version(target).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["schema_version"], target);
+        assert_eq!(value["teeth"], 20);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 5-step chain: Doohickey v1 -> v2 -> v3 -> v4 -> v5 -> v6
+// ═══════════════════════════════════════════════════════════════════
+
+macro_rules! doohickey_version {
+    ($name:ident, $version:literal) => {
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+        struct $name {
+            #[serde(default = "doohickey_default_version")]
+            schema_version: u32,
+            size: u32,
+        }
+        impl SchemaType for $name {
+            const NAME: &'static str = "doohickey";
+            const VERSION: u32 = $version;
+        }
+    };
+}
+fn doohickey_default_version() -> u32 {
+    0
+}
+
+doohickey_version!(DoohickeyV1, 1);
+doohickey_version!(DoohickeyV2, 2);
+doohickey_version!(DoohickeyV3, 3);
+doohickey_version!(DoohickeyV4, 4);
+doohickey_version!(DoohickeyV5, 5);
+doohickey_version!(DoohickeyV6, 6);
+
+macro_rules! doohickey_step {
+    ($step:ident, $older:ident, $newer:ident, $to_version:literal) => {
+        struct $step;
+        impl MigrationStep for $step {
+            type Older = $older;
+            type Newer = $newer;
+            const FROM_VERSION: u32 = $to_version - 1;
+            const TO_VERSION: u32 = $to_version;
+            fn up(v: $older) -> Result<$newer, MigrationError> {
+                Ok($newer {
+                    schema_version: $to_version,
+                    size: v.size,
+                })
+            }
+            fn down(v: $newer) -> Result<$older, MigrationError> {
+                Ok($older {
+                    schema_version: $to_version - 1,
+                    size: v.size,
+                })
+            }
+        }
+    };
+}
+
+doohickey_step!(DoohickeyV1ToV2, DoohickeyV1, DoohickeyV2, 2);
+doohickey_step!(DoohickeyV2ToV3, DoohickeyV2, DoohickeyV3, 3);
+doohickey_step!(DoohickeyV3ToV4, DoohickeyV3, DoohickeyV4, 4);
+doohickey_step!(DoohickeyV4ToV5, DoohickeyV4, DoohickeyV5, 5);
+doohickey_step!(DoohickeyV5ToV6, DoohickeyV5, DoohickeyV6, 6);
+
+migration_chain! {
+    type Current = DoohickeyV6;
+    version_field = "schema_version";
+    steps {
+        DoohickeyV1ToV2: DoohickeyV1 => DoohickeyV2,
+        DoohickeyV2ToV3: DoohickeyV2 => DoohickeyV3,
+        DoohickeyV3ToV4: DoohickeyV3 => DoohickeyV4,
+        DoohickeyV4ToV5: DoohickeyV4 => DoohickeyV5,
+        DoohickeyV5ToV6: DoohickeyV5 => DoohickeyV6,
+    }
+}
+
+#[test]
+fn doohickey_upgrades_from_every_historical_version() {
+    for (version, size) in [(1u32, 1u32), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)] {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema_version": version,
+            "size": size,
+        }))
+        .unwrap();
+        let current = DoohickeyV6::migrate_from_bytes(&bytes).unwrap();
+        assert_eq!(
+            current,
+            DoohickeyV6 {
+                schema_version: 6,
+                size
+            }
+        );
+    }
+}
+
+#[test]
+fn doohickey_downgrades_to_every_target_version() {
+    let current = DoohickeyV6 {
+        schema_version: 6,
+        size: 99,
+    };
+    for target in 1u32..=6 {
+        let bytes = current.migrate_to_version(target).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["schema_version"], target);
+        assert_eq!(value["size"], 99);
+    }
+}

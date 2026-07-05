@@ -1,0 +1,10 @@
+error[E0080]: evaluation panicked: migration steps must be sequential
+  --> tests/compile-fail/chain_non_sequential.rs:69:1
+   |
+69 | / migration_chain! {
+70 | |     type Current = SeqCurrent;
+71 | |     version_field = "schema_version";
+72 | |     steps {
+...  |
+76 | | }
+   | |_^ evaluation of `_` failed here

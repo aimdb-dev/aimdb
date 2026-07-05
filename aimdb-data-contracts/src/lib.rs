@@ -44,6 +44,17 @@ extern crate std;
 
 extern crate alloc;
 
+// The `migration_chain!` proc-macro (aimdb-derive) has no `$crate` and so
+// hardcodes absolute `::aimdb_data_contracts::...` paths in its expansion
+// (matching the `RecordKey` -> `aimdb_core` precedent). That means this
+// crate must be able to resolve itself by its own external name — which a
+// crate cannot do by default (RFC 2126) — for the internal arity-check
+// fixture in `migratable.rs` that invokes the macro from inside this same
+// crate. External callers (doctests, integration tests, downstream
+// consumers) don't need this; it only matters for that one self-reference.
+#[cfg(feature = "migratable")]
+extern crate self as aimdb_data_contracts;
+
 /// Re-exports used by macro-generated code, kept out of the crate's own
 /// namespace so a caller's own `serde_json`/`alloc` (if any) never shadows
 /// or gets shadowed by them — see `migration_chain!`'s expansion.
