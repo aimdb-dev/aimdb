@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "rand 0.10.1",
