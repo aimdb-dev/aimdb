@@ -78,6 +78,9 @@ pub use simulatable::{SimulationConfig, SimulationParams};
 #[cfg(feature = "migratable")]
 pub use migratable::{MigrationChain, MigrationError, MigrationStep};
 
+#[cfg(feature = "migratable")]
+pub use aimdb_derive::migration_chain;
+
 // ═══════════════════════════════════════════════════════════════════
 // SCHEMA TRAITS (Implementation-defined)
 // ═══════════════════════════════════════════════════════════════════

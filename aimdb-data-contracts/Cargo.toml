@@ -16,12 +16,17 @@ alloc = ["serde/alloc"]
 std = ["alloc", "serde/std", "serde_json?/std"]
 linkable = ["alloc", "serde_json"]
 simulatable = ["rand"]
-migratable = ["alloc", "serde_json"]
+migratable = ["alloc", "serde_json", "dep:aimdb-derive"]
 observable = ["alloc", "aimdb-core"]
 
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
+
+# migration_chain! proc-macro (build-time only; no target/runtime/no_std
+# impact — see aimdb-derive::migration_chain). No cycle: aimdb-derive emits
+# token paths to this crate but does not depend on it.
+aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
 
 # Optional dependencies for observable feature (log_tap function)
 # Note: aimdb-core requires alloc feature for core functionality

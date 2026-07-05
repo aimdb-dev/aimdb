@@ -121,6 +121,7 @@ name = "aimdb-data-contracts"
 version = "0.2.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-derive",
  "rand 0.10.1",
  "serde",
  "serde_json",
