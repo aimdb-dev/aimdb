@@ -100,11 +100,11 @@ impl Settable for Humidity {
 
 #[cfg(feature = "linkable")]
 impl Linkable for Humidity {
-    fn from_bytes(data: &[u8]) -> Result<Self, String> {
-        serde_json::from_slice(data).map_err(|e| e.to_string())
+    fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String> {
+        serde_json::from_slice(data).map_err(|e| alloc::string::ToString::to_string(&e))
     }
 
-    fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(self).map_err(|e| e.to_string())
+    fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+        serde_json::to_vec(self).map_err(|e| alloc::string::ToString::to_string(&e))
     }
 }
