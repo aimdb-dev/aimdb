@@ -1,6 +1,12 @@
 # 039 — `no_std` Typed Migrations: Lift the `std` Gate from `migratable`
 
-**Status:** Proposed 2026-07-05. Follows the claims assessment that found `migratable` to be the only capability trait that cannot ship to an MCU. Split into two PRs: **PR 1** lifts the `std` gate (small change set; minor version bump of `aimdb-data-contracts`). **PR 2** removes the hardcoded 3-step ceiling by moving `migration_chain!` to a proc-macro — separable, and orthogonal to the `no_std` work.
+**Status:** Proposed 2026-07-05. Follows the claims assessment that found `migratable` to be the only capability trait that cannot ship to an MCU. Split into three PRs — PR 1 stands alone; PR 2 and PR 3 are separable follow-ups, orthogonal to the `no_std` work:
+
+| PR | Scope | Work items | Ships as |
+|---|---|---|---|
+| **PR 1** | Lift the `std` gate | W1–W5 (§3) | `aimdb-data-contracts` 0.2.0 |
+| **PR 2** | Variable-arity `migration_chain!` (proc-macro) | W6–W9 (§4) | `aimdb-derive` 0.2.0 + `aimdb-data-contracts` minor |
+| **PR 3** | `Value`-free version probe for small MCU heaps (optional) | §5 | `aimdb-data-contracts` minor, **after PR 2** |
 
 ---
 
@@ -93,13 +99,15 @@ cargo clippy --package aimdb-data-contracts --no-default-features --features all
 
 Caveat on the test lane: the dev-dependency `serde_json = "1.0"` ([`Cargo.toml`](../../aimdb-data-contracts/Cargo.toml) `[dev-dependencies]`) carries default (std) features, so `cargo test` unifies `serde_json` to std regardless of the flags above. This lane therefore proves **behavior**, not `no_std`-ness. The target lane below is the actual `no_std` gate — it links no dev-dependencies, so it is what catches accidental `std` reintroduction.
 
+Behavior tests also land here, **before** PR 2's rewrite: [`migratable.rs`](../../aimdb-data-contracts/src/migratable.rs) currently has no `#[cfg(test)]` module — its only behavioral coverage is doctests (`linkable.rs` has real unit tests; `migratable.rs` does not). Add a round-trip suite at the current arity — 1-, 2-, and 3-step chains, upgrading from every historical version and downgrading to every target, plus the error paths (`MissingVersion`, `VersionTooNew`, `VersionTooOld`, malformed payload) — so the PR 2 proc-macro rewrite lands against pre-existing green tests rather than tests written alongside the code they are meant to pin.
+
 Target compile checks, mirroring the existing thumbv7em lane (~line 308, `cargo check` into `$(EMBEDDED_CHECK_TARGET_DIR)`):
 
 ```make
 cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf \
     --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,linkable,migratable
 
-# Real chain on-target with no consumer serde_json dep (see W5, criterion 3):
+# Real chain on-target with no *direct* consumer serde_json dep (see W5, criterion 3):
 cargo check --package weather-mesh-common --target thumbv7em-none-eabihf \
     --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features migratable
 ```
@@ -144,6 +152,7 @@ Add `#[proc_macro] pub fn migration_chain`. A custom `syn::parse::Parse` impl re
 - **`migrate_from_bytes`** — const-guard arms (`v if v == <Step_k as MigrationStep>::FROM_VERSION => …`, the pattern already used for the current-version arm), each parsing `Older_k` then folding `up` over steps *k..N*.
 - **`migrate_to_version`** — const-guard arms folding `down` from `Current` over steps *N..k*, then `to_vec`; bounds checks unchanged.
 - **O(N) code, not O(N²)** — emit one `fn __up_k` / `fn __down_k` free function per step and have each arm call the entry point, rather than re-inlining the full walk in every arm. This is the factoring `macro_rules!` could not do (it can't synthesize the identifiers).
+- **Collision-safe emission** — wrap the generated helpers *and* the `impl MigrationChain` in a single `const _: () = { … }` block (the pattern serde's derives use): the trait impl still applies globally, while the `__up_k`/`__down_k` helpers stay invisible outside the block. Without this, two chains in the same module — several contracts in one `contracts` module is realistic — would collide on the helper names.
 
 Generated code refers back to the contracts crate by absolute path via the W2 re-export — `::aimdb_data_contracts::__private::{serde_json, alloc}` and `::aimdb_data_contracts::{MigrationStep, MigrationChain, MigrationError}` — since a proc-macro has no `$crate`. Use [`proc-macro-crate`](https://crates.io/crates/proc-macro-crate) to resolve the dependency's real name if rename-robustness is wanted; otherwise hardcode the path (matching the `RecordKey` precedent).
 
@@ -155,7 +164,7 @@ Generated code refers back to the contracts crate by absolute path via the W2 re
 
 ### W8 — Tests / CI
 
-- Add a 4- and 5-step chain to the host test suite (round-trip: upgrade from every historical version, downgrade to every target) — proves arity is unbounded.
+- Extend the round-trip suite introduced in PR 1/W3 with 4- and 5-step chains — proves arity is unbounded. The existing 1–3-step cases must pass **unchanged**: they are the behavioral pin for the rewrite.
 - Keep compile-fail coverage for malformed chains (gap, wrong start, non-sequential, wrong end); if the repo lacks a compile-fail harness, add `trybuild` as a dev-dependency for these.
 - Extend the thumbv7em lane so a >3-step chain compiles on-target.
 
@@ -172,7 +181,7 @@ Generated code refers back to the contracts crate by absolute path via the W2 re
 4. Every existing caller (e.g. weather-mesh-common's 1-step chain) compiles unmodified — the `aimdb_data_contracts::migration_chain!` grammar and call path are preserved.
 5. Generated dispatch is O(N) in code size (per-step free functions), confirmed by `cargo expand`.
 
-## 5. Follow-up (separate PR): `Value`-free version probe
+## 5. PR 3 — `Value`-free version probe (optional follow-up)
 
 Not required for MCU enablement, but worth doing for small heaps. `migrate_from_bytes` currently parses the payload into a full `serde_json::Value` tree to read one integer, then converts with `from_value`. Peak heap is O(payload tree). The macro knows the version field name at expansion time, so it can generate a two-pass, tree-free path:
 
@@ -196,13 +205,13 @@ Peak allocation drops from O(json tree) to O(concrete struct); two linear scans 
 - **Semver:** removing `std` from `migratable`'s implied features is observable by a crate that enabled only `migratable` and relied on it transitively activating `std`. Release as `aimdb-data-contracts` 0.2.0. In-repo consumers (weather-mesh, examples) enable `std` by default and are unaffected.
 - **Behavior:** none of W1–W3 changes any runtime behavior on std targets; W2 changes only name resolution inside the macro expansion.
 - **MSRV:** weak dependency features (`serde_json?/std`) need Rust ≥ 1.60; the workspace is on edition 2021 and already uses `dep:`-style features in `aimdb-core`, so no MSRV movement.
-- **PR 2:** `migration_chain!` moves from `macro_rules!` to a re-exported proc-macro. Source-compatible — the grammar and the `aimdb_data_contracts::migration_chain!` call path are preserved. Adds a build-time `aimdb-derive` dependency to `migratable`, with no target/runtime/`no_std` impact; `aimdb-derive` already uses `syn` 2, so no MSRV movement. Can ship in the same 0.2.0 or a later minor.
+- **PR 2:** `migration_chain!` moves from `macro_rules!` to a re-exported proc-macro. Source-compatible — the grammar and the `aimdb_data_contracts::migration_chain!` call path are preserved. Adds a build-time `aimdb-derive` dependency to `migratable`, with no target/runtime/`no_std` impact; `aimdb-derive` already uses `syn` 2, so no MSRV movement. Can ship in the same `aimdb-data-contracts` 0.2.0 or a later minor. Release ordering: `aimdb-derive` itself takes a minor bump (0.1.0 → 0.2.0 — new public proc-macro) and must be published before or together with the `aimdb-data-contracts` release that depends on it.
 
 ## 7. Risks
 
 | Risk | Assessment |
 |---|---|
-| JSON parse cost on MCU | Bounded by wire payload size; runs only at connector ingest, not on the in-process hot path. W4 reduces peak further. |
+| JSON parse cost on MCU | Bounded by wire payload size; runs only at connector ingest, not on the in-process hot path. The PR 3 probe (§5) reduces peak further. |
 | Feature unification re-enabling `serde_json/std` from another crate in a firmware build | Only the firmware's own dependency graph can do this; W2 removes the *need* for a caller `serde_json` dep and W5 removes the actual one from the in-repo demo. The two thumbv7em CI lanes (data-contracts + weather-mesh-common) catch regressions in-repo. |
 | Float handling in `serde_json` alloc mode | Fully supported (serialization and parsing); no `std` math required. |
 
@@ -214,7 +223,7 @@ Peak allocation drops from O(json tree) to O(concrete struct); two linear scans 
 ## 9. Acceptance criteria (PR 1)
 
 1. `cargo check -p aimdb-data-contracts --no-default-features --features alloc,linkable,migratable --target thumbv7em-none-eabihf` succeeds in CI (the `no_std` gate; links no dev-dependencies).
-2. Existing `migration_chain!` tests pass unchanged on host under `--no-default-features --features alloc,migratable`. Behavioral coverage only — the dev-dependency `serde_json` unifies to std on host, so this does **not** assert `no_std`; criterion 1 does.
-3. `cargo check -p weather-mesh-common --no-default-features --features migratable --target thumbv7em-none-eabihf` compiles the real `TemperatureV1ToV2` chain with no `extern crate serde_json` and — after W5 — `serde_json` absent from the crate's dependency graph (`cargo tree -p weather-mesh-common --no-default-features --features migratable` shows no `serde_json`). The `linkable` build legitimately still carries the dep and is out of scope for this criterion.
+2. The existing doctests and the new W3 round-trip suite pass on host under `--no-default-features --features alloc,migratable`. Behavioral coverage only — the dev-dependency `serde_json` unifies to std on host, so this does **not** assert `no_std`; criterion 1 does.
+3. `cargo check -p weather-mesh-common --no-default-features --features migratable --target thumbv7em-none-eabihf` compiles the real `TemperatureV1ToV2` chain with no **direct** `serde_json` dependency in `weather-mesh-common`. `serde_json` stays in the *transitive* graph by design — `aimdb-data-contracts/migratable` enables it to implement the chain. Verify with `cargo tree -p weather-mesh-common --no-default-features --features migratable -i serde_json -f "{p} {f}"`: the only inverse path runs through `aimdb-data-contracts`, and the feature list shows `alloc` without `std`. The `linkable` build legitimately still carries a direct dep and is out of scope for this criterion.
 4. After W5, `weather-mesh-common`'s `migratable` feature no longer activates `serde_json`, and its `linkable` build compiles on `thumbv7em-none-eabihf` (workspace-pinned `serde_json`, `alloc` only).
 5. No new allocations on the produce/consume hot path (B0 lanes unchanged).
