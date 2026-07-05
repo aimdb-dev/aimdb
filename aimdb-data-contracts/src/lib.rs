@@ -244,10 +244,10 @@ pub trait Linkable: SchemaType + Sized {
     /// Deserialize from bytes (e.g., MQTT payload).
     ///
     /// Returns `Err` with error message on parse failure.
-    fn from_bytes(data: &[u8]) -> Result<Self, String>;
+    fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String>;
 
     /// Serialize to bytes (e.g., for MQTT payload).
     ///
     /// Returns `Err` with error message on serialization failure.
-    fn to_bytes(&self) -> Result<Vec<u8>, String>;
+    fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String>;
 }

@@ -66,6 +66,8 @@ build:
 	cargo build --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std)$(NC)\n"
 	cargo build --package aimdb-data-contracts --no-default-features --features alloc
+	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std + linkable + migratable)$(NC)\n"
+	cargo build --package aimdb-data-contracts --no-default-features --features alloc,linkable,migratable
 	@printf "$(YELLOW)  → Building aimdb-core (no_std + alloc)$(NC)\n"
 	cargo build --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-core (std platform)$(NC)\n"
@@ -109,6 +111,8 @@ test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (std)$(NC)\n"
 	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
+	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + migratable)$(NC)\n"
+	cargo test --package aimdb-data-contracts --no-default-features --features alloc,migratable
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
@@ -196,6 +200,8 @@ clippy:
 	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc + linkable + migratable)$(NC)\n"
+	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc,linkable,migratable -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + remote)$(NC)\n"
@@ -306,6 +312,10 @@ test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
+	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc + linkable + migratable) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,linkable,migratable
+	@printf "$(YELLOW)  → Checking weather-mesh-common (no_std migratable, real TemperatureV1ToV2 chain, no direct serde_json dep) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package weather-mesh-common --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features migratable
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + remote) on thumbv7em-none-eabihf target$(NC)\n"
