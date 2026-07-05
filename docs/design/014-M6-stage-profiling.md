@@ -23,6 +23,25 @@
 - `RecordRegistrar::with_name("...")` is always available (no-op without the
   feature). MCP tools: `get_stage_profiling` (incl. bottleneck detection) and
   `reset_stage_profiling`.
+- **Transform stages** (issue #109) split into two timing strategies sharing one
+  `transforms` bucket on `RecordProfilingMetrics`, rather than reusing the
+  source/tap interval trick uniformly:
+  - Single-input `.transform()`: AimDB owns the call boundary directly (unlike
+    `.source()`/`.tap()`, whose callbacks loop internally), so the transform
+    closure itself is timed — wrapped with the runtime clock immediately
+    before/after `transform_fn(&input, &mut state)` inside
+    `run_single_transform`, recording on both `Some(output)` and `None` (a
+    `None` still consumed an input). This is "time per input value processed."
+  - `.transform_join()`: the Design 027 task-model handler owns its own event
+    loop, so per-trigger timing would mean intruding into user code. Instead it
+    reuses the `.source()` producer-cadence trick — `collect_transform_futures`
+    attaches `ProducerProfilingState` to the join's output `Producer<T>`,
+    timing the interval between successive `produce()` calls as a throughput
+    proxy ("average time between successive join outputs").
+  - The rejected alternative was using producer-cadence for single-input
+    transforms too (simpler/unified) — rejected because it conflates closure
+    time with input-wait time, giving a misleading number for the actual
+    bottleneck.
 
 ---
 

@@ -560,9 +560,15 @@ where
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
-        // Transform stages are not yet instrumented; track the kind so `.with_name()`
-        // remains coherent (it currently has nowhere to store the name).
-        self.last_stage = Some((StageKind::Transform, 0));
+        #[cfg(feature = "observability")]
+        {
+            let (idx, _) = self.rec.profiling_mut().push_transform();
+            self.last_stage = Some((StageKind::Transform, idx));
+        }
+        #[cfg(not(feature = "observability"))]
+        {
+            self.last_stage = Some((StageKind::Transform, 0));
+        }
         self
     }
 
@@ -579,7 +585,15 @@ where
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
-        self.last_stage = Some((StageKind::Transform, 0));
+        #[cfg(feature = "observability")]
+        {
+            let (idx, _) = self.rec.profiling_mut().push_transform();
+            self.last_stage = Some((StageKind::Transform, idx));
+        }
+        #[cfg(not(feature = "observability"))]
+        {
+            self.last_stage = Some((StageKind::Transform, 0));
+        }
         self
     }
 
@@ -1250,12 +1264,12 @@ mod tests {
     fn dummy_transform_descriptor() -> crate::transform::TransformDescriptor<TestRecord> {
         crate::transform::TransformDescriptor::<TestRecord> {
             input_keys: vec![],
-            build_fn: Box::new(
-                |_p, _db, _output_key| crate::transform::CollectedTransform {
+            build_fn: Box::new(|_p, _db, _output_key, _profiling| {
+                crate::transform::CollectedTransform {
                     task_future: Box::pin(async {}),
                     fanin_futures: vec![],
-                },
-            ),
+                }
+            }),
         }
     }
 

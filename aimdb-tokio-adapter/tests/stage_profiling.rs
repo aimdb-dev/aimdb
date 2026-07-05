@@ -95,6 +95,96 @@ async fn source_and_tap_stages_are_timed_and_named() {
     assert_eq!(prof.tap(0).unwrap().metrics.call_count(), 0);
 }
 
+#[derive(Debug, Clone)]
+struct Doubled {
+    value: u64,
+}
+
+const DOUBLED_KEY: &str = "profiling::Doubled";
+
+/// Registers a single-input `.transform()` alongside a fast `.tap()` on the
+/// derived record, and checks that the transform closure itself is timed
+/// (not the producer cadence — see `run_single_transform`) and that its
+/// average is correctly identified as the slower of the two stages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transform_stage_is_timed_and_is_the_bottleneck() {
+    let adapter = Arc::new(TokioAdapter);
+    let mut builder = AimDbBuilder::new().runtime(adapter);
+
+    builder.configure::<Reading>(KEY, |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 32 })
+            .source(|ctx, producer| async move {
+                let mut n = 0u64;
+                loop {
+                    producer.produce(Reading { value: n });
+                    n += 1;
+                    ctx.time().sleep_millis(5).await;
+                }
+            })
+            .with_name("fast_source");
+    });
+
+    builder.configure::<Doubled>(DOUBLED_KEY, |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 32 })
+            .transform::<Reading, _>(KEY, |b| {
+                b.map(|input: &Reading| {
+                    // Simulate expensive per-value work (wall-clock, synchronous —
+                    // the transform closure has no `.await` point).
+                    std::thread::sleep(Duration::from_millis(15));
+                    Some(Doubled {
+                        value: input.value * 2,
+                    })
+                })
+            })
+            .with_name("slow_doubler")
+            .tap(|_ctx, consumer| async move {
+                let mut reader = consumer.subscribe();
+                while let Ok(doubled) = reader.recv().await {
+                    let _ = doubled.value;
+                }
+            })
+            .with_name("quick_consumer");
+    });
+
+    let (db, runner) = builder.build().await.expect("build");
+    tokio::spawn(runner.run());
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let rec = db
+        .inner()
+        .get_typed_record_by_key::<Doubled>(DOUBLED_KEY)
+        .expect("typed record");
+    let prof = rec.profiling();
+
+    // This record is derived via `.transform()`, not `.source()`.
+    assert!(prof.source(0).is_none());
+
+    let transform = prof.transform(0).expect("transform stage registered");
+    assert_eq!(transform.name.as_deref(), Some("slow_doubler"));
+    let tm = &transform.metrics;
+    assert!(
+        tm.call_count() >= 1,
+        "expected at least one transform invocation recorded, got {}",
+        tm.call_count()
+    );
+    assert!(tm.min_time_ns() <= tm.avg_time_ns());
+    assert!(tm.avg_time_ns() <= tm.max_time_ns());
+
+    let tap = prof.tap(0).expect("tap stage registered");
+    assert_eq!(tap.name.as_deref(), Some("quick_consumer"));
+
+    // The transform closure sleeps ~15ms per call; the tap is a no-op drain
+    // loop. It must be reported as the slowest (bottleneck) stage on this
+    // record.
+    assert!(
+        tm.avg_time_ns() > tap.metrics.avg_time_ns(),
+        "expected transform (slow) avg {} ns > tap (fast) avg {} ns",
+        tm.avg_time_ns(),
+        tap.metrics.avg_time_ns()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn with_name_is_a_no_op_friendly_builder() {
     // `.with_name()` must always be chainable even on a stage that is never run.
