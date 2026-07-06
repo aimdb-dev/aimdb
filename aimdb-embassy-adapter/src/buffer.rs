@@ -794,6 +794,25 @@ mod tests {
         assert!(!values.is_empty());
     }
 
+    // ── Shared cross-runtime buffer contract ────────────────────────────────
+    // The same `aimdb-core` suite the tokio and wasm adapters run, driven on the
+    // host via `futures::executor::block_on` (no embassy executor needed — the
+    // buffers don't touch embassy-time). Const generics sized within default
+    // limits: SUBS/WATCH_N=4 comfortably cover the two-reader fixtures, so slot
+    // exhaustion (which would surface as BufferClosed) never trips.
+    #[test]
+    fn buffer_contract_suite() {
+        use aimdb_core::buffer::test_support;
+        use futures::executor::block_on;
+
+        // CAP=4, SUBS=4, PUBS=2, WATCH_N=4.
+        type B = EmbassyBuffer<i32, 4, 4, 2, 4>;
+
+        block_on(test_support::assert_single_latest_contract(B::new_watch));
+        block_on(test_support::assert_mailbox_contract(B::new_mailbox));
+        block_on(test_support::assert_spmc_ring_contract(B::new_spmc));
+    }
+
     // ========================================================================
     // peek() Tests — non-destructive buffer-native reads
     //

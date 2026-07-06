@@ -46,6 +46,19 @@ pub trait Buffer<T: Clone + Send>: Send + Sync + 'static {
     ///
     /// Each reader maintains its own position and can consume at its own pace.
     /// The returned reader is owned and can outlive this reference.
+    ///
+    /// # Fresh-subscriber semantics (SingleLatest)
+    ///
+    /// For a [`SingleLatest`](BufferCfg::SingleLatest) buffer, a fresh
+    /// subscriber observes the buffer's current value once, as if it had been
+    /// pushed right after subscription; if nothing has been produced yet, it
+    /// waits. A late subscriber to state wants the current state, not just
+    /// future changes. This rule holds identically across every runtime adapter
+    /// and is enforced by
+    /// [`test_support::assert_single_latest_contract`](super::test_support::assert_single_latest_contract).
+    ///
+    /// `SpmcRing` and `Mailbox` readers have no such replay: a fresh subscriber
+    /// only sees values produced after it subscribes.
     fn subscribe(&self) -> Self::Reader;
 }
 

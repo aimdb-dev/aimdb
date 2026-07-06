@@ -63,6 +63,13 @@ mod reader;
 mod traits;
 mod writer;
 
+/// Shared buffer conformance suite, invoked from each adapter's own test lane.
+///
+/// `#[doc(hidden)] pub` (not `#[cfg(test)]`) so downstream adapter crates can
+/// call it, mirroring [`crate::executor::test_support`].
+#[doc(hidden)]
+pub mod test_support;
+
 // Public API exports
 pub use cfg::BufferCfg;
 pub use reader::Reader;

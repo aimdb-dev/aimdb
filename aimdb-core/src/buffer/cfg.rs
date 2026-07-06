@@ -43,7 +43,9 @@ pub enum BufferCfg {
     /// A reader that subscribes after a value has already been produced
     /// observes that value once, as if it had been pushed after subscription
     /// — a late subscriber to state wants the current state, not just future
-    /// changes (identical on the tokio and embassy adapters).
+    /// changes. If nothing has been produced yet, the reader waits. This
+    /// fresh-subscriber rule is identical across all runtime adapters (tokio,
+    /// embassy, and wasm) and is enforced by the shared buffer contract suite.
     SingleLatest,
 
     /// Single-slot mailbox with overwrite

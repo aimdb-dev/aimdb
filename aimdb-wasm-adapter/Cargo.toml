@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-wasm-adapter"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -77,3 +77,9 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+# Host-only: drives the async `aimdb-core` buffer contract suite via
+# `futures::executor::block_on` in the native (`cargo test`) lane. Target-gated
+# off wasm32 so the `std`-backed executor never enters the wasm-pack build.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+futures = { workspace = true }
