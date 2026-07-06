@@ -1,0 +1,10 @@
+error[E0080]: evaluation panicked: last migration step must end at current VERSION
+  --> tests/compile-fail/chain_wrong_end.rs:40:1
+   |
+40 | / migration_chain! {
+41 | |     type Current = WrongEndCurrent;
+42 | |     version_field = "schema_version";
+43 | |     steps {
+...  |
+46 | | }
+   | |_^ evaluation of `_` failed here

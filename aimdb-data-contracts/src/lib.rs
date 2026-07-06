@@ -44,6 +44,27 @@ extern crate std;
 
 extern crate alloc;
 
+// The `migration_chain!` proc-macro (aimdb-derive) has no `$crate` and so
+// hardcodes absolute `::aimdb_data_contracts::...` paths in its expansion
+// (matching the `RecordKey` -> `aimdb_core` precedent). That means this
+// crate must be able to resolve itself by its own external name — which a
+// crate cannot do by default (RFC 2126) — for the internal arity-check
+// fixture in `migratable.rs` that invokes the macro from inside this same
+// crate. External callers (doctests, integration tests, downstream
+// consumers) don't need this; it only matters for that one self-reference.
+#[cfg(feature = "migratable")]
+extern crate self as aimdb_data_contracts;
+
+/// Re-exports used by macro-generated code, kept out of the crate's own
+/// namespace so a caller's own `serde_json`/`alloc` (if any) never shadows
+/// or gets shadowed by them — see `migration_chain!`'s expansion.
+#[doc(hidden)]
+pub mod __private {
+    pub extern crate alloc;
+    #[cfg(any(feature = "linkable", feature = "migratable"))]
+    pub use serde_json;
+}
+
 mod streamable;
 pub use streamable::Streamable;
 
@@ -67,6 +88,9 @@ pub use simulatable::{SimulationConfig, SimulationParams};
 
 #[cfg(feature = "migratable")]
 pub use migratable::{MigrationChain, MigrationError, MigrationStep};
+
+#[cfg(feature = "migratable")]
+pub use aimdb_derive::migration_chain;
 
 // ═══════════════════════════════════════════════════════════════════
 // SCHEMA TRAITS (Implementation-defined)
@@ -98,7 +122,8 @@ pub use migratable::{MigrationChain, MigrationError, MigrationStep};
 /// | Add required field | ⚠️ Migration | Use `MigrationStep` + `migration_chain!` |
 ///
 /// For breaking changes, implement `MigrationStep` and use `migration_chain!` (requires `migratable` feature)
-/// to provide runtime transformation of older data formats.
+/// to provide runtime transformation of older data formats. `migratable` only requires `alloc` — schema
+/// migration works identically on `no_std` targets (e.g. Embassy on an MCU) and on `std`.
 pub trait SchemaType: Sized {
     /// Unique identifier for this schema (e.g., "temperature", "humidity")
     const NAME: &'static str;
@@ -234,10 +259,10 @@ pub trait Linkable: SchemaType + Sized {
     /// Deserialize from bytes (e.g., MQTT payload).
     ///
     /// Returns `Err` with error message on parse failure.
-    fn from_bytes(data: &[u8]) -> Result<Self, String>;
+    fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String>;
 
     /// Serialize to bytes (e.g., for MQTT payload).
     ///
     /// Returns `Err` with error message on serialization failure.
-    fn to_bytes(&self) -> Result<Vec<u8>, String>;
+    fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String>;
 }

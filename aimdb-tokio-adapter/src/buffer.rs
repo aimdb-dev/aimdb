@@ -994,6 +994,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn buffer_contract_suite() {
+        use aimdb_core::buffer::test_support;
+        // The one shared cross-runtime contract, run under the tokio executor.
+        test_support::assert_single_latest_contract(|| {
+            TokioBuffer::<i32>::new(&BufferCfg::SingleLatest)
+        })
+        .await;
+        test_support::assert_mailbox_contract(|| TokioBuffer::<i32>::new(&BufferCfg::Mailbox))
+            .await;
+        test_support::assert_spmc_ring_contract(|| {
+            TokioBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 4 })
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn test_watch_fresh_subscriber_sees_current_value() {
         let cfg = BufferCfg::SingleLatest;
         let buffer = TokioBuffer::<i32>::new(&cfg);

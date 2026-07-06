@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **`migratable` no longer requires `std`.** `migratable = ["alloc", "serde_json"]` (was `["std", "serde_json"]`); the crate's `serde_json` dependency now follows the workspace pin (`default-features = false, features = ["alloc"]`) instead of pulling in `serde_json/std` by default. `migration_chain!` and both `Linkable`-with-migration patterns now compile on `no_std + alloc` (e.g. `thumbv7em-none-eabihf`). A crate that enabled only `migratable` and relied on it transitively activating `std` will need to enable `std` explicitly. In-repo consumers are unaffected (they enable `std` by default).
 - `log_tap<T, R>(ctx, consumer, node_id)` now takes `Consumer<T>` instead of `Consumer<T, R>` — `R` is still on `RuntimeContext<R>` (Design 029, M14). User-visible signature shrink only; behaviour unchanged.
 
 ## [0.1.1] - 2026-05-22

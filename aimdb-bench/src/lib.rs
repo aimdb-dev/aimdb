@@ -24,6 +24,7 @@
 //! | `benches/b1_b2_embassy.rs`        | B1+B2 | Latency (time/iter) + throughput (Embassy)|
 //! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
 //! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
+//! | `benches/b0_alloc_migration.rs`   | B0    | Per-call allocation (migrate_from_bytes) |
 //!
 //! On-target cycle profiling (B3) lives in the hardware-only
 //! `examples/embassy-bench-stm32h5` crate, since DWT cycle counting cannot run

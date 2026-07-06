@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **SingleLatest fresh-subscriber parity (Design 040).** A subscriber created
+  *after* a value has been published now receives that current value on its
+  first `recv()` / `try_recv()`, instead of waiting for the next push. This
+  matches the tokio and embassy adapters and is the documented cross-runtime
+  contract — a dashboard that subscribes to a config record after the producer
+  published now renders the current state on mount rather than blank until the
+  next change. `WasmBuffer::subscribe()` initializes the reader as
+  never-having-seen-anything (`last_seen_version: 0`) rather than snapshotting
+  the current version.
+- **`peek()` on WASM buffers (Design 040).** `WasmBuffer` now overrides
+  `DynBuffer::peek()`, returning the current value for `SingleLatest` and the
+  pending slot for `Mailbox` (`None` for `SpmcRing`), matching tokio/embassy.
+  The buffer-native non-destructive read used by AimX `record.get` previously
+  returned `None` on WASM.
+
+### Changed (behavioral)
+
+- **JS/WASM `SingleLatest` subscribers may observe one extra initial delivery.**
+  As a consequence of the fresh-subscriber fix above, `subscribe` /
+  `subscribe_typed` (bindings and `WsBridge`) now fire an immediate callback with
+  the current value when one already exists. Portable code already tolerates
+  this (the other two runtimes behave this way); only code that treated every
+  delivery as a *transition* is affected.
+
+### Added
+
+- **Host-run buffer unit tests + shared contract suite (Design 040).** `buffer.rs`
+  now has native (`cargo test`) unit tests for the fresh-subscriber and `peek()`
+  semantics, plus the `aimdb-core` `buffer::test_support` conformance suite run
+  under `futures::executor::block_on` — the same suite the tokio and embassy
+  adapters run. Added `futures` as a host-only (wasm32-excluded) dev-dependency.
+
 ### Changed (breaking)
 
 - **Issue #131 — `WasmRecordRegistrarExt` shrinks to `.buffer(cfg)` only** (`source`/`tap`/`transform` are inherent on the non-generic `RecordRegistrar<'a, T>`); `join_queue.rs` (`WasmJoinQueue`) is deleted with the `JoinFanInRuntime` family; bindings/bridge take the non-generic `AimDb`.

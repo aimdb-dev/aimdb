@@ -29,6 +29,18 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Error, Fields, Lit, Meta};
 
+mod migration_chain;
+
+/// Variable-arity replacement for `aimdb-data-contracts`'s old 3-arm
+/// `macro_rules! migration_chain`. Re-exported as
+/// `aimdb_data_contracts::migration_chain!` — see that crate's
+/// `migratable` feature and `migratable.rs` for the user-facing grammar
+/// and docs.
+#[proc_macro]
+pub fn migration_chain(input: TokenStream) -> TokenStream {
+    migration_chain::migration_chain(input)
+}
+
 /// Derive the `RecordKey` trait for an enum
 ///
 /// Each variant must have a `#[key = "..."]` attribute specifying its string key.

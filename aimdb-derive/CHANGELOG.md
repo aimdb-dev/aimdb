@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **`migration_chain!` proc-macro.** Variable-arity replacement for the 3-arm `macro_rules!` previously hand-unrolled in `aimdb-data-contracts`; re-exported as `aimdb_data_contracts::migration_chain!` with the same grammar and call path. Generated dispatch is `O(N)` in code size regardless of chain length (one `__up_k`/`__down_k` helper per step). Emits foreign-crate paths into `aimdb_data_contracts` without depending on it (same pattern as `RecordKey` → `aimdb_core`) — a build-time-only dependency with no target/runtime/`no_std` impact.
+- **Tree-free version probe in `migrate_from_bytes`.** The generated dispatch no longer parses the payload into a full `serde_json::Value` tree to read the version field. It now scans a small `#[derive(serde::Deserialize)]` probe struct for just the version, then parses the same bytes a second time directly into the matched concrete type — peak allocation drops from O(payload tree) to O(concrete struct). `serde_json::Error::is_data()` preserves the existing `MissingVersion` vs `DeserializationFailed` split (missing/wrong-type field vs malformed JSON). Wire behavior is unchanged (same errors for missing/unknown versions).
+
+### Fixed
+
+- **`migrate_from_bytes` reports `VersionTooOld` for below-minimum source versions.** A payload whose version is below `MIN_VERSION` (e.g. `0`) previously fell through to `VersionTooNew` (`"source version 0 is newer than current N"`, contradictory); the generated dispatch now returns `VersionTooOld { target, minimum }`, matching the `migrate_to_version` path. Covered by a new `error_on_source_version_too_old` round-trip test.
 
 ## [0.1.0] - 2025-12-23
 

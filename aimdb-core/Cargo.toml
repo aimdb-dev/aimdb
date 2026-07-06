@@ -68,7 +68,7 @@ test-utils = ["std"]
 
 [dependencies]
 # Derive macros (optional)
-aimdb-derive = { version = "0.1.0", path = "../aimdb-derive", optional = true }
+aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }

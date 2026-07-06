@@ -80,6 +80,29 @@ library crates with no capability loss. Breaking changes and migrations:
   "issue #133", "pre-W8") rewritten to state the invariant directly; history lives in git
   blame and docs/design/.
 
+### Changed — no_std typed migrations
+
+Schema migration is the last capability trait freed from `std`, so a versioned
+contract can migrate old payloads on a bare-metal target (e.g. Embassy on an MCU),
+not just under `std`. Verified on `thumbv7em-none-eabihf` in CI, with a
+multi-step migration round-trip suite and a trybuild compile-fail harness.
+
+- **`migratable` no longer requires `std` (breaking).** The feature is now
+  `["alloc", "serde_json", "dep:aimdb-derive"]` (was `["std", "serde_json"]`), and
+  the crate's `serde_json` follows the workspace pin (`default-features = false`,
+  `features = ["alloc"]`). `migration_chain!` and the `Linkable`-with-migration
+  patterns now compile on `no_std + alloc`. *Migration:* a crate that enabled only
+  `migratable` and relied on it transitively activating `std` must now enable `std`
+  explicitly; in-repo consumers default to `std` and are unaffected.
+  ([aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md))
+- **`migration_chain!` moves to an `aimdb-derive` proc-macro.** The 3-arm
+  `macro_rules!` is replaced by a variable-arity proc-macro (re-exported unchanged as
+  `aimdb_data_contracts::migration_chain!`) with `O(N)`-in-code-size dispatch and a
+  tree-free version probe in `migrate_from_bytes` (peak allocation O(concrete struct),
+  not O(payload tree)). A below-`MIN_VERSION` source version now reports `VersionTooOld`
+  instead of the contradictory `VersionTooNew`.
+  ([aimdb-derive](aimdb-derive/CHANGELOG.md))
+
 ### Added
 
 - **Design 034 Phase 3 — sans-io KNX/IP tunneling engine shared by both transports (Issue #135, [review doc §3.7](docs/design/034-technical-debt-review.md)).** The entire tunneling lifecycle — CONNECT_REQUEST/RESPONSE handshake, TUNNELING_REQUEST/ACK sequence + pending-ACK bookkeeping, keepalive (CONNECTIONSTATE_REQUEST) scheduling, ACK-timeout sweeps, and reconnect-with-backoff — now lives **once**, in the new runtime-neutral `aimdb_knx_connector::tunnel` module (`no_std + alloc`, no tokio/embassy imports), driven as a poll-based state machine (events in, `Action`s out, `next_deadline()` for timer arming). `tokio_client.rs` (988 → ~530 lines incl. a new fake-gateway integration test) and `embassy_client.rs` (1,055 → ~450 lines) are reduced to socket shims; the previously untestable handshake/ACK/keepalive/reconnect paths now have 15 host-run unit tests plus a scripted localhost-UDP roundtrip test. Behavioral unifications: Embassy gains the 5 s CONNECT_RESPONSE timeout (previously waited forever), both shims reconnect on fatal socket errors, and the dead tokio-only per-publish ACK oneshot is dropped (it was always `None`); the CONNECT_REQUEST HPAI stays per-transport (`LocalEndpoint`: tokio = real bound address, Embassy = NAT mode). ([aimdb-knx-connector](aimdb-knx-connector/CHANGELOG.md))
