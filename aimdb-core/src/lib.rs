@@ -39,6 +39,7 @@ pub mod remote;
 pub mod router;
 #[cfg(feature = "connector-session")]
 pub mod session;
+pub mod signal;
 pub mod transform;
 pub mod transport;
 pub mod typed_api;
@@ -83,9 +84,15 @@ pub use session::{
     SessionLimits, Source, TransportError, TransportResult,
 };
 
+// Signal gauge handle (always available; inert without `observability`)
+pub use signal::SignalGaugeHandle;
+
 // Stage profiling exports (feature-gated)
 #[cfg(feature = "observability")]
-pub use profiling::{RecordProfilingMetrics, StageMetrics, StageProfilingInfo};
+pub use profiling::{
+    RecordProfilingMetrics, SignalGauge, SignalStats, SignalStatsInfo, StageMetrics,
+    StageProfilingInfo,
+};
 
 // Connector Infrastructure exports
 pub use connector::TopicProvider;

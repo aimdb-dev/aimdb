@@ -1183,6 +1183,10 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         #[cfg(feature = "observability")]
         let metadata = metadata.with_stage_profiling(self.profiling.snapshot());
 
+        // Attach signal-gauge statistics (from `.observe()`) when enabled.
+        #[cfg(feature = "observability")]
+        let metadata = metadata.with_signal_stats(self.profiling.signal_snapshot());
+
         metadata
     }
 

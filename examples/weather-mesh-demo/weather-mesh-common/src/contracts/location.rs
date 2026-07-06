@@ -41,33 +41,10 @@ impl Observable for GpsLocation {
     /// Ordering is lexicographic (lat first, then lon).
     type Signal = (f64, f64);
 
-    const ICON: &'static str = "📍";
     const UNIT: &'static str = "°";
 
     fn signal(&self) -> Self::Signal {
         (self.latitude, self.longitude)
-    }
-
-    fn format_log(&self, node_id: &str) -> alloc::string::String {
-        let alt_str = match self.altitude {
-            Some(alt) => alloc::format!(" alt={:.1}m", alt),
-            None => alloc::string::String::new(),
-        };
-        let acc_str = match self.accuracy {
-            Some(acc) => alloc::format!(" acc=±{:.1}m", acc),
-            None => alloc::string::String::new(),
-        };
-        alloc::format!(
-            "{} [{}] GpsLocation: {:.6}{}, {:.6}{}{}{}",
-            Self::ICON,
-            node_id,
-            self.latitude,
-            Self::UNIT,
-            self.longitude,
-            Self::UNIT,
-            alt_str,
-            acc_str
-        )
     }
 }
 

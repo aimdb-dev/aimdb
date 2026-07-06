@@ -1009,54 +1009,18 @@ fn emit_observable_impl(rec: &RecordDef) -> Option<TokenStream> {
     let signal_type: syn::Type = syn::parse_str(&signal_field.field_type).ok()?;
     let signal_ident = format_ident!("{}", obs.signal_field);
 
-    let icon = &obs.icon;
     let unit = &obs.unit;
 
-    // Timestamp heuristic: first u64 field named timestamp/computed_at/fetched_at
-    let timestamp_names = ["timestamp", "computed_at", "fetched_at"];
-    let timestamp_field = rec
-        .fields
-        .iter()
-        .find(|f| f.field_type == "u64" && timestamp_names.contains(&f.name.as_str()));
-
-    let format_log_body = if let Some(ts) = timestamp_field {
-        let ts_ident = format_ident!("{}", ts.name);
-        quote! {
-            alloc::format!(
-                "{} [{}] {}: {:.1}{} at {}",
-                Self::ICON,
-                node_id,
-                Self::NAME,
-                self.signal(),
-                Self::UNIT,
-                self.#ts_ident,
-            )
-        }
-    } else {
-        quote! {
-            alloc::format!(
-                "{} [{}] {}: {:.1}{}",
-                Self::ICON,
-                node_id,
-                Self::NAME,
-                self.signal(),
-                Self::UNIT,
-            )
-        }
-    };
-
+    // Observable is now a kernel-only trait (design 041 §3.2): the numeric
+    // projection + UNIT label. `SIGNAL` defaults to the schema name; presentation
+    // (`ICON`, `format_log`) moved out of the trait, so we no longer emit them.
     Some(quote! {
         impl Observable for #struct_name {
             type Signal = #signal_type;
-            const ICON: &'static str = #icon;
             const UNIT: &'static str = #unit;
 
             fn signal(&self) -> #signal_type {
                 self.#signal_ident
-            }
-
-            fn format_log(&self, node_id: &str) -> alloc::string::String {
-                #format_log_body
             }
         }
     })

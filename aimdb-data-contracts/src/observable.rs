@@ -1,55 +1,94 @@
-//! Observable helper functions for data contracts.
+//! Observable registrar extension + logging tap for data contracts.
 //!
-//! Provides tap functions for logging observable data types.
+//! Implementing [`Observable`](crate::Observable) unlocks one verb —
+//! [`ObservableRegistrarExt::observe`] — which feeds the record's domain signal
+//! into core signal-gauge metrics (design 041 §3.2). `.log(node_id)` is the
+//! human-readable companion for console watching.
 
 extern crate alloc;
+
+use aimdb_core::typed_api::RecordRegistrar;
 
 use crate::Observable;
 
 // ═══════════════════════════════════════════════════════════════════
-// LOG TAP (feature = "observable")
+// LOG TAP
 // ═══════════════════════════════════════════════════════════════════
 
-/// Generic logging tap for Observable types.
+/// Generic logging tap for [`Observable`] types.
 ///
-/// This function can be used with any type implementing `Observable` to
-/// log observations as they flow through the mesh. It uses `format_log()`
-/// to produce human-readable output.
-///
-/// # Example
-///
-/// ```no_run
-/// use aimdb_data_contracts::log_tap;
-/// # use aimdb_core::AimDbBuilder;
-/// # use aimdb_data_contracts::{Observable, SchemaType};
-/// # #[derive(Clone, Debug)]
-/// # struct Temperature { celsius: f32 }
-/// # impl SchemaType for Temperature { const NAME: &'static str = "temperature"; }
-/// # impl Observable for Temperature {
-/// #     type Signal = f32;
-/// #     fn signal(&self) -> f32 { self.celsius }
-/// # }
-/// # fn wire(builder: &mut AimDbBuilder) {
-/// builder.configure::<Temperature>("node.alpha", |reg| {
-///     // .buffer(BufferCfg::SingleLatest) — via your runtime adapter's ext trait
-///     reg.tap(|ctx, consumer| log_tap(ctx, consumer, "alpha"));
-/// });
-/// # }
-/// ```
-#[cfg(feature = "observable")]
+/// Formats each value from `Debug` plus the schema's
+/// [`SIGNAL`](Observable::SIGNAL)/[`UNIT`](Observable::UNIT) labels. Prefer
+/// [`ObservableRegistrarExt::log`]; this free function remains for hand-wired
+/// `.tap()` calls.
 pub async fn log_tap<T>(
     ctx: aimdb_core::RuntimeContext,
     consumer: aimdb_core::typed_api::Consumer<T>,
-    node_id: &'static str,
+    node_id: &str,
 ) where
     T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
     let log = ctx.log();
-
     let mut reader = consumer.subscribe();
 
     while let Ok(value) = reader.recv().await {
-        log.info(&value.format_log(node_id));
+        log.info(&alloc::format!(
+            "[{}] {}: {:?}{}",
+            node_id,
+            T::SIGNAL,
+            value,
+            T::UNIT
+        ));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// REGISTRAR EXTENSION: `.observe()` / `.log(node_id)`
+// ═══════════════════════════════════════════════════════════════════
+
+/// Adds `.observe()` and `.log(node_id)` to [`RecordRegistrar`] for
+/// [`Observable`] types.
+pub trait ObservableRegistrarExt<'a, T>
+where
+    T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    /// Feed `T::signal()` into the record's signal gauge (last/min/max/mean),
+    /// visible via `record.list` / `record.get` / stage profiling.
+    ///
+    /// Bounded `T::Signal: Into<f64>` here (not on the trait), so `f32`/`i32`/
+    /// `u32` signals qualify while a type with an exotic signal can still
+    /// implement `Observable` and write its own tap.
+    fn observe(&mut self) -> &mut RecordRegistrar<'a, T>
+    where
+        T::Signal: Into<f64>;
+
+    /// Log each value to the runtime log, formatted from `Debug` +
+    /// `SIGNAL`/`UNIT`. For humans watching a console; `.observe()` is the
+    /// metrics path.
+    fn log(&mut self, node_id: &'static str) -> &mut RecordRegistrar<'a, T>;
+}
+
+impl<'a, T> ObservableRegistrarExt<'a, T> for RecordRegistrar<'a, T>
+where
+    T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    fn observe(&mut self) -> &mut RecordRegistrar<'a, T>
+    where
+        T::Signal: Into<f64>,
+    {
+        let gauge = self.signal_gauge(T::SIGNAL, T::UNIT);
+        self.tap(move |_ctx, consumer| async move {
+            let mut reader = consumer.subscribe();
+            while let Ok(value) = reader.recv().await {
+                gauge.update(value.signal().into());
+            }
+        })
+        .with_name("observe")
+    }
+
+    fn log(&mut self, node_id: &'static str) -> &mut RecordRegistrar<'a, T> {
+        self.tap(move |ctx, consumer| log_tap(ctx, consumer, node_id))
+            .with_name("log")
     }
 }
 
@@ -71,6 +110,7 @@ mod tests {
 
     impl Observable for TestSensor {
         type Signal = f32;
+        const UNIT: &'static str = "°C";
 
         fn signal(&self) -> f32 {
             self.value
@@ -78,54 +118,21 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_extraction() {
+    fn signal_extraction() {
         let sensor = TestSensor { value: 42.5 };
         assert_eq!(sensor.signal(), 42.5);
     }
 
     #[test]
-    fn test_threshold_comparison() {
+    fn signal_label_defaults_to_schema_name() {
+        assert_eq!(TestSensor::SIGNAL, "test_sensor");
+        assert_eq!(TestSensor::UNIT, "°C");
+    }
+
+    #[test]
+    fn signal_is_into_f64() {
         let sensor = TestSensor { value: 25.0 };
-
-        // Above threshold
-        assert!(sensor.signal() > 20.0);
-
-        // Below threshold
-        assert!(sensor.signal() < 30.0);
-
-        // In range
-        let s = sensor.signal();
-        assert!((20.0..=30.0).contains(&s));
-    }
-
-    #[test]
-    fn test_default_icon_and_unit() {
-        assert_eq!(TestSensor::ICON, "📊");
-        assert_eq!(TestSensor::UNIT, "");
-    }
-
-    #[test]
-    fn test_format_log_default() {
-        #[derive(Debug)]
-        struct DebugSensor {
-            value: f32,
-        }
-
-        impl SchemaType for DebugSensor {
-            const NAME: &'static str = "debug_sensor";
-        }
-
-        impl Observable for DebugSensor {
-            type Signal = f32;
-            fn signal(&self) -> f32 {
-                self.value
-            }
-        }
-
-        let sensor = DebugSensor { value: 42.5 };
-        let log = sensor.format_log("node1");
-        assert!(log.contains("📊"));
-        assert!(log.contains("[node1]"));
-        assert!(log.contains("42.5"));
+        let as_f64: f64 = sensor.signal().into();
+        assert_eq!(as_f64, 25.0);
     }
 }

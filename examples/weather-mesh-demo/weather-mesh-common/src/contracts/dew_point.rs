@@ -33,22 +33,10 @@ impl Streamable for DewPoint {}
 
 impl Observable for DewPoint {
     type Signal = f32;
-    const ICON: &'static str = "🌫️";
     const UNIT: &'static str = "°C";
 
     fn signal(&self) -> f32 {
         self.celsius
-    }
-
-    fn format_log(&self, node_id: &str) -> alloc::string::String {
-        alloc::format!(
-            "{} [{}] DewPoint: {:.1}{} at {}",
-            Self::ICON,
-            node_id,
-            self.celsius,
-            Self::UNIT,
-            self.timestamp
-        )
     }
 }
 

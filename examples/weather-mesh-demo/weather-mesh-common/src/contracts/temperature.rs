@@ -168,22 +168,10 @@ aimdb_data_contracts::migration_chain! {
 
 impl Observable for TemperatureV2 {
     type Signal = f32;
-    const ICON: &'static str = "🌡️";
     const UNIT: &'static str = "°C";
 
     fn signal(&self) -> f32 {
         self.celsius
-    }
-
-    fn format_log(&self, node_id: &str) -> alloc::string::String {
-        alloc::format!(
-            "{} [{}] Temperature: {:.1}{} at {}",
-            Self::ICON,
-            node_id,
-            self.celsius,
-            Self::UNIT,
-            self.timestamp
-        )
     }
 }
 

@@ -98,7 +98,11 @@ where
     /// Installs a **source**, so single-writer-per-key is enforced by `build()`
     /// exactly as for a hardware `.source()` — the two are mutually exclusive by
     /// the app's `#[cfg]`, never both present in one binary.
-    fn simulate<R>(&mut self, profile: SimProfile<T::Params>, rng: R) -> &mut RecordRegistrar<'a, T>
+    fn simulate<R>(
+        &mut self,
+        profile: SimProfile<T::Params>,
+        rng: R,
+    ) -> &mut RecordRegistrar<'a, T>
     where
         R: rand::Rng + Send + 'static;
 }

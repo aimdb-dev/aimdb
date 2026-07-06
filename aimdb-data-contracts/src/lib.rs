@@ -75,7 +75,7 @@ mod linkable;
 mod observable;
 
 #[cfg(feature = "observable")]
-pub use observable::log_tap;
+pub use observable::{log_tap, ObservableRegistrarExt};
 
 #[cfg(feature = "simulatable")]
 mod simulatable;
@@ -153,52 +153,34 @@ pub trait Settable: SchemaType {
 // OBSERVABLE SUPPORT
 // ═══════════════════════════════════════════════════════════════════
 
-/// Extract a signal value for observation.
+/// Project a schema type onto a numeric domain signal.
 ///
-/// Implement this trait to enable threshold checking, alerting,
-/// and other signal-based operations on your schema type.
+/// The trait's kernel is the numeric projection: implement it, call
+/// [`ObservableRegistrarExt::observe`](observable::ObservableRegistrarExt::observe),
+/// and the signal is folded into live last/min/max/mean statistics that surface
+/// on `record.list` / `record.get` and stage profiling. The signal can also feed
+/// threshold checks, alerting, and aggregation.
 ///
-/// The extracted signal can be used by node implementations to:
-/// - Check against configured thresholds
-/// - Trigger alerts when bounds are exceeded
-/// - Compute aggregations (mean, min, max)
-/// - Feed into monitoring systems
-/// - Format log output with `format_log()`
+/// Presentation lives elsewhere: `.log(node_id)` (also on the ext trait) formats
+/// a human-readable line from `Debug` + [`SIGNAL`](Observable::SIGNAL)/[`UNIT`](Observable::UNIT),
+/// and demo emoji live in the demo.
 pub trait Observable: SchemaType {
     /// The numeric type of the signal (e.g., `f32`, `f64`, `i32`).
     ///
-    /// Must be comparable and copyable for threshold checks.
+    /// Must be comparable and copyable for threshold checks. Bound
+    /// `Into<f64>` at the `.observe()` call site (not here) so exotic signals
+    /// can still implement `Observable` and write their own tap.
     type Signal: PartialOrd + Copy;
 
-    /// Icon/emoji for log output (e.g., "🌡️", "💧", "📊")
-    ///
-    /// Override this to provide a visual indicator for your data type.
-    const ICON: &'static str = "📊";
+    /// What the signal means, for metrics/UI labels (e.g. `"celsius"`).
+    /// Defaults to the schema name.
+    const SIGNAL: &'static str = Self::NAME;
 
-    /// Unit label for the signal (e.g., "°C", "%", "hPa")
-    ///
-    /// Override this to display the appropriate unit in log output.
+    /// Unit label for the signal (e.g. `"°C"`, `"%"`, `"hPa"`).
     const UNIT: &'static str = "";
 
     /// Extract the signal value from this instance.
     fn signal(&self) -> Self::Signal;
-
-    /// Format a log entry for this observation.
-    ///
-    /// The default implementation uses `Debug` formatting. Override this
-    /// for prettier, human-readable output.
-    ///
-    /// # Example output
-    /// ```text
-    /// 🌡️ [alpha] Temperature: 22.5°C at 1704326400000
-    /// 💧 [beta] Humidity: 65.3% at 1704326400000
-    /// ```
-    fn format_log(&self, node_id: &str) -> alloc::string::String
-    where
-        Self: core::fmt::Debug,
-    {
-        alloc::format!("{} [{}] {:?}", Self::ICON, node_id, self)
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -28,7 +28,10 @@ fn sim_rng() -> rand::rngs::StdRng {
 /// reading on the same 5 s cadence so the record still has exactly one writer
 /// and the production dependency graph stays sim-free (no `rand`).
 #[cfg(not(feature = "sim"))]
-async fn read_temperature(ctx: aimdb_core::RuntimeContext, producer: aimdb_core::Producer<Temperature>) {
+async fn read_temperature(
+    ctx: aimdb_core::RuntimeContext,
+    producer: aimdb_core::Producer<Temperature>,
+) {
     loop {
         let now = unix_millis(&ctx);
         producer.produce(Temperature::new(20.0, now));

@@ -17,10 +17,12 @@
 
 mod info;
 mod record_profiling;
+mod signal_stats;
 mod stage_metrics;
 
-pub use info::StageProfilingInfo;
-pub use record_profiling::{RecordProfilingMetrics, StageEntry};
+pub use info::{SignalStatsInfo, StageProfilingInfo};
+pub use record_profiling::{RecordProfilingMetrics, SignalGauge, StageEntry};
+pub use signal_stats::SignalStats;
 pub use stage_metrics::StageMetrics;
 
 use alloc::{boxed::Box, sync::Arc};

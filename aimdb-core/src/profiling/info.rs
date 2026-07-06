@@ -4,7 +4,7 @@ use alloc::{string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 
-use crate::profiling::{RecordProfilingMetrics, StageEntry};
+use crate::profiling::{RecordProfilingMetrics, SignalGauge, StageEntry};
 
 /// A point-in-time snapshot of one execution stage's timing metrics.
 ///
@@ -29,6 +29,44 @@ pub struct StageProfilingInfo {
     pub min_time_ns: u64,
     /// Slowest recorded invocation, nanoseconds.
     pub max_time_ns: u64,
+}
+
+/// A point-in-time snapshot of one record's signal gauge (`.observe()`).
+///
+/// Carried in `RecordMetadata::signal_stats` so a record's live domain signal
+/// (last/min/max/mean) surfaces on `record.list`/`record.get` and the MCP tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignalStatsInfo {
+    /// Signal label (`Observable::SIGNAL`, defaults to the schema name).
+    pub signal: String,
+    /// Unit label (`Observable::UNIT`), omitted when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub unit: String,
+    /// Number of samples observed.
+    pub count: u64,
+    /// Most recent sample.
+    pub last: f64,
+    /// Smallest sample observed.
+    pub min: f64,
+    /// Largest sample observed.
+    pub max: f64,
+    /// Mean of all samples.
+    pub mean: f64,
+}
+
+impl SignalStatsInfo {
+    fn from_gauge(gauge: &SignalGauge) -> Self {
+        let s = &gauge.stats;
+        Self {
+            signal: gauge.name.clone(),
+            unit: gauge.unit.clone(),
+            count: s.count(),
+            last: s.last(),
+            min: s.min(),
+            max: s.max(),
+            mean: s.mean(),
+        }
+    }
 }
 
 impl StageProfilingInfo {
@@ -63,5 +101,13 @@ impl RecordProfilingMetrics {
             }
         }
         out
+    }
+
+    /// Returns a serializable snapshot of every registered signal gauge.
+    pub fn signal_snapshot(&self) -> Vec<SignalStatsInfo> {
+        self.signals()
+            .iter()
+            .map(SignalStatsInfo::from_gauge)
+            .collect()
     }
 }

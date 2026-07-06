@@ -30,22 +30,10 @@ impl Streamable for Humidity {}
 
 impl Observable for Humidity {
     type Signal = f32;
-    const ICON: &'static str = "💧";
     const UNIT: &'static str = "%";
 
     fn signal(&self) -> f32 {
         self.percent
-    }
-
-    fn format_log(&self, node_id: &str) -> alloc::string::String {
-        alloc::format!(
-            "{} [{}] Humidity: {:.1}{} at {}",
-            Self::ICON,
-            node_id,
-            self.percent,
-            Self::UNIT,
-            self.timestamp
-        )
     }
 }
 
