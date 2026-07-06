@@ -4432,7 +4432,6 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
- "chrono",
  "rand 0.10.1",
  "tokio",
  "tracing",

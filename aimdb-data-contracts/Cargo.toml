@@ -15,7 +15,10 @@ default = ["std"]
 alloc = ["serde/alloc"]
 std = ["alloc", "serde/std", "serde_json?/std"]
 linkable = ["alloc", "serde_json"]
-simulatable = ["rand"]
+# Dev-tier — never a default feature. The ext trait needs core's registrar,
+# same coupling `observable` has. `rand` is the tracer CI uses to prove a
+# production graph is sim-free (design 041 §3.1.1).
+simulatable = ["rand", "aimdb-core"]
 migratable = ["alloc", "serde_json", "dep:aimdb-derive"]
 observable = ["alloc", "aimdb-core"]
 
@@ -33,11 +36,12 @@ aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", optional = true, default-features = false, features = [
     "alloc",
 ] }
+# RNG is caller-supplied, so we need only the `Rng`/`RngExt` traits and the
+# always-available `SmallRng` — no `std_rng` (design 041 §3.1.1, decision 2).
 [dependencies.rand]
 version = "0.10.1"
 optional = true
 default-features = false
-features = ["std_rng"]
 
 [dev-dependencies]
 serde_json = "1.0"

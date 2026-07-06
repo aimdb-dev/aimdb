@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use aimdb_data_contracts::Linkable;
 
 #[cfg(feature = "simulatable")]
-use aimdb_data_contracts::{Simulatable, SimulationConfig};
+use aimdb_data_contracts::{RandomWalkParams, Simulatable};
 #[cfg(feature = "simulatable")]
 use rand::RngExt;
 
@@ -189,23 +189,25 @@ impl Observable for TemperatureV2 {
 
 #[cfg(feature = "simulatable")]
 impl Simulatable for TemperatureV2 {
+    type Params = RandomWalkParams;
+
     /// Simulate temperature readings with random walk behavior.
     ///
-    /// # Config params interpretation
+    /// # Params interpretation
     /// - `base`: Center temperature value (default: 22.0°C)
     /// - `variation`: Maximum deviation from base (default: 3.0°C)
     /// - `step`: Random walk step multiplier (default: 0.2)
     /// - `trend`: Linear trend per sample (default: 0.0)
     fn simulate<R: rand::Rng>(
-        config: &SimulationConfig,
+        params: &Self::Params,
         previous: Option<&Self>,
         rng: &mut R,
-        timestamp: u64,
+        timestamp_ms: u64,
     ) -> Self {
-        let base = config.params.base as f32;
-        let variation = config.params.variation as f32;
-        let step = config.params.step as f32;
-        let trend = config.params.trend as f32;
+        let base = params.base as f32;
+        let variation = params.variation as f32;
+        let step = params.step as f32;
+        let trend = params.trend as f32;
 
         // Random walk: small delta from previous value, clamped to range
         let current = match previous {
@@ -219,7 +221,7 @@ impl Simulatable for TemperatureV2 {
         TemperatureV2 {
             schema_version: 2,
             celsius: current,
-            timestamp,
+            timestamp: timestamp_ms,
         }
     }
 }

@@ -1,82 +1,77 @@
-//! Simulation configuration for data contracts.
+//! Simulation capability for data contracts (dev-tier, `feature = "simulatable"`).
 //!
-//! These structures configure how `Simulatable` types generate test data.
+//! Implementing [`Simulatable`] unlocks exactly one verb —
+//! [`SimulatableRegistrarExt::simulate`] — which installs a source that emits
+//! synthetic samples on a timer. This is the **dev tier**: it must never ship in
+//! a production binary. Sim-to-real selection is a compile-time `#[cfg]` in the
+//! application (design 041 §3.1.4), never a runtime flag, and `rand` is the
+//! tracer CI uses to prove production dependency graphs are sim-free.
 
 use serde::{Deserialize, Serialize};
 
+use aimdb_core::typed_api::RecordRegistrar;
+
+use crate::SchemaType;
+
 // ═══════════════════════════════════════════════════════════════════
-// SIMULATION CONFIG
+// SIMULATABLE TRAIT
 // ═══════════════════════════════════════════════════════════════════
 
-/// Configuration for data simulation.
+/// Dev-only capability: generate realistic synthetic data.
 ///
-/// This is passed to `Simulatable::simulate()` to control how
-/// test data is generated.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SimulationConfig {
-    /// Whether simulation is active
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+/// This is an intrinsic capability of the schema type itself, not a policy
+/// decision. If a type can be simulated, implement this — then call
+/// [`SimulatableRegistrarExt::simulate`] on the registrar.
+pub trait Simulatable: SchemaType {
+    /// Type-specific generation parameters (a temperature defines walk bounds,
+    /// a GPS track defines waypoints, …). Use [`RandomWalkParams`] for scalar
+    /// walks, or define your own.
+    type Params: Clone + Send + Sync + Default + 'static;
 
-    /// Interval between simulated samples (milliseconds)
-    #[serde(default = "default_interval")]
+    /// Generate the next sample.
+    ///
+    /// - `params`: type-specific generation parameters.
+    /// - `previous`: last generated value, enabling walks/trends.
+    /// - `rng`: caller-supplied RNG (bring [`rand::RngExt`] into scope for
+    ///   `.random()`).
+    /// - `timestamp_ms`: Unix millis supplied by the driving loop.
+    fn simulate<R: rand::Rng>(
+        params: &Self::Params,
+        previous: Option<&Self>,
+        rng: &mut R,
+        timestamp_ms: u64,
+    ) -> Self;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PROFILE + OFF-THE-SHELF PARAMS
+// ═══════════════════════════════════════════════════════════════════
+
+/// Loop policy + generation params for one record.
+#[derive(Clone, Debug, Default)]
+pub struct SimProfile<P> {
+    /// Interval between samples (milliseconds).
     pub interval_ms: u64,
-
-    /// Type-specific parameters (schema implementations interpret these)
-    #[serde(default)]
-    pub params: SimulationParams,
+    /// Type-specific generation parameters.
+    pub params: P,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-fn default_interval() -> u64 {
-    1000
-}
-
-impl Default for SimulationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            interval_ms: 1000,
-            params: SimulationParams::default(),
-        }
-    }
-}
-
-/// Type-specific simulation parameters.
-///
-/// Common parameters that many schema types use. Schema implementations
-/// can interpret these as appropriate for their domain.
+/// Off-the-shelf [`Simulatable::Params`] for scalar random walks — what the
+/// pre-0.3 `SimulationParams` actually was. Existing impls migrate by setting
+/// `type Params = RandomWalkParams`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SimulationParams {
-    /// Base/center value for the simulation
-    #[serde(default)]
+pub struct RandomWalkParams {
+    /// Base/center value for the walk.
     pub base: f64,
-
-    /// Maximum deviation from base (for random walks)
-    #[serde(default = "default_variation")]
+    /// Maximum deviation from base.
     pub variation: f64,
-
-    /// Linear trend per sample (positive = increasing, negative = decreasing)
-    #[serde(default)]
+    /// Linear trend applied per sample (positive = increasing).
     pub trend: f64,
-
-    /// Step size multiplier for random walk (0.0-1.0)
-    #[serde(default = "default_step")]
+    /// Step-size multiplier for the random walk (0.0–1.0).
     pub step: f64,
 }
 
-fn default_variation() -> f64 {
-    1.0
-}
-
-fn default_step() -> f64 {
-    0.2
-}
-
-impl Default for SimulationParams {
+impl Default for RandomWalkParams {
     fn default() -> Self {
         Self {
             base: 0.0,
@@ -88,46 +83,118 @@ impl Default for SimulationParams {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// REGISTRAR EXTENSION: `.simulate(profile, rng)`
+// ═══════════════════════════════════════════════════════════════════
+
+/// Adds `.simulate(profile, rng)` to [`RecordRegistrar`] for [`Simulatable`] types.
+pub trait SimulatableRegistrarExt<'a, T>
+where
+    T: Simulatable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    /// Install a source that emits `T::simulate(...)` every `interval_ms`,
+    /// driving the caller-supplied RNG (OS entropy on std, seeded PRNG on
+    /// no_std, fixed seed in tests).
+    ///
+    /// Installs a **source**, so single-writer-per-key is enforced by `build()`
+    /// exactly as for a hardware `.source()` — the two are mutually exclusive by
+    /// the app's `#[cfg]`, never both present in one binary.
+    fn simulate<R>(&mut self, profile: SimProfile<T::Params>, rng: R) -> &mut RecordRegistrar<'a, T>
+    where
+        R: rand::Rng + Send + 'static;
+}
+
+impl<'a, T> SimulatableRegistrarExt<'a, T> for RecordRegistrar<'a, T>
+where
+    T: Simulatable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    fn simulate<R>(
+        &mut self,
+        profile: SimProfile<T::Params>,
+        mut rng: R,
+    ) -> &mut RecordRegistrar<'a, T>
+    where
+        R: rand::Rng + Send + 'static,
+    {
+        self.source(move |ctx, producer| async move {
+            let mut prev: Option<T> = None;
+            loop {
+                let now_ms = ctx
+                    .time()
+                    .unix_time()
+                    .map(|(s, ns)| s.saturating_mul(1000) + (ns / 1_000_000) as u64)
+                    .unwrap_or(0);
+                let next = T::simulate(&profile.params, prev.as_ref(), &mut rng, now_ms);
+                producer.produce(next.clone());
+                prev = Some(next);
+                ctx.time().sleep_millis(profile.interval_ms.max(1)).await;
+            }
+        })
+        .with_name("simulate")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{RngExt, SeedableRng};
 
-    #[test]
-    fn test_simulation_config_defaults() {
-        let config = SimulationConfig::default();
-        assert!(config.enabled);
-        assert_eq!(config.interval_ms, 1000);
-        assert_eq!(config.params.base, 0.0);
-        assert_eq!(config.params.variation, 1.0);
-        assert_eq!(config.params.step, 0.2);
+    #[derive(Clone, Debug, PartialEq)]
+    struct Scalar(f64);
+
+    impl SchemaType for Scalar {
+        const NAME: &'static str = "scalar";
+    }
+
+    impl Simulatable for Scalar {
+        type Params = RandomWalkParams;
+
+        fn simulate<R: rand::Rng>(
+            params: &Self::Params,
+            previous: Option<&Self>,
+            rng: &mut R,
+            _timestamp_ms: u64,
+        ) -> Self {
+            let base = previous.map(|p| p.0).unwrap_or(params.base);
+            let delta = (rng.random::<f64>() - 0.5) * params.variation * params.step + params.trend;
+            Scalar(base + delta)
+        }
     }
 
     #[test]
-    fn test_simulation_config_json_roundtrip() {
-        let json = r#"{
-            "enabled": true,
-            "interval_ms": 500,
-            "params": {
-                "base": 22.0,
-                "variation": 3.0,
-                "trend": 0.1,
-                "step": 0.1
-            }
-        }"#;
+    fn random_walk_defaults() {
+        let p = RandomWalkParams::default();
+        assert_eq!(p.variation, 1.0);
+        assert_eq!(p.step, 0.2);
+        assert_eq!(p.base, 0.0);
+        assert_eq!(p.trend, 0.0);
+    }
 
-        let config: SimulationConfig = serde_json::from_str(json).unwrap();
-        assert!(config.enabled);
-        assert_eq!(config.interval_ms, 500);
-        assert_eq!(config.params.base, 22.0);
-        assert_eq!(config.params.variation, 3.0);
-        assert_eq!(config.params.trend, 0.1);
+    #[test]
+    fn sim_profile_default_is_zero_interval() {
+        let profile: SimProfile<RandomWalkParams> = SimProfile::default();
+        assert_eq!(profile.interval_ms, 0);
+        assert_eq!(profile.params, RandomWalkParams::default());
+    }
 
-        // Roundtrip
-        let serialized = serde_json::to_string(&config).unwrap();
-        let deserialized: SimulationConfig = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(config, deserialized);
+    #[test]
+    fn simulate_is_deterministic_for_fixed_seed() {
+        let params = RandomWalkParams::default();
+        // SmallRng is seedable and available with `default-features = false`.
+        let mut a = rand::rngs::SmallRng::seed_from_u64(42);
+        let mut b = rand::rngs::SmallRng::seed_from_u64(42);
+
+        let mut prev_a: Option<Scalar> = None;
+        let mut prev_b: Option<Scalar> = None;
+        for ts in 0..5 {
+            let sa = Scalar::simulate(&params, prev_a.as_ref(), &mut a, ts);
+            let sb = Scalar::simulate(&params, prev_b.as_ref(), &mut b, ts);
+            assert_eq!(sa, sb, "same seed must yield the same walk");
+            prev_a = Some(sa);
+            prev_b = Some(sb);
+        }
     }
 }

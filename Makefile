@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check readme-check codegen-drift
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check readme-check codegen-drift check-no-sim
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -535,8 +535,31 @@ codegen-drift:
 	@printf "$(GREEN)Checking codegen templates against the workspace API...$(NC)\n"
 	./tools/scripts/codegen-drift-check.sh
 
+# Prove that simulation code (design 041, dev tier) never reaches a production
+# binary. `rand` is the tracer: it is reachable iff `simulatable` is enabled
+# (aimdb-data-contracts/src/simulatable.rs). `cargo tree -i rand` exits non-zero
+# when `rand` is absent from the resolved graph, so a *successful* lookup here is
+# a failure. Also asserts `simulatable` is not a default feature of the contracts
+# crate (which would pull `rand` into its own default graph).
+SIM_EXAMPLES := weather-station-beta weather-station-gamma
+check-no-sim:
+	@printf "$(GREEN)Proving production graphs are simulation-free...$(NC)\n"
+	@for bin in $(SIM_EXAMPLES); do \
+		if cargo tree -p $$bin -e normal -i rand >/dev/null 2>&1; then \
+			printf "$(RED)✗ '$$bin' (default/production, no sim) pulls in 'rand' — simulation code leaked into production$(NC)\n"; \
+			exit 1; \
+		fi; \
+		printf "$(BLUE)✓ $$bin production graph is rand-free$(NC)\n"; \
+	done
+	@if cargo tree -p aimdb-data-contracts -e normal -i rand >/dev/null 2>&1; then \
+		printf "$(RED)✗ aimdb-data-contracts pulls 'rand' with default features — 'simulatable' must never be a default feature$(NC)\n"; \
+		exit 1; \
+	fi
+	@printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"
+	@printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
+
 ## Convenience commands
-check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift
+check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"

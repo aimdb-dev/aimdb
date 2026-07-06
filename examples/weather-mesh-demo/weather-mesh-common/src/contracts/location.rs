@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use aimdb_data_contracts::Linkable;
 
 #[cfg(feature = "simulatable")]
-use aimdb_data_contracts::{Simulatable, SimulationConfig};
+use aimdb_data_contracts::{RandomWalkParams, Simulatable};
 #[cfg(feature = "simulatable")]
 use rand::RngExt;
 
@@ -73,24 +73,26 @@ impl Observable for GpsLocation {
 
 #[cfg(feature = "simulatable")]
 impl Simulatable for GpsLocation {
+    type Params = RandomWalkParams;
+
     /// Simulate GPS readings with random walk behavior around a base location.
     ///
-    /// # Config params interpretation
+    /// # Params interpretation
     /// - `base`: Base latitude (default: 48.2082 - Vienna)
     /// - `variation`: Maximum wander radius in degrees (default: 0.001 ≈ 111m)
     /// - `step`: Random walk step multiplier (default: 0.2)
     /// - `trend`: Not used for GPS
     fn simulate<R: rand::Rng>(
-        config: &SimulationConfig,
+        params: &Self::Params,
         previous: Option<&Self>,
         rng: &mut R,
-        timestamp: u64,
+        timestamp_ms: u64,
     ) -> Self {
         // Use base as latitude, and a fixed longitude offset
-        let base_lat = config.params.base;
+        let base_lat = params.base;
         let base_lon = 16.3738; // Vienna longitude as default
-        let max_delta = config.params.variation;
-        let step = config.params.step;
+        let max_delta = params.variation;
+        let step = params.step;
 
         // Random walk from previous position or start near base
         let (lat, lon) = match previous {
@@ -115,7 +117,7 @@ impl Simulatable for GpsLocation {
             longitude: lon,
             altitude: Some(200.0 + rng.random::<f32>() * 10.0),
             accuracy: Some(5.0 + rng.random::<f32>() * 10.0),
-            timestamp,
+            timestamp: timestamp_ms,
         }
     }
 }

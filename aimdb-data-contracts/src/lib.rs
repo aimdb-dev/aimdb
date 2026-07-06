@@ -84,7 +84,7 @@ mod simulatable;
 mod migratable;
 
 #[cfg(feature = "simulatable")]
-pub use simulatable::{SimulationConfig, SimulationParams};
+pub use simulatable::{RandomWalkParams, SimProfile, Simulatable, SimulatableRegistrarExt};
 
 #[cfg(feature = "migratable")]
 pub use migratable::{MigrationChain, MigrationError, MigrationStep};
@@ -132,31 +132,6 @@ pub trait SchemaType: Sized {
     ///
     /// Increment when adding new optional/defaulted fields.
     const VERSION: u32 = 1;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// SIMULATABLE SUPPORT (feature = "simulatable")
-// ═══════════════════════════════════════════════════════════════════
-
-/// Generate realistic test/simulation data.
-///
-/// This is an intrinsic capability of the schema type itself,
-/// not a policy decision. If a type can be simulated, implement this.
-#[cfg(feature = "simulatable")]
-pub trait Simulatable: SchemaType {
-    /// Generate a new sample with optional reference to previous value.
-    ///
-    /// # Parameters
-    /// - `config`: Simulation parameters (type-specific)
-    /// - `previous`: Optional reference to last generated value (for random walks, trends)
-    /// - `rng`: Random number generator
-    /// - `timestamp`: Unix timestamp in milliseconds
-    fn simulate<R: rand::Rng>(
-        config: &SimulationConfig,
-        previous: Option<&Self>,
-        rng: &mut R,
-        timestamp: u64,
-    ) -> Self;
 }
 
 /// Construct a schema instance from its primary value.
