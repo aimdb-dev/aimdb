@@ -128,14 +128,29 @@ docker compose up
 | [**SingleLatest**](examples/hello-single-latest-async) | Only the current value matters | Feature flags, config, UI state |
 | [**Mailbox**](examples/hello-mailbox) / [**async Mailbox**](examples/hello-mailbox-async)| Latest instruction wins | Device commands, actuation, RPC |
 
-**Four capability traits** — opt-in, type-checked:
+**Capability traits** — opt-in, type-checked. Each one is a promise: implement it, and exactly one verb becomes available. The **tier** column says whether the capability may exist in a production binary.
 
-| Trait | What it unlocks | Runtimes |
-| --- | --- | --- |
-| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | Crossing WASM / WebSocket / CLI boundaries | std, no_std |
-| [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | Typed schema evolution across deployed fleets | std, no_std |
-| `Observable` | Automatic per-record metrics | std, no_std |
-| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | Wire-format connectors | std, no_std |
+| Contract | Implement when… | Verb it unlocks | Tier |
+| --- | --- | --- | --- |
+| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the type crosses a per-URL byte boundary (MQTT/KNX/serial/UDS) | `.linked_from(url)` / `.linked_to(url)` (`#[derive(Linkable)]` for JSON) | wire (prod) |
+| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | the type streams as schema-named JSON (browser/WASM) | ws-connector `.register::<T>()` | wire (prod) |
+| [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | the schema evolved across versions | `migration_chain!` | wire (prod) |
+| `Settable` | callers outside the AimDB thread set the record from a primitive | `SyncProducer::set_value(v)` | wire (prod) |
+| `Observable` | the type carries a domain signal worth watching | `.observe()` → live signal metrics (last/min/max/mean on `record.list`/`record.get`) | introspection (prod, optional) |
+| `Simulatable` | the type can generate realistic synthetic data | `.simulate(profile, rng)` | **dev-only — never ships in prod** |
+
+`Simulatable` is the one exception to "opt-in, always safe": it lives behind the `simulatable` feature (never a default), and sim-to-real selection is a compile-time `#[cfg]` in your app —
+
+```rust
+builder.configure::<Temperature>(KEY, |reg| {
+    #[cfg(feature = "sim")]
+    reg.simulate(profile, rng);
+    #[cfg(not(feature = "sim"))]
+    reg.source(read_hardware);
+});
+```
+
+— so a production build with `sim` off carries zero simulation code: no `T::simulate` impls, no `rand`, nothing to audit. CI proves it (`rand` is the tracer: `cargo tree -e normal -i rand` on the production feature set must come up empty).
 
 **One async API across runtimes.** Tokio, Embassy, WASM — swap the runtime adapter, keep the code. → [How the runtime abstraction works](https://aimdb.dev/blog/building-aimdb-one-async-api)
 

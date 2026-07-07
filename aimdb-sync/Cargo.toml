@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-sync"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -23,7 +23,7 @@ thiserror = "1.0"
 # Optional: Settable::set (feature `data-contracts`) for the `set_value` family.
 # Dependency direction stays contracts -> sync; the contracts crate gains no
 # `sync` feature (design 041 §3.4).
-aimdb-data-contracts = { path = "../aimdb-data-contracts", version = "0.2.0", optional = true, default-features = false, features = [
+aimdb-data-contracts = { path = "../aimdb-data-contracts", version = "0.3.0", optional = true, default-features = false, features = [
     "settable",
 ] }
 

@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-data-contracts"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -34,12 +34,14 @@ serde_json = { workspace = true, optional = true }
 # migration_chain! + #[derive(Linkable)] proc-macros (build-time only; no
 # target/runtime/no_std impact — see aimdb-derive). No cycle: aimdb-derive
 # emits token paths to this crate but does not depend on it.
-aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
+aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
 
 # Optional: shared by the `linkable`, `observable`, and `simulatable` registrar
-# ext traits (RecordRegistrar/RuntimeContext). Note: aimdb-core requires the
-# alloc feature for core functionality.
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", optional = true, default-features = false, features = [
+# ext traits (RecordRegistrar/RuntimeContext). 1.2.0 is the true minimum: the
+# `observable` feature's `.observe()` calls `RecordRegistrar::signal_gauge`,
+# added in 1.2.0. Note: aimdb-core requires the alloc feature for core
+# functionality.
+aimdb-core = { version = "1.2.0", path = "../aimdb-core", optional = true, default-features = false, features = [
     "alloc",
 ] }
 # RNG is caller-supplied, so we need only the `Rng`/`RngExt` traits and the

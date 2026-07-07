@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`SyncProducer<T: Settable>::set_value`/`try_set_value`/`set_value_at`** (design 041 §3.4, feature `data-contracts`). `set()` took a fully constructed `T`, so every outside-the-thread caller hand-assembled the struct; `set_value(value)` constructs via `T::set(value, timestamp)` and sends in one call — blocking (`set_value`), non-blocking (`try_set_value`), or with an explicit timestamp for replay/testing (`set_value_at`). `set_value`/`try_set_value` stamp the caller's `SystemTime` (crate is std-only). New optional dependency: `aimdb-data-contracts` (feature `settable`), behind the new `data-contracts` feature — the contracts crate gains no `sync` feature (dependency direction unchanged).
+
 ### Changed (breaking)
 
 - **Issue #131:** `AimDbSyncExt` extends the non-generic `aimdb_core::AimDb`; internal handles drop the `TokioAdapter` type parameter.
@@ -60,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v0.2.0...v0.3.0

@@ -33,7 +33,7 @@ tracing = ["dep:tracing"]
 
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
-aimdb-data-contracts = { version = "0.2.0", path = "../aimdb-data-contracts", default-features = false }
+aimdb-data-contracts = { version = "0.3.0", path = "../aimdb-data-contracts", default-features = false }
 aimdb-ws-protocol = { version = "0.1.0", path = "../aimdb-ws-protocol" }
 
 # Async runtime

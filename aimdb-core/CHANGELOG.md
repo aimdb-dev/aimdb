@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`RecordRegistrar::signal_gauge(name, unit) -> SignalGaugeHandle`** (design 041 §3.2) — the core hook behind `aimdb-data-contracts`'s `Observable::observe()`. Feeding values via `SignalGaugeHandle::update(f64)` folds them into per-record `SignalStats` (last/min/max/mean), surfaced through `RecordMetadata::signal_stats` on `record.list`/`record.get`. Mirrors the `with_name` precedent: always callable, an inert no-op handle when the `observability` feature is off, so callers never `#[cfg]` on core's features. New public types: `SignalGaugeHandle` (always available), `SignalStats`/`SignalGauge`/`SignalStatsInfo` (feature `observability`).
+
 ### Fixed
 
 - **AimX protocol doc rot cleaned up; `remote::PROTOCOL_VERSION` corrected to `"2.0"` and exported.** The `remote` module docs claimed "AimX v1" and linked a spec file that no longer exists; they now describe the v2 NDJSON tagged-frame wire and point at `crate::session::aimx` / `docs/design/remote-access-via-connectors.md`. The AimX dispatch's Welcome uses the constant instead of a hardcoded `"2.0"` (same bytes on the wire). The dead, never-exported v1 `Message` untagged envelope and its helpers were removed from `remote::protocol`. Also de-advertised Kafka/HTTP connector semantics from `ConnectorUrl` docs (the parser is scheme-agnostic; those connectors never existed) and updated the `connector` module docs from the removed `.link()` API to `.link_to()`/`.link_from()`.
@@ -452,7 +456,8 @@ warning fires if you exceed 1000 interned keys.
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/aimdb-dev/aimdb/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
