@@ -9,7 +9,7 @@ publish = false
 [features]
 default = ["embassy-runtime"]
 embassy-runtime = []
-# `sim` is opt-in and dev-only (design 041 §3.1.4): "develop against sim, flash
+# `sim` is opt-in and dev-only: "develop against sim, flash
 # against silicon". It pulls the `Simulatable` impls + `rand` and wires
 # `.simulate()`; the default (flash) build reads a hardware source and has no
 # `rand` in its graph.

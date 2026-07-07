@@ -44,8 +44,8 @@ pub fn migration_chain(input: TokenStream) -> TokenStream {
 /// Derive `Linkable` (JSON codec) for a schema type.
 ///
 /// Emits `from_bytes`/`to_bytes` via `serde_json::from_slice`/`to_vec` — the
-/// boilerplate every hand-written `impl Linkable` for a JSON-wire type repeats
-/// (design 041 §3.3). Requires `T: Serialize + DeserializeOwned` (a normal
+/// boilerplate every hand-written `impl Linkable` for a JSON-wire type repeats.
+/// Requires `T: Serialize + DeserializeOwned` (a normal
 /// compile error surfaces if it's missing) and the `linkable` feature of
 /// `aimdb-data-contracts` (for the `Linkable` trait and its `__private::serde_json`
 /// re-export). Binary formats (e.g. KNX DPT codecs) still implement `Linkable`

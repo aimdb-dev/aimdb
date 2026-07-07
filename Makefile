@@ -555,9 +555,10 @@ codegen-drift:
 	@printf "$(GREEN)Checking codegen templates against the workspace API...$(NC)\n"
 	./tools/scripts/codegen-drift-check.sh
 
-# Prove that simulation code (design 041, dev tier) never reaches a production
-# binary. `rand` is the tracer: it is reachable iff `simulatable` is enabled
-# (aimdb-data-contracts/src/simulatable.rs). The guard must not fail open:
+# Prove that simulation code (the dev-tier `simulatable` contract) never
+# reaches a production binary. `rand` is the tracer: it is reachable iff
+# `simulatable` is enabled (aimdb-data-contracts/src/simulatable.rs).
+# The guard must not fail open:
 # "rand is absent" is accepted only when `cargo tree -i rand` fails with its
 # specific "did not match any packages" error — any other failure (missing
 # submodule, typo'd package name, registry trouble) aborts the check instead of

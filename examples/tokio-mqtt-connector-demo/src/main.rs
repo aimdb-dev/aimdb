@@ -141,8 +141,8 @@ async fn main() -> DbResult<()> {
 
     // Temperature sensors (outbound to MQTT) - using link_address() from key metadata.
     // TempIndoor needs per-link QoS/retain, so it stays on the raw builder (the
-    // escape hatch, design 041 §3.3); TempOutdoor/TempServerRoom need no extra
-    // options, so `.linked_to()` (from `#[derive(Linkable)]`) is the 80% path.
+    // escape hatch for per-link options); TempOutdoor/TempServerRoom need no
+    // extra options, so `.linked_to()` (from `#[derive(Linkable)]`) suffices.
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(indoor_temp_producer)

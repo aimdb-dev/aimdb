@@ -98,7 +98,7 @@ fn humidity_profile() -> SimProfile<RandomWalkParams> {
 ///
 /// A real MCU deployment reads an ADC/I2C sensor here. The demo emits a fixed
 /// reading so the record still has exactly one writer and the flashed image
-/// carries no `rand` (design 041 §3.1.4).
+/// carries no `rand`.
 #[cfg(not(feature = "sim"))]
 async fn read_temperature(
     ctx: aimdb_core::RuntimeContext,

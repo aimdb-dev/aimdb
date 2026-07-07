@@ -149,8 +149,8 @@ pub trait SchemaType: Sized {
 /// Construct a schema instance from its primary value.
 ///
 /// This defines the canonical way to create a new reading/measurement — the
-/// write counterpart to [`Observable::signal`]'s read projection. The verb it
-/// unlocks is `SyncProducer::set_value` in `aimdb-sync` (design 041 §3.4).
+/// write counterpart to [`Observable::signal`]'s read projection. Implementing
+/// it unlocks the `SyncProducer::set_value` family in `aimdb-sync`.
 #[cfg(feature = "settable")]
 pub trait Settable: SchemaType {
     /// The primary value type (e.g., `f32` for temperature)
@@ -176,15 +176,15 @@ pub trait Settable: SchemaType {
 /// on `record.list` / `record.get` and stage profiling. The signal can also feed
 /// threshold checks, alerting, and aggregation.
 ///
-/// Presentation lives elsewhere: `.log(node_id)` (also on the ext trait) formats
-/// a human-readable line from `Debug` + [`SIGNAL`](Observable::SIGNAL)/[`UNIT`](Observable::UNIT),
-/// and demo emoji live in the demo.
+/// Presentation is not part of the trait: `.log(node_id)` (also on the ext
+/// trait) formats a human-readable line from `Debug` +
+/// [`SIGNAL`](Observable::SIGNAL)/[`UNIT`](Observable::UNIT).
 pub trait Observable: SchemaType {
     /// The numeric type of the signal (e.g., `f32`, `f64`, `i32`).
     ///
-    /// Must be comparable and copyable for threshold checks. Bound
-    /// `Into<f64>` at the `.observe()` call site (not here) so exotic signals
-    /// can still implement `Observable` and write their own tap.
+    /// Must be comparable and copyable for threshold checks. `.observe()`
+    /// additionally requires `Signal: Into<f64>` at its call site; a type with
+    /// an exotic signal can still implement `Observable` and write its own tap.
     type Signal: PartialOrd + Copy;
 
     /// What the signal means, for metrics/UI labels (e.g. `"celsius"`).

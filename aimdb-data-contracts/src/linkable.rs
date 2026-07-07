@@ -3,8 +3,8 @@
 //! Implementing [`Linkable`](crate::Linkable) unlocks two verbs —
 //! [`LinkableRegistrarExt::linked_from`] / [`linked_to`](LinkableRegistrarExt::linked_to)
 //! — that install the raw `.link_from()`/`.link_to()` builders with the codec
-//! defaulted to `T::from_bytes`/`T::to_bytes` (design 041 §3.3). The raw builders
-//! remain the escape hatch for per-link options (QoS, topic providers/resolvers).
+//! defaulted to `T::from_bytes`/`T::to_bytes`. The raw builders remain the
+//! escape hatch for per-link options (QoS, topic providers/resolvers).
 
 use aimdb_core::connector::SerializeError;
 use aimdb_core::typed_api::RecordRegistrar;
@@ -24,8 +24,7 @@ where
     ///
     /// `Linkable::to_bytes`'s `String` error is mapped to
     /// `SerializeError::InvalidData` — the connector layer's serializer error
-    /// type has no string detail (see design 041 §3.3, `CodecError` alignment
-    /// recorded as a follow-up).
+    /// type carries no string detail.
     fn linked_to(&mut self, url: &str) -> &mut RecordRegistrar<'a, T>;
 }
 

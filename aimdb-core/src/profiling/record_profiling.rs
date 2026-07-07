@@ -25,7 +25,7 @@ impl StageEntry {
 }
 
 /// One registered signal gauge: its label/unit plus the shared statistics that
-/// `.observe()` folds `Observable::signal()` into (design 041 §3.2).
+/// `.observe()` folds `Observable::signal()` into.
 #[derive(Debug)]
 pub struct SignalGauge {
     /// Signal label (`Observable::SIGNAL`, defaults to the schema name).

@@ -1,6 +1,6 @@
-//! Integration coverage for `SyncProducer::set_value` (feature `data-contracts`,
-//! design 041 §3.4): construct via `Settable::set`, produce, and consume
-//! end-to-end through the real sync bridge.
+//! Integration coverage for `SyncProducer::set_value` (feature `data-contracts`):
+//! construct via `Settable::set`, produce, and consume end-to-end through the
+//! real sync bridge.
 
 #![cfg(feature = "data-contracts")]
 
@@ -114,7 +114,7 @@ fn set_value_at_stamps_the_explicit_timestamp() {
         .expect("failed to create consumer");
 
     // Explicit timestamp, not wall-clock — deterministic regardless of when the
-    // test runs (replay/testing use case, design 041 §3.4).
+    // test runs (the replay/testing use case).
     producer
         .set_value_at(22.5, 1_700_000_000_000)
         .expect("set_value_at should succeed");

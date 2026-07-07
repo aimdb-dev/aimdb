@@ -1018,9 +1018,9 @@ fn emit_observable_impl(rec: &RecordDef) -> Option<TokenStream> {
 
     let unit = &obs.unit;
 
-    // Observable is now a kernel-only trait (design 041 §3.2): the numeric
-    // projection + UNIT label. `SIGNAL` defaults to the schema name; presentation
-    // (`ICON`, `format_log`) moved out of the trait, so we no longer emit them.
+    // Observable is a kernel-only trait: the numeric projection + UNIT label.
+    // `SIGNAL` defaults to the schema name; presentation (icons, log formatting)
+    // is not part of the trait, so nothing else is emitted.
     Some(quote! {
         impl Observable for #struct_name {
             type Signal = #signal_type;

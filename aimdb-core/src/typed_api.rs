@@ -445,7 +445,7 @@ where
     /// Values pushed via [`SignalGaugeHandle::update`](crate::SignalGaugeHandle::update)
     /// fold into per-record last/min/max/mean statistics that surface on
     /// `record.list` / `record.get` and stage profiling. This is the core hook
-    /// behind `Observable::observe()` (design 041 §3.2).
+    /// behind `aimdb-data-contracts`' `Observable::observe()`.
     ///
     /// Always available, mirroring [`with_name`](Self::with_name): when the
     /// `observability` feature is disabled it returns an inert handle whose

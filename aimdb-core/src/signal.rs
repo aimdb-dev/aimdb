@@ -1,4 +1,4 @@
-//! Signal gauge handle for `Observable::observe()` (design 041 §3.2).
+//! Signal gauge handle: per-record domain-signal statistics.
 //!
 //! `RecordRegistrar::signal_gauge` hands back a [`SignalGaugeHandle`]. Feeding
 //! values in with [`update`](SignalGaugeHandle::update) folds them into the

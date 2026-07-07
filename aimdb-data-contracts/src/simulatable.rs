@@ -4,8 +4,8 @@
 //! [`SimulatableRegistrarExt::simulate`] — which installs a source that emits
 //! synthetic samples on a timer. This is the **dev tier**: it must never ship in
 //! a production binary. Sim-to-real selection is a compile-time `#[cfg]` in the
-//! application (design 041 §3.1.4), never a runtime flag, and `rand` is the
-//! tracer CI uses to prove production dependency graphs are sim-free.
+//! application, never a runtime flag, and `rand` is the tracer CI uses to prove
+//! production dependency graphs are sim-free (see `make check-no-sim`).
 
 use serde::{Deserialize, Serialize};
 
@@ -56,9 +56,9 @@ pub struct SimProfile<P> {
     pub params: P,
 }
 
-/// Off-the-shelf [`Simulatable::Params`] for scalar random walks — what the
-/// pre-0.3 `SimulationParams` actually was. Existing impls migrate by setting
-/// `type Params = RandomWalkParams`.
+/// Off-the-shelf [`Simulatable::Params`] for scalar signals that wander around
+/// a base value: set `type Params = RandomWalkParams` and derive the next
+/// sample from `previous` plus a bounded random step.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RandomWalkParams {
     /// Base/center value for the walk.

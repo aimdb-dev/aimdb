@@ -24,5 +24,5 @@ aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-feature
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 # RNG is caller-supplied at the station; the contract impls only use the
-# `Rng`/`RngExt` traits, so no `std_rng` here (design 041 §3.1.1).
+# `Rng`/`RngExt` traits, so no `std_rng` here.
 rand = { version = "0.10.1", optional = true, default-features = false }

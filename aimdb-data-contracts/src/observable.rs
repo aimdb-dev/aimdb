@@ -2,8 +2,8 @@
 //!
 //! Implementing [`Observable`](crate::Observable) unlocks one verb —
 //! [`ObservableRegistrarExt::observe`] — which feeds the record's domain signal
-//! into core signal-gauge metrics (design 041 §3.2). `.log(node_id)` is the
-//! human-readable companion for console watching.
+//! into core signal-gauge metrics. `.log(node_id)` is the human-readable
+//! companion for console watching.
 
 extern crate alloc;
 

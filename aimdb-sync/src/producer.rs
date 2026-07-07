@@ -220,13 +220,12 @@ where
     }
 }
 
-/// `Settable`-powered set-by-primitive verb (design 041 §3.4, feature `data-contracts`).
+/// Set-by-primitive verbs for `Settable` types (feature `data-contracts`).
 ///
-/// `set()` takes a fully constructed `T`, so every outside-the-thread caller had
-/// to hand-assemble the struct. `set_value` closes that gap: construct via
-/// `T::set(value, timestamp)` and send, in one call. Distinct from AimX's
-/// `record.set {name, value}` (full JSON value through `JsonCodec`) — this is
-/// set-by-primitive.
+/// Where [`set`](Self::set) takes a fully constructed `T`, `set_value`
+/// constructs it via `T::set(value, timestamp)` and sends, in one call.
+/// Distinct from AimX's `record.set {name, value}` (full JSON value through
+/// `JsonCodec`) — this is set-by-primitive.
 #[cfg(feature = "data-contracts")]
 impl<T> SyncProducer<T>
 where
