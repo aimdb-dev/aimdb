@@ -295,6 +295,7 @@ records pick one for links:
 | `unix:///tmp/aimdb.sock` / `uds:///tmp/aimdb.sock` | Unix domain socket |
 | `/tmp/aimdb.sock` (bare path) | Unix domain socket (the `unix://` shorthand) |
 | `serial:///dev/ttyACM0?baud=115200` | Serial/UART (requires the `transport-serial` build feature) |
+| `tcp://127.0.0.1:7001` | TCP (requires the `transport-tcp` build feature) |
 
 ```bash
 # Explicit endpoint
@@ -305,6 +306,9 @@ aimdb --connect /tmp/aimdb.sock record list
 
 # Serial board (CLI built with --features transport-serial)
 aimdb --connect serial:///dev/ttyACM0?baud=115200 record list
+
+# TCP endpoint (CLI built with --features transport-tcp)
+aimdb --connect tcp://127.0.0.1:7001 record list
 ```
 
 An unknown scheme — or one whose transport isn't compiled into this binary — is
@@ -334,6 +338,7 @@ building:
 
 ```bash
 cargo build --release -p aimdb-cli --features transport-serial
+cargo build --release -p aimdb-cli --features transport-tcp
 ```
 
 ## Error Handling

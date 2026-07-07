@@ -70,6 +70,7 @@ version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-serial-connector",
+ "aimdb-tcp-connector",
  "aimdb-tokio-adapter",
  "aimdb-uds-connector",
  "anyhow",
@@ -288,6 +289,23 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "aimdb-tcp-connector"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-embassy-adapter",
+ "aimdb-tokio-adapter",
+ "defmt 1.0.1",
+ "embassy-net",
+ "embedded-io-async 0.7.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
