@@ -2516,6 +2516,7 @@ name = "mqtt-connector-demo-common"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "defmt 1.0.1",
  "serde",
  "serde_json",
@@ -3711,6 +3712,7 @@ name = "tokio-mqtt-connector-demo"
 version = "1.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
  "mqtt-connector-demo-common",

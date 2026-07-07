@@ -14,7 +14,9 @@ categories = ["embedded", "no-std"]
 default = ["std"]
 alloc = ["serde/alloc"]
 std = ["alloc", "serde/std", "serde_json?/std"]
-linkable = ["alloc", "serde_json"]
+# The ext trait needs core's registrar/connector-builder types (same wiring as
+# `observable`); `dep:aimdb-derive` powers `#[derive(Linkable)]`.
+linkable = ["alloc", "serde_json", "aimdb-core", "dep:aimdb-derive"]
 # Dev-tier — never a default feature. The ext trait needs core's registrar,
 # same coupling `observable` has. `rand` is the tracer CI uses to prove a
 # production graph is sim-free (design 041 §3.1.1).
@@ -26,13 +28,14 @@ observable = ["alloc", "aimdb-core"]
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 
-# migration_chain! proc-macro (build-time only; no target/runtime/no_std
-# impact — see aimdb-derive::migration_chain). No cycle: aimdb-derive emits
-# token paths to this crate but does not depend on it.
+# migration_chain! + #[derive(Linkable)] proc-macros (build-time only; no
+# target/runtime/no_std impact — see aimdb-derive). No cycle: aimdb-derive
+# emits token paths to this crate but does not depend on it.
 aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
 
-# Optional dependencies for observable feature (log_tap function)
-# Note: aimdb-core requires alloc feature for core functionality
+# Optional: shared by the `linkable`, `observable`, and `simulatable` registrar
+# ext traits (RecordRegistrar/RuntimeContext). Note: aimdb-core requires the
+# alloc feature for core functionality.
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", optional = true, default-features = false, features = [
     "alloc",
 ] }

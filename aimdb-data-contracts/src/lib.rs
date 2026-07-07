@@ -71,6 +71,18 @@ pub use streamable::Streamable;
 #[cfg(feature = "linkable")]
 mod linkable;
 
+#[cfg(feature = "linkable")]
+pub use linkable::LinkableRegistrarExt;
+
+/// `#[derive(Linkable)]` — see [`Linkable`] and `aimdb_derive::Linkable`'s docs.
+///
+/// Re-exported under the same name as the trait, following the trait+derive
+/// pairing convention (`serde::Serialize`, `aimdb_derive::RecordKey`) — proc-macro
+/// derive names live in a separate namespace from traits, so this is not a
+/// conflict.
+#[cfg(feature = "linkable")]
+pub use aimdb_derive::Linkable;
+
 #[cfg(feature = "observable")]
 mod observable;
 
@@ -189,26 +201,25 @@ pub trait Observable: SchemaType {
 
 /// Types that can be serialized/deserialized for connector links.
 ///
-/// Implement this trait to enable `link_from` and `link_to` operations
-/// in AimDB connectors (MQTT, KNX, etc.). This provides the wire format
-/// for transporting schema types across network boundaries.
+/// Implement this trait, then call
+/// [`LinkableRegistrarExt::linked_from`](linkable::LinkableRegistrarExt::linked_from) /
+/// [`linked_to`](linkable::LinkableRegistrarExt::linked_to) to wire `link_from`
+/// / `link_to` in AimDB connectors (MQTT, KNX, etc.) with the codec defaulted to
+/// `from_bytes`/`to_bytes`. This provides the wire format for transporting
+/// schema types across network boundaries.
 ///
 /// # Example
 ///
-/// Not compiled: the snippet needs `aimdb-core`'s builder, which this crate
-/// only depends on under the `observable` feature — `linkable` alone has no
-/// core dependency.
+/// Not compiled: the snippet needs `aimdb-core`'s builder types in scope.
 ///
 /// ```rust,ignore
-/// use aimdb_data_contracts::Linkable;
+/// use aimdb_data_contracts::{Linkable, LinkableRegistrarExt};
 /// use my_app::Temperature;  // user-defined type implementing Linkable
 ///
 /// // In connector configuration:
 /// builder.configure::<Temperature>(NODE_ID, |reg| {
-///     reg.buffer(BufferCfg::SingleLatest)
-///         .link_from("mqtt://sensors/temperature")
-///         .with_deserializer(Temperature::from_bytes)
-///         .finish();
+///     reg.buffer(BufferCfg::SingleLatest);
+///     reg.linked_from("mqtt://sensors/temperature");
 /// });
 /// ```
 #[cfg(feature = "linkable")]
