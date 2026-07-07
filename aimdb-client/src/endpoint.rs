@@ -5,15 +5,13 @@
 //! Two layers, deliberately split so the grammar is testable without any
 //! transport compiled in:
 //! - [`parse_endpoint`] — **pure, feature-independent**. Recognizes the scheme
-//!   grammar (`unix://` / `uds://` / `serial://`, plus a bare path as `unix://`
-//!   shorthand) into a [`ParsedEndpoint`]. An unknown scheme is rejected here.
+//!   grammar (`unix://` / `uds://` / `serial://` / `tcp://host:port`, plus a
+//!   bare path as `unix://` shorthand) into a [`ParsedEndpoint`]. An unknown
+//!   scheme is rejected here.
 //! - [`dial`] — builds the concrete [`Dialer`] for a parsed endpoint, under the
 //!   matching `transport-*` feature. A scheme whose transport isn't compiled into
 //!   this binary is rejected here (distinct from "unknown scheme").
 //!
-//! TCP is intentionally absent for now (tracked separately); adding it is a new
-//! [`Scheme`] arm plus a `dial` branch.
-
 use aimdb_core::session::Dialer;
 
 use crate::error::{ClientError, ClientResult};
@@ -23,7 +21,7 @@ pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 
 /// Schemes the resolver's *grammar* understands, independent of which transports
 /// are compiled in. Used to phrase the "unknown scheme" error.
-const KNOWN_SCHEMES: &[&str] = &["unix", "uds", "serial"];
+const KNOWN_SCHEMES: &[&str] = &["unix", "uds", "serial", "tcp"];
 
 /// The transport family an endpoint names. Always compiled (it is grammar, not a
 /// capability) — whether a given variant can actually be dialed depends on the
@@ -34,6 +32,8 @@ pub enum Scheme {
     Unix,
     /// A serial/UART device (`serial://`).
     Serial,
+    /// A TCP endpoint (`tcp://host:port`).
+    Tcp,
 }
 
 /// A parsed endpoint: the transport family plus its target and any transport
@@ -42,7 +42,7 @@ pub enum Scheme {
 pub struct ParsedEndpoint {
     /// Which transport family this endpoint names.
     pub scheme: Scheme,
-    /// The transport target — a socket path (`Unix`) or device path (`Serial`).
+    /// The transport target — a socket path, serial device path, or host:port.
     pub target: String,
     /// Serial baud from `?baud=N`, if given (`Serial` only; [`dial`] defaults it
     /// to [`DEFAULT_SERIAL_BAUD`]).
@@ -54,7 +54,8 @@ pub struct ParsedEndpoint {
 /// - `unix://PATH` / `uds://PATH` → [`Scheme::Unix`].
 /// - a bare path (no `scheme://`) → [`Scheme::Unix`] (the shorthand).
 /// - `serial://PATH` (optionally `?baud=N`) → [`Scheme::Serial`].
-/// - anything else (e.g. `tcp://…`) → [`ClientError::UnsupportedEndpoint`].
+/// - `tcp://HOST:PORT` → [`Scheme::Tcp`].
+/// - anything else → [`ClientError::UnsupportedEndpoint`].
 pub fn parse_endpoint(endpoint: &str) -> ClientResult<ParsedEndpoint> {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() {
@@ -89,6 +90,14 @@ pub fn parse_endpoint(endpoint: &str) -> ClientResult<ParsedEndpoint> {
                 scheme: Scheme::Serial,
                 target: path.to_string(),
                 baud,
+            })
+        }
+        "tcp" => {
+            require_tcp_target(endpoint, rest)?;
+            Ok(ParsedEndpoint {
+                scheme: Scheme::Tcp,
+                target: rest.to_string(),
+                baud: None,
             })
         }
         other => Err(ClientError::unsupported_endpoint(
@@ -132,6 +141,16 @@ pub fn dial(endpoint: &str) -> ClientResult<Box<dyn Dialer>> {
                 Err(not_built_in(endpoint, "serial", "transport-serial"))
             }
         }
+        Scheme::Tcp => {
+            #[cfg(feature = "transport-tcp")]
+            {
+                Ok(Box::new(aimdb_tcp_connector::TcpDialer::new(parsed.target)))
+            }
+            #[cfg(not(feature = "transport-tcp"))]
+            {
+                Err(not_built_in(endpoint, "tcp", "transport-tcp"))
+            }
+        }
     }
 }
 
@@ -145,6 +164,34 @@ fn require_nonempty(endpoint: &str, target: &str) -> ClientResult<()> {
     } else {
         Ok(())
     }
+}
+
+/// Validate `tcp://host:port`.
+fn require_tcp_target(endpoint: &str, target: &str) -> ClientResult<()> {
+    require_nonempty(endpoint, target)?;
+
+    let Some((host, port)) = target.rsplit_once(':') else {
+        return Err(ClientError::unsupported_endpoint(
+            endpoint,
+            "missing TCP port",
+        ));
+    };
+    if host.is_empty() {
+        return Err(ClientError::unsupported_endpoint(
+            endpoint,
+            "missing TCP host",
+        ));
+    }
+    if port.is_empty() {
+        return Err(ClientError::unsupported_endpoint(
+            endpoint,
+            "missing TCP port",
+        ));
+    }
+    port.parse::<u16>().map_err(|_| {
+        ClientError::unsupported_endpoint(endpoint, format!("invalid TCP port {port:?}"))
+    })?;
+    Ok(())
 }
 
 /// Pull `baud` out of a `serial://` query string (`baud=N[&k=v…]`).
@@ -162,7 +209,11 @@ fn parse_baud(endpoint: &str, query: &str) -> ClientResult<Option<u32>> {
 }
 
 /// A recognized scheme whose transport feature isn't compiled in.
-#[cfg(any(not(feature = "transport-uds"), not(feature = "transport-serial")))]
+#[cfg(any(
+    not(feature = "transport-uds"),
+    not(feature = "transport-serial"),
+    not(feature = "transport-tcp")
+))]
 fn not_built_in(endpoint: &str, scheme: &str, feature: &str) -> ClientError {
     ClientError::unsupported_endpoint(
         endpoint,
@@ -209,12 +260,23 @@ mod tests {
     }
 
     #[test]
+    fn tcp_scheme_parses_host_and_port() {
+        let p = parse_endpoint("tcp://127.0.0.1:7001").expect("parse");
+        assert_eq!(p.scheme, Scheme::Tcp);
+        assert_eq!(p.target, "127.0.0.1:7001");
+
+        let p = parse_endpoint("tcp://localhost:7001").expect("parse");
+        assert_eq!(p.scheme, Scheme::Tcp);
+        assert_eq!(p.target, "localhost:7001");
+    }
+
+    #[test]
     fn malformed_endpoints_are_rejected() {
-        // Unknown scheme.
-        assert!(matches!(
-            parse_endpoint("tcp://host:1234"),
-            Err(ClientError::UnsupportedEndpoint { .. })
-        ));
+        // Malformed TCP.
+        assert!(parse_endpoint("tcp://").is_err());
+        assert!(parse_endpoint("tcp://host").is_err());
+        assert!(parse_endpoint("tcp://:1234").is_err());
+        assert!(parse_endpoint("tcp://host:fast").is_err());
         // Empty + empty target.
         assert!(parse_endpoint("").is_err());
         assert!(parse_endpoint("unix://").is_err());
@@ -225,7 +287,7 @@ mod tests {
     #[test]
     fn dial_rejects_unknown_scheme() {
         assert!(matches!(
-            dial("tcp://host:1234"),
+            dial("http://host:1234"),
             Err(ClientError::UnsupportedEndpoint { .. })
         ));
     }
@@ -250,5 +312,20 @@ mod tests {
     #[test]
     fn dial_builds_a_serial_dialer() {
         assert!(dial("serial:///dev/ttyACM0?baud=115200").is_ok());
+    }
+
+    #[cfg(not(feature = "transport-tcp"))]
+    #[test]
+    fn dial_rejects_tcp_when_not_built_in() {
+        assert!(matches!(
+            dial("tcp://127.0.0.1:7001"),
+            Err(ClientError::UnsupportedEndpoint { .. })
+        ));
+    }
+
+    #[cfg(feature = "transport-tcp")]
+    #[test]
+    fn dial_builds_a_tcp_dialer() {
+        assert!(dial("tcp://127.0.0.1:7001").is_ok());
     }
 }
