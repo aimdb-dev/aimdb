@@ -116,6 +116,9 @@ spin = { version = "0.9", default-features = false, features = ["mutex", "spin_m
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 
 [dev-dependencies]
+# Serde-attribute roundtrip tests (src/profiling/info.rs) must run in every
+# feature config, including ones where the optional `serde_json` dep is off.
+serde_json = { workspace = true }
 # For no_std testing
 heapless = "0.9.1"
 # For async testing (`sync` covers tokio::sync::mpsc in tests/session_engine.rs,
