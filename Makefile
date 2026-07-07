@@ -537,26 +537,40 @@ codegen-drift:
 
 # Prove that simulation code (design 041, dev tier) never reaches a production
 # binary. `rand` is the tracer: it is reachable iff `simulatable` is enabled
-# (aimdb-data-contracts/src/simulatable.rs). `cargo tree -i rand` exits non-zero
-# when `rand` is absent from the resolved graph, so a *successful* lookup here is
-# a failure. Also asserts `simulatable` is not a default feature of the contracts
-# crate (which would pull `rand` into its own default graph).
+# (aimdb-data-contracts/src/simulatable.rs). The guard must not fail open:
+# "rand is absent" is accepted only when `cargo tree -i rand` fails with its
+# specific "did not match any packages" error — any other failure (missing
+# submodule, typo'd package name, registry trouble) aborts the check instead of
+# passing it vacuously. A positive control per example asserts the sim build
+# DOES find `rand`, proving the tracer still traces. Also asserts `simulatable`
+# is not a default feature of the contracts crate (which would pull `rand` into
+# its own default graph).
 SIM_EXAMPLES := weather-station-beta weather-station-gamma
 check-no-sim:
 	@printf "$(GREEN)Proving production graphs are simulation-free...$(NC)\n"
-	@for bin in $(SIM_EXAMPLES); do \
-		if cargo tree -p $$bin -e normal -i rand >/dev/null 2>&1; then \
-			printf "$(RED)✗ '$$bin' (default/production, no sim) pulls in 'rand' — simulation code leaked into production$(NC)\n"; \
+	@tree_rand() { cargo tree -p "$$1" $$2 -e normal -i rand 2>&1; }; \
+	assert_rand_free() { \
+		if out=$$(tree_rand "$$1" "$$2"); then \
+			printf "$(RED)✗ $$3$(NC)\n"; \
+			exit 1; \
+		elif ! printf '%s\n' "$$out" | grep -q 'did not match any packages'; then \
+			printf "$(RED)✗ cargo tree for '$$1' failed for a reason other than 'rand is absent' — refusing to pass vacuously:$(NC)\n"; \
+			printf '%s\n' "$$out"; \
 			exit 1; \
 		fi; \
+	}; \
+	for bin in $(SIM_EXAMPLES); do \
+		assert_rand_free "$$bin" "" "'$$bin' (default/production, no sim) pulls in 'rand' — simulation code leaked into production"; \
 		printf "$(BLUE)✓ $$bin production graph is rand-free$(NC)\n"; \
-	done
-	@if cargo tree -p aimdb-data-contracts -e normal -i rand >/dev/null 2>&1; then \
-		printf "$(RED)✗ aimdb-data-contracts pulls 'rand' with default features — 'simulatable' must never be a default feature$(NC)\n"; \
-		exit 1; \
-	fi
-	@printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"
-	@printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
+		if ! tree_rand "$$bin" "--features sim" >/dev/null; then \
+			printf "$(RED)✗ positive control failed: '$$bin --features sim' does not pull 'rand' — the tracer no longer traces, so the rand-free results above prove nothing$(NC)\n"; \
+			exit 1; \
+		fi; \
+		printf "$(BLUE)✓ $$bin sim graph finds rand (tracer positive control)$(NC)\n"; \
+	done; \
+	assert_rand_free "aimdb-data-contracts" "" "aimdb-data-contracts pulls 'rand' with default features — 'simulatable' must never be a default feature"; \
+	printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"; \
+	printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
 
 ## Convenience commands
 check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim

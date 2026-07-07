@@ -40,7 +40,11 @@ pub struct SignalStatsInfo {
     /// Signal label (`Observable::SIGNAL`, defaults to the schema name).
     pub signal: String,
     /// Unit label (`Observable::UNIT`), omitted when empty.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    ///
+    /// `default` matches the skip: `Observable::UNIT` defaults to `""`, so a
+    /// snapshot without a unit must deserialize (aimdb-client/aimdb-mcp read
+    /// this back from `record.list`/`record.get`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub unit: String,
     /// Number of samples observed.
     pub count: u64,
@@ -109,5 +113,33 @@ impl RecordProfilingMetrics {
             .iter()
             .map(SignalStatsInfo::from_gauge)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    /// `unit` is skipped when empty (`Observable::UNIT` defaults to `""`), so
+    /// the emitted JSON must deserialize back without it — aimdb-client and
+    /// aimdb-mcp read these snapshots from `record.list`/`record.get`.
+    #[test]
+    fn empty_unit_roundtrips() {
+        let info = SignalStatsInfo {
+            signal: "temperature".to_string(),
+            unit: String::new(),
+            count: 3,
+            last: 1.0,
+            min: 0.5,
+            max: 2.0,
+            mean: 1.2,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("unit"), "empty unit must be omitted: {json}");
+
+        let back: SignalStatsInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, info);
     }
 }

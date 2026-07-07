@@ -100,7 +100,10 @@ fn humidity_profile() -> SimProfile<RandomWalkParams> {
 /// reading so the record still has exactly one writer and the flashed image
 /// carries no `rand` (design 041 §3.1.4).
 #[cfg(not(feature = "sim"))]
-async fn read_temperature(ctx: aimdb_core::RuntimeContext, producer: aimdb_core::Producer<Temperature>) {
+async fn read_temperature(
+    ctx: aimdb_core::RuntimeContext,
+    producer: aimdb_core::Producer<Temperature>,
+) {
     let log = ctx.log();
     log.info("🌡️  Starting temperature sensor...");
     loop {
