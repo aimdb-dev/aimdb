@@ -1,0 +1,68 @@
+[package]
+name = "aimdb-tcp-connector"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Length-prefixed TCP transport connector for AimDB remote access (AimX over TCP), tokio + Embassy"
+keywords = ["aimdb", "connector", "tcp", "remote", "embedded"]
+categories = ["network-programming", "embedded", "no-std"]
+
+[features]
+default = ["aimdb-core/alloc"]
+
+std = [
+    "aimdb-core/std",
+    "aimdb-core/alloc",
+    "aimdb-core/connector-session",
+    "aimdb-core/remote",
+    "thiserror",
+]
+
+tokio-runtime = [
+    "std",
+    "aimdb-core/connector-session",
+    "aimdb-core/remote",
+    "dep:tokio",
+]
+
+embassy-runtime = [
+    "aimdb-core/alloc",
+    "aimdb-core/connector-session",
+    "aimdb-core/remote",
+    "dep:aimdb-embassy-adapter",
+    "aimdb-embassy-adapter/connectors",
+    "aimdb-embassy-adapter/embassy-net-support",
+    "dep:embassy-net",
+    "dep:embedded-io-async",
+]
+
+tracing = ["dep:tracing", "aimdb-core/tracing"]
+defmt = ["dep:defmt", "aimdb-core/defmt"]
+
+_test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
+
+[dependencies]
+aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
+
+tokio = { workspace = true, optional = true, features = ["net", "io-util"] }
+thiserror = { workspace = true, optional = true }
+
+aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+embassy-net = { workspace = true, optional = true }
+embedded-io-async = { workspace = true, optional = true }
+
+aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
+
+tracing = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[example]]
+name = "tcp_demo"
+required-features = ["_test-tokio"]

@@ -22,7 +22,8 @@ struct Cli {
     command: Command,
 
     /// Endpoint of the AimDB instance: a `scheme://` URL (`unix://PATH`,
-    /// `serial://DEVICE?baud=N`) or a bare path (the `unix://` shorthand).
+    /// `serial://DEVICE?baud=N`, `tcp://HOST:PORT`) or a bare path (the
+    /// `unix://` shorthand).
     /// Falls back to the `AIMDB_CONNECT` env var, then auto-discovery.
     #[arg(long, global = true)]
     connect: Option<String>,

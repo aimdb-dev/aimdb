@@ -8,7 +8,8 @@ Internal client library for the AimX remote access protocol (v2 NDJSON wire).
 implementation for the AimX remote access protocol. It enables programmatic
 connections to running AimDB instances over a transport picked at runtime via
 a `scheme://` endpoint URL — Unix domain sockets (`unix://PATH` / `uds://PATH`,
-or a bare path) and serial (`serial://DEVICE?baud=N`).
+or a bare path), serial (`serial://DEVICE?baud=N`), and TCP
+(`tcp://HOST:PORT`, behind the `transport-tcp` feature).
 
 **This library is used by:**
 - `tools/aimdb-cli` - Command-line interface for AimDB
@@ -70,6 +71,9 @@ See these tools for real-world usage patterns.
 ```bash
 # Run tests
 cargo test -p aimdb-client
+
+# Run TCP endpoint resolver tests
+cargo test -p aimdb-client --no-default-features --features transport-tcp
 
 # Start test server
 cargo run --example remote-access-demo

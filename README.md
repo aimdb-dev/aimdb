@@ -207,6 +207,7 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 | **MQTT** — `aimdb-mqtt-connector` | ✅ Ready | std, no_std |
 | **KNX** — `aimdb-knx-connector` | ✅ Ready | std, no_std |
 | **WebSocket** — `aimdb-websocket-connector` | ✅ Ready | std, wasm |
+| **TCP** — `aimdb-tcp-connector` | ✅ Ready | std, no_std client |
 | **Kafka** | 📋 Planned | std |
 | **Modbus** | 📋 Planned | std, no_std |
 
