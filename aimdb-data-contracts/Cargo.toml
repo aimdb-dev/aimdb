@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Trait definitions for AimDB data contracts: SchemaType, Streamable, Observable, Linkable, Simulatable, Migratable"
+description = "Trait definitions for AimDB data contracts: SchemaType, Streamable, Observable, Linkable, Simulatable, Migratable, Settable"
 keywords = ["aimdb", "iot", "edge", "schema", "contracts"]
 categories = ["embedded", "no-std"]
 
@@ -23,6 +23,9 @@ linkable = ["alloc", "serde_json", "aimdb-core", "dep:aimdb-derive"]
 simulatable = ["rand", "aimdb-core"]
 migratable = ["alloc", "serde_json", "dep:aimdb-derive"]
 observable = ["alloc", "aimdb-core"]
+# Moved behind a feature for tier symmetry with the other wire contracts
+# (design 041 §3.4). A pure trait — no dependencies of its own.
+settable = []
 
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive"] }

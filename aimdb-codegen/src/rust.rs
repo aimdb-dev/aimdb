@@ -132,10 +132,17 @@ pub fn generate_cargo_toml(state: &ArchitectureState) -> String {
         .iter()
         .any(|r| r.serialization.as_ref() == Some(&SerializationType::Postcard));
     let has_observable = state.records.iter().any(|r| r.observable.is_some());
+    let has_settable = state
+        .records
+        .iter()
+        .any(|r| r.fields.iter().any(|f| f.settable));
 
     let mut data_contracts_features = Vec::new();
     if has_non_custom_ser {
         data_contracts_features.push("\"linkable\"");
+    }
+    if has_settable {
+        data_contracts_features.push("\"settable\"");
     }
 
     let dc_features_str = if data_contracts_features.is_empty() {

@@ -20,6 +20,13 @@ tokio = { version = "1.40", features = ["sync", "rt", "time", "macros"] }
 # Error handling
 thiserror = "1.0"
 
+# Optional: Settable::set (feature `data-contracts`) for the `set_value` family.
+# Dependency direction stays contracts -> sync; the contracts crate gains no
+# `sync` feature (design 041 §3.4).
+aimdb-data-contracts = { path = "../aimdb-data-contracts", version = "0.2.0", optional = true, default-features = false, features = [
+    "settable",
+] }
+
 # For type erasure and Any
 [dev-dependencies]
 # Testing dependencies
@@ -32,6 +39,9 @@ default = []
 
 # Enable tracing for debugging
 tracing = ["aimdb-core/tracing"]
+
+# SyncProducer::set_value / try_set_value / set_value_at (design 041 §3.4)
+data-contracts = ["dep:aimdb-data-contracts"]
 
 [package.metadata.docs.rs]
 all-features = true

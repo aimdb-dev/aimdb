@@ -148,7 +148,10 @@ pub trait SchemaType: Sized {
 
 /// Construct a schema instance from its primary value.
 ///
-/// This defines the canonical way to create a new reading/measurement.
+/// This defines the canonical way to create a new reading/measurement — the
+/// write counterpart to [`Observable::signal`]'s read projection. The verb it
+/// unlocks is `SyncProducer::set_value` in `aimdb-sync` (design 041 §3.4).
+#[cfg(feature = "settable")]
 pub trait Settable: SchemaType {
     /// The primary value type (e.g., `f32` for temperature)
     type Value;

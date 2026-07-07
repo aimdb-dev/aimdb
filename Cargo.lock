@@ -282,6 +282,7 @@ name = "aimdb-sync"
 version = "0.5.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-tokio-adapter",
  "serde",
  "serde_json",
