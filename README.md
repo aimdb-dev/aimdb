@@ -39,15 +39,15 @@ AimDB is not a storage engine. It's a typed data plane where the Rust type *is* 
 
 ## Why AimDB exists
 
-Distributed systems spend most of their complexity budget translating between layers. IDLs, codegen, serialization, schema registries and glue services. AimDB removes that layer by making **the Rust type the contract**: defined once, compiled unchanged from a `no_std` microcontroller to the browser.
+Most of a distributed system's complexity is translation: IDLs, codegen, serialization glue, schema registries. AimDB deletes that layer by making **the Rust type the contract** — defined once, compiled unchanged from a `no_std` microcontroller to the browser.
 
 - **One type, every tier.** The same struct compiles for firmware and cloud. No conversion layer between them.
 - **The buffer defines how data moves.** No manual queue wiring, no separate transport config.
 - **No untyped boundaries.** Capabilities, like streaming, migration, observability and connectors, are unlocked by traits.
 
-### The Evidence
+### The receipts
 
-Everything here is backed by code, tests or committed benchmarks — not roadmap:
+None of this is roadmap. Every claim is backed by code, tests or committed benchmarks:
 
 - **Data contracts as schema** → the Rust type *is* the wire contract. No IDL, no codegen, [CI cross-compiles](Makefile) unchanged from Cortex-M to WASM.
 - **Typed data migrations** → [`migration_chain!`](aimdb-data-contracts/src/migratable.rs) const-validates the chain and works `no_std`, so old and new nodes coexist on the wire.
@@ -103,10 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
     });
 
-    // `.run()` builds the database, collects every producer/consumer/transform
-    // future, and drives them all on a single `FuturesUnordered`. It blocks
-    // until shutdown. For programmatic access to the `AimDb` handle, call
-    // `.build().await?` directly — it returns `(AimDb, AimDbRunner)`.
+    // Build the db and drive every source/tap future until shutdown.
     builder.run().await?;
     Ok(())
 }
@@ -150,18 +147,18 @@ Deep dives: [source/tap/transform](https://aimdb.dev/blog/source-tap-transform) 
 
 ## Data contracts: one method per capability
 
-A capability trait is a compile-time promise about a schema type. Each one is opt-in and type-checked: implement it, and **exactly one method** becomes available on the registrar. The **tier** column says whether the capability may exist in a production binary.
+Every capability is an opt-in trait on your schema type: implement it and **exactly one method** appears on the registrar.
 
 | Contract | Implement when… | Verb it unlocks | Tier |
 | --- | --- | --- | --- |
-| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the type crosses a per-URL byte boundary (MQTT/KNX/serial/UDS) | `.linked_from(url)` / `.linked_to(url)` (`#[derive(Linkable)]` for JSON) | wire (prod) |
-| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | the type streams as schema-named JSON (browser/WASM) | ws-connector `.register::<T>()` | wire (prod) |
+| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the record is mirrored to/from an endpoint (MQTT, KNX, serial, UDS…) | `.linked_from(url)` / `.linked_to(url)` (`#[derive(Linkable)]` for JSON) | wire (prod) |
+| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | the record streams to browsers as schema-named JSON | ws-connector `.register::<T>()` | wire (prod) |
 | [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | the schema evolved across versions | `migration_chain!` | wire (prod) |
-| `Settable` | callers outside the AimDB thread set the record from a primitive | `SyncProducer::set_value(v)` | wire (prod) |
-| `Observable` | the type carries a domain signal worth watching | `.observe()` → live signal metrics (last/min/max/mean on `record.list`/`record.get`) | introspection (prod, optional) |
+| `Settable` | sync code outside AimDB sets the value | `SyncProducer::set_value(v)` | wire (prod) |
+| `Observable` | the value is worth watching in production | `.observe()` → live last/min/max/mean on `record.list`/`record.get` | introspection (prod, optional) |
 | `Simulatable` | the type can generate realistic synthetic data | `.simulate(profile, rng)` | **dev-only — never ships in prod** |
 
-`Simulatable` is the one exception to "opt-in, always safe": it lives behind the `simulatable` feature (never a default), and sim-to-real selection is a compile-time `#[cfg]` in your app —
+`Simulatable` is the odd one out: it lives behind the `simulatable` feature (never a default) and switching from simulated to real data is one `#[cfg]` in your app:
 
 ```rust
 builder.configure::<Temperature>(KEY, |reg| {
@@ -172,9 +169,9 @@ builder.configure::<Temperature>(KEY, |reg| {
 });
 ```
 
-— so a production build with `sim` off carries zero simulation code: no `T::simulate` impls, no `rand`, nothing to audit. CI proves it (`rand` is the tracer: `cargo tree -e normal -i rand` on the production feature set must come up empty).
+Build with `sim` off and the simulation code is *gone* — no `T::simulate` impls, no `rand`, nothing to audit.
 
-**Old and new nodes coexist.** Migration steps are typed and bidirectional and `migration_chain!` validates the whole chain at compile time. The [roundtrip tests](aimdb-data-contracts/tests/migration_roundtrip.rs) exercise upgrade *and* downgrade across multi-step chains. This works `no_std`: an MCU can ingest a payload one schema version behind its own contract or downgrade its output for an older peer.
+**Old and new nodes coexist.** Migration steps are typed and bidirectional and `migration_chain!` checks the whole chain at compile time — [roundtrip tests](aimdb-data-contracts/tests/migration_roundtrip.rs) cover upgrade *and* downgrade across multi-step chains. It's `no_std` too: even an MCU can accept a payload one schema version behind or downgrade its output for an older peer.
 
 Deep dive: [data contracts](https://aimdb.dev/blog/data-contracts-deep-dive)
 
@@ -195,7 +192,7 @@ A record is written by a `Source`, lands in a typed `Buffer` and fans out to in-
                 └──────────────┘ ───►  Link ──► MQTT / KNX / WS / UDS / serial
 ```
 
-The Rust type system enforces correctness at compile time, buffer semantics enforce flow guarantees at runtime and connectors wire to your infrastructure without an integration layer. The same code compiles for MCU, edge, cloud or browser — see [Platform Support](#platform-support) below.
+Types check correctness at compile time, buffers enforce flow semantics at runtime and connectors bridge to your infrastructure, with no integration layer in between. The same code compiles for MCU, edge, cloud or browser — see [Platform Support](#platform-support) below.
 
 ---
 
