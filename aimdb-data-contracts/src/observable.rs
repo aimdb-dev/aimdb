@@ -55,6 +55,11 @@ where
     /// Feed `T::signal()` into the record's signal gauge (last/min/max/mean),
     /// visible via `record.list` / `record.get` / stage profiling.
     ///
+    /// Recording requires `aimdb-core`'s `observability` feature: without it
+    /// [`RecordRegistrar::signal_gauge`] hands back an inert gauge and this
+    /// tap compiles and runs but records nothing. `.log()` does not depend on
+    /// that feature.
+    ///
     /// Bounded `T::Signal: Into<f64>` here (not on the trait), so `f32`/`i32`/
     /// `u32` signals qualify while a type with an exotic signal can still
     /// implement `Observable` and write its own tap.

@@ -171,7 +171,7 @@ pub trait Settable: SchemaType {
 /// Project a schema type onto a numeric domain signal.
 ///
 /// The trait's kernel is the numeric projection: implement it, call
-/// [`ObservableRegistrarExt::observe`](observable::ObservableRegistrarExt::observe),
+/// [`ObservableRegistrarExt::observe`],
 /// and the signal is folded into live last/min/max/mean statistics that surface
 /// on `record.list` / `record.get` and stage profiling. The signal can also feed
 /// threshold checks, alerting, and aggregation.
@@ -179,6 +179,23 @@ pub trait Settable: SchemaType {
 /// Presentation is not part of the trait: `.log(node_id)` (also on the ext
 /// trait) formats a human-readable line from `Debug` +
 /// [`SIGNAL`](Observable::SIGNAL)/[`UNIT`](Observable::UNIT).
+///
+/// # Feature layering
+///
+/// Three layers, each useful without the next:
+///
+/// 1. **This trait** — always compiled, no features. [`signal()`](Observable::signal)
+///    plus the `SIGNAL`/`UNIT` labels are enough for hand-wired `.tap()`s,
+///    threshold checks, and generic code over `T: Observable`.
+/// 2. **`observable` (this crate)** — unlocks the registrar verbs `.observe()`
+///    and `.log()`. Gated only because the ext trait needs `alloc` and
+///    `aimdb-core`.
+/// 3. **`observability` (`aimdb-core`)** — the metrics backend. When it is off,
+///    `.observe()` still compiles and runs but its gauge is inert: updates are
+///    no-ops and nothing surfaces on `record.list` / `record.get` (see
+///    `RecordRegistrar::signal_gauge`). `.log()` is unaffected. This lets
+///    constrained targets ship `Observable` contracts while compiling the
+///    metrics cost away.
 pub trait Observable: SchemaType {
     /// The numeric type of the signal (e.g., `f32`, `f64`, `i32`).
     ///
