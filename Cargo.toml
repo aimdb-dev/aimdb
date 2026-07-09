@@ -32,6 +32,7 @@ members = [
     "examples/remote-access-demo",
     "examples/weather-mesh-demo/weather-mesh-common",
     "examples/weather-mesh-demo/weather-hub",
+    "examples/weather-mesh-demo/weather-station",
     "examples/weather-mesh-demo/weather-station-alpha",
     "examples/weather-mesh-demo/weather-station-beta",
     "examples/weather-mesh-demo/weather-station-gamma",

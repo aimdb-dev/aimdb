@@ -4520,6 +4520,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "weather-station"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-data-contracts",
+ "aimdb-mqtt-connector",
+ "aimdb-tokio-adapter",
+ "chrono",
+ "clap",
+ "reqwest",
+ "rumqttc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "weather-mesh-common",
+]
+
+[[package]]
 name = "weather-station-alpha"
 version = "0.1.0"
 dependencies = [
