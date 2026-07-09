@@ -4501,6 +4501,7 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-mqtt-connector",
+ "aimdb-tcp-connector",
  "aimdb-tokio-adapter",
  "tokio",
  "tracing",

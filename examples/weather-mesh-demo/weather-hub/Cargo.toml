@@ -29,6 +29,11 @@ aimdb-data-contracts = { path = "../../../aimdb-data-contracts", features = [
 aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", features = [
     "tokio-runtime",
 ] }
+# AimX server for mesh mode: `aimdb record list --url tcp://…:7433`
+# (design 042 §7). Unused in the local demo path.
+aimdb-tcp-connector = { path = "../../../aimdb-tcp-connector", features = [
+    "tokio-runtime",
+] }
 
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

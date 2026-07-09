@@ -6,10 +6,14 @@ use weather_mesh_common::{DewPoint, Humidity, HumidityKey, TempKey, Temperature}
 #[tokio::main]
 async fn main() -> aimdb_core::DbResult<()> {
     // Initialize logging
+    // `aimdb` is the runtime-context log target (ctx.log() via the adapter) —
+    // without it in the fallback filter, contract-violation reports from the
+    // mesh deserializers are invisible. The docker-compose demo always sets
+    // RUST_LOG explicitly, so this only affects bare `cargo run`.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "weather_hub=info,aimdb_core=info".into()),
+                .unwrap_or_else(|_| "weather_hub=info,aimdb_core=info,aimdb=info".into()),
         )
         .init();
 
@@ -38,6 +42,16 @@ async fn main() -> aimdb_core::DbResult<()> {
         Some(v) => {
             let slots: u16 = v.parse().unwrap_or(64);
             tracing::info!("🕸️  Mesh mode: {} slots", slots);
+
+            // AimX introspection endpoint — the `aimdb record list --url
+            // tcp://…:7433` half of the demo loop (design 042 §7). Read-only
+            // (the default policy); loopback unless AIMX_BIND says otherwise
+            // (the hosted deployment fronts it as aimdb.dev:7433).
+            let aimx_bind =
+                std::env::var("AIMX_BIND").unwrap_or_else(|_| "127.0.0.1:7433".to_string());
+            tracing::info!("🔌 AimX endpoint: tcp://{}", aimx_bind);
+            builder = builder.with_connector(aimdb_tcp_connector::TcpServer::new(&aimx_bind));
+
             configure_mesh(&mut builder, slots);
         }
         None => configure_demo(&mut builder),
@@ -116,8 +130,20 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
         builder.configure::<Temperature>(temp_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
+            // JSON codec for AimX record.get/subscribe — the dashboard and
+            // `aimdb record get` read the mesh through this.
+            reg.with_remote_access();
+            let key_name = temp_key.as_str();
             reg.link_from(&temp_topic)
-                .with_deserializer(|_ctx, data: &[u8]| Temperature::from_bytes(data))
+                .with_deserializer(move |ctx, data: &[u8]| {
+                    Temperature::from_bytes(data).map_err(|e| {
+                        // Design 042 §9: schema errors are a feature — a
+                        // malformed payload is visibly rejected at the hub.
+                        ctx.log()
+                            .error(&format!("{key_name}: rejected payload: {e}"));
+                        e
+                    })
+                })
                 .finish();
         });
 
@@ -126,8 +152,16 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
         builder.configure::<Humidity>(humidity_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
+            reg.with_remote_access();
+            let key_name = humidity_key.as_str();
             reg.link_from(&humidity_topic)
-                .with_deserializer(|_ctx, data: &[u8]| Humidity::from_bytes(data))
+                .with_deserializer(move |ctx, data: &[u8]| {
+                    Humidity::from_bytes(data).map_err(|e| {
+                        ctx.log()
+                            .error(&format!("{key_name}: rejected payload: {e}"));
+                        e
+                    })
+                })
                 .finish();
         });
 
@@ -137,6 +171,7 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
         builder.configure::<DewPoint>(dew_point_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
+            reg.with_remote_access();
             reg.transform_join(|b| {
                 b.input::<Temperature>(temp_key)
                     .input::<Humidity>(humidity_key)
