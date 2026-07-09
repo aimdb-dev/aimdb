@@ -298,14 +298,11 @@ dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
  "aimdb-tokio-adapter",
- "defmt 1.0.1",
  "embassy-net",
  "embedded-io-async 0.7.0",
  "serde",
  "serde_json",
- "thiserror 2.0.17",
  "tokio",
- "tracing",
 ]
 
 [[package]]

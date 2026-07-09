@@ -17,7 +17,6 @@ std = [
     "aimdb-core/alloc",
     "aimdb-core/connector-session",
     "aimdb-core/remote",
-    "thiserror",
 ]
 
 tokio-runtime = [
@@ -38,8 +37,8 @@ embassy-runtime = [
     "dep:embedded-io-async",
 ]
 
-tracing = ["dep:tracing", "aimdb-core/tracing"]
-defmt = ["dep:defmt", "aimdb-core/defmt"]
+tracing = ["aimdb-core/tracing"]
+defmt = ["aimdb-core/defmt"]
 
 _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
 
@@ -47,16 +46,12 @@ _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
 
 tokio = { workspace = true, optional = true, features = ["net", "io-util"] }
-thiserror = { workspace = true, optional = true }
 
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 embassy-net = { workspace = true, optional = true }
 embedded-io-async = { workspace = true, optional = true }
 
 aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
-
-tracing = { workspace = true, optional = true }
-defmt = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net"] }
