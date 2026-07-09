@@ -60,7 +60,16 @@ struct AppProfile {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    // Display-format errors (revoked slot, bad profile, …) instead of the
+    // default Debug dump — these messages are the failure UX (design 042 §9).
+    if let Err(e) = run().await {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
