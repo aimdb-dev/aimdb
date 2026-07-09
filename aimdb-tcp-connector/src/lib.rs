@@ -28,7 +28,7 @@ pub const DEFAULT_SCHEME: &str = "tcp";
 
 /// Mark each record named in the policy's writable set as writable, so
 /// `record.list` advertises the writable flag. The dispatch also enforces it.
-#[cfg(feature = "tokio-runtime")]
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote::AimxConfig) {
     for key in config.security_policy.writable_records() {
         if let Some(id) = db.inner().resolve_str(&key) {
@@ -43,7 +43,11 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
 pub use tokio_transport::{TcpClient, TcpConnection, TcpDialer, TcpListener, TcpServer};
 
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_transport::{TcpClient as EmbassyTcpClient, TcpConnection as EmbassyTcpConnection};
+pub use embassy_transport::{
+    TcpClient as EmbassyTcpClient, TcpConnection as EmbassyTcpConnection,
+    TcpDialer as EmbassyTcpDialer, TcpListener as EmbassyTcpListener,
+    TcpServer as EmbassyTcpServer,
+};
 #[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub use tokio_transport::{
     TcpClient as TokioTcpClient, TcpConnection as TokioTcpConnection, TcpDialer, TcpListener,
@@ -51,4 +55,4 @@ pub use tokio_transport::{
 };
 
 #[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_transport::{TcpClient, TcpConnection};
+pub use embassy_transport::{TcpClient, TcpConnection, TcpDialer, TcpListener, TcpServer};
