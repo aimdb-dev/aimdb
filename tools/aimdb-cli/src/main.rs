@@ -4,6 +4,8 @@
 //! AimDB instances via the AimX remote access protocol (v2 NDJSON wire).
 
 use clap::{Parser, Subcommand};
+#[cfg(feature = "join")]
+use commands::join::JoinCommand;
 use commands::{
     generate::GenerateCommand, graph::GraphCommand, instance::InstanceCommand,
     record::RecordCommand, watch::WatchCommand,
@@ -54,6 +56,11 @@ enum Command {
     /// Generate architecture artefacts from state.toml
     #[command(name = "generate")]
     Generate(GenerateCommand),
+
+    /// Join an AimDB deployment via its provisioning endpoint (design 043)
+    #[cfg(feature = "join")]
+    #[command(name = "join")]
+    Join(JoinCommand),
 }
 
 #[tokio::main]
@@ -73,6 +80,8 @@ async fn main() {
         Command::Graph(cmd) => cmd.execute(endpoint).await,
         Command::Watch(cmd) => cmd.execute(endpoint).await,
         Command::Generate(cmd) => cmd.execute().await,
+        #[cfg(feature = "join")]
+        Command::Join(cmd) => cmd.execute().await,
     };
 
     if let Err(e) = result {

@@ -53,9 +53,21 @@ chrono = "0.4"
 # Optional: YAML output
 serde_yaml = { version = "0.9", optional = true }
 
+# `join` only (design 043): HTTP client for the provisioning endpoint + the
+# GitHub device flow, and TOML for the station profile. rustls so released
+# binaries don't depend on a system OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+], optional = true }
+toml = { version = "0.8", optional = true }
+
 [features]
-default = []
+default = ["join"]
 yaml = ["serde_yaml"]
+# `aimdb join <provisioning-url>` — admit this machine to a deployment
+# (design 043). On by default in released binaries.
+join = ["dep:reqwest", "dep:toml"]
 # Add the serial transport to the endpoint resolver, so `--connect serial://…`
 # works. Off by default (pulls tokio-serial → libudev on Linux).
 transport-serial = ["aimdb-client/transport-serial"]

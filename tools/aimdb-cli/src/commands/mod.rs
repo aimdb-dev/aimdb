@@ -5,6 +5,8 @@
 pub mod generate;
 pub mod graph;
 pub mod instance;
+#[cfg(feature = "join")]
+pub mod join;
 pub mod record;
 pub mod watch;
 
