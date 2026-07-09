@@ -29,10 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
     });
 
-    // `.run()` builds the database, collects every producer/consumer/transform
-    // future, and drives them all on a single `FuturesUnordered`. It blocks
-    // until shutdown. For programmatic access to the `AimDb` handle, call
-    // `.build().await?` directly — it returns `(AimDb, AimDbRunner)`.
+    // Build the db and drive every source/tap future until shutdown.
     builder.run().await?;
     Ok(())
 }

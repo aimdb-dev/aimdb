@@ -1,12 +1,12 @@
 [package]
 name = "aimdb-data-contracts"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Trait definitions for AimDB data contracts: SchemaType, Streamable, Observable, Linkable, Simulatable, Migratable"
+description = "Trait definitions for AimDB data contracts: SchemaType, Streamable, Observable, Linkable, Simulatable, Migratable, Settable"
 keywords = ["aimdb", "iot", "edge", "schema", "contracts"]
 categories = ["embedded", "no-std"]
 
@@ -14,30 +14,42 @@ categories = ["embedded", "no-std"]
 default = ["std"]
 alloc = ["serde/alloc"]
 std = ["alloc", "serde/std", "serde_json?/std"]
-linkable = ["alloc", "serde_json"]
-simulatable = ["rand"]
+# The ext trait needs core's registrar/connector-builder types (same wiring as
+# `observable`); `dep:aimdb-derive` powers `#[derive(Linkable)]`.
+linkable = ["alloc", "serde_json", "aimdb-core", "dep:aimdb-derive"]
+# Dev-tier — never a default feature. The ext trait needs core's registrar,
+# same coupling `observable` has. `rand` is the tracer CI uses to prove a
+# production graph is sim-free (`make check-no-sim`).
+simulatable = ["rand", "aimdb-core"]
 migratable = ["alloc", "serde_json", "dep:aimdb-derive"]
 observable = ["alloc", "aimdb-core"]
+# Feature-gated for tier symmetry with the other wire contracts. A pure trait —
+# no dependencies of its own.
+settable = []
 
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 
-# migration_chain! proc-macro (build-time only; no target/runtime/no_std
-# impact — see aimdb-derive::migration_chain). No cycle: aimdb-derive emits
-# token paths to this crate but does not depend on it.
-aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
+# migration_chain! + #[derive(Linkable)] proc-macros (build-time only; no
+# target/runtime/no_std impact — see aimdb-derive). No cycle: aimdb-derive
+# emits token paths to this crate but does not depend on it.
+aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
 
-# Optional dependencies for observable feature (log_tap function)
-# Note: aimdb-core requires alloc feature for core functionality
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", optional = true, default-features = false, features = [
+# Optional: shared by the `linkable`, `observable`, and `simulatable` registrar
+# ext traits (RecordRegistrar/RuntimeContext). 1.2.0 is the true minimum: the
+# `observable` feature's `.observe()` calls `RecordRegistrar::signal_gauge`,
+# added in 1.2.0. Note: aimdb-core requires the alloc feature for core
+# functionality.
+aimdb-core = { version = "1.2.0", path = "../aimdb-core", optional = true, default-features = false, features = [
     "alloc",
 ] }
+# RNG is caller-supplied, so we need only the `Rng`/`RngExt` traits and the
+# always-available `SmallRng` — no `std_rng`.
 [dependencies.rand]
 version = "0.10.1"
 optional = true
 default-features = false
-features = ["std_rng"]
 
 [dev-dependencies]
 serde_json = "1.0"

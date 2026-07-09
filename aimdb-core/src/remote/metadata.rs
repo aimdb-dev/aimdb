@@ -86,6 +86,14 @@ pub struct RecordMetadata {
     #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_profiling: Option<Vec<crate::profiling::StageProfilingInfo>>,
+
+    // ===== Signal gauges (feature-gated) =====
+    /// Per-record domain-signal statistics (last/min/max/mean) fed by
+    /// `Observable::observe()`, if the `observability` feature is enabled and any
+    /// gauge has been registered.
+    #[cfg(feature = "observability")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal_stats: Option<Vec<crate::profiling::SignalStatsInfo>>,
 }
 
 impl RecordMetadata {
@@ -139,6 +147,8 @@ impl RecordMetadata {
             occupancy: None,
             #[cfg(feature = "observability")]
             stage_profiling: None,
+            #[cfg(feature = "observability")]
+            signal_stats: None,
         }
     }
 
@@ -166,6 +176,15 @@ impl RecordMetadata {
     ) -> Self {
         if !stages.is_empty() {
             self.stage_profiling = Some(stages);
+        }
+        self
+    }
+
+    /// Attaches a signal-gauge snapshot (observability feature only).
+    #[cfg(feature = "observability")]
+    pub fn with_signal_stats(mut self, signals: Vec<crate::profiling::SignalStatsInfo>) -> Self {
+        if !signals.is_empty() {
+            self.signal_stats = Some(signals);
         }
         self
     }

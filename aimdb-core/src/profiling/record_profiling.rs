@@ -2,7 +2,7 @@
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use crate::profiling::StageMetrics;
+use crate::profiling::{SignalStats, StageMetrics};
 use crate::StageKind;
 
 /// One registered stage: its shared metrics plus an optional human-readable name
@@ -24,6 +24,18 @@ impl StageEntry {
     }
 }
 
+/// One registered signal gauge: its label/unit plus the shared statistics that
+/// `.observe()` folds `Observable::signal()` into.
+#[derive(Debug)]
+pub struct SignalGauge {
+    /// Signal label (`Observable::SIGNAL`, defaults to the schema name).
+    pub name: String,
+    /// Unit label (`Observable::UNIT`, e.g. `"°C"`).
+    pub unit: String,
+    /// Shared cumulative statistics (last/min/max/mean).
+    pub stats: Arc<SignalStats>,
+}
+
 /// All stage profiling metrics for a single record, indexed by registration order
 /// within each stage kind (`sources[0]` is the first `.source()`, `taps[1]` the
 /// second `.tap()`, etc.).
@@ -33,6 +45,7 @@ pub struct RecordProfilingMetrics {
     taps: Vec<StageEntry>,
     links: Vec<StageEntry>,
     transforms: Vec<StageEntry>,
+    signals: Vec<SignalGauge>,
 }
 
 impl RecordProfilingMetrics {
@@ -41,12 +54,13 @@ impl RecordProfilingMetrics {
         Self::default()
     }
 
-    /// `true` if no stages have been registered.
+    /// `true` if no stages and no signal gauges have been registered.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
             && self.taps.is_empty()
             && self.links.is_empty()
             && self.transforms.is_empty()
+            && self.signals.is_empty()
     }
 
     /// Registers a new source stage; returns its index and shared metrics handle.
@@ -120,6 +134,23 @@ impl RecordProfilingMetrics {
         &self.transforms
     }
 
+    /// Registers a new signal gauge; returns its shared stats handle. Called by
+    /// `RecordRegistrar::signal_gauge` (which `.observe()` builds on).
+    pub fn push_signal_gauge(&mut self, name: &str, unit: &str) -> Arc<SignalStats> {
+        let stats = Arc::new(SignalStats::new());
+        self.signals.push(SignalGauge {
+            name: String::from(name),
+            unit: String::from(unit),
+            stats: stats.clone(),
+        });
+        stats
+    }
+
+    /// All registered signal gauges, in registration order.
+    pub fn signals(&self) -> &[SignalGauge] {
+        &self.signals
+    }
+
     /// Assigns a name to a previously registered stage. No-op if `idx` is out of range.
     pub fn set_stage_name(&mut self, kind: StageKind, idx: usize, name: &str) {
         let vec = match kind {
@@ -133,7 +164,7 @@ impl RecordProfilingMetrics {
         }
     }
 
-    /// Resets every stage's counters.
+    /// Resets every stage's counters and signal-gauge statistics.
     pub fn reset_all(&self) {
         for e in self
             .sources
@@ -143,6 +174,9 @@ impl RecordProfilingMetrics {
             .chain(&self.transforms)
         {
             e.metrics.reset();
+        }
+        for g in &self.signals {
+            g.stats.reset();
         }
     }
 }

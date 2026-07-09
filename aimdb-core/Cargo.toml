@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-core"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
@@ -68,7 +68,7 @@ test-utils = ["std"]
 
 [dependencies]
 # Derive macros (optional)
-aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
+aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
@@ -116,6 +116,9 @@ spin = { version = "0.9", default-features = false, features = ["mutex", "spin_m
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 
 [dev-dependencies]
+# Serde-attribute roundtrip tests (src/profiling/info.rs) must run in every
+# feature config, including ones where the optional `serde_json` dep is off.
+serde_json = { workspace = true }
 # For no_std testing
 heapless = "0.9.1"
 # For async testing (`sync` covers tokio::sync::mpsc in tests/session_engine.rs,

@@ -440,6 +440,33 @@ where
         self
     }
 
+    /// Registers a signal gauge on this record and returns a handle to feed it.
+    ///
+    /// Values pushed via [`SignalGaugeHandle::update`](crate::SignalGaugeHandle::update)
+    /// fold into per-record last/min/max/mean statistics that surface on
+    /// `record.list` / `record.get` and stage profiling. This is the core hook
+    /// behind `aimdb-data-contracts`' `Observable::observe()`.
+    ///
+    /// Always available, mirroring [`with_name`](Self::with_name): when the
+    /// `observability` feature is disabled it returns an inert handle whose
+    /// `update` is a no-op, so callers never `#[cfg]` on core's features.
+    pub fn signal_gauge(
+        &mut self,
+        name: &'static str,
+        unit: &'static str,
+    ) -> crate::signal::SignalGaugeHandle {
+        #[cfg(feature = "observability")]
+        {
+            let stats = self.rec.profiling_mut().push_signal_gauge(name, unit);
+            crate::signal::SignalGaugeHandle::live(stats)
+        }
+        #[cfg(not(feature = "observability"))]
+        {
+            let _ = (name, unit);
+            crate::signal::SignalGaugeHandle::inert()
+        }
+    }
+
     /// Registers a producer service for this record type.
     ///
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext)

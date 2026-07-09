@@ -235,12 +235,7 @@ examples/                # Demo applications
 
 ## Next Development Areas
 
-See `.github/copilot-instructions.md` for current implementation status and priorities:
-
-- **Kafka Connector** - Kafka integration using `rdkafka`
-- **DDS Connector** - DDS protocol support
-- **CLI Tools** - Introspection, monitoring, debugging commands
-- **Performance** - Benchmarks and profiling infrastructure
+See the [GitHub issues](https://github.com/aimdb-dev/aimdb/issues) for planned work and open feature requests.
 
 ## Getting Help
 

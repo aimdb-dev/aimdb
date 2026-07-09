@@ -16,7 +16,11 @@ weather-mesh-common = { path = "../weather-mesh-common", features = [
     "migratable",
 ] }
 aimdb-core = { path = "../../../aimdb-core", features = ["derive"] }
-aimdb-tokio-adapter = { path = "../../../aimdb-tokio-adapter" }
+# `observability` makes `.observe()`'s signal gauge live; without it core hands
+# back an inert handle and no signal stats surface on record.list/record.get.
+aimdb-tokio-adapter = { path = "../../../aimdb-tokio-adapter", features = [
+    "observability",
+] }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", features = [
     "linkable",
     "observable",

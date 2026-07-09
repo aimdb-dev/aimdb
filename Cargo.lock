@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "aimdb-derive",
  "anyhow",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-derive",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-derive"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -280,9 +280,10 @@ dependencies = [
 
 [[package]]
 name = "aimdb-sync"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-tokio-adapter",
  "serde",
  "serde_json",
@@ -2531,6 +2532,7 @@ name = "mqtt-connector-demo-common"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "defmt 1.0.1",
  "serde",
  "serde_json",
@@ -3726,6 +3728,7 @@ name = "tokio-mqtt-connector-demo"
 version = "1.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
  "mqtt-connector-demo-common",
@@ -4447,7 +4450,6 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
- "chrono",
  "rand 0.10.1",
  "tokio",
  "tracing",

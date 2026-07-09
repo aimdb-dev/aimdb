@@ -132,10 +132,17 @@ pub fn generate_cargo_toml(state: &ArchitectureState) -> String {
         .iter()
         .any(|r| r.serialization.as_ref() == Some(&SerializationType::Postcard));
     let has_observable = state.records.iter().any(|r| r.observable.is_some());
+    let has_settable = state
+        .records
+        .iter()
+        .any(|r| r.fields.iter().any(|f| f.settable));
 
     let mut data_contracts_features = Vec::new();
     if has_non_custom_ser {
         data_contracts_features.push("\"linkable\"");
+    }
+    if has_settable {
+        data_contracts_features.push("\"settable\"");
     }
 
     let dc_features_str = if data_contracts_features.is_empty() {
@@ -1009,54 +1016,18 @@ fn emit_observable_impl(rec: &RecordDef) -> Option<TokenStream> {
     let signal_type: syn::Type = syn::parse_str(&signal_field.field_type).ok()?;
     let signal_ident = format_ident!("{}", obs.signal_field);
 
-    let icon = &obs.icon;
     let unit = &obs.unit;
 
-    // Timestamp heuristic: first u64 field named timestamp/computed_at/fetched_at
-    let timestamp_names = ["timestamp", "computed_at", "fetched_at"];
-    let timestamp_field = rec
-        .fields
-        .iter()
-        .find(|f| f.field_type == "u64" && timestamp_names.contains(&f.name.as_str()));
-
-    let format_log_body = if let Some(ts) = timestamp_field {
-        let ts_ident = format_ident!("{}", ts.name);
-        quote! {
-            alloc::format!(
-                "{} [{}] {}: {:.1}{} at {}",
-                Self::ICON,
-                node_id,
-                Self::NAME,
-                self.signal(),
-                Self::UNIT,
-                self.#ts_ident,
-            )
-        }
-    } else {
-        quote! {
-            alloc::format!(
-                "{} [{}] {}: {:.1}{}",
-                Self::ICON,
-                node_id,
-                Self::NAME,
-                self.signal(),
-                Self::UNIT,
-            )
-        }
-    };
-
+    // Observable is a kernel-only trait: the numeric projection + UNIT label.
+    // `SIGNAL` defaults to the schema name; presentation (icons, log formatting)
+    // is not part of the trait, so nothing else is emitted.
     Some(quote! {
         impl Observable for #struct_name {
             type Signal = #signal_type;
-            const ICON: &'static str = #icon;
             const UNIT: &'static str = #unit;
 
             fn signal(&self) -> #signal_type {
                 self.#signal_ident
-            }
-
-            fn format_log(&self, node_id: &str) -> alloc::string::String {
-                #format_log_body
             }
         }
     })

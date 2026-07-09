@@ -71,11 +71,23 @@ pub use streamable::Streamable;
 #[cfg(feature = "linkable")]
 mod linkable;
 
+#[cfg(feature = "linkable")]
+pub use linkable::LinkableRegistrarExt;
+
+/// `#[derive(Linkable)]` — see [`Linkable`] and `aimdb_derive::Linkable`'s docs.
+///
+/// Re-exported under the same name as the trait, following the trait+derive
+/// pairing convention (`serde::Serialize`, `aimdb_derive::RecordKey`) — proc-macro
+/// derive names live in a separate namespace from traits, so this is not a
+/// conflict.
+#[cfg(feature = "linkable")]
+pub use aimdb_derive::Linkable;
+
 #[cfg(feature = "observable")]
 mod observable;
 
 #[cfg(feature = "observable")]
-pub use observable::log_tap;
+pub use observable::{log_tap, ObservableRegistrarExt};
 
 #[cfg(feature = "simulatable")]
 mod simulatable;
@@ -84,7 +96,7 @@ mod simulatable;
 mod migratable;
 
 #[cfg(feature = "simulatable")]
-pub use simulatable::{SimulationConfig, SimulationParams};
+pub use simulatable::{RandomWalkParams, SimProfile, Simulatable, SimulatableRegistrarExt};
 
 #[cfg(feature = "migratable")]
 pub use migratable::{MigrationChain, MigrationError, MigrationStep};
@@ -134,34 +146,12 @@ pub trait SchemaType: Sized {
     const VERSION: u32 = 1;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// SIMULATABLE SUPPORT (feature = "simulatable")
-// ═══════════════════════════════════════════════════════════════════
-
-/// Generate realistic test/simulation data.
-///
-/// This is an intrinsic capability of the schema type itself,
-/// not a policy decision. If a type can be simulated, implement this.
-#[cfg(feature = "simulatable")]
-pub trait Simulatable: SchemaType {
-    /// Generate a new sample with optional reference to previous value.
-    ///
-    /// # Parameters
-    /// - `config`: Simulation parameters (type-specific)
-    /// - `previous`: Optional reference to last generated value (for random walks, trends)
-    /// - `rng`: Random number generator
-    /// - `timestamp`: Unix timestamp in milliseconds
-    fn simulate<R: rand::Rng>(
-        config: &SimulationConfig,
-        previous: Option<&Self>,
-        rng: &mut R,
-        timestamp: u64,
-    ) -> Self;
-}
-
 /// Construct a schema instance from its primary value.
 ///
-/// This defines the canonical way to create a new reading/measurement.
+/// This defines the canonical way to create a new reading/measurement — the
+/// write counterpart to [`Observable::signal`]'s read projection. Implementing
+/// it unlocks the `SyncProducer::set_value` family in `aimdb-sync`.
+#[cfg(feature = "settable")]
 pub trait Settable: SchemaType {
     /// The primary value type (e.g., `f32` for temperature)
     type Value;
@@ -178,52 +168,51 @@ pub trait Settable: SchemaType {
 // OBSERVABLE SUPPORT
 // ═══════════════════════════════════════════════════════════════════
 
-/// Extract a signal value for observation.
+/// Project a schema type onto a numeric domain signal.
 ///
-/// Implement this trait to enable threshold checking, alerting,
-/// and other signal-based operations on your schema type.
+/// The trait's kernel is the numeric projection: implement it, call
+/// [`ObservableRegistrarExt::observe`],
+/// and the signal is folded into live last/min/max/mean statistics that surface
+/// on `record.list` / `record.get` and stage profiling. The signal can also feed
+/// threshold checks, alerting, and aggregation.
 ///
-/// The extracted signal can be used by node implementations to:
-/// - Check against configured thresholds
-/// - Trigger alerts when bounds are exceeded
-/// - Compute aggregations (mean, min, max)
-/// - Feed into monitoring systems
-/// - Format log output with `format_log()`
+/// Presentation is not part of the trait: `.log(node_id)` (also on the ext
+/// trait) formats a human-readable line from `Debug` +
+/// [`SIGNAL`](Observable::SIGNAL)/[`UNIT`](Observable::UNIT).
+///
+/// # Feature layering
+///
+/// Three layers, each useful without the next:
+///
+/// 1. **This trait** — always compiled, no features. [`signal()`](Observable::signal)
+///    plus the `SIGNAL`/`UNIT` labels are enough for hand-wired `.tap()`s,
+///    threshold checks, and generic code over `T: Observable`.
+/// 2. **`observable` (this crate)** — unlocks the registrar verbs `.observe()`
+///    and `.log()`. Gated only because the ext trait needs `alloc` and
+///    `aimdb-core`.
+/// 3. **`observability` (`aimdb-core`)** — the metrics backend. When it is off,
+///    `.observe()` still compiles and runs but its gauge is inert: updates are
+///    no-ops and nothing surfaces on `record.list` / `record.get` (see
+///    `RecordRegistrar::signal_gauge`). `.log()` is unaffected. This lets
+///    constrained targets ship `Observable` contracts while compiling the
+///    metrics cost away.
 pub trait Observable: SchemaType {
     /// The numeric type of the signal (e.g., `f32`, `f64`, `i32`).
     ///
-    /// Must be comparable and copyable for threshold checks.
+    /// Must be comparable and copyable for threshold checks. `.observe()`
+    /// additionally requires `Signal: Into<f64>` at its call site; a type with
+    /// an exotic signal can still implement `Observable` and write its own tap.
     type Signal: PartialOrd + Copy;
 
-    /// Icon/emoji for log output (e.g., "🌡️", "💧", "📊")
-    ///
-    /// Override this to provide a visual indicator for your data type.
-    const ICON: &'static str = "📊";
+    /// What the signal means, for metrics/UI labels (e.g. `"celsius"`).
+    /// Defaults to the schema name.
+    const SIGNAL: &'static str = Self::NAME;
 
-    /// Unit label for the signal (e.g., "°C", "%", "hPa")
-    ///
-    /// Override this to display the appropriate unit in log output.
+    /// Unit label for the signal (e.g. `"°C"`, `"%"`, `"hPa"`).
     const UNIT: &'static str = "";
 
     /// Extract the signal value from this instance.
     fn signal(&self) -> Self::Signal;
-
-    /// Format a log entry for this observation.
-    ///
-    /// The default implementation uses `Debug` formatting. Override this
-    /// for prettier, human-readable output.
-    ///
-    /// # Example output
-    /// ```text
-    /// 🌡️ [alpha] Temperature: 22.5°C at 1704326400000
-    /// 💧 [beta] Humidity: 65.3% at 1704326400000
-    /// ```
-    fn format_log(&self, node_id: &str) -> alloc::string::String
-    where
-        Self: core::fmt::Debug,
-    {
-        alloc::format!("{} [{}] {:?}", Self::ICON, node_id, self)
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -232,26 +221,25 @@ pub trait Observable: SchemaType {
 
 /// Types that can be serialized/deserialized for connector links.
 ///
-/// Implement this trait to enable `link_from` and `link_to` operations
-/// in AimDB connectors (MQTT, KNX, etc.). This provides the wire format
-/// for transporting schema types across network boundaries.
+/// Implement this trait, then call
+/// [`LinkableRegistrarExt::linked_from`](linkable::LinkableRegistrarExt::linked_from) /
+/// [`linked_to`](linkable::LinkableRegistrarExt::linked_to) to wire `link_from`
+/// / `link_to` in AimDB connectors (MQTT, KNX, etc.) with the codec defaulted to
+/// `from_bytes`/`to_bytes`. This provides the wire format for transporting
+/// schema types across network boundaries.
 ///
 /// # Example
 ///
-/// Not compiled: the snippet needs `aimdb-core`'s builder, which this crate
-/// only depends on under the `observable` feature — `linkable` alone has no
-/// core dependency.
+/// Not compiled: the snippet needs `aimdb-core`'s builder types in scope.
 ///
 /// ```rust,ignore
-/// use aimdb_data_contracts::Linkable;
+/// use aimdb_data_contracts::{Linkable, LinkableRegistrarExt};
 /// use my_app::Temperature;  // user-defined type implementing Linkable
 ///
 /// // In connector configuration:
 /// builder.configure::<Temperature>(NODE_ID, |reg| {
-///     reg.buffer(BufferCfg::SingleLatest)
-///         .link_from("mqtt://sensors/temperature")
-///         .with_deserializer(Temperature::from_bytes)
-///         .finish();
+///     reg.buffer(BufferCfg::SingleLatest);
+///     reg.linked_from("mqtt://sensors/temperature");
 /// });
 /// ```
 #[cfg(feature = "linkable")]

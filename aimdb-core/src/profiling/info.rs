@@ -4,7 +4,7 @@ use alloc::{string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 
-use crate::profiling::{RecordProfilingMetrics, StageEntry};
+use crate::profiling::{RecordProfilingMetrics, SignalGauge, StageEntry};
 
 /// A point-in-time snapshot of one execution stage's timing metrics.
 ///
@@ -29,6 +29,48 @@ pub struct StageProfilingInfo {
     pub min_time_ns: u64,
     /// Slowest recorded invocation, nanoseconds.
     pub max_time_ns: u64,
+}
+
+/// A point-in-time snapshot of one record's signal gauge (`.observe()`).
+///
+/// Carried in `RecordMetadata::signal_stats` so a record's live domain signal
+/// (last/min/max/mean) surfaces on `record.list`/`record.get` and the MCP tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignalStatsInfo {
+    /// Signal label (`Observable::SIGNAL`, defaults to the schema name).
+    pub signal: String,
+    /// Unit label (`Observable::UNIT`), omitted when empty.
+    ///
+    /// `default` matches the skip: `Observable::UNIT` defaults to `""`, so a
+    /// snapshot without a unit must deserialize (aimdb-client/aimdb-mcp read
+    /// this back from `record.list`/`record.get`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
+    /// Number of samples observed.
+    pub count: u64,
+    /// Most recent sample.
+    pub last: f64,
+    /// Smallest sample observed.
+    pub min: f64,
+    /// Largest sample observed.
+    pub max: f64,
+    /// Mean of all samples.
+    pub mean: f64,
+}
+
+impl SignalStatsInfo {
+    fn from_gauge(gauge: &SignalGauge) -> Self {
+        let s = &gauge.stats;
+        Self {
+            signal: gauge.name.clone(),
+            unit: gauge.unit.clone(),
+            count: s.count(),
+            last: s.last(),
+            min: s.min(),
+            max: s.max(),
+            mean: s.mean(),
+        }
+    }
 }
 
 impl StageProfilingInfo {
@@ -63,5 +105,41 @@ impl RecordProfilingMetrics {
             }
         }
         out
+    }
+
+    /// Returns a serializable snapshot of every registered signal gauge.
+    pub fn signal_snapshot(&self) -> Vec<SignalStatsInfo> {
+        self.signals()
+            .iter()
+            .map(SignalStatsInfo::from_gauge)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    /// `unit` is skipped when empty (`Observable::UNIT` defaults to `""`), so
+    /// the emitted JSON must deserialize back without it — aimdb-client and
+    /// aimdb-mcp read these snapshots from `record.list`/`record.get`.
+    #[test]
+    fn empty_unit_roundtrips() {
+        let info = SignalStatsInfo {
+            signal: "temperature".to_string(),
+            unit: String::new(),
+            count: 3,
+            last: 1.0,
+            min: 0.5,
+            max: 2.0,
+            mean: 1.2,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("unit"), "empty unit must be omitted: {json}");
+
+        let back: SignalStatsInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, info);
     }
 }

@@ -39,11 +39,21 @@ AimDB is not a storage engine. It's a typed data plane where the Rust type *is* 
 
 ## Why AimDB exists
 
-Distributed systems spend most of their complexity budget translating between layers. IDLs, codegen, serialization, schema registries and glue services. AimDB removes that layer by making **the Rust type the contract**: defined once, compiled unchanged from a `no_std` microcontroller to the browser.
+Most of a distributed system's complexity is translation: IDLs, codegen, serialization glue, schema registries. AimDB deletes that layer by making **the Rust type the contract** — defined once, compiled unchanged from a `no_std` microcontroller to the browser.
 
 - **One type, every tier.** The same struct compiles for firmware and cloud. No conversion layer between them.
 - **The buffer defines how data moves.** No manual queue wiring, no separate transport config.
 - **No untyped boundaries.** Capabilities, like streaming, migration, observability and connectors, are unlocked by traits.
+
+### The receipts
+
+None of this is roadmap. Every claim is backed by code, tests or committed benchmarks:
+
+- **Data contracts as schema** → the Rust type *is* the wire contract. No IDL, no codegen, [CI cross-compiles](Makefile) unchanged from Cortex-M to WASM.
+- **Typed data migrations** → [`migration_chain!`](aimdb-data-contracts/src/migratable.rs) const-validates the chain and works `no_std`, so old and new nodes coexist on the wire.
+- **Zero allocation per message** → [allocation baselines](aimdb-bench/data/baselines) across Tokio, Embassy and WASM.
+- **Non-blocking producers** → synchronous [`produce()`](aimdb-core/src/typed_api.rs) calls and overwrite semantics on all buffers.
+- **Identical buffer contracts across runtimes** → [shared conformance suite](aimdb-core/src/buffer/test_support.rs) validates SPMC Ring, SingleLatest and Mailbox on every adapter.
 
 [The Next Era of Software Architecture Is Data-First](https://aimdb.dev/blog/data-driven-design)
 
@@ -93,10 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
     });
 
-    // `.run()` builds the database, collects every producer/consumer/transform
-    // future, and drives them all on a single `FuturesUnordered`. It blocks
-    // until shutdown. For programmatic access to the `AimDb` handle, call
-    // `.build().await?` directly — it returns `(AimDb, AimDbRunner)`.
+    // Build the db and drive every source/tap future until shutdown.
     builder.run().await?;
     Ok(())
 }
@@ -128,20 +135,45 @@ docker compose up
 | [**SingleLatest**](examples/hello-single-latest-async) | Only the current value matters | Feature flags, config, UI state |
 | [**Mailbox**](examples/hello-mailbox) / [**async Mailbox**](examples/hello-mailbox-async)| Latest instruction wins | Device commands, actuation, RPC |
 
-**Four capability traits** — opt-in, type-checked:
-
-| Trait | What it unlocks | Runtimes |
-| --- | --- | --- |
-| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | Crossing WASM / WebSocket / CLI boundaries | std, no_std |
-| [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | Typed schema evolution across deployed fleets | std, no_std |
-| `Observable` | Automatic per-record metrics | std, no_std |
-| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | Wire-format connectors | std, no_std |
-
 **One async API across runtimes.** Tokio, Embassy, WASM — swap the runtime adapter, keep the code. → [How the runtime abstraction works](https://aimdb.dev/blog/building-aimdb-one-async-api)
 
-**Connectors that ship today:** MQTT, KNX, WebSocket. Writing your own is one trait impl.
+**Connectors that ship today:** MQTT, KNX, WebSocket, TCP, serial (COBS-framed UART) and Unix domain sockets. Writing your own is one trait impl. → [Connector status](#connectors)
 
-Deep dives: [data contracts](https://aimdb.dev/blog/data-contracts-deep-dive) · [source/tap/transform](https://aimdb.dev/blog/source-tap-transform) · [schema migration](https://aimdb.dev/blog/schema-migration-without-ceremony) · [reactive pipelines](https://aimdb.dev/blog/reactive-pipelines)
+**Optional persistence.** The core is an in-memory data plane; [`aimdb-persistence`](aimdb-persistence) adds `.persist()` with a SQLite backend ([`aimdb-persistence-sqlite`](aimdb-persistence-sqlite)) for records whose history must survive restarts.
+
+Deep dives: [source/tap/transform](https://aimdb.dev/blog/source-tap-transform) · [schema migration](https://aimdb.dev/blog/schema-migration-without-ceremony) · [reactive pipelines](https://aimdb.dev/blog/reactive-pipelines)
+
+---
+
+## Data contracts: one method per capability
+
+Every capability is an opt-in trait on your schema type: implement it and **exactly one method** appears on the registrar.
+
+| Contract | Implement when… | Verb it unlocks | Tier |
+| --- | --- | --- | --- |
+| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the record is mirrored to/from an endpoint (MQTT, KNX, serial, UDS…) | `.linked_from(url)` / `.linked_to(url)` (`#[derive(Linkable)]` for JSON) | wire (prod) |
+| [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | the record streams to browsers as schema-named JSON | ws-connector `.register::<T>()` | wire (prod) |
+| [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | the schema evolved across versions | `migration_chain!` | wire (prod) |
+| `Settable` | sync code outside AimDB sets the value | `SyncProducer::set_value(v)` | wire (prod) |
+| `Observable` | the value is worth watching in production | `.observe()` → live last/min/max/mean on `record.list`/`record.get` | introspection (prod, optional) |
+| `Simulatable` | the type can generate realistic synthetic data | `.simulate(profile, rng)` | **dev-only — never ships in prod** |
+
+`Simulatable` is the odd one out: it lives behind the `simulatable` feature (never a default) and switching from simulated to real data is one `#[cfg]` in your app:
+
+```rust
+builder.configure::<Temperature>(KEY, |reg| {
+    #[cfg(feature = "sim")]
+    reg.simulate(profile, rng);
+    #[cfg(not(feature = "sim"))]
+    reg.source(read_hardware);
+});
+```
+
+Build with `sim` off and the simulation code is *gone* — no `T::simulate` impls, no `rand`, nothing to audit.
+
+**Old and new nodes coexist.** Migration steps are typed and bidirectional and `migration_chain!` checks the whole chain at compile time — [roundtrip tests](aimdb-data-contracts/tests/migration_roundtrip.rs) cover upgrade *and* downgrade across multi-step chains. It's `no_std` too: even an MCU can accept a payload one schema version behind or downgrade its output for an older peer.
+
+Deep dive: [data contracts](https://aimdb.dev/blog/data-contracts-deep-dive)
 
 ---
 
@@ -157,10 +189,10 @@ A record is written by a `Source`, lands in a typed `Buffer` and fans out to in-
    Source  ───► │   Buffer     │
    (typed)      │ SPMC / SL /  │ ───►  Tap   (another subscriber)
                 │   Mailbox    │
-                └──────────────┘ ───►  Link ──► MQTT / KNX / WebSocket
+                └──────────────┘ ───►  Link ──► MQTT / KNX / WS / UDS / serial
 ```
 
-The Rust type system enforces correctness at compile time, buffer semantics enforce flow guarantees at runtime and connectors wire to your infrastructure without an integration layer. The same code compiles for MCU, edge, cloud or browser — see [Platform Support](#platform-support) below.
+Types check correctness at compile time, buffers enforce flow semantics at runtime and connectors bridge to your infrastructure, with no integration layer in between. The same code compiles for MCU, edge, cloud or browser — see [Platform Support](#platform-support) below.
 
 ---
 
@@ -211,6 +243,8 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 | **Kafka** | 📋 Planned | std |
 | **Modbus** | 📋 Planned | std, no_std |
 
+The serial, TCP and UDS connectors carry both record mirroring and the AimX remote-access protocol used by the CLI and MCP server. Typed records over multiple transports, from bare metal to cloud.
+
 ---
 
 ### Platform Support
@@ -228,14 +262,8 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 
 We're a small team building something ambitious. The fastest way to help is to take on a scoped piece of it. Each of these is sized for a few hours and includes file pointers, acceptance criteria and a place to ask questions:
 
-- [#92 — `no_std` `Display` for `DbError` should include numeric fields](https://github.com/aimdb-dev/aimdb/issues/92) · 2–3h · core · embedded
 - [#93 — Minimal example: `hello-single-latest`](https://github.com/aimdb-dev/aimdb/issues/93) · 2–3h · docs
-- [#95 — CLI: add `aimdb instance ping` subcommand](https://github.com/aimdb-dev/aimdb/issues/95) · 3–4h · cli
-- [#96 — CI: fail on broken rustdoc links](https://github.com/aimdb-dev/aimdb/issues/96) · 1–2h · docs
-- [#97 — Doctests for `BufferCfg` variants](https://github.com/aimdb-dev/aimdb/issues/97) · 2–3h · core · docs
-- [#99 — Async example: `hello-mailbox-async`](https://github.com/aimdb-dev/aimdb/issues/99) · 2–3h · docs
-- [#100 — Async example: `hello-single-latest-async`](https://github.com/aimdb-dev/aimdb/issues/100) · 2–3h · docs
-- [#101 — Async example: `hello-spmc-ring-async`](https://github.com/aimdb-dev/aimdb/issues/101) · 2–3h · docs
+- [#101 — Minimal example: `hello-spmc-ring-async`](https://github.com/aimdb-dev/aimdb/issues/101) · 2–3h · docs
 
 [See all good first issues →](https://github.com/aimdb-dev/aimdb/labels/good%20first%20issue)
 

@@ -36,6 +36,7 @@
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
+use aimdb_data_contracts::LinkableRegistrarExt;
 use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
@@ -139,9 +140,9 @@ async fn main() -> DbResult<()> {
     );
 
     // Temperature sensors (outbound to MQTT) - using link_address() from key metadata.
-    // The MQTT knobs come from the connector crate's MqttLinkExt/
-    // MqttOutboundLinkExt extension traits; QoS 1 / no
-    // retain matches the connector defaults.
+    // TempIndoor needs per-link QoS/retain, so it stays on the raw builder (the
+    // escape hatch for per-link options); TempOutdoor/TempServerRoom need no
+    // extra options, so `.linked_to()` (from `#[derive(Linkable)]`) suffices.
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(indoor_temp_producer)
@@ -156,22 +157,20 @@ async fn main() -> DbResult<()> {
     builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(outdoor_temp_producer)
-            .tap(temperature_logger)
-            .link_to(SensorKey::TempOutdoor.link_address().unwrap())
-            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
-            .finish();
+            .tap(temperature_logger);
+        reg.linked_to(SensorKey::TempOutdoor.link_address().unwrap());
     });
 
     builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(server_room_temp_producer)
-            .tap(temperature_logger)
-            .link_to(SensorKey::TempServerRoom.link_address().unwrap())
-            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
-            .finish();
+            .tap(temperature_logger);
+        reg.linked_to(SensorKey::TempServerRoom.link_address().unwrap());
     });
 
-    // Command consumers (inbound from MQTT) - using link_address() from key metadata
+    // Command consumers (inbound from MQTT) - using link_address() from key metadata.
+    // TempIndoor needs subscribe QoS, so it stays on the raw builder; TempOutdoor
+    // uses `.linked_from()`.
     builder.configure::<TemperatureCommand>(CommandKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(command_consumer)
@@ -183,10 +182,8 @@ async fn main() -> DbResult<()> {
 
     builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(command_consumer)
-            .link_from(CommandKey::TempOutdoor.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
-            .finish();
+            .tap(command_consumer);
+        reg.linked_from(CommandKey::TempOutdoor.link_address().unwrap());
     });
 
     println!("Subscribe: mosquitto_sub -h localhost -t 'sensors/#' -v");

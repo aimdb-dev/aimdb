@@ -75,6 +75,9 @@ jobs:
     - name: Check codegen template drift
       run: make codegen-drift
 
+    - name: Prove production is simulation-free
+      run: make check-no-sim
+
   # Embedded target testing
   embedded-targets:
     name: Embedded Cross-compilation

@@ -1,5 +1,5 @@
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey};
-use aimdb_data_contracts::{log_tap, Linkable};
+use aimdb_data_contracts::{Linkable, ObservableRegistrarExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use weather_mesh_common::{Humidity, HumidityKey, TempKey, Temperature};
 
@@ -32,9 +32,12 @@ async fn main() -> aimdb_core::DbResult<()> {
         let topic = key.link_address().unwrap().to_string();
 
         builder.configure::<Temperature>(key, |reg| {
-            reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
-                .tap(move |ctx, consumer| log_tap(ctx, consumer, key.as_str()))
-                .link_from(&topic)
+            reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
+            // Metrics: fold °C into the record's signal gauge (record.list/get).
+            reg.observe();
+            // Console: one human-readable log line per value (the demo's point).
+            reg.log(key.as_str());
+            reg.link_from(&topic)
                 .with_deserializer(|ctx, data: &[u8]| {
                     ctx.log()
                         .debug("Deserializing temperature from MQTT payload");
@@ -55,9 +58,10 @@ async fn main() -> aimdb_core::DbResult<()> {
         let topic = key.link_address().unwrap().to_string();
 
         builder.configure::<Humidity>(key, |reg| {
-            reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
-                .tap(move |ctx, consumer| log_tap(ctx, consumer, key.as_str()))
-                .link_from(&topic)
+            reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
+            // Metrics only for humidity; temperature keeps the console `.log()`.
+            reg.observe();
+            reg.link_from(&topic)
                 .with_deserializer(|ctx, data: &[u8]| {
                     ctx.log().debug("Deserializing humidity from MQTT payload");
                     let humidity = Humidity::from_bytes(data)?;

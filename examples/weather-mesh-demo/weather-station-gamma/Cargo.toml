@@ -9,15 +9,22 @@ publish = false
 [features]
 default = ["embassy-runtime"]
 embassy-runtime = []
+# `sim` is opt-in and dev-only: "develop against sim, flash
+# against silicon". It pulls the `Simulatable` impls + `rand` and wires
+# `.simulate()`; the default (flash) build reads a hardware source and has no
+# `rand` in its graph.
+sim = [
+    "weather-mesh-common/simulatable",
+    "aimdb-data-contracts/simulatable",
+    "dep:rand",
+]
 # Declare but don't enable these features to silence cfg warnings
 tokio-runtime = []
 std = []
 
 [dependencies]
 # AimDB dependencies
-weather-mesh-common = { path = "../weather-mesh-common", default-features = false, features = [
-    "simulatable",
-] }
+weather-mesh-common = { path = "../weather-mesh-common", default-features = false }
 aimdb-core = { path = "../../../aimdb-core", default-features = false, features = [
     "alloc",
 ] }
@@ -25,9 +32,7 @@ aimdb-embassy-adapter = { path = "../../../aimdb-embassy-adapter", default-featu
     "alloc",
     "embassy-runtime",
 ] }
-aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false, features = [
-    "simulatable",
-] }
+aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false }
 aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", default-features = false, features = [
     "embassy-runtime",
 ] }
@@ -85,8 +90,9 @@ micromath = { workspace = true }
 stm32-fmc = { workspace = true }
 embedded-alloc = { version = "0.6", features = ["llff"] }
 
-# Random number generation for simulation
-rand = { version = "0.10.1", default-features = false }
+# Random number generation for simulation — only in the `sim` build. The
+# network-stack seed uses the STM32 HAL RNG (embassy_stm32), not this crate.
+rand = { version = "0.10.1", default-features = false, optional = true }
 
 
 [package.metadata.embassy]

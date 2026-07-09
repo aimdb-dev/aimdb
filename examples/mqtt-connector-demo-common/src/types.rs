@@ -9,6 +9,9 @@ use alloc::string::String;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "data-contracts")]
+use aimdb_data_contracts::{Linkable, SchemaType};
+
 // ============================================================================
 // TEMPERATURE READING
 // ============================================================================
@@ -18,11 +21,17 @@ use serde::{Deserialize, Serialize};
 /// Represents a temperature measurement that can be published to MQTT.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "data-contracts", derive(Linkable))]
 pub struct Temperature {
     /// Sensor identifier (e.g., "indoor-001", "outdoor-001")
     pub sensor_id: String,
     /// Temperature in degrees Celsius
     pub celsius: f32,
+}
+
+#[cfg(feature = "data-contracts")]
+impl SchemaType for Temperature {
+    const NAME: &'static str = "mqtt_demo.temperature";
 }
 
 impl Temperature {
@@ -81,11 +90,17 @@ impl Temperature {
 /// Command for controlling temperature sensors (inbound from MQTT)
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "data-contracts", derive(Linkable))]
 pub struct TemperatureCommand {
     /// Action to perform (e.g., "read", "calibrate", "reset")
     pub action: String,
     /// Target sensor identifier
     pub sensor_id: String,
+}
+
+#[cfg(feature = "data-contracts")]
+impl SchemaType for TemperatureCommand {
+    const NAME: &'static str = "mqtt_demo.temperature_command";
 }
 
 impl TemperatureCommand {

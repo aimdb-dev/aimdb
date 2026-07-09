@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check readme-check codegen-drift
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check readme-check codegen-drift check-no-sim
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -555,8 +555,46 @@ codegen-drift:
 	@printf "$(GREEN)Checking codegen templates against the workspace API...$(NC)\n"
 	./tools/scripts/codegen-drift-check.sh
 
+# Prove that simulation code (the dev-tier `simulatable` contract) never
+# reaches a production binary. `rand` is the tracer: it is reachable iff
+# `simulatable` is enabled (aimdb-data-contracts/src/simulatable.rs).
+# The guard must not fail open:
+# "rand is absent" is accepted only when `cargo tree -i rand` fails with its
+# specific "did not match any packages" error — any other failure (missing
+# submodule, typo'd package name, registry trouble) aborts the check instead of
+# passing it vacuously. A positive control per example asserts the sim build
+# DOES find `rand`, proving the tracer still traces. Also asserts `simulatable`
+# is not a default feature of the contracts crate (which would pull `rand` into
+# its own default graph).
+SIM_EXAMPLES := weather-station-beta weather-station-gamma
+check-no-sim:
+	@printf "$(GREEN)Proving production graphs are simulation-free...$(NC)\n"
+	@tree_rand() { cargo tree -p "$$1" $$2 -e normal -i rand 2>&1; }; \
+	assert_rand_free() { \
+		if out=$$(tree_rand "$$1" "$$2"); then \
+			printf "$(RED)✗ $$3$(NC)\n"; \
+			exit 1; \
+		elif ! printf '%s\n' "$$out" | grep -q 'did not match any packages'; then \
+			printf "$(RED)✗ cargo tree for '$$1' failed for a reason other than 'rand is absent' — refusing to pass vacuously:$(NC)\n"; \
+			printf '%s\n' "$$out"; \
+			exit 1; \
+		fi; \
+	}; \
+	for bin in $(SIM_EXAMPLES); do \
+		assert_rand_free "$$bin" "" "'$$bin' (default/production, no sim) pulls in 'rand' — simulation code leaked into production"; \
+		printf "$(BLUE)✓ $$bin production graph is rand-free$(NC)\n"; \
+		if ! tree_rand "$$bin" "--features sim" >/dev/null; then \
+			printf "$(RED)✗ positive control failed: '$$bin --features sim' does not pull 'rand' — the tracer no longer traces, so the rand-free results above prove nothing$(NC)\n"; \
+			exit 1; \
+		fi; \
+		printf "$(BLUE)✓ $$bin sim graph finds rand (tracer positive control)$(NC)\n"; \
+	done; \
+	assert_rand_free "aimdb-data-contracts" "" "aimdb-data-contracts pulls 'rand' with default features — 'simulatable' must never be a default feature"; \
+	printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"; \
+	printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
+
 ## Convenience commands
-check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift
+check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"

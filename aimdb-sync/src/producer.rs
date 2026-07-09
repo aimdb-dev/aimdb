@@ -220,6 +220,80 @@ where
     }
 }
 
+/// Set-by-primitive verbs for `Settable` types (feature `data-contracts`).
+///
+/// Where [`set`](Self::set) takes a fully constructed `T`, `set_value`
+/// constructs it via `T::set(value, timestamp)` and sends, in one call.
+/// Distinct from AimX's `record.set {name, value}` (full JSON value through
+/// `JsonCodec`) — this is set-by-primitive.
+#[cfg(feature = "data-contracts")]
+impl<T> SyncProducer<T>
+where
+    T: aimdb_data_contracts::Settable + Send + 'static + Debug + Clone,
+{
+    /// Construct via `T::set(value, now)` and send. Blocking, like [`set`](Self::set).
+    ///
+    /// Stamps with the *caller's* `SystemTime` (sample time at the edge), not
+    /// the engine's `ctx.time()` — use [`set_value_at`](Self::set_value_at) for
+    /// explicit-timestamp control (replay, testing).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "data-contracts")]
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use aimdb_core::AimDbBuilder;
+    /// use aimdb_data_contracts::{SchemaType, Settable};
+    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_tokio_adapter::TokioAdapter;
+    /// use std::sync::Arc;
+    ///
+    /// #[derive(Debug, Clone)]
+    /// struct Temperature { celsius: f32, timestamp: u64 }
+    ///
+    /// impl SchemaType for Temperature {
+    ///     const NAME: &'static str = "temperature";
+    /// }
+    ///
+    /// impl Settable for Temperature {
+    ///     type Value = f32;
+    ///     fn set(value: f32, timestamp: u64) -> Self {
+    ///         Temperature { celsius: value, timestamp }
+    ///     }
+    /// }
+    ///
+    /// let handle = AimDbBuilder::new().runtime(Arc::new(TokioAdapter)).attach()?;
+    /// let producer = handle.producer::<Temperature>("temperature")?;
+    /// producer.set_value(22.5)?; // constructs Temperature::set(22.5, now_ms) and sends
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "data-contracts"))]
+    /// # fn main() {}
+    /// ```
+    pub fn set_value(&self, value: T::Value) -> SyncResult<()> {
+        self.set(T::set(value, unix_now_ms()))
+    }
+
+    /// Non-blocking variant, like [`try_set`](Self::try_set).
+    pub fn try_set_value(&self, value: T::Value) -> SyncResult<()> {
+        self.try_set(T::set(value, unix_now_ms()))
+    }
+
+    /// Explicit-timestamp variant (replay, testing).
+    pub fn set_value_at(&self, value: T::Value, timestamp_ms: u64) -> SyncResult<()> {
+        self.set(T::set(value, timestamp_ms))
+    }
+}
+
+/// Current wall-clock time as Unix milliseconds (caller-side clock).
+#[cfg(feature = "data-contracts")]
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 impl<T> Clone for SyncProducer<T>
 where
     T: Send + 'static + Debug + Clone,

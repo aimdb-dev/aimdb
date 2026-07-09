@@ -23,6 +23,12 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
 mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features = [
     "std",
     "derive",
+    "data-contracts",
+] }
+
+# LinkableRegistrarExt / #[derive(Linkable)] verb
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", features = [
+    "linkable",
 ] }
 
 # MQTT connector

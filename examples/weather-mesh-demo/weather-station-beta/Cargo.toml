@@ -10,16 +10,24 @@ publish = false
 name = "weather-station-beta"
 path = "src/main.rs"
 
+[features]
+# `sim` is opt-in and dev-only: it pulls the `Simulatable`
+# impls + `rand` and wires `.simulate()`. The DEFAULT (production) build reads a
+# hardware source and contains no `rand` at all — `make check-no-sim` proves it.
+sim = [
+    "weather-mesh-common/simulatable",
+    "aimdb-data-contracts/simulatable",
+    "dep:rand",
+]
+
 [dependencies]
 weather-mesh-common = { path = "../weather-mesh-common", features = [
-    "simulatable",
     "linkable",
     "migratable",
 ] }
 aimdb-core = { path = "../../../aimdb-core" }
 aimdb-tokio-adapter = { path = "../../../aimdb-tokio-adapter" }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", features = [
-    "simulatable",
     "linkable",
     "migratable",
 ] }
@@ -30,5 +38,4 @@ aimdb-mqtt-connector = { path = "../../../aimdb-mqtt-connector", features = [
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rand = "0.10.1"
-chrono = "0.4"
+rand = { version = "0.10.1", optional = true }

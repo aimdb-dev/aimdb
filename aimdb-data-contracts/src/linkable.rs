@@ -1,7 +1,51 @@
-//! Linkable trait implementations and tests.
+//! Linkable registrar extension: one-line link verbs for connector wiring.
 //!
-//! This module provides the wire format support for transporting schema types
-//! across connector links (MQTT, KNX, etc.).
+//! Implementing [`Linkable`](crate::Linkable) unlocks two verbs —
+//! [`LinkableRegistrarExt::linked_from`] / [`linked_to`](LinkableRegistrarExt::linked_to)
+//! — that install the raw `.link_from()`/`.link_to()` builders with the codec
+//! defaulted to `T::from_bytes`/`T::to_bytes`. The raw builders remain the
+//! escape hatch for per-link options (QoS, topic providers/resolvers).
+
+use aimdb_core::connector::SerializeError;
+use aimdb_core::typed_api::RecordRegistrar;
+
+use crate::Linkable;
+
+/// Adds `.linked_from(url)` and `.linked_to(url)` to [`RecordRegistrar`] for
+/// [`Linkable`] types.
+pub trait LinkableRegistrarExt<'a, T>
+where
+    T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    /// `.link_from(url)` with the codec defaulted to `T::from_bytes`.
+    fn linked_from(&mut self, url: &str) -> &mut RecordRegistrar<'a, T>;
+
+    /// `.link_to(url)` with the codec defaulted to `T::to_bytes`.
+    ///
+    /// `Linkable::to_bytes`'s `String` error is mapped to
+    /// `SerializeError::InvalidData` — the connector layer's serializer error
+    /// type carries no string detail.
+    fn linked_to(&mut self, url: &str) -> &mut RecordRegistrar<'a, T>;
+}
+
+impl<'a, T> LinkableRegistrarExt<'a, T> for RecordRegistrar<'a, T>
+where
+    T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    fn linked_from(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
+        self.link_from(url)
+            .with_deserializer(|_ctx, bytes| T::from_bytes(bytes))
+            .finish()
+    }
+
+    fn linked_to(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
+        self.link_to(url)
+            .with_serializer(|_ctx, value: &T| {
+                value.to_bytes().map_err(|_| SerializeError::InvalidData)
+            })
+            .finish()
+    }
+}
 
 #[cfg(test)]
 mod tests {

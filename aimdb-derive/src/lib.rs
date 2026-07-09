@@ -41,6 +41,62 @@ pub fn migration_chain(input: TokenStream) -> TokenStream {
     migration_chain::migration_chain(input)
 }
 
+/// Derive `Linkable` (JSON codec) for a schema type.
+///
+/// Emits `from_bytes`/`to_bytes` via `serde_json::from_slice`/`to_vec` — the
+/// boilerplate every hand-written `impl Linkable` for a JSON-wire type repeats.
+/// Requires `T: Serialize + DeserializeOwned` (a normal
+/// compile error surfaces if it's missing) and the `linkable` feature of
+/// `aimdb-data-contracts` (for the `Linkable` trait and its `__private::serde_json`
+/// re-export). Binary formats (e.g. KNX DPT codecs) still implement `Linkable`
+/// by hand — this derive is JSON-only.
+///
+/// # Example
+///
+/// Illustrative (not compiled: see the crate-level note — compiled
+/// integration tests live in `aimdb-data-contracts`).
+///
+/// ```rust,ignore
+/// use aimdb_data_contracts::Linkable;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Clone, Debug, Serialize, Deserialize, Linkable)]
+/// struct Temperature {
+///     celsius: f32,
+///     timestamp: u64,
+/// }
+/// ```
+#[proc_macro_derive(Linkable)]
+pub fn derive_linkable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let expanded = quote! {
+        impl ::aimdb_data_contracts::Linkable for #name {
+            fn from_bytes(
+                data: &[u8],
+            ) -> Result<Self, ::aimdb_data_contracts::__private::alloc::string::String> {
+                ::aimdb_data_contracts::__private::serde_json::from_slice(data).map_err(|e| {
+                    ::aimdb_data_contracts::__private::alloc::string::ToString::to_string(&e)
+                })
+            }
+
+            fn to_bytes(
+                &self,
+            ) -> Result<
+                ::aimdb_data_contracts::__private::alloc::vec::Vec<u8>,
+                ::aimdb_data_contracts::__private::alloc::string::String,
+            > {
+                ::aimdb_data_contracts::__private::serde_json::to_vec(self).map_err(|e| {
+                    ::aimdb_data_contracts::__private::alloc::string::ToString::to_string(&e)
+                })
+            }
+        }
+    };
+
+    expanded.into()
+}
+
 /// Derive the `RecordKey` trait for an enum
 ///
 /// Each variant must have a `#[key = "..."]` attribute specifying its string key.

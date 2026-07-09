@@ -24,8 +24,9 @@
 
 extern crate alloc;
 
-use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
-use aimdb_data_contracts::{Simulatable, SimulationConfig, SimulationParams};
+use aimdb_core::{AimDbBuilder, RecordKey};
+#[cfg(feature = "sim")]
+use aimdb_data_contracts::{RandomWalkParams, SimProfile, SimulatableRegistrarExt};
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
 use defmt::*;
@@ -37,6 +38,7 @@ use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
 use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config};
 use embassy_time::{Duration, Timer};
+#[cfg(feature = "sim")]
 use rand::SeedableRng;
 use static_cell::StaticCell;
 use weather_mesh_common::{DewPoint, DewPointKey, Humidity, HumidityKey, TempKey, Temperature};
@@ -64,66 +66,64 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
     runner.run().await
 }
 
-/// Temperature producer - generates synthetic data
-async fn temperature_producer(ctx: RuntimeContext, producer: Producer<Temperature>) {
-    let log = ctx.log();
-    log.info("🌡️  Starting temperature producer...");
-
-    let config = SimulationConfig {
-        enabled: true,
+/// Sim profile for temperature (dev-tier `sim` build only).
+#[cfg(feature = "sim")]
+fn temperature_profile() -> SimProfile<RandomWalkParams> {
+    SimProfile {
         interval_ms: 5000,
-        params: SimulationParams {
+        params: RandomWalkParams {
             base: 22.0,     // Portable: ~22°C
             variation: 5.0, // ±5°C (more variation)
             step: 0.3,      // Random walk
             trend: 0.0,
         },
-    };
-
-    let mut rng = rand::rngs::SmallRng::from_seed([42; 32]);
-    let mut prev: Option<Temperature> = None;
-
-    loop {
-        let now = ctx.time().now() / 1_000_000;
-        let temp = Temperature::simulate(&config, prev.as_ref(), &mut rng, now);
-
-        log.info(&alloc::format!("📊 Temp: {:.1}°C", temp.celsius));
-
-        producer.produce(temp.clone());
-
-        prev = Some(temp);
-        Timer::after(Duration::from_secs(5)).await;
     }
 }
 
-/// Humidity producer - generates synthetic data
-async fn humidity_producer(ctx: RuntimeContext, producer: Producer<Humidity>) {
-    let log = ctx.log();
-    log.info("💧 Starting humidity producer...");
-
-    let config = SimulationConfig {
-        enabled: true,
+/// Sim profile for humidity (dev-tier `sim` build only).
+#[cfg(feature = "sim")]
+fn humidity_profile() -> SimProfile<RandomWalkParams> {
+    SimProfile {
         interval_ms: 5000,
-        params: SimulationParams {
+        params: RandomWalkParams {
             base: 55.0,      // Portable: ~55%
             variation: 15.0, // ±15%
             step: 0.3,       // Random walk
             trend: 0.0,
         },
-    };
+    }
+}
 
-    let mut rng = rand::rngs::SmallRng::from_seed([84; 32]);
-    let mut prev: Option<Humidity> = None;
-
+/// Placeholder "hardware" temperature source for the production (flash) build.
+///
+/// A real MCU deployment reads an ADC/I2C sensor here. The demo emits a fixed
+/// reading so the record still has exactly one writer and the flashed image
+/// carries no `rand`.
+#[cfg(not(feature = "sim"))]
+async fn read_temperature(
+    ctx: aimdb_core::RuntimeContext,
+    producer: aimdb_core::Producer<Temperature>,
+) {
+    let log = ctx.log();
+    log.info("🌡️  Starting temperature sensor...");
     loop {
         let now = ctx.time().now() / 1_000_000;
-        let humidity = Humidity::simulate(&config, prev.as_ref(), &mut rng, now);
+        producer.produce(Temperature::new(22.0, now));
+        Timer::after(Duration::from_secs(5)).await;
+    }
+}
 
-        log.info(&alloc::format!("📊 Humidity: {:.1}%", humidity.percent));
-
-        producer.produce(humidity.clone());
-
-        prev = Some(humidity);
+/// Placeholder "hardware" humidity source for the production (flash) build.
+#[cfg(not(feature = "sim"))]
+async fn read_humidity(ctx: aimdb_core::RuntimeContext, producer: aimdb_core::Producer<Humidity>) {
+    let log = ctx.log();
+    log.info("💧 Starting humidity sensor...");
+    loop {
+        let now = ctx.time().now() / 1_000_000;
+        producer.produce(Humidity {
+            percent: 55.0,
+            timestamp: now,
+        });
         Timer::after(Duration::from_secs(5)).await;
     }
 }
@@ -257,9 +257,18 @@ async fn main(spawner: Spawner) {
     // Configure temperature record
     let temp_topic = TempKey::Gamma.link_address().unwrap();
     builder.configure::<Temperature>(TempKey::Gamma, |reg| {
-        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
-            .source(temperature_producer)
-            .link_to(temp_topic)
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing);
+
+        // Sim-to-real is a compile-time `#[cfg]`: exactly one producer installed.
+        #[cfg(feature = "sim")]
+        reg.simulate(
+            temperature_profile(),
+            rand::rngs::SmallRng::from_seed([42; 32]),
+        );
+        #[cfg(not(feature = "sim"))]
+        reg.source(read_temperature);
+
+        reg.link_to(temp_topic)
             .with_serializer(|_ctx, t: &Temperature| {
                 // Manual JSON serialization for no_std
                 let whole = t.celsius as i32;
@@ -279,9 +288,17 @@ async fn main(spawner: Spawner) {
     // Configure humidity record
     let humidity_topic = HumidityKey::Gamma.link_address().unwrap();
     builder.configure::<Humidity>(HumidityKey::Gamma, |reg| {
-        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
-            .source(humidity_producer)
-            .link_to(humidity_topic)
+        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing);
+
+        #[cfg(feature = "sim")]
+        reg.simulate(
+            humidity_profile(),
+            rand::rngs::SmallRng::from_seed([84; 32]),
+        );
+        #[cfg(not(feature = "sim"))]
+        reg.source(read_humidity);
+
+        reg.link_to(humidity_topic)
             .with_serializer(|_ctx, h: &Humidity| {
                 // Manual JSON serialization for no_std
                 let whole = h.percent as i32;

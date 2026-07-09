@@ -15,6 +15,12 @@ derive = ["aimdb-core/derive"]
 # needed: the no_std JSON paths are hand-rolled), so an embassy demo can expose
 # these records over a remote-access (serial) server.
 serde = ["dep:serde"]
+# `SchemaType` + `#[derive(Linkable)]`. `no_std + alloc`
+# compatible (aimdb-data-contracts's `linkable` feature only needs `alloc` —
+# its `serde_json` dep is alloc-only, no `std`). Not enabled by default: the
+# embassy demo's hand-rolled no_std JSON path is an intentional illustration,
+# left untouched; only the tokio demo opts into this feature.
+data-contracts = ["alloc", "serde", "dep:aimdb-data-contracts"]
 
 # Embassy-specific features (no_std)
 defmt = ["dep:defmt"]
@@ -25,6 +31,10 @@ aimdb-core = { path = "../../aimdb-core", default-features = false }
 # Serialization (std only)
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
+# Optional: SchemaType + #[derive(Linkable)] (feature `data-contracts`, no_std + alloc)
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", default-features = false, optional = true, features = [
+    "linkable",
+] }
 
 # Optional defmt for embedded logging
 defmt = { workspace = true, optional = true }
