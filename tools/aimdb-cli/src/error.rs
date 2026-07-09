@@ -45,7 +45,7 @@ pub enum CliError {
     InvalidJson { input: String, error: String },
 
     /// Server returned an error response
-    #[error("Server error: {code}\n  Message: {message}{}", format_details(.details))]
+    #[error("Server error: {code}\n  Message: {message}{}", .details.as_ref().map(|d| format!("\n  Details: {d}")).unwrap_or_default())]
     ServerError {
         code: String,
         message: String,
@@ -88,13 +88,6 @@ impl From<aimdb_client::ClientError> for CliError {
             aimdb_client::ClientError::Json(e) => CliError::Json(e),
             aimdb_client::ClientError::Other(e) => CliError::Other(e),
         }
-    }
-}
-
-fn format_details(details: &Option<serde_json::Value>) -> String {
-    match details {
-        Some(val) => format!("\n  Details: {}", val),
-        None => String::new(),
     }
 }
 
