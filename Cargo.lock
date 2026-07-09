@@ -4603,6 +4603,7 @@ dependencies = [
  "rand 0.10.1",
  "static_cell",
  "stm32-fmc 0.3.2",
+ "toml 0.8.23",
  "weather-mesh-common",
 ]
 

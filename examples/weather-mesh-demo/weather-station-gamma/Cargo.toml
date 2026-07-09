@@ -94,6 +94,10 @@ embedded-alloc = { version = "0.6", features = ["llff"] }
 # network-stack seed uses the STM32 HAL RNG (embassy_stm32), not this crate.
 rand = { version = "0.10.1", default-features = false, optional = true }
 
+[build-dependencies]
+# Parses the $MESH_CONFIG station profile (station.toml, design 042 §8.2) to
+# generate station_config.rs. Host-side only — nothing lands in the firmware.
+toml = "0.8"
 
 [package.metadata.embassy]
 build = [
