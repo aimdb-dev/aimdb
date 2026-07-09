@@ -27,6 +27,7 @@ A distributed weather monitoring mesh demonstrating AimDB's multi-tier architect
 | `weather-station-alpha` | Tokio (Linux Edge) | Real weather data (Open-Meteo API) |
 | `weather-station-beta` | Tokio (Linux Edge) | Synthetic sensor data |
 | `weather-station-gamma` | Embassy (STM32H563ZITx) | Portable/remote MCU sensor (hardware) |
+| `weather-station` | Tokio (anywhere) | Public-mesh station, driven by a `station.toml` profile |
 | `weather-mesh-common` | no_std compatible | Shared contracts and configuration |
 | `mqtt` | Eclipse Mosquitto | Message bus for all nodes |
 
@@ -109,6 +110,33 @@ cd examples/weather-mesh-demo/weather-station-gamma
 cargo build --release
 probe-rs run --chip STM32H563ZITx target/thumbv8m.main-none-eabihf/release/weather-station-gamma
 ```
+
+## Public mesh mode (design 042)
+
+The same crates also run the hosted public mesh anyone can join
+([design 042](../../docs/design/042-public-weather-mesh-flagship.md)). The
+local demo above is unchanged; mesh mode is opt-in per environment variable:
+
+- **Hub** — `MESH_SLOTS=64 cargo run -p weather-hub` replaces the three-enum
+  configuration with a bounded pool of string-keyed slot records
+  (`station.{slot}.temperature/humidity/dew_point` from
+  `station/{slot}/…` topics; dew point derived at the hub). `MQTT_URL` takes
+  a full connector URL (e.g. `mqtts://hub-sub:…@…:8883` for EMQX Cloud), and
+  a read-only AimX endpoint is served at `AIMX_BIND`
+  (default `127.0.0.1:7433`) for `aimdb record list/get/watch`.
+- **Station** — the three-command join loop
+  ([format doc 043](../../docs/design/043-join-endpoint-v1.md)):
+
+  ```bash
+  aimdb join https://mesh.aimdb.dev          # writes station.toml
+  cargo run -p weather-station -- --config station.toml
+  aimdb record list --connect tcp://aimdb.dev:7433
+  ```
+
+- **MCU station** — same profile, consumed at build time:
+  `MESH_CONFIG=../station.toml cargo run --release` inside
+  `weather-station-gamma` (plain-TCP brokers only until the Embassy MQTT
+  client speaks TLS — design 042 §8.1).
 
 ## Inspecting with VS Code Copilot
 

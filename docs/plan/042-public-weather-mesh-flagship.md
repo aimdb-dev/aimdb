@@ -2,7 +2,7 @@
 
 **Design:** [042 — Public weather mesh flagship](../design/042-public-weather-mesh-flagship.md)
 
-**Status:** 📝 Planned
+**Status:** 🚧 OSS work packages implemented 2026-07-09 (WP1, WP3's 043 doc, WP4, WP5, WP6 — plus the mqtts:// TLS-transport fix in the Tokio MQTT client the WP1 premise relied on, a read-only AimX TCP endpoint in the hub's mesh mode so the §7 `aimdb record list` loop has a server, and CLI observability metadata so signal gauges round-trip). External WPs (WP2 broker, WP3 provisioning service, WP8 website) and WP7 (Embassy TLS) remain open.
 
 This plan translates the design's sequencing (§10) into concrete work packages
 (WPs). Each WP is marked by where the work happens:
