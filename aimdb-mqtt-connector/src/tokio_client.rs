@@ -177,6 +177,12 @@ impl MqttConnectorImpl {
             mqtt_opts.set_credentials(username, password);
         }
 
+        // mqtts:// selects the TLS transport (system trust roots via
+        // native-tls); rumqttc otherwise speaks plain TCP regardless of port.
+        if connector_url.scheme == "mqtts" {
+            mqtt_opts.set_transport(rumqttc::Transport::Tls(rumqttc::TlsConfiguration::Native));
+        }
+
         // Wrap router early so we can count topics for capacity calculation
         let router_arc = Arc::new(router);
         let topic_count = router_arc.resource_ids().len();
@@ -363,5 +369,19 @@ mod tests {
         let router = RouterBuilder::new().build();
         let connector = MqttConnectorImpl::build_internal("not-a-valid-url", None, router).await;
         assert!(connector.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connector_mqtts_url_with_credentials() {
+        // mqtts:// with URL-embedded credentials must parse and build; the TLS
+        // handshake itself only happens once the event loop is polled.
+        let router = RouterBuilder::new().build();
+        let connector = MqttConnectorImpl::build_internal(
+            "mqtts://hub-sub:secret@broker.example.com:8883",
+            None,
+            router,
+        )
+        .await;
+        assert!(connector.is_ok());
     }
 }
