@@ -198,7 +198,7 @@ Three tiers, ordered by commitment:
 - **Tier 1 — run locally (5 min, no admission):** the existing docker-compose demo, unchanged. Gives impatient visitors something immediate and shows the contracts are ordinary, readable Rust.
 - **Tier 2 — join the public mesh:** §6 flow, then §7 commands. Target: **under 10 minutes from `aimdb join` to dot on the map** — with self-serve admission there is no waiting step left in the funnel. On first successful publish, the station prints the direct URL to its live chart and a ready-made MCP prompt for its own data — the shareable moment.
 
-**Hardware path:** same `station.toml`, consumed at firmware build time and flashed via probe-rs as `weather-station-gamma` does today — contingent on §8.1.
+**Hardware path:** same `station.toml`, consumed at firmware build time and flashed via probe-rs — see §8.2.
 
 **Station identity pages** (`aimdb.dev/mesh/<name>`): live chart, uptime, last reading. Gives contributors a link to share and a reason to keep stations running — which sustains the propose/admit traffic this exists to generate.
 
@@ -206,11 +206,39 @@ Three tiers, ordered by commitment:
 
 EMQX Cloud serverless is TLS-only, and [`embassy_client.rs`](../../aimdb-mqtt-connector/src/embassy_client.rs) has no TLS support — so the MCU station cannot currently connect to the public broker directly. Options:
 
-1. **Add TLS to the Embassy MQTT client** (e.g. `embedded-tls`). Real work, but a valuable connector feature in its own right, and it keeps the "MCU speaks directly to a managed cloud broker" claim true. **Recommended.**
+1. **Add TLS to the Embassy MQTT client** (e.g. `embedded-tls`). Real work — the TLS session itself, entropy (the STM32H5 on-chip TRNG, which `weather-station-gamma` already binds via the `rng` interrupt), and a time source for certificate validation (e.g. an SNTP task, since the board has no RTC battery) — but a valuable connector feature in its own right, and it keeps the "MCU speaks directly to a managed cloud broker" claim true. **Recommended.**
 2. EMQX Cloud dedicated tier with a plain-TCP listener. Solves it with money and reopens the unencrypted-public-broker question this migration closes.
 3. A local bridge/gateway in front of the MCU. Cheapest; quietly breaks the direct-to-cloud story.
 
 This is the one place the broker choice touches the product. Decide before committing to a broker tier; option 1 can land after launch if the hardware station joins later than the cloud-fed path.
+
+### 8.2 MCU join path (Embassy)
+
+Premise: the `aimdb` CLI runs on the **host machine used for flashing** — the same laptop that drives probe-rs, exactly `weather-station-gamma`'s workflow today. The reference board (Nucleo STM32H563ZI) uses Ethernet with DHCP, so there is **zero on-device network configuration** — no Wi-Fi credentials, nothing to type on the device.
+
+The flow is the cloud-station flow with the flash step swapped in for "run the binary":
+
+```
+$ aimdb join https://mesh.aimdb.dev --out station.toml      # §6 — same self-serve flow, on the host
+
+$ cd examples/weather-mesh-demo/weather-station-gamma
+$ MESH_CONFIG=../station.toml cargo run --release           # build → probe-rs flash → defmt logs
+
+$ aimdb record list --url tcp://aimdb.dev:7433              # §7 — same verification, same tool
+```
+
+**Mechanism — build-time config embedding.** Today gamma hardcodes `MQTT_BROKER_IP`/`MQTT_BROKER_PORT` as consts with an "update this" comment. Replace that with the station profile consumed at build time: [`build.rs`](../../examples/weather-mesh-demo/weather-station-gamma/build.rs) reads the profile at the path in `MESH_CONFIG`, generates a `station_config.rs` into `OUT_DIR` (`include!`d by `main.rs`), and declares `cargo:rerun-if-env-changed=MESH_CONFIG` / `cargo:rerun-if-changed=<path>`. With `MESH_CONFIG` unset, the generated config falls back to the local docker-compose demo defaults, so the existing tier-1 demo stays zero-setup.
+
+Why build-time rather than a config flash partition or serial provisioning:
+
+- Per-station firmware builds are the norm for this audience — the crate already pins its toolchain (`rust-toolchain.toml`) and builds locally; there is no identical-binary distribution problem to solve.
+- It reuses the exact workflow embedded Rust developers already know: `cargo run` under the existing probe-rs runner *is* flash + RTT/defmt streaming. The §8 success banner (station chart URL + ready-made MCP prompt) prints over defmt, so the dot-on-the-map moment happens in the same terminal that flashed the board.
+- The split build/flash workflow ([`flash.sh`](../../examples/weather-mesh-demo/weather-station-gamma/flash.sh): build in the dev container, flash from the host) keeps working unchanged — `MESH_CONFIG` matters only at build time.
+- A config partition (probe-rs writing a config blob at a fixed flash address, firmware reading it at boot) is the natural v2 if prebuilt-image distribution ever becomes desirable; it isn't needed for one flagship's contributors.
+
+**Trust model:** the slot-scoped credential ends up inside the firmware image in `target/`, which is equivalent to `station.toml` sitting on the same disk — it is the user's own credential, scoped to their own `station/{slot}/#` topics. Built images shouldn't be shared; revocation (D9) covers mistakes.
+
+**Contingency:** this path reaches the public broker only once §8.1 is resolved — until then, `MESH_CONFIG`-built firmware can target the local demo broker only.
 
 ## 9. Privacy, lifecycle, and failure UX
 
@@ -227,7 +255,7 @@ This is the one place the broker choice touches the product. Decide before commi
 3. **Provisioning service** (§6.2) — private ops repo; includes the GitHub OAuth app registration, identity/admission checks, and slot-recycling job.
 4. **`aimdb join`** (§7) + the open endpoint format doc (§6.3) — OSS.
 5. **Landing page, station pages, privacy note** (§8, §9).
-6. Launch; Embassy TLS (§8.1 option 1) may follow as the hardware-station on-ramp.
+6. Launch; the hardware-station on-ramp — Embassy TLS (§8.1 option 1) plus the gamma build-time config plumbing (§8.2) — may follow after launch. The `build.rs` embedding in §8.2 is small and independent, so it can also land with step 1.
 
 Steps 1 and 4 are pure OSS and unblocked today. Step 3 is the only new operational component, and it is a thin shim in front of the EMQX Cloud API.
 
