@@ -170,12 +170,42 @@ fn require_nonempty(endpoint: &str, target: &str) -> ClientResult<()> {
 fn require_tcp_target(endpoint: &str, target: &str) -> ClientResult<()> {
     require_nonempty(endpoint, target)?;
 
-    let Some((host, port)) = target.rsplit_once(':') else {
-        return Err(ClientError::unsupported_endpoint(
-            endpoint,
-            "missing TCP port",
-        ));
+    let (host, port) = if let Some(rest) = target.strip_prefix('[') {
+        let Some((host, after_host)) = rest.split_once(']') else {
+            return Err(ClientError::unsupported_endpoint(
+                endpoint,
+                "missing closing bracket for IPv6 TCP host",
+            ));
+        };
+        let Some(port) = after_host.strip_prefix(':') else {
+            return Err(ClientError::unsupported_endpoint(
+                endpoint,
+                "missing TCP port",
+            ));
+        };
+        (host, port)
+    } else {
+        if target.matches(':').count() > 1 {
+            return Err(ClientError::unsupported_endpoint(
+                endpoint,
+                "IPv6 TCP hosts must be bracketed, e.g. tcp://[::1]:7001",
+            ));
+        }
+        let Some((host, port)) = target.split_once(':') else {
+            return Err(ClientError::unsupported_endpoint(
+                endpoint,
+                "missing TCP port",
+            ));
+        };
+        if host.contains(['[', ']']) {
+            return Err(ClientError::unsupported_endpoint(
+                endpoint,
+                "malformed TCP host",
+            ));
+        }
+        (host, port)
     };
+
     if host.is_empty() {
         return Err(ClientError::unsupported_endpoint(
             endpoint,
@@ -268,6 +298,14 @@ mod tests {
         let p = parse_endpoint("tcp://localhost:7001").expect("parse");
         assert_eq!(p.scheme, Scheme::Tcp);
         assert_eq!(p.target, "localhost:7001");
+
+        let p = parse_endpoint("tcp://[::1]:7001").expect("parse");
+        assert_eq!(p.scheme, Scheme::Tcp);
+        assert_eq!(p.target, "[::1]:7001");
+
+        let p = parse_endpoint("tcp://[fe80::1]:7001").expect("parse");
+        assert_eq!(p.scheme, Scheme::Tcp);
+        assert_eq!(p.target, "[fe80::1]:7001");
     }
 
     #[test]
@@ -277,6 +315,10 @@ mod tests {
         assert!(parse_endpoint("tcp://host").is_err());
         assert!(parse_endpoint("tcp://:1234").is_err());
         assert!(parse_endpoint("tcp://host:fast").is_err());
+        assert!(parse_endpoint("tcp://fe80::1").is_err());
+        assert!(parse_endpoint("tcp://[fe80::1]").is_err());
+        assert!(parse_endpoint("tcp://[]:7001").is_err());
+        assert!(parse_endpoint("tcp://[fe80::1:7001").is_err());
         // Empty + empty target.
         assert!(parse_endpoint("").is_err());
         assert!(parse_endpoint("unix://").is_err());
