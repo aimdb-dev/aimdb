@@ -241,7 +241,7 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 | **WebSocket** — `aimdb-websocket-connector` | ✅ Ready | std, wasm |
 | **Serial (COBS/UART)** — `aimdb-serial-connector` | ✅ Ready | std, no_std |
 | **Unix domain socket** — `aimdb-uds-connector` | ✅ Ready | std |
-| **TCP** — `aimdb-tcp-connector` | ✅ Ready | std, no_std client |
+| **TCP** — `aimdb-tcp-connector` | ✅ Ready | std, no_std |
 | **Kafka** | 📋 Planned | std |
 | **Modbus** | 📋 Planned | std, no_std |
 
