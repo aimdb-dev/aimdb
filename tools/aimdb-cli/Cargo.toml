@@ -59,9 +59,11 @@ serde_yaml = { version = "0.9", optional = true }
 
 # `join` only (design 043): HTTP client for the provisioning endpoint + the
 # GitHub device flow, and TOML for the station profile. rustls so released
-# binaries don't depend on a system OpenSSL.
+# binaries don't depend on a system OpenSSL; native roots (system trust
+# store) rather than the bundled webpki-roots, whose CDLA license is not on
+# the deny.toml allowlist.
 reqwest = { version = "0.12", default-features = false, features = [
-    "rustls-tls",
+    "rustls-tls-native-roots",
     "json",
 ], optional = true }
 toml = { version = "0.8", optional = true }
