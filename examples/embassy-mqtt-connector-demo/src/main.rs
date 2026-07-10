@@ -221,7 +221,7 @@ async fn main(spawner: Spawner) {
     // Initialize heap for the allocator
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 49152; // 48KB heap (MQTT + serial AimX server JSON)
+        const HEAP_SIZE: usize = 98304; // 96KB heap (MQTT + serial AimX server JSON)
         static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe {
             let heap_ptr = core::ptr::addr_of_mut!(HEAP);

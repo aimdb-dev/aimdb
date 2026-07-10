@@ -177,11 +177,14 @@ EMQX credential (issue 007) land.
 
 ## 8. Cost
 
-On the reference STM32H563ZI (640 KB RAM / 2 MB flash), the TLS build adds
-~21 KB of statically-allocated RAM (16 640 + 4 096 record buffers, D10) plus
-the handshake's stack transient, and roughly 150–250 KB of flash
-(p256 + rsa + p384 + SHA-2 + embedded-tls). Comfortable here; a smaller
-part could drop `rsa`/`p384` (features are additive pass-throughs) and pin
+On the reference STM32H563ZI (640 KB RAM / 2 MB flash), measured on
+`embassy-mqtt-connector-demo` (`arm-none-eabi-size`, release profile): the
+TLS build adds 21 568 bytes of statically-allocated RAM (16 640 + 4 096
+record buffers, D10, matching the estimate exactly) plus the handshake's
+stack transient, and ~351 KB of flash — p256 + rsa + p384 + SHA-2 +
+embedded-tls, plus the embedded CA and the TLS-path additions to the
+mountain-mqtt fork port. Comfortable here; a smaller part could drop
+`rsa`/`p384` (features are additive pass-throughs) and pin
 its broker CA chain to P-256.
 
 ## 9. Open questions
