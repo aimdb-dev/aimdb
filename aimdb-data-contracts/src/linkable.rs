@@ -49,6 +49,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::{String, ToString};
+    use alloc::vec::Vec;
+
     use crate::{Linkable, SchemaType};
     use serde::{Deserialize, Serialize};
 

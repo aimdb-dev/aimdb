@@ -112,9 +112,9 @@ build:
 test:
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (std)$(NC)\n"
-	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable"
-	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + migratable)$(NC)\n"
-	cargo test --package aimdb-data-contracts --no-default-features --features alloc,migratable
+	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable"
+	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + linkable + migratable)$(NC)\n"
+	cargo test --package aimdb-data-contracts --no-default-features --features alloc,linkable,migratable
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
