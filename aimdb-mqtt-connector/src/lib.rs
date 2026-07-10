@@ -8,6 +8,8 @@
 //!
 //! - `tokio-runtime`: Tokio-based connector using `rumqttc`
 //! - `embassy-runtime`: Embassy connector for embedded systems using `mountain-mqtt`
+//! - `embassy-tls`: TLS (`mqtts://`), broker authentication, DNS, and the
+//!   SNTP time source for the Embassy connector (design 044)
 //! - `tracing`: Debug logging support (std)
 //! - `defmt`: Debug logging support (no_std)
 //!
@@ -102,6 +104,17 @@ pub mod tokio_client;
 
 #[cfg(feature = "embassy-runtime")]
 pub mod embassy_client;
+
+// SNTP wire codec — pure and feature-independent so it is unit-tested on the
+// host; only the `embassy-tls` I/O task consumes it.
+#[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
+pub(crate) mod sntp_codec;
+
+// TLS transport + SNTP time source for the Embassy client (design 044)
+#[cfg(feature = "embassy-tls")]
+pub mod embassy_tls;
+#[cfg(feature = "embassy-tls")]
+pub mod sntp;
 
 // Re-export platform-specific types
 // Both implementations use MqttConnectorBuilder for API consistency

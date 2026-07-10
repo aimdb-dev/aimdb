@@ -71,14 +71,19 @@ use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
 use mountain_mqtt_embassy::mqtt_manager::{self, MqttEvent, Settings};
 
+#[cfg(feature = "embassy-tls")]
+pub use crate::embassy_tls::TlsOptions;
+#[cfg(feature = "embassy-tls")]
+use crate::embassy_tls::{host_is_ip_literal, run_tls};
+
 /// Maximum number of pending MQTT actions and events
-const CHANNEL_SIZE: usize = 32;
+pub(crate) const CHANNEL_SIZE: usize = 32;
 
 /// Buffer size for MQTT packets (4KB)
-const BUFFER_SIZE: usize = 4096;
+pub(crate) const BUFFER_SIZE: usize = 4096;
 
 /// Maximum properties in MQTT packets
-const MAX_PROPERTIES: usize = 16;
+pub(crate) const MAX_PROPERTIES: usize = 16;
 
 /// The runner's collected future type.
 type EmbassyBoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -269,13 +274,38 @@ impl EmbassySourceRaw for MqttSource {
     }
 }
 
+/// Force-`Send + Sync` slot for the TLS materials: [`TlsOptions`] holds
+/// `&'static mut` exclusive resources (TRNG, record buffers), so it is
+/// neither `Sync` nor takeable through the `&self` that
+/// [`ConnectorBuilder::build`] receives without interior mutability.
+///
+/// SAFETY invariant: same single-core cooperative-executor invariant as
+/// [`NetStack`](aimdb_embassy_adapter::connectors::NetStack); the slot is
+/// written by `with_tls` and taken exactly once inside `build()`, both on
+/// that executor.
+#[cfg(feature = "embassy-tls")]
+struct TlsSlot(core::cell::RefCell<Option<TlsOptions>>);
+
+// SAFETY: see the struct-level invariant.
+#[cfg(feature = "embassy-tls")]
+unsafe impl Send for TlsSlot {}
+// SAFETY: see the struct-level invariant.
+#[cfg(feature = "embassy-tls")]
+unsafe impl Sync for TlsSlot {}
+
 /// MQTT connector builder for Embassy with router-based dispatch.
 ///
 /// Collects routes from the database during `build()` and wires the broker
-/// manager + the outbound/inbound pumps.
+/// manager + the outbound/inbound pumps. The broker URL scheme selects the
+/// transport (design 044 D9): `mqtt://` is plain TCP (default port 1883),
+/// `mqtts://` is TLS (default port 8883) and requires both the `embassy-tls`
+/// feature and [`with_tls`](Self::with_tls).
 pub struct MqttConnectorBuilder {
     broker_url: String,
     client_id: String,
+    credentials: Option<(String, String)>,
+    #[cfg(feature = "embassy-tls")]
+    tls: TlsSlot,
     stack: aimdb_embassy_adapter::connectors::NetStack,
 }
 
@@ -283,13 +313,17 @@ impl MqttConnectorBuilder {
     /// Create a new MQTT connector builder for Embassy.
     ///
     /// # Arguments
-    /// * `broker_url` - Broker URL in format `mqtt://host:port`
+    /// * `broker_url` - Broker URL in format `mqtt://host:port` (plain TCP)
+    ///   or `mqtts://host:port` (TLS, see [`with_tls`](Self::with_tls))
     /// * `stack` - The device's network stack (the runtime travels as
     ///   `Arc<dyn RuntimeOps>` and cannot surface it)
     pub fn new(broker_url: impl Into<String>, stack: &'static embassy_net::Stack<'static>) -> Self {
         Self {
             broker_url: broker_url.into(),
             client_id: "aimdb-client".to_string(),
+            credentials: None,
+            #[cfg(feature = "embassy-tls")]
+            tls: TlsSlot(core::cell::RefCell::new(None)),
             // SAFETY: AimDB's Embassy integration requires a single-core
             // cooperative executor (the adapter's module-level invariant);
             // every future touching this stack — including the broker task
@@ -301,6 +335,28 @@ impl MqttConnectorBuilder {
     /// Set the MQTT client ID (should be unique per device).
     pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
         self.client_id = client_id.into();
+        self
+    }
+
+    /// Authenticate with the broker (MQTT CONNECT username/password).
+    ///
+    /// Works on both transports, but note that over `mqtt://` the credential
+    /// transits in cleartext — pair it with `mqtts://` outside a trusted LAN.
+    pub fn with_credentials(
+        mut self,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
+        self.credentials = Some((username.into(), password.into()));
+        self
+    }
+
+    /// Provide the TLS materials for an `mqtts://` broker (design 044 §4).
+    ///
+    /// Required for `mqtts://` URLs; rejected at `build()` for `mqtt://`.
+    #[cfg(feature = "embassy-tls")]
+    pub fn with_tls(self, options: TlsOptions) -> Self {
+        *self.tls.0.borrow_mut() = Some(options);
         self
     }
 }
@@ -332,9 +388,43 @@ impl ConnectorBuilder for MqttConnectorBuilder {
             #[cfg(feature = "defmt")]
             defmt::info!("MQTT: subscribing to {} inbound topics", topics.len());
 
-            // Broker manager task + the channel ends for the pumps.
-            let (action_sender, event_receiver, manager_task) =
-                setup_manager(&self.broker_url, &self.client_id, self.stack, topics)?;
+            let broker = parse_broker_url(&self.broker_url)?;
+            let connection_settings =
+                static_connection_settings(&self.client_id, self.credentials.as_ref());
+
+            // Broker manager task(s) + the channel ends for the pumps.
+            // The URL scheme selects the transport (design 044 D9).
+            #[cfg(feature = "embassy-tls")]
+            let (action_sender, event_receiver, manager_tasks) = {
+                let tls_options = self.tls.0.borrow_mut().take();
+                match (broker.tls, tls_options) {
+                    (true, Some(options)) => setup_tls_manager(
+                        &broker,
+                        options,
+                        connection_settings,
+                        self.stack,
+                        topics,
+                    )?,
+                    (true, None) => {
+                        return Err(build_err("mqtts:// broker URLs require .with_tls(...)"))
+                    }
+                    (false, Some(_)) => {
+                        return Err(build_err(".with_tls(...) requires an mqtts:// broker URL"))
+                    }
+                    (false, None) => {
+                        setup_manager(&broker, connection_settings, self.stack, topics)?
+                    }
+                }
+            };
+            #[cfg(not(feature = "embassy-tls"))]
+            let (action_sender, event_receiver, manager_tasks) = {
+                if broker.tls {
+                    return Err(build_err(
+                        "mqtts:// broker URLs require the `embassy-tls` feature of aimdb-mqtt-connector",
+                    ));
+                }
+                setup_manager(&broker, connection_settings, self.stack, topics)?
+            };
 
             // Outbound publishes + inbound routing ride core's pumps.
             let mut futures = pump_sink(
@@ -351,8 +441,9 @@ impl ConnectorBuilder for MqttConnectorBuilder {
                     receiver: event_receiver,
                 }),
             ));
-            // The broker manager protocol loop (force-`Send` via the adapter).
-            futures.push(manager_task);
+            // The broker manager protocol loop (plus the SNTP time-source
+            // task on the TLS path), force-`Send` via the adapter.
+            futures.extend(manager_tasks);
 
             Ok(futures)
         })
@@ -363,41 +454,73 @@ impl ConnectorBuilder for MqttConnectorBuilder {
     }
 }
 
-/// Set up the static channels + the mountain-mqtt broker manager task, returning
-/// the action sender (outbound), the event receiver (inbound), and the manager
-/// task future (which first queues the topic subscriptions, then runs the broker
-/// loop). Synchronous — no `.await` — so the caller's `build` future stays `Send`.
-fn setup_manager(
-    broker_url: &str,
-    client_id: &str,
-    stack: aimdb_embassy_adapter::connectors::NetStack,
-    topics: Vec<String>,
-) -> Result<(ActionSender, EventReceiver, EmbassyBoxFuture), aimdb_core::DbError> {
-    let build_err = |msg: &str| {
-        #[cfg(feature = "defmt")]
-        defmt::error!("Failed to build MQTT connector: {}", msg);
-        aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", msg))
-    };
+/// Parsed broker endpoint: transport + authority (design 044 D9).
+struct BrokerUrl {
+    tls: bool,
+    host: String,
+    port: u16,
+}
 
-    // Parse the broker URL (add a dummy topic if none, so parsing succeeds).
+fn build_err(msg: &str) -> aimdb_core::DbError {
+    #[cfg(feature = "defmt")]
+    defmt::error!("Failed to build MQTT connector: {}", msg);
+    aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", msg))
+}
+
+/// Parse the broker URL into transport + host + port (`mqtt://` 1883,
+/// `mqtts://` 8883).
+fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> {
+    // Add a dummy topic if none, so parsing succeeds.
     let mut url = broker_url.to_string();
     if !url.contains('/') || url.matches('/').count() < 3 {
         url = format!("{}/dummy", url.trim_end_matches('/'));
     }
     let connector_url = ConnectorUrl::parse(&url).map_err(|_| build_err("Invalid MQTT URL"))?;
-    let host = connector_url.host.clone();
-    let port = connector_url.port.unwrap_or(1883);
+    let tls = match connector_url.scheme.as_str() {
+        "mqtt" => false,
+        "mqtts" => true,
+        _ => return Err(build_err("Broker URL scheme must be mqtt:// or mqtts://")),
+    };
+    let port = connector_url.port.unwrap_or(if tls { 8883 } else { 1883 });
+    Ok(BrokerUrl {
+        tls,
+        host: connector_url.host,
+        port,
+    })
+}
 
-    let broker_ip =
-        Ipv4Addr::from_str(&host).map_err(|_| build_err("Invalid broker IP address"))?;
-    let octets = broker_ip.octets();
-    let broker_addr = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
-
-    // Store client_id in static memory for the 'static lifetime requirement.
+/// Build the `ConnectionSettings<'static>` for MQTT CONNECT, parking the
+/// identity strings in statics for the `'static` lifetime requirement.
+fn static_connection_settings(
+    client_id: &str,
+    credentials: Option<&(String, String)>,
+) -> ConnectionSettings<'static> {
     static CLIENT_ID_STORAGE: OnceLock<String> = OnceLock::new();
-    let client_id_static: &'static str = CLIENT_ID_STORAGE.get_or_init(|| client_id.to_string());
+    static CREDENTIALS_STORAGE: OnceLock<(String, String)> = OnceLock::new();
 
-    // Static channels for MQTT communication.
+    let client_id: &'static str = CLIENT_ID_STORAGE.get_or_init(|| client_id.to_string());
+    match credentials {
+        Some(credentials) => {
+            let credentials: &'static (String, String) =
+                CREDENTIALS_STORAGE.get_or_init(|| credentials.clone());
+            ConnectionSettings::authenticated(
+                client_id,
+                credentials.0.as_str(),
+                credentials.1.as_bytes(),
+            )
+        }
+        None => ConnectionSettings::unauthenticated(client_id),
+    }
+}
+
+/// Sender half of the event channel (used by the broker manager tasks).
+type EventSender = Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>;
+/// Receiver half of the action channel (drained by the broker manager tasks).
+type ActionReceiver = Receiver<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>;
+
+/// Initialise the static action/event channels shared by both transports
+/// (one MQTT connector per firmware — `StaticCell` enforces single init).
+fn init_channels() -> (ActionSender, ActionReceiver, EventSender, EventReceiver) {
     static ACTION_CHANNEL: StaticCell<Channel<NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>> =
         StaticCell::new();
     static EVENT_CHANNEL: StaticCell<
@@ -406,13 +529,34 @@ fn setup_manager(
     let action_channel = ACTION_CHANNEL.init(Channel::new());
     let event_channel = EVENT_CHANNEL.init(Channel::new());
 
-    let action_sender = action_channel.sender();
-    let action_receiver = action_channel.receiver();
-    let event_sender = event_channel.sender();
-    let event_receiver = event_channel.receiver();
+    (
+        action_channel.sender(),
+        action_channel.receiver(),
+        event_channel.sender(),
+        event_channel.receiver(),
+    )
+}
 
-    let connection_settings = ConnectionSettings::unauthenticated(client_id_static);
-    let settings = Settings::new(broker_addr, port);
+/// Set up the plain-TCP broker manager (mountain-mqtt-embassy's `run`),
+/// returning the action sender (outbound), the event receiver (inbound), and
+/// the manager task future (which first queues the topic subscriptions, then
+/// runs the broker loop). Synchronous — no `.await` — so the caller's `build`
+/// future stays `Send`.
+fn setup_manager(
+    broker: &BrokerUrl,
+    connection_settings: ConnectionSettings<'static>,
+    stack: aimdb_embassy_adapter::connectors::NetStack,
+    topics: Vec<String>,
+) -> Result<(ActionSender, EventReceiver, Vec<EmbassyBoxFuture>), aimdb_core::DbError> {
+    let broker_ip = Ipv4Addr::from_str(&broker.host).map_err(|_| {
+        build_err("Invalid broker IP address (plain mqtt:// needs an IPv4 literal)")
+    })?;
+    let octets = broker_ip.octets();
+    let broker_addr = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
+
+    let (action_sender, action_receiver, event_sender, event_receiver) = init_channels();
+
+    let settings = Settings::new(broker_addr, broker.port);
     let network = stack.get();
 
     // Manager task: queue subscriptions, then run the broker loop (never returns).
@@ -449,7 +593,66 @@ fn setup_manager(
         }
     });
 
-    Ok((action_sender, event_receiver, manager_task))
+    Ok((action_sender, event_receiver, alloc::vec![manager_task]))
+}
+
+/// Set up the TLS broker manager ([`run_tls`]) plus the SNTP time-source
+/// task (design 044 §5–§6). Synchronous — no `.await` — so the caller's
+/// `build` future stays `Send`.
+#[cfg(feature = "embassy-tls")]
+fn setup_tls_manager(
+    broker: &BrokerUrl,
+    options: TlsOptions,
+    connection_settings: ConnectionSettings<'static>,
+    stack: aimdb_embassy_adapter::connectors::NetStack,
+    topics: Vec<String>,
+) -> Result<(ActionSender, EventReceiver, Vec<EmbassyBoxFuture>), aimdb_core::DbError> {
+    if host_is_ip_literal(&broker.host) {
+        return Err(build_err(
+            "mqtts:// needs a hostname — certificate verification cannot match an IP literal",
+        ));
+    }
+
+    let (action_sender, action_receiver, event_sender, event_receiver) = init_channels();
+
+    // `Settings` supplies the session cadence and port; its address field is
+    // unused on the TLS path (the host is resolved per attempt, 044 D7).
+    let settings = Settings::new(Ipv4Address::UNSPECIFIED, broker.port);
+    let network = stack.get();
+    let host = broker.host.clone();
+    let sntp_server = options.sntp_server;
+
+    let manager_task = into_box_future(async move {
+        #[cfg(feature = "defmt")]
+        defmt::info!("MQTT-TLS background task starting");
+
+        #[allow(unreachable_code)]
+        {
+            let _: () = run_tls(
+                *network,
+                options,
+                host,
+                topics,
+                connection_settings,
+                settings,
+                event_sender,
+                action_receiver,
+            )
+            .await;
+        }
+    });
+    let sntp_task = into_box_future(async move {
+        #[allow(unreachable_code)]
+        {
+            let _: () = crate::sntp::run(*network, sntp_server).await;
+        }
+    });
+
+    Ok((
+        action_sender,
+        event_receiver,
+        alloc::vec![manager_task, sntp_task],
+    ))
 }
 
 /// Map a QoS level (0/1/2) to mountain-mqtt's `QualityOfService` (2 downgrades to 1).

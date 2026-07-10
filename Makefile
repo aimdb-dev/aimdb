@@ -252,6 +252,8 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + defmt)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + TLS + defmt)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-tls,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (embassy + defmt)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WS protocol$(NC)\n"
