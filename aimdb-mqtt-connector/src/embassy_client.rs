@@ -297,9 +297,9 @@ unsafe impl Sync for TlsSlot {}
 ///
 /// Collects routes from the database during `build()` and wires the broker
 /// manager + the outbound/inbound pumps. The broker URL scheme selects the
-/// transport (design 044 D9): `mqtt://` is plain TCP (default port 1883),
-/// `mqtts://` is TLS (default port 8883) and requires both the `embassy-tls`
-/// feature and [`with_tls`](Self::with_tls).
+/// transport: `mqtt://` is plain TCP (default port 1883), `mqtts://` is TLS
+/// (default port 8883) and requires both the `embassy-tls` feature and
+/// [`with_tls`](Self::with_tls).
 pub struct MqttConnectorBuilder {
     broker_url: String,
     client_id: String,
@@ -351,7 +351,7 @@ impl MqttConnectorBuilder {
         self
     }
 
-    /// Provide the TLS materials for an `mqtts://` broker (design 044 §4).
+    /// Provide the TLS materials for an `mqtts://` broker.
     ///
     /// Required for `mqtts://` URLs; rejected at `build()` for `mqtt://`.
     #[cfg(feature = "embassy-tls")]
@@ -393,7 +393,7 @@ impl ConnectorBuilder for MqttConnectorBuilder {
                 static_connection_settings(&self.client_id, self.credentials.as_ref());
 
             // Broker manager task(s) + the channel ends for the pumps.
-            // The URL scheme selects the transport (design 044 D9).
+            // The URL scheme selects the transport.
             #[cfg(feature = "embassy-tls")]
             let (action_sender, event_receiver, manager_tasks) = {
                 let tls_options = self.tls.0.borrow_mut().take();
@@ -454,7 +454,7 @@ impl ConnectorBuilder for MqttConnectorBuilder {
     }
 }
 
-/// Parsed broker endpoint: transport + authority (design 044 D9).
+/// Parsed broker endpoint: transport + authority.
 struct BrokerUrl {
     tls: bool,
     host: String,
@@ -597,8 +597,8 @@ fn setup_manager(
 }
 
 /// Set up the TLS broker manager ([`run_tls`]) plus the SNTP time-source
-/// task (design 044 §5–§6). Synchronous — no `.await` — so the caller's
-/// `build` future stays `Send`.
+/// task. Synchronous — no `.await` — so the caller's `build` future stays
+/// `Send`.
 #[cfg(feature = "embassy-tls")]
 fn setup_tls_manager(
     broker: &BrokerUrl,
@@ -616,7 +616,7 @@ fn setup_tls_manager(
     let (action_sender, action_receiver, event_sender, event_receiver) = init_channels();
 
     // `Settings` supplies the session cadence and port; its address field is
-    // unused on the TLS path (the host is resolved per attempt, 044 D7).
+    // unused on the TLS path (the host is resolved per attempt instead).
     let settings = Settings::new(Ipv4Address::UNSPECIFIED, broker.port);
     let network = stack.get();
     let host = broker.host.clone();

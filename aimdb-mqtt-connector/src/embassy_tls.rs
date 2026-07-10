@@ -1,4 +1,4 @@
-//! TLS transport for the Embassy MQTT client (design 044).
+//! TLS transport for the Embassy MQTT client.
 //!
 //! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over the Embassy
 //! TCP socket, wrapped in mountain-mqtt's [`ConnectionEmbedded`] so the MQTT
@@ -10,8 +10,8 @@
 //! The session loop ([`handle_messages`], [`State`], [`ChannelEventHandler`])
 //! is a port of mountain-mqtt-embassy's private equivalents (MIT OR
 //! Apache-2.0): upstream `run()` constructs a bare `TcpSocket` internally and
-//! offers no seam for a TLS session (design 044 D6). Keep the loop in sync
-//! with the fork when bumping it.
+//! offers no seam for a TLS session. Keep the loop in sync with the fork when
+//! bumping it.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -53,7 +53,7 @@ use crate::sntp::{self, SntpClock};
 /// covers RSA-4096 leaves with headroom.
 const CERT_BUFFER_SIZE: usize = 4096;
 
-/// TLS materials for a `mqtts://` broker connection (design 044 §4).
+/// TLS materials for a `mqtts://` broker connection.
 ///
 /// All references are `'static`: the session outlives `build()`, so buffers
 /// and the RNG live in `StaticCell`s (or equivalents) owned by the
@@ -155,10 +155,10 @@ impl embedded_io_async::Write for SharedTcp<'_, '_> {
 /// undecrypted bytes on the wire (`can_recv` on the shared socket). Checking
 /// both keeps coalesced packets flowing promptly.
 ///
-/// Known limitation (documented in design 044): wire bytes that decrypt to
-/// *no* application data (unsolicited session tickets, KeyUpdate) make
-/// `receive` wait for the next real record; if the broker stays silent, the
-/// keep-alive lapse tears the session down and the manager reconnects.
+/// Known limitation: wire bytes that decrypt to *no* application data
+/// (unsolicited session tickets, KeyUpdate) make `receive` wait for the next
+/// real record; if the broker stays silent, the keep-alive lapse tears the
+/// session down and the manager reconnects.
 struct TlsSession<'r, 'a, 'b> {
     tls: TlsConnection<'b, SharedTcp<'r, 'a>, Aes128GcmSha256>,
     socket: SharedTcp<'r, 'a>,
@@ -204,7 +204,7 @@ impl Connection for TlsSession<'_, '_, '_> {
 /// [`CryptoProvider`] pairing the injected TRNG with `rustpki` certificate
 /// verification (time from [`SntpClock`]). Client-certificate signing is
 /// deliberately absent — the mesh authenticates with MQTT credentials
-/// (design 044 non-goals).
+/// instead.
 struct TrngProvider<'a> {
     rng: &'a mut dyn CryptoRngCore,
     verifier: CertVerifier<'static, Aes128GcmSha256, SntpClock, CERT_BUFFER_SIZE>,
@@ -227,7 +227,7 @@ impl CryptoProvider for TrngProvider<'_> {
 /// The TLS broker manager: resolve → TCP → TLS handshake → MQTT session,
 /// reconnecting forever with the same [`Settings`] cadence as the plain
 /// path's `mqtt_manager::run` (`settings.address` is unused — the TLS path
-/// resolves `host` per attempt, design 044 D7).
+/// resolves `host` per attempt instead).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_tls(
     stack: Stack<'static>,
@@ -255,7 +255,7 @@ pub(crate) async fn run_tls(
 
     loop {
         // Certificate validity needs real time — hold the first handshake
-        // until SNTP has synced (design 044 D5).
+        // until SNTP has synced.
         if sntp::unix_now().is_none() {
             #[cfg(feature = "defmt")]
             defmt::info!("MQTT-TLS: waiting for SNTP time sync...");

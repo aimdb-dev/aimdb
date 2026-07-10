@@ -9,7 +9,7 @@
 //! - `tokio-runtime`: Tokio-based connector using `rumqttc`
 //! - `embassy-runtime`: Embassy connector for embedded systems using `mountain-mqtt`
 //! - `embassy-tls`: TLS (`mqtts://`), broker authentication, DNS, and the
-//!   SNTP time source for the Embassy connector (design 044)
+//!   SNTP time source for the Embassy connector
 //! - `tracing`: Debug logging support (std)
 //! - `defmt`: Debug logging support (no_std)
 //!
@@ -110,7 +110,7 @@ pub mod embassy_client;
 #[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
 pub(crate) mod sntp_codec;
 
-// TLS transport + SNTP time source for the Embassy client (design 044)
+// TLS transport + SNTP time source for the Embassy client
 #[cfg(feature = "embassy-tls")]
 pub mod embassy_tls;
 #[cfg(feature = "embassy-tls")]
