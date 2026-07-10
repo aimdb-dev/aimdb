@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Generated `Cargo.toml` for manifests mixing `serialization = "json"` and `serialization = "postcard"` records omitted the `serde_json` dependency (postcard presence suppressed it), so the generated crate failed to compile under the `std` feature. `serde_json` is now emitted whenever any record uses JSON serialization, independent of postcard (#155).
+
 ### Changed (breaking)
 
 - Emitted task scaffolds now use `Producer<T>` / `Consumer<T>` (no `, TokioAdapter` second parameter) and emitted doc tables show the same form, matching the M14 cleanup in `aimdb-core` (Design 029). Regenerate downstream scaffolds after upgrading.

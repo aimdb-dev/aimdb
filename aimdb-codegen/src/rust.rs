@@ -127,6 +127,9 @@ pub fn generate_cargo_toml(state: &ArchitectureState) -> String {
     let has_non_custom_ser = state.records.iter().any(|r| {
         r.serialization.as_ref().unwrap_or(&SerializationType::Json) != &SerializationType::Custom
     });
+    let has_json = state.records.iter().any(|r| {
+        r.serialization.as_ref().unwrap_or(&SerializationType::Json) == &SerializationType::Json
+    });
     let has_postcard = state
         .records
         .iter()
@@ -153,7 +156,7 @@ pub fn generate_cargo_toml(state: &ArchitectureState) -> String {
 
     // Build std feature deps
     let mut std_deps = vec!["\"aimdb-data-contracts/std\"".to_string()];
-    if has_non_custom_ser && !has_postcard {
+    if has_json {
         std_deps.push("\"serde_json\"".to_string());
     }
     if has_observable {
@@ -162,7 +165,7 @@ pub fn generate_cargo_toml(state: &ArchitectureState) -> String {
     let std_features = std_deps.join(", ");
 
     let mut optional_deps = String::new();
-    if has_non_custom_ser && !has_postcard {
+    if has_json {
         optional_deps.push_str("serde_json = { version = \"1.0\", optional = true }\n");
     }
     if has_postcard {
@@ -2216,6 +2219,75 @@ url = "sensors/{variant}/observation"
         assert!(
             toml.contains("linkable"),
             "Missing linkable feature:\n{toml}"
+        );
+    }
+
+    const MIXED_CODEC_TOML: &str = r#"
+[project]
+name = "mixed-codec"
+
+[meta]
+aimdb_version = "1.2.0"
+created_at = "2026-07-10T00:00:00Z"
+last_modified = "2026-07-10T00:00:00Z"
+
+[[records]]
+name = "JsonReading"
+buffer = "SpmcRing"
+capacity = 16
+key_prefix = "readings.json."
+key_variants = ["a"]
+serialization = "json"
+
+[[records.fields]]
+name = "value"
+type = "f32"
+description = "Reading value"
+
+[[records]]
+name = "PostcardReading"
+buffer = "SpmcRing"
+capacity = 16
+key_prefix = "readings.postcard."
+key_variants = ["a"]
+serialization = "postcard"
+
+[[records.fields]]
+name = "value"
+type = "f32"
+description = "Reading value"
+"#;
+
+    #[test]
+    fn cargo_toml_mixed_json_postcard_has_both_deps() {
+        let state = ArchitectureState::from_toml(MIXED_CODEC_TOML).unwrap();
+        let toml = generate_cargo_toml(&state);
+        assert!(
+            toml.contains("serde_json = { version = \"1.0\", optional = true }"),
+            "JSON record present but serde_json dep missing:\n{toml}"
+        );
+        assert!(
+            toml.contains("\"serde_json\""),
+            "serde_json missing from std feature deps:\n{toml}"
+        );
+        assert!(
+            toml.contains("postcard = { version = \"1.0\""),
+            "Postcard record present but postcard dep missing:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn cargo_toml_postcard_only_omits_serde_json() {
+        let mut state = ArchitectureState::from_toml(MIXED_CODEC_TOML).unwrap();
+        state.records.retain(|r| r.name == "PostcardReading");
+        let toml = generate_cargo_toml(&state);
+        assert!(
+            !toml.contains("serde_json"),
+            "Postcard-only crate should not depend on serde_json:\n{toml}"
+        );
+        assert!(
+            toml.contains("postcard = { version = \"1.0\""),
+            "Missing postcard dep:\n{toml}"
         );
     }
 
