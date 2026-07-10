@@ -22,3 +22,6 @@ target
 
 # Environment files
 .env
+
+# Dev files
+dev

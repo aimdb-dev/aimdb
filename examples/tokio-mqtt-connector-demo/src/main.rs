@@ -33,6 +33,22 @@
 //! ```bash
 //! mosquitto_pub -h localhost -t 'commands/temp/indoor' -m '{"action":"read","sensor_id":"indoor-001"}'
 //! ```
+//!
+//! ## TLS (mqtts://)
+//!
+//! The broker URL is read from `MQTT_BROKER_URL` (defaults to
+//! `mqtt://localhost:1883`). To exercise the `mqtts://` TLS transport against
+//! a local mosquitto broker configured with a self-signed CA:
+//!
+//! ```bash
+//! SSL_CERT_FILE=/path/to/ca.crt \
+//!     MQTT_BROKER_URL=mqtts://localhost:8883 \
+//!     cargo run -p tokio-mqtt-connector-demo --features tokio-runtime
+//! ```
+//!
+//! `SSL_CERT_FILE` is honored by the native-tls/OpenSSL backend on Linux to
+//! extend the trusted roots without touching the system store — required
+//! because a self-signed broker cert won't otherwise validate.
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
@@ -130,12 +146,16 @@ async fn main() -> DbResult<()> {
 
     let runtime = Arc::new(TokioAdapter::new()?);
 
+    let broker_url = std::env::var("MQTT_BROKER_URL")
+        .unwrap_or_else(|_| "mqtt://localhost:1883".to_string());
+
     println!("MQTT Connector Demo");
     println!("===================");
+    println!("Broker: {broker_url}");
     println!();
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883")
+        aimdb_mqtt_connector::MqttConnector::new(broker_url)
             .with_client_id("tokio-demo-multi-sensor"),
     );
 
