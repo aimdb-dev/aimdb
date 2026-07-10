@@ -146,8 +146,8 @@ async fn main() -> DbResult<()> {
 
     let runtime = Arc::new(TokioAdapter::new()?);
 
-    let broker_url = std::env::var("MQTT_BROKER_URL")
-        .unwrap_or_else(|_| "mqtt://localhost:1883".to_string());
+    let broker_url =
+        std::env::var("MQTT_BROKER_URL").unwrap_or_else(|_| "mqtt://localhost:1883".to_string());
 
     println!("MQTT Connector Demo");
     println!("===================");
