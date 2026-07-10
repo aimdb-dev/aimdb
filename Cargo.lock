@@ -4962,7 +4962,6 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
  "aimdb-mqtt-connector",
- "base64 0.22.1",
  "cortex-m",
  "cortex-m-rt",
  "critical-section",
