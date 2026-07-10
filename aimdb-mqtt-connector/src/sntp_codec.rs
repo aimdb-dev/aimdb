@@ -9,24 +9,32 @@ const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
 /// SNTP packets are exactly 48 bytes (no authenticator).
 pub(crate) const PACKET_SIZE: usize = 48;
 
-/// A client request: LI = 0, VN = 4, Mode = 3 (client), everything else zero.
-/// (RFC 4330 §5: a client may leave all timestamps zero and use only the
-/// reply's transmit timestamp.)
-pub(crate) fn request() -> [u8; PACKET_SIZE] {
+/// Replies mapping below this Unix time (2025-01-01T00:00:00Z) are rejected
+/// as implausible: everything this clock helps validate postdates it, and a
+/// "successful" sync to a bogus early time would poison certificate checks.
+pub(crate) const MIN_UNIX_SECS: u64 = 1_735_689_600;
+
+/// A client request: LI = 0, VN = 4, Mode = 3 (client); `nonce` rides in the
+/// transmit-timestamp field. (RFC 4330 §5: the server echoes that field back
+/// in the reply's originate timestamp, correlating reply to request.)
+pub(crate) fn request(nonce: u64) -> [u8; PACKET_SIZE] {
     let mut packet = [0u8; PACKET_SIZE];
     packet[0] = 0x23; // 00_100_011: LI 0, VN 4, Mode 3
+    packet[40..48].copy_from_slice(&nonce.to_be_bytes());
     packet
 }
 
 /// Parse a server reply into Unix seconds, or `None` if the packet is not a
-/// plausible time: wrong size/mode, unsynchronized server (LI = 3), invalid
-/// stratum (0 is a kiss-of-death, > 15 is reserved), or a zero/pre-Unix-epoch
-/// transmit timestamp. Sub-second fraction is dropped — certificate validity
+/// plausible answer to our request: wrong size/mode, originate timestamp not
+/// echoing the request `nonce` (rejects blind spoofs and stale replies from
+/// earlier attempts), unsynchronized server (LI = 3), invalid stratum (0 is a
+/// kiss-of-death, > 15 is reserved), or a transmit timestamp before
+/// [`MIN_UNIX_SECS`]. Sub-second fraction is dropped — certificate validity
 /// has day granularity.
 ///
 /// The 32-bit seconds field wraps in 2036 (NTP era 1); like every plain SNTP
 /// consumer this treats all timestamps as era 0.
-pub(crate) fn parse_reply(packet: &[u8]) -> Option<u64> {
+pub(crate) fn parse_reply(packet: &[u8], nonce: u64) -> Option<u64> {
     if packet.len() < PACKET_SIZE {
         return None;
     }
@@ -36,57 +44,71 @@ pub(crate) fn parse_reply(packet: &[u8]) -> Option<u64> {
     if leap == 3 || mode != 4 || stratum == 0 || stratum > 15 {
         return None;
     }
+    // Originate timestamp (bytes 24..32) must echo the request's transmit
+    // timestamp — our nonce.
+    if packet[24..32] != nonce.to_be_bytes() {
+        return None;
+    }
     // Transmit timestamp, seconds part (bytes 40..44).
     let ntp_secs = u64::from(u32::from_be_bytes([
         packet[40], packet[41], packet[42], packet[43],
     ]));
-    if ntp_secs == 0 {
-        return None;
-    }
-    ntp_secs.checked_sub(NTP_UNIX_OFFSET)
+    let unix_secs = ntp_secs.checked_sub(NTP_UNIX_OFFSET)?;
+    (unix_secs >= MIN_UNIX_SECS).then_some(unix_secs)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const NONCE: u64 = 0x1122_3344_5566_7788;
+
     fn reply_with(transmit_secs: u32) -> [u8; PACKET_SIZE] {
         let mut packet = [0u8; PACKET_SIZE];
         packet[0] = 0x24; // LI 0, VN 4, Mode 4 (server)
         packet[1] = 2; // stratum 2
+        packet[24..32].copy_from_slice(&NONCE.to_be_bytes()); // originate = echoed nonce
         packet[40..44].copy_from_slice(&transmit_secs.to_be_bytes());
         packet
     }
 
     #[test]
     fn request_header() {
-        let packet = request();
+        let packet = request(NONCE);
         assert_eq!(packet[0], 0x23);
-        assert!(packet[1..].iter().all(|&b| b == 0));
+        assert!(packet[1..40].iter().all(|&b| b == 0));
+        assert_eq!(packet[40..48], NONCE.to_be_bytes()); // transmit = nonce
     }
 
     #[test]
     fn parses_valid_reply() {
         // 2026-01-01T00:00:00Z = Unix 1767225600 = NTP 3976214400
-        assert_eq!(parse_reply(&reply_with(3_976_214_400)), Some(1_767_225_600));
+        assert_eq!(
+            parse_reply(&reply_with(3_976_214_400), NONCE),
+            Some(1_767_225_600)
+        );
     }
 
     #[test]
     fn rejects_bad_packets() {
-        assert_eq!(parse_reply(&[0u8; 40]), None); // truncated
+        assert_eq!(parse_reply(&[0u8; 40], NONCE), None); // truncated
         let mut p = reply_with(3_976_214_400);
         p[0] = 0x23; // mode 3 (client) echoed back
-        assert_eq!(parse_reply(&p), None);
+        assert_eq!(parse_reply(&p, NONCE), None);
         let mut p = reply_with(3_976_214_400);
         p[0] |= 0xC0; // LI 3: clock unsynchronized
-        assert_eq!(parse_reply(&p), None);
+        assert_eq!(parse_reply(&p, NONCE), None);
         let mut p = reply_with(3_976_214_400);
         p[1] = 0; // kiss-of-death
-        assert_eq!(parse_reply(&p), None);
+        assert_eq!(parse_reply(&p, NONCE), None);
         let mut p = reply_with(3_976_214_400);
         p[1] = 16; // reserved stratum
-        assert_eq!(parse_reply(&p), None);
-        assert_eq!(parse_reply(&reply_with(0)), None); // zero timestamp
-        assert_eq!(parse_reply(&reply_with(1)), None); // pre-Unix-epoch
+        assert_eq!(parse_reply(&p, NONCE), None);
+        // wrong nonce: blind spoof or stale reply from an earlier attempt
+        assert_eq!(parse_reply(&reply_with(3_976_214_400), NONCE ^ 1), None);
+        assert_eq!(parse_reply(&reply_with(0), NONCE), None); // zero timestamp
+        assert_eq!(parse_reply(&reply_with(1), NONCE), None); // pre-Unix-epoch
+                                                              // pre-2025 (NTP for 2020-01-01): below the plausibility floor
+        assert_eq!(parse_reply(&reply_with(3_786_825_600), NONCE), None);
     }
 }

@@ -23,8 +23,11 @@ static BOOT_UNIX_SECS: AtomicU32 = AtomicU32::new(0);
 
 /// NTP server port.
 const SNTP_PORT: u16 = 123;
-/// Fixed local port for the client socket (smoltcp cannot bind port 0).
-const LOCAL_PORT: u16 = 55123;
+/// Local ephemeral-port range for the client socket. smoltcp cannot bind
+/// port 0, so "random source port" is randomized here per attempt — a reply
+/// must land on the right port *and* echo the request nonce to be accepted.
+const LOCAL_PORT_BASE: u16 = 49152;
+const LOCAL_PORT_SPAN: u16 = 16384;
 /// How long to wait for a server reply before treating the sync as failed.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Retry cadence until the first successful sync (TLS is blocked on it).
@@ -59,12 +62,27 @@ impl embedded_tls::TlsClock for SntpClock {
 pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
     loop {
         match sync_once(stack, server).await {
+            // 0 is the "unsynced" sentinel and anything above u32::MAX would
+            // truncate (year 2106): store neither — treat the sync as failed
+            // rather than poisoning the clock and sleeping an hour on it.
             Ok(unix_secs) => {
-                let boot = unix_secs.saturating_sub(Instant::now().as_secs());
-                BOOT_UNIX_SECS.store(boot as u32, Ordering::Relaxed);
-                #[cfg(feature = "defmt")]
-                defmt::info!("SNTP: synced, unix time {}", unix_secs);
-                Timer::after(RESYNC_INTERVAL).await;
+                match u32::try_from(unix_secs.saturating_sub(Instant::now().as_secs())) {
+                    Ok(boot @ 1..) => {
+                        BOOT_UNIX_SECS.store(boot, Ordering::Relaxed);
+                        #[cfg(feature = "defmt")]
+                        defmt::info!("SNTP: synced, unix time {}", unix_secs);
+                        Timer::after(RESYNC_INTERVAL).await;
+                    }
+                    _ => {
+                        #[cfg(feature = "defmt")]
+                        defmt::warn!(
+                            "SNTP: implausible time {} from {}, retrying",
+                            unix_secs,
+                            server
+                        );
+                        Timer::after(RETRY_INTERVAL).await;
+                    }
+                }
             }
             Err(error) => {
                 #[cfg(feature = "defmt")]
@@ -90,12 +108,30 @@ pub(crate) enum SntpError {
     InvalidReply,
 }
 
+/// Best-effort request nonce: the hardware TRNG belongs to the TLS session
+/// (injected via `TlsOptions`), so unpredictability comes from the tick
+/// counter through a splitmix64 finalizer. Enough to defeat *blind* reply
+/// spoofing — an off-path attacker cannot observe when the request fired —
+/// while an on-path attacker defeats unauthenticated NTP regardless.
+fn request_nonce() -> u64 {
+    let mut z = Instant::now()
+        .as_ticks()
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 async fn sync_once(stack: Stack<'static>, server: &str) -> Result<u64, SntpError> {
     let addresses = stack
         .dns_query(server, DnsQueryType::A)
         .await
         .map_err(|_| SntpError::Resolve)?;
     let address = *addresses.first().ok_or(SntpError::Resolve)?;
+    let server_endpoint = IpEndpoint::new(address, SNTP_PORT);
+
+    let nonce = request_nonce();
+    let local_port = LOCAL_PORT_BASE + (nonce >> 48) as u16 % LOCAL_PORT_SPAN;
 
     let mut rx_meta = [PacketMetadata::EMPTY; 2];
     let mut tx_meta = [PacketMetadata::EMPTY; 2];
@@ -108,18 +144,24 @@ async fn sync_once(stack: Stack<'static>, server: &str) -> Result<u64, SntpError
         &mut tx_meta,
         &mut tx_buffer,
     );
-    socket.bind(LOCAL_PORT).map_err(|_| SntpError::Send)?;
+    socket.bind(local_port).map_err(|_| SntpError::Send)?;
 
     socket
-        .send_to(&sntp_codec::request(), IpEndpoint::new(address, SNTP_PORT))
+        .send_to(&sntp_codec::request(nonce), server_endpoint)
         .await
         .map_err(|_| SntpError::Send)?;
 
     let mut reply = [0u8; sntp_codec::PACKET_SIZE];
-    let (len, _meta) = with_timeout(REPLY_TIMEOUT, socket.recv_from(&mut reply))
+    let (len, meta) = with_timeout(REPLY_TIMEOUT, socket.recv_from(&mut reply))
         .await
         .map_err(|_| SntpError::Timeout)?
         .map_err(|_| SntpError::InvalidReply)?;
 
-    sntp_codec::parse_reply(&reply[..len]).ok_or(SntpError::InvalidReply)
+    // Only the queried server may answer; the nonce check inside
+    // `parse_reply` covers senders spoofing that source address.
+    if meta.endpoint != server_endpoint {
+        return Err(SntpError::InvalidReply);
+    }
+
+    sntp_codec::parse_reply(&reply[..len], nonce).ok_or(SntpError::InvalidReply)
 }

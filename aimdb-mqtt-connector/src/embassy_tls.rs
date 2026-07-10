@@ -16,7 +16,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::net::Ipv4Addr;
+use core::net::IpAddr;
 
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
@@ -53,6 +53,13 @@ use crate::sntp::{self, SntpClock};
 /// covers RSA-4096 leaves with headroom.
 const CERT_BUFFER_SIZE: usize = 4096;
 
+/// Minimum TLS record read buffer: a TLS 1.3 peer may send full-size records
+/// (2^14 payload + record overhead) regardless of our `max_fragment_length`
+/// offer, and `embedded-tls` fails any record larger than the buffer — a
+/// smaller buffer works until the first big record, then reconnect-loops.
+/// Enforced at `build()` so undersizing fails loudly instead.
+pub(crate) const READ_BUF_MIN: usize = 16_640;
+
 /// TLS materials for a `mqtts://` broker connection.
 ///
 /// All references are `'static`: the session outlives `build()`, so buffers
@@ -71,9 +78,9 @@ impl TlsOptions {
     ///
     /// * `rng` — CSPRNG for the handshake; on STM32 the hardware TRNG
     ///   (`embassy_stm32::rng::Rng` implements `CryptoRngCore`).
-    /// * `read_buf` — TLS record read buffer. 16 640 bytes recommended: a
+    /// * `read_buf` — TLS record read buffer. At least 16 640 bytes (a
     ///   TLS 1.3 peer may send full-size records regardless of our
-    ///   `max_fragment_length` offer.
+    ///   `max_fragment_length` offer); `build()` rejects smaller buffers.
     /// * `write_buf` — TLS record write buffer; 4 096 bytes is plenty for
     ///   MQTT-sized writes.
     pub fn new(
@@ -381,10 +388,19 @@ async fn resolve(stack: Stack<'static>, host: &str) -> Option<IpAddress> {
     }
 }
 
-/// SNI requires a name, not an address — used by `build()` to reject broker
-/// URLs that can never verify.
-pub(crate) fn host_is_ip_literal(host: &str) -> bool {
-    host.parse::<Ipv4Addr>().is_ok()
+/// Parse the broker host as an IP literal (with or without URL-style
+/// brackets, `[::1]`). `build()` uses this to vet `mqtts://` hosts:
+/// certificate verification prefers a DNS name, but an IPv4 literal can
+/// still pass through `rustpki`'s CN fallback when a private CA pins the
+/// dotted quad there (the dev bench does) — allowed with a warning. An IPv6
+/// literal can never match (the verifier's hostname charset has no `:`) and
+/// is rejected.
+pub(crate) fn host_ip_literal(host: &str) -> Option<IpAddr> {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<IpAddr>().ok()
 }
 
 // --- Ported session loop (see module doc) ---------------------------------

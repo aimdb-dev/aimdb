@@ -74,7 +74,7 @@ use mountain_mqtt_embassy::mqtt_manager::{self, MqttEvent, Settings};
 #[cfg(feature = "embassy-tls")]
 pub use crate::embassy_tls::TlsOptions;
 #[cfg(feature = "embassy-tls")]
-use crate::embassy_tls::{host_is_ip_literal, run_tls};
+use crate::embassy_tls::{host_ip_literal, run_tls, READ_BUF_MIN};
 
 /// Maximum number of pending MQTT actions and events
 pub(crate) const CHANNEL_SIZE: usize = 32;
@@ -607,9 +607,25 @@ fn setup_tls_manager(
     stack: aimdb_embassy_adapter::connectors::NetStack,
     topics: Vec<String>,
 ) -> Result<(ActionSender, EventReceiver, Vec<EmbassyBoxFuture>), aimdb_core::DbError> {
-    if host_is_ip_literal(&broker.host) {
+    match host_ip_literal(&broker.host) {
+        Some(core::net::IpAddr::V6(_)) => {
+            return Err(build_err(
+                "mqtts:// with an IPv6 literal can never pass certificate verification — use a hostname",
+            ));
+        }
+        Some(core::net::IpAddr::V4(_)) => {
+            // Verifies only via the certificate's CN — private-CA bench
+            // setups pin the IP there; public CAs won't issue such certs.
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "MQTT-TLS: broker host is an IP literal; the certificate must carry it in CN — prefer a hostname"
+            );
+        }
+        None => {}
+    }
+    if options.read_buf.len() < READ_BUF_MIN {
         return Err(build_err(
-            "mqtts:// needs a hostname — certificate verification cannot match an IP literal",
+            "TLS read buffer too small — a TLS 1.3 peer may send 16 KB records; provide at least 16 640 bytes",
         ));
     }
 

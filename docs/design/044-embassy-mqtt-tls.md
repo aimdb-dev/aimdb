@@ -1,19 +1,20 @@
 # 044 — Embassy MQTT client: TLS
 
-**Status:** 🚧 Implemented on `feat/embassy-mqtt-tls` (hardware verification pending)
+**Status:** 🚧 Implemented on `feat/embassy-mqtt-tls-connector` (hardware verification pending)
 
 **Scope:** the `embassy-tls` feature of
 [`aimdb-mqtt-connector`](../../aimdb-mqtt-connector) — TLS, broker
 authentication, DNS resolution, and an SNTP time source for the Embassy MQTT
-client — plus the `weather-station-gamma` wiring that consumes it. Resolves
-the open problem in [042 §8.1](./042-public-weather-mesh-flagship.md)
-(option 1, recommended there) and issue `000-wp7-embassy-mqtt-tls`.
+client — plus the `embassy-mqtt-connector-demo` wiring that consumes it.
+Resolves the open problem in
+[042 §8.1](./042-public-weather-mesh-flagship.md) (option 1, recommended
+there) and issue `000-wp7-embassy-mqtt-tls`.
 
-**Consumers:** `weather-station-gamma`
-([`examples/weather-mesh-demo`](../../examples/weather-mesh-demo)) today;
-the MCU station template (issue 006, `aimdb-weather-mesh` repo) once it
-tracks this. The hub/cloud path already has TLS via the Tokio client
-(`rumqttc`, `use-native-tls`) and is untouched.
+**Consumers:** [`examples/embassy-mqtt-connector-demo`](../../examples/embassy-mqtt-connector-demo)
+(`tls` feature) today; `weather-station-gamma` and the MCU station template
+(issue 006, `aimdb-weather-mesh` repo) once they track this. The hub/cloud
+path already has TLS via the Tokio client (`rumqttc`, `use-native-tls`) and
+is untouched.
 
 ---
 
@@ -46,16 +47,16 @@ client also needs DNS resolution.
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | TLS via **`embedded-tls` 0.19** (TLS 1.3 only), behind a new `embassy-tls` cargo feature. | The only maintained pure-Rust `no_std` TLS 1.3 client; its `embedded-io-async` 0.7 traits match our embassy-net pin exactly, so the session wraps the existing `TcpSocket` and slots under mountain-mqtt's `ConnectionEmbedded` unchanged. TLS 1.3-only is acceptable: EMQX supports it, and this client exists for the flagship path. |
+| D1 | TLS via **`embedded-tls` 0.19** (TLS 1.3 only), behind a new `embassy-tls` cargo feature. | The only maintained pure-Rust `no_std` TLS 1.3 client; its `embedded-io-async` 0.7 traits match our embassy-net pin exactly, so the session wraps the existing `TcpSocket` and slots under mountain-mqtt's `Connection` seam unchanged. TLS 1.3-only is acceptable: EMQX supports it, and this client exists for the flagship path. |
 | D2 | Certificate verification via embedded-tls's **`rustpki`** verifier (pure Rust: `der` + `p256`, plus `rsa` and `p384` enabled), against a **root CA the firmware embeds** (DER, supplied by the application). | The `webpki` alternative drags `ring` (C, painful on thumbv8m). `rsa`+`p384` cost flash but make public CA chains (e.g. Let's Encrypt, both its RSA and ECDSA/P-384 intermediates) verify out of the box — 2 MB parts don't care. The station profile (043 §4) carries no CA today, so distribution is the firmware's job; see §9. |
 | D3 | Entropy is **injected**: `TlsOptions.rng: &'static mut dyn CryptoRngCore` (rand_core 0.6). | The connector cannot depend on `embassy-stm32` (it is chip-agnostic); the application owns the TRNG. `embassy_stm32::rng::Rng` implements the trait directly, and `&mut dyn CryptoRngCore` satisfies embedded-tls's `CryptoRngCore` bound via rand_core's blanket impls. |
 | D4 | Time via a **connector-internal SNTP task** (embassy-net UDP), spawned automatically with the TLS manager; a global monotonic-anchored Unix offset backs the `TlsClock` impl. | The board has no RTC; SNTP is 48 bytes of UDP. Making the connector spawn it keeps "TLS just works" true for consumers — no extra app wiring, no way to forget it. The offset is an `AtomicU32` anchored to `embassy_time::Instant`, so one sync serves all future handshakes; the task re-syncs hourly to bound drift. |
 | D5 | The TLS handshake **waits for time sync** before connecting. | `rustpki` skips validity checking when the clock returns `None` — silently accepting expired/not-yet-valid certs on cold boot is worse than a delayed connect. Startup order becomes DHCP → SNTP → TLS, each logged over defmt. |
-| D6 | The TLS path runs a **connector-local port of mountain-mqtt-embassy's manager loop** (`run_tls`); the plain-TCP path keeps calling upstream `run()` unchanged. | Upstream `run()` constructs a bare `TcpSocket` internally — there is no seam to insert a TLS session. Porting the ~100-line loop into `aimdb-mqtt-connector` (reusing the fork's public `Settings`, `MqttEvent`, `ClientNoQueue`, `ConnectionEmbedded`) keeps the fork delta minimal and honours the WP7 acceptance criterion that the local plain-TCP demo path is untouched. |
-| D7 | Broker **hostname resolution via embassy-net DNS**, per connection attempt, on the TLS path only. SNI and hostname verification use the URL host; `mqtts://` with an **IP literal is rejected at `build()`**. | Serverless brokers are DNS names and records can change between reconnects. An IP-literal `mqtts://` URL can never pass `rustpki`'s hostname matching (it compares DNS names; with no name, only a cert with *no* names at all would match) — failing loudly at build beats a forever-retrying handshake on a headless board. The plain path stays IPv4-literal-only: unchanged is the contract. |
+| D6 | The TLS path runs a **connector-local port of mountain-mqtt-embassy's manager loop** (`run_tls`); the plain-TCP path keeps calling upstream `run()` unchanged. | Upstream `run()` constructs a bare `TcpSocket` internally — there is no seam to insert a TLS session. Porting the ~100-line loop into `aimdb-mqtt-connector` (reusing the fork's public `Settings`, `MqttEvent`, `ClientNoQueue`) keeps the fork delta minimal and honours the WP7 acceptance criterion that the local plain-TCP demo path is untouched. |
+| D7 | Broker **hostname resolution via embassy-net DNS**, per connection attempt, on the TLS path only. SNI and hostname verification use the URL host; `mqtts://` with an **IPv6 literal is rejected at `build()`**, an IPv4 literal is allowed with a defmt warning. | Serverless brokers are DNS names and records can change between reconnects. `rustpki` matches SAN DNS names and falls back to the CN, so an IPv4 literal verifies when a private CA pins the dotted quad in the CN (the `dev/mosquitto` bench does; public CAs won't issue such certs). An IPv6 literal can never match — the matcher's hostname charset has no `:` — and failing loudly at build beats a forever-retrying handshake on a headless board. The plain path stays IPv4-literal-only: unchanged is the contract. |
 | D8 | Authentication is **orthogonal to TLS**: `MqttConnectorBuilder::with_credentials(username, password)` feeds MQTT CONNECT on both paths. The fork gains upstream 0.4's `ConnectionSettings::with_auth`/`authenticated` constructors — nothing else. | The struct always had the fields; only constructors were missing at our 0.2 fork point. Mirroring upstream's exact API keeps an eventual fork retirement mechanical. Credentials over plain TCP transit cleartext — acceptable on the local demo LAN, and the flagship profile is `mqtts://`. |
 | D9 | **URL scheme selects the transport**: `mqtt://` (default port 1883, plain) vs `mqtts://` (default 8883, TLS). `mqtts://` without `with_tls(...)` is a build error, as is `with_tls` on `mqtt://`. | Same convention as the Tokio client and every MQTT tool; the profile's `broker.url` flows through unmodified. Failing loudly at `build()` beats a connect-time surprise on a headless board. |
-| D10 | TLS record buffers are **application-provided** (`&'static mut [u8]` in `TlsOptions`; 16 640 read / 4 096 write recommended). | A 16 KB read buffer is the price of correctness (a TLS 1.3 peer may send full-size records regardless of our `max_fragment_length` offer). Hiding it inside the connector would bloat every embassy-mqtt user and take sizing away from the one party that knows the board. |
+| D10 | TLS record buffers are **application-provided** (`&'static mut [u8]` in `TlsOptions`; 16 640 read minimum — enforced at `build()` — and 4 096 write recommended). | A 16 KB read buffer is the price of correctness (a TLS 1.3 peer may send full-size records regardless of our `max_fragment_length` offer); an undersized one works until the first big record, then reconnect-loops, so `build()` rejects it loudly. Hiding the buffers inside the connector would bloat every embassy-mqtt user and take sizing away from the one party that knows the board. |
 
 ## 3. Non-goals
 
@@ -66,11 +67,10 @@ client also needs DNS resolution.
   at weather cadence that is fine.
 - **TLS or DNS for the plain-TCP path** — unchanged by design (D6, D7).
 - **Tokio client changes** — `mqtts://` already works there.
-- **Removing gamma's/the template's `mqtt://`-only guard sight unseen** —
-  gamma's guard is lifted here because the same commit wires the TLS it
-  guards against; the *template's* guard (WP7 scope item 3) falls only after
-  issue 006 lands and an end-to-end `mqtts://` profile run passes on
-  hardware.
+- **Removing gamma's/the template's `mqtt://`-only guard** — both stay
+  until their own TLS wiring lands (issue 006 for the template, plus an
+  end-to-end `mqtts://` profile run on hardware); this design wires the
+  connector and the `embassy-mqtt-connector-demo` consumer only.
 
 ## 4. Connector API
 
@@ -87,8 +87,8 @@ let mqtt = MqttConnectorBuilder::new("mqtts://xxxx.eu-central-1.emqx.cloud:8883"
     .with_tls(TlsOptions::new(
         TLS_RNG.init(rng),                  // &'static mut dyn CryptoRngCore (D3)
         CA_DER,                             // &'static [u8], root CA, DER (D2)
-        TLS_READ_BUF.init([0; 16_640]),
-        TLS_WRITE_BUF.init([0; 4_096]),
+        TLS_READ_BUF.init_with(|| [0; 16_640]), // init_with: keeps 16 KB off the stack
+        TLS_WRITE_BUF.init_with(|| [0; 4_096]),
     ));
 ```
 
@@ -113,8 +113,11 @@ falling through to the reconnect delay (same policy as upstream `run()`):
    a `CryptoProvider` combining the injected RNG with
    `rustpki::CertVerifier<Aes128GcmSha256, SntpClock, 4096>` over the
    embedded CA (D2, D3).
-5. **MQTT session** — `ConnectionEmbedded::new(tls_connection)` into
-   `ClientNoQueue`, then the ported loop: CONNECT with credentials (D8),
+5. **MQTT session** — a connector-local `TlsSession` implements
+   mountain-mqtt's `Connection` over the open TLS session
+   (`ConnectionEmbedded` needs `ReadReady`, which a TLS session cannot
+   offer) into `ClientNoQueue`, then the ported loop: CONNECT with
+   credentials (D8),
    re-subscribe the inbound routes (per session, so inbound routing survives
    reconnects — the plain path queues subscriptions only once at startup),
    then ping/poll/action-drain with the same `Settings` timeouts,
@@ -130,9 +133,15 @@ of the connector.
 
 Minimal SNTPv4 client (RFC 4330 subset), `embassy-tls`-gated:
 
-- one UDP socket, one 48-byte request (`LI=0, VN=4, Mode=client`), transmit
-  timestamp taken from the reply, sanity-checked (`Mode=server`,
-  `stratum 1..=15`, non-zero timestamp);
+- one UDP socket per attempt on a randomized local port, one 48-byte request
+  (`LI=0, VN=4, Mode=client`) carrying a nonce in its transmit timestamp
+  (mixed from the tick counter — the TRNG belongs to the TLS session); the
+  reply must come from the queried endpoint, echo the nonce in its originate
+  timestamp (RFC 4330 §5 — rejects blind off-path spoofs and stale replies;
+  an on-path attacker defeats unauthenticated NTP regardless), and pass
+  sanity checks (`Mode=server`, `stratum 1..=15`, transmit timestamp ≥
+  2025-01-01 — accepting a bogus early time would poison certificate
+  checks);
 - global state is a single `AtomicU32` — Unix seconds minus
   `embassy_time::Instant::now().as_secs()` at sync — read by
   `unix_now() -> Option<u64>` and the `SntpClock: TlsClock` impl;
@@ -145,20 +154,26 @@ has day granularity, and the representation is unambiguous until 2106.
 format shared by every SNTP consumer; a future era-aware fix is contained in
 one parse function.)
 
-## 7. Gamma wiring
+## 7. Demo wiring (`embassy-mqtt-connector-demo`)
 
-- **`build.rs`**: the `mqtt://`-only panic is replaced by real `mqtts://`
-  handling — default port 8883, `cargo:rustc-cfg=mesh_tls`, and CA embedding:
-  `MESH_CA` (env var, path to the root CA in PEM or DER) is decoded to DER in
-  `OUT_DIR/ca.der` and surfaced as `MQTT_CA_DER`. A `mqtts://` profile
-  without `MESH_CA` is a build error with instructions. Plain profiles and
-  the no-profile local demo generate byte-identical config to today.
-- **`main.rs`**: TLS statics (RNG cell, record buffers) and the
-  `.with_credentials(...)`/`.with_tls(...)` calls sit behind
-  `#[cfg(mesh_tls)]`, so a plain-demo build carries zero TLS code or RAM —
-  the same compile-time sim-to-real philosophy as design 041. The TRNG
-  moves into a `StaticCell` so the one instance seeds the net stack *and*
-  feeds TLS. `StackResources` grows 3 → 5 (DNS + SNTP sockets).
+Behind a `tls` cargo feature, so a plain build carries zero TLS code or
+RAM — the same compile-time philosophy as design 041:
+
+- **Broker config**: `MQTT_BROKER_HOST` (a DNS name) and
+  `MQTT_BROKER_TLS_PORT` consts replace the plain path's IP/port;
+  `MQTT_CREDENTIALS: Option<(&str, &str)>` feeds `.with_credentials(...)`
+  when set. The root CA embeds from `ca.der` next to `Cargo.toml`
+  (`include_bytes!`, DER; the README shows the one-line PEM→DER
+  conversion, and the file is gitignored).
+- **`main.rs`**: the TLS statics (RNG cell, record buffers via `init_with`
+  so the 16 KB array never transits the stack) and the `.with_tls(...)`
+  call sit behind `#[cfg(feature = "tls")]`. The TRNG moves into a
+  `StaticCell` so the one instance seeds the net stack *and* feeds TLS.
+  `StackResources` grows 3 → 5 (DNS + SNTP sockets).
+
+The `weather-station-gamma`/station-template wiring (profile-driven CA
+embedding in `build.rs`) is future work — it follows once issue 006 and the
+EMQX credential (issue 007) land.
 
 ## 8. Cost
 
@@ -188,9 +203,11 @@ its broker CA chain to P-256.
 - Host: existing `make check`/`make test` legs, plus unit tests for the URL
   scheme/port/TLS-option validation and the SNTP packet codec.
 - Cross: the existing thumbv7em clippy leg gains an
-  `embassy-runtime,embassy-tls,defmt` variant; gamma builds for
-  thumbv8m.main with a synthetic `mqtts://` profile + `MESH_CA` (compile
-  proof of the full wiring) and without one (plain demo unchanged).
-- Hardware (the WP7 acceptance): gamma + real mesh profile connects,
-  authenticates, publishes through the TLS broker — runs on the bench once
-  a broker credential exists (issue 007), tracked in the WP7 issue.
+  `embassy-runtime,embassy-tls,defmt` variant;
+  `embassy-mqtt-connector-demo` builds with `--features tls` + a local
+  `ca.der` (compile proof of the full wiring) and without (plain demo
+  unchanged).
+- Hardware (the WP7 acceptance): the demo — later gamma + a real mesh
+  profile — connects, authenticates, publishes through a TLS broker; runs
+  on the bench once a broker credential exists (issue 007), tracked in the
+  WP7 issue.
