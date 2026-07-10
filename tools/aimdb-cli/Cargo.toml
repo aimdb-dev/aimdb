@@ -19,9 +19,13 @@ path = "src/main.rs"
 aimdb-client = { version = "0.6.0", path = "../../aimdb-client" }
 aimdb-codegen = { version = "0.2.0", path = "../../aimdb-codegen" }
 
-# Core dependencies - reuse protocol types from aimdb-core
+# Core dependencies - reuse protocol types from aimdb-core.
+# `observability` keeps the optional RecordMetadata fields (signal_stats,
+# stage_profiling, buffer metrics) in the client-side struct — without it
+# serde silently drops them from `record list --format json` output.
 aimdb-core = { version = "1.1.0", path = "../../aimdb-core", features = [
     "std",
+    "observability",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
