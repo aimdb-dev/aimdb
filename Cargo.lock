@@ -1357,8 +1357,6 @@ version = "0.1.2"
 name = "embassy-hal-internal"
 version = "0.5.0"
 dependencies = [
- "aligned",
- "as-slice",
  "cortex-m",
  "critical-section",
  "defmt 1.0.1",
@@ -1522,6 +1520,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rand_core 0.9.3",
  "regex",
+ "sdio",
  "sdio-host",
  "static_assertions",
  "stm32-fmc 0.4.0",
@@ -3571,6 +3570,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sdio"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "203db256bf75fbd6eb96e82b0c109398442183de06a67a7182951a463a17f9fe"
+dependencies = [
+ "aligned",
+ "block-device-driver",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+]
+
+[[package]]
 name = "sdio-host"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3912,7 +3923,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-98c747c5a5eb2fe1bfa452d6375445a1c3c51628#ff0350aebb88f1498cbf5800305de327df02012c"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-43d482dc249c6755fe990b67e86be4fdc9092909#1d8486efb2e9226b08ddfcd424841a11fb0620a0"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
