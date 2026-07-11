@@ -7,11 +7,14 @@
 //! from the [`sntp`](crate::sntp) task; entropy comes from the
 //! application-injected TRNG ([`TlsOptions::new`]).
 //!
-//! The session loop ([`handle_messages`], [`State`], [`ChannelEventHandler`])
-//! is a port of mountain-mqtt-embassy's private equivalents (MIT OR
-//! Apache-2.0): upstream `run()` constructs a bare `TcpSocket` internally and
-//! offers no seam for a TLS session. Keep the loop in sync with the fork when
-//! bumping it.
+//! The session loop is mountain-mqtt-embassy's own public
+//! [`handle_messages`](mountain_mqtt_embassy::mqtt_manager::handle_messages)
+//! (with [`State`](mountain_mqtt_embassy::mqtt_manager::State) /
+//! [`ChannelEventHandler`](mountain_mqtt_embassy::mqtt_manager::ChannelEventHandler)):
+//! it is transport-agnostic (generic over `Client`), so the only thing this
+//! module supplies is the transport — resolve → TCP → TLS handshake → session.
+//! Upstream `run()` shares that exact loop, keeping the plain and TLS paths in
+//! lock-step with no copied code to drift.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -23,7 +26,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, Stack};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Receiver, Sender};
-use embassy_time::{Delay, Instant, Timer};
+use embassy_time::{Delay, Timer};
 
 use embedded_tls::pki::CertVerifier;
 use embedded_tls::{
@@ -33,16 +36,15 @@ use embedded_tls::{
 
 use embedded_io_async::Write as _;
 
-use mountain_mqtt::client::{
-    Client, ClientError, ClientNoQueue, ClientReceivedEvent, ConnectionSettings, EventHandler,
-    EventHandlerError,
-};
+use mountain_mqtt::client::{ClientNoQueue, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::embedded_hal_async::DelayEmbedded;
 use mountain_mqtt::error::{PacketReadError, PacketWriteError};
-use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
+use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packet_client::Connection;
-use mountain_mqtt_embassy::mqtt_manager::{Error, FromApplicationMessage, MqttEvent, Settings};
+use mountain_mqtt_embassy::mqtt_manager::{
+    handle_messages, ChannelEventHandler, MqttEvent, Settings, State,
+};
 
 use crate::embassy_client::{
     AimdbMqttAction, AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES,
@@ -258,6 +260,13 @@ pub(crate) async fn run_tls(
     let mut tx_buffer = [0u8; BUFFER_SIZE];
     let mut mqtt_buffer = [0u8; BUFFER_SIZE];
 
+    // Re-subscribed by `handle_messages` on every (re)connection, so inbound
+    // routing survives reconnects. Built once — borrows `topics` for the loop.
+    let subscribe_topics: Vec<(&str, QualityOfService)> = topics
+        .iter()
+        .map(|topic| (topic.as_str(), QualityOfService::Qos1))
+        .collect();
+
     let mut connection_index = 0u32;
 
     loop {
@@ -334,16 +343,18 @@ pub(crate) async fn run_tls(
         let delay = DelayEmbedded::new(Delay);
         let timeout_millis = settings.response_timeout.as_millis() as u32;
 
-        let state = RefCell::new(State::new());
+        let state: RefCell<State<AimdbMqttAction>> = RefCell::new(State::new());
 
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
 
-        let event_handler = ChannelEventHandler {
-            connection_id,
-            event_sender: &event_sender,
-            state: &state,
-        };
+        let event_handler: ChannelEventHandler<
+            '_,
+            AimdbMqttAction,
+            AimdbMqttEvent,
+            MAX_PROPERTIES,
+            CHANNEL_SIZE,
+        > = ChannelEventHandler::new(connection_id, &event_sender, &state);
 
         let mut client = ClientNoQueue::new(
             connection,
@@ -358,7 +369,7 @@ pub(crate) async fn run_tls(
             &mut client,
             &state,
             &connection_settings,
-            &topics,
+            &subscribe_topics,
             &event_sender,
             &mut action_receiver,
             &settings,
@@ -401,200 +412,4 @@ pub(crate) fn host_ip_literal(host: &str) -> Option<IpAddr> {
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
     host.parse::<IpAddr>().ok()
-}
-
-// --- Ported session loop (see module doc) ---------------------------------
-
-struct State {
-    /// The instant of the most recent proof the connection is live (set at
-    /// connect, refreshed on every Ack from the server).
-    last_connection_event: Instant,
-    /// A failed action to retry on the next loop turn / connection.
-    pending_action: Option<AimdbMqttAction>,
-}
-
-impl State {
-    fn new() -> Self {
-        Self {
-            last_connection_event: Instant::now(),
-            pending_action: None,
-        }
-    }
-    fn record_connection_event(&mut self) {
-        self.last_connection_event = Instant::now();
-    }
-}
-
-struct ChannelEventHandler<'a> {
-    connection_id: ConnectionId,
-    event_sender: &'a Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>,
-    state: &'a RefCell<State>,
-}
-
-impl EventHandler<MAX_PROPERTIES> for ChannelEventHandler<'_> {
-    async fn handle_event(
-        &mut self,
-        event: ClientReceivedEvent<'_, MAX_PROPERTIES>,
-    ) -> Result<(), EventHandlerError> {
-        match event {
-            ClientReceivedEvent::ApplicationMessage(message) => {
-                let event = AimdbMqttEvent::from_application_message(&message)?;
-                self.event_sender
-                    .send(MqttEvent::ApplicationEvent {
-                        connection_id: self.connection_id,
-                        event,
-                    })
-                    .await;
-            }
-            ClientReceivedEvent::Ack => {
-                self.state.borrow_mut().record_connection_event();
-            }
-            ClientReceivedEvent::SubscriptionGrantedBelowMaximumQos {
-                granted_qos,
-                maximum_qos,
-            } => {
-                self.event_sender
-                    .send(MqttEvent::SubscriptionGrantedBelowMaximumQos {
-                        connection_id: self.connection_id,
-                        granted_qos,
-                        maximum_qos,
-                    })
-                    .await
-            }
-            ClientReceivedEvent::PublishedMessageHadNoMatchingSubscribers => {
-                self.event_sender
-                    .send(MqttEvent::PublishedMessageHadNoMatchingSubscribers {
-                        connection_id: self.connection_id,
-                    })
-                    .await
-            }
-            ClientReceivedEvent::NoSubscriptionExisted => {
-                self.event_sender
-                    .send(MqttEvent::NoSubscriptionExisted {
-                        connection_id: self.connection_id,
-                    })
-                    .await
-            }
-        }
-        Ok(())
-    }
-}
-
-async fn try_action<'a, C>(
-    current_connection_id: ConnectionId,
-    client: &mut C,
-    state: &RefCell<State>,
-    connection_settings: &ConnectionSettings<'static>,
-    mut action: AimdbMqttAction,
-    is_retry: bool,
-) -> Result<(), ClientError>
-where
-    C: Client<'a>,
-{
-    if let Err(e) = action
-        .perform(
-            client,
-            connection_settings.client_id(),
-            current_connection_id,
-            is_retry,
-        )
-        .await
-    {
-        state.borrow_mut().pending_action = Some(action);
-        return Err(e);
-    }
-    Ok(())
-}
-
-/// Connect, re-subscribe the inbound routes, then handle messages until an
-/// error ends the session. Unlike the plain path (which queues subscriptions
-/// once at startup), subscribing per session means inbound routing survives
-/// reconnects.
-#[allow(clippy::too_many_arguments)]
-async fn handle_messages<'a, C>(
-    current_connection_id: ConnectionId,
-    client: &mut C,
-    state: &RefCell<State>,
-    connection_settings: &ConnectionSettings<'static>,
-    topics: &[String],
-    event_sender: &Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>,
-    action_receiver: &mut Receiver<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>,
-    settings: &Settings,
-) -> Result<(), Error>
-where
-    C: Client<'a>,
-{
-    client.connect(connection_settings).await?;
-
-    event_sender
-        .send(MqttEvent::Connected {
-            connection_id: current_connection_id,
-        })
-        .await;
-
-    for topic in topics {
-        client.subscribe(topic, QualityOfService::Qos1).await?;
-    }
-
-    let mut connection_instant = Some(Instant::now());
-    let mut last_ping_instant = Instant::now();
-
-    loop {
-        Timer::after(settings.poll_interval).await;
-
-        if last_ping_instant.elapsed() > settings.ping_interval {
-            last_ping_instant = Instant::now();
-            client.send_ping().await?;
-        }
-
-        // Check for stabilisation
-        if let Some(instant) = connection_instant {
-            if instant.elapsed() > settings.stabilisation_interval {
-                connection_instant = None;
-                event_sender
-                    .send(MqttEvent::ConnectionStable {
-                        connection_id: current_connection_id,
-                    })
-                    .await;
-            }
-        }
-
-        // Check for too long since last connection event
-        let elapsed = state.borrow().last_connection_event.elapsed();
-        if elapsed > settings.connection_event_max_interval {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("MQTT-TLS: server unresponsive");
-            return Err(Error::MqttServerUnresponsive);
-        }
-
-        // Poll with no delay while we have mqtt packets
-        while client.poll(false).await? {}
-
-        // If we have a pending action, try to perform it
-        let pending_action = state.borrow_mut().pending_action.take();
-        if let Some(action) = pending_action {
-            try_action(
-                current_connection_id,
-                client,
-                state,
-                connection_settings,
-                action,
-                true,
-            )
-            .await?;
-        }
-
-        // Handle actions from receiver
-        while let Ok(action) = action_receiver.try_receive() {
-            try_action(
-                current_connection_id,
-                client,
-                state,
-                connection_settings,
-                action,
-                false,
-            )
-            .await?;
-        }
-    }
 }

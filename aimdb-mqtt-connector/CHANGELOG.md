@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Embassy connector reuses the upstream session loop instead of copying it.** The TLS path no longer duplicates mountain-mqtt-embassy's `handle_messages`/`State`/`ChannelEventHandler`/`try_action` (~195 lines): the `aimdb-dev/mountain-mqtt` fork now exposes them publicly (plus a `run_with_subscriptions`), so the plain and TLS transports share one keep-alive/action-dispatch/event loop and can no longer drift. The plain `mqtt://` path also switches to `run_with_subscriptions`, which **re-subscribes inbound topics on every connection** — previously it queued subscribe actions once at startup, so subscriptions were silently lost after a reconnect. The submodule is bumped to the matching change; no public API change.
 - **Embassy broker URL parsing now validates the scheme.** `MqttConnectorBuilder::new`'s URL must be `mqtt://` or `mqtts://` (previously any scheme's host/port were used as-is); this is what selects the transport for the `embassy-tls` change above.
 
 ### Changed (breaking)

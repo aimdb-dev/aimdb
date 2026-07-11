@@ -537,11 +537,12 @@ fn init_channels() -> (ActionSender, ActionReceiver, EventSender, EventReceiver)
     )
 }
 
-/// Set up the plain-TCP broker manager (mountain-mqtt-embassy's `run`),
-/// returning the action sender (outbound), the event receiver (inbound), and
-/// the manager task future (which first queues the topic subscriptions, then
-/// runs the broker loop). Synchronous — no `.await` — so the caller's `build`
-/// future stays `Send`.
+/// Set up the plain-TCP broker manager
+/// (mountain-mqtt-embassy's `run_with_subscriptions`), returning the action
+/// sender (outbound), the event receiver (inbound), and the manager task
+/// future. The manager re-subscribes the inbound topics on every connection,
+/// so routing survives reconnects. Synchronous — no `.await` — so the caller's
+/// `build` future stays `Send`.
 fn setup_manager(
     broker: &BrokerUrl,
     connection_settings: ConnectionSettings<'static>,
@@ -559,24 +560,21 @@ fn setup_manager(
     let settings = Settings::new(broker_addr, broker.port);
     let network = stack.get();
 
-    // Manager task: queue subscriptions, then run the broker loop (never returns).
-    let sub_sender = action_sender;
+    // Manager task: run the broker loop (never returns). The manager
+    // re-subscribes these topics on every connection, so inbound routing
+    // survives reconnects (unlike queuing subscribe actions once at startup).
     let manager_task = into_box_future(async move {
-        for topic in &topics {
-            sub_sender
-                .send(AimdbMqttAction::Subscribe {
-                    topic: topic.clone(),
-                    qos: QualityOfService::Qos1,
-                })
-                .await;
-        }
+        let subscribe_topics: Vec<(&str, QualityOfService)> = topics
+            .iter()
+            .map(|topic| (topic.as_str(), QualityOfService::Qos1))
+            .collect();
 
         #[cfg(feature = "defmt")]
         defmt::info!("MQTT background task starting");
 
         #[allow(unreachable_code)]
         {
-            let _: () = mqtt_manager::run::<
+            let _: () = mqtt_manager::run_with_subscriptions::<
                 AimdbMqttAction,
                 AimdbMqttEvent,
                 MAX_PROPERTIES,
@@ -586,6 +584,7 @@ fn setup_manager(
                 *network,
                 connection_settings,
                 settings,
+                &subscribe_topics,
                 event_sender,
                 action_receiver,
             )
