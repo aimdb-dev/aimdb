@@ -3,3 +3,5 @@ Cargo.lock
 *.bin
 *.elf
 *.hex
+# Broker root CA for --features tls builds (user-supplied, see main.rs)
+ca.der

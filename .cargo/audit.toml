@@ -2,5 +2,11 @@
 # See: https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
 
 [advisories]
-# Advisories to ignore (transitive dependencies we can't fix)
-ignore = []
+# Advisories to ignore (transitive dependencies we can't fix in the current
+# embedded and CLI dependency graph). These are tracked upstream and have no
+# viable replacement in the workspace today.
+ignore = [
+    "RUSTSEC-2023-0071", # rsa timing sidechannel via embedded-tls; no fixed upgrade available
+    "RUSTSEC-2026-0110", # bare-metal deprecated via cortex-m (embedded-only transitive)
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (transitive via defmt/tabled_derive)
+]

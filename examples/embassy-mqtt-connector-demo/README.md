@@ -78,6 +78,35 @@ The example code in `src/main.rs` is a template. To adapt it:
    cargo build --release
    ```
 
+## TLS (`mqtts://`)
+
+The `tls` feature switches the demo to a TLS broker (`aimdb-mqtt-connector`'s
+`embassy-tls` feature underneath): `mqtts://` with hostname resolution via
+DNS, optional MQTT username/password, and an automatic SNTP time sync that
+gates the first handshake (certificate validity needs real time — the board
+has no RTC battery).
+
+1. In `src/main.rs`, set `MQTT_BROKER_HOST` and, if the broker requires it,
+   `MQTT_CREDENTIALS`. Prefer a DNS name: an IPv4 literal verifies only when
+   the certificate pins that IP in its CN (the repo's `dev/mosquitto` bench
+   CA does; public CAs won't issue such certs). IPv6 literals are rejected
+   at build.
+2. Drop the broker's root CA next to `Cargo.toml`, DER-encoded — for the
+   `dev/mosquitto` bench broker:
+   ```bash
+   openssl x509 -in ../../dev/mosquitto/config/certs/ca.crt -outform der -out ca.der
+   ```
+3. Build (and flash) from this directory, so its `.cargo/config.toml`
+   selects the thumbv8m target and probe-rs runner:
+   ```bash
+   cargo run --release --features tls
+   ```
+   Note: broker/CA config is compile-time — env vars like `SSL_CERT_FILE`
+   or `MQTT_BROKER_URL` only apply to the host-side Tokio demo.
+
+Cost: ~21 KB extra statically-allocated RAM (TLS record buffers) plus
+~150–250 KB flash (pure-Rust crypto: p256 + rsa + p384 + SHA-2).
+
 ## Testing the MQTT Client Without Hardware
 
 You can test the MQTT connector implementation using the Tokio runtime version:

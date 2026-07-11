@@ -6,7 +6,7 @@
 
 set -e
 
-BINARY="../../target/thumbv8m.main-none-eabihf/debug/embassy-mqtt-connector-demo"
+BINARY="../../target/thumbv8m.main-none-eabihf/release/embassy-mqtt-connector-demo"
 
 if [ ! -f "$BINARY" ]; then
     echo "Error: Binary not found at $BINARY"

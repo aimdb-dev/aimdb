@@ -22,8 +22,8 @@ wildcards = "allow"
 [advisories]
 version = 2
 yanked = "warn"
-# bare-metal is archived/deprecated and pulled transitively by cortex-m in the
-# embedded stack; there is currently no drop-in replacement at this depth.
+# These transitive advisories are accepted for the current workspace because the
+# upstream dependency chain has no viable replacement path at the moment.
 ignore = [
     "RUSTSEC-2026-0110", # bare-metal deprecated via cortex-m (embedded-only transitive)
     "RUSTSEC-2026-0173", # TEMP: proc-macro-error2 unmaintained (transitive via defmt-macros/tabled_derive)

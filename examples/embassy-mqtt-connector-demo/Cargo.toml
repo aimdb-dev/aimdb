@@ -9,6 +9,9 @@ description = "AimDB example demonstrating MQTT connector with Embassy runtime"
 [features]
 default = ["embassy-runtime"]
 embassy-runtime = []
+# TLS (`mqtts://`) + broker authentication. Needs the broker's root CA at
+# `ca.der` (DER) next to this Cargo.toml — see the TLS section in main.rs.
+tls = ["aimdb-mqtt-connector/embassy-tls"]
 # Declare but don't enable these features to silence cfg warnings
 tokio-runtime = []
 std = []
