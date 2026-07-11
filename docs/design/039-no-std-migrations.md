@@ -63,6 +63,11 @@ migratable  = ["alloc", "serde_json"]          # was: ["std", "serde_json"]
 serde_json = { workspace = true, optional = true }   # was: local, default-features on
 ```
 
+> **Post-#155 update:** this block records the feature shape at the time of
+> design 039. Current `linkable` is format-neutral (`alloc + aimdb-core`), while
+> the JSON dependency and JSON derive live under `linkable-json`. `migratable`
+> still owns its serde_json dependency as described here.
+
 Notes:
 
 - `serde_json?/std` (weak dependency feature) keeps std builds on serde_json's std implementation without forcing the dependency on.
@@ -136,7 +141,7 @@ serde_json = { workspace = true, optional = true }             # was: version = 
 - `linkable` keeps its `serde_json` because the `Linkable` impls in [`temperature.rs`](../../examples/weather-mesh-demo/weather-mesh-common/src/contracts/temperature.rs) (`from_bytes`/`to_bytes`, and the migration-backed `TemperatureV2` impl) call `serde_json::{from_slice, to_vec}` in hand-written code — the macro fix does not reach them. Switching the dep to the workspace pin (`alloc`, no default `std`) makes that path `no_std`-clean too, so this step also unblocks `linkable` on-target for the demo, not just `migratable`.
 - No source change in `temperature.rs` is required; the hand-written `serde_json` calls resolve against the now-`no_std` consumer dep.
 
-Scope note: criterion 3's "no direct `serde_json` dependency" is literally true only for the `migratable`-without-`linkable` build — `linkable` genuinely serializes JSON by hand and will always carry the dep. The `weather-mesh-common` target lane in W3 builds exactly that configuration (`--features migratable`, no `linkable`), so `serde_json` is absent from its dependency graph.
+Scope note: for the `weather-mesh-common` fixture, criterion 3's "no direct `serde_json` dependency" is literally true only for the `migratable`-without-`linkable` build — that crate's hand-written JSON `Linkable` impls genuinely require its direct dependency. After #155 the base `aimdb-data-contracts/linkable` feature itself is JSON-free; the weather fixture still opts into JSON explicitly. The W3 lane builds `--features migratable` without the weather `linkable` feature, so the consumer has no direct serde_json dependency.
 
 ## 4. PR 2 — Variable-arity `migration_chain!` (proc-macro)
 

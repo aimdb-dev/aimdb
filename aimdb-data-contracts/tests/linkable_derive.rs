@@ -5,7 +5,7 @@
 //! `::aimdb_data_contracts::...` paths (matching the `migration_chain!` /
 //! `RecordKey` precedent), which only resolve from outside the defining crate.
 
-#![cfg(feature = "linkable")]
+#![cfg(feature = "linkable-json")]
 
 use aimdb_data_contracts::{Linkable, SchemaType};
 use serde::{Deserialize, Serialize};

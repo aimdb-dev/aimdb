@@ -2292,6 +2292,29 @@ description = "Reading value"
     }
 
     #[test]
+    fn linkable_impl_postcard_generated() {
+        let mut state = ArchitectureState::from_toml(MIXED_CODEC_TOML).unwrap();
+        state.records.retain(|r| r.name == "PostcardReading");
+        let rust = generate_schema_rs(&state);
+        assert!(
+            rust.contains("impl Linkable for PostcardReadingValue"),
+            "Missing Postcard Linkable impl:\n{rust}"
+        );
+        assert!(
+            rust.contains("postcard::to_allocvec(self)"),
+            "Missing postcard serializer:\n{rust}"
+        );
+        assert!(
+            rust.contains("postcard::from_bytes(data)"),
+            "Missing postcard deserializer:\n{rust}"
+        );
+        assert!(
+            !rust.contains("serde_json"),
+            "Postcard-only schema should not reference serde_json:\n{rust}"
+        );
+    }
+
+    #[test]
     fn generate_lib_rs_output() {
         let lib = generate_lib_rs();
         assert!(lib.contains("no_std"), "Missing no_std attribute:\n{lib}");

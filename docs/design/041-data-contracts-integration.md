@@ -275,8 +275,8 @@ where
 Notes:
 - **Inbound matches exactly** (`with_deserializer` takes `Result<T, String>`). **Outbound needs one lossy mapping**: `with_serializer` returns `Result<Vec<u8>, SerializeError>`, so the `String` detail is dropped to `SerializeError::InvalidData`. Aligning `Linkable`'s error type with the connector layer (a shared `CodecError` instead of `String` — which also removes an alloc on embedded) is a recorded follow-up (§7); it touches core connector signatures and doesn't block this verb.
 - **The raw builders remain the escape hatch** for per-link options (`with_config`, QoS ext traits, topic providers/resolvers). `.linked_from`/`.linked_to` are the 80% path.
-- **JSON boilerplate gets a derive:** `#[derive(Linkable)]` in `aimdb-derive` emitting `serde_json::to_vec`/`from_slice` (JSON is the default format; binary formats implement by hand, as the KNX DPT codecs rightly do). Per the D1 rule, the derive replaces a hand-written JSON impl in the same change.
-- **Coupling:** the `linkable` feature gains an `aimdb-core` dependency for the ext trait (`default-features = false, features = ["alloc"]`, same wiring as `observable`).
+- **JSON boilerplate gets a derive:** `#[derive(Linkable)]` in `aimdb-derive` emitting `serde_json::to_vec`/`from_slice` (JSON is the default format; binary formats implement by hand, as the KNX DPT codecs rightly do). Per the D1 rule, the derive replaces a hand-written JSON impl in the same change. After #155, this convenience lives behind `linkable-json`; base `linkable` stays format-neutral and JSON-free for Postcard/custom codecs.
+- **Coupling:** the `linkable` feature gains an `aimdb-core` dependency for the ext trait (`default-features = false, features = ["alloc"]`, same wiring as `observable`). `linkable-json` adds the optional `serde_json` + derive dependencies.
 - **Three serialization stories, stated once** so users stop guessing:
 
   | Boundary | Mechanism | Contract |
@@ -331,7 +331,8 @@ Consumed since design 039, works no_std. Stretch (recorded, not in scope): auto-
 
 ```
 aimdb-data-contracts
-  features: linkable (+core), observable (+core), migratable, settable,
+  features: linkable (+core), linkable-json (+serde_json, derive),
+            observable (+core), migratable, settable,
             simulatable (+core, rand nf — no std_rng)   # dev tier — never a default feature
   (no new crate: aimdb-simulation split considered and rejected, §3.1.1)
 

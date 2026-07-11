@@ -57,11 +57,12 @@ extern crate self as aimdb_data_contracts;
 
 /// Re-exports used by macro-generated code, kept out of the crate's own
 /// namespace so a caller's own `serde_json`/`alloc` (if any) never shadows
-/// or gets shadowed by them — see `migration_chain!`'s expansion.
+/// or gets shadowed by them — see the `Linkable` and `migration_chain!`
+/// expansions.
 #[doc(hidden)]
 pub mod __private {
     pub extern crate alloc;
-    #[cfg(any(feature = "linkable", feature = "migratable"))]
+    #[cfg(any(feature = "linkable-json", feature = "migratable"))]
     pub use serde_json;
 }
 
@@ -74,13 +75,14 @@ mod linkable;
 #[cfg(feature = "linkable")]
 pub use linkable::LinkableRegistrarExt;
 
-/// `#[derive(Linkable)]` — see [`Linkable`] and `aimdb_derive::Linkable`'s docs.
+/// JSON `#[derive(Linkable)]` (feature `linkable-json`) — see [`Linkable`] and
+/// `aimdb_derive::Linkable`'s docs.
 ///
 /// Re-exported under the same name as the trait, following the trait+derive
 /// pairing convention (`serde::Serialize`, `aimdb_derive::RecordKey`) — proc-macro
 /// derive names live in a separate namespace from traits, so this is not a
 /// conflict.
-#[cfg(feature = "linkable")]
+#[cfg(feature = "linkable-json")]
 pub use aimdb_derive::Linkable;
 
 #[cfg(feature = "observable")]
@@ -222,11 +224,15 @@ pub trait Observable: SchemaType {
 /// Types that can be serialized/deserialized for connector links.
 ///
 /// Implement this trait, then call
-/// [`LinkableRegistrarExt::linked_from`](linkable::LinkableRegistrarExt::linked_from) /
+/// [`LinkableRegistrarExt::linked_from`] /
 /// [`linked_to`](linkable::LinkableRegistrarExt::linked_to) to wire `link_from`
 /// / `link_to` in AimDB connectors (MQTT, KNX, etc.) with the codec defaulted to
 /// `from_bytes`/`to_bytes`. This provides the wire format for transporting
 /// schema types across network boundaries.
+///
+/// The `linkable` feature is format-neutral. Enable `linkable-json` for the
+/// JSON `#[derive(Linkable)]` convenience, or implement these methods directly
+/// for Postcard and other shared-contract formats.
 ///
 /// # Example
 ///

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Postcard codegen is now exercised end to end by `make codegen-drift`: a generated Postcard-only common crate roundtrips on the host, cross-compiles for `thumbv7em-none-eabihf`, and proves its normal dependency graph is JSON-free. A generated mixed JSON + Postcard crate is also compiled so codec feature/dependency drift fails in CI (#155).
+
 ### Fixed
 
 - Generated `Cargo.toml` for manifests mixing `serialization = "json"` and `serialization = "postcard"` records omitted the `serde_json` dependency (postcard presence suppressed it), so the generated crate failed to compile under the `std` feature. `serde_json` is now emitted whenever any record uses JSON serialization, independent of postcard (#155).
