@@ -23,7 +23,7 @@ thiserror = "1.0"
 # Optional: Settable::set (feature `data-contracts`) for the `set_value` family.
 # aimdb-sync depends on the contracts crate, never the reverse — the contracts
 # crate has no `sync` feature.
-aimdb-data-contracts = { path = "../aimdb-data-contracts", version = "0.3.0", optional = true, default-features = false, features = [
+aimdb-data-contracts = { path = "../aimdb-data-contracts", version = "0.4.0", optional = true, default-features = false, features = [
     "settable",
 ] }
 

@@ -12,13 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Simulatable` reshaped for compile-time-only simulation.** `simulate<R>(config: &SimulationConfig, ...)` → `simulate<R>(params: &Self::Params, ...)` with a new associated `type Params`. `SimulationConfig` (including its runtime `enabled` gate) and `SimulationParams` are removed; `SimProfile<P> { interval_ms, params }` and off-the-shelf `RandomWalkParams` replace them (`type Params = RandomWalkParams` is the migration path for existing scalar-walk impls). `simulatable` now also requires `aimdb-core` (for the new `SimulatableRegistrarExt`) and `rand` drops the `std_rng` feature (RNG is always caller-supplied).
 - **`Observable` loses `ICON` and `format_log()`.** The trait is now numeric-projection-only: `type Signal`, `const SIGNAL` (defaults to `Self::NAME`), `const UNIT`, `fn signal()`. Presentation moved to `ObservableRegistrarExt::log(node_id)`.
 - **`Settable` moves behind a new `settable` feature** (was compiled unconditionally) for tier symmetry with the other wire contracts.
+- **`linkable` is now format-neutral.** It enables only the `Linkable` trait, registrar verbs, `alloc`, and `aimdb-core`; it no longer pulls `serde_json` or re-exports the JSON `#[derive(Linkable)]`. Existing derive users must enable the new `linkable-json` feature. Manual Postcard/custom implementations stay on base `linkable`, so their normal dependency graph is JSON-free (#155).
 
 ### Added
 
 - `SimulatableRegistrarExt::simulate(profile, rng)` — installs a `.source()` loop emitting `T::simulate(...)` on a timer.
 - `ObservableRegistrarExt::observe()` — feeds `T::signal()` into a core signal gauge (last/min/max/mean), surfaced on `record.list`/`record.get`/stage profiling; `ObservableRegistrarExt::log(node_id)` for the console-logging path (replaces the old `format_log`).
 - `LinkableRegistrarExt::linked_from(url)` / `linked_to(url)` — one-line `.link_from()`/`.link_to()` wiring defaulted to `T::from_bytes`/`T::to_bytes`. `linkable` now also requires `aimdb-core`.
-- `#[derive(Linkable)]` (via `aimdb-derive`) — emits a JSON `Linkable` impl (`serde_json::to_vec`/`from_slice`), `no_std + alloc` compatible.
+- `linkable-json` — layers `serde_json` and the JSON `#[derive(Linkable)]` convenience over the format-neutral `linkable` contract; `no_std + alloc` compatible.
 
 ### Changed
 

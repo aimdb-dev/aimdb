@@ -26,7 +26,8 @@ mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features 
     "data-contracts",
 ] }
 
-# LinkableRegistrarExt / #[derive(Linkable)] verb
+# Format-neutral LinkableRegistrarExt; the common crate enables linkable-json
+# for its derived value types.
 aimdb-data-contracts = { path = "../../aimdb-data-contracts", features = [
     "linkable",
 ] }
