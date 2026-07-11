@@ -1,0 +1,39 @@
+# Mixed JSON + Postcard fixture for `make codegen-drift`.
+#
+# This catches dependency and feature-unification bugs that string-only
+# generator tests cannot: the generated crate must compile with both codecs.
+
+[project]
+name = "mixed-codec-drift"
+edition = "2021"
+
+[meta]
+aimdb_version = "1.2.0"
+created_at = "2026-07-11T00:00:00Z"
+last_modified = "2026-07-11T00:00:00Z"
+
+[[records]]
+name = "JsonReading"
+buffer = "SpmcRing"
+capacity = 16
+key_prefix = "readings.json."
+key_variants = ["sensor"]
+serialization = "json"
+
+[[records.fields]]
+name = "value"
+type = "f32"
+description = "JSON sensor value"
+
+[[records]]
+name = "PostcardReading"
+buffer = "SpmcRing"
+capacity = 16
+key_prefix = "readings.postcard."
+key_variants = ["sensor"]
+serialization = "postcard"
+
+[[records.fields]]
+name = "value"
+type = "f32"
+description = "Postcard sensor value"

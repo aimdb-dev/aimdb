@@ -151,7 +151,7 @@ Every capability is an opt-in trait on your schema type: implement it and **exac
 
 | Contract | Implement when… | Verb it unlocks | Tier |
 | --- | --- | --- | --- |
-| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the record is mirrored to/from an endpoint (MQTT, KNX, serial, UDS…) | `.linked_from(url)` / `.linked_to(url)` (`#[derive(Linkable)]` for JSON) | wire (prod) |
+| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the record is mirrored to/from an endpoint (MQTT, KNX, serial, UDS…) | `.linked_from(url)` / `.linked_to(url)` (`linkable-json` provides the JSON derive; codegen supports Postcard) | wire (prod) |
 | [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | the record streams to browsers as schema-named JSON | ws-connector `.register::<T>()` | wire (prod) |
 | [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | the schema evolved across versions | `migration_chain!` | wire (prod) |
 | `Settable` | sync code outside AimDB sets the value | `SyncProducer::set_value(v)` | wire (prod) |

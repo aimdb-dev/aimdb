@@ -1,0 +1,31 @@
+# Postcard-only fixture for `make codegen-drift`.
+#
+# The generated common crate must compile on the host and Cortex-M without
+# pulling serde_json through aimdb-data-contracts' format-neutral Linkable path.
+
+[project]
+name = "postcard-drift"
+edition = "2021"
+
+[meta]
+aimdb_version = "1.2.0"
+created_at = "2026-07-11T00:00:00Z"
+last_modified = "2026-07-11T00:00:00Z"
+
+[[records]]
+name = "PostcardReading"
+buffer = "SpmcRing"
+capacity = 16
+key_prefix = "readings.postcard."
+key_variants = ["sensor"]
+serialization = "postcard"
+
+[[records.fields]]
+name = "value"
+type = "f32"
+description = "Sensor value"
+
+[[records.fields]]
+name = "sequence"
+type = "u32"
+description = "Monotonic sample sequence"

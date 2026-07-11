@@ -713,8 +713,11 @@ impl for connector wiring.
 ## 11. Open Questions
 
 1. **Should `postcard` be a first-class serialisation target?**
-   It's the natural choice for `no_std` / Embassy. The TOML field supports it,
-   but implementation can be deferred to Phase 2+.
+   *Resolved — yes.* `serialization = "postcard"` emits
+   `postcard::to_allocvec` / `postcard::from_bytes`. Issue #155 split the
+   format-neutral `linkable` feature from the `linkable-json` convenience and
+   added host roundtrip, mixed-codec compile, JSON-free dependency, and
+   `thumbv7em-none-eabihf` drift checks for the generated Postcard path.
 
 2. **Should the codegen generate `Debug` formatting for key enums?**
    Currently missing from the derive list. The hand-written crates include it.

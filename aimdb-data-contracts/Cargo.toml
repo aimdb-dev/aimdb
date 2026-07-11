@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-data-contracts"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -14,9 +14,12 @@ categories = ["embedded", "no-std"]
 default = ["std"]
 alloc = ["serde/alloc"]
 std = ["alloc", "serde/std", "serde_json?/std"]
-# The ext trait needs core's registrar/connector-builder types (same wiring as
-# `observable`); `dep:aimdb-derive` powers `#[derive(Linkable)]`.
-linkable = ["alloc", "serde_json", "aimdb-core", "dep:aimdb-derive"]
+# Format-neutral connector contract plus registrar verbs. Concrete codecs live
+# at the application/codegen edge, so Postcard/custom builds stay JSON-free.
+linkable = ["alloc", "aimdb-core"]
+# JSON convenience layered over the format-neutral contract. The derive emits
+# serde_json calls through this crate's private re-export.
+linkable-json = ["linkable", "serde_json", "dep:aimdb-derive"]
 # Dev-tier — never a default feature. The ext trait needs core's registrar,
 # same coupling `observable` has. `rand` is the tracer CI uses to prove a
 # production graph is sim-free (`make check-no-sim`).
