@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Embassy client: TLS (`mqtts://`) and broker authentication ([design 044](../docs/design/044-embassy-mqtt-tls.md), WP7).** New `embassy-tls` feature (`embassy-runtime` + `embedded-tls`/`embedded-io-async`/`rand_core`, `embassy-net/dns`, `embassy-net/udp`) adds an `embedded-tls` 1.3 session over the Embassy TCP socket, with pure-Rust (`rustpki`) certificate verification (`rsa` + `p384`, so public CA chains verify out of the box) and SNI/hostname verification taken from the broker URL. `MqttConnectorBuilder::new` now accepts `mqtts://host[:port]` (default port 8883) alongside plain `mqtt://` (1883); the scheme selects the transport at `build()`. New `MqttConnectorBuilder::with_tls(TlsOptions)` supplies the TLS materials — entropy (`&'static mut dyn CryptoRngCore`, app-owned TRNG), app-provided static record buffers, and the SNTP server address; `build()` errors if `mqtts://` is used without `.with_tls(...)`, if `.with_tls(...)` is used with a plain `mqtt://` URL, or if the `embassy-tls` feature is off. IPv6 broker literals are rejected at `build()` (can never pass certificate verification); IPv4 literals are allowed with a `defmt` warning (only a private CA that pins the dotted quad in its CN will verify). A connector-internal SNTP (UDP) task backs the TLS clock and gates the first handshake on a successful time sync, so certificate validity is always checked. The plain `mqtt://` path is unchanged.
+- **`MqttConnectorBuilder::with_credentials(username, password)` (Embassy, design 044 D8).** Feeds the MQTT CONNECT username/password on both the plain and TLS transports. The `aimdb-dev/mountain-mqtt` fork submodule is bumped to pick up upstream 0.4's `ConnectionSettings::with_auth`/`authenticated` (`aimdb-dev/mountain-mqtt@89a7129`).
+- `make check` gains an `embassy-runtime,embassy-tls,defmt` clippy leg on `thumbv7em-none-eabihf`.
+
+### Changed
+
+- **Embassy broker URL parsing now validates the scheme.** `MqttConnectorBuilder::new`'s URL must be `mqtt://` or `mqtts://` (previously any scheme's host/port were used as-is); this is what selects the transport for the `embassy-tls` change above.
+
 ### Changed (breaking)
 
 - **Issue #131:** the Embassy `MqttConnectorBuilder::new` takes the network stack — `MqttConnectorBuilder::new(broker_url, stack)` — since the deleted `EmbassyNetwork` runtime trait can no longer supply it; both `ConnectorBuilder` impls and the `MqttLinkExt`/`MqttOutboundLinkExt` link-builder ext traits are non-generic over the runtime.
