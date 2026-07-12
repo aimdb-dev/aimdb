@@ -25,6 +25,7 @@ use aimdb_core::session::{
 };
 use aimdb_embassy_adapter::connectors::{EmbassySessionClient, OneShotCell};
 use aimdb_embassy_adapter::SendFutureWrapper;
+use embassy_futures::yield_now;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpEndpoint, IpListenEndpoint, Stack};
 use embedded_io_async::Write;
@@ -114,6 +115,8 @@ impl Connection for TcpConnection {
 impl Drop for TcpConnection {
     fn drop(&mut self) {
         if let Some(mut socket) = self.socket.take() {
+            // Double abort is intentional: this one resets the link promptly on
+            // drop; the next taker re-aborts before reuse for a clean socket.
             socket.abort();
             if let Some(recycler) = &self.recycler {
                 recycler.put(socket);
@@ -147,8 +150,9 @@ struct TcpSocketSlot {
 // SAFETY: single-core cooperative Embassy executor; the socket and stack stay on
 // the same executor task set, and `RefCell` is never borrowed from another core.
 unsafe impl Send for TcpSocketSlot {}
-// SAFETY: same invariant. This is only shared so the dropped connection can
-// return its socket to the dialer-owned slot.
+// SAFETY: same invariant. Shared only so a dropped connection can return its
+// socket to the slot — owned by a dialer, an accept/session worker, or the
+// `Listener` compat path, never touched from more than one at a time.
 unsafe impl Sync for TcpSocketSlot {}
 
 impl TcpSocketSlot {
@@ -324,6 +328,9 @@ impl Listener for TcpListener<1> {
                 Err(_) => {
                     socket.abort();
                     slot.put(socket);
+                    // Same synchronous-failure guard as `serve_socket_slot`:
+                    // `serve()` re-enters `accept()` immediately on `Err`, so yield.
+                    yield_now().await;
                     Err(TransportError::Io)
                 }
             }
@@ -350,6 +357,11 @@ async fn serve_socket_slot(
             Err(_) => {
                 socket.abort();
                 slot.put(socket);
+                // `accept()` can fail synchronously (e.g. port-0 `InvalidPort`);
+                // without this await the loop retakes the slot and retries with no
+                // yield point, starving the executor. Yield so a misconfig
+                // warn-loops instead of hanging.
+                yield_now().await;
             }
         }
     }

@@ -34,6 +34,7 @@ embassy-runtime = [
     "aimdb-embassy-adapter/connectors",
     "aimdb-embassy-adapter/embassy-net-support",
     "dep:embassy-net",
+    "dep:embassy-futures",
     "dep:embedded-io-async",
 ]
 
@@ -42,6 +43,20 @@ defmt = ["aimdb-core/defmt"]
 
 _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
 
+# Internal: the Embassy TCP half's runtime smoke (`tests/embassy_loopback.rs`)
+# stands up two real `embassy-net` stacks wired by an in-memory driver-channel
+# crossover, so it needs `medium-ip`/`proto-ipv4` and the host-only loopback
+# deps. Kept off `embassy-runtime` (production never pulls a network device or a
+# critical-section impl) and out of `[dev-dependencies]` (they would compile into
+# the `_test-tokio` build too). Run with `--features _test-embassy-loopback`.
+_test-embassy-loopback = [
+    "embassy-runtime",
+    "embassy-net/medium-ip",
+    "embassy-net/proto-ipv4",
+    "dep:embassy-net-driver-channel",
+    "dep:critical-section",
+]
+
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
 
@@ -49,14 +64,27 @@ tokio = { workspace = true, optional = true, features = ["net", "io-util"] }
 
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 embassy-net = { workspace = true, optional = true }
+embassy-futures = { workspace = true, optional = true }
 embedded-io-async = { workspace = true, optional = true }
 
 aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
+
+# test-only (see `_test-embassy-loopback`)
+embassy-net-driver-channel = { path = "../_external/embassy/embassy-net-driver-channel", optional = true }
+critical-section = { version = "1.1", features = ["std"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "net"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The Embassy loopback smoke expands `host_test_stubs!()` (no-op defmt logger +
+# host time driver) and drives the stack with `futures::executor::block_on`; the
+# macro references `defmt`/`embassy-time-driver` at the call site.
+futures = { workspace = true }
+defmt = { workspace = true }
+embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+# `StaticConfigV4.dns_servers` is a heapless 0.9 `Vec` (embassy-net's version).
+heapless = "0.9"
 
 [[example]]
 name = "tcp_demo"
