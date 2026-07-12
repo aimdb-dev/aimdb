@@ -20,7 +20,7 @@ Plus two informational benches that exercise the full runner-driven pipeline.
 **Adapters covered:**
 
 - **Tokio** — `b0_alloc_tokio`, `b1_b2_tokio` (host).
-- **Postcard `Linkable` codec** — `b0_alloc_linkable` (host). This isolates the
+- **postcard `Linkable` codec** — `b0_alloc_linkable` (host). This isolates the
   issue #177 `encode_into` seam; it is not a whole-connector allocation claim.
 - **Embassy** — `b0_alloc_embassy`, `b1_b2_embassy`
   (host). These drive the real [`EmbassyBuffer`] backend via
@@ -96,6 +96,7 @@ Criterion writes HTML reports to `target/criterion/`.
 `b0_alloc_tokio` does not use Criterion. It runs a fixed warmup + batch cycle and writes JSON results to `aimdb-bench/target/bench-results/b0_alloc_tokio.json` (the path is anchored to the crate dir, so it is the same regardless of the directory you run from).
 
 **Measurement model:**
+
 1. Create buffer + reader.
 2. Warmup ≥ 200 push → recv cycles (excluded from counters).
 3. Reset allocation counters.
@@ -108,12 +109,8 @@ The committed baseline lives in `data/baselines/b0_alloc_tokio.json`. When a cha
 
 `b0_alloc_embassy` mirrors this against the Embassy buffer backend and writes `data/baselines/b0_alloc_embassy.json` — also **0 allocs/msg** across all three profiles, confirming the Embassy `poll_recv` path is allocation-free on the host. The on-target B3 bench (`examples/embassy-bench-stm32h5`) re-checks the same 0-alloc claim against the real embedded allocator.
 
-`b0_alloc_linkable` warms up for 1,000 iterations, then measures 10,000
-generated-shape Postcard `Linkable::encode_into` calls into one stack buffer.
-The required result is **0 allocation calls and 0 allocated bytes**. It isolates
-the codec seam: `SerializedReader` still returns a boxed future, dynamic topics
-may allocate, and connector implementations may copy payload ownership after
-the core pump lends them the scratch slice.
+`b0_alloc_linkable` warms up for 1,000 iterations, then measures 10,000 generated-shape postcard `Linkable::encode_into` calls into one stack buffer.
+The required result is **0 allocation calls and 0 allocated bytes**. It isolates the codec seam: `SerializedReader` still returns a boxed future, dynamic topics may allocate and connector implementations may copy payload ownership after the core pump lends them the scratch slice.
 
 > **Embassy eager registration (design 039 F8/F9).** An Embassy `SpmcRing` reader registers its embassy `Subscriber` eagerly, at `subscribe()` time — matching Tokio's `broadcast` — so no separate priming step is needed before the first `push`.
 
@@ -139,4 +136,3 @@ Use them as a comparison point, not a regression gate. If they regress, `b0_allo
 - Criterion p99 can vary ±5–10% on noisy CI runners. Use p50 medians for trend comparisons.
 - Always specify `--release` or debug build consistently when comparing runs; optimizations differ by 5–50×.
 - `b_alloc_pipeline` uses a paced source: per-message pace tokens and notification channels. The coordination overhead is included in the measured window.
-

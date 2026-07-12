@@ -1037,13 +1037,13 @@ fn emit_linkable_postcard(rec: &RecordDef) -> TokenStream {
             fn encode_into(
                 &self,
                 buf: &mut [u8],
-            ) -> Result<usize, aimdb_core::connector::LinkCodecError> {
+            ) -> Result<usize, aimdb_core::connector::SerializeError> {
                 match postcard::to_slice(self, buf) {
                     Ok(used) => Ok(used.len()),
                     Err(postcard::Error::SerializeBufferFull) => {
-                        Err(aimdb_core::connector::LinkCodecError::BufferTooSmall)
+                        Err(aimdb_core::connector::SerializeError::BufferTooSmall)
                     }
-                    Err(_) => Err(aimdb_core::connector::LinkCodecError::InvalidData),
+                    Err(_) => Err(aimdb_core::connector::SerializeError::InvalidData),
                 }
             }
 
@@ -2375,7 +2375,7 @@ url = "mqtt://readings/postcard/{variant}"
             "Missing zero-allocation Postcard serializer:\n{rust}"
         );
         assert!(
-            rust.contains("LinkCodecError::BufferTooSmall"),
+            rust.contains("SerializeError::BufferTooSmall"),
             "Missing Postcard small-buffer mapping:\n{rust}"
         );
         assert!(

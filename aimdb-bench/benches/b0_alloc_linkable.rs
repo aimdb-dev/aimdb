@@ -8,7 +8,7 @@
 use std::hint::black_box;
 
 use aimdb_bench::alloc::{reset, snapshot};
-use aimdb_core::connector::LinkCodecError;
+use aimdb_core::connector::SerializeError;
 use aimdb_data_contracts::{Linkable, SchemaType};
 use serde::{Deserialize, Serialize};
 
@@ -40,11 +40,11 @@ impl Linkable for PostcardReading {
         postcard::to_allocvec(self).map_err(|e| e.to_string())
     }
 
-    fn encode_into(&self, out: &mut [u8]) -> Result<usize, LinkCodecError> {
+    fn encode_into(&self, out: &mut [u8]) -> Result<usize, SerializeError> {
         match postcard::to_slice(self, out) {
             Ok(used) => Ok(used.len()),
-            Err(postcard::Error::SerializeBufferFull) => Err(LinkCodecError::BufferTooSmall),
-            Err(_) => Err(LinkCodecError::InvalidData),
+            Err(postcard::Error::SerializeBufferFull) => Err(SerializeError::BufferTooSmall),
+            Err(_) => Err(SerializeError::InvalidData),
         }
     }
 }

@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn default_encode_into_rejects_small_buffer_without_mutating_it() {
-        use aimdb_core::connector::LinkCodecError;
+        use aimdb_core::connector::SerializeError;
 
         let temp = TestTemp {
             celsius: 22.5,
@@ -272,7 +272,7 @@ mod tests {
             .encode_into(&mut out)
             .expect_err("undersized output must fail");
 
-        assert_eq!(err, LinkCodecError::BufferTooSmall);
+        assert_eq!(err, SerializeError::BufferTooSmall);
         assert_eq!(out, before);
     }
 }

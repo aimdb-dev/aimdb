@@ -42,7 +42,7 @@ run_generate "$MIXED_CODEC_STATE" --common-crate
 # Exercise the generated Postcard codec as behavior, not just compilable tokens.
 mkdir -p "$OUT/postcard-drift-common/tests"
 cat > "$OUT/postcard-drift-common/tests/postcard_roundtrip.rs" <<'EOF'
-use aimdb_core::connector::LinkCodecError;
+use aimdb_core::connector::SerializeError;
 use aimdb_data_contracts::Linkable;
 use postcard_drift_common::PostcardReadingValue;
 
@@ -71,7 +71,7 @@ fn generated_postcard_linkable_roundtrips() {
     let mut too_small = vec![0_u8; bytes.len() - 1];
     assert_eq!(
         expected.encode_into(&mut too_small),
-        Err(LinkCodecError::BufferTooSmall)
+        Err(SerializeError::BufferTooSmall)
     );
 
     let actual = PostcardReadingValue::from_bytes(&bytes).expect("deserialize with postcard");

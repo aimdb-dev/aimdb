@@ -97,7 +97,7 @@ pub use profiling::{
 // Connector Infrastructure exports
 pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
-pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, LinkCodecError, SerializeError};
+pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
 pub use connector::{IngestFactoryFn, IngestFn};
 pub use connector::{
     SerializedPayload, SerializedReader, SerializedSource, SerializedValue, SerializedValueInto,

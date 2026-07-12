@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 > **Note**: This is the global changelog for the AimDB project. For detailed changes to individual crates, see their respective CHANGELOG.md files:
+>
 > - [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md)
 > - [aimdb-codegen/CHANGELOG.md](aimdb-codegen/CHANGELOG.md)
 > - [aimdb-data-contracts/CHANGELOG.md](aimdb-data-contracts/CHANGELOG.md)
@@ -105,16 +106,8 @@ multi-step migration round-trip suite and a trybuild compile-fail harness.
 
 ### Added
 
-- **Zero-allocation generated Postcard encoding (Issue #177).** `Linkable`
-  gains a source-compatible `encode_into(&mut [u8])` fast path and generated
-  Postcard records implement it with `postcard::to_slice`. Core reuses one
-  bounded 256-byte scratch allocation per generated Postcard outbound route
-  (raw builders choose their capacity) and falls back to the existing owned
-  serializer when a value does not fit. The codec seam is gated
-  by a 10,000-iteration allocation-counting bench (0 allocations, 0 bytes) plus
-  host, `no_std` Cortex-M, and codegen-drift tests. The claim intentionally
-  excludes connector-internal payload copies and the existing boxed connector
-  reader future. ([aimdb-core](aimdb-core/CHANGELOG.md),
+- **Zero-allocation generated Postcard encoding (Issue #177).** `Linkable` gains a source-compatible `encode_into(&mut [u8])` fast path and generated Postcard records implement it with `postcard::to_slice`. Core reuses onebounded 256-byte scratch allocation per generated Postcard outbound route (raw builders choose their capacity) and falls back to the existing owned serializer when a value does not fit. The codec seam is gated by a 10,000-iteration allocation-counting bench (0 allocations, 0 bytes) plus
+  host, `no_std` Cortex-M, and codegen-drift tests. The claim intentionally excludes connector-internal payload copies and the existing boxed connector reader future. ([aimdb-core](aimdb-core/CHANGELOG.md),
   [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md),
   [aimdb-codegen](aimdb-codegen/CHANGELOG.md))
 - **Embassy MQTT client TLS — `mqtts://` for embedded, WP7 ([design 044](docs/design/044-embassy-mqtt-tls.md)).** The Embassy MQTT connector can now dial a broker over TLS 1.3 (`embedded-tls`, pure-Rust `rustpki` certificate verification with `rsa`/`p384` so public CA chains verify out of the box), with SNI/hostname verification, DNS resolution, and a connector-internal SNTP time source that gates the first handshake so certificate validity is always checked against real time. Behind the new `embassy-tls` feature; `MqttConnectorBuilder::new` picks the transport from the URL scheme (`mqtt://` plain, `mqtts://` TLS) and gains `with_tls(TlsOptions)` (entropy, record buffers, SNTP server) and `with_credentials(username, password)` (MQTT CONNECT auth, both transports). The plain `mqtt://` path is untouched. The `embassy-mqtt-connector-demo` example gains a `tls` feature demonstrating the full flow against the repo's `dev/mosquitto` bench broker. ([aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
@@ -430,6 +423,7 @@ builder.configure::<Temperature>("sensor.temperature", |reg| {
 ```
 
 **Key naming conventions:**
+
 - Use dot-separated hierarchical names: `"sensors.indoor"`, `"config.app"`
 - Keys must be unique across all records (duplicate keys panic at registration)
 - For single-instance records, any descriptive string works (e.g., `"sensor.temperature"`, `"app.config"`)
@@ -525,6 +519,7 @@ This release introduces **bidirectional connector support**, enabling true two-w
 ### Modified Crates
 
 See individual changelogs for detailed changes:
+
 - **[aimdb-core](aimdb-core/CHANGELOG.md)**: Core connector architecture, router system, bidirectional APIs
 - **[aimdb-tokio-adapter](aimdb-tokio-adapter/CHANGELOG.md)**: Connector builder integration
 - **[aimdb-embassy-adapter](aimdb-embassy-adapter/CHANGELOG.md)**: Network stack access, connector support
@@ -534,6 +529,7 @@ See individual changelogs for detailed changes:
 ### Migration Guide
 
 **1. Update connector registration:**
+
 ```rust
 // Old (v0.1.0)
 let mqtt = MqttConnector::new("mqtt://broker:1883").await?;
@@ -544,6 +540,7 @@ builder.with_connector(MqttConnectorBuilder::new("mqtt://broker:1883"))
 ```
 
 **2. Make build() async:**
+
 ```rust
 // Old (v0.1.0)
 let db = builder.build()?;
@@ -553,6 +550,7 @@ let db = builder.build().await?;
 ```
 
 **3. Use directional link methods:**
+
 ```rust
 // Old (v0.1.0)
 .link("mqtt://sensors/temp")
@@ -563,6 +561,7 @@ let db = builder.build().await?;
 ```
 
 **4. Remove manual MQTT task spawning (Embassy):**
+
 ```rust
 // Old (v0.1.0) - Manual task spawning required
 let mqtt_result = MqttConnector::create(...).await?;
@@ -639,12 +638,14 @@ impl MyConnector {
 ```
 
 **Why this change?** The new trait-based architecture provides:
+
 - ✅ Symmetry with inbound routing (`ProducerTrait` ↔ `ConsumerTrait`)
 - ✅ Testability (can mock `ConsumerTrait` without real records)
 - ✅ Type safety via factory pattern (type capture at configuration time)
 - ✅ Maintainability (connector logic stays in connector crate)
 
 **Migration checklist for custom connectors:**
+
 - [ ] Add `spawn_outbound_publishers()` method to connector implementation
 - [ ] Call `db.collect_outbound_routes(protocol_name)` in `ConnectorBuilder::build()`
 - [ ] Call `connector.spawn_outbound_publishers(db, routes)?` before returning
@@ -665,6 +666,7 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
 ### Added
 
 #### Core Database (`aimdb-core`)
+
 - Initial release of AimDB async in-memory database engine
 - Type-safe record system using `TypeId`-based routing
 - Three buffer types for different data flow patterns:
@@ -678,6 +680,7 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
 - Remote access protocol (AimX v1) for cross-process introspection
 
 #### Runtime Adapters
+
 - **Tokio Adapter** (`aimdb-tokio-adapter`): Full-featured std runtime support
   - Lock-free buffer implementations
   - Configurable buffer capacities
@@ -688,6 +691,7 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
   - Compatible with ARM Cortex-M targets
 
 #### MQTT Connector (`aimdb-mqtt-connector`)
+
 - Dual runtime support for both Tokio and Embassy
 - Automatic consumer registration via builder pattern
 - Topic mapping with QoS and retain configuration
@@ -697,6 +701,7 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
 - Uses `mountain-mqtt` for embedded environments
 
 #### Developer Tools
+
 - **MCP Server** (`aimdb-mcp`): LLM-powered introspection and debugging
   - Discover running AimDB instances
   - Query record values and schemas
@@ -714,12 +719,14 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
   - Clean error handling
 
 #### Synchronous API (`aimdb-sync`)
+
 - Blocking wrapper around async AimDB core
 - Thread-safe synchronous record access
 - Automatic Tokio runtime management
 - Ideal for gradual migration from sync to async
 
 #### Documentation & Examples
+
 - Comprehensive README with architecture overview
 - Individual crate documentation with examples
 - 12 detailed design documents in `/docs/design`
@@ -730,6 +737,7 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
   - `remote-access-demo`: Cross-process introspection server
 
 #### Build & CI Infrastructure
+
 - Comprehensive Makefile with color-coded output
 - GitHub Actions workflows:
   - Continuous integration (format, lint, test)
@@ -741,6 +749,7 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
 - Dev container setup for consistent development environment
 
 ### Design Goals Achieved
+
 - ✅ Sub-50ms latency for data synchronization
 - ✅ Lock-free buffer operations
 - ✅ Cross-platform support (MCU → edge → cloud)
@@ -748,21 +757,25 @@ See [Connector Development Guide](docs/design/012-M5-connector-development-guide
 - ✅ Protocol-agnostic connector architecture
 
 ### Known Limitations
+
 - Kafka and DDS connectors planned for future releases
 - CLI tool is currently skeleton implementation
 - Performance benchmarks not yet included
 - Limited to Unix domain sockets for remote access (no TCP yet)
 
 ### Dependencies
+
 - Rust 1.75+ required
 - Tokio 1.47+ for std environments
 - Embassy 0.9+ for embedded environments
 - See `deny.toml` for approved dependency licenses
 
 ### Breaking Changes
+
 None (initial release)
 
 ### Migration Guide
+
 Not applicable (initial release)
 
 ---
@@ -774,6 +787,7 @@ Not applicable (initial release)
 AimDB v0.1.0 establishes the foundational architecture for async, in-memory data synchronization across MCU → edge → cloud environments. This release focuses on core functionality, dual runtime support, and developer tooling.
 
 **Highlights:**
+
 - 🚀 Dual runtime support: Works on both standard library (Tokio) and embedded (Embassy)
 - 🔒 Type-safe record system eliminates runtime string lookups
 - 📦 Three buffer types cover most data patterns
@@ -782,6 +796,7 @@ AimDB v0.1.0 establishes the foundational architecture for async, in-memory data
 - ✅ 27+ core tests, comprehensive CI/CD, security auditing
 
 **Get Started:**
+
 ```bash
 cargo add aimdb-core aimdb-tokio-adapter
 ```
@@ -790,7 +805,7 @@ See [README.md](README.md) for quickstart guide and examples.
 
 **Feedback Welcome:**
 This is an early release. Please report issues, suggest features, or contribute at:
-https://github.com/aimdb-dev/aimdb
+<https://github.com/aimdb-dev/aimdb>
 
 ---
 

@@ -9,13 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Issue #177 — generated Postcard records now have a true into-slice codec.**
-  Their `Linkable` implementation advertises a 256-byte reusable scratch
-  capacity and overrides `encode_into` with `postcard::to_slice`; generated
-  outbound connector chains install `with_serializer_into`. Values that exceed
-  the scratch capacity retain the existing `postcard::to_allocvec` fallback.
-  Host behavior, generated connector wiring, `no_std` Cortex-M compilation, and
-  the JSON-free dependency graph are covered by `make codegen-drift`.
+- **Issue #177 - generated postcard records now have a true into-slice codec.**
+  Their `Linkable` implementation advertises a 256-byte reusable scratch capacity and overrides `encode_into` with `postcard::to_slice`; generated outbound connector chains install `with_serializer_into`. Values that exceed the scratch capacity retain the existing `postcard::to_allocvec` fallback. Host behavior, generated connector wiring, `no_std` Cortex-M compilation and the JSON-free dependency graph are covered by `make codegen-drift`.
 - Postcard codegen is now exercised end to end by `make codegen-drift`: a generated Postcard-only common crate roundtrips on the host, cross-compiles for `thumbv7em-none-eabihf`, and proves its normal dependency graph is JSON-free. A generated mixed JSON + Postcard crate is also compiled so codec feature/dependency drift fails in CI (#155).
 
 ### Fixed
@@ -32,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Generated join handler stubs** updated to match the new task-model `on_triggers` API (Design 027). Multi-input task handlers are now generated as:
+
   ```rust
   pub async fn task_handler(
       mut _rx: aimdb_core::transform::JoinEventRx,
@@ -42,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       }
   }
   ```
+
   Previously generated `fn task_handler(JoinTrigger, &mut (), &Producer<...>) -> Pin<Box<dyn Future>>` for the callback model.
 - `build_transform_call` for join tasks now emits `.on_triggers(handler)` instead of `.with_state(()).on_trigger(handler)`.
 

@@ -284,16 +284,16 @@ pub trait Linkable: SchemaType + Sized {
     /// streaming encoder may have written a prefix before discovering that the
     /// buffer is too small. The compatibility implementation below performs a
     /// checked copy and therefore leaves `buf` untouched on
-    /// [`LinkCodecError::BufferTooSmall`].
+    /// [`SerializeError::BufferTooSmall`].
     ///
-    /// [`LinkCodecError::BufferTooSmall`]: aimdb_core::connector::LinkCodecError::BufferTooSmall
-    fn encode_into(&self, buf: &mut [u8]) -> Result<usize, aimdb_core::connector::LinkCodecError> {
-        use aimdb_core::connector::LinkCodecError;
+    /// [`SerializeError::BufferTooSmall`]: aimdb_core::connector::SerializeError::BufferTooSmall
+    fn encode_into(&self, buf: &mut [u8]) -> Result<usize, aimdb_core::connector::SerializeError> {
+        use aimdb_core::connector::SerializeError;
 
-        let bytes = self.to_bytes().map_err(|_| LinkCodecError::InvalidData)?;
+        let bytes = self.to_bytes().map_err(|_| SerializeError::InvalidData)?;
         let out = buf
             .get_mut(..bytes.len())
-            .ok_or(LinkCodecError::BufferTooSmall)?;
+            .ok_or(SerializeError::BufferTooSmall)?;
         out.copy_from_slice(&bytes);
         Ok(bytes.len())
     }

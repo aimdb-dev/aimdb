@@ -303,7 +303,7 @@ type FusedSerializeFn<T> = Arc<
 /// `BufferTooSmall` selects the owned serializer for that value; other failures
 /// retain the existing skip-and-log behavior.
 type FusedSerializeIntoFn<T> = Arc<
-    dyn Fn(&crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::LinkCodecError>
+    dyn Fn(&crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::SerializeError>
         + Send
         + Sync,
 >;
@@ -429,7 +429,7 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
                             payload: crate::connector::SerializedPayload::Scratch { len },
                         });
                     }
-                    Err(crate::connector::LinkCodecError::BufferTooSmall) => {
+                    Err(crate::connector::SerializeError::BufferTooSmall) => {
                         match (self.serialize)(ctx, &value) {
                             Ok(payload) => {
                                 return Ok(crate::connector::SerializedValueInto {
@@ -480,7 +480,7 @@ type TypedContextSerializerFn<T> = Arc<
 
 /// Typed into-slice serializer stored by [`OutboundConnectorBuilder`].
 type TypedContextSerializerIntoFn<T> = Arc<
-    dyn Fn(crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::LinkCodecError>
+    dyn Fn(crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::SerializeError>
         + Send
         + Sync
         + 'static,
@@ -821,7 +821,7 @@ where
                 crate::RuntimeContext,
                 &T,
                 &mut [u8],
-            ) -> Result<usize, crate::connector::LinkCodecError>
+            ) -> Result<usize, crate::connector::SerializeError>
             + Send
             + Sync
             + 'static,
@@ -1193,7 +1193,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DbResult;
+    use crate::{
+        connector::{SerializeError, SerializedPayload, SerializedReader as _, TopicProvider},
+        DbResult,
+    };
     use core::pin::Pin;
 
     #[cfg(not(feature = "std"))]
@@ -1792,8 +1795,6 @@ mod tests {
     // Fused outbound reader tests
     // ====================================================================
 
-    use crate::connector::SerializedReader as _;
-
     /// Buffer reader that replays a fixed script, then reports the buffer
     /// closed.
     struct ScriptedReader {
@@ -1835,7 +1836,7 @@ mod tests {
     fn fused_reader(
         script: Vec<Result<TestRecord, crate::DbError>>,
         serialize: FusedSerializeFn<TestRecord>,
-        topic: Option<Arc<dyn crate::connector::TopicProvider<TestRecord>>>,
+        topic: Option<Arc<dyn TopicProvider<TestRecord>>>,
     ) -> FusedReader<TestRecord> {
         FusedReader {
             inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
@@ -1899,7 +1900,7 @@ mod tests {
             vec![Ok(TestRecord { value: 13 }), Ok(TestRecord { value: 42 })],
             Arc::new(|_ctx, r| {
                 if r.value == 13 {
-                    Err(crate::connector::SerializeError::InvalidData)
+                    Err(SerializeError::InvalidData)
                 } else {
                     Ok(r.value.to_le_bytes().to_vec())
                 }
@@ -1928,7 +1929,7 @@ mod tests {
                 into_counter.fetch_add(1, Ordering::SeqCst);
                 let bytes = r.value.to_le_bytes();
                 out.get_mut(..bytes.len())
-                    .ok_or(crate::connector::LinkCodecError::BufferTooSmall)?
+                    .ok_or(SerializeError::BufferTooSmall)?
                     .copy_from_slice(&bytes);
                 Ok(bytes.len())
             }),
@@ -1940,10 +1941,7 @@ mod tests {
             .await
             .expect("value");
 
-        assert_eq!(
-            msg.payload,
-            crate::connector::SerializedPayload::Scratch { len: 4 }
-        );
+        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
         assert_eq!(&scratch[..4], 7i32.to_le_bytes().as_slice());
         assert_eq!(into_calls.load(Ordering::SeqCst), 1);
         assert_eq!(owned_calls.load(Ordering::SeqCst), 0);
@@ -1959,7 +1957,7 @@ mod tests {
                 owned_counter.fetch_add(1, Ordering::SeqCst);
                 Ok(r.value.to_le_bytes().to_vec())
             }),
-            Arc::new(|_ctx, _r, _out| Err(crate::connector::LinkCodecError::BufferTooSmall)),
+            Arc::new(|_ctx, _r, _out| Err(SerializeError::BufferTooSmall)),
         );
         let mut scratch = [0_u8; 2];
 
@@ -1970,7 +1968,7 @@ mod tests {
 
         assert_eq!(
             msg.payload,
-            crate::connector::SerializedPayload::Owned(9i32.to_le_bytes().to_vec())
+            SerializedPayload::Owned(9i32.to_le_bytes().to_vec())
         );
         assert_eq!(owned_calls.load(Ordering::SeqCst), 1);
     }
@@ -1996,10 +1994,7 @@ mod tests {
             .await
             .expect("second value");
 
-        assert_eq!(
-            msg.payload,
-            crate::connector::SerializedPayload::Scratch { len: 4 }
-        );
+        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
         assert_eq!(&scratch[..4], 2i32.to_le_bytes().as_slice());
     }
 
@@ -2010,7 +2005,7 @@ mod tests {
             Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
             Arc::new(|_ctx, r, out| {
                 if r.value == 1 {
-                    return Err(crate::connector::LinkCodecError::InvalidData);
+                    return Err(SerializeError::InvalidData);
                 }
                 let bytes = r.value.to_le_bytes();
                 out[..bytes.len()].copy_from_slice(&bytes);
@@ -2024,10 +2019,7 @@ mod tests {
             .await
             .expect("second value");
 
-        assert_eq!(
-            msg.payload,
-            crate::connector::SerializedPayload::Scratch { len: 4 }
-        );
+        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
         assert_eq!(&scratch[..4], 2i32.to_le_bytes().as_slice());
     }
 
@@ -2035,7 +2027,7 @@ mod tests {
     #[tokio::test]
     async fn fused_reader_resolves_dynamic_topic() {
         struct PositiveTopic;
-        impl crate::connector::TopicProvider<TestRecord> for PositiveTopic {
+        impl TopicProvider<TestRecord> for PositiveTopic {
             fn topic(&self, value: &TestRecord) -> Option<String> {
                 (value.value > 0).then(|| alloc::format!("dyn/{}", value.value))
             }
@@ -2074,7 +2066,7 @@ mod tests {
         }
 
         struct FixedTopic;
-        impl crate::connector::TopicProvider<TestRecord> for FixedTopic {
+        impl TopicProvider<TestRecord> for FixedTopic {
             fn topic(&self, value: &TestRecord) -> Option<String> {
                 Some(alloc::format!("dyn/{}", value.value))
             }
@@ -2097,7 +2089,7 @@ mod tests {
                     let encoded = r.value.to_le_bytes();
                     let dest = out
                         .get_mut(..encoded.len())
-                        .ok_or(crate::connector::LinkCodecError::BufferTooSmall)?;
+                        .ok_or(SerializeError::BufferTooSmall)?;
                     dest.copy_from_slice(&encoded);
                     Ok(encoded.len())
                 })
@@ -2115,10 +2107,7 @@ mod tests {
         let mut scratch = [0u8; 4];
         let msg = reader.recv_into(&ctx, &mut scratch).await.expect("value");
         assert_eq!(msg.dest.as_deref(), Some("dyn/5"));
-        assert_eq!(
-            msg.payload,
-            crate::connector::SerializedPayload::Scratch { len: 4 }
-        );
+        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
         assert_eq!(scratch, 5i32.to_le_bytes());
 
         let closed = reader

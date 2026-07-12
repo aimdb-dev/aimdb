@@ -41,7 +41,7 @@ use alloc::format;
 
 use crate::{builder::AimDb, DbResult};
 
-/// Allocation-free error shared by record/link codec operations.
+/// Error shared by outbound record serialization operations.
 ///
 /// This is deliberately separate from [`crate::CodecError`], which describes
 /// failures in a session envelope codec (AimX, WebSocket, and similar framed
@@ -51,7 +51,7 @@ use crate::{builder::AimDb, DbResult};
 /// Uses an enum instead of `String` for predictable `no_std` behavior and
 /// `defmt` logging support on Embassy targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkCodecError {
+pub enum SerializeError {
     /// Output buffer is too small for the serialized data
     BufferTooSmall,
 
@@ -59,14 +59,8 @@ pub enum LinkCodecError {
     InvalidData,
 }
 
-/// Backwards-compatible name for the outbound-only serializer error.
-///
-/// New APIs should prefer [`LinkCodecError`], which also names the record/link
-/// layer without implying that the error can only occur while encoding.
-pub use LinkCodecError as SerializeError;
-
 #[cfg(feature = "defmt")]
-impl defmt::Format for LinkCodecError {
+impl defmt::Format for SerializeError {
     fn format(&self, f: defmt::Formatter) {
         match self {
             Self::BufferTooSmall => defmt::write!(f, "BufferTooSmall"),
@@ -76,7 +70,7 @@ impl defmt::Format for LinkCodecError {
 }
 
 #[cfg(feature = "std")]
-impl std::fmt::Display for LinkCodecError {
+impl std::fmt::Display for SerializeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BufferTooSmall => write!(f, "Output buffer too small"),
@@ -86,7 +80,7 @@ impl std::fmt::Display for LinkCodecError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for LinkCodecError {}
+impl std::error::Error for SerializeError {}
 
 /// One serialized record update, produced by a fused [`SerializedReader`]
 ///
