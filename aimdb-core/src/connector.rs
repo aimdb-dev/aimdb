@@ -41,12 +41,17 @@ use alloc::format;
 
 use crate::{builder::AimDb, DbResult};
 
-/// Error that can occur during serialization
+/// Allocation-free error shared by record/link codec operations.
 ///
-/// Uses an enum instead of String for better performance in `no_std` environments
-/// and to enable defmt logging support in Embassy.
+/// This is deliberately separate from [`crate::CodecError`], which describes
+/// failures in a session envelope codec (AimX, WebSocket, and similar framed
+/// protocols). A link codec sits one layer higher: it turns a typed record into
+/// the opaque payload passed to a connector.
+///
+/// Uses an enum instead of `String` for predictable `no_std` behavior and
+/// `defmt` logging support on Embassy targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SerializeError {
+pub enum LinkCodecError {
     /// Output buffer is too small for the serialized data
     BufferTooSmall,
 
@@ -54,8 +59,14 @@ pub enum SerializeError {
     InvalidData,
 }
 
+/// Backwards-compatible name for the outbound-only serializer error.
+///
+/// New APIs should prefer [`LinkCodecError`], which also names the record/link
+/// layer without implying that the error can only occur while encoding.
+pub use LinkCodecError as SerializeError;
+
 #[cfg(feature = "defmt")]
-impl defmt::Format for SerializeError {
+impl defmt::Format for LinkCodecError {
     fn format(&self, f: defmt::Formatter) {
         match self {
             Self::BufferTooSmall => defmt::write!(f, "BufferTooSmall"),
@@ -65,7 +76,7 @@ impl defmt::Format for SerializeError {
 }
 
 #[cfg(feature = "std")]
-impl std::fmt::Display for SerializeError {
+impl std::fmt::Display for LinkCodecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BufferTooSmall => write!(f, "Output buffer too small"),
@@ -75,7 +86,7 @@ impl std::fmt::Display for SerializeError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for SerializeError {}
+impl std::error::Error for LinkCodecError {}
 
 /// One serialized record update, produced by a fused [`SerializedReader`]
 ///
@@ -94,12 +105,45 @@ pub struct SerializedValue {
     pub payload: Vec<u8>,
 }
 
+/// Location of a payload produced by [`SerializedReader::recv_into`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SerializedPayload {
+    /// The initialized prefix of the caller-provided scratch buffer.
+    ///
+    /// A custom reader returning this variant must write the prefix during the
+    /// same `recv_into` call and its source must advertise a sufficient
+    /// [`SerializedSource::serializer_scratch_capacity`]. The pump validates
+    /// the length before publishing.
+    Scratch {
+        /// Number of initialized payload bytes in the scratch buffer.
+        len: usize,
+    },
+    /// Compatibility fallback from the existing `Vec` serializer.
+    Owned(Vec<u8>),
+}
+
+/// One serialized record produced into caller-owned scratch storage or an owned fallback.
+///
+/// No reference escapes the async reader call. The pump validates `len`, then
+/// borrows its own scratch buffer only for the subsequent `publish().await`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerializedValueInto {
+    /// Dynamic destination resolved while the typed record was available.
+    pub dest: Option<String>,
+    /// Scratch prefix metadata or an owned compatibility payload.
+    pub payload: SerializedPayload,
+}
+
 /// Type alias for the future returned by [`SerializedReader::recv`]
 ///
 /// Manual boxed future for object safety — same pattern as the rest of this
 /// module (`#[async_trait]` would drag in `std`).
 pub type RecvSerializedFuture<'a> =
     Pin<Box<dyn Future<Output = DbResult<SerializedValue>> + Send + 'a>>;
+
+/// Future returned by [`SerializedReader::recv_into`].
+pub type RecvSerializedIntoFuture<'a> =
+    Pin<Box<dyn Future<Output = DbResult<SerializedValueInto>> + Send + 'a>>;
 
 /// A subscription to one record, fused with destination resolution and
 /// serialization at registration time — no `dyn Any` crosses this boundary
@@ -113,6 +157,26 @@ pub trait SerializedReader: Send {
     /// recovered; any other error means the buffer is gone. Serialization
     /// failures are logged and skipped inside the reader.
     fn recv<'a>(&'a mut self, ctx: &'a crate::RuntimeContext) -> RecvSerializedFuture<'a>;
+
+    /// Yield the next serialized value into caller-owned scratch storage.
+    ///
+    /// Third-party readers remain source-compatible: the default adapter calls
+    /// [`recv`](Self::recv) and returns its `Vec<u8>` as
+    /// [`SerializedPayload::Owned`]. AimDB's fused reader overrides this method
+    /// when an into-slice serializer was registered.
+    fn recv_into<'a>(
+        &'a mut self,
+        ctx: &'a crate::RuntimeContext,
+        _scratch: &'a mut [u8],
+    ) -> RecvSerializedIntoFuture<'a> {
+        Box::pin(async move {
+            let value = self.recv(ctx).await?;
+            Ok(SerializedValueInto {
+                dest: value.dest,
+                payload: SerializedPayload::Owned(value.payload),
+            })
+        })
+    }
 }
 
 /// A record's outbound wire interface, built where the record type `T` is
@@ -120,6 +184,15 @@ pub trait SerializedReader: Send {
 /// bytes. Replaces the erased `ConsumerTrait` + serializer + topic-provider
 /// triple.
 pub trait SerializedSource: Send + Sync {
+    /// Scratch capacity requested by this source's into-slice serializer.
+    ///
+    /// `None` means the source only supports the existing owned serializer. A
+    /// source whose reader can return [`SerializedPayload::Scratch`] must
+    /// return `Some(capacity)` here so the route pump provides that storage.
+    fn serializer_scratch_capacity(&self) -> Option<usize> {
+        None
+    }
+
     /// Subscribe to the record's updates.
     ///
     /// Synchronous and infallible — the buffer handle is pre-resolved at

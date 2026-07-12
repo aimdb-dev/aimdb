@@ -285,6 +285,51 @@ Notes:
   | Per-URL opaque payloads (MQTT/KNX/serial/UDS) | fused per-link codec | `Linkable` |
   | AimX `record.get`/`record.set`/`subscribe` JSON | blanket `RemoteSerialize` ([`codec.rs:33`](../../aimdb-core/src/codec.rs)), automatic for serde types | none needed |
 
+#### 3.3.1 Issue #177 follow-up: bounded into-slice encoding
+
+Issue #177 implements the non-allocating outbound half without forcing the
+deferred breaking error migration. `Linkable` now has a source-compatible
+`encode_into(&mut [u8]) -> Result<usize, LinkCodecError>` default and an
+`ENCODE_BUFFER_CAPACITY` opt-in. Existing implementations stay on `to_bytes`;
+generated Postcard implementations opt in and call `postcard::to_slice`.
+
+The ownership boundary is deliberately in the route pump:
+
+```text
+route pump starts once
+  scratch: Vec<u8> with fixed length N
+
+for each T
+  FusedReader::recv_into(&mut scratch)
+    success(len <= N) -> SerializedPayload::Scratch { len }
+    BufferTooSmall   -> old to_bytes() -> SerializedPayload::Owned(Vec)
+    InvalidData      -> log and skip
+  pump validates scratch.get(..len)
+  Connector::publish(&scratch[..len]).await
+  only then may the next record overwrite scratch
+```
+
+Returning a slice borrowed from reader-owned storage was rejected: a boxed
+async retry loop cannot safely lend that slice and then mutably reuse the same
+storage on a later iteration. Returning only `{ len }` metadata lets the pump
+borrow its own storage across `publish().await`, needs no `unsafe`, and keeps the
+additive `SerializedReader::recv_into` default source-compatible for connector
+authors.
+
+Error ownership is now explicit but only partially aligned:
+
+- `LinkCodecError::{BufferTooSmall, InvalidData}` names the record/per-link
+  codec layer; `SerializeError` remains its compatibility alias.
+- Root `aimdb_core::CodecError` still belongs to session-envelope codecs and is
+  intentionally not reused.
+- `Linkable::from_bytes`/`to_bytes` still return `String`. Migrating those
+  signatures remains the separately agreed breaking part of the §7 follow-up.
+
+The allocation claim is correspondingly narrow: successful generated Postcard
+encoding performs zero heap allocations, measured over 10,000 calls. The
+existing boxed `SerializedReader` future, dynamic topic `String`, and
+connector-internal ownership copies are outside that claim.
+
 ### 3.4 `Settable` → consumed by `aimdb-sync`
 
 `Settable` was built for the sync bridge, but `aimdb-sync` never referenced it: `SyncProducer::set(value: T)` took a fully constructed record, so every outside-the-thread caller hand-assembled the struct. The verb the trait was named for is a small inherent impl — and note it is distinct from AimX's existing `record.set {name, value}` (full JSON value through `JsonCodec`); `Settable` is **set-by-primitive**:

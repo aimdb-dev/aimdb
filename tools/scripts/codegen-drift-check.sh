@@ -4,8 +4,9 @@
 # The codegen templates print API-shaped strings the compiler never checks,
 # so they can silently rot against the real AimDB API. This script makes the
 # drift loud: it generates the default common/hub/flat outputs plus Postcard-
-# only and mixed-codec common crates, then compiles and exercises them against
-# the workspace at HEAD (design 038 §3.10 decision, issue #155).
+# only and mixed-codec common crates plus a Postcard flat schema, then compiles
+# and exercises them against the workspace at HEAD (design 038 §3.10 decision,
+# issues #155 and #177).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -15,7 +16,10 @@ MIXED_CODEC_STATE="$REPO/tools/codegen-drift/state-mixed-codec.toml"
 OUT="${CODEGEN_DRIFT_DIR:-$REPO/target/codegen-drift}"
 
 rm -rf "$OUT"
-mkdir -p "$OUT/.aimdb" "$OUT/drift-check-flat/src"
+mkdir -p \
+    "$OUT/.aimdb" \
+    "$OUT/drift-check-flat/src" \
+    "$OUT/postcard-drift-flat/src"
 
 run_generate() {
     local state="$1"
@@ -32,11 +36,13 @@ run_generate "$STATE" --rust "$OUT/drift-check-flat/src/generated_schema.rs"
 
 echo "── Generating Postcard-only and mixed-codec common crates"
 run_generate "$POSTCARD_STATE" --common-crate
+run_generate "$POSTCARD_STATE" --rust "$OUT/postcard-drift-flat/src/generated_schema.rs"
 run_generate "$MIXED_CODEC_STATE" --common-crate
 
 # Exercise the generated Postcard codec as behavior, not just compilable tokens.
 mkdir -p "$OUT/postcard-drift-common/tests"
 cat > "$OUT/postcard-drift-common/tests/postcard_roundtrip.rs" <<'EOF'
+use aimdb_core::connector::LinkCodecError;
 use aimdb_data_contracts::Linkable;
 use postcard_drift_common::PostcardReadingValue;
 
@@ -49,6 +55,24 @@ fn generated_postcard_linkable_roundtrips() {
 
     let bytes = expected.to_bytes().expect("serialize with postcard");
     assert!(!bytes.is_empty());
+
+    let mut out = vec![0xA5; bytes.len() + 4];
+    let written = expected
+        .encode_into(&mut out)
+        .expect("encode postcard into caller buffer");
+    assert_eq!(written, bytes.len());
+    assert_eq!(&out[..written], bytes.as_slice());
+    assert_eq!(&out[written..], &[0xA5; 4]);
+
+    let mut exact = vec![0_u8; bytes.len()];
+    assert_eq!(expected.encode_into(&mut exact), Ok(bytes.len()));
+    assert_eq!(exact, bytes);
+
+    let mut too_small = vec![0_u8; bytes.len() - 1];
+    assert_eq!(
+        expected.encode_into(&mut too_small),
+        Err(LinkCodecError::BufferTooSmall)
+    );
 
     let actual = PostcardReadingValue::from_bytes(&bytes).expect("deserialize with postcard");
     assert_eq!(actual.value.to_bits(), expected.value.to_bits());
@@ -88,6 +112,33 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 EOF
 
+# The Postcard flat output includes configure_schema(), so compiling this
+# wrapper checks that generated outbound chains call with_serializer_into with
+# the real core API. The common-crate output above checks the no_std codec impl.
+cat > "$OUT/postcard-drift-flat/src/lib.rs" <<'EOF'
+extern crate alloc;
+
+mod generated_schema;
+pub use generated_schema::*;
+EOF
+cat > "$OUT/postcard-drift-flat/Cargo.toml" <<EOF
+[package]
+name = "postcard-drift-flat"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+aimdb-core = { path = "$REPO/aimdb-core", features = ["std"] }
+aimdb-data-contracts = { path = "$REPO/aimdb-data-contracts", features = ["std", "linkable"] }
+aimdb-tokio-adapter = { path = "$REPO/aimdb-tokio-adapter", features = ["tokio-runtime"] }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+EOF
+
 # The generated manifests pin crates.io versions; point every aimdb-*
 # dependency at the local workspace instead so we compile against HEAD.
 sed -i -E "s|^(aimdb-[a-z0-9-]+) = \\{ version = \"[^\"]+\"|\\1 = { path = \"$REPO/\\1\"|" \
@@ -104,6 +155,7 @@ members = [
     "drift-check-hub",
     "drift-check-flat",
     "postcard-drift-common",
+    "postcard-drift-flat",
     "mixed-codec-drift-common",
 ]
 resolver = "2"

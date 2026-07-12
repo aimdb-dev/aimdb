@@ -40,6 +40,10 @@ harness = false
 name = "b0_alloc_migration"
 harness = false
 
+[[bench]]
+name = "b0_alloc_linkable"
+harness = false
+
 [features]
 default = ["std"]
 # Gates `profiles`/`reports`/`harness` and their criterion/serde_json/
@@ -89,6 +93,7 @@ serde_json = { workspace = true, optional = true }
 # criterion/serde_json above, since that's the only bench that needs it.
 aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
     "alloc",
+    "linkable",
     "migratable",
 ], optional = true }
 
@@ -124,3 +129,4 @@ critical-section = { version = "1.1", features = ["std"] }
 # defmt logger / panic-handler + embassy-time driver stubs for the host bench
 defmt = { workspace = true }
 embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }

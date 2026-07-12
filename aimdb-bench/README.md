@@ -20,6 +20,8 @@ Plus two informational benches that exercise the full runner-driven pipeline.
 **Adapters covered:**
 
 - **Tokio** — `b0_alloc_tokio`, `b1_b2_tokio` (host).
+- **Postcard `Linkable` codec** — `b0_alloc_linkable` (host). This isolates the
+  issue #177 `encode_into` seam; it is not a whole-connector allocation claim.
 - **Embassy** — `b0_alloc_embassy`, `b1_b2_embassy`
   (host). These drive the real [`EmbassyBuffer`] backend via
   `futures::executor::block_on` over embassy-sync's poll methods — no
@@ -52,6 +54,9 @@ Always run from the workspace root (`/aimdb_ws/aimdb`).
 ```sh
 # B0 — allocation gate (buffer layer)
 cargo bench -p aimdb-bench --bench b0_alloc_tokio
+
+# B0 — allocation gate (Postcard Linkable::encode_into codec seam)
+cargo bench -p aimdb-bench --bench b0_alloc_linkable
 
 # B1 + B2 — latency (time/iter) and throughput (msgs/sec), one Criterion suite
 cargo bench -p aimdb-bench --bench b1_b2_tokio
@@ -103,6 +108,13 @@ The committed baseline lives in `data/baselines/b0_alloc_tokio.json`. When a cha
 
 `b0_alloc_embassy` mirrors this against the Embassy buffer backend and writes `data/baselines/b0_alloc_embassy.json` — also **0 allocs/msg** across all three profiles, confirming the Embassy `poll_recv` path is allocation-free on the host. The on-target B3 bench (`examples/embassy-bench-stm32h5`) re-checks the same 0-alloc claim against the real embedded allocator.
 
+`b0_alloc_linkable` warms up for 1,000 iterations, then measures 10,000
+generated-shape Postcard `Linkable::encode_into` calls into one stack buffer.
+The required result is **0 allocation calls and 0 allocated bytes**. It isolates
+the codec seam: `SerializedReader` still returns a boxed future, dynamic topics
+may allocate, and connector implementations may copy payload ownership after
+the core pump lends them the scratch slice.
+
 > **Embassy eager registration (design 039 F8/F9).** An Embassy `SpmcRing` reader registers its embassy `Subscriber` eagerly, at `subscribe()` time — matching Tokio's `broadcast` — so no separate priming step is needed before the first `push`.
 
 **Noise reduction:** a `new_current_thread()` Tokio executor is used so there are no work-stealing threads and Tokio's scheduler does not allocate per-poll in the hot path.
@@ -127,5 +139,4 @@ Use them as a comparison point, not a regression gate. If they regress, `b0_allo
 - Criterion p99 can vary ±5–10% on noisy CI runners. Use p50 medians for trend comparisons.
 - Always specify `--release` or debug build consistently when comparing runs; optimizations differ by 5–50×.
 - `b_alloc_pipeline` uses a paced source: per-message pace tokens and notification channels. The coordination overhead is included in the measured window.
-
 

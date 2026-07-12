@@ -297,6 +297,17 @@ type FusedSerializeFn<T> = Arc<
         + Sync,
 >;
 
+/// Optional allocation-free serializer captured beside [`FusedSerializeFn`].
+///
+/// The callback writes into one pump-owned bounded scratch buffer. Returning
+/// `BufferTooSmall` selects the owned serializer for that value; other failures
+/// retain the existing skip-and-log behavior.
+type FusedSerializeIntoFn<T> = Arc<
+    dyn Fn(&crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::LinkCodecError>
+        + Send
+        + Sync,
+>;
+
 /// The [`SerializedSource`](crate::connector::SerializedSource) built by
 /// `OutboundConnectorBuilder::finish()` — holds the typed consumer,
 /// serializer, and optional topic provider, so every per-message step stays
@@ -304,6 +315,7 @@ type FusedSerializeFn<T> = Arc<
 struct FusedSource<T: Send + Sync + 'static + Debug + Clone> {
     consumer: Consumer<T>,
     serialize: FusedSerializeFn<T>,
+    serialize_into: Option<(usize, FusedSerializeIntoFn<T>)>,
     topic: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
 }
 
@@ -311,10 +323,18 @@ impl<T> crate::connector::SerializedSource for FusedSource<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    fn serializer_scratch_capacity(&self) -> Option<usize> {
+        self.serialize_into.as_ref().map(|(capacity, _)| *capacity)
+    }
+
     fn subscribe(&self) -> Box<dyn crate::connector::SerializedReader> {
         Box::new(FusedReader {
             inner: self.consumer.subscribe(),
             serialize: self.serialize.clone(),
+            serialize_into: self
+                .serialize_into
+                .as_ref()
+                .map(|(_, serialize_into)| serialize_into.clone()),
             topic: self.topic.clone(),
         })
     }
@@ -329,6 +349,7 @@ where
 struct FusedReader<T: Clone + Send + 'static> {
     inner: crate::buffer::Reader<T>,
     serialize: FusedSerializeFn<T>,
+    serialize_into: Option<FusedSerializeIntoFn<T>>,
     topic: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
 }
 
@@ -361,6 +382,85 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
             }
         })
     }
+
+    fn recv_into<'a>(
+        &'a mut self,
+        ctx: &'a crate::RuntimeContext,
+        scratch: &'a mut [u8],
+    ) -> crate::connector::RecvSerializedIntoFuture<'a> {
+        Box::pin(async move {
+            loop {
+                let value = self.inner.recv().await?;
+                let dest = self.topic.as_ref().and_then(|p| p.topic(&value));
+
+                let Some(serialize_into) = &self.serialize_into else {
+                    match (self.serialize)(ctx, &value) {
+                        Ok(payload) => {
+                            return Ok(crate::connector::SerializedValueInto {
+                                dest,
+                                payload: crate::connector::SerializedPayload::Owned(payload),
+                            });
+                        }
+                        Err(_e) => {
+                            log_error!(
+                                "outbound link: failed to serialize {} (dest {:?}): {:?}",
+                                core::any::type_name::<T>(),
+                                dest,
+                                _e
+                            );
+                            continue;
+                        }
+                    }
+                };
+
+                match serialize_into(ctx, &value, scratch) {
+                    Ok(len) => {
+                        if scratch.get(..len).is_none() {
+                            log_error!(
+                                "outbound link: serializer for {} returned invalid length {} for {}-byte scratch buffer",
+                                core::any::type_name::<T>(),
+                                len,
+                                scratch.len()
+                            );
+                            continue;
+                        }
+                        return Ok(crate::connector::SerializedValueInto {
+                            dest,
+                            payload: crate::connector::SerializedPayload::Scratch { len },
+                        });
+                    }
+                    Err(crate::connector::LinkCodecError::BufferTooSmall) => {
+                        match (self.serialize)(ctx, &value) {
+                            Ok(payload) => {
+                                return Ok(crate::connector::SerializedValueInto {
+                                    dest,
+                                    payload: crate::connector::SerializedPayload::Owned(payload),
+                                });
+                            }
+                            Err(_e) => {
+                                log_error!(
+                                    "outbound link: fallback serialization failed for {} (dest {:?}): {:?}",
+                                    core::any::type_name::<T>(),
+                                    dest,
+                                    _e
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    Err(_e) => {
+                        log_error!(
+                            "outbound link: failed to serialize {} into scratch buffer (dest {:?}): {:?}",
+                            core::any::type_name::<T>(),
+                            dest,
+                            _e
+                        );
+                        continue;
+                    }
+                }
+            }
+        })
+    }
 }
 
 // ============================================================================
@@ -373,6 +473,14 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
 /// erasure.
 type TypedContextSerializerFn<T> = Arc<
     dyn Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+/// Typed into-slice serializer stored by [`OutboundConnectorBuilder`].
+type TypedContextSerializerIntoFn<T> = Arc<
+    dyn Fn(crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::LinkCodecError>
         + Send
         + Sync
         + 'static,
@@ -633,6 +741,7 @@ where
             url: url.to_string(),
             config: Vec::new(),
             context_serializer: None,
+            context_serializer_into: None,
             topic_provider: None,
         }
     }
@@ -664,6 +773,7 @@ pub struct OutboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + C
     url: String,
     config: Vec<(String, String)>,
     context_serializer: Option<TypedContextSerializerFn<T>>,
+    context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
     topic_provider: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
 }
 
@@ -691,6 +801,32 @@ where
             + 'static,
     {
         self.context_serializer = Some(Arc::new(f));
+        self
+    }
+
+    /// Adds an into-slice fast path beside the required owned serializer.
+    ///
+    /// One zero-initialized scratch buffer of `capacity` bytes is allocated when
+    /// each route pump starts, then reused for every message. A successful
+    /// callback returns the initialized prefix length. The framework validates
+    /// that length before borrowing the prefix. `BufferTooSmall` falls back to
+    /// [`with_serializer`](Self::with_serializer) for that value; any other
+    /// codec error is logged and the value is skipped.
+    ///
+    /// This method is an optimization only: callers must still install the
+    /// owned serializer so oversized and legacy values retain their old behavior.
+    pub fn with_serializer_into<F>(mut self, capacity: usize, f: F) -> Self
+    where
+        F: Fn(
+                crate::RuntimeContext,
+                &T,
+                &mut [u8],
+            ) -> Result<usize, crate::connector::LinkCodecError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.context_serializer_into = Some((capacity, Arc::new(f)));
         self
     }
 
@@ -770,6 +906,16 @@ where
             return self.registrar;
         };
 
+        let serialize_into: Option<(usize, FusedSerializeIntoFn<T>)> =
+            self.context_serializer_into.map(|(capacity, ser)| {
+                let adapted: FusedSerializeIntoFn<T> = Arc::new(
+                    move |ctx: &crate::RuntimeContext, value: &T, out: &mut [u8]| {
+                        ser(ctx.clone(), value, out)
+                    },
+                );
+                (capacity, adapted)
+            });
+
         // Validation: Check that connector builder is registered
         let has_connector = self
             .registrar
@@ -840,6 +986,7 @@ where
                 Box::new(FusedSource {
                     consumer,
                     serialize: serialize.clone(),
+                    serialize_into: serialize_into.clone(),
                     topic: topic_provider.clone(),
                 }) as Box<dyn crate::connector::SerializedSource>
             })
@@ -1693,7 +1840,21 @@ mod tests {
         FusedReader {
             inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
             serialize,
+            serialize_into: None,
             topic,
+        }
+    }
+
+    fn fused_reader_into(
+        script: Vec<Result<TestRecord, crate::DbError>>,
+        serialize: FusedSerializeFn<TestRecord>,
+        serialize_into: FusedSerializeIntoFn<TestRecord>,
+    ) -> FusedReader<TestRecord> {
+        FusedReader {
+            inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
+            serialize,
+            serialize_into: Some(serialize_into),
+            topic: None,
         }
     }
 
@@ -1749,6 +1910,125 @@ mod tests {
         // One recv: the failing value is skipped, the next good one returned.
         let msg = reader.recv(&test_ctx()).await.expect("value");
         assert_eq!(msg.payload, 42i32.to_le_bytes().to_vec());
+    }
+
+    #[tokio::test]
+    async fn fused_reader_into_uses_scratch_without_owned_fallback() {
+        let owned_calls = Arc::new(AtomicUsize::new(0));
+        let into_calls = Arc::new(AtomicUsize::new(0));
+        let owned_counter = owned_calls.clone();
+        let into_counter = into_calls.clone();
+        let mut reader = fused_reader_into(
+            vec![Ok(TestRecord { value: 7 })],
+            Arc::new(move |_ctx, r| {
+                owned_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(r.value.to_le_bytes().to_vec())
+            }),
+            Arc::new(move |_ctx, r, out| {
+                into_counter.fetch_add(1, Ordering::SeqCst);
+                let bytes = r.value.to_le_bytes();
+                out.get_mut(..bytes.len())
+                    .ok_or(crate::connector::LinkCodecError::BufferTooSmall)?
+                    .copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }),
+        );
+        let mut scratch = [0_u8; 8];
+
+        let msg = reader
+            .recv_into(&test_ctx(), &mut scratch)
+            .await
+            .expect("value");
+
+        assert_eq!(
+            msg.payload,
+            crate::connector::SerializedPayload::Scratch { len: 4 }
+        );
+        assert_eq!(&scratch[..4], 7i32.to_le_bytes().as_slice());
+        assert_eq!(into_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(owned_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fused_reader_into_falls_back_once_when_scratch_is_small() {
+        let owned_calls = Arc::new(AtomicUsize::new(0));
+        let owned_counter = owned_calls.clone();
+        let mut reader = fused_reader_into(
+            vec![Ok(TestRecord { value: 9 })],
+            Arc::new(move |_ctx, r| {
+                owned_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(r.value.to_le_bytes().to_vec())
+            }),
+            Arc::new(|_ctx, _r, _out| Err(crate::connector::LinkCodecError::BufferTooSmall)),
+        );
+        let mut scratch = [0_u8; 2];
+
+        let msg = reader
+            .recv_into(&test_ctx(), &mut scratch)
+            .await
+            .expect("fallback value");
+
+        assert_eq!(
+            msg.payload,
+            crate::connector::SerializedPayload::Owned(9i32.to_le_bytes().to_vec())
+        );
+        assert_eq!(owned_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn fused_reader_into_rejects_invalid_length_and_skips_value() {
+        let mut reader = fused_reader_into(
+            vec![Ok(TestRecord { value: 1 }), Ok(TestRecord { value: 2 })],
+            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
+            Arc::new(|_ctx, r, out| {
+                if r.value == 1 {
+                    return Ok(out.len() + 1);
+                }
+                let bytes = r.value.to_le_bytes();
+                out[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }),
+        );
+        let mut scratch = [0_u8; 8];
+
+        let msg = reader
+            .recv_into(&test_ctx(), &mut scratch)
+            .await
+            .expect("second value");
+
+        assert_eq!(
+            msg.payload,
+            crate::connector::SerializedPayload::Scratch { len: 4 }
+        );
+        assert_eq!(&scratch[..4], 2i32.to_le_bytes().as_slice());
+    }
+
+    #[tokio::test]
+    async fn fused_reader_into_skips_invalid_data() {
+        let mut reader = fused_reader_into(
+            vec![Ok(TestRecord { value: 1 }), Ok(TestRecord { value: 2 })],
+            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
+            Arc::new(|_ctx, r, out| {
+                if r.value == 1 {
+                    return Err(crate::connector::LinkCodecError::InvalidData);
+                }
+                let bytes = r.value.to_le_bytes();
+                out[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }),
+        );
+        let mut scratch = [0_u8; 8];
+
+        let msg = reader
+            .recv_into(&test_ctx(), &mut scratch)
+            .await
+            .expect("second value");
+
+        assert_eq!(
+            msg.payload,
+            crate::connector::SerializedPayload::Scratch { len: 4 }
+        );
+        assert_eq!(&scratch[..4], 2i32.to_le_bytes().as_slice());
     }
 
     /// The destination is resolved from the typed value while it is in hand.
@@ -1813,6 +2093,14 @@ mod tests {
                 .with_serializer(|_ctx: crate::RuntimeContext, r: &TestRecord| {
                     Ok(r.value.to_le_bytes().to_vec())
                 })
+                .with_serializer_into(4, |_ctx, r: &TestRecord, out| {
+                    let encoded = r.value.to_le_bytes();
+                    let dest = out
+                        .get_mut(..encoded.len())
+                        .ok_or(crate::connector::LinkCodecError::BufferTooSmall)?;
+                    dest.copy_from_slice(&encoded);
+                    Ok(encoded.len())
+                })
                 .finish();
         });
         let (db, _runner) = builder.build().await.expect("build must succeed");
@@ -1820,14 +2108,23 @@ mod tests {
         let routes = db.collect_outbound_routes("mqtt");
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].topic, "tele/out");
+        assert_eq!(routes[0].source.serializer_scratch_capacity(), Some(4));
 
         let mut reader = routes[0].source.subscribe();
         let ctx = db.runtime_ctx();
-        let msg = reader.recv(&ctx).await.expect("value");
+        let mut scratch = [0u8; 4];
+        let msg = reader.recv_into(&ctx, &mut scratch).await.expect("value");
         assert_eq!(msg.dest.as_deref(), Some("dyn/5"));
-        assert_eq!(msg.payload, 5i32.to_le_bytes().to_vec());
+        assert_eq!(
+            msg.payload,
+            crate::connector::SerializedPayload::Scratch { len: 4 }
+        );
+        assert_eq!(scratch, 5i32.to_le_bytes());
 
-        let closed = reader.recv(&ctx).await.expect_err("buffer closed");
+        let closed = reader
+            .recv_into(&ctx, &mut scratch)
+            .await
+            .expect_err("buffer closed");
         assert!(matches!(closed, crate::DbError::BufferClosed { .. }));
     }
 }

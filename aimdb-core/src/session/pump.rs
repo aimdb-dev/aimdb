@@ -50,11 +50,15 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
         let sink = sink.clone();
         let runtime_ctx = db.runtime_ctx();
         let cfg = ConnectorConfig::from_query(&config);
+        let scratch_capacity = source.serializer_scratch_capacity().unwrap_or(0);
 
         futures.push(Box::pin(async move {
             // Subscribe inside the pump future (not at collect time), so the
             // ring-buffer cursor starts when the publisher actually runs.
             let mut reader = source.subscribe();
+            // One bounded allocation per route, reused for every successful
+            // into-slice serialization. Owned-only sources request zero bytes.
+            let mut scratch = vec![0_u8; scratch_capacity];
 
             log_info!(
                 "pump_sink: publisher started for destination: {}",
@@ -62,7 +66,10 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
             );
 
             loop {
-                let msg = match reader.recv(&runtime_ctx).await {
+                let msg = match reader
+                    .recv_into(&runtime_ctx, scratch.as_mut_slice())
+                    .await
+                {
                     Ok(m) => m,
                     // SPMC-ring overflow: messages were missed, but the reader
                     // recovers (cursor resets to the oldest live value). Skip the
@@ -82,11 +89,27 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
                         break;
                     }
                 };
+                let crate::connector::SerializedValueInto { dest, payload } = msg;
                 // Destination: dynamic (resolved by the source) or default (from URL).
-                let dest = msg.dest.unwrap_or_else(|| default_topic.clone());
+                let dest = dest.as_deref().unwrap_or(&default_topic);
+
+                let payload = match &payload {
+                    crate::connector::SerializedPayload::Scratch { len } => {
+                        let Some(payload) = scratch.get(..*len) else {
+                            log_error!(
+                                "pump_sink: serializer returned invalid length {} for {}-byte scratch buffer",
+                                len,
+                                scratch.len()
+                            );
+                            continue;
+                        };
+                        payload
+                    }
+                    crate::connector::SerializedPayload::Owned(payload) => payload.as_slice(),
+                };
 
                 // Publish through the connector's pure I/O adapter.
-                if let Err(_e) = sink.publish(&dest, &cfg, &msg.payload).await {
+                if let Err(_e) = sink.publish(dest, &cfg, payload).await {
                     log_error!("pump_sink: failed to publish to '{}': {:?}", dest, _e);
                 } else {
                     log_debug!("pump_sink: published to: {}", dest);

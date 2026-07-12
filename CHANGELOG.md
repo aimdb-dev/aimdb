@@ -105,6 +105,18 @@ multi-step migration round-trip suite and a trybuild compile-fail harness.
 
 ### Added
 
+- **Zero-allocation generated Postcard encoding (Issue #177).** `Linkable`
+  gains a source-compatible `encode_into(&mut [u8])` fast path and generated
+  Postcard records implement it with `postcard::to_slice`. Core reuses one
+  bounded 256-byte scratch allocation per generated Postcard outbound route
+  (raw builders choose their capacity) and falls back to the existing owned
+  serializer when a value does not fit. The codec seam is gated
+  by a 10,000-iteration allocation-counting bench (0 allocations, 0 bytes) plus
+  host, `no_std` Cortex-M, and codegen-drift tests. The claim intentionally
+  excludes connector-internal payload copies and the existing boxed connector
+  reader future. ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md),
+  [aimdb-codegen](aimdb-codegen/CHANGELOG.md))
 - **Embassy MQTT client TLS — `mqtts://` for embedded, WP7 ([design 044](docs/design/044-embassy-mqtt-tls.md)).** The Embassy MQTT connector can now dial a broker over TLS 1.3 (`embedded-tls`, pure-Rust `rustpki` certificate verification with `rsa`/`p384` so public CA chains verify out of the box), with SNI/hostname verification, DNS resolution, and a connector-internal SNTP time source that gates the first handshake so certificate validity is always checked against real time. Behind the new `embassy-tls` feature; `MqttConnectorBuilder::new` picks the transport from the URL scheme (`mqtt://` plain, `mqtts://` TLS) and gains `with_tls(TlsOptions)` (entropy, record buffers, SNTP server) and `with_credentials(username, password)` (MQTT CONNECT auth, both transports). The plain `mqtt://` path is untouched. The `embassy-mqtt-connector-demo` example gains a `tls` feature demonstrating the full flow against the repo's `dev/mosquitto` bench broker. ([aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
 - **Design 034 Phase 3 — sans-io KNX/IP tunneling engine shared by both transports (Issue #135, [review doc §3.7](docs/design/034-technical-debt-review.md)).** The entire tunneling lifecycle — CONNECT_REQUEST/RESPONSE handshake, TUNNELING_REQUEST/ACK sequence + pending-ACK bookkeeping, keepalive (CONNECTIONSTATE_REQUEST) scheduling, ACK-timeout sweeps, and reconnect-with-backoff — now lives **once**, in the new runtime-neutral `aimdb_knx_connector::tunnel` module (`no_std + alloc`, no tokio/embassy imports), driven as a poll-based state machine (events in, `Action`s out, `next_deadline()` for timer arming). `tokio_client.rs` (988 → ~530 lines incl. a new fake-gateway integration test) and `embassy_client.rs` (1,055 → ~450 lines) are reduced to socket shims; the previously untestable handshake/ACK/keepalive/reconnect paths now have 15 host-run unit tests plus a scripted localhost-UDP roundtrip test. Behavioral unifications: Embassy gains the 5 s CONNECT_RESPONSE timeout (previously waited forever), both shims reconnect on fatal socket errors, and the dead tokio-only per-publish ACK oneshot is dropped (it was always `None`); the CONNECT_REQUEST HPAI stays per-transport (`LocalEndpoint`: tokio = real bound address, Embassy = NAT mode). ([aimdb-knx-connector](aimdb-knx-connector/CHANGELOG.md))
 

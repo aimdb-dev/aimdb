@@ -269,7 +269,12 @@ impl Linkable for WeatherObservationValue {
 ```
 
 **For `serialization = "postcard"`:** generates `postcard::to_allocvec` /
-`postcard::from_bytes` calls. Adds `postcard` to Cargo.toml dependencies.
+`postcard::from_bytes` for the compatibility path and a true
+`Linkable::encode_into` override backed by `postcard::to_slice`. The generated
+type advertises a 256-byte preferred scratch capacity; generated outbound
+connector chains install `with_serializer_into`, while values that do not fit
+fall back to `to_allocvec`. The 256 bytes are a performance budget, not a wire
+limit. Adds `postcard` to Cargo.toml dependencies.
 
 **For `serialization = "custom"`:** no deterministic `Linkable` impl is
 generated. Instead, the agent proposes a `Linkable` impl as an inline
@@ -714,7 +719,8 @@ impl for connector wiring.
 
 1. **Should `postcard` be a first-class serialisation target?**
    *Resolved — yes.* `serialization = "postcard"` emits
-   `postcard::to_allocvec` / `postcard::from_bytes`. Issue #155 split the
+   `postcard::to_allocvec` / `postcard::from_bytes`, plus an allocation-free
+   `postcard::to_slice` override for `Linkable::encode_into`. Issue #155 split the
    format-neutral `linkable` feature from the `linkable-json` convenience and
    added host roundtrip, mixed-codec compile, JSON-free dependency, and
    `thumbv7em-none-eabihf` drift checks for the generated Postcard path.
