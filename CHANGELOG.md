@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [aimdb-websocket-connector/CHANGELOG.md](aimdb-websocket-connector/CHANGELOG.md)
 > - [aimdb-uds-connector/CHANGELOG.md](aimdb-uds-connector/CHANGELOG.md)
 > - [aimdb-serial-connector/CHANGELOG.md](aimdb-serial-connector/CHANGELOG.md)
+> - [aimdb-tcp-connector/CHANGELOG.md](aimdb-tcp-connector/CHANGELOG.md)
 > - [aimdb-ws-protocol/CHANGELOG.md](aimdb-ws-protocol/CHANGELOG.md)
 > - [aimdb-wasm-adapter/CHANGELOG.md](aimdb-wasm-adapter/CHANGELOG.md)
 > - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
