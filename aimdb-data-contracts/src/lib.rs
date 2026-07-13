@@ -250,6 +250,16 @@ pub trait Observable: SchemaType {
 /// ```
 #[cfg(feature = "linkable")]
 pub trait Linkable: SchemaType + Sized {
+    /// Preferred reusable scratch capacity for [`encode_into`](Self::encode_into).
+    ///
+    /// `None` keeps outbound links on the existing owned-`Vec` serializer.
+    /// Implementations that override `encode_into` with an allocation-free path
+    /// can advertise `Some(bytes)` so [`LinkableRegistrarExt::linked_to`] installs
+    /// the bounded scratch-buffer fast path. An undersized scratch buffer is a
+    /// performance fallback, not a correctness failure: the connector pipeline
+    /// retries that value through [`to_bytes`](Self::to_bytes).
+    const ENCODE_BUFFER_CAPACITY: Option<usize> = None;
+
     /// Deserialize from bytes (e.g., MQTT payload).
     ///
     /// Returns `Err` with error message on parse failure.
@@ -259,4 +269,32 @@ pub trait Linkable: SchemaType + Sized {
     ///
     /// Returns `Err` with error message on serialization failure.
     fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String>;
+
+    /// Serialize into caller-owned storage and return the number of bytes used.
+    ///
+    /// The default implementation preserves source compatibility for existing
+    /// `Linkable` implementations by calling [`to_bytes`](Self::to_bytes) and
+    /// copying the result after a checked bounds test. It is therefore not
+    /// allocation-free. Implementations such as generated Postcard records can
+    /// override this method and set [`ENCODE_BUFFER_CAPACITY`](Self::ENCODE_BUFFER_CAPACITY)
+    /// to enable the allocation-free outbound fast path.
+    ///
+    /// On success, bytes after the returned length are left untouched. On any
+    /// error, callers must treat the contents of `buf` as unspecified: a true
+    /// streaming encoder may have written a prefix before discovering that the
+    /// buffer is too small. The compatibility implementation below performs a
+    /// checked copy and therefore leaves `buf` untouched on
+    /// [`SerializeError::BufferTooSmall`].
+    ///
+    /// [`SerializeError::BufferTooSmall`]: aimdb_core::connector::SerializeError::BufferTooSmall
+    fn encode_into(&self, buf: &mut [u8]) -> Result<usize, aimdb_core::connector::SerializeError> {
+        use aimdb_core::connector::SerializeError;
+
+        let bytes = self.to_bytes().map_err(|_| SerializeError::InvalidData)?;
+        let out = buf
+            .get_mut(..bytes.len())
+            .ok_or(SerializeError::BufferTooSmall)?;
+        out.copy_from_slice(&bytes);
+        Ok(bytes.len())
+    }
 }

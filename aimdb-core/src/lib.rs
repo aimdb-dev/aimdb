@@ -99,7 +99,10 @@ pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
 pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
 pub use connector::{IngestFactoryFn, IngestFn};
-pub use connector::{SerializedReader, SerializedSource, SerializedValue, SourceFactoryFn};
+pub use connector::{
+    SerializedPayload, SerializedReader, SerializedSource, SerializedValue, SerializedValueInto,
+    SourceFactoryFn,
+};
 
 // Router exports for connector implementations
 pub use router::{Route, Router, RouterBuilder};
