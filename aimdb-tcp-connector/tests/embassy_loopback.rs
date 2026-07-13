@@ -116,8 +116,18 @@ where
     Fut: Future<Output = ()>,
     F: FnOnce(Stack<'static>, Stack<'static>) -> Fut,
 {
+    use core::future::poll_fn;
+    use core::task::Poll;
+    use std::time::{Duration, Instant};
+
     use futures::future::{join4, select, Either};
     use futures::pin_mut;
+
+    // A stuck foreground (a transport regression or a dropped crossover packet)
+    // would otherwise leave `block_on` pending forever, failing only at the outer
+    // CI timeout. Bound every test with a wall-clock watchdog so `make check`
+    // fails promptly and points at the hang instead.
+    const WATCHDOG: Duration = Duration::from_secs(20);
 
     let (server_stack, mut server_net, server_ch) = make_stack(SERVER_IP, 0x1111_2222);
     let (client_stack, mut client_net, client_ch) = make_stack(CLIENT_IP, 0x3333_4444);
@@ -138,9 +148,31 @@ where
     futures::executor::block_on(async {
         pin_mut!(foreground);
         pin_mut!(background);
-        match select(foreground, background).await {
-            Either::Left(_) => {}
-            Either::Right(_) => panic!("background stacks ended before the test"),
+        let session = select(foreground, background);
+        pin_mut!(session);
+
+        let deadline = Instant::now() + WATCHDOG;
+        let watchdog = poll_fn(move |cx| {
+            if Instant::now() >= deadline {
+                Poll::Ready(())
+            } else {
+                // Re-arm each poll so the executor keeps spinning and observes the
+                // deadline even if the stacks and foreground would otherwise park.
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        });
+        pin_mut!(watchdog);
+
+        match select(session, watchdog).await {
+            Either::Left((Either::Left(_), _)) => {}
+            Either::Left((Either::Right(_), _)) => {
+                panic!("background stacks ended before the test")
+            }
+            Either::Right(_) => panic!(
+                "watchdog: foreground stuck for {}s (transport regression or dropped packet)",
+                WATCHDOG.as_secs()
+            ),
         }
     });
 }
