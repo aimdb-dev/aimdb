@@ -70,7 +70,7 @@ embedded-io-async = { workspace = true, optional = true }
 aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
 
 # test-only (see `_test-embassy-loopback`)
-embassy-net-driver-channel = { path = "../_external/embassy/embassy-net-driver-channel", optional = true }
+embassy-net-driver-channel = { version = "0.4.0", path = "../_external/embassy/embassy-net-driver-channel", optional = true }
 critical-section = { version = "1.1", features = ["std"], optional = true }
 
 [dev-dependencies]

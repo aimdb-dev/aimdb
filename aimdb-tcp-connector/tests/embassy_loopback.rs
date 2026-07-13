@@ -52,8 +52,8 @@ impl embassy_time_driver::Driver for HostClock {
         use std::time::Instant;
         static START: OnceLock<Instant> = OnceLock::new();
         let start = START.get_or_init(Instant::now);
-        // Workspace pins `embassy-time` at tick-hz-32_768.
-        (start.elapsed().as_micros() * 32_768 / 1_000_000) as u64
+        // Scale wall-clock micros to the driver's *actual* tick rate
+        (start.elapsed().as_micros() * u128::from(embassy_time_driver::TICK_HZ) / 1_000_000) as u64
     }
     fn schedule_wake(&self, _at: u64, waker: &core::task::Waker) {
         waker.wake_by_ref();
