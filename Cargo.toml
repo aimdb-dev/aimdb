@@ -40,7 +40,7 @@ members = [
     "examples/hello-single-latest-async",
     "examples/readme-quickstart",
     # Benchmarking infrastructure — host-only, excluded from default-members
-    "aimdb-bench",
+    "aimdb-bench", "examples/hello-spmc-ring-async",
 ]
 exclude = ["_external"]
 resolver = "2"
