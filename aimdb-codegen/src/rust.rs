@@ -15,6 +15,13 @@ use crate::state::{
     TaskType,
 };
 
+/// Small per-route scratch buffer for generated Postcard link serializers.
+///
+/// Generated records with a larger encoded value fall back to their existing
+/// owned `to_allocvec` serializer for that value, so this is a memory/performance
+/// trade-off rather than a wire-size limit.
+const POSTCARD_ENCODE_BUFFER_CAPACITY: usize = 256;
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Generate a complete Rust source file from architecture state.
@@ -814,8 +821,17 @@ fn emit_record_configure_block(rec: &RecordDef) -> TokenStream {
     // everything must be a single fluent chain starting from `reg.buffer(...)`.
     // We build two branches: one with connectors wired (when all addresses
     // resolve), one plain buffer fallback.
-    let linked_chain =
-        emit_connector_chain(&rec.connectors, &value_type, &buffer_tokens, is_custom);
+    let serialization = rec
+        .serialization
+        .as_ref()
+        .unwrap_or(&SerializationType::Json);
+    let linked_chain = emit_connector_chain(
+        &rec.connectors,
+        &value_type,
+        &buffer_tokens,
+        is_custom,
+        serialization,
+    );
     let addr_conditions: Vec<TokenStream> = (0..rec.connectors.len())
         .map(|i| {
             let addr_var = format_ident!("addr_{}", i);
@@ -878,6 +894,7 @@ fn emit_connector_chain(
     value_type: &syn::Ident,
     buffer_tokens: &TokenStream,
     is_custom: bool,
+    serialization: &SerializationType,
 ) -> TokenStream {
     // Start the chain with reg.buffer(...)
     let mut chain = quote! { reg.buffer(#buffer_tokens) };
@@ -911,6 +928,17 @@ fn emit_connector_chain(
                     };
                 }
                 ConnectorDirection::Outbound => {
+                    let into_slice = if matches!(serialization, SerializationType::Postcard) {
+                        quote! {
+                            .with_serializer_into(
+                                <#value_type as Linkable>::ENCODE_BUFFER_CAPACITY
+                                    .unwrap_or(0),
+                                |_ctx, v: &#value_type, out| v.encode_into(out),
+                            )
+                        }
+                    } else {
+                        quote! {}
+                    };
                     chain = quote! {
                         #chain
                             .link_to(#addr_var)
@@ -918,6 +946,7 @@ fn emit_connector_chain(
                                 v.to_bytes()
                                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
                             })
+                            #into_slice
                             .finish()
                     };
                 }
@@ -995,11 +1024,27 @@ fn emit_linkable_json(rec: &RecordDef) -> TokenStream {
 
 fn emit_linkable_postcard(rec: &RecordDef) -> TokenStream {
     let struct_name = format_ident!("{}Value", rec.name);
+    let scratch_capacity = proc_macro2::Literal::usize_unsuffixed(POSTCARD_ENCODE_BUFFER_CAPACITY);
     quote! {
         impl Linkable for #struct_name {
+            const ENCODE_BUFFER_CAPACITY: Option<usize> = Some(#scratch_capacity);
+
             fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
                 postcard::to_allocvec(self)
                     .map_err(|e| alloc::format!("serialize {}: {e}", Self::NAME))
+            }
+
+            fn encode_into(
+                &self,
+                buf: &mut [u8],
+            ) -> Result<usize, aimdb_core::connector::SerializeError> {
+                match postcard::to_slice(self, buf) {
+                    Ok(used) => Ok(used.len()),
+                    Err(postcard::Error::SerializeBufferFull) => {
+                        Err(aimdb_core::connector::SerializeError::BufferTooSmall)
+                    }
+                    Err(_) => Err(aimdb_core::connector::SerializeError::InvalidData),
+                }
             }
 
             fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String> {
@@ -1501,12 +1546,23 @@ fn emit_transform_configure_block(
         .iter()
         .any(|c| matches!(c.direction, ConnectorDirection::Outbound));
     let outbound_chain = if has_outbound {
+        let into_slice = if matches!(rec.serialization, Some(SerializationType::Postcard)) {
+            quote! {
+                .with_serializer_into(
+                    <#value_type as Linkable>::ENCODE_BUFFER_CAPACITY.unwrap_or(0),
+                    |_ctx, v: &#value_type, out| v.encode_into(out),
+                )
+            }
+        } else {
+            quote! {}
+        };
         quote! {
             .link_to(addr)
             .with_serializer(|_ctx, v: &#value_type| {
                 v.to_bytes()
                     .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
             })
+            #into_slice
             .finish()
         }
     } else {
@@ -2256,6 +2312,11 @@ serialization = "postcard"
 name = "value"
 type = "f32"
 description = "Reading value"
+
+[[records.connectors]]
+protocol = "mqtt"
+direction = "outbound"
+url = "mqtt://readings/postcard/{variant}"
 "#;
 
     #[test]
@@ -2296,6 +2357,7 @@ description = "Reading value"
         let mut state = ArchitectureState::from_toml(MIXED_CODEC_TOML).unwrap();
         state.records.retain(|r| r.name == "PostcardReading");
         let rust = generate_schema_rs(&state);
+        let configured = generate_rust(&state);
         assert!(
             rust.contains("impl Linkable for PostcardReadingValue"),
             "Missing Postcard Linkable impl:\n{rust}"
@@ -2303,6 +2365,22 @@ description = "Reading value"
         assert!(
             rust.contains("postcard::to_allocvec(self)"),
             "Missing postcard serializer:\n{rust}"
+        );
+        assert!(
+            rust.contains("const ENCODE_BUFFER_CAPACITY: Option<usize> = Some(256)"),
+            "Missing Postcard scratch capacity:\n{rust}"
+        );
+        assert!(
+            rust.contains("postcard::to_slice(self, buf)"),
+            "Missing zero-allocation Postcard serializer:\n{rust}"
+        );
+        assert!(
+            rust.contains("SerializeError::BufferTooSmall"),
+            "Missing Postcard small-buffer mapping:\n{rust}"
+        );
+        assert!(
+            configured.contains("with_serializer_into"),
+            "Missing Postcard connector fast-path wiring:\n{configured}"
         );
         assert!(
             rust.contains("postcard::from_bytes(data)"),
@@ -2355,11 +2433,17 @@ key_prefix = "sensors.temp."
 key_variants = ["indoor"]
 producers = ["sensor_task"]
 consumers = ["dashboard_task"]
+serialization = "postcard"
 
 [[records.fields]]
 name = "celsius"
 type = "f64"
 description = "Temperature in degrees Celsius"
+
+[[records.connectors]]
+protocol = "mqtt"
+direction = "outbound"
+url = "mqtt://readings/postcard/{variant}"
 
 [[tasks]]
 name = "sensor_task"
@@ -2380,6 +2464,11 @@ record = "TemperatureReading"
 [[binaries]]
 name = "drift-check-hub"
 tasks = ["sensor_task", "dashboard_task"]
+
+[[binaries.external_connectors]]
+protocol = "mqtt"
+env_var = "MQTT_BROKER"
+default = "localhost"
 "#;
 
     fn hub_state() -> ArchitectureState {
@@ -2396,6 +2485,11 @@ tasks = ["sensor_task", "dashboard_task"]
         assert!(
             out.contains(".source(sensor_task)"),
             "Producing task should still be wired via .source():\n{out}"
+        );
+        assert!(
+            out.contains(".with_serializer_into(")
+                && out.contains("Linkable>::ENCODE_BUFFER_CAPACITY"),
+            "Postcard-producing task should wire the into-slice serializer:\n{out}"
         );
     }
 

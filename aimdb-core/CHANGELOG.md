@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Issue #177 — bounded into-slice serialization for outbound links.** New
+  `OutboundConnectorBuilder::with_serializer_into` and the additive
+  `SerializedReader::recv_into`/`SerializedPayload` SPI let a fused typed reader
+  encode into caller-owned storage using the existing `SerializeError` contract.
+  `pump_sink` allocates one bounded scratch buffer per route and reuses it across
+  messages; an undersized buffer falls back to the existing owned serializer for
+  that value. Existing serializers, third-party `SerializedReader`
+  implementations, and `pump_client` keep their owned-`Vec` behavior. This
+  removes the codec allocation when an into-slice encoder is installed;
+  connector adapters may still copy the borrowed payload.
 - **`RecordRegistrar::signal_gauge(name, unit) -> SignalGaugeHandle`** (design 041 §3.2) — the core hook behind `aimdb-data-contracts`'s `Observable::observe()`. Feeding values via `SignalGaugeHandle::update(f64)` folds them into per-record `SignalStats` (last/min/max/mean), surfaced through `RecordMetadata::signal_stats` on `record.list`/`record.get`. Mirrors the `with_name` precedent: always callable, an inert no-op handle when the `observability` feature is off, so callers never `#[cfg]` on core's features. New public types: `SignalGaugeHandle` (always available), `SignalStats`/`SignalGauge`/`SignalStatsInfo` (feature `observability`).
 
 ### Fixed

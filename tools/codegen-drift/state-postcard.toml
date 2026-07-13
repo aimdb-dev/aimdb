@@ -29,3 +29,8 @@ description = "Sensor value"
 name = "sequence"
 type = "u32"
 description = "Monotonic sample sequence"
+
+[[records.connectors]]
+protocol = "mqtt"
+direction = "outbound"
+url = "mqtt://readings/postcard/{variant}"

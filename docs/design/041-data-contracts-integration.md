@@ -273,7 +273,7 @@ where
 ```
 
 Notes:
-- **Inbound matches exactly** (`with_deserializer` takes `Result<T, String>`). **Outbound needs one lossy mapping**: `with_serializer` returns `Result<Vec<u8>, SerializeError>`, so the `String` detail is dropped to `SerializeError::InvalidData`. Aligning `Linkable`'s error type with the connector layer (a shared `CodecError` instead of `String` — which also removes an alloc on embedded) is a recorded follow-up (§7); it touches core connector signatures and doesn't block this verb.
+- **Inbound matches exactly** (`with_deserializer` takes `Result<T, String>`). **Outbound needs one lossy mapping**: `with_serializer` returns `Result<Vec<u8>, SerializeError>`, so the `String` detail is dropped to `SerializeError::InvalidData`. Issue #177 reuses that existing connector error for its additive `encode_into` method without changing either legacy signature. Replacing `String` across `Linkable` and the connector deserializer remains separate breaking follow-up scope (§7).
 - **The raw builders remain the escape hatch** for per-link options (`with_config`, QoS ext traits, topic providers/resolvers). `.linked_from`/`.linked_to` are the 80% path.
 - **JSON boilerplate gets a derive:** `#[derive(Linkable)]` in `aimdb-derive` emitting `serde_json::to_vec`/`from_slice` (JSON is the default format; binary formats implement by hand, as the KNX DPT codecs rightly do). Per the D1 rule, the derive replaces a hand-written JSON impl in the same change. After #155, this convenience lives behind `linkable-json`; base `linkable` stays format-neutral and JSON-free for Postcard/custom codecs.
 - **Coupling:** the `linkable` feature gains an `aimdb-core` dependency for the ext trait (`default-features = false, features = ["alloc"]`, same wiring as `observable`). `linkable-json` adds the optional `serde_json` + derive dependencies.
@@ -284,6 +284,52 @@ Notes:
   | Schema-named JSON streaming (browser/WASM) | ws registry keyed by `SchemaType::NAME` | `Streamable` |
   | Per-URL opaque payloads (MQTT/KNX/serial/UDS) | fused per-link codec | `Linkable` |
   | AimX `record.get`/`record.set`/`subscribe` JSON | blanket `RemoteSerialize` ([`codec.rs:33`](../../aimdb-core/src/codec.rs)), automatic for serde types | none needed |
+
+#### 3.3.1 Issue #177 follow-up: bounded into-slice encoding
+
+Issue #177 implements the non-allocating outbound half without forcing the
+deferred breaking error migration. `Linkable` now has a source-compatible
+`encode_into(&mut [u8]) -> Result<usize, SerializeError>` default and an
+`ENCODE_BUFFER_CAPACITY` opt-in. Existing implementations stay on `to_bytes`;
+generated Postcard implementations opt in and call `postcard::to_slice`.
+
+The ownership boundary is deliberately in the route pump:
+
+```text
+route pump starts once
+  scratch: Vec<u8> with fixed length N
+
+for each T
+  FusedReader::recv_into(&mut scratch)
+    success(len <= N) -> SerializedPayload::Scratch { len }
+    BufferTooSmall   -> old to_bytes() -> SerializedPayload::Owned(Vec)
+    InvalidData      -> log and skip
+  pump validates scratch.get(..len)
+  Connector::publish(&scratch[..len]).await
+  only then may the next record overwrite scratch
+```
+
+Returning a slice borrowed from reader-owned storage was rejected: a boxed
+async retry loop cannot safely lend that slice and then mutably reuse the same
+storage on a later iteration. Returning only `{ len }` metadata lets the pump
+borrow its own storage across `publish().await`, needs no `unsafe`, and keeps the
+additive `SerializedReader::recv_into` default source-compatible for connector
+authors.
+
+The compatibility-first error decision is explicit:
+
+- `SerializeError::{BufferTooSmall, InvalidData}` is reused by both the existing
+  owned serializer and the new into-slice encoder. No new codec error type is
+  introduced.
+- Root `aimdb_core::CodecError` still belongs to session-envelope codecs and is
+  intentionally not reused.
+- `Linkable::from_bytes`/`to_bytes` still return `String`. Migrating those
+  signatures remains separate breaking follow-up scope.
+
+The allocation claim is correspondingly narrow: successful generated Postcard
+encoding performs zero heap allocations, measured over 10,000 calls. The
+existing boxed `SerializedReader` future, dynamic topic `String`, and
+connector-internal ownership copies are outside that claim.
 
 ### 3.4 `Settable` → consumed by `aimdb-sync`
 
@@ -352,7 +398,7 @@ aimdb-core
 2. **The RNG is caller-supplied**; `rand` loses `std_rng` everywhere.
 3. **`Simulatable::Params` is an associated type**; `RandomWalkParams` ships as the migration path for existing scalar walks.
 4. **`Observable` claims metrics because it delivers metrics**: kernel-only trait, `.observe()` → core signal gauges surfaced via `record.list`/`record.get`/profiling.
-5. **`Linkable` gets its verbs in the same design**: `.linked_from`/`.linked_to` + `#[derive(Linkable)]`; the `String` → `SerializeError::InvalidData` mapping is accepted until the `CodecError` alignment (§7).
+5. **`Linkable` gets its verbs in the same design**: `.linked_from`/`.linked_to` + `#[derive(Linkable)]`; the legacy `String` → `SerializeError::InvalidData` mapping remains accepted. Issue #177 reuses `SerializeError` for `encode_into`, while any breaking migration of the legacy `String` signatures stays deferred (§7).
 6. **`Settable` is wired to its original purpose**: `SyncProducer::set_value` family in `aimdb-sync`, caller-side clock, `settable` feature gate.
 7. **No trait bounds on `.source()`/`.tap()`/`.transform()`; no core→contracts dependency.**
 
@@ -375,4 +421,4 @@ One branch/PR; each work item lands as its own commit carrying its caller:
 4. `aimdb-sync` `set_value` family + `settable` feature gate + tests.
 5. README verb/tier tables + CHANGELOG sweep.
 
-**Out of scope / recorded for later:** runtime sim↔real failover (a single source future multiplexing on sensor staleness — still single-writer-safe, own doc); `CodecError` alignment across `Linkable` and the connector (de)serializer signatures; AimX set-by-primitive verb (second `Settable` consumer); signal-metrics history/percentiles beyond last/min/max/mean; auto-migration on the `linked_from` path (§3.6).
+**Out of scope / recorded for later:** runtime sim↔real failover (a single source future multiplexing on sensor staleness — still single-writer-safe, own doc); breaking replacement of the legacy `String` errors across `Linkable` and connector deserializer signatures; AimX set-by-primitive verb (second `Settable` consumer); signal-metrics history/percentiles beyond last/min/max/mean; auto-migration on the `linked_from` path (§3.6).
