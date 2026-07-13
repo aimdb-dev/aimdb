@@ -7,8 +7,8 @@
 //! `TcpListener`/`TcpDialer`/`TcpConnection` triple under `block_on`:
 //!
 //! - recycle: accept -> exchange -> drop -> re-accept (`recycle_then_reaccept`);
-//! - concurrency: two sessions, each with its own accept slot, at once
-//!   (`two_concurrent_sessions`);
+//! - concurrency: one pooled `N = 2` listener keeps both sockets in `accept()`
+//!   on a single port while two clients dial it (`two_concurrent_sessions`);
 //! - redial: after a failed connect and after a dropped link
 //!   (`dialer_redials_after_failure_and_drop`).
 #![cfg(feature = "_test-embassy-loopback")]
@@ -201,6 +201,30 @@ async fn exchange(server: &mut dyn Connection, client: &mut dyn Connection, tag:
     assert_eq!(got, b"pong", "reply framing round-trip");
 }
 
+/// Receive one frame and echo it straight back. Pairing-agnostic: with same-port
+/// fan-out the stack, not the test, decides which pooled server socket a given
+/// client lands on, so the server can only echo whatever frame arrives on it.
+async fn echo_once(server: &mut dyn Connection) {
+    let got = server
+        .recv()
+        .await
+        .expect("server recv")
+        .expect("server frame");
+    server.send(&got).await.expect("server echo");
+}
+
+/// Send `tag`, then assert the echo comes back byte-for-byte — so each client
+/// verifies its own session regardless of which server socket served it.
+async fn send_and_verify(client: &mut dyn Connection, tag: &[u8]) {
+    client.send(tag).await.expect("client send");
+    let got = client
+        .recv()
+        .await
+        .expect("client recv")
+        .expect("client frame");
+    assert_eq!(got, tag, "echo round-trip");
+}
+
 /// accept -> exchange -> disconnect -> socket recycled -> re-accept works.
 #[test]
 fn recycle_then_reaccept() {
@@ -228,33 +252,42 @@ fn recycle_then_reaccept() {
     });
 }
 
-/// Two client/server sessions, each with its own accept slot, live at once — the
-/// concurrent-accept-slots property the pool exists for. (The single-port
-/// `TcpListener<N>` fan-out runs the AimX session engine, covered elsewhere.)
+/// One pooled `N = 2` listener keeps both of its sockets in `accept()` on a
+/// single port while two clients dial that port at once — the same-port fan-out
+/// and pooled worker creation that `TcpListener::<N>::with_buffers` exists for.
+/// Each client lands on a distinct pooled slot; a broken pool (only one socket
+/// accepting, or both racing to the same slot) would hang the second session and
+/// trip the watchdog. (Wiring the pool into the AimX session engine via
+/// `TcpServer<N>` is covered elsewhere; this stays at the transport layer.)
 #[test]
 fn two_concurrent_sessions() {
     drive(|server_stack, client_stack| async move {
-        let mut listener_a = TcpListener::new(server_stack, 7001u16, buf(), buf());
-        let mut listener_b = TcpListener::new(server_stack, 7002u16, buf(), buf());
+        // One pooled listener, two sockets, both bound to port 7001.
+        let listener =
+            TcpListener::<2>::with_buffers(server_stack, 7001u16, [buf(), buf()], [buf(), buf()]);
         let dialer_a = TcpDialer::new(client_stack, endpoint(7001), buf(), buf());
-        let dialer_b = TcpDialer::new(client_stack, endpoint(7002), buf(), buf());
+        let dialer_b = TcpDialer::new(client_stack, endpoint(7001), buf(), buf());
 
-        // Bring both sessions up concurrently, then exchange on both while both
-        // are still open.
-        let (a_srv, a_cli, b_srv, b_cli) = futures::join!(
-            listener_a.accept(),
+        // Both pooled sockets accept on 7001 while both clients dial it; each
+        // client establishes against a separate slot.
+        let (a_srv, b_srv, a_cli, b_cli) = futures::join!(
+            listener.accept_on(0),
+            listener.accept_on(1),
             dialer_a.connect(),
-            listener_b.accept(),
             dialer_b.connect(),
         );
-        let mut a_srv = a_srv.expect("accept A");
+        let mut a_srv = a_srv.expect("accept slot 0");
+        let mut b_srv = b_srv.expect("accept slot 1");
         let mut a_cli = a_cli.expect("connect A");
-        let mut b_srv = b_srv.expect("accept B");
         let mut b_cli = b_cli.expect("connect B");
 
+        // Drive both sessions at once. Servers echo (the stack picks the pairing);
+        // each client verifies its own tag returns.
         futures::join!(
-            exchange(a_srv.as_mut(), a_cli.as_mut(), b"aaa"),
-            exchange(b_srv.as_mut(), b_cli.as_mut(), b"bbb"),
+            echo_once(a_srv.as_mut()),
+            echo_once(b_srv.as_mut()),
+            send_and_verify(a_cli.as_mut(), b"aaa"),
+            send_and_verify(b_cli.as_mut(), b"bbb"),
         );
     });
 }

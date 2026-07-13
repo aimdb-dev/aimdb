@@ -292,6 +292,23 @@ impl<const N: usize> TcpListener<N> {
         }
     }
 
+    /// Accept one connection on pooled socket `index`, recycling that socket
+    /// back into its slot when the returned connection drops.
+    ///
+    /// The [`Listener`] impl (`N = 1`) and the `TcpServer` workers each accept a
+    /// single slot at a time; this exposes the same per-slot accept so a caller
+    /// can keep several pooled sockets in `accept()` on one endpoint at once
+    /// (the concurrent-listener property `with_buffers` exists for). Panics if
+    /// `index >= N`.
+    pub fn accept_on(
+        &self,
+        index: usize,
+    ) -> impl Future<Output = TransportResult<Box<dyn Connection>>> + Send + '_ {
+        let slot = self.slots[index].clone();
+        let local_endpoint = self.local_endpoint;
+        SendFutureWrapper(async move { accept_on_slot(&slot, local_endpoint).await })
+    }
+
     fn into_server_futures(
         self,
         codec: Arc<AimxCodec>,
@@ -316,25 +333,33 @@ impl<const N: usize> TcpListener<N> {
 
 impl Listener for TcpListener<1> {
     fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
-        Box::pin(SendFutureWrapper(async move {
-            let slot = &self.slots[0];
-            let mut socket = poll_fn(|cx| slot.poll_take(cx)).await;
+        Box::pin(self.accept_on(0))
+    }
+}
+
+/// Take the socket from `slot`, accept one inbound connection on it, and hand
+/// back a recyclable [`TcpConnection`]. Shared by [`TcpListener::accept_on`] and
+/// the per-slot server workers so all pooled accept paths behave identically.
+async fn accept_on_slot(
+    slot: &Arc<TcpSocketSlot>,
+    local_endpoint: IpListenEndpoint,
+) -> TransportResult<Box<dyn Connection>> {
+    let mut socket = poll_fn(|cx| slot.poll_take(cx)).await;
+    socket.abort();
+    match socket.accept(local_endpoint).await {
+        Ok(()) => {
+            Ok(Box::new(TcpConnection::reusable(socket, slot.clone())) as Box<dyn Connection>)
+        }
+        Err(_) => {
             socket.abort();
-            match socket.accept(self.local_endpoint).await {
-                Ok(()) => {
-                    Ok(Box::new(TcpConnection::reusable(socket, slot.clone()))
-                        as Box<dyn Connection>)
-                }
-                Err(_) => {
-                    socket.abort();
-                    slot.put(socket);
-                    // Same synchronous-failure guard as `serve_socket_slot`:
-                    // `serve()` re-enters `accept()` immediately on `Err`, so yield.
-                    yield_now().await;
-                    Err(TransportError::Io)
-                }
-            }
-        }))
+            slot.put(socket);
+            // `accept()` can fail synchronously (e.g. port-0 `InvalidPort`);
+            // without this await the caller re-enters `accept()` immediately with
+            // no yield point, starving the executor. Yield so a misconfig
+            // warn-loops instead of hanging.
+            yield_now().await;
+            Err(TransportError::Io)
+        }
     }
 }
 
@@ -346,23 +371,10 @@ async fn serve_socket_slot(
     config: SessionConfig,
 ) {
     loop {
-        let mut socket = poll_fn(|cx| slot.poll_take(cx)).await;
-        socket.abort();
-        match socket.accept(local_endpoint).await {
-            Ok(()) => {
-                let conn =
-                    Box::new(TcpConnection::reusable(socket, slot.clone())) as Box<dyn Connection>;
-                run_session(conn, codec.as_ref(), dispatch.as_ref(), &config).await;
-            }
-            Err(_) => {
-                socket.abort();
-                slot.put(socket);
-                // `accept()` can fail synchronously (e.g. port-0 `InvalidPort`);
-                // without this await the loop retakes the slot and retries with no
-                // yield point, starving the executor. Yield so a misconfig
-                // warn-loops instead of hanging.
-                yield_now().await;
-            }
+        // `accept_on_slot` already yields on the synchronous-failure path, so a
+        // misconfig warn-loops here instead of starving the executor.
+        if let Ok(conn) = accept_on_slot(&slot, local_endpoint).await {
+            run_session(conn, codec.as_ref(), dispatch.as_ref(), &config).await;
         }
     }
 }
