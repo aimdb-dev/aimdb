@@ -9,6 +9,4 @@ publish = false
 [dependencies]
 aimdb-core = { path = "../../aimdb-core", features = ["std"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = ["tokio-runtime"] }
-aimdb-sync = { path = "../../aimdb-sync" }
-aimdb-data-contracts = { path = "../../aimdb-data-contracts"}
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["time"] }
