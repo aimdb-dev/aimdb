@@ -8,9 +8,12 @@
 //!
 //! - recycle: accept -> exchange -> drop -> re-accept (`recycle_then_reaccept`);
 //! - concurrency: one pooled `N = 2` listener keeps both sockets in `accept()`
-//!   on a single port while two clients dial it (`two_concurrent_sessions`);
+//!   on a single port (via the test-only `accept_on`, one accept per index) while
+//!   two clients dial it (`two_concurrent_sessions`);
 //! - redial: after a failed connect and after a dropped link
-//!   (`dialer_redials_after_failure_and_drop`).
+//!   (`dialer_redials_after_failure_and_drop`);
+//! - cancellation: a cancelled accept returns its socket to the slot
+//!   (`cancelled_accept_recycles_socket`).
 #![cfg(feature = "_test-embassy-loopback")]
 
 extern crate alloc;
@@ -258,7 +261,7 @@ fn recycle_then_reaccept() {
 /// Each client lands on a distinct pooled slot; a broken pool (only one socket
 /// accepting, or both racing to the same slot) would hang the second session and
 /// trip the watchdog. (Wiring the pool into the AimX session engine via
-/// `TcpServer<N>` is covered elsewhere; this stays at the transport layer.)
+/// `TcpServer<N>` is intentionally outside this transport-level smoke test.)
 #[test]
 fn two_concurrent_sessions() {
     drive(|server_stack, client_stack| async move {
@@ -268,8 +271,9 @@ fn two_concurrent_sessions() {
         let dialer_a = TcpDialer::new(client_stack, endpoint(7001), buf(), buf());
         let dialer_b = TcpDialer::new(client_stack, endpoint(7001), buf(), buf());
 
-        // Both pooled sockets accept on 7001 while both clients dial it; each
-        // client establishes against a separate slot.
+        // Drive the pooled sockets directly via the test-only `accept_on`, one
+        // accept per index (its single-caller-per-index contract): both sockets
+        // accept on 7001 while both clients dial it, each landing on its own slot.
         let (a_srv, b_srv, a_cli, b_cli) = futures::join!(
             listener.accept_on(0),
             listener.accept_on(1),
@@ -323,3 +327,42 @@ fn dialer_redials_after_failure_and_drop() {
         exchange(server.as_mut(), client.as_mut(), b"again").await;
     });
 }
+
+/// A cancelled accept — its future dropped mid-`accept()`, as a `select!` timeout
+/// or shutdown branch would drop it — must return the pooled socket to its slot.
+/// Without the drop guard the socket is dropped instead of recycled, the slot
+/// stays empty, and the follow-up accept below would hang until the watchdog.
+#[test]
+fn cancelled_accept_recycles_socket() {
+    use futures::future::{ready, select, Either};
+    use futures::pin_mut;
+
+    drive(|server_stack, client_stack| async move {
+        let mut listener = TcpListener::new(server_stack, 7005u16, buf(), buf());
+        let dialer = TcpDialer::new(client_stack, endpoint(7005), buf(), buf());
+
+        // No client dials 7005, so this accept takes the pooled socket and then
+        // parks in `TcpSocket::accept`. Cancel it by letting a ready future win a
+        // `select`, dropping the accept future while its accept is still pending.
+        {
+            let accept = listener.accept();
+            pin_mut!(accept);
+            match select(accept, ready(())).await {
+                Either::Right(_) => {} // `ready` won -> the accept future is cancelled
+                Either::Left(_) => panic!("accept resolved with no client dialing"),
+            }
+        } // the parked accept future drops here, recycling its socket into the slot
+
+        // The recycled socket must be back in its slot: a real accept + dial now
+        // succeeds. A leaked slot would hang this accept and trip the watchdog.
+        let (accepted, connected) = futures::join!(listener.accept(), dialer.connect());
+        let mut server = accepted.expect("accept after a cancelled accept (socket recycled)");
+        let mut client = connected.expect("connect after a cancelled accept");
+        exchange(server.as_mut(), client.as_mut(), b"post-cancel").await;
+    });
+}
+
+// Note: there is no shipped public multi-slot accept to misuse — the pooled path
+// is `TcpServer<N>` (one worker per slot) and the `accept_on` used above is a
+// test-only, single-caller-per-index hook. So the one-waiter-per-slot invariant
+// is upheld by construction and there is nothing to assert at runtime.
