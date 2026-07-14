@@ -1,0 +1,12 @@
+[package]
+name = "hello-spmc-ring-async"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AimDB minimal example demonstrating async SPMC buffer"
+publish = false
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = ["tokio-runtime"] }
+tokio = { workspace = true, features = ["time"] }
