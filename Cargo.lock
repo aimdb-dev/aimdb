@@ -2198,8 +2198,6 @@ name = "hello-spmc-ring-async"
 version = "1.1.0"
 dependencies = [
  "aimdb-core",
- "aimdb-data-contracts",
- "aimdb-sync",
  "aimdb-tokio-adapter",
  "tokio",
 ]

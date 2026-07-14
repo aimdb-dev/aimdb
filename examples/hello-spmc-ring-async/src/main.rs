@@ -1,5 +1,4 @@
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt::Display, sync::Arc};
 
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, Producer, RuntimeContext};
@@ -27,8 +26,8 @@ async fn main() -> Result<(), DbError> {
     println!("=== hello-spmc-ring-async: SPMC ring buffer demo ===\n");
     println!("Ring size:          10");
     println!("Producer at rate    20.0 messages/sec");
-    println!("Observer 01 at rate 25.0 message/sec");
-    println!("Observer 02 at rate  6.7 message/sec");
+    println!("Observer 01 at rate 25.0 messages/sec");
+    println!("Observer 02 at rate  6.7 messages/sec");
     println!("\n");
 
     // configuration
@@ -52,20 +51,20 @@ async fn main() -> Result<(), DbError> {
 
 async fn rollout_source(ctx: RuntimeContext, producer: Producer<Temperature>) {
     let time = ctx.time();
-
     let t0: f32 = -20.0;
     for i in 0..40 {
         time.sleep_millis(50).await;
-        publich_rollout(&producer, t0 + (i as f32 + 1.0) * 2.0).await;
+        // Read wall-clock time through the runtime abstraction rather than
+        // `SystemTime::now()`, so the example stays runtime/sim-friendly.
+        let timestamp = time.unix_time().map(|(secs, _)| secs).unwrap_or(0);
+        publich_rollout(&producer, t0 + (i as f32 + 1.0) * 2.0, timestamp).await;
     }
 }
 
-async fn publich_rollout(producer: &Producer<Temperature>, t: f32) {
-    let now = SystemTime::now();
-    let d = now.duration_since(UNIX_EPOCH).expect("Error getting time");
+async fn publich_rollout(producer: &Producer<Temperature>, t: f32, timestamp: u64) {
     let temperature = Temperature {
         celcius: t,
-        timestamp: d.as_secs(),
+        timestamp,
     };
     producer.produce(temperature);
 }

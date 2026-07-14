@@ -38,9 +38,10 @@ members = [
     "examples/hello-mailbox",
     "examples/hello-mailbox-async",
     "examples/hello-single-latest-async",
+    "examples/hello-spmc-ring-async",
     "examples/readme-quickstart",
     # Benchmarking infrastructure — host-only, excluded from default-members
-    "aimdb-bench", "examples/hello-spmc-ring-async",
+    "aimdb-bench", 
 ]
 exclude = ["_external"]
 resolver = "2"
