@@ -25,6 +25,7 @@ use aimdb_core::session::{
 };
 use aimdb_embassy_adapter::connectors::{EmbassySessionClient, OneShotCell};
 use aimdb_embassy_adapter::SendFutureWrapper;
+use embassy_futures::yield_now;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpEndpoint, IpListenEndpoint, Stack};
 use embedded_io_async::Write;
@@ -114,6 +115,8 @@ impl Connection for TcpConnection {
 impl Drop for TcpConnection {
     fn drop(&mut self) {
         if let Some(mut socket) = self.socket.take() {
+            // Double abort is intentional: this one resets the link promptly on
+            // drop; the next taker re-aborts before reuse for a clean socket.
             socket.abort();
             if let Some(recycler) = &self.recycler {
                 recycler.put(socket);
@@ -141,14 +144,21 @@ where
 
 struct TcpSocketSlot {
     socket: RefCell<Option<TcpSocket<'static>>>,
+    // Single `Waker`: at most one accept ever waits on a given slot. Every shipped
+    // accept path holds one waiter per slot by construction — the `&mut self`
+    // `Listener` impl serializes accepts on the sole slot, and `TcpServer<N>` runs
+    // exactly one worker per slot. The pooled per-slot accept is test-only (see
+    // `accept_on`), and its single caller drives one accept per index. So this
+    // waker is never clobbered.
     waker: RefCell<Option<Waker>>,
 }
 
 // SAFETY: single-core cooperative Embassy executor; the socket and stack stay on
 // the same executor task set, and `RefCell` is never borrowed from another core.
 unsafe impl Send for TcpSocketSlot {}
-// SAFETY: same invariant. This is only shared so the dropped connection can
-// return its socket to the dialer-owned slot.
+// SAFETY: same invariant. Shared only so a dropped connection can return its
+// socket to the slot — owned by a dialer, an accept/session worker, or the
+// `Listener` compat path, never touched from more than one at a time.
 unsafe impl Sync for TcpSocketSlot {}
 
 impl TcpSocketSlot {
@@ -182,6 +192,47 @@ impl TcpSocketSlot {
         }
         if let Some(waker) = self.waker.borrow_mut().take() {
             waker.wake();
+        }
+    }
+}
+
+/// Owns a socket taken out of its slot for the duration of an `accept()`, and
+/// returns it to the slot if dropped before the accept succeeds. Without this,
+/// an accept future dropped mid-`accept` (a `select!` timeout or shutdown branch
+/// winning the race) would drop the socket instead of recycling it, leaving the
+/// slot permanently empty so every later accept on that index waits forever.
+/// [`SlotReturn::into_socket`] defuses it once the socket moves into a
+/// [`TcpConnection`] on the success path.
+struct SlotReturn<'a> {
+    slot: &'a Arc<TcpSocketSlot>,
+    socket: Option<TcpSocket<'static>>,
+}
+
+impl<'a> SlotReturn<'a> {
+    fn new(slot: &'a Arc<TcpSocketSlot>, socket: TcpSocket<'static>) -> Self {
+        Self {
+            slot,
+            socket: Some(socket),
+        }
+    }
+
+    fn socket_mut(&mut self) -> &mut TcpSocket<'static> {
+        self.socket
+            .as_mut()
+            .expect("socket present until into_socket")
+    }
+
+    /// Take the socket back, defusing the guard so its `Drop` becomes a no-op.
+    fn into_socket(mut self) -> TcpSocket<'static> {
+        self.socket.take().expect("socket taken exactly once")
+    }
+}
+
+impl Drop for SlotReturn<'_> {
+    fn drop(&mut self) {
+        if let Some(mut socket) = self.socket.take() {
+            socket.abort();
+            self.slot.put(socket);
         }
     }
 }
@@ -288,6 +339,26 @@ impl<const N: usize> TcpListener<N> {
         }
     }
 
+    /// Accept one connection on pooled socket `index`, recycling that socket back
+    /// into its slot when the returned connection drops. **Test-only** (gated on
+    /// `_test-embassy-loopback`): the shipped pooled path is `TcpServer<N>`, which
+    /// runs one worker per slot; this lets the transport-level loopback test drive
+    /// the same-port fan-out directly, without the session engine.
+    ///
+    /// The slot stores a single `Waker`, so this takes `&self` on the contract
+    /// that the caller drives **at most one accept per `index`** (the test uses
+    /// distinct indices). Panics if `index >= N`.
+    #[cfg(feature = "_test-embassy-loopback")]
+    #[doc(hidden)]
+    pub fn accept_on(
+        &self,
+        index: usize,
+    ) -> impl Future<Output = TransportResult<Box<dyn Connection>>> + Send + '_ {
+        let slot = self.slots[index].clone();
+        let local_endpoint = self.local_endpoint;
+        SendFutureWrapper(async move { accept_on_slot(&slot, local_endpoint).await })
+    }
+
     fn into_server_futures(
         self,
         codec: Arc<AimxCodec>,
@@ -312,22 +383,49 @@ impl<const N: usize> TcpListener<N> {
 
 impl Listener for TcpListener<1> {
     fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        // `&mut self` already serializes accepts on the sole slot, so the
+        // one-waiter-per-slot invariant holds here.
+        let slot = self.slots[0].clone();
+        let local_endpoint = self.local_endpoint;
         Box::pin(SendFutureWrapper(async move {
-            let slot = &self.slots[0];
-            let mut socket = poll_fn(|cx| slot.poll_take(cx)).await;
-            socket.abort();
-            match socket.accept(self.local_endpoint).await {
-                Ok(()) => {
-                    Ok(Box::new(TcpConnection::reusable(socket, slot.clone()))
-                        as Box<dyn Connection>)
-                }
-                Err(_) => {
-                    socket.abort();
-                    slot.put(socket);
-                    Err(TransportError::Io)
-                }
-            }
+            accept_on_slot(&slot, local_endpoint).await
         }))
+    }
+}
+
+/// Take the socket from `slot`, accept one inbound connection on it, and hand
+/// back a recyclable [`TcpConnection`]. Shared by the [`Listener`] impl, the
+/// per-slot server workers, and the test-only `accept_on` so all pooled accept
+/// paths behave identically.
+async fn accept_on_slot(
+    slot: &Arc<TcpSocketSlot>,
+    local_endpoint: IpListenEndpoint,
+) -> TransportResult<Box<dyn Connection>> {
+    let socket = poll_fn(|cx| slot.poll_take(cx)).await;
+    // The socket lives in this guard until it either moves into a `TcpConnection`
+    // (success) or is returned to the slot. If the whole future is dropped while
+    // `accept()` is still pending, the guard's `Drop` recycles the socket so the
+    // slot is never left permanently empty.
+    let mut guard = SlotReturn::new(slot, socket);
+    guard.socket_mut().abort();
+    // Bind the result before matching so the `accept()` future's borrow of
+    // `guard` ends here, freeing `guard` for `into_socket` / `drop` below.
+    let accepted = guard.socket_mut().accept(local_endpoint).await;
+    match accepted {
+        Ok(()) => {
+            let socket = guard.into_socket();
+            Ok(Box::new(TcpConnection::reusable(socket, slot.clone())) as Box<dyn Connection>)
+        }
+        Err(_) => {
+            // Dropping `guard` aborts the socket and returns it to the slot.
+            drop(guard);
+            // `accept()` can fail synchronously (e.g. port-0 `InvalidPort`);
+            // without this await the caller re-enters `accept()` immediately with
+            // no yield point, starving the executor. Yield so a misconfig
+            // warn-loops instead of hanging.
+            yield_now().await;
+            Err(TransportError::Io)
+        }
     }
 }
 
@@ -339,18 +437,10 @@ async fn serve_socket_slot(
     config: SessionConfig,
 ) {
     loop {
-        let mut socket = poll_fn(|cx| slot.poll_take(cx)).await;
-        socket.abort();
-        match socket.accept(local_endpoint).await {
-            Ok(()) => {
-                let conn =
-                    Box::new(TcpConnection::reusable(socket, slot.clone())) as Box<dyn Connection>;
-                run_session(conn, codec.as_ref(), dispatch.as_ref(), &config).await;
-            }
-            Err(_) => {
-                socket.abort();
-                slot.put(socket);
-            }
+        // `accept_on_slot` already yields on the synchronous-failure path, so a
+        // misconfig warn-loops here instead of starving the executor.
+        if let Ok(conn) = accept_on_slot(&slot, local_endpoint).await {
+            run_session(conn, codec.as_ref(), dispatch.as_ref(), &config).await;
         }
     }
 }

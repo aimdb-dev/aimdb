@@ -179,6 +179,8 @@ test:
 	cargo test --package aimdb-serial-connector --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Testing TCP connector (tokio: length-prefix framing + AimX loopback)$(NC)\n"
 	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-tokio"
+	@printf "$(YELLOW)  → Testing TCP connector (embassy: socket recycle + concurrent slots + redial over an embassy-net loopback)$(NC)\n"
+	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test embassy_loopback
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
@@ -280,6 +282,8 @@ clippy:
 	cargo clippy --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on TCP connector (embassy + defmt)$(NC)\n"
 	cargo clippy --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on TCP connector (embassy-net loopback smoke, host)$(NC)\n"
+	cargo clippy --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test embassy_loopback -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on benchmarking infrastructure (host-only, incl. benches)$(NC)\n"

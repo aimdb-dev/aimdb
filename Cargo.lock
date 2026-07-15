@@ -337,8 +337,15 @@ dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
  "aimdb-tokio-adapter",
+ "critical-section",
+ "defmt 1.0.1",
+ "embassy-futures",
  "embassy-net",
+ "embassy-net-driver-channel",
+ "embassy-time-driver",
  "embedded-io-async 0.7.0",
+ "futures",
+ "heapless 0.9.1",
  "serde",
  "serde_json",
  "tokio",
@@ -1460,6 +1467,15 @@ name = "embassy-net-driver"
 version = "0.2.0"
 dependencies = [
  "defmt 1.0.1",
+]
+
+[[package]]
+name = "embassy-net-driver-channel"
+version = "0.4.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-net-driver",
+ "embassy-sync",
 ]
 
 [[package]]
