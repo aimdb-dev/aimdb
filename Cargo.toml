@@ -37,6 +37,7 @@ members = [
     "examples/weather-mesh-demo/weather-station-gamma",
     "examples/hello-mailbox",
     "examples/hello-mailbox-async",
+    "examples/hello-single-latest",
     "examples/hello-single-latest-async",
     "examples/hello-spmc-ring-async",
     "examples/readme-quickstart",
