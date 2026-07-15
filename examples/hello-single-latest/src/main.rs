@@ -67,8 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Give the slow tap time to observe the final update before shutdown.
-    thread::sleep(Duration::from_millis(1000));
+    // Give the slow tap time to observe the final update before shutdown. Its read cycle is 2000ms, therefore wait a little longer than that.
+    thread::sleep(Duration::from_millis(2500));
 
     // Step 4: Clean shutdown
     // Detach the handle to gracefully shut down the runtime thread

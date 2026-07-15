@@ -2223,7 +2223,6 @@ dependencies = [
  "aimdb-core",
  "aimdb-sync",
  "aimdb-tokio-adapter",
- "tokio",
 ]
 
 [[package]]

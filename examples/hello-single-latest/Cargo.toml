@@ -12,6 +12,3 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
 ] }
 aimdb-sync = { path = "../../aimdb-sync" }
-
-# Runtime for initialization
-tokio = { workspace = true, features = ["time"] }
