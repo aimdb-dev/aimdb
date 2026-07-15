@@ -3624,12 +3624,13 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdio"
-version = "0.4.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "203db256bf75fbd6eb96e82b0c109398442183de06a67a7182951a463a17f9fe"
+checksum = "442d4946fee518534b4fe4f3b1f37ca440af1d08300dd7bda89a6bfc99bd05b3"
 dependencies = [
  "aligned",
  "block-device-driver",
+ "defmt 1.0.1",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
 ]

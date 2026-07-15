@@ -1,11 +1,6 @@
 [submodule "_external/embassy"]
 	path = _external/embassy
-	# Vendored fork: this branch pins embassy at aimdb-dev/embassy@20f6d85e8
-	# (recent upstream + embassy-rs/embassy#6390's public poll_next_message /
-	# poll_changed). The pin is fork-only, so the URL must point at the fork.
-	# Revert to https://github.com/embassy-rs/embassy.git once #6390 merges
-	# upstream and the pin can move to an upstream commit.
-	url = https://github.com/aimdb-dev/embassy.git
+	url = https://github.com/embassy-rs/embassy.git
 [submodule "_external/mountain-mqtt"]
 	path = _external/mountain-mqtt
 	url = https://github.com/aimdb-dev/mountain-mqtt.git
