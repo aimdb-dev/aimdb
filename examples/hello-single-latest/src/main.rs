@@ -3,13 +3,13 @@
 //!
 //! ## What This Demo Shows
 //!
-//! 1. Building an AimDB instance with a typed record and a tap observer
+//! 1. Building an AimDB instance with a typed record and 2 tap observers (slow and fast)
 //! 2. Attaching the database to get a sync handle
 //! 3. Creating a producer in sync context
 //! 4. Setting values using blocking operations
 //! 5. Clean shutdown with detach()
 
-use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
+use aimdb_core::{buffer::BufferCfg, AimDbBuilder, Consumer, RuntimeContext};
 use aimdb_sync::AimDbBuilderSyncExt; // Extension trait for .attach()
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt}; // Extension for .buffer()
 use std::{sync::Arc, thread, time::Duration};
@@ -33,16 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.configure::<FeatureFlag>(KEY, |reg| {
         // Configure a SingleLatest buffer
         reg.buffer(BufferCfg::SingleLatest)
-            // Register a tap that observes rollout percentage values
-            .tap(|_ctx, consumer| async move {
-                let mut reader = consumer.subscribe();
-                while let Ok(feature_flag) = reader.recv().await {
-                    println!(
-                        "Current rollout percentage: {}%",
-                        feature_flag.rollout_percent
-                    );
-                }
-            });
+            // Register 2 taps that observe rollout percentage values
+            .tap(rollout_observer_fast)
+            .tap(rollout_observer_slow);
     });
 
     // Build happens inside the runtime thread where Tokio context exists
@@ -70,12 +63,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Producer publishes new value every second
         if i < 4 {
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_millis(1000));
         }
     }
 
-    // Give the tap time to observe the final update before shutdown.
-    thread::sleep(Duration::from_millis(50));
+    // Give the slow tap time to observe the final update before shutdown.
+    thread::sleep(Duration::from_millis(1000));
 
     // Step 4: Clean shutdown
     // Detach the handle to gracefully shut down the runtime thread
@@ -84,7 +77,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     handle.detach()?;
 
-    println!("Done. The sync producer published rollout updates observed by a SingleLatest tap.");
+    println!("Done. The sync producer published rollout updates observed by fast and slow SingleLatest taps");
 
     Ok(())
+}
+
+// A fast tap observer
+async fn rollout_observer_fast(ctx: RuntimeContext, consumer: Consumer<FeatureFlag>) {
+    let mut reader = consumer.subscribe();
+
+    while let Ok(feature_flag) = reader.recv().await {
+        ctx.log().info(&format!(
+            "[fast] rollout: {}%",
+            feature_flag.rollout_percent
+        ));
+    }
+}
+
+// A slow tap observer
+async fn rollout_observer_slow(ctx: RuntimeContext, consumer: Consumer<FeatureFlag>) {
+    let mut reader = consumer.subscribe();
+    let time = ctx.time();
+
+    while let Ok(feature_flag) = reader.recv().await {
+        ctx.log().info(&format!(
+            "[slow] rollout: {}%",
+            feature_flag.rollout_percent
+        ));
+
+        time.sleep_millis(2000).await;
+    }
 }
