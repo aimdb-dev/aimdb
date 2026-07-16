@@ -225,8 +225,12 @@ where
     /// Configure buffer with custom size parameters for Embassy
     ///
     /// This allows precise control over buffer sizing for embedded systems.
-    /// The default `.buffer()` method uses conservative defaults (CAP=16, CONSUMERS=4),
-    /// but you can optimize for your specific use case with this method.
+    /// The default `.buffer()` method uses conservative defaults (`CAP=16`,
+    /// `SUBS=4`, `PUBS=4`, `WATCH_N=1`). Note `WATCH_N=1`: a `SingleLatest`
+    /// buffer created via the default `.buffer()` supports exactly **one**
+    /// subscriber — a second subscriber (e.g. another `.tap()`) exhausts the
+    /// watch slots and gets `BufferClosed` on its first poll. Use this method
+    /// with `CONSUMERS > 1` for multi-subscriber `SingleLatest` records.
     ///
     /// # Type Parameters
     /// - `CAP`: Buffer capacity
