@@ -116,6 +116,10 @@ defmt = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
+serde = { workspace = true }
+aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
+    "linkable-postcard",
+] }
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
 ] }

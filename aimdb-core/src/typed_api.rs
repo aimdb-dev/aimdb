@@ -830,6 +830,17 @@ where
         self
     }
 
+    /// Removes a previously installed into-slice serializer.
+    ///
+    /// Higher-level builder extensions use this when replacing a bounded
+    /// serialization strategy with an owned-only one. Clearing the fast path
+    /// prevents the old scratch serializer from emitting a different wire
+    /// format beside the replacement owned serializer.
+    pub fn clear_serializer_into(mut self) -> Self {
+        self.context_serializer_into = None;
+        self
+    }
+
     /// Sets the operation timeout in milliseconds (the connector interprets
     /// it; passed as the `timeout_ms` option — see
     /// `ConnectorConfig::from_query`)
