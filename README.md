@@ -240,6 +240,8 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 | **KNX** — `aimdb-knx-connector` | ✅ Ready | std, no_std |
 | **WebSocket** — `aimdb-websocket-connector` | ✅ Ready | std, wasm |
 | **TCP** — `aimdb-tcp-connector` | ✅ Ready | std, no_std |
+| **Serial** — `aimdb-serial-connector` | ✅ Ready | std, no_std |
+| **UDS** — `aimdb-uds-connector` | ✅ Ready | std |
 | **Kafka** | 📋 Planned | std |
 | **Modbus** | 📋 Planned | std, no_std |
 

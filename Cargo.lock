@@ -3394,6 +3394,7 @@ version = "0.1.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-tokio-adapter",
  "aimdb-uds-connector",
  "futures",
