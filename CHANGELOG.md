@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `with_link_codec(codec)`. Selection is fused at registration time; bounded
   Postcard routes retain the reusable scratch/owned-overflow behavior from
   issue #177 without a per-message registry, lock, or lookup. See
-  [Design 045](docs/design/045-per-link-codec-selection.md).
+  [Design 045](docs/design/045-per-link-codec-selection.md). Re-selecting a
+  codec replaces both the owned and scratch serializers, so changing a route
+  from bounded postcard to owned JSON cannot retain stale postcard output.
 
 ### Changed — Design 038 simplification pass (breaking)
 

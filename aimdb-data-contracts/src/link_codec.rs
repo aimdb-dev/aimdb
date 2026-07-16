@@ -161,6 +161,10 @@ where
     T: Send + Sync + Clone + Debug + 'static,
 {
     /// Install this codec on the current inbound or outbound link.
+    ///
+    /// Calling this method again replaces the complete codec strategy. In
+    /// particular, an owned-only codec clears any scratch serializer installed
+    /// by an earlier bounded codec.
     fn with_link_codec<C>(self, codec: C) -> Self
     where
         C: LinkCodec<T>;
@@ -174,14 +178,17 @@ where
     where
         C: LinkCodec<T>,
     {
-        let scratch_codec = codec.clone();
-        let builder = self.with_serializer(move |_ctx, value| codec.encode(value));
-
         match C::ENCODE_BUFFER_CAPACITY {
-            Some(capacity) => builder.with_serializer_into(capacity, move |_ctx, value, out| {
-                scratch_codec.encode_into(value, out)
-            }),
-            None => builder,
+            Some(capacity) => {
+                let scratch_codec = codec.clone();
+                self.with_serializer(move |_ctx, value| codec.encode(value))
+                    .with_serializer_into(capacity, move |_ctx, value, out| {
+                        scratch_codec.encode_into(value, out)
+                    })
+            }
+            None => self
+                .with_serializer(move |_ctx, value| codec.encode(value))
+                .clear_serializer_into(),
         }
     }
 }
@@ -488,6 +495,11 @@ mod tests {
                     .finish();
                 registrar
                     .linked_to_with("test://postcard-owned-fallback", link_codecs::Postcard::<1>);
+                registrar
+                    .link_to("test://postcard-replaced-by-json")
+                    .with_link_codec(link_codecs::Postcard::<64>)
+                    .with_link_codec(link_codecs::Json)
+                    .finish();
             });
 
             let json_capture = json_in.clone();
@@ -512,7 +524,7 @@ mod tests {
 
             let (db, _runner) = builder.build().await.expect("codec routes build");
             let routes = db.collect_outbound_routes("test");
-            assert_eq!(routes.len(), 3);
+            assert_eq!(routes.len(), 4);
 
             let json_route = routes
                 .iter()
@@ -575,6 +587,25 @@ mod tests {
                 .decode(&fallback_bytes)
                 .expect("fallback Postcard decode");
             assert_eq!(decoded_fallback, reading);
+
+            let replacement_route = routes
+                .iter()
+                .find(|route| route.topic == "postcard-replaced-by-json")
+                .expect("replacement route");
+            assert_eq!(
+                replacement_route.source.serializer_scratch_capacity(),
+                None,
+                "owned-only replacement must clear the previous scratch codec"
+            );
+            let mut replacement_reader = replacement_route.source.subscribe();
+            let replacement_message = replacement_reader
+                .recv_into(&db.runtime_ctx(), &mut [])
+                .await
+                .expect("replacement JSON payload");
+            let SerializedPayload::Owned(replacement_bytes) = replacement_message.payload else {
+                panic!("replacement JSON codec must use owned serialization");
+            };
+            assert_eq!(replacement_bytes, json_bytes);
 
             let inbound = db.collect_inbound_routes("test");
             assert_eq!(inbound.len(), 2);

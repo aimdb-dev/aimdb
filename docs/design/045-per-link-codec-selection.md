@@ -155,6 +155,13 @@ reg.link_to("mqtt://cloud/readings")
     .finish();
 ```
 
+Repeated selection replaces the entire serialization strategy, not only its
+owned half. A bounded codec installs owned and scratch callbacks; replacing it
+with an owned-only codec calls
+`OutboundConnectorBuilder::clear_serializer_into`. Without that reset,
+`Postcard<N> -> Json` would leave the Postcard scratch callback active for
+fitting values and use JSON only on fallback, mixing formats on one route.
+
 The registrar shorthand lives in a new sibling trait. Adding required methods
 to the existing public `LinkableRegistrarExt` could break a downstream manual
 implementation, even though AimDB itself supplies the normal implementation.
@@ -297,6 +304,8 @@ The implementation contains:
   outbound links, asserting `Owned` versus `Scratch` payload ownership;
 - a deliberately undersized Postcard route that exercises the owned fallback;
 - route-level inbound JSON and Postcard ingestion;
+- a bounded-Postcard-to-owned-JSON replacement regression that asserts the
+  stale scratch capacity is cleared and the route emits owned JSON;
 - builder composition checks using config methods after codec selection;
 - an MQTT integration test that compiles and builds outbound
   `.with_link_codec(...).with_qos(...).with_retain(...)` and inbound
