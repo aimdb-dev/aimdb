@@ -275,6 +275,7 @@ where
 Notes:
 - **Inbound matches exactly** (`with_deserializer` takes `Result<T, String>`). **Outbound needs one lossy mapping**: `with_serializer` returns `Result<Vec<u8>, SerializeError>`, so the `String` detail is dropped to `SerializeError::InvalidData`. Issue #177 reuses that existing connector error for its additive `encode_into` method without changing either legacy signature. Replacing `String` across `Linkable` and the connector deserializer remains separate breaking follow-up scope (§7).
 - **The raw builders remain the escape hatch** for per-link options (`with_config`, QoS ext traits, topic providers/resolvers). `.linked_from`/`.linked_to` are the 80% path.
+- **Per-link formats are additive:** Design 045 adds `with_link_codec(codec)` and `.linked_*_with(url, codec)` without changing these default verbs. Codec selection is captured in the existing fused route closures rather than stored in a runtime registry.
 - **JSON boilerplate gets a derive:** `#[derive(Linkable)]` in `aimdb-derive` emitting `serde_json::to_vec`/`from_slice` (JSON is the default format; binary formats implement by hand, as the KNX DPT codecs rightly do). Per the D1 rule, the derive replaces a hand-written JSON impl in the same change. After #155, this convenience lives behind `linkable-json`; base `linkable` stays format-neutral and JSON-free for Postcard/custom codecs.
 - **Coupling:** the `linkable` feature gains an `aimdb-core` dependency for the ext trait (`default-features = false, features = ["alloc"]`, same wiring as `observable`). `linkable-json` adds the optional `serde_json` + derive dependencies.
 - **Three serialization stories, stated once** so users stop guessing:
@@ -378,6 +379,7 @@ Consumed since design 039, works no_std. Stretch (recorded, not in scope): auto-
 ```
 aimdb-data-contracts
   features: linkable (+core), linkable-json (+serde_json, derive),
+            linkable-postcard (+postcard),
             observable (+core), migratable, settable,
             simulatable (+core, rand nf — no std_rng)   # dev tier — never a default feature
   (no new crate: aimdb-simulation split considered and rejected, §3.1.1)

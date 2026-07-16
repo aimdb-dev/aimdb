@@ -94,6 +94,7 @@ serde_json = { workspace = true, optional = true }
 aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
     "alloc",
     "linkable",
+    "linkable-postcard",
     "migratable",
 ], optional = true }
 

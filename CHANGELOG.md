@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — per-link record codecs
+
+- **Issue #178:** one `Linkable` record type can now select JSON, bounded
+  Postcard, or a custom codec independently on each inbound/outbound connector
+  route through `linked_*_with(url, codec)` or builder-level
+  `with_link_codec(codec)`. Selection is fused at registration time; bounded
+  Postcard routes retain the reusable scratch/owned-overflow behavior from
+  issue #177 without a per-message registry, lock, or lookup. See
+  [Design 045](docs/design/045-per-link-codec-selection.md).
+
 ### Changed — Design 038 simplification pass (breaking)
 
 Implementation of the accepted items of [design 038](docs/design/038-technical-debt-and-simplification-review.md)

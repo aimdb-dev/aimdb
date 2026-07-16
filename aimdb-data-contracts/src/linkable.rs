@@ -1,15 +1,16 @@
 //! Linkable registrar extension: one-line link verbs for connector wiring.
 //!
-//! Implementing [`Linkable`](crate::Linkable) unlocks two verbs —
+//! Implementing [`Linkable`](crate::Linkable) unlocks default-codec verbs —
 //! [`LinkableRegistrarExt::linked_from`] / [`linked_to`](LinkableRegistrarExt::linked_to)
 //! — that install the raw `.link_from()`/`.link_to()` builders with the codec
 //! defaulted to `T::from_bytes`/`T::to_bytes`. The raw builders remain the
-//! escape hatch for per-link options (QoS, topic providers/resolvers).
+//! escape hatch for per-link options (QoS, topic providers/resolvers), while
+//! [`LinkCodecRegistrarExt`] selects a different codec for an individual link.
 
 use aimdb_core::connector::SerializeError;
 use aimdb_core::typed_api::RecordRegistrar;
 
-use crate::Linkable;
+use crate::{LinkCodec, LinkCodecBuilderExt, Linkable};
 
 /// Adds `.linked_from(url)` and `.linked_to(url)` to [`RecordRegistrar`] for
 /// [`Linkable`] types.
@@ -50,6 +51,45 @@ where
                 .finish(),
             None => builder.finish(),
         }
+    }
+}
+
+/// Adds per-link codec variants of [`LinkableRegistrarExt`]'s shorthand verbs.
+///
+/// This is a sibling trait rather than new required methods on
+/// `LinkableRegistrarExt`, preserving source compatibility for downstream
+/// implementations of the existing public extension trait.
+pub trait LinkCodecRegistrarExt<'a, T>
+where
+    T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    /// `.link_from(url).with_link_codec(codec).finish()`.
+    fn linked_from_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
+    where
+        C: LinkCodec<T>;
+
+    /// `.link_to(url).with_link_codec(codec).finish()`.
+    fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
+    where
+        C: LinkCodec<T>;
+}
+
+impl<'a, T> LinkCodecRegistrarExt<'a, T> for RecordRegistrar<'a, T>
+where
+    T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+{
+    fn linked_from_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
+    where
+        C: LinkCodec<T>,
+    {
+        self.link_from(url).with_link_codec(codec).finish()
+    }
+
+    fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
+    where
+        C: LinkCodec<T>,
+    {
+        self.link_to(url).with_link_codec(codec).finish()
     }
 }
 

@@ -70,10 +70,16 @@ mod streamable;
 pub use streamable::Streamable;
 
 #[cfg(feature = "linkable")]
+mod link_codec;
+
+#[cfg(feature = "linkable")]
 mod linkable;
 
 #[cfg(feature = "linkable")]
-pub use linkable::LinkableRegistrarExt;
+pub use link_codec::{link_codecs, LinkCodec, LinkCodecBuilderExt};
+
+#[cfg(feature = "linkable")]
+pub use linkable::{LinkCodecRegistrarExt, LinkableRegistrarExt};
 
 /// JSON `#[derive(Linkable)]` (feature `linkable-json`) — see [`Linkable`] and
 /// `aimdb_derive::Linkable`'s docs.
@@ -232,7 +238,10 @@ pub trait Observable: SchemaType {
 ///
 /// The `linkable` feature is format-neutral. Enable `linkable-json` for the
 /// JSON `#[derive(Linkable)]` convenience, or implement these methods directly
-/// for Postcard and other shared-contract formats.
+/// for another default format. To select a different format on each route, use
+/// [`LinkCodecRegistrarExt::linked_from_with`] /
+/// [`LinkCodecRegistrarExt::linked_to_with`] with a custom [`LinkCodec`] or the
+/// feature-gated `link_codecs::Json` and `link_codecs::Postcard` markers.
 ///
 /// # Example
 ///
