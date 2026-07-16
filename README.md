@@ -132,7 +132,7 @@ docker compose up
 | Buffer | Semantics | Use cases |
 | --- | --- | --- |
 | [**SPMC Ring**](examples/hello-spmc-ring-async) | Bounded stream with independent consumers | Sensor telemetry, event logs |
-| [**SingleLatest**](examples/hello-single-latest-async) | Only the current value matters | Feature flags, config, UI state |
+| [**SingleLatest**](examples/hello-single-latest) / [**SingleLatest async**](examples/hello-single-latest-async) | Only the current value matters | Feature flags, config, UI state |
 | [**Mailbox**](examples/hello-mailbox) / [**async Mailbox**](examples/hello-mailbox-async)| Latest instruction wins | Device commands, actuation, RPC |
 
 **One async API across runtimes.** Tokio, Embassy, WASM — swap the runtime adapter, keep the code. → [How the runtime abstraction works](https://aimdb.dev/blog/building-aimdb-one-async-api)

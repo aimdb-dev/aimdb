@@ -1,0 +1,14 @@
+[package]
+name = "hello-single-latest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AimDB minimal sync example demonstrating SingleLatest buffer semantics"
+publish = false
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core", features = ["std"] }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+] }
+aimdb-sync = { path = "../../aimdb-sync" }

@@ -2217,6 +2217,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hello-single-latest"
+version = "1.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-sync",
+ "aimdb-tokio-adapter",
+]
+
+[[package]]
 name = "hello-single-latest-async"
 version = "1.1.0"
 dependencies = [
