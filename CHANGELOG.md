@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — knx-pico submodule
+
+- **Submodule:** bump `_external/knx-pico` to upstream `0.3` (commit 158325bd4)
+
 ### Added — per-link record codecs
 
 - **Issue #178:** one `Linkable` record type can now select JSON, bounded
