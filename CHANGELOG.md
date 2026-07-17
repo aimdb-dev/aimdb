@@ -52,6 +52,7 @@ Implementation of the accepted items of [design 038](docs/design/038-technical-d
 (§3.1, §3.3–§3.8, §3.11, D10, plus the CI drift guards). Net −2,500 lines across the
 library crates with no capability loss. Breaking changes and migrations:
 
+- **Submodule:** bump `_external/knx-pico` to upstream `0.3` (commit 158325bd4)
 - **`aimdb-executor` is retired (§3.1).** `RuntimeOps`, `LogLevel`, `BoxFuture`, and
   `ExecutorError`/`ExecutorResult` now live in `aimdb_core::executor` (re-exported at the
   crate root). The superseded generic trait family (`RuntimeAdapter`, `TimeOps`, `Logger`,
