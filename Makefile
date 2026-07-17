@@ -184,6 +184,30 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
+	@for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring aimdb-bench; do \
+		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
+		cargo fmt -p $$pkg 2>/dev/null || true; \
+	done
+	@printf "$(GREEN)✓ Formatting complete!$(NC)\n"
+
+fmt-check:
+	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
+	@FAILED=0; \
+	for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring aimdb-bench; do \
+		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
+		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
+			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
+			FAILED=1; \
+		fi; \
+	done; \
+	if [ $$FAILED -eq 1 ]; then \
+		printf "$(RED)✗ Formatting check failed! Run 'make fmt' to fix.$(NC)\n"; \
+		exit 1; \
+	fi
+	@printf "$(GREEN)✓ All packages properly formatted!$(NC)\n"
+
+fmt:
+	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
 	@for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
@@ -424,6 +448,8 @@ examples:
 	cargo build --package hello-single-latest
 	@printf "$(YELLOW)  → Building hello-single-latest-async$(NC)\n"
 	cargo build --package hello-single-latest-async
+	@printf "$(YELLOW)  → Building hello-spmc-ring$(NC)\n"
+	cargo build --package hello-spmc-ring
 	@printf "$(YELLOW)  → Building hello-spmc-ring-async$(NC)\n"
 	cargo build --package hello-spmc-ring-async
 	@printf "$(YELLOW)  → Building readme-quickstart (compiled README example)$(NC)\n"

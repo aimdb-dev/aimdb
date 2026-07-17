@@ -2235,6 +2235,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hello-spmc-ring"
+version = "1.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-sync",
+ "aimdb-tokio-adapter",
+]
+
+[[package]]
 name = "hello-spmc-ring-async"
 version = "1.1.0"
 dependencies = [

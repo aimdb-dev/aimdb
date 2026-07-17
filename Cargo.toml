@@ -39,6 +39,7 @@ members = [
     "examples/hello-mailbox-async",
     "examples/hello-single-latest",
     "examples/hello-single-latest-async",
+    "examples/hello-spmc-ring",
     "examples/hello-spmc-ring-async",
     "examples/readme-quickstart",
     # Benchmarking infrastructure — host-only, excluded from default-members
