@@ -89,6 +89,8 @@ The knock-on structure this forces:
 
 ### 2.5 The remote-access stack: one excellent engine, two protocols, three clients
 
+> **Status update:** resolved by [design 045](./045-retire-ws-protocol-converge-on-aimx.md) — the table below is the *pre-045* picture; every transport (including the browser) now speaks AimX over the shared engines.
+
 The session substrate (`session/mod.rs` + server/client engines + pumps, ~2,300 lines) is genuinely good work: dyn-safe layering (Connection/Listener/Dialer → EnvelopeCodec → Dispatch/Session), runtime-neutral (`futures` channels + `RuntimeOps` clock), and it made `aimdb-uds-connector` a 391-line crate. That is the target picture.
 
 But the workspace ended up with:
@@ -201,9 +203,11 @@ Validate "at most one of {source, transform, link_from}" in exactly one place: `
 
 ### 3.9 One remote-access protocol — **~1,200–1,800 lines, breaking for browser clients, real work**
 
+> **Status update: implemented via [design 045](./045-retire-ws-protocol-converge-on-aimx.md)** (the design-doc gate 036 A2 asked for). `aimdb-ws-protocol`, the WS codec, and the hand-rolled `WsBridge` demux are gone; AimX gained wildcard subscribe (optional `Event.topic`, `Snapshot.sub`, the `subscribed` ack frame) and the shared `record.query`/`record.list` result shapes. Two scope corrections vs. the paragraph below: the `aimdb-client` demux fold had **already** happened (PR #124 — only dead re-exports remained), and query passthrough already existed (`record.query` + `QueryHandlerFn`); what was missing was the result shape, not the passthrough.
+
 Port the WebSocket connector to speak AimX over its existing WS transport (it already runs on the session engine; the delta is the envelope), extend AimX with the two features that justified the fork (wildcard subscribe, query passthrough — both fit the `method`/`topic` model), and rewrite `WsBridge` as an AimX client. Then delete `aimdb-ws-protocol` (353), the WS codec (507), and the protocol-specific halves of `server/` and `WsBridge`. End state: **one protocol, one snapshot/ack/auth semantics, every transport including the browser**. This also collapses the documentation story ("AimX is how you talk to AimDB — over UDS, serial, TCP, or WebSocket").
 
-Follow-up in the same theme: fold `aimdb-client`'s hand-rolled demux onto `session::client::run_client` so reply correlation exists once.
+Follow-up in the same theme: fold `aimdb-client`'s hand-rolled demux onto `session::client::run_client` so reply correlation exists once. *(Already done before 045 — see the status note above.)*
 
 ### 3.10 Extract the architecture agent — **~4,000 lines out of this repo, organizational**
 
@@ -248,7 +252,7 @@ Respecting the 034 Phase-4 decision to stay monolithic: at minimum move the 5-cr
 | §3.3 DbError diet | ~450 | match sites | low | **implemented** |
 | §3.4–§3.6 registry/traits/validation | ~520 | no | low | **implemented** |
 | §3.7–§3.8 API pruning | ~450 | mechanical | low | **implemented** |
-| §3.9 one protocol | ~1,500 | browser clients | medium–high | open (no decision yet; needs design doc) |
+| §3.9 one protocol | ~1,500 | browser clients | medium–high | **implemented (design 045)** |
 | §3.10 extract agent | ~4,000 (relocated) | no | organizational | **deferred** — CI drift check implemented instead |
 | §3.11 features | (gates, not lines) | feature selectors | low | **implemented** as amended |
 | §3.12 examples/workspace | (build time) | no | low | **discarded for now** |

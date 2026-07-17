@@ -19,7 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [aimdb-uds-connector/CHANGELOG.md](aimdb-uds-connector/CHANGELOG.md)
 > - [aimdb-serial-connector/CHANGELOG.md](aimdb-serial-connector/CHANGELOG.md)
 > - [aimdb-tcp-connector/CHANGELOG.md](aimdb-tcp-connector/CHANGELOG.md)
-> - [aimdb-ws-protocol/CHANGELOG.md](aimdb-ws-protocol/CHANGELOG.md)
 > - [aimdb-wasm-adapter/CHANGELOG.md](aimdb-wasm-adapter/CHANGELOG.md)
 > - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
 > - [aimdb-client/CHANGELOG.md](aimdb-client/CHANGELOG.md)
@@ -29,6 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
 
 ## [Unreleased]
+
+### Changed — Design 045: one wire protocol (AimX) for every transport (breaking)
+
+Implementation of [design 045](docs/design/045-retire-ws-protocol-converge-on-aimx.md)
+(the 038 §3.9 / 036 A2 protocol unification). The `aimdb-ws-protocol` crate is
+**deleted**; the WebSocket connector and the browser `WsBridge` now speak the
+same AimX tagged frames as UDS/serial/TCP, over the same session engines.
+AimX gained the two features that justified the ws fork: wildcard /
+multi-record subscribe (one subscription fans in every matching record, events
+tagged with the record that fired, one late-join snapshot per match) and the
+shared `record.query`/`record.list` result shapes (`{records, total}` with
+`QueryRecord{topic, payload, ts}` rows; `{name, schema_type, entity}` topic
+rows). **Breaking for browser clients** (the JS `WsBridge` API is unchanged,
+but the wire is new); breaking Rust API changes are listed per crate
+(`aimdb-core`, `aimdb-websocket-connector`, `aimdb-wasm-adapter`,
+`aimdb-client`, `aimdb-persistence`).
 
 ### Changed — Design 038 simplification pass (breaking)
 

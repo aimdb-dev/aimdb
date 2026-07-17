@@ -52,6 +52,5 @@ pub use endpoint::{dial, parse_endpoint, ParsedEndpoint, Scheme};
 pub use engine::{AimxConnection, DrainResponse};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{
-    cli_hello, parse_message, serialize_message, Event, EventMessage, RecordMetadata, Request,
-    RequestExt, Response, ResponseExt, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION,
+    Event, RecordMetadata, Request, Response, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION,
 };
