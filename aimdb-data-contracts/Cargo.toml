@@ -20,6 +20,10 @@ linkable = ["alloc", "aimdb-core"]
 # JSON convenience layered over the format-neutral contract. The derive emits
 # serde_json calls through this crate's private re-export.
 linkable-json = ["linkable", "serde_json", "dep:aimdb-derive"]
+# Compact binary codec with a caller-chosen bounded scratch capacity. Postcard
+# stays optional and no_std-compatible; `alloc` supplies the correctness
+# fallback for values larger than the preferred route buffer.
+linkable-postcard = ["linkable", "dep:postcard"]
 # Dev-tier — never a default feature. The ext trait needs core's registrar,
 # same coupling `observable` has. `rand` is the tracer CI uses to prove a
 # production graph is sim-free (`make check-no-sim`).
@@ -33,6 +37,9 @@ settable = []
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
+postcard = { version = "1.0", default-features = false, features = [
+    "alloc",
+], optional = true }
 
 # migration_chain! + #[derive(Linkable)] proc-macros (build-time only; no
 # target/runtime/no_std impact — see aimdb-derive). No cycle: aimdb-derive
@@ -55,5 +62,6 @@ optional = true
 default-features = false
 
 [dev-dependencies]
+futures = { workspace = true }
 serde_json = "1.0"
 trybuild = "1.0"

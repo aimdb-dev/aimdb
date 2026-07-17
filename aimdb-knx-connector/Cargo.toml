@@ -39,8 +39,9 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = fal
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # Use official crates.io version
-# External users should patch this to aimdb-dev/knx-pico fork until fixes are upstreamed
-knx-pico = { version = "0.2.4", default-features = false }
+# External users should patch this to aimdb-dev/knx-pico fork until the
+# npdu_length=1 panic fix is upstreamed (DPT9 fix landed upstream in 0.3.0)
+knx-pico = { version = "0.3.0", default-features = false }
 
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }

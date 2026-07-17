@@ -33,6 +33,10 @@ pub struct CountingAllocator<A>(pub A);
 // the only side-effect is the atomic counter updates.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // These are independent observational counters: they publish no data
+        // and protect no other memory, so cross-variable ordering is irrelevant
+        // and Relaxed is sufficient even when allocator calls come from more
+        // than one thread.
         ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
         // SAFETY: caller guarantees `layout` is valid; delegated to inner.
@@ -48,6 +52,8 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
 /// Reset both counters to zero.
 ///
 /// Call once after the warmup phase, immediately before the measured window.
+/// For deterministic attribution, the caller must ensure unrelated threads are
+/// not allocating concurrently with `reset` or the measured window.
 #[inline]
 pub fn reset() {
     ALLOC_COUNT.store(0, Ordering::Relaxed);

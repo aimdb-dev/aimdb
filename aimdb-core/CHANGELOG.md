@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   implementations, and `pump_client` keep their owned-`Vec` behavior. This
   removes the codec allocation when an into-slice encoder is installed;
   connector adapters may still copy the borrowed payload.
+- **Scratch serializer reset hook.**
+  `OutboundConnectorBuilder::clear_serializer_into` lets higher-level builder
+  extensions replace a bounded serialization strategy with an owned-only one
+  without retaining the previous route-local scratch callback.
 - **`RecordRegistrar::signal_gauge(name, unit) -> SignalGaugeHandle`** (design 041 §3.2) — the core hook behind `aimdb-data-contracts`'s `Observable::observe()`. Feeding values via `SignalGaugeHandle::update(f64)` folds them into per-record `SignalStats` (last/min/max/mean), surfaced through `RecordMetadata::signal_stats` on `record.list`/`record.get`. Mirrors the `with_name` precedent: always callable, an inert no-op handle when the `observability` feature is off, so callers never `#[cfg]` on core's features. New public types: `SignalGaugeHandle` (always available), `SignalStats`/`SignalGauge`/`SignalStatsInfo` (feature `observability`).
 
 ### Fixed
