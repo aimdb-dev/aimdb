@@ -2,10 +2,15 @@
 //!
 //! These drive the connector through its **public API only**: a server `AimDb`
 //! stood up with [`WebSocketConnector`] over a real TCP socket, talked to by a
-//! raw `tokio-tungstenite` client (or the public `run_client` + [`WsDialer`]
-//! engine). Server→client data is pushed by *producing a record* — an "injector"
-//! record whose dynamic topic + raw serializer let a test broadcast an arbitrary
-//! `(topic, payload)` through the real `pump_sink` → bus → session path.
+//! raw `tokio-tungstenite` client speaking AimX frames (or the public
+//! `run_client` + [`WsDialer`] engine). Server→client data is pushed by
+//! *producing a record* — an "injector" record whose dynamic topic + raw
+//! serializer let a test broadcast an arbitrary `(topic, payload)` through the
+//! real `pump_sink` → bus → session path.
+//!
+//! The parity block at the bottom locks the AimX WS wire to the semantics the
+//! retired ws-protocol offered (subscribe ack, wildcard fan-out, late-join
+//! snapshot, query, list — design 045 §2.1).
 //!
 //! Needs both halves (`server` + `client`); compiles away otherwise.
 
@@ -19,15 +24,14 @@ use std::time::Duration;
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::TopicProvider;
-use aimdb_core::session::{run_client, ClientConfig};
+use aimdb_core::session::{aimx::AimxCodec, run_client, ClientConfig};
 use aimdb_core::{AimDb, AimDbBuilder};
 use aimdb_data_contracts::{SchemaType, Streamable};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use aimdb_websocket_connector::codec::WsCodec;
 use aimdb_websocket_connector::transport::WsDialer;
 use aimdb_websocket_connector::{
-    AuthError, AuthHandler, AuthRequest, ClientInfo, ClientMessage, ErrorCode, Permissions,
-    QueryFuture, QueryHandler, QueryRecord, ServerMessage, WebSocketConnector,
+    AuthError, AuthHandler, AuthRequest, ClientInfo, Permissions, QueryFuture, QueryHandler,
+    QueryRecord, WebSocketConnector,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -52,7 +56,7 @@ impl TopicProvider<Inject> for InjectTopic {
     }
 }
 
-// ── A registered Streamable type (for the `list_topics` schema name) ──
+// ── A registered Streamable type (for the `record.list` schema name) ──
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Temp {
@@ -187,14 +191,15 @@ async fn ws_connect(addr: SocketAddr) -> WsClient {
         .0
 }
 
-async fn ws_send(c: &mut WsClient, m: ClientMessage) {
-    c.send(Message::Text(serde_json::to_string(&m).unwrap().into()))
+/// Send one raw AimX frame (a JSON value) as a WS text message.
+async fn ws_send(c: &mut WsClient, frame: Value) {
+    c.send(Message::Text(frame.to_string().into()))
         .await
         .unwrap();
 }
 
-/// Read the next `ServerMessage`, with a timeout so a hang fails loudly.
-async fn ws_recv(c: &mut WsClient) -> ServerMessage {
+/// Read the next AimX frame as JSON, with a timeout so a hang fails loudly.
+async fn ws_recv(c: &mut WsClient) -> Value {
     loop {
         match timeout(Duration::from_secs(3), c.next())
             .await
@@ -208,24 +213,15 @@ async fn ws_recv(c: &mut WsClient) -> ServerMessage {
     }
 }
 
-/// Like [`ws_recv`] but returns the raw JSON with `ts` normalized to `0`.
-async fn recv_value(c: &mut WsClient) -> Value {
-    loop {
-        match timeout(Duration::from_secs(3), c.next())
-            .await
-            .expect("recv timed out")
-        {
-            Some(Ok(Message::Text(t))) => {
-                let mut v: Value = serde_json::from_str(&t).unwrap();
-                if let Some(ts) = v.get_mut("ts") {
-                    *ts = json!(0);
-                }
-                return v;
-            }
-            Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
-            other => panic!("unexpected ws frame: {other:?}"),
+/// Read frames until one has `"t" == tag`; panics on timeout.
+async fn ws_recv_tag(c: &mut WsClient, tag: &str) -> Value {
+    for _ in 0..50 {
+        let v = ws_recv(c).await;
+        if v["t"] == tag {
+            return v;
         }
     }
+    panic!("no '{tag}' frame arrived");
 }
 
 // ── Server e2e ───────────────────────────────────────────────────────
@@ -235,67 +231,57 @@ async fn server_subscribe_ack_and_wildcard_fanout() {
     let (addr, db) = spawn_default().await;
     let mut c = ws_connect(addr).await;
 
-    ws_send(
-        &mut c,
-        ClientMessage::Subscribe {
-            topics: vec!["sensors/#".into()],
-        },
-    )
-    .await;
-    assert!(
-        matches!(ws_recv(&mut c).await, ServerMessage::Subscribed { topics } if topics == vec!["sensors/#".to_string()])
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"sensors/#"})).await;
+    // Explicit ack (acks_subscribe:true): the sub id echoes the request id.
+    assert_eq!(
+        ws_recv(&mut c).await,
+        json!({"t":"subscribed","sub":"1"}),
+        "subscribe must be acked with the request id as sub id"
     );
 
-    // The ack means the bus subscription is registered, so a fan-out reaches us.
+    // The ack means the bus subscription is registered, so a fan-out reaches us
+    // — tagged with the concrete topic the wildcard matched.
     inject(&db, "sensors/temp/vienna", json!(22.5));
-    match ws_recv(&mut c).await {
-        ServerMessage::Data { topic, payload, .. } => {
-            assert_eq!(topic, "sensors/temp/vienna");
-            assert_eq!(payload, Some(json!(22.5)));
-        }
-        other => panic!("expected Data, got {other:?}"),
-    }
+    let ev = ws_recv_tag(&mut c, "event").await;
+    assert_eq!(ev["sub"], "1");
+    assert_eq!(ev["topic"], "sensors/temp/vienna");
+    assert_eq!(ev["data"], json!(22.5));
 }
 
 #[tokio::test]
-async fn server_multi_topic_subscribe_and_unsubscribe() {
+async fn server_two_subscriptions_and_unsubscribe() {
     let (addr, db) = spawn_default().await;
     let mut c = ws_connect(addr).await;
 
-    ws_send(
-        &mut c,
-        ClientMessage::Subscribe {
-            topics: vec!["a".into(), "b".into()],
-        },
-    )
-    .await;
-    let mut acked = Vec::new();
-    for _ in 0..2 {
-        if let ServerMessage::Subscribed { topics } = ws_recv(&mut c).await {
-            acked.extend(topics);
-        }
-    }
+    // Two patterns are two `sub` frames (the multi-topic Subscribe is gone).
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"a"})).await;
+    ws_send(&mut c, json!({"t":"sub","id":2,"topic":"b"})).await;
+    let mut acked = vec![
+        ws_recv_tag(&mut c, "subscribed").await["sub"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+        ws_recv_tag(&mut c, "subscribed").await["sub"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    ];
     acked.sort();
-    assert_eq!(acked, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(acked, vec!["1".to_string(), "2".to_string()]);
 
     inject(&db, "a", json!(1));
-    assert!(matches!(ws_recv(&mut c).await, ServerMessage::Data { topic, .. } if topic == "a"));
+    let ev = ws_recv_tag(&mut c, "event").await;
+    assert_eq!(ev["sub"], "1");
+    assert_eq!(ev["topic"], "a");
 
-    // Unsubscribe "a"; a later "a" must not arrive, but "b" still does.
-    ws_send(
-        &mut c,
-        ClientMessage::Unsubscribe {
-            topics: vec!["a".into()],
-        },
-    )
-    .await;
+    // Unsubscribe "a" by its sub id; a later "a" must not arrive, but "b" does.
+    ws_send(&mut c, json!({"t":"unsub","sub":"1"})).await;
     tokio::time::sleep(Duration::from_millis(100)).await; // let the unsub settle
     inject(&db, "a", json!(2));
     inject(&db, "b", json!(3));
-    match ws_recv(&mut c).await {
-        ServerMessage::Data { topic, .. } => assert_eq!(topic, "b", "only 'b' should arrive"),
-        other => panic!("expected Data on b, got {other:?}"),
-    }
+    let ev = ws_recv_tag(&mut c, "event").await;
+    assert_eq!(ev["sub"], "2", "only 'b' should arrive");
+    assert_eq!(ev["topic"], "b");
 }
 
 #[tokio::test]
@@ -306,28 +292,39 @@ async fn server_late_join_snapshot() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut c = ws_connect(addr).await;
-    ws_send(
-        &mut c,
-        ClientMessage::Subscribe {
-            topics: vec!["sensors/temp".into()],
-        },
-    )
-    .await;
-    assert!(matches!(
+    ws_send(&mut c, json!({"t":"sub","id":4,"topic":"sensors/temp"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"4"}));
+    // The snapshot rides between the ack and the first event, tagged with the
+    // subscription that triggered it.
+    assert_eq!(
         ws_recv(&mut c).await,
-        ServerMessage::Subscribed { .. }
-    ));
-    match ws_recv(&mut c).await {
-        ServerMessage::Snapshot { topic, payload } => {
-            assert_eq!(topic, "sensors/temp");
-            assert_eq!(payload, Some(json!(99)));
-        }
-        other => panic!("expected Snapshot, got {other:?}"),
-    }
+        json!({"t":"snap","sub":"4","topic":"sensors/temp","data":99})
+    );
 }
 
 #[tokio::test]
-async fn server_query_and_list_topics() {
+async fn server_wildcard_late_join_snapshots_per_match() {
+    let (addr, db) = spawn_default().await;
+    inject(&db, "sensors/temp", json!(1));
+    inject(&db, "sensors/humidity", json!(2));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut c = ws_connect(addr).await;
+    ws_send(&mut c, json!({"t":"sub","id":9,"topic":"sensors/#"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"9"}));
+    // One snapshot per cached record under the pattern (order is map order).
+    let mut snaps = Vec::new();
+    for _ in 0..2 {
+        let s = ws_recv_tag(&mut c, "snap").await;
+        assert_eq!(s["sub"], "9");
+        snaps.push(s["topic"].as_str().unwrap().to_string());
+    }
+    snaps.sort();
+    assert_eq!(snaps, vec!["sensors/humidity", "sensors/temp"]);
+}
+
+#[tokio::test]
+async fn server_query_and_record_list() {
     let addr = free_addr();
     let mut ws = WebSocketConnector::new().with_query_handler(OneRecordQuery);
     ws.register::<Temp>();
@@ -347,44 +344,57 @@ async fn server_query_and_list_topics() {
 
     let mut c = ws_connect(addr).await;
 
+    // record.query rides a plain AimX request; the reply carries the shared
+    // `{records, total}` shape.
     ws_send(
         &mut c,
-        ClientMessage::Query {
-            id: "q1".into(),
-            pattern: "#".into(),
-            from: None,
-            to: None,
-            limit: None,
-        },
+        json!({"t":"req","id":10,"method":"record.query","params":{"name":"#"}}),
     )
     .await;
-    match ws_recv(&mut c).await {
-        ServerMessage::QueryResult { id, records, total } => {
-            assert_eq!(id, "q1"); // the String id round-trips
-            assert_eq!(total, 1);
-            assert_eq!(records.len(), 1);
-        }
-        other => panic!("expected QueryResult, got {other:?}"),
-    }
+    let reply = ws_recv_tag(&mut c, "reply").await;
+    assert_eq!(reply["id"], 10);
+    assert_eq!(reply["ok"]["total"], 1);
+    assert_eq!(
+        reply["ok"]["records"],
+        json!([{"topic":"temp","payload":21.0,"ts":7}])
+    );
 
-    ws_send(&mut c, ClientMessage::ListTopics { id: "l1".into() }).await;
-    match ws_recv(&mut c).await {
-        ServerMessage::TopicList { id, topics } => {
-            assert_eq!(id, "l1");
-            assert_eq!(topics.len(), 1);
-            assert_eq!(topics[0].name, "temp");
-            assert_eq!(topics[0].schema_type.as_deref(), Some("temperature"));
-        }
-        other => panic!("expected TopicList, got {other:?}"),
-    }
+    // record.list returns `{name, schema_type, entity}` rows.
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":11,"method":"record.list","params":null}),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut c, "reply").await;
+    assert_eq!(reply["id"], 11);
+    assert_eq!(
+        reply["ok"],
+        json!([{"name":"temp","schema_type":"temperature","entity":"temp"}])
+    );
+}
+
+#[tokio::test]
+async fn server_query_without_handler_is_not_found() {
+    let (addr, _db) = spawn_default().await;
+    let mut c = ws_connect(addr).await;
+    // No custom handler and no with_persistence → not_found (3-code vocabulary).
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":3,"method":"record.query","params":{"name":"*"}}),
+    )
+    .await;
+    assert_eq!(
+        ws_recv_tag(&mut c, "reply").await,
+        json!({"t":"reply","id":3,"err":"not_found"})
+    );
 }
 
 #[tokio::test]
 async fn server_ping_pong() {
     let (addr, _db) = spawn_default().await;
     let mut c = ws_connect(addr).await;
-    ws_send(&mut c, ClientMessage::Ping).await;
-    assert!(matches!(ws_recv(&mut c).await, ServerMessage::Pong));
+    ws_send(&mut c, json!({"t":"ping"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"pong"}));
 }
 
 #[tokio::test]
@@ -400,24 +410,50 @@ async fn server_survives_malformed_frame() {
     let (addr, db) = spawn_default().await;
     let mut c = ws_connect(addr).await;
 
-    // Garbage that is not a ClientMessage — the session must skip it, not die.
+    // Garbage that is not an AimX frame — the session must skip it, not die.
     c.send(Message::Text("{not valid".to_string().into()))
         .await
         .unwrap();
     // The connection is still usable afterwards.
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"x"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"1"}));
+    inject(&db, "x", json!(1));
+    let ev = ws_recv_tag(&mut c, "event").await;
+    assert_eq!(ev["topic"], "x");
+}
+
+#[tokio::test]
+async fn server_write_reaches_inbound_record() {
+    let addr = free_addr();
+    let mut sb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
+    sb.configure::<Temp>("cfg", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .link_from("ws://cfg")
+            .with_deserializer(|_ctx, d: &[u8]| {
+                serde_json::from_slice::<Temp>(d).map_err(|e| e.to_string())
+            })
+            .finish();
+    });
+    let (db, runner) = sb.build().await.expect("build db");
+    let db = Arc::new(db);
+    tokio::spawn(runner.run());
+    wait_for_listen(addr).await;
+
+    let mut c = ws_connect(addr).await;
+    // Fire-and-forget write: the payload is the raw record value (no wrapper).
     ws_send(
         &mut c,
-        ClientMessage::Subscribe {
-            topics: vec!["x".into()],
-        },
+        json!({"t":"write","topic":"cfg","payload":{"c":7.5}}),
     )
     .await;
-    assert!(matches!(
-        ws_recv(&mut c).await,
-        ServerMessage::Subscribed { .. }
-    ));
-    inject(&db, "x", json!(1));
-    assert!(matches!(ws_recv(&mut c).await, ServerMessage::Data { topic, .. } if topic == "x"));
+    // FIFO on the one connection: the pong proves the write frame was processed.
+    ws_send(&mut c, json!({"t":"ping"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"pong"}));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(db.try_latest_as_json("cfg"), Some(json!({"c":7.5})));
 }
 
 // ── Client engine e2e (run_client + WsDialer over a real socket) ─────
@@ -427,13 +463,12 @@ async fn client_engine_receives_broadcast_over_real_socket() {
     let (addr, db) = spawn_default().await;
 
     let config = ClientConfig {
-        topic_routed_subs: true,
         reconnect: false,
         ..ClientConfig::default()
     };
     let (handle, engine) = run_client(
         WsDialer::new(format!("ws://{addr}/ws")),
-        WsCodec::new(),
+        AimxCodec,
         config,
         Arc::new(TokioAdapter),
     );
@@ -450,8 +485,10 @@ async fn client_engine_receives_broadcast_over_real_socket() {
             break;
         }
     }
-    // The record value round-trips: Data{payload:42} → engine stream yields b"42".
-    assert_eq!(&got.expect("a value")[..], b"42");
+    // The record value round-trips; the bus tags every event with its topic.
+    let update = got.expect("a value");
+    assert_eq!(&update.data[..], b"42");
+    assert_eq!(update.topic.as_deref(), Some("sensors/temp"));
 
     drop(handle);
     drop(stream);
@@ -467,24 +504,16 @@ async fn many_clients_fanout() {
     let mut clients = Vec::new();
     for _ in 0..20 {
         let mut c = ws_connect(addr).await;
-        ws_send(
-            &mut c,
-            ClientMessage::Subscribe {
-                topics: vec!["evt/#".into()],
-            },
-        )
-        .await;
-        assert!(matches!(
-            ws_recv(&mut c).await,
-            ServerMessage::Subscribed { .. }
-        ));
+        ws_send(&mut c, json!({"t":"sub","id":1,"topic":"evt/#"})).await;
+        assert_eq!(ws_recv(&mut c).await["t"], "subscribed");
         clients.push(c);
     }
 
     // One broadcast reaches all 20.
     inject(&db, "evt/x", json!(1));
     for c in &mut clients {
-        assert!(matches!(ws_recv(c).await, ServerMessage::Data { topic, .. } if topic == "evt/x"));
+        let ev = ws_recv_tag(c, "event").await;
+        assert_eq!(ev["topic"], "evt/x");
     }
 }
 
@@ -494,26 +523,11 @@ async fn stalled_client_does_not_block_a_healthy_one() {
 
     // Stalled: subscribes but never reads — its socket backpressures.
     let mut stalled = ws_connect(addr).await;
-    ws_send(
-        &mut stalled,
-        ClientMessage::Subscribe {
-            topics: vec!["x".into()],
-        },
-    )
-    .await;
+    ws_send(&mut stalled, json!({"t":"sub","id":1,"topic":"x"})).await;
 
     let mut healthy = ws_connect(addr).await;
-    ws_send(
-        &mut healthy,
-        ClientMessage::Subscribe {
-            topics: vec!["x".into()],
-        },
-    )
-    .await;
-    assert!(matches!(
-        ws_recv(&mut healthy).await,
-        ServerMessage::Subscribed { .. }
-    ));
+    ws_send(&mut healthy, json!({"t":"sub","id":1,"topic":"x"})).await;
+    assert_eq!(ws_recv(&mut healthy).await["t"], "subscribed");
     tokio::time::sleep(Duration::from_millis(100)).await; // let the stalled sub register
 
     // Flood well past the bounded funnel (256). This also overruns the injector
@@ -524,9 +538,10 @@ async fn stalled_client_does_not_block_a_healthy_one() {
         inject(&db, "x", json!(i));
     }
 
-    assert!(
-        matches!(ws_recv(&mut healthy).await, ServerMessage::Data { topic, .. } if topic == "x"),
-        "healthy client must keep receiving past a stalled peer",
+    let ev = ws_recv_tag(&mut healthy, "event").await;
+    assert_eq!(
+        ev["topic"], "x",
+        "healthy client must keep receiving past a stalled peer"
     );
     let _ = stalled.close(None).await;
 }
@@ -540,30 +555,21 @@ async fn golden_wire_frames() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut c = ws_connect(addr).await;
-    ws_send(
-        &mut c,
-        ClientMessage::Subscribe {
-            topics: vec!["t".into()],
-        },
-    )
-    .await;
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"t"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"1"}));
     assert_eq!(
-        recv_value(&mut c).await,
-        json!({"type": "subscribed", "topics": ["t"]})
-    );
-    assert_eq!(
-        recv_value(&mut c).await,
-        json!({"type": "snapshot", "topic": "t", "payload": 5})
+        ws_recv(&mut c).await,
+        json!({"t":"snap","sub":"1","topic":"t","data":5})
     );
 
     inject(&db, "t", json!(42));
     assert_eq!(
-        recv_value(&mut c).await,
-        json!({"type": "data", "topic": "t", "payload": 42, "ts": 0})
+        ws_recv(&mut c).await,
+        json!({"t":"event","sub":"1","seq":1,"topic":"t","data":42})
     );
 
-    ws_send(&mut c, ClientMessage::Ping).await;
-    assert_eq!(recv_value(&mut c).await, json!({"type": "pong"}));
+    ws_send(&mut c, json!({"t":"ping"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"pong"}));
 }
 
 // ── Async authorization over a real socket ───────────────────────────
@@ -574,32 +580,17 @@ async fn async_authorize_subscribe_gates_despite_allow_all_permissions() {
     let mut c = ws_connect(addr).await;
 
     // Denied topic: permissions are allow-all, but the *async* hook says no.
-    ws_send(
-        &mut c,
-        ClientMessage::Subscribe {
-            topics: vec!["secret/x".into()],
-        },
-    )
-    .await;
-    match ws_recv(&mut c).await {
-        ServerMessage::Error { code, .. } => assert!(matches!(code, ErrorCode::Forbidden)),
-        other => panic!("expected Forbidden Error for denied subscribe, got {other:?}"),
-    }
+    // The refusal is a `reply` carrying the subscribe id + the 3-code error.
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"secret/x"})).await;
+    assert_eq!(
+        ws_recv(&mut c).await,
+        json!({"t":"reply","id":1,"err":"denied"})
+    );
 
     // An allowed topic still works end-to-end.
-    ws_send(
-        &mut c,
-        ClientMessage::Subscribe {
-            topics: vec!["public/x".into()],
-        },
-    )
-    .await;
-    assert!(matches!(
-        ws_recv(&mut c).await,
-        ServerMessage::Subscribed { .. }
-    ));
+    ws_send(&mut c, json!({"t":"sub","id":2,"topic":"public/x"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"2"}));
     inject(&db, "public/x", json!(1));
-    assert!(
-        matches!(ws_recv(&mut c).await, ServerMessage::Data { topic, .. } if topic == "public/x")
-    );
+    let ev = ws_recv_tag(&mut c, "event").await;
+    assert_eq!(ev["topic"], "public/x");
 }

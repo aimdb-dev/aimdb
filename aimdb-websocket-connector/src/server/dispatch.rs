@@ -6,29 +6,36 @@
 //! application surface (the [`ClientManager`] bus handle, auth principal, query
 //! handler).
 //!
-//! The id↔topic bookkeeping lives in the per-connection [`WsCodec`](crate::codec),
-//! not here. The `Subscribed` ack and late-join `Snapshot` are engine emissions;
-//! this session only supplies the snapshot bytes and the subscription stream.
+//! The wire is AimX ([`aimdb_core::session::aimx::AimxCodec`]); this dispatch
+//! only supplies WS-specific semantics on top of the shared vocabulary:
+//! HTTP-upgrade auth, the bus-backed subscribe, and the `record.query` /
+//! `record.list` calls (design 045 §3.4). The `Subscribed` ack and late-join
+//! `Snapshot`s are engine emissions; this session only supplies the snapshot
+//! bytes and the subscription stream.
 
 use std::sync::Arc;
 
+use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams};
 use aimdb_core::session::Session;
-use aimdb_core::{AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, SessionCtx};
-use aimdb_ws_protocol::TopicInfo;
-
-use crate::protocol::{ClientMessage, ErrorCode, ServerMessage};
+use aimdb_core::{
+    AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, SessionCtx, SubUpdate,
+};
+use serde_json::Value;
 
 use super::{
     auth::{AuthHandler, ClientId, ClientInfo, Permissions},
     client_manager::{ClientManager, ConnectionGuard},
-    session::{QueryHandler, Router, SnapshotProvider},
+    session::{QueryHandler, Router, SnapshotProvider, TopicInfo},
 };
 
 /// The shared WS dispatch — one `Arc<dyn Dispatch>` per server.
 pub struct WsDispatch {
+    /// Cheap-clone db handle — resolves the Extensions-registered
+    /// `QueryHandlerFn` when no custom query handler is plugged in.
+    pub(crate) db: aimdb_core::builder::AimDb,
     pub(crate) client_mgr: ClientManager,
     pub(crate) snapshot_provider: Arc<dyn SnapshotProvider>,
-    pub(crate) query_handler: Arc<dyn QueryHandler>,
+    pub(crate) query_handler: Option<Arc<dyn QueryHandler>>,
     pub(crate) router: Arc<Router>,
     pub(crate) known_topics: Arc<Vec<TopicInfo>>,
     pub(crate) auth: Arc<dyn AuthHandler>,
@@ -62,6 +69,7 @@ impl Dispatch for WsDispatch {
             })
         });
         Box::new(WsSession {
+            db: self.db.clone(),
             client_mgr: self.client_mgr.clone(),
             snapshot_provider: self.snapshot_provider.clone(),
             query_handler: self.query_handler.clone(),
@@ -78,9 +86,10 @@ impl Dispatch for WsDispatch {
 
 /// One connection's per-session state (owned by the engine, `&mut`-threaded).
 struct WsSession {
+    db: aimdb_core::builder::AimDb,
     client_mgr: ClientManager,
     snapshot_provider: Arc<dyn SnapshotProvider>,
-    query_handler: Arc<dyn QueryHandler>,
+    query_handler: Option<Arc<dyn QueryHandler>>,
     router: Arc<Router>,
     known_topics: Arc<Vec<TopicInfo>>,
     auth: Arc<dyn AuthHandler>,
@@ -98,38 +107,15 @@ impl Session for WsSession {
         params: Payload,
     ) -> BoxFut<'a, Result<Payload, RpcError>> {
         Box::pin(async move {
-            let msg: ClientMessage =
-                serde_json::from_slice(&params).map_err(|_| RpcError::Internal)?;
-            let response = match (method, msg) {
-                (
-                    "query",
-                    ClientMessage::Query {
-                        id,
-                        pattern,
-                        from,
-                        to,
-                        limit,
-                    },
-                ) => match self
-                    .query_handler
-                    .handle_query(&pattern, from, to, limit)
-                    .await
-                {
-                    Ok((records, total)) => ServerMessage::QueryResult { id, records, total },
-                    Err(message) => ServerMessage::Error {
-                        code: ErrorCode::ServerError,
-                        topic: None,
-                        message,
-                    },
-                },
-                ("list_topics", ClientMessage::ListTopics { id }) => ServerMessage::TopicList {
-                    id,
-                    topics: (*self.known_topics).clone(),
-                },
+            let value = match method {
+                "record.list" => serde_json::json!(*self.known_topics),
+                "record.query" => {
+                    let params: Value = serde_json::from_slice(&params).unwrap_or(Value::Null);
+                    self.record_query(params).await?
+                }
                 _ => return Err(RpcError::NotFound),
             };
-            // The codec writes this complete `ServerMessage` verbatim.
-            let bytes = serde_json::to_vec(&response).map_err(|_| RpcError::Internal)?;
+            let bytes = serde_json::to_vec(&value).map_err(|_| RpcError::Internal)?;
             Ok(Payload::from(bytes.as_slice()))
         })
     }
@@ -137,7 +123,7 @@ impl Session for WsSession {
     fn subscribe<'a>(
         &'a mut self,
         topic: &'a str,
-    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
         Box::pin(async move {
             // Per-operation authorization via the async `AuthHandler` hook.
             if !self.auth.authorize_subscribe(&self.info, topic).await {
@@ -149,13 +135,15 @@ impl Session for WsSession {
         })
     }
 
-    fn snapshot(&mut self, topic: &str) -> Option<Payload> {
+    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
         if !self.late_join {
-            return None;
+            return Vec::new();
         }
         self.snapshot_provider
-            .snapshot(topic)
-            .map(|bytes| Payload::from(bytes.as_slice()))
+            .snapshots(topic)
+            .into_iter()
+            .map(|(topic, bytes)| (topic, Payload::from(bytes.as_slice())))
+            .collect()
     }
 
     fn write<'a>(
@@ -170,6 +158,57 @@ impl Session for WsSession {
             self.router
                 .route(topic, &payload, &self.runtime_ctx)
                 .map_err(|_| RpcError::Internal)
+        })
+    }
+}
+
+impl WsSession {
+    /// `record.query` with the shared `{name, limit, start, end}` params and
+    /// `{records, total}` result (design 045 §3.4): a plugged-in
+    /// [`QueryHandler`] wins; otherwise delegate to the Extensions-registered
+    /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`.
+    async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("*")
+            .to_string();
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| usize::try_from(v).ok());
+        let start = params.get("start").and_then(|v| v.as_u64());
+        let end = params.get("end").and_then(|v| v.as_u64());
+
+        if let Some(handler) = &self.query_handler {
+            let (records, total) = handler
+                .handle_query(&name, start, end, limit)
+                .await
+                .map_err(|_e| {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("record.query handler failed: {}", _e);
+                    RpcError::Internal
+                })?;
+            return Ok(serde_json::json!({ "records": records, "total": total }));
+        }
+
+        let handler_fut = {
+            let handler = self
+                .db
+                .extensions()
+                .get::<QueryHandlerFn>()
+                .ok_or(RpcError::NotFound)?;
+            handler(QueryHandlerParams {
+                name,
+                limit,
+                start,
+                end,
+            })
+        };
+        handler_fut.await.map_err(|_e| {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("record.query persistence handler failed: {}", _e);
+            RpcError::Internal
         })
     }
 }

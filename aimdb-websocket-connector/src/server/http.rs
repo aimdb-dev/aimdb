@@ -14,7 +14,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
 use aimdb_core::{
-    session::{run_session, SessionConfig},
+    session::{aimx::AimxCodec, run_session, SessionConfig},
     Connection, Dispatch, PeerInfo, SessionLimits,
 };
 use axum::{
@@ -29,7 +29,7 @@ use axum::{
 };
 use tower_http::cors::CorsLayer;
 
-use crate::{codec::WsCodec, transport::WsServerConnection};
+use crate::transport::WsServerConnection;
 
 use super::{
     auth::{AuthError, AuthRequest, ClientInfo, DynAuthHandler},
@@ -179,9 +179,9 @@ async fn ws_upgrade_handler(
         let peer = PeerInfo::default().with_ext(Arc::new(info));
         let conn: Box<dyn Connection> =
             Box::new(WsServerConnection::new(socket, peer, &auto_subscribe));
-        let codec = WsCodec::new();
-        // Per-connection codec + run_session drive this socket (doc 039 § 6).
-        run_session(conn, &codec, dispatch.as_ref(), &config).await;
+        // The shared AimX codec + run_session drive this socket (doc 045);
+        // each codec blob rides as one WS text frame.
+        run_session(conn, &AimxCodec, dispatch.as_ref(), &config).await;
     })
     .into_response()
 }

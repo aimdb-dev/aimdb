@@ -27,6 +27,8 @@ use aimdb_data_contracts::Streamable;
 use aimdb_core::{pump_sink, router::RouterBuilder, ConnectorBuilder, Dispatch};
 use axum::Router as AxumRouter;
 
+use aimdb_core::topic_matches;
+
 use super::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
     client_manager::ClientManager,
@@ -34,9 +36,8 @@ use super::{
     dispatch::WsDispatch,
     http::{build_server_future, ServerState},
     registry::StreamableRegistry,
-    session::{NoQuery, NoSnapshot, QueryHandler, SnapshotProvider},
+    session::{NoSnapshot, QueryHandler, SnapshotProvider, TopicInfo},
 };
-use aimdb_ws_protocol::TopicInfo;
 
 // ════════════════════════════════════════════════════════════════════
 // Builder
@@ -74,17 +75,12 @@ pub struct WebSocketConnectorBuilder {
     /// Topics to subscribe every new client to automatically on connect.
     ///
     /// When non-empty, clients receive data on these topics immediately after
-    /// the WebSocket handshake without having to send a `Subscribe` message.
+    /// the WebSocket handshake without having to send a subscribe frame.
     /// Use `["#"]` to push all topics to every client.
     auto_subscribe_topics: Vec<String>,
-    /// When `true`, the serialized payload bytes are sent directly as the
-    /// WebSocket text frame — no `ServerMessage::Data` envelope.
-    ///
-    /// Combine with a serializer that produces a complete flat JSON object
-    /// (including `"type"` and `"node_id"`) to speak a custom protocol.
-    raw_payload: bool,
-    /// Handler for client `query` messages (history retrieval).
-    query_handler: Arc<dyn QueryHandler>,
+    /// Custom handler for `record.query` calls. `None` falls back to the
+    /// `QueryHandlerFn` that `with_persistence` registers in Extensions.
+    query_handler: Option<Arc<dyn QueryHandler>>,
     /// Registered streamable types for schema resolution.
     streamable_registry: StreamableRegistry,
 }
@@ -100,8 +96,7 @@ impl Default for WebSocketConnectorBuilder {
             channel_capacity: 256,
             additional_routes: None,
             auto_subscribe_topics: Vec::new(),
-            raw_payload: false,
-            query_handler: Arc::new(NoQuery),
+            query_handler: None,
             streamable_registry: StreamableRegistry::new(),
         }
     }
@@ -217,24 +212,13 @@ impl WebSocketConnectorBuilder {
         self
     }
 
-    /// Send serializer output directly as a WebSocket text frame, bypassing
-    /// the `{"type":"data","topic":…,"payload":…}` envelope.
+    /// Plug in a custom handler for `record.query` calls (history retrieval).
     ///
-    /// Use this when the record serializers already produce the complete JSON
-    /// expected by the client (e.g. `{"type":"temperature","node_id":…}`).
-    pub fn with_raw_payload(mut self, enabled: bool) -> Self {
-        self.raw_payload = enabled;
-        self
-    }
-
-    /// Plug in a handler for client `query` messages (history retrieval).
-    ///
-    /// When set, clients can send `{"type":"query", "id":"…", "pattern":"*"}`
-    /// and receive a `{"type":"query_result", …}` response with persisted records.
-    ///
-    /// Without this, query messages receive a `server_error` response.
+    /// Without this, `record.query` delegates to the `QueryHandlerFn` that
+    /// `aimdb-persistence::with_persistence` registers in Extensions; with
+    /// neither, clients get `not_found`.
     pub fn with_query_handler(mut self, handler: impl QueryHandler + 'static) -> Self {
-        self.query_handler = Arc::new(handler);
+        self.query_handler = Some(Arc::new(handler));
         self
     }
 
@@ -288,7 +272,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 self.late_join.then(|| Arc::new(Mutex::new(HashMap::new())));
 
             // ── Client manager ────────────────────────────────────
-            let client_mgr = ClientManager::new(self.raw_payload, self.channel_capacity.max(1));
+            let client_mgr = ClientManager::new(self.channel_capacity.max(1));
 
             // ── Build snapshot provider ──────────────────────────
             let snapshot_provider: Arc<dyn SnapshotProvider> = match &snapshot_map {
@@ -320,6 +304,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
 
             // ── Shared dispatch (one Arc<dyn Dispatch> per server) ───
             let dispatch: Arc<dyn Dispatch> = Arc::new(WsDispatch {
+                db: db.clone(),
                 client_mgr: client_mgr.clone(),
                 snapshot_provider,
                 query_handler: self.query_handler.clone(),
@@ -371,7 +356,13 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
 struct DynMapSnapshot(SnapshotCache);
 
 impl SnapshotProvider for DynMapSnapshot {
-    fn snapshot(&self, topic: &str) -> Option<Vec<u8>> {
-        self.0.lock().ok()?.get(topic).cloned()
+    fn snapshots(&self, pattern: &str) -> Vec<(String, Vec<u8>)> {
+        let Ok(map) = self.0.lock() else {
+            return Vec::new();
+        };
+        map.iter()
+            .filter(|(topic, _)| topic_matches(pattern, topic))
+            .map(|(topic, bytes)| (topic.clone(), bytes.clone()))
+            .collect()
     }
 }

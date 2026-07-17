@@ -2,11 +2,11 @@
 //! bridges records to them.
 //!
 //! The HTTP/WS accept loop is axum's ([`http`]); each upgraded socket is driven
-//! by the shared `run_session` engine over the root [`codec`](crate::codec) /
-//! [`transport`](crate::transport) substrate, with [`dispatch`] supplying the
-//! subscribe/write/query semantics and [`client_manager`] the cross-connection
-//! fan-out bus. The outbound data plane rides [`connector`]'s `WsBusSink` through
-//! the core `pump_sink`.
+//! by the shared `run_session` engine over the AimX codec
+//! ([`aimdb_core::session::aimx`]) and the [`transport`](crate::transport)
+//! substrate, with [`dispatch`] supplying the subscribe/write/query semantics
+//! and [`client_manager`] the cross-connection fan-out bus. The outbound data
+//! plane rides [`connector`]'s `WsBusSink` through the core `pump_sink`.
 
 pub mod auth;
 pub mod builder;

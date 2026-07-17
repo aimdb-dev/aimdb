@@ -1,9 +1,10 @@
 //! WS transport adapters — `Connection` (and, for the client, `Dialer`) over a
 //! real WebSocket, so the shared session engines drive it.
 //!
-//! The **server** side (`WsServerConnection`) wraps axum's upgraded `WebSocket`
-//! and performs the **multi-topic split**: a `Subscribe`/`Unsubscribe` carrying N
-//! topics is yielded as N single-topic frames, so the codec's `decode` stays 1→1.
+//! WebSocket frames are already message-delimited, so each AimX codec blob
+//! rides as one WS text frame — no newline/length framing. The **server** side
+//! (`WsServerConnection`) wraps axum's upgraded `WebSocket` and seeds the
+//! builder's auto-subscribe patterns as synthetic AimX `sub` frames.
 
 #[cfg(feature = "server")]
 use std::collections::VecDeque;
@@ -13,16 +14,12 @@ use aimdb_core::{BoxFut, Connection, PeerInfo, TransportError, TransportResult};
 #[cfg(feature = "server")]
 use axum::extract::ws::{Message, WebSocket};
 
-#[cfg(feature = "server")]
-use crate::protocol::ClientMessage;
-
 /// A server-side [`Connection`] over an upgraded axum [`WebSocket`].
 #[cfg(feature = "server")]
 pub struct WsServerConnection {
     ws: WebSocket,
     peer: PeerInfo,
-    /// Single-topic frames split off a multi-topic `Subscribe`/`Unsubscribe`,
-    /// drained before reading the next WS message.
+    /// Synthetic auto-subscribe frames, drained before reading the socket.
     pending: VecDeque<Vec<u8>>,
 }
 
@@ -30,24 +27,29 @@ pub struct WsServerConnection {
 impl WsServerConnection {
     /// Wrap an upgraded socket with its pre-resolved peer identity.
     ///
-    /// `auto_subscribe` seeds synthetic single-topic `Subscribe` frames so the
-    /// engine subscribes the client to those patterns on connect, without a
-    /// client message.
+    /// `auto_subscribe` seeds synthetic AimX `sub` frames so the engine
+    /// subscribes the client to those patterns on connect, without a client
+    /// message. Their ids count down from `u64::MAX` so they cannot collide
+    /// with client-chosen ids (engine clients allocate from 1 upward); the
+    /// resulting events carry these server-side sub ids, so engine-demuxed
+    /// clients should subscribe explicitly instead (design 045 §3.6).
     pub fn new(ws: WebSocket, peer: PeerInfo, auto_subscribe: &[String]) -> Self {
         let pending = auto_subscribe
             .iter()
-            .filter_map(|t| {
-                serde_json::to_vec(&ClientMessage::Subscribe {
-                    topics: vec![t.clone()],
-                })
+            .enumerate()
+            .filter_map(|(i, t)| {
+                serde_json::to_vec(&serde_json::json!({
+                    "t": "sub",
+                    "id": u64::MAX - i as u64,
+                    "topic": t,
+                }))
                 .ok()
             })
             .collect();
         Self { ws, peer, pending }
     }
 
-    /// Read one logical frame, expanding a multi-topic `Subscribe`/`Unsubscribe`
-    /// into one single-topic frame per call (the rest are queued in `pending`).
+    /// Read one logical frame, draining seeded auto-subscribe frames first.
     async fn next_logical(&mut self) -> TransportResult<Option<Vec<u8>>> {
         loop {
             if let Some(frame) = self.pending.pop_front() {
@@ -61,10 +63,6 @@ impl WsServerConnection {
                 Some(Ok(Message::Close(_))) | None => return Ok(None),
                 Some(Err(_)) => return Err(TransportError::Io),
             };
-            if let Some(split) = split_multi_topic(&bytes) {
-                self.pending.extend(split);
-                continue;
-            }
             return Ok(Some(bytes));
         }
     }
@@ -89,31 +87,6 @@ impl Connection for WsServerConnection {
     fn peer(&self) -> &PeerInfo {
         &self.peer
     }
-}
-
-/// If `bytes` is a multi-topic `Subscribe`/`Unsubscribe`, return one re-serialized
-/// single-topic frame per topic; otherwise `None` (the frame passes through).
-#[cfg(feature = "server")]
-fn split_multi_topic(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let msg: ClientMessage = serde_json::from_slice(bytes).ok()?;
-    let (topics, is_sub) = match msg {
-        ClientMessage::Subscribe { topics } if topics.len() > 1 => (topics, true),
-        ClientMessage::Unsubscribe { topics } if topics.len() > 1 => (topics, false),
-        _ => return None,
-    };
-    Some(
-        topics
-            .into_iter()
-            .filter_map(|t| {
-                let one = if is_sub {
-                    ClientMessage::Subscribe { topics: vec![t] }
-                } else {
-                    ClientMessage::Unsubscribe { topics: vec![t] }
-                };
-                serde_json::to_vec(&one).ok()
-            })
-            .collect(),
-    )
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -195,41 +168,5 @@ impl Connection for WsClientConnection {
 
     fn peer(&self) -> &PeerInfo {
         &self.peer
-    }
-}
-
-#[cfg(all(test, feature = "server"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn splits_multi_topic_subscribe() {
-        let frame = serde_json::to_vec(&ClientMessage::Subscribe {
-            topics: vec!["a".into(), "b".into(), "c".into()],
-        })
-        .unwrap();
-        let split = split_multi_topic(&frame).expect("should split");
-        assert_eq!(split.len(), 3);
-        for (i, t) in ["a", "b", "c"].iter().enumerate() {
-            match serde_json::from_slice::<ClientMessage>(&split[i]).unwrap() {
-                ClientMessage::Subscribe { topics } => assert_eq!(topics, vec![t.to_string()]),
-                _ => panic!("expected single-topic Subscribe"),
-            }
-        }
-    }
-
-    #[test]
-    fn single_topic_passes_through() {
-        let frame = serde_json::to_vec(&ClientMessage::Subscribe {
-            topics: vec!["only".into()],
-        })
-        .unwrap();
-        assert!(split_multi_topic(&frame).is_none());
-    }
-
-    #[test]
-    fn non_subscribe_passes_through() {
-        let frame = serde_json::to_vec(&ClientMessage::Ping).unwrap();
-        assert!(split_multi_topic(&frame).is_none());
     }
 }

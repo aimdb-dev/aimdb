@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 045: the WS wire is now AimX
+
+- **The wire protocol is AimX** (`aimdb-core::session::aimx`), one tagged JSON
+  frame per WS text message — the same envelope as UDS/serial/TCP. The
+  `aimdb-ws-protocol` crate, the 507-line `WsCodec` (and its per-connection
+  id↔topic maps), the multi-topic `Subscribe` split, and the `Data`-frame
+  pre-serialization in `ClientManager` are deleted. Subscribing to N patterns
+  is N `sub` frames; events carry `sub`/`seq`/`topic`; snapshots carry the
+  routing `sub`; errors collapse to the 3-code AimX vocabulary
+  (`not_found`/`denied`/`internal` — auth stays out-of-band at the HTTP 401).
+- **`record.query` / `record.list` replace `Query`/`ListTopics`.**
+  `QueryHandler` returns the shared `aimdb_core::remote::QueryRecord` rows;
+  without a plugged-in handler the dispatch now falls back to the
+  `QueryHandlerFn` registered by `aimdb-persistence::with_persistence`
+  (`NoQuery` is gone). `record.list` replies with `{name, schema_type,
+  entity}` rows (`TopicInfo` now lives in this crate and is serialize-only).
+- **`with_raw_payload` removed** — its purpose was bypassing the ws `Data`
+  envelope; under AimX the envelope is the protocol.
+- **`SnapshotProvider::snapshot(topic)` became `snapshots(pattern)`**,
+  returning every cached `(topic, value)` under the pattern, so wildcard
+  subscriptions late-join every covered record (previously wildcard patterns
+  never hit the exact-key cache).
+- **Auto-subscribe ids are server-chosen** (counting down from `u64::MAX`);
+  engine-demuxed clients should subscribe explicitly (design 045 §3.6).
+
 ### Internal refactors
 
 - **Adjusted to core's design-036-W1 data-plane de-`Any`.** `WsDispatch`/`WsSession` carry a concrete `RuntimeContext` (was `Option` — it was always `Some`) and the inbound `Router::route` call is synchronous; the inbound route tuples and `pump_sink` routes flow through opaquely. No public API or wire change.

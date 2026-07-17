@@ -45,8 +45,8 @@ impl Connector for WsBusSink {
             if let Some(map) = &self.snapshot {
                 map.lock().unwrap().insert(dest.clone(), bytes.clone());
             }
-            // The per-connection `WsCodec` applies the `Data` envelope (or, in raw
-            // mode, sends the bytes verbatim) — so the bus carries raw bytes.
+            // The bus carries raw record-value bytes tagged with the topic; the
+            // per-connection AimX codec applies the `event` envelope downstream.
             self.client_mgr.broadcast(&dest, &bytes).await;
             Ok(())
         })

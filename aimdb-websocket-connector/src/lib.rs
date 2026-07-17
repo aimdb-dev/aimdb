@@ -13,7 +13,9 @@
 //!   `link_from("ws-client://host/topic")` for direct AimDB-to-AimDB sync
 //!   without an intermediary broker.
 //!
-//! Both modes share the same wire protocol from [`aimdb_ws_protocol`].
+//! Both modes speak **AimX** ([`aimdb_core::session::aimx`]) — the same NDJSON
+//! tagged frames as the UDS/serial/TCP connectors, one frame per WS text
+//! message (design 045 retired the separate ws wire protocol).
 //!
 //! ## Server Quick Start
 //!
@@ -79,8 +81,9 @@
 //!
 //! ## Wire Protocol
 //!
-//! See [`protocol`] for the full message specification (re-exported from
-//! [`aimdb_ws_protocol`]).
+//! AimX-v2 tagged frames — see [`aimdb_core::session::aimx`] and design doc
+//! 045 for the frame set (`req`/`reply`/`sub`/`subscribed`/`unsub`/`event`/
+//! `snap`/`write`/`ping`/`pong`).
 //!
 //! ## Authentication (server only)
 //!
@@ -104,22 +107,11 @@ pub mod client;
 // Shared session-engine glue (server and/or client)
 // ════════════════════════════════════════════════════════════════════
 
-/// Per-connection WS-JSON `EnvelopeCodec` shared by the server (`run_session`)
-/// and client (`run_client`) ports.
-#[cfg(any(feature = "server", feature = "client"))]
-pub mod codec;
-
 /// WS transport adapters (`Connection`/`Dialer`) over a real WebSocket.
 #[cfg(any(feature = "server", feature = "client"))]
 pub mod transport;
 
 // Real-socket integration tests live in `tests/e2e.rs` (black-box, public API).
-
-// ════════════════════════════════════════════════════════════════════
-// Protocol (always available)
-// ════════════════════════════════════════════════════════════════════
-
-pub mod protocol;
 
 // ════════════════════════════════════════════════════════════════════
 // Public re-exports
@@ -144,7 +136,8 @@ pub use server::client_manager::ClientManager;
 #[cfg(feature = "client")]
 pub type WsClientConnector = client::WsClientConnectorBuilder;
 
-pub use protocol::{ClientMessage, ErrorCode, QueryRecord, ServerMessage};
+/// Canonical `record.query` result row (shared AimX vocabulary, from core).
+pub use aimdb_core::remote::QueryRecord;
 
 #[cfg(feature = "server")]
-pub use server::session::{NoQuery, QueryFuture, QueryHandler};
+pub use server::session::{QueryFuture, QueryHandler, TopicInfo};
