@@ -33,8 +33,6 @@ use aimdb_core::buffer::BufferCfg;
 use aimdb_core::builder::{AimDb, AimDbBuilder};
 use aimdb_core::record_id::StringKey;
 
-use aimdb_ws_protocol::{ClientMessage, ServerMessage};
-
 use crate::schema_registry::{SchemaOps, SchemaRegistry};
 use crate::ws_bridge::WsBridge;
 use crate::WasmAdapter;
@@ -248,7 +246,7 @@ impl WasmDb {
 
     /// Discover topics served at `url` without building a full database.
     ///
-    /// Opens a one-shot WebSocket, sends `ListTopics`, and resolves with
+    /// Opens a one-shot WebSocket, sends an AimX `record.list` request, and resolves with
     /// `TopicInfo[]` once the server responds. Rejects after 30 s if no
     /// response arrives, or immediately on connection error.
     ///
@@ -344,6 +342,10 @@ impl WasmDb {
 
 /// Build a one-shot WebSocket promise that resolves with `TopicInfo[]`.
 ///
+/// Speaks one raw AimX exchange: `{"t":"req","id":1,"method":"record.list"}`
+/// → `{"t":"reply","id":1,"ok":[{name, schema_type, entity}, …]}` (design 045
+/// §2.1 — discovery is a plain `record.list` request).
+///
 /// Each callback pair (resolve, reject) is stored in an `Rc<RefCell<Option>>`
 /// so that whichever event fires first wins and subsequent events are no-ops.
 fn discover_impl(url: String) -> js_sys::Promise {
@@ -363,29 +365,25 @@ fn discover_impl(url: String) -> js_sys::Promise {
             Rc::new(RefCell::new(Some(resolve)));
         let reject_rc: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(Some(reject)));
 
-        // on_open: send ListTopics
+        // on_open: send the record.list request
         {
             let ws_clone = ws.clone();
             let on_open = Closure::wrap(Box::new(move || {
-                let msg = ClientMessage::ListTopics {
-                    id: "discover".to_string(),
-                };
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    let _ = ws_clone.send_with_str(&json);
-                }
+                let _ = ws_clone
+                    .send_with_str(r#"{"t":"req","id":1,"method":"record.list","params":null}"#);
             }) as Box<dyn FnMut()>);
             ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
             on_open.forget();
         }
 
-        // on_message: parse TopicList, resolve, close socket
+        // on_message: parse the reply, resolve, close socket
         {
             let ws_clone = ws.clone();
             let resolve_clone = resolve_rc.clone();
             let reject_clone = reject_rc.clone();
             let on_message = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
-                let _ = ws_clone.close();
                 let Some(text) = event.data().as_string() else {
+                    let _ = ws_clone.close();
                     if let Some(rej) = reject_clone.borrow_mut().take() {
                         let _ = rej.call1(
                             &JsValue::NULL,
@@ -394,11 +392,19 @@ fn discover_impl(url: String) -> js_sys::Promise {
                     }
                     return;
                 };
-                match serde_json::from_str::<ServerMessage>(&text) {
-                    Ok(ServerMessage::TopicList { topics, .. }) => {
+                let Ok(frame) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    return; // skip non-JSON noise; the timeout guards a dead peer
+                };
+                // Ignore unrelated frames (auto-subscribe events, acks, …).
+                if frame["t"] != "reply" || frame["id"] != 1 {
+                    return;
+                }
+                let _ = ws_clone.close();
+                match frame.get("ok").and_then(|v| v.as_array()) {
+                    Some(topics) => {
                         let serializer = serde_wasm_bindgen::Serializer::json_compatible();
                         let arr = js_sys::Array::new();
-                        for topic in &topics {
+                        for topic in topics {
                             if let Ok(js_val) = topic.serialize(&serializer) {
                                 arr.push(&js_val);
                             }
@@ -407,11 +413,11 @@ fn discover_impl(url: String) -> js_sys::Promise {
                             let _ = res.call1(&JsValue::NULL, &arr);
                         }
                     }
-                    _ => {
+                    None => {
                         if let Some(rej) = reject_clone.borrow_mut().take() {
                             let _ = rej.call1(
                                 &JsValue::NULL,
-                                &JsValue::from_str("Unexpected server message"),
+                                &JsValue::from_str("record.list failed on server"),
                             );
                         }
                     }
@@ -436,7 +442,7 @@ fn discover_impl(url: String) -> js_sys::Promise {
             on_error.forget();
         }
 
-        // on_close: reject if server closed before we got TopicList
+        // on_close: reject if server closed before the record.list reply
         // (no-op if on_message already resolved)
         {
             let reject_clone = reject_rc.clone();
@@ -444,7 +450,7 @@ fn discover_impl(url: String) -> js_sys::Promise {
                 if let Some(rej) = reject_clone.borrow_mut().take() {
                     let _ = rej.call1(
                         &JsValue::NULL,
-                        &JsValue::from_str("Connection closed before TopicList received"),
+                        &JsValue::from_str("Connection closed before record.list reply"),
                     );
                 }
             }) as Box<dyn FnMut()>);
