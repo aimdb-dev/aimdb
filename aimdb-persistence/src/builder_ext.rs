@@ -55,6 +55,8 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
         });
 
         // Register a QueryHandlerFn so AimX record.query can delegate to us.
+        // Result shape is the shared `{records, total}` vocabulary (design 045
+        // §3.4) — one row type (`QueryRecord`) for every transport.
         let query_backend = backend.clone();
         let handler: QueryHandlerFn = Box::new(move |params: QueryHandlerParams| {
             let backend = query_backend.clone();
@@ -70,21 +72,20 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let values: Vec<serde_json::Value> = stored
+                let mut records: Vec<aimdb_core::remote::QueryRecord> = stored
                     .into_iter()
-                    .map(|sv| {
-                        serde_json::json!({
-                            "record": sv.record_name,
-                            "value": sv.value,
-                            "stored_at": sv.stored_at,
-                        })
+                    .map(|sv| aimdb_core::remote::QueryRecord {
+                        topic: sv.record_name,
+                        payload: sv.value,
+                        ts: sv.stored_at,
                     })
                     .collect();
+                records.sort_by_key(|r| r.ts);
 
-                let count = values.len();
+                let total = records.len();
                 Ok(serde_json::json!({
-                    "values": values,
-                    "count": count,
+                    "records": records,
+                    "total": total,
                 }))
             })
         });

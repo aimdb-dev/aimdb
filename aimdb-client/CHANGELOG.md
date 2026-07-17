@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 045
+
+- **Wildcard subscriptions:** new `AimxConnection::subscribe_with_topics`
+  yields `(Option<String>, Value)` pairs so one pattern subscription (`#`,
+  `*`) can fan in many records with each update naming the record that fired.
+  `ClientHandle`-level streams now carry `SubUpdate` (see `aimdb-core`).
+- **Dead protocol helpers removed** (retired with the hand-rolled client in
+  PR #124, deleted now): `RequestExt`, `ResponseExt`, `serialize_message`,
+  `parse_message`, `EventMessage`, `cli_hello`. `RecordMetadata`,
+  `WelcomeMessage`, `Request`, `Response`, `Event` re-exports remain.
+
 ### Added
 
 - **Transport-agnostic endpoint resolver — pick the transport at runtime via a `scheme://` URL (Issue #123, follow-up to #39 / #122).** New `endpoint` module: `parse_endpoint` (pure, feature-independent grammar) and `dial(url) -> Box<dyn Dialer>` map an endpoint string to a transport `Dialer`, the way records already pick one for links. Schemes: `unix://PATH` / `uds://PATH`, a bare path (the `unix://` shorthand), and `serial://DEVICE?baud=N`. An unknown scheme — or one whose transport isn't compiled in — is rejected with a clear error. New `AimxConnection::connect_over(dialer)` / `connect_over_with_timeout` dial over an explicit `Dialer`, bypassing resolution. (Rides a new `impl Dialer for Box<dyn Dialer>` in `aimdb-core`.)

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 045
+
+- **`with_persistence`'s registered `QueryHandlerFn` returns the shared
+  `record.query` shape** `{"records": [{topic, payload, ts}, …], "total": N}`
+  (rows sorted by `ts` ascending) instead of `{values: [{record, value,
+  stored_at}], count}`, so every transport shares one query vocabulary.
+
 ### Changed (breaking)
 
 - **Issue #131:** `RecordRegistrarPersistExt`/`AimDbBuilderPersistExt`/`AimDbQueryExt` are non-generic over the runtime (they extend `RecordRegistrar<'a, T>` / `AimDbBuilder` / `AimDb`); the retention-cleanup `on_start` task receives `RuntimeContext` and sleeps via `ctx.time().sleep_secs(...)`.

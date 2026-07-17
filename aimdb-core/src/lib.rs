@@ -79,9 +79,9 @@ pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 // compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
-    pump_sink, pump_source, AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch,
-    EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, SessionCtx,
-    SessionLimits, Source, TransportError, TransportResult,
+    is_wildcard, pump_sink, pump_source, topic_matches, AuthError, BoxFut, BoxStream, CodecError,
+    Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo,
+    RpcError, SessionCtx, SessionLimits, Source, SubUpdate, TransportError, TransportResult,
 };
 
 // Signal gauge handle (always available; inert without `observability`)

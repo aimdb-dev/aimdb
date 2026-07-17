@@ -24,6 +24,7 @@ use hashbrown::HashMap;
 
 use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
+    SubUpdate,
 };
 use crate::router::RouterBuilder;
 use crate::AimDb;
@@ -51,10 +52,6 @@ pub struct ClientConfig {
     /// Cap on caller commands buffered while disconnected (oldest dropped past it).
     /// Defaults to `usize::MAX` (unbounded).
     pub max_offline_queue: usize,
-    /// Key the subscription demux by **topic** instead of the request `id`.
-    /// `false` (default): events echo the id. `true`: the wire pushes data keyed
-    /// by topic, so `decode_outbound` returns the topic as `Event.sub`.
-    pub topic_routed_subs: bool,
     /// Send a Ping handshake on connect and await the Pong before serving caller
     /// commands. A real protocol swaps Ping/Pong for its Hello.
     pub sends_hello: bool,
@@ -69,7 +66,6 @@ impl Default for ClientConfig {
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
             sends_hello: false,
         }
     }
@@ -107,7 +103,7 @@ enum ClientCmd {
     },
     Subscribe {
         topic: String,
-        events: Sender<Payload>,
+        events: Sender<SubUpdate>,
     },
     Write {
         topic: String,
@@ -143,16 +139,19 @@ impl ClientHandle {
     /// sends the `Subscribe` request asynchronously). Dropping the stream stops
     /// local delivery. The stream ends on disconnect and is not re-subscribed on
     /// reconnect (see [`ClientConfig::reconnect`]) — re-call to resume.
+    ///
+    /// Each [`SubUpdate`] carries the concrete record topic when the server tags
+    /// it (wildcard subscriptions fan in many records under this one stream).
     pub fn subscribe(
         &self,
         topic: impl Into<String>,
-    ) -> Result<BoxStream<'static, Payload>, RpcError> {
-        let (events, rx) = async_channel::unbounded::<Payload>();
+    ) -> Result<BoxStream<'static, SubUpdate>, RpcError> {
+        let (events, rx) = async_channel::unbounded::<SubUpdate>();
         self.enqueue(ClientCmd::Subscribe {
             topic: topic.into(),
             events,
         })?;
-        // The receiver is itself a `Stream<Item = Payload>`.
+        // The receiver is itself a `Stream<Item = SubUpdate>`.
         Ok(Box::pin(rx))
     }
 
@@ -314,7 +313,7 @@ where
     let mut pending: HashMap<u64, oneshot::Sender<Result<Payload, RpcError>>> = HashMap::new();
     // sub-id → event sink. The sub-id is `id.to_string()` of the opening
     // request, matching the server's derivation so `Event.sub` routes back.
-    let mut subs: HashMap<String, Sender<Payload>> = HashMap::new();
+    let mut subs: HashMap<String, Sender<SubUpdate>> = HashMap::new();
     let mut out = Vec::new();
     let keepalive_ms = config.keepalive_interval;
     // Keepalive is deadline-based: activity only records a timestamp (one dyn
@@ -389,18 +388,28 @@ where
                             subs.remove(&id.to_string());
                         }
                     }
-                    Ok(Outbound::Event { sub, seq: _, data }) => {
+                    Ok(Outbound::Event {
+                        sub,
+                        seq: _,
+                        topic,
+                        data,
+                    }) => {
                         let dead = match subs.get(sub) {
-                            Some(tx) => tx.try_send(data).is_err(),
+                            Some(tx) => tx
+                                .try_send(SubUpdate {
+                                    topic: topic.map(Arc::from),
+                                    data,
+                                })
+                                .is_err(),
                             None => false, // late event for a dropped sub — ignore
                         };
                         if dead {
                             subs.remove(sub);
                         }
                     }
-                    Ok(Outbound::Snapshot { topic, data }) => {
-                        if let Some(tx) = subs.get(topic) {
-                            let _ = tx.try_send(data);
+                    Ok(Outbound::Snapshot { sub, topic, data }) => {
+                        if let Some(tx) = subs.get(sub) {
+                            let _ = tx.try_send(SubUpdate::tagged(Arc::from(topic), data));
                         }
                     }
                     Ok(Outbound::Pong) => {}
@@ -468,13 +477,7 @@ where
                     ClientCmd::Subscribe { topic, events } => {
                         let id = next_id;
                         next_id += 1;
-                        // Demux key: topic (topic-routed) or the request id.
-                        let key = if config.topic_routed_subs {
-                            topic.clone()
-                        } else {
-                            id.to_string()
-                        };
-                        subs.insert(key, events);
+                        subs.insert(id.to_string(), events);
                         out.clear();
                         let sent = codec
                             .encode_inbound(Inbound::Subscribe { id, topic }, &mut out)
@@ -568,8 +571,8 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
                 Ok(s) => s,
                 Err(_e) => return,
             };
-            while let Some(payload) = stream.next().await {
-                let _ = router.route(id.as_ref(), &payload, &ctx);
+            while let Some(update) = stream.next().await {
+                let _ = router.route(id.as_ref(), &update.data, &ctx);
             }
         }));
     }

@@ -31,7 +31,8 @@ use serde_json::{json, Value};
 use crate::buffer::JsonBufferReader;
 use crate::remote::{AimxConfig, RecordMetadata, SecurityPolicy, WelcomeMessage, PROTOCOL_VERSION};
 use crate::session::{
-    AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, Session, SessionCtx,
+    is_wildcard, topic_matches, AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo,
+    RpcError, Session, SessionCtx, SubUpdate,
 };
 use crate::{AimDb, DbError};
 
@@ -100,14 +101,35 @@ impl Session for AimxSession {
     fn subscribe<'a>(
         &'a mut self,
         topic: &'a str,
-    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
         // The engine owns the subscription lifecycle and the per-connection cap;
         // AimX has no async authorization, so this is a trivial wrapper.
         Box::pin(async move {
+            if is_wildcard(topic) {
+                return Ok(self.subscribe_wildcard(topic));
+            }
+            // Exact-topic fast path: resolve one key, untagged updates.
             let stream = crate::remote::stream::stream_record_updates(&self.db, topic)
                 .map_err(map_db_err)?;
-            Ok(Box::pin(stream.map(|v| to_payload(&v))) as BoxStream<'static, Payload>)
+            Ok(Box::pin(stream.map(|v| SubUpdate::new(to_payload(&v))))
+                as BoxStream<'static, SubUpdate>)
         })
+    }
+
+    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
+        // Late-join state for wildcard subscriptions: the current value of every
+        // matched record that has one. Exact-topic AimX subscribes stay
+        // event-only (unchanged wire for UDS/serial/TCP clients).
+        if !is_wildcard(topic) {
+            return Vec::new();
+        }
+        self.matched_keys(topic)
+            .into_iter()
+            .filter_map(|key| {
+                let value = self.db.try_latest_as_json(&key)?;
+                Some((key, to_payload(&value)))
+            })
+            .collect()
     }
 
     fn write<'a>(
@@ -131,6 +153,46 @@ impl Session for AimxSession {
 }
 
 impl AimxSession {
+    /// Record keys matching a wildcard pattern. The record set is frozen at
+    /// builder time, so matching once at subscribe time is complete (design
+    /// 045 §3.1 — dynamic membership waits for runtime registration).
+    fn matched_keys(&self, pattern: &str) -> Vec<String> {
+        self.db
+            .list_records()
+            .into_iter()
+            .map(|m: RecordMetadata| m.record_key)
+            .filter(|key| topic_matches(pattern, key))
+            .collect()
+    }
+
+    /// One wildcard subscription fans in every matched record's update stream,
+    /// each event tagged with the record that fired. Records without remote
+    /// access are skipped — the subscription covers what can stream.
+    fn subscribe_wildcard(&self, pattern: &str) -> BoxStream<'static, SubUpdate> {
+        let mut streams: Vec<BoxStream<'static, SubUpdate>> = Vec::new();
+        for key in self.matched_keys(pattern) {
+            match crate::remote::stream::stream_record_updates(&self.db, &key) {
+                Ok(stream) => {
+                    let tag: Arc<str> = Arc::from(key.as_str());
+                    streams.push(Box::pin(
+                        stream.map(move |v| SubUpdate::tagged(tag.clone(), to_payload(&v))),
+                    ));
+                }
+                Err(_e) => {
+                    log_warn!(
+                        "wildcard subscribe '{}': skipping '{}': {:?}",
+                        pattern,
+                        key,
+                        _e
+                    );
+                }
+            }
+        }
+        // An empty match set yields a stream that ends immediately — with a
+        // builder-frozen record set, "no matches now" is "no matches ever".
+        Box::pin(futures_util::stream::select_all(streams))
+    }
+
     /// Match the method and produce its JSON result (or an [`RpcError`]).
     async fn dispatch_call(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
         match method {

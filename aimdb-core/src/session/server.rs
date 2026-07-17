@@ -28,7 +28,7 @@ use hashbrown::HashMap;
 
 use super::{
     BoxFut, BoxStream, Connection, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload,
-    RpcError, SessionLimits,
+    RpcError, SessionLimits, SubUpdate,
 };
 
 /// Per-session engine knobs.
@@ -55,6 +55,9 @@ const EVENT_BUFFER: usize = 256;
 struct SubEvent {
     sub: String,
     seq: u64,
+    /// Concrete record topic, when the subscription tags its updates
+    /// (see [`SubUpdate::topic`]).
+    topic: Option<Arc<str>>,
     data: Payload,
 }
 
@@ -165,6 +168,7 @@ pub async fn run_session<C, D>(
                         Outbound::Event {
                             sub: &ev.sub,
                             seq: ev.seq,
+                            topic: ev.topic.as_deref(),
                             data: ev.data,
                         },
                         &mut out,
@@ -215,13 +219,16 @@ pub async fn run_session<C, D>(
                                         break;
                                     }
                                 }
-                                // Optional late-join snapshot, before the first event.
-                                if let Some(data) = session.snapshot(&topic) {
+                                // Optional late-join snapshots (one per covered
+                                // record), before the first event.
+                                let mut send_failed = false;
+                                for (snap_topic, data) in session.snapshots(&topic) {
                                     out.clear();
                                     if codec
                                         .encode(
                                             Outbound::Snapshot {
-                                                topic: &topic,
+                                                sub: &sub_id,
+                                                topic: &snap_topic,
                                                 data,
                                             },
                                             &mut out,
@@ -229,8 +236,12 @@ pub async fn run_session<C, D>(
                                         .is_ok()
                                         && conn.send(&out).await.is_err()
                                     {
+                                        send_failed = true;
                                         break;
                                     }
+                                }
+                                if send_failed {
+                                    break;
                                 }
                                 let (cancel_tx, cancel_rx) = oneshot::channel();
                                 cancels.insert(sub_id.clone(), cancel_tx);
@@ -305,7 +316,7 @@ async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
 /// later prune is a no-op.
 async fn pump_subscription(
     sub_id: String,
-    mut stream: BoxStream<'static, Payload>,
+    mut stream: BoxStream<'static, SubUpdate>,
     tx: Sender<SubEvent>,
     cancel: oneshot::Receiver<()>,
 ) -> String {
@@ -317,12 +328,12 @@ async fn pump_subscription(
     let mut seq: u64 = 0;
     loop {
         // Independent arms, so a direct `select_biased!` is fine here.
-        let data = select_biased! {
+        let update = select_biased! {
             // Resolves on explicit Unsubscribe (send) or on sender drop.
             _ = cancel => break,
             // `BoxStream` is not `FusedStream`, so fuse the per-iteration `next`.
             next = stream.next().fuse() => match next {
-                Some(data) => data,
+                Some(update) => update,
                 None => break, // stream exhausted
             },
         };
@@ -332,7 +343,8 @@ async fn pump_subscription(
         match tx.try_send(SubEvent {
             sub: sub_id.clone(),
             seq,
-            data,
+            topic: update.topic,
+            data: update.data,
         }) {
             Ok(()) => {}
             Err(e) if e.is_full() => {} // drop on overflow

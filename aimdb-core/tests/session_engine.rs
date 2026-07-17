@@ -20,7 +20,7 @@ use futures::StreamExt;
 use aimdb_core::session::{
     run_client, serve, AuthError, BoxFut, BoxStream, ClientConfig, CodecError, Connection, Dialer,
     Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, Session,
-    SessionConfig, SessionCtx, SessionLimits, TransportError, TransportResult,
+    SessionConfig, SessionCtx, SessionLimits, SubUpdate, TransportError, TransportResult,
 };
 
 /// Engine-test clock (aimdb-core can't depend on a runtime adapter — that
@@ -180,10 +180,24 @@ impl EnvelopeCodec for LineCodec {
                 Ok(data) => format!("REPLY\n{}\nOK\n{}", id, utf8(&data)?),
                 Err(e) => format!("REPLY\n{}\nERR\n{}", id, rpc_code(&e)),
             },
-            Outbound::Event { sub, seq, data } => {
-                format!("EVENT\n{}\n{}\n{}", sub, seq, utf8(&data)?)
+            Outbound::Event {
+                sub,
+                seq,
+                topic,
+                data,
+            } => {
+                // `-` marks an untagged event (no per-record topic).
+                format!(
+                    "EVENT\n{}\n{}\n{}\n{}",
+                    sub,
+                    seq,
+                    topic.unwrap_or("-"),
+                    utf8(&data)?
+                )
             }
-            Outbound::Snapshot { topic, data } => format!("SNAP\n{}\n{}", topic, utf8(&data)?),
+            Outbound::Snapshot { sub, topic, data } => {
+                format!("SNAP\n{}\n{}\n{}", sub, topic, utf8(&data)?)
+            }
             Outbound::Pong => "PONG".to_string(),
             Outbound::Subscribed { sub } => format!("SUBSCRIBED\n{}", sub),
         };
@@ -225,16 +239,20 @@ impl EnvelopeCodec for LineCodec {
             }
             "EVENT" => {
                 let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
-                let (seq, data) = r.split_once('\n').unwrap_or((r, ""));
+                let (seq, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Event {
                     sub,
                     seq: seq.parse().map_err(|_| CodecError::Malformed)?,
+                    topic: (topic != "-").then_some(topic),
                     data: payload_from(data),
                 })
             }
             "SNAP" => {
-                let (topic, data) = rest.split_once('\n').unwrap_or((rest, ""));
+                let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Snapshot {
+                    sub,
                     topic,
                     data: payload_from(data),
                 })
@@ -291,7 +309,7 @@ impl Session for EchoSession {
     fn subscribe<'a>(
         &'a mut self,
         topic: &'a str,
-    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
         let topic = topic.to_string();
         Box::pin(async move {
             // Sentinel: let a known topic fail so the subscribe-ack path is testable.
@@ -299,10 +317,10 @@ impl Session for EchoSession {
                 return Err(RpcError::NotFound);
             }
             // Three synthetic updates derived from the topic, then end.
-            let items: Vec<Payload> = (1..=3)
-                .map(|i| payload_from(&format!("{topic}#{i}")))
+            let items: Vec<SubUpdate> = (1..=3)
+                .map(|i| SubUpdate::new(payload_from(&format!("{topic}#{i}"))))
                 .collect();
-            Ok(Box::pin(futures::stream::iter(items)) as BoxStream<'static, Payload>)
+            Ok(Box::pin(futures::stream::iter(items)) as BoxStream<'static, SubUpdate>)
         })
     }
 
@@ -352,7 +370,6 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
             sends_hello: true,
         },
         Arc::new(TestClock),
@@ -368,9 +385,9 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
     let e1 = stream.next().await.expect("event 1");
     let e2 = stream.next().await.expect("event 2");
     let e3 = stream.next().await.expect("event 3");
-    assert_eq!(&*e1, b"temp#1");
-    assert_eq!(&*e2, b"temp#2");
-    assert_eq!(&*e3, b"temp#3");
+    assert_eq!(&*e1.data, b"temp#1");
+    assert_eq!(&*e2.data, b"temp#2");
+    assert_eq!(&*e3.data, b"temp#3");
 
     // 3) Fire-and-forget write, then a follow-up RPC. FIFO on the single
     //    connection guarantees the write frame is processed before the reply
@@ -418,7 +435,6 @@ async fn failed_subscribe_ends_stream_via_ack() {
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
             sends_hello: false,
         },
         Arc::new(TestClock),
@@ -477,7 +493,6 @@ async fn ended_subscription_frees_its_cap_slot() {
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
             sends_hello: false,
         },
         Arc::new(TestClock),
@@ -486,13 +501,13 @@ async fn ended_subscription_frees_its_cap_slot() {
 
     // Drain a subscription's three echo updates; the server-side stream then
     // ends, so its pump finishes and is reaped.
-    async fn drain_three(stream: &mut BoxStream<'static, Payload>, topic: &str) {
+    async fn drain_three(stream: &mut BoxStream<'static, SubUpdate>, topic: &str) {
         for i in 1..=3 {
             let ev = tokio::time::timeout(Duration::from_secs(2), stream.next())
                 .await
                 .expect("event should arrive")
                 .expect("an accepted subscription must yield its events");
-            assert_eq!(&*ev, format!("{topic}#{i}").as_bytes());
+            assert_eq!(&*ev.data, format!("{topic}#{i}").as_bytes());
         }
     }
 
@@ -513,8 +528,8 @@ async fn ended_subscription_frees_its_cap_slot() {
         .await
         .expect("third subscribe must not hang");
     assert_eq!(
-        first.as_deref(),
-        Some(&b"c#1"[..]),
+        first.map(|u| u.data.to_vec()),
+        Some(b"c#1".to_vec()),
         "an ended subscription must free its cap slot; the third subscribe was refused"
     );
 

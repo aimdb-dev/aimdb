@@ -142,6 +142,86 @@ async fn aimx_roundtrip_over_uds_production_server() {
     drop(conn); // stops the client engine
 }
 
+/// One wildcard subscription fans in every matching record: events arrive
+/// tagged with the concrete record topic, and matched records with a current
+/// value are delivered up front as snapshots (design 045 §3.1/§3.3).
+#[tokio::test]
+async fn wildcard_subscribe_fans_in_matching_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+
+    let config = AimxConfig::uds_default().socket_path(sock.to_str().unwrap());
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    for key in ["temp/vienna", "temp/berlin", "humidity/london"] {
+        builder.configure::<Setting>(key, |reg| {
+            reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+        });
+    }
+    let (db, runner) = builder.build().await.expect("build db");
+    let db = Arc::new(db);
+    tokio::spawn(runner.run());
+
+    // Seed one matched record before subscribing — it must arrive as a
+    // late-join snapshot on the wildcard stream.
+    db.set_record_from_json("temp/vienna", json!({ "level": 1 }))
+        .expect("seed vienna");
+
+    let conn = AimxConnection::connect(sock.to_str().unwrap())
+        .await
+        .expect("connect");
+    let mut stream = conn
+        .subscribe_with_topics("temp/#")
+        .expect("wildcard subscribe");
+
+    // The snapshot for the seeded record arrives first, tagged with its topic.
+    let (topic, value) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("snapshot within timeout")
+        .expect("snapshot");
+    assert_eq!(topic.as_deref(), Some("temp/vienna"));
+    assert_eq!(value, json!({ "level": 1 }));
+
+    // Live updates from both matched records ride the one subscription, each
+    // tagged; the non-matching record must never appear.
+    let db2 = db.clone();
+    tokio::spawn(async move {
+        for n in 1..=50u64 {
+            let _ = db2.set_record_from_json("temp/berlin", json!({ "level": n }));
+            let _ = db2.set_record_from_json("humidity/london", json!({ "level": n }));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    // Drain events until the other matched record fires (the seeded record's
+    // current value may replay first — SingleLatest readers start warm). Every
+    // event must be topic-tagged and inside the pattern.
+    let mut saw_berlin = false;
+    for _ in 0..20 {
+        match tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+            Ok(Some((topic, value))) => {
+                let topic = topic.expect("wildcard events are topic-tagged");
+                assert!(
+                    topic.starts_with("temp/"),
+                    "event from outside the pattern: {topic}"
+                );
+                assert!(value.get("level").is_some());
+                if topic == "temp/berlin" {
+                    saw_berlin = true;
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    assert!(
+        saw_berlin,
+        "the wildcard stream must carry the other matched record's updates"
+    );
+
+    drop(conn);
+}
+
 /// `record.get` on a ring (`SpmcRing`) record has no canonical latest, so it
 /// falls back to draining the connection's cursor for the most-recent value.
 #[tokio::test]

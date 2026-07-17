@@ -56,7 +56,7 @@ pub use metadata::RecordMetadata;
 pub use protocol::{
     ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage, PROTOCOL_VERSION,
 };
-pub use query::{QueryHandlerFn, QueryHandlerParams};
+pub use query::{QueryHandlerFn, QueryHandlerParams, QueryRecord};
 
 // Internal exports for implementation
 #[cfg(feature = "connector-session")]

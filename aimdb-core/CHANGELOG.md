@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 045: one protocol (AimX) for every transport
+
+- **Wildcard / multi-record subscribe.** `Inbound::Subscribe` topics may carry
+  MQTT-style wildcards (`#`, `*`): `AimxDispatch` matches the pattern against
+  the registry once at subscribe time (the record set is builder-frozen),
+  merges the matched records' update streams under the one subscription id,
+  and emits one late-join `Snapshot` per matched record. The matcher moved in
+  from the retired `aimdb-ws-protocol` crate as
+  `session::topic_match::{topic_matches, is_wildcard}` (re-exported at the
+  crate root).
+- **Subscription streams carry the firing record.** `Session::subscribe` and
+  `ClientHandle::subscribe` now yield `SubUpdate { topic: Option<Arc<str>>,
+  data: Payload }` instead of bare `Payload`; `Outbound::Event` gains an
+  optional `topic` and `Outbound::Snapshot` gains the routing `sub` (frames
+  without them are unchanged on the wire). `Session::snapshot` became
+  `Session::snapshots(topic) -> Vec<(String, Payload)>` (one per covered
+  record).
+- **`AimxCodec` learned the `subscribed` ack frame** (`{"t":"subscribed",
+  "sub":S}`) for servers running `acks_subscribe:true` (the WebSocket
+  connector); UDS/serial/TCP keep the implicit ack. A dedicated `AimxCodec`
+  roundtrip suite now locks the frame set.
+- **`ClientConfig::topic_routed_subs` removed** — it existed solely for the
+  retired ws wire; all subscriptions are id-routed.
+- **Shared query/list vocabulary.** New `remote::QueryRecord { topic, payload,
+  ts }` is the canonical `record.query` result row (result shape
+  `{records, total}`); `RecordMetadata` gains optional `schema_type` /
+  `entity` fields (`entity` derived from the record key's final `.` segment).
+
 ### Added
 
 - **Issue #177 — bounded into-slice serialization for outbound links.** New
