@@ -151,12 +151,29 @@ Every capability is an opt-in trait on your schema type: implement it and **exac
 
 | Contract | Implement when… | Verb it unlocks | Tier |
 | --- | --- | --- | --- |
-| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the record is mirrored to/from an endpoint (MQTT, KNX, serial, UDS…) | `.linked_from(url)` / `.linked_to(url)` (`linkable-json` provides the JSON derive; codegen supports Postcard) | wire (prod) |
+| [`Linkable`](https://aimdb.dev/blog/connectors-where-aimdb-meets-the-real-world) | the record is mirrored to/from an endpoint (MQTT, KNX, serial, UDS…) | `.linked_from(url)` / `.linked_to(url)` by default; `*_with(url, codec)` selects JSON/Postcard/custom per link | wire (prod) |
 | [`Streamable`](https://aimdb.dev/blog/streamable-crossing-boundaries) | the record streams to browsers as schema-named JSON | ws-connector `.register::<T>()` | wire (prod) |
 | [`Migratable`](https://aimdb.dev/blog/schema-migration-without-ceremony) | the schema evolved across versions | `migration_chain!` | wire (prod) |
 | `Settable` | sync code outside AimDB sets the value | `SyncProducer::set_value(v)` | wire (prod) |
 | `Observable` | the value is worth watching in production | `.observe()` → live last/min/max/mean on `record.list`/`record.get` | introspection (prod, optional) |
 | `Simulatable` | the type can generate realistic synthetic data | `.simulate(profile, rng)` | **dev-only — never ships in prod** |
+
+One record type can use different wire formats without runtime codec lookup:
+
+```rust,ignore
+use aimdb_data_contracts::{
+    link_codecs::{Json, Postcard},
+    LinkCodecRegistrarExt,
+};
+
+reg.linked_to_with("serial://mcu/temperature", Postcard::<128>);
+reg.linked_to_with("mqtt://cloud/temperature", Json);
+```
+
+Enable `linkable-json` and/or `linkable-postcard`; the existing `.linked_*`
+methods still use the record's `Linkable` implementation. See
+[Design 045](docs/design/045-per-link-codec-selection.md) for the bounded
+scratch/fallback model.
 
 `Simulatable` is the odd one out: it lives behind the `simulatable` feature (never a default) and switching from simulated to real data is one `#[cfg]` in your app:
 
@@ -240,6 +257,8 @@ See the [MCP server docs](tools/aimdb-mcp/) for Claude Desktop and other editors
 | **KNX** — `aimdb-knx-connector` | ✅ Ready | std, no_std |
 | **WebSocket** — `aimdb-websocket-connector` | ✅ Ready | std, wasm |
 | **TCP** — `aimdb-tcp-connector` | ✅ Ready | std, no_std |
+| **Serial** — `aimdb-serial-connector` | ✅ Ready | std, no_std |
+| **UDS** — `aimdb-uds-connector` | ✅ Ready | std |
 | **Kafka** | 📋 Planned | std |
 | **Modbus** | 📋 Planned | std, no_std |
 

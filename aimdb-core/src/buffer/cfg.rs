@@ -29,7 +29,10 @@ pub enum BufferCfg {
     /// Best for high-frequency data streams with bounded memory. Fast producers
     /// can outrun slow consumers (lag detection). Oldest messages dropped on overflow.
     ///
-    /// **Sizing:** `capacity = data_rate_hz × lag_seconds` (use power-of-2)
+    /// **Sizing:** `capacity = data_rate_hz × lag_seconds` (use power-of-2).
+    /// The Tokio adapter's broadcast backend rounds capacity up to the next
+    /// power of two, so the effective capacity can exceed the configured
+    /// value; metrics report the configured capacity.
     SpmcRing {
         /// Maximum number of items in the buffer
         capacity: usize,
@@ -50,8 +53,13 @@ pub enum BufferCfg {
 
     /// Single-slot mailbox with overwrite
     ///
-    /// New value overwrites old if not consumed. At-least-once delivery.
-    /// Use for commands where latest command wins.
+    /// New value overwrites old if not consumed: delivery is at-most-once
+    /// per value — an unconsumed value is lost on overwrite. Use for
+    /// commands where the latest command wins.
+    ///
+    /// With multiple subscribers, consumption is competitive: each value is
+    /// taken by exactly one subscriber, nondeterministically. Unlike
+    /// `SpmcRing` and `SingleLatest`, a mailbox does not fan out.
     Mailbox,
 }
 
@@ -79,33 +87,6 @@ impl BufferCfg {
             BufferCfg::SpmcRing { .. } => "spmc_ring",
             BufferCfg::SingleLatest => "single_latest",
             BufferCfg::Mailbox => "mailbox",
-        }
-    }
-
-    /// Returns estimated memory overhead for this buffer type
-    ///
-    /// Approximation; varies by implementation and platform.
-    pub fn estimated_memory_bytes(&self, item_size: usize, consumer_count: usize) -> usize {
-        match self {
-            BufferCfg::SpmcRing { capacity } => {
-                // Buffer storage + per-consumer overhead
-                let buffer_size = capacity * item_size;
-                let consumer_overhead = consumer_count * 64; // Approximate
-                buffer_size + consumer_overhead
-            }
-            BufferCfg::SingleLatest => {
-                // Single slot + per-consumer overhead
-                let buffer_size = item_size + 8; // Option<T> overhead
-                let consumer_overhead = consumer_count * 16; // Watcher handles
-                buffer_size + consumer_overhead
-            }
-            BufferCfg::Mailbox => {
-                // Single slot + notify + per-consumer overhead
-                let buffer_size = item_size + 8; // Option<T>
-                let notify_overhead = 32; // Notify primitive
-                let consumer_overhead = consumer_count * 16; // Notifier handles
-                buffer_size + notify_overhead + consumer_overhead
-            }
         }
     }
 }
@@ -166,27 +147,6 @@ mod tests {
         );
         assert_eq!(format!("{}", BufferCfg::SingleLatest), "SingleLatest");
         assert_eq!(format!("{}", BufferCfg::Mailbox), "Mailbox");
-    }
-
-    #[test]
-    fn test_estimated_memory() {
-        // SPMC Ring with 100-byte items, 1024 capacity, 3 consumers
-        let cfg = BufferCfg::SpmcRing { capacity: 1024 };
-        let mem = cfg.estimated_memory_bytes(100, 3);
-        // Should be roughly 1024*100 + 3*64 = 102,400 + 192 = 102,592
-        assert!(mem > 102_000 && mem < 103_000);
-
-        // SingleLatest with 100-byte items, 3 consumers
-        let cfg = BufferCfg::SingleLatest;
-        let mem = cfg.estimated_memory_bytes(100, 3);
-        // Should be roughly 100 + 8 + 3*16 = 156
-        assert!(mem > 100 && mem < 200);
-
-        // Mailbox with 100-byte items, 3 consumers
-        let cfg = BufferCfg::Mailbox;
-        let mem = cfg.estimated_memory_bytes(100, 3);
-        // Should be roughly 100 + 8 + 32 + 3*16 = 188
-        assert!(mem > 140 && mem < 250);
     }
 
     #[test]

@@ -456,10 +456,11 @@ The KNX connector depends on a forked version of `knx-pico` with critical bug fi
 knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master" }
 ```
 
-**Bug fixes in the fork:**
-1. **DPT 9 (float) encoding/decoding**: Fixes incorrect temperature values
-2. **Panic prevention**: Handles malformed telegrams with npdu_length=1
-3. **Embassy compatibility**: Uses workspace-local embassy checkout
+**Carried patches in the fork (on top of upstream 0.3.0):**
+1. **Panic prevention**: Handles telegrams with npdu_length=1 (not yet upstreamed)
+2. **Embassy compatibility**: Uses workspace-local embassy checkout
+
+The DPT 9 (float) encoding/decoding fix landed upstream in knx-pico 0.3.0.
 
 ### 🔧 MQTT Connector Requires Patch (Embassy Only)
 For Embassy runtime support, the MQTT connector requires patched `mountain-mqtt` dependencies:
@@ -510,7 +511,7 @@ We encourage you to test AimDB and report issues!
 - Report the specific telegram that causes panic
 
 **Wrong temperature readings (DPT 9)**
-- Make sure you're using the patched knx-pico with DPT 9 bug fix
+- Make sure you're using knx-pico 0.3.0 or later (DPT 9 sign handling was fixed upstream)
 - Verify you're using the correct DPT for your sensor
 - Check telegram bytes with ETS Bus Monitor
 

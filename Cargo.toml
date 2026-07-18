@@ -177,8 +177,8 @@ embassy-futures = { path = "./_external/embassy/embassy-futures" }
 mountain-mqtt = { path = "./_external/mountain-mqtt/mountain-mqtt" }
 mountain-mqtt-embassy = { path = "./_external/mountain-mqtt/mountain-mqtt-embassy" }
 
-# Patch knx-pico to use our fork with bug fixes until they're upstreamed
-# Required fixes: DPT 9 encoding/decoding, panic prevention, Embassy compat
+# Patch knx-pico to use our fork (upstream 0.3.0 + carried patches)
+# Carried: npdu_length=1 panic prevention, embassy deps from local checkout
 knx-pico = { path = "./_external/knx-pico" }
 
 [workspace.metadata.docs.rs]

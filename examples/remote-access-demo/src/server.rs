@@ -14,6 +14,7 @@
 
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, Consumer, Producer, RuntimeContext};
+use aimdb_data_contracts::{Observable, ObservableRegistrarExt, SchemaType};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use aimdb_uds_connector::UdsServer;
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,19 @@ struct Temperature {
     sensor_id: String,
     celsius: f64,
     timestamp: f64, // Unix timestamp as f64 (seconds since epoch with fractional nanoseconds, e.g., 1730379296.123456789)
+}
+
+impl SchemaType for Temperature {
+    const NAME: &'static str = "temperature";
+}
+
+impl Observable for Temperature {
+    type Signal = f64;
+    const UNIT: &'static str = "°C";
+
+    fn signal(&self) -> f64 {
+        self.celsius
+    }
 }
 
 /// Temperature reading converted to Fahrenheit — derived from `Temperature` via
@@ -116,13 +130,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // automatic stage profiling (feature `profiling`, query via the MCP
     // `get_stage_profiling` tool). `.with_name("...")` gives each stage a
     // human-readable label that shows up in the profiling output.
+    // `.observe()` feeds the reading's signal (`Observable::signal()`, here
+    // `celsius`) into a live gauge — last/min/max/mean surface in
+    // `record.list`/`record.get` as `signal_stats`.
     builder.configure::<Temperature>("server::Temperature", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
             .with_remote_access()
             .source(temperature_simulator)
             .with_name("temp_simulator")
             .tap(temperature_logger)
-            .with_name("temp_logger");
+            .with_name("temp_logger")
+            .observe();
     });
 
     // TemperatureFahrenheit is derived from Temperature via `.transform()` — no

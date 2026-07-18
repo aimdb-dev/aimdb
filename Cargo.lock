@@ -160,6 +160,8 @@ version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-derive",
+ "futures",
+ "postcard",
  "rand 0.10.1",
  "serde",
  "serde_json",
@@ -248,6 +250,7 @@ name = "aimdb-mqtt-connector"
 version = "0.6.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-embassy-adapter",
  "aimdb-tokio-adapter",
  "async-stream",
@@ -265,6 +268,7 @@ dependencies = [
  "mountain-mqtt-embassy",
  "rand_core 0.6.4",
  "rumqttc",
+ "serde",
  "static_cell",
  "thiserror 2.0.17",
  "tokio",
@@ -2639,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "knx-pico"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "defmt 1.0.1",
  "heapless 0.9.1",
@@ -3403,6 +3407,7 @@ version = "0.1.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-tokio-adapter",
  "aimdb-uds-connector",
  "futures",
@@ -3995,7 +4000,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "21.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-43d482dc249c6755fe990b67e86be4fdc9092909#1d8486efb2e9226b08ddfcd424841a11fb0620a0"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-1912ac7d73c27f03863fb2d71fbfddf0d9fce062#27bdd2e4982cbc04ba4f4ad9ee7c8824a797944b"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

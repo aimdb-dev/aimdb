@@ -16,14 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Issue #177 — `Linkable::encode_into(&mut [u8])`.** Existing implementations
-  remain source-compatible through a checked `to_bytes`-and-copy default. A new
-  `ENCODE_BUFFER_CAPACITY` associated constant lets implementations advertise a
-  real allocation-free override; `linked_to` then installs the core's reusable
-  scratch-buffer fast path while retaining `to_bytes` for oversized values.
-  The new method reuses `aimdb_core::connector::SerializeError`; no additional
-  codec error type is introduced. The older `from_bytes`/`to_bytes` `String`
-  errors remain unchanged under the compatibility-first decision.
+- **Issue #178 — per-link codec selection.** `LinkCodec<T>`, `LinkCodecBuilderExt::with_link_codec` and `LinkCodecRegistrarExt::{linked_from_with, linked_to_with}` let the same record type use different formats on different connector routes without a runtime registry. Built-in `link_codecs::Json` and bounded `link_codecs::Postcard<N>` markers are feature-gated by `linkable-json` and the new `linkable-postcard`; Postcard reuses the route-local scratch and owned overflow fallback added for issue #177. Existing `.linked_from` and `.linked_to` behavior is unchanged. Repeated `with_link_codec` calls use complete last-selection-wins semantics: an owned-only replacement clears a scratch encoder left by an earlier bounded codec.
+- **Issue #177 — `Linkable::encode_into(&mut [u8])`.** Existing implementations remain source-compatible through a checked `to_bytes`-and-copy default. A new `ENCODE_BUFFER_CAPACITY` associated constant lets implementations advertise a real allocation-free override; `linked_to` then installs the core's reusable scratch-buffer fast path while retaining `to_bytes` for oversized values. The new method reuses `aimdb_core::connector::SerializeError`; no additional codec error type is introduced. The older `from_bytes`/`to_bytes` `String` errors remain unchanged under the compatibility-first decision.
 - `SimulatableRegistrarExt::simulate(profile, rng)` — installs a `.source()` loop emitting `T::simulate(...)` on a timer.
 - `ObservableRegistrarExt::observe()` — feeds `T::signal()` into a core signal gauge (last/min/max/mean), surfaced on `record.list`/`record.get`/stage profiling; `ObservableRegistrarExt::log(node_id)` for the console-logging path (replaces the old `format_log`).
 - `LinkableRegistrarExt::linked_from(url)` / `linked_to(url)` — one-line `.link_from()`/`.link_to()` wiring defaulted to `T::from_bytes`/`T::to_bytes`. `linkable` now also requires `aimdb-core`.
