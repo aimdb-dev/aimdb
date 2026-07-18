@@ -47,7 +47,7 @@ use core::task::{Context, Poll};
 use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader};
 use aimdb_core::DbError;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
+use embassy_sync::channel::{Channel, TrySendError};
 use embassy_sync::pubsub::{PubSubChannel, Subscriber, WaitResult};
 use embassy_sync::watch::{Receiver as WatchReceiver, Watch};
 
@@ -205,11 +205,10 @@ impl<
             EmbassyBufferInner::Mailbox(channel) => {
                 // Try to send, if full, clear and try again (overwrite semantic)
                 let sender = channel.sender();
-                if sender.try_send(value.clone()).is_err() {
-                    // Channel is full (has 1 old message), try to receive it to make space
+                if let Err(TrySendError::Full(rejected)) = sender.try_send(value) {
+                    // A receiver may drain the old message before this call; retry either way.
                     let _ = channel.try_receive();
-                    // Now try to send again
-                    let _ = sender.try_send(value);
+                    let _ = sender.try_send(rejected);
                 }
             }
         }
@@ -633,6 +632,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     // ── Host-test scaffolding ────────────────────────────────────────────
     // The crate links `defmt` (workspace dep) and embassy-time's
@@ -669,6 +669,59 @@ mod tests {
 
         let cfg3 = BufferCfg::Mailbox;
         let _buf3: TestBuffer = Buffer::new(&cfg3);
+    }
+
+    #[test]
+    fn test_mailbox_push_does_not_clone_payload() {
+        #[derive(Debug)]
+        struct CloneCounted {
+            value: u32,
+            clones: Arc<AtomicUsize>,
+        }
+
+        impl Clone for CloneCounted {
+            fn clone(&self) -> Self {
+                self.clones.fetch_add(1, Ordering::Relaxed);
+                Self {
+                    value: self.value,
+                    clones: Arc::clone(&self.clones),
+                }
+            }
+        }
+
+        type TestBuffer = EmbassyBuffer<CloneCounted, 1, 1, 1, 1>;
+
+        let clones = Arc::new(AtomicUsize::new(0));
+        let buffer: TestBuffer = TestBuffer::new_mailbox();
+        let mut reader = buffer.subscribe();
+
+        Buffer::push(
+            &buffer,
+            CloneCounted {
+                value: 1,
+                clones: Arc::clone(&clones),
+            },
+        );
+        assert_eq!(
+            clones.load(Ordering::Relaxed),
+            0,
+            "empty-slot push must not clone"
+        );
+
+        Buffer::push(
+            &buffer,
+            CloneCounted {
+                value: 2,
+                clones: Arc::clone(&clones),
+            },
+        );
+        assert_eq!(
+            clones.load(Ordering::Relaxed),
+            0,
+            "full-slot overwrite must recover ownership without cloning"
+        );
+        assert_eq!(reader.try_recv().unwrap().value, 2);
+        assert!(matches!(reader.try_recv(), Err(DbError::BufferEmpty)));
     }
 
     // ========================================================================
