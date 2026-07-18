@@ -22,9 +22,9 @@ cargo run -p hello-spmc-ring
 === hello-spmc-ring: SPMC ring buffer sync demo ===
 
 Ring size:          10
-Producer at rate    20.0 messages/sec
-Slow Observer at rate 10.0 messages/sec
-Fast Observer at rate 20.0 messages/sec
+Producer interval:   50 ms
+Fast tap delay:      none
+Slow tap delay:      100 ms
 
 
 1. Building database and attaching for sync API...
