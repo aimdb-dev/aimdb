@@ -25,6 +25,9 @@ use core::task::{Context, Poll, Waker};
 use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader, DynBuffer};
 use aimdb_core::DbError;
 
+#[cfg(feature = "observability")]
+use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
+
 // ============================================================================
 // Buffer
 // ============================================================================
@@ -37,6 +40,8 @@ use aimdb_core::DbError;
 /// construction time.
 pub struct WasmBuffer<T> {
     inner: Rc<RefCell<WasmBufferInner<T>>>,
+    #[cfg(feature = "observability")]
+    metrics: Rc<BufferCounters>,
 }
 
 // SAFETY: wasm32 is single-threaded — Rc<RefCell<…>> cannot be accessed concurrently
@@ -81,6 +86,12 @@ impl<T: Clone + Send + 'static> Buffer<T> for WasmBuffer<T> {
     type Reader = WasmBufferReader<T>;
 
     fn new(cfg: &BufferCfg) -> Self {
+        #[cfg(feature = "observability")]
+        let capacity = match cfg {
+            BufferCfg::SpmcRing { capacity } => *capacity,
+            BufferCfg::SingleLatest | BufferCfg::Mailbox => 1,
+        };
+
         let inner = match cfg {
             BufferCfg::SpmcRing { capacity } => WasmBufferInner::SpmcRing {
                 ring: VecDeque::with_capacity(*capacity),
@@ -101,10 +112,15 @@ impl<T: Clone + Send + 'static> Buffer<T> for WasmBuffer<T> {
 
         WasmBuffer {
             inner: Rc::new(RefCell::new(inner)),
+            #[cfg(feature = "observability")]
+            metrics: Rc::new(BufferCounters::new(capacity)),
         }
     }
 
     fn push(&self, value: T) {
+        #[cfg(feature = "observability")]
+        self.metrics.increment_produced();
+
         let mut inner = self.inner.borrow_mut();
         match &mut *inner {
             WasmBufferInner::SpmcRing {
@@ -163,6 +179,8 @@ impl<T: Clone + Send + 'static> Buffer<T> for WasmBuffer<T> {
         WasmBufferReader {
             buffer: Rc::clone(&self.inner),
             state,
+            #[cfg(feature = "observability")]
+            metrics: Rc::clone(&self.metrics),
         }
     }
 }
@@ -192,6 +210,34 @@ impl<T: Clone + Send + 'static> DynBuffer<T> for WasmBuffer<T> {
             WasmBufferInner::SpmcRing { .. } => None,
         }
     }
+
+    #[cfg(feature = "observability")]
+    fn metrics_snapshot(&self) -> Option<BufferMetricsSnapshot> {
+        Some(<Self as BufferMetrics>::metrics(self))
+    }
+
+    #[cfg(feature = "observability")]
+    fn reset_metrics(&self) {
+        <Self as BufferMetrics>::reset_metrics(self);
+    }
+}
+
+#[cfg(feature = "observability")]
+impl<T: Clone + Send + 'static> BufferMetrics for WasmBuffer<T> {
+    fn metrics(&self) -> BufferMetricsSnapshot {
+        let current_occupancy = match &*self.inner.borrow() {
+            WasmBufferInner::SpmcRing { ring, .. } => ring.len(),
+            WasmBufferInner::SingleLatest { value, .. } => usize::from(value.is_some()),
+            WasmBufferInner::Mailbox { slot, .. } => usize::from(slot.is_some()),
+        };
+
+        self.metrics
+            .snapshot((current_occupancy, self.metrics.capacity()))
+    }
+
+    fn reset_metrics(&self) {
+        self.metrics.reset();
+    }
 }
 
 // ============================================================================
@@ -205,6 +251,8 @@ impl<T: Clone + Send + 'static> DynBuffer<T> for WasmBuffer<T> {
 pub struct WasmBufferReader<T> {
     buffer: Rc<RefCell<WasmBufferInner<T>>>,
     state: ReaderState,
+    #[cfg(feature = "observability")]
+    metrics: Rc<BufferCounters>,
 }
 
 // SAFETY: wasm32 is single-threaded — no concurrent access possible
@@ -276,6 +324,8 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
                     // Reader fell behind — skip to oldest available
                     let lag_count = oldest_seq - *read_seq;
                     *read_seq = oldest_seq;
+                    #[cfg(feature = "observability")]
+                    self.metrics.add_dropped(lag_count);
                     return Err(DbError::BufferLagged {
                         lag_count,
                         buffer_name: alloc::string::String::from("wasm ring"),
@@ -285,6 +335,8 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
                 let offset = (*read_seq - oldest_seq) as usize;
                 let value = ring[offset].clone();
                 *read_seq += 1;
+                #[cfg(feature = "observability")]
+                self.metrics.increment_consumed();
                 Ok(value)
             }
             (
@@ -297,6 +349,8 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
                 match value {
                     Some(v) => {
                         *last_seen_version = *version;
+                        #[cfg(feature = "observability")]
+                        self.metrics.increment_consumed();
                         Ok(v.clone())
                     }
                     // Unreachable given the invariants (value is `Some` iff
@@ -306,9 +360,14 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
                     None => Err(DbError::BufferEmpty),
                 }
             }
-            (WasmBufferInner::Mailbox { slot, .. }, ReaderState::Mailbox) => {
-                slot.take().ok_or(DbError::BufferEmpty)
-            }
+            (WasmBufferInner::Mailbox { slot, .. }, ReaderState::Mailbox) => match slot.take() {
+                Some(value) => {
+                    #[cfg(feature = "observability")]
+                    self.metrics.increment_consumed();
+                    Ok(value)
+                }
+                None => Err(DbError::BufferEmpty),
+            },
             _ => unreachable!("reader state mismatch"),
         }
     }
@@ -585,6 +644,103 @@ mod tests {
             DynBuffer::push(&buffer, 1);
             DynBuffer::push(&buffer, 2);
             assert_eq!(buffer.peek(), None);
+        }
+    }
+
+    #[cfg(feature = "observability")]
+    mod metrics_tests {
+        use super::super::*;
+        use aimdb_core::buffer::{BufferMetrics, DynBuffer};
+
+        #[test]
+        fn metrics_snapshot_is_available_for_all_buffer_types() {
+            let ring = WasmBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 4 });
+            let latest = WasmBuffer::<i32>::new(&BufferCfg::SingleLatest);
+            let mailbox = WasmBuffer::<i32>::new(&BufferCfg::Mailbox);
+
+            assert!(DynBuffer::metrics_snapshot(&ring).is_some());
+            assert!(DynBuffer::metrics_snapshot(&latest).is_some());
+            assert!(DynBuffer::metrics_snapshot(&mailbox).is_some());
+        }
+
+        #[test]
+        fn spmc_ring_counts_produced_consumed_and_reader_lag() {
+            let buffer = WasmBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 3 });
+            let mut reader = buffer.subscribe();
+
+            for value in 0..10 {
+                Buffer::push(&buffer, value);
+            }
+
+            assert!(matches!(
+                reader.try_recv(),
+                Err(DbError::BufferLagged { lag_count: 7, .. })
+            ));
+
+            let metrics = buffer.metrics();
+            assert_eq!(metrics.produced_count, 10);
+            assert_eq!(metrics.consumed_count, 0);
+            assert_eq!(metrics.dropped_count, 7);
+            assert_eq!(metrics.occupancy, (3, 3));
+
+            assert_eq!(reader.try_recv().unwrap(), 7);
+            let metrics = buffer.metrics();
+            assert_eq!(metrics.consumed_count, 1);
+            assert_eq!(metrics.dropped_count, 7);
+        }
+
+        #[test]
+        fn single_latest_overwrites_are_not_drops_and_occupancy_stays_present() {
+            let buffer = WasmBuffer::<i32>::new(&BufferCfg::SingleLatest);
+            let mut reader = buffer.subscribe();
+
+            Buffer::push(&buffer, 1);
+            Buffer::push(&buffer, 2);
+            Buffer::push(&buffer, 3);
+
+            assert_eq!(reader.try_recv().unwrap(), 3);
+            let metrics = buffer.metrics();
+            assert_eq!(metrics.produced_count, 3);
+            assert_eq!(metrics.consumed_count, 1);
+            assert_eq!(metrics.dropped_count, 0);
+            assert_eq!(metrics.occupancy, (1, 1));
+        }
+
+        #[test]
+        fn mailbox_overwrites_are_not_drops_and_receive_clears_occupancy() {
+            let buffer = WasmBuffer::<i32>::new(&BufferCfg::Mailbox);
+            let mut reader = buffer.subscribe();
+
+            Buffer::push(&buffer, 1);
+            Buffer::push(&buffer, 2);
+
+            let metrics = buffer.metrics();
+            assert_eq!(metrics.produced_count, 2);
+            assert_eq!(metrics.consumed_count, 0);
+            assert_eq!(metrics.dropped_count, 0);
+            assert_eq!(metrics.occupancy, (1, 1));
+
+            assert_eq!(reader.try_recv().unwrap(), 2);
+            let metrics = buffer.metrics();
+            assert_eq!(metrics.consumed_count, 1);
+            assert_eq!(metrics.dropped_count, 0);
+            assert_eq!(metrics.occupancy, (0, 1));
+        }
+
+        #[test]
+        fn reset_metrics_preserves_live_occupancy_and_capacity() {
+            let buffer = WasmBuffer::<i32>::new(&BufferCfg::SingleLatest);
+            let mut reader = buffer.subscribe();
+
+            Buffer::push(&buffer, 42);
+            assert_eq!(reader.try_recv().unwrap(), 42);
+            DynBuffer::reset_metrics(&buffer);
+
+            let metrics = buffer.metrics();
+            assert_eq!(metrics.produced_count, 0);
+            assert_eq!(metrics.consumed_count, 0);
+            assert_eq!(metrics.dropped_count, 0);
+            assert_eq!(metrics.occupancy, (1, 1));
         }
     }
 }
