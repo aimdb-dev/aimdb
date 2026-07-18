@@ -153,6 +153,8 @@ test:
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib: buffer semantics + shared contract suite; browser layer runs via wasm-test)$(NC)\n"
 	cargo test --package aimdb-wasm-adapter --no-default-features --lib
+	@printf "$(YELLOW)  → Testing WASM adapter (host lib with observability)$(NC)\n"
+	cargo test --package aimdb-wasm-adapter --no-default-features --features observability --lib
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
@@ -188,7 +190,7 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring-async aimdb-bench; do \
+	@for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -197,7 +199,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring-async aimdb-bench; do \
+	for pkg in aimdb-derive aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-ws-protocol aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -432,6 +434,8 @@ examples:
 	cargo build --package hello-single-latest
 	@printf "$(YELLOW)  → Building hello-single-latest-async$(NC)\n"
 	cargo build --package hello-single-latest-async
+	@printf "$(YELLOW)  → Building hello-spmc-ring$(NC)\n"
+	cargo build --package hello-spmc-ring
 	@printf "$(YELLOW)  → Building hello-spmc-ring-async$(NC)\n"
 	cargo build --package hello-spmc-ring-async
 	@printf "$(YELLOW)  → Building readme-quickstart (compiled README example)$(NC)\n"
