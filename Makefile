@@ -153,6 +153,8 @@ test:
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib: buffer semantics + shared contract suite; browser layer runs via wasm-test)$(NC)\n"
 	cargo test --package aimdb-wasm-adapter --no-default-features --lib
+	@printf "$(YELLOW)  → Testing WASM adapter (host lib with observability)$(NC)\n"
+	cargo test --package aimdb-wasm-adapter --no-default-features --features observability --lib
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
