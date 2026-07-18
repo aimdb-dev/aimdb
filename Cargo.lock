@@ -1446,6 +1446,7 @@ version = "0.9.1"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
+ "embassy-futures",
  "embassy-net-driver",
  "embassy-sync",
  "embassy-time",
