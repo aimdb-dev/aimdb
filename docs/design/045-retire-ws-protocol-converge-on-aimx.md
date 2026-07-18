@@ -1,7 +1,7 @@
 # 045 — Retire `aimdb-ws-protocol`: every transport speaks AimX
 
-**Status:** 🚧 Proposed (mapping-table gate from 036 A2; implementation bound
-to the next protocol-breaking release)
+**Status:** ✅ Implemented (mapping-table gate from 036 A2; shipped on
+`feat/retire-aimdb-ws-protocol`)
 
 **Scope:** delete the `aimdb-ws-protocol` crate and the WS-JSON envelope it
 defines, porting the WebSocket connector (`aimdb-websocket-connector`), the

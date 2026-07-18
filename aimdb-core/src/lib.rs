@@ -75,6 +75,11 @@ pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 #[cfg(feature = "remote")]
 pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 
+// Record-key leaf/entity derivation, shared by record metadata and the
+// connectors that surface the `entity` field.
+#[cfg(feature = "remote")]
+pub use remote::topic_leaf;
+
 // connector-session contracts (feature `connector-session`, no_std + alloc
 // compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]

@@ -32,6 +32,8 @@ use wasm_bindgen::prelude::*;
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::builder::{AimDb, AimDbBuilder};
 use aimdb_core::record_id::StringKey;
+use aimdb_core::session::aimx::AimxCodec;
+use aimdb_core::{EnvelopeCodec, Inbound, Outbound, Payload};
 
 use crate::schema_registry::{SchemaOps, SchemaRegistry};
 use crate::ws_bridge::WsBridge;
@@ -342,9 +344,9 @@ impl WasmDb {
 
 /// Build a one-shot WebSocket promise that resolves with `TopicInfo[]`.
 ///
-/// Speaks one raw AimX exchange: `{"t":"req","id":1,"method":"record.list"}`
-/// → `{"t":"reply","id":1,"ok":[{name, schema_type, entity}, …]}` (design 045
-/// §2.1 — discovery is a plain `record.list` request).
+/// Speaks one AimX exchange via the shared [`AimxCodec`]: a `record.list`
+/// request (`id` 1) whose reply carries `[{name, schema_type, entity}, …]`
+/// (design 045 §2.1 — discovery is a plain `record.list` request).
 ///
 /// Each callback pair (resolve, reject) is stored in an `Rc<RefCell<Option>>`
 /// so that whichever event fires first wins and subsequent events are no-ops.
@@ -365,12 +367,36 @@ fn discover_impl(url: String) -> js_sys::Promise {
             Rc::new(RefCell::new(Some(resolve)));
         let reject_rc: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(Some(reject)));
 
+        // Encode the request frame once via the shared codec.
+        let request = {
+            let mut buf = Vec::new();
+            if AimxCodec
+                .encode_inbound(
+                    Inbound::Request {
+                        id: 1,
+                        method: "record.list".into(),
+                        params: Payload::from(&b"null"[..]),
+                    },
+                    &mut buf,
+                )
+                .is_err()
+            {
+                if let Some(rej) = reject_rc.borrow_mut().take() {
+                    let _ = rej.call1(
+                        &JsValue::NULL,
+                        &JsValue::from_str("failed to encode record.list request"),
+                    );
+                }
+                return;
+            }
+            String::from_utf8(buf).unwrap_or_default()
+        };
+
         // on_open: send the record.list request
         {
             let ws_clone = ws.clone();
             let on_open = Closure::wrap(Box::new(move || {
-                let _ = ws_clone
-                    .send_with_str(r#"{"t":"req","id":1,"method":"record.list","params":null}"#);
+                let _ = ws_clone.send_with_str(&request);
             }) as Box<dyn FnMut()>);
             ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
             on_open.forget();
@@ -392,19 +418,22 @@ fn discover_impl(url: String) -> js_sys::Promise {
                     }
                     return;
                 };
-                let Ok(frame) = serde_json::from_str::<serde_json::Value>(&text) else {
-                    return; // skip non-JSON noise; the timeout guards a dead peer
+                // Decode via the shared codec; ignore anything that isn't our
+                // `record.list` reply (auto-subscribe events, acks, other ids,
+                // non-JSON noise) — the timeout guards a dead peer.
+                let result = match AimxCodec.decode_outbound(text.as_bytes()) {
+                    Ok(Outbound::Reply { id: 1, result }) => result,
+                    _ => return,
                 };
-                // Ignore unrelated frames (auto-subscribe events, acks, …).
-                if frame["t"] != "reply" || frame["id"] != 1 {
-                    return;
-                }
                 let _ = ws_clone.close();
-                match frame.get("ok").and_then(|v| v.as_array()) {
+                let topics = result
+                    .ok()
+                    .and_then(|ok| serde_json::from_slice::<Vec<serde_json::Value>>(&ok).ok());
+                match topics {
                     Some(topics) => {
                         let serializer = serde_wasm_bindgen::Serializer::json_compatible();
                         let arr = js_sys::Array::new();
-                        for topic in topics {
+                        for topic in &topics {
                             if let Ok(js_val) = topic.serialize(&serializer) {
                                 arr.push(&js_val);
                             }

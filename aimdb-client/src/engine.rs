@@ -195,9 +195,10 @@ impl AimxConnection {
     pub fn subscribe(&self, name: &str) -> ClientResult<BoxStream<'static, serde_json::Value>> {
         let raw = self.handle.subscribe(name).map_err(rpc_err)?;
         // Decode each update's payload into a JSON value; drop any that fail to
-        // parse. For the per-record topic (wildcard subscriptions), see
+        // parse. A terminal rejection item ends the stream. For the per-record
+        // topic (wildcard subscriptions), see
         // [`subscribe_with_topics`](Self::subscribe_with_topics).
-        let decoded = raw.filter_map(|u| async move { serde_json::from_slice(&u.data).ok() });
+        let decoded = raw.filter_map(|u| async move { serde_json::from_slice(&u.ok()?.data).ok() });
         Ok(Box::pin(decoded))
     }
 
@@ -211,6 +212,7 @@ impl AimxConnection {
     ) -> ClientResult<BoxStream<'static, (Option<String>, serde_json::Value)>> {
         let raw = self.handle.subscribe(pattern).map_err(rpc_err)?;
         let decoded = raw.filter_map(|u| async move {
+            let u = u.ok()?;
             let value = serde_json::from_slice(&u.data).ok()?;
             Some((u.topic.as_deref().map(String::from), value))
         });

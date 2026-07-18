@@ -24,7 +24,7 @@ use hashbrown::HashMap;
 
 use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
-    SubUpdate,
+    SubUpdate, TransportError,
 };
 use crate::router::RouterBuilder;
 use crate::AimDb;
@@ -103,7 +103,7 @@ enum ClientCmd {
     },
     Subscribe {
         topic: String,
-        events: Sender<SubUpdate>,
+        events: Sender<Result<SubUpdate, RpcError>>,
     },
     Write {
         topic: String,
@@ -137,16 +137,20 @@ impl ClientHandle {
 
     /// Open a subscription; returns the stream of updates immediately (the engine
     /// sends the `Subscribe` request asynchronously). Dropping the stream stops
-    /// local delivery. The stream ends on disconnect and is not re-subscribed on
-    /// reconnect (see [`ClientConfig::reconnect`]) — re-call to resume.
+    /// local delivery. The stream is not re-subscribed on reconnect (see
+    /// [`ClientConfig::reconnect`]) — re-call to resume.
     ///
-    /// Each [`SubUpdate`] carries the concrete record topic when the server tags
-    /// it (wildcard subscriptions fan in many records under this one stream).
+    /// Each item is `Ok(`[`SubUpdate`]`)` for a delivered update, carrying the
+    /// concrete record topic when the server tags it (wildcard subscriptions fan
+    /// in many records under this one stream). A server rejection surfaces as a
+    /// terminal `Err(`[`RpcError`]`)` item, letting the caller distinguish a
+    /// denied subscription (do not retry) from a disconnect-shaped stream end
+    /// (retry to resume).
     pub fn subscribe(
         &self,
         topic: impl Into<String>,
-    ) -> Result<BoxStream<'static, SubUpdate>, RpcError> {
-        let (events, rx) = async_channel::unbounded::<SubUpdate>();
+    ) -> Result<BoxStream<'static, Result<SubUpdate, RpcError>>, RpcError> {
+        let (events, rx) = async_channel::unbounded::<Result<SubUpdate, RpcError>>();
         self.enqueue(ClientCmd::Subscribe {
             topic: topic.into(),
             events,
@@ -244,8 +248,16 @@ async fn client_loop<D, C>(
                 attempt = 0;
                 conn
             }
-            Err(_e) => {
-                log_warn!("client dial failed: {:?}", _e);
+            Err(e) => {
+                log_warn!("client dial failed: {:?}", e);
+                // `Closed` is terminal — the dialer signals it will never succeed
+                // again (e.g. the caller stopped the bridge), so retrying would
+                // spin a permanently-failing redial forever. Only transient
+                // failures (`Io`) earn a backoff+retry. Other transports' dialers
+                // map connect failures to `Io`, never `Closed`, so this is safe.
+                if e == TransportError::Closed {
+                    return;
+                }
                 match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
                     true => continue,
                     false => return,
@@ -313,7 +325,7 @@ where
     let mut pending: HashMap<u64, oneshot::Sender<Result<Payload, RpcError>>> = HashMap::new();
     // sub-id → event sink. The sub-id is `id.to_string()` of the opening
     // request, matching the server's derivation so `Event.sub` routes back.
-    let mut subs: HashMap<String, Sender<SubUpdate>> = HashMap::new();
+    let mut subs: HashMap<String, Sender<Result<SubUpdate, RpcError>>> = HashMap::new();
     let mut out = Vec::new();
     let keepalive_ms = config.keepalive_interval;
     // Keepalive is deadline-based: activity only records a timestamp (one dyn
@@ -380,12 +392,16 @@ where
                     Ok(Outbound::Reply { id, result }) => {
                         if let Some(tx) = pending.remove(&id) {
                             let _ = tx.send(result);
-                        } else if result.is_err() {
+                        } else if let Err(err) = result {
                             // A subscribe is acked implicitly by its events; the
                             // server replies only on failure, carrying the subscribe
-                            // `id` (never a pending call). Drop the event sink so the
-                            // stream ends instead of hanging.
-                            subs.remove(&id.to_string());
+                            // `id` (never a pending call). Surface the rejection as a
+                            // terminal error item before dropping the sink, so the
+                            // subscriber can tell "denied" from a disconnect-shaped
+                            // stream end instead of re-subscribing forever.
+                            if let Some(tx) = subs.remove(&id.to_string()) {
+                                let _ = tx.try_send(Err(err));
+                            }
                         }
                     }
                     Ok(Outbound::Event {
@@ -396,10 +412,10 @@ where
                     }) => {
                         let dead = match subs.get(sub) {
                             Some(tx) => tx
-                                .try_send(SubUpdate {
+                                .try_send(Ok(SubUpdate {
                                     topic: topic.map(Arc::from),
                                     data,
-                                })
+                                }))
                                 .is_err(),
                             None => false, // late event for a dropped sub — ignore
                         };
@@ -409,7 +425,7 @@ where
                     }
                     Ok(Outbound::Snapshot { sub, topic, data }) => {
                         if let Some(tx) = subs.get(sub) {
-                            let _ = tx.try_send(SubUpdate::tagged(Arc::from(topic), data));
+                            let _ = tx.try_send(Ok(SubUpdate::tagged(Arc::from(topic), data)));
                         }
                     }
                     Ok(Outbound::Pong) => {}
@@ -572,7 +588,13 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
                 Err(_e) => return,
             };
             while let Some(update) = stream.next().await {
-                let _ = router.route(id.as_ref(), &update.data, &ctx);
+                match update {
+                    Ok(update) => {
+                        let _ = router.route(id.as_ref(), &update.data, &ctx);
+                    }
+                    // Server rejected the subscription — terminal, not replayed.
+                    Err(_e) => break,
+                }
             }
         }));
     }

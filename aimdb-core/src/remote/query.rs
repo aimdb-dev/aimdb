@@ -25,7 +25,7 @@ pub type QueryHandlerFn = Box<
 >;
 
 /// One row of a `record.query` result — the canonical shape every transport
-/// shares (the retired ws-protocol `QueryRecord`, now core vocabulary).
+/// shares.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryRecord {
     /// Record key / topic the value was stored under (e.g. `"temp.vienna"`).

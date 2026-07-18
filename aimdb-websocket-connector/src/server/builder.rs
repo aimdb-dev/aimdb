@@ -27,7 +27,7 @@ use aimdb_data_contracts::Streamable;
 use aimdb_core::{pump_sink, router::RouterBuilder, ConnectorBuilder, Dispatch};
 use axum::Router as AxumRouter;
 
-use aimdb_core::topic_matches;
+use aimdb_core::{topic_leaf, topic_matches};
 
 use super::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
@@ -290,10 +290,11 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                         .streamable_registry
                         .resolve_name(&type_id)
                         .map(|s| s.to_string());
-                    // Extract entity from topic name: "temp.vienna" → "vienna".
-                    // The server owns the naming convention — clients receive
-                    // the entity as a first-class field and never parse topics.
-                    let entity = topic.rsplit('.').next().map(|s| s.to_string());
+                    // Leaf segment of the topic ("temp.vienna" or
+                    // "sensors/temp/vienna" → "vienna"). The server owns the
+                    // naming convention — clients receive the entity as a
+                    // first-class field and never parse topics.
+                    let entity = Some(topic_leaf(&topic).to_string());
                     TopicInfo {
                         name: topic,
                         schema_type,

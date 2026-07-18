@@ -382,9 +382,9 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
 
     // 2) Streaming: subscribe → three events routed back by sub id.
     let mut stream = handle.subscribe("temp").unwrap();
-    let e1 = stream.next().await.expect("event 1");
-    let e2 = stream.next().await.expect("event 2");
-    let e3 = stream.next().await.expect("event 3");
+    let e1 = stream.next().await.expect("event 1").expect("ok event 1");
+    let e2 = stream.next().await.expect("event 2").expect("ok event 2");
+    let e3 = stream.next().await.expect("event 3").expect("ok event 3");
     assert_eq!(&*e1.data, b"temp#1");
     assert_eq!(&*e2.data, b"temp#2");
     assert_eq!(&*e3.data, b"temp#3");
@@ -411,8 +411,10 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
     server.abort();
 }
 
-/// Subscribe-ack: a subscribe the server rejects must surface as a stream that
-/// *ends* (`None`) rather than one that hangs forever (the pre-fix behavior).
+/// Subscribe-ack: a subscribe the server rejects must surface as a terminal
+/// `Err` item followed by end-of-stream — distinguishable from a disconnect (a
+/// plain `None`) so a caller can stop instead of re-subscribing forever, and
+/// never hanging (the original pre-fix behavior).
 #[tokio::test]
 async fn failed_subscribe_ends_stream_via_ack() {
     let (listener, dialer) = transport_pair();
@@ -441,13 +443,26 @@ async fn failed_subscribe_ends_stream_via_ack() {
     );
     let client = tokio::spawn(client_fut);
 
-    // The "bad" topic is rejected server-side; the failure Reply must close the
-    // stream. A generous timeout guards against the old hang-forever behavior.
+    // The "bad" topic is rejected server-side; the failure Reply must surface as
+    // a terminal `Err` item, then the stream ends. A generous timeout guards
+    // against the old hang-forever behavior.
     let mut stream = handle.subscribe("bad").unwrap();
+    let rejected = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("failed subscribe must yield an item, not hang")
+        .expect("rejected subscribe should yield a terminal item");
+    assert_eq!(
+        rejected.unwrap_err(),
+        RpcError::NotFound,
+        "rejection should carry the server's error code"
+    );
     let ended = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
-        .expect("failed subscribe must end the stream, not hang");
-    assert!(ended.is_none(), "rejected subscribe should yield no events");
+        .expect("stream must end after the rejection, not hang");
+    assert!(
+        ended.is_none(),
+        "stream should end after the terminal error"
+    );
 
     drop(handle);
     drop(stream);
@@ -501,12 +516,16 @@ async fn ended_subscription_frees_its_cap_slot() {
 
     // Drain a subscription's three echo updates; the server-side stream then
     // ends, so its pump finishes and is reaped.
-    async fn drain_three(stream: &mut BoxStream<'static, SubUpdate>, topic: &str) {
+    async fn drain_three(
+        stream: &mut BoxStream<'static, Result<SubUpdate, RpcError>>,
+        topic: &str,
+    ) {
         for i in 1..=3 {
             let ev = tokio::time::timeout(Duration::from_secs(2), stream.next())
                 .await
                 .expect("event should arrive")
-                .expect("an accepted subscription must yield its events");
+                .expect("an accepted subscription must yield its events")
+                .expect("an accepted subscription must not be rejected");
             assert_eq!(&*ev.data, format!("{topic}#{i}").as_bytes());
         }
     }
@@ -528,7 +547,7 @@ async fn ended_subscription_frees_its_cap_slot() {
         .await
         .expect("third subscribe must not hang");
     assert_eq!(
-        first.map(|u| u.data.to_vec()),
+        first.map(|u| u.expect("third subscribe must be accepted").data.to_vec()),
         Some(b"c#1".to_vec()),
         "an ended subscription must free its cap slot; the third subscribe was refused"
     );

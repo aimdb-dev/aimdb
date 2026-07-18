@@ -72,7 +72,7 @@ pub type Payload = Arc<[u8]>;
 /// any transport that tags every event, like the WS bus); `None` where the
 /// subscription is exact-topic and the wire stays minimal. `Arc<str>` so
 /// per-event tagging is a refcount bump, not a string allocation.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SubUpdate {
     /// Concrete record topic that fired, when the producer side tags it.
     pub topic: Option<Arc<str>>,

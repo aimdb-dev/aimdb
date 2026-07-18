@@ -3,8 +3,7 @@
 //! Shared by every transport that supports wildcard subscriptions: the AimX
 //! wildcard subscribe ([`crate::session::aimx`]) matches a pattern against the
 //! registry once at subscribe time, and the WebSocket connector's fan-out bus
-//! matches per broadcast. Moved here from the retired `aimdb-ws-protocol`
-//! crate (design 045).
+//! matches per broadcast.
 
 /// Returns `true` if `topic` matches `pattern`.
 ///

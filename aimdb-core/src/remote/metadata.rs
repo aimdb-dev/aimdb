@@ -66,9 +66,10 @@ pub struct RecordMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_type: Option<String>,
 
-    /// Entity / node identifier (e.g. `"vienna"` for `"temp.vienna"`), derived
-    /// from the record key's final `.` segment. The server is the authority on
-    /// naming conventions — clients use this field instead of parsing keys.
+    /// Entity / node identifier (e.g. `"vienna"` for `"temp.vienna"` or
+    /// `"sensors/temp/vienna"`), the record key's leaf segment after the last
+    /// `.` or `/` separator. The server is the authority on naming conventions —
+    /// clients use this field instead of parsing keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity: Option<String>,
 
@@ -138,11 +139,7 @@ impl RecordMetadata {
         writable: bool,
         outbound_connector_count: usize,
     ) -> Self {
-        let entity = record_key
-            .as_str()
-            .rsplit('.')
-            .next()
-            .map(|s| s.to_string());
+        let entity = Some(super::topic_leaf(record_key.as_str()).to_string());
         Self {
             record_id: record_id.raw(),
             record_key: record_key.as_str().to_string(),

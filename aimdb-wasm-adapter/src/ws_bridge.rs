@@ -23,9 +23,6 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -39,6 +36,7 @@ use aimdb_core::{
 };
 
 use crate::schema_registry::SchemaRegistry;
+use crate::time::SendFuture;
 use crate::WasmAdapter;
 
 // ─── Connection status ────────────────────────────────────────────────────
@@ -75,11 +73,6 @@ pub struct BridgeOptions {
     /// Re-connect automatically on close (default: true).
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
-    /// Retained for option-shape compatibility: late-join snapshots are
-    /// server-driven under AimX (`with_late_join` on the server builder) and
-    /// arrive automatically on subscribe.
-    #[serde(default = "default_true")]
-    pub late_join: bool,
     /// Maximum queued commands (writes/subscribes) while disconnected
     /// (default: 256).
     #[serde(default = "default_queue_size")]
@@ -111,36 +104,10 @@ impl Default for BridgeOptions {
         Self {
             subscribe_topics: Vec::new(),
             auto_reconnect: true,
-            late_join: true,
             max_offline_queue: 256,
             keepalive_ms: 30_000,
             query_timeout_ms: 30_000,
         }
-    }
-}
-
-// ─── Single-threaded `Send` shims ─────────────────────────────────────────
-
-/// Wraps a JS-touching future so it satisfies the engine's `Send` bounds.
-///
-/// # Safety
-///
-/// Only ever executed on `wasm32-unknown-unknown` without the `atomics`
-/// proposal — single-threaded by construction (the compile guard in
-/// [`crate::time`] rejects wasm threads). The unconditional impl exists so the
-/// crate also *compiles* in the native test lane, where this code never runs —
-/// the same rationale as [`WsBridge`]'s `Send`/`Sync` impls below.
-struct JsSendFut<F>(F);
-
-unsafe impl<F> Send for JsSendFut<F> {}
-
-impl<F: Future> Future for JsSendFut<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: pure pin projection to the inner field.
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
-        inner.poll(cx)
     }
 }
 
@@ -196,13 +163,13 @@ struct WasmWsConnection {
     _plain_callbacks: Vec<Closure<dyn FnMut()>>,
 }
 
-// SAFETY: wasm32 without atomics is single-threaded; see `JsSendFut`.
+// SAFETY: wasm32 without atomics is single-threaded; see [`SendFuture`].
 unsafe impl Send for WasmWsConnection {}
 
 impl Connection for WasmWsConnection {
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
         // `Ok(None)` when the frame funnel closes (socket closed/errored).
-        Box::pin(JsSendFut(async move { Ok(self.frames.next().await) }))
+        Box::pin(SendFuture(async move { Ok(self.frames.next().await) }))
     }
 
     fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFut<'a, TransportResult<()>> {
@@ -248,14 +215,14 @@ struct WasmWsDialer {
     shared: Rc<BridgeShared>,
 }
 
-// SAFETY: wasm32 without atomics is single-threaded; see `JsSendFut`.
+// SAFETY: wasm32 without atomics is single-threaded; see [`SendFuture`].
 unsafe impl Send for WasmWsDialer {}
 
 impl Dialer for WasmWsDialer {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
         let url = self.url.clone();
         let shared = self.shared.clone();
-        Box::pin(JsSendFut(async move {
+        Box::pin(SendFuture(async move {
             if shared.stopped.get() {
                 return Err(TransportError::Closed);
             }
@@ -353,7 +320,6 @@ impl Dialer for WasmWsDialer {
 /// const bridge = db.connectBridge('wss://api.example.com/ws', {
 ///   subscribeTopics: ['sensors/#'],
 ///   autoReconnect: true,
-///   lateJoin: true,
 /// });
 /// bridge.onStatusChange((status) => updateIndicator(status));
 /// // ...
@@ -407,7 +373,10 @@ impl WsBridge {
     /// Close the WebSocket and stop reconnection attempts.
     pub fn disconnect(&self) {
         self.shared.stopped.set(true);
-        // Dropping the handle stops the engine (pending calls reject).
+        // Setting `stopped` makes the dialer return a terminal `Closed` on its
+        // next redial, which stops the engine — dropping this handle alone would
+        // not, since the subscription pumps hold their own clones. Dropping it
+        // still rejects pending calls once the engine drains its command channel.
         self.handle.borrow_mut().take();
         if let Some(ws) = self.shared.ws.borrow_mut().take() {
             let _ = ws.close();
@@ -594,8 +563,10 @@ fn rpc_err_str(e: &RpcError) -> &'static str {
 // ─── Subscription pump ─────────────────────────────────────────────────────
 
 /// Subscribe to `pattern` and mirror every tagged update into the local
-/// database; when the stream ends (disconnect or server rejection),
-/// re-subscribe until the bridge is stopped.
+/// database; when the stream ends on a disconnect, re-subscribe until the
+/// bridge is stopped. A server rejection (a terminal error item) is permanent,
+/// so the pump stops rather than spinning re-subscribe attempts the server will
+/// keep denying.
 async fn pump_pattern(
     shared: Rc<BridgeShared>,
     handle: ClientHandle,
@@ -613,13 +584,19 @@ async fn pump_pattern(
             Err(_) => return, // engine stopped
         };
         while let Some(update) = stream.next().await {
+            let update = match update {
+                Ok(update) => update,
+                // Terminal rejection (e.g. the server denied the pattern):
+                // re-subscribing would only be denied again — stop this pump.
+                Err(_rejected) => return,
+            };
             // Wildcard events carry the concrete record topic; an exact-topic
             // subscription may leave it implicit.
             let topic = update.topic.as_deref().unwrap_or(&pattern);
             route_update(&db, &schema_map, &registry, topic, &update.data);
         }
-        // Stream ended — disconnected or rejected. Pace the re-subscribe so a
-        // rejecting server doesn't spin; the engine queues it while offline.
+        // Stream ended without a rejection — a disconnect. Pace the re-subscribe
+        // so we don't spin; the engine queues it while offline.
         WasmAdapter
             .sleep(core::time::Duration::from_millis(500))
             .await;

@@ -480,7 +480,7 @@ async fn client_engine_receives_broadcast_over_real_socket() {
     let mut got = None;
     for _ in 0..100 {
         inject(&db, "sensors/temp", json!(42));
-        if let Ok(Some(item)) = timeout(Duration::from_millis(20), stream.next()).await {
+        if let Ok(Some(Ok(item))) = timeout(Duration::from_millis(20), stream.next()).await {
             got = Some(item);
             break;
         }
