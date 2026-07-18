@@ -54,6 +54,7 @@ pub fn format_records_table(records: &[RecordMetadata]) -> String {
         "Producers",
         "Consumers",
         "Writable",
+        "Signal",
     ]);
 
     // Add rows
@@ -63,6 +64,28 @@ pub fn format_records_table(records: &[RecordMetadata]) -> String {
         } else {
             "no".dimmed().to_string()
         };
+        let signal_str = record
+            .signal_stats
+            .as_deref()
+            .and_then(|signals| signals.split_first())
+            .map(|(signal, rest)| {
+                let unit = if signal.unit.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", signal.unit)
+                };
+                let additional = if rest.is_empty() {
+                    String::new()
+                } else {
+                    format!(" +{}", rest.len())
+                };
+
+                format!(
+                    "{}{} ({}..{}, avg {}){}",
+                    signal.last, unit, signal.min, signal.max, signal.mean, additional
+                )
+            })
+            .unwrap_or_else(|| "-".dimmed().to_string());
 
         builder.push_record(vec![
             record.name.clone(),
@@ -71,6 +94,7 @@ pub fn format_records_table(records: &[RecordMetadata]) -> String {
             record.producer_count.to_string(),
             record.consumer_count.to_string(),
             writable_str,
+            signal_str,
         ]);
     }
 
@@ -237,40 +261,118 @@ mod tests {
     #[test]
     fn test_format_records_table() {
         use aimdb_core::graph::RecordOrigin;
+        use aimdb_core::profiling::SignalStatsInfo;
         use aimdb_core::record_id::{RecordId, StringKey};
         use core::any::TypeId;
 
-        let records = vec![
-            RecordMetadata::new(
-                RecordId::new(0),
-                StringKey::new("sensor.temperature"),
-                TypeId::of::<i32>(),
-                "Temperature".to_string(),
-                RecordOrigin::Source,
-                "spmc_ring".to_string(),
-                Some(100),
-                1,
-                2,
-                false,
-                0,
-            ),
-            RecordMetadata::new(
-                RecordId::new(1),
-                StringKey::new("app.config"),
-                TypeId::of::<String>(),
-                "Config".to_string(),
-                RecordOrigin::Passive,
-                "mailbox".to_string(),
-                Some(1),
-                0,
-                3,
-                true,
-                1,
-            ),
-        ];
+        colored::control::set_override(false);
 
-        let table = format_records_table(&records);
-        assert!(table.contains("Temperature"));
-        assert!(table.contains("Config"));
+        let mut temperature = RecordMetadata::new(
+            RecordId::new(0),
+            StringKey::new("sensor.temperature"),
+            TypeId::of::<i32>(),
+            "Temperature".to_string(),
+            RecordOrigin::Source,
+            "spmc_ring".to_string(),
+            Some(100),
+            1,
+            2,
+            false,
+            0,
+        )
+        .with_signal_stats(vec![
+            SignalStatsInfo {
+                signal: "temperature".to_string(),
+                unit: "C".to_string(),
+                count: 4,
+                last: 21.5,
+                min: 18.0,
+                max: 24.0,
+                mean: 20.25,
+            },
+            SignalStatsInfo {
+                signal: "humidity".to_string(),
+                unit: "%".to_string(),
+                count: 4,
+                last: 40.0,
+                min: 35.0,
+                max: 42.0,
+                mean: 39.0,
+            },
+        ]);
+        temperature.type_id = "type-temperature".to_string();
+
+        let mut config = RecordMetadata::new(
+            RecordId::new(1),
+            StringKey::new("app.config"),
+            TypeId::of::<String>(),
+            "Config".to_string(),
+            RecordOrigin::Passive,
+            "mailbox".to_string(),
+            Some(1),
+            0,
+            3,
+            true,
+            1,
+        );
+        config.type_id = "type-config".to_string();
+
+        let table = format_records_table(&[temperature, config]);
+        assert_eq!(
+            table,
+            "\
+┌─────────────┬──────────────────┬─────────────┬───────────┬───────────┬──────────┬───────────────────────────────┐
+│ Name        │ Type ID          │ Buffer Type │ Producers │ Consumers │ Writable │ Signal                        │
+├─────────────┼──────────────────┼─────────────┼───────────┼───────────┼──────────┼───────────────────────────────┤
+│ Temperature │ type-temperature │ spmc_ring   │ 1         │ 2         │ no       │ 21.5 C (18..24, avg 20.25) +1 │
+├─────────────┼──────────────────┼─────────────┼───────────┼───────────┼──────────┼───────────────────────────────┤
+│ Config      │ type-config      │ mailbox     │ 0         │ 3         │ yes      │ -                             │
+└─────────────┴──────────────────┴─────────────┴───────────┴───────────┴──────────┴───────────────────────────────┘"
+        );
+    }
+
+    #[test]
+    fn test_format_records_table_signal_without_unit() {
+        use aimdb_core::graph::RecordOrigin;
+        use aimdb_core::profiling::SignalStatsInfo;
+        use aimdb_core::record_id::{RecordId, StringKey};
+        use core::any::TypeId;
+
+        colored::control::set_override(false);
+
+        let mut record = RecordMetadata::new(
+            RecordId::new(0),
+            StringKey::new("system.load"),
+            TypeId::of::<f64>(),
+            "Load".to_string(),
+            RecordOrigin::Source,
+            "single_latest".to_string(),
+            Some(1),
+            1,
+            0,
+            false,
+            0,
+        )
+        .with_signal_stats(vec![SignalStatsInfo {
+            signal: "load".to_string(),
+            unit: String::new(),
+            count: 3,
+            last: 0.75,
+            min: 0.5,
+            max: 1.0,
+            mean: 0.625,
+        }]);
+        record.type_id = "type-load".to_string();
+
+        let table = format_records_table(&[record]);
+        assert_eq!(
+            table,
+            "\
+┌──────┬───────────┬───────────────┬───────────┬───────────┬──────────┬──────────────────────────┐
+│ Name │ Type ID   │ Buffer Type   │ Producers │ Consumers │ Writable │ Signal                   │
+├──────┼───────────┼───────────────┼───────────┼───────────┼──────────┼──────────────────────────┤
+│ Load │ type-load │ single_latest │ 1         │ 0         │ no       │ 0.75 (0.5..1, avg 0.625) │
+└──────┴───────────┴───────────────┴───────────┴───────────┴──────────┴──────────────────────────┘"
+        );
     }
 }

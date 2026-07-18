@@ -131,7 +131,7 @@ docker compose up
 
 | Buffer | Semantics | Use cases |
 | --- | --- | --- |
-| [**SPMC Ring**](examples/hello-spmc-ring-async) | Bounded stream with independent consumers | Sensor telemetry, event logs |
+| [**SPMC Ring**](examples/hello-spmc-ring/) / [**SPMC Ring async**](examples/hello-spmc-ring-async) | Bounded stream with independent consumers | Sensor telemetry, event logs |
 | [**SingleLatest**](examples/hello-single-latest) / [**SingleLatest async**](examples/hello-single-latest-async) | Only the current value matters | Feature flags, config, UI state |
 | [**Mailbox**](examples/hello-mailbox) / [**async Mailbox**](examples/hello-mailbox-async)| Latest instruction wins | Device commands, actuation, RPC |
 

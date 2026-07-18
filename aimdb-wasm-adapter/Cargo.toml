@@ -24,6 +24,7 @@ wasm-runtime = [
     "web-sys",
     "serde-wasm-bindgen",
 ]
+observability = ["aimdb-core/observability"]
 
 [dependencies]
 # Core AimDB types (no std, no tokio — the connector-session engines and the
