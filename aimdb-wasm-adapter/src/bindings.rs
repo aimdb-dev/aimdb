@@ -248,9 +248,10 @@ impl WasmDb {
 
     /// Discover topics served at `url` without building a full database.
     ///
-    /// Opens a one-shot WebSocket, sends an AimX `record.list` request, and resolves with
-    /// `TopicInfo[]` once the server responds. Rejects after 30 s if no
-    /// response arrives, or immediately on connection error.
+    /// Opens a one-shot WebSocket, sends an AimX `record.list` request, and
+    /// resolves with one record-metadata object per record once the server
+    /// responds. Rejects after 30 s if no response arrives, or immediately on
+    /// connection error.
     ///
     /// # Example (TypeScript)
     /// ```ts
@@ -342,11 +343,11 @@ impl WasmDb {
 
 // ─── discover_impl ────────────────────────────────────────────────────────
 
-/// Build a one-shot WebSocket promise that resolves with `TopicInfo[]`.
+/// Build a one-shot WebSocket promise that resolves with the `record.list` rows.
 ///
 /// Speaks one AimX exchange via the shared [`AimxCodec`]: a `record.list`
-/// request (`id` 1) whose reply carries `[{name, schema_type, entity}, …]`
-/// (design 045 §2.1 — discovery is a plain `record.list` request).
+/// request (`id` 1) whose reply carries the record-metadata rows, forwarded to
+/// JS unchanged.
 ///
 /// Each callback pair (resolve, reject) is stored in an `Rc<RefCell<Option>>`
 /// so that whichever event fires first wins and subsequent events are no-ops.

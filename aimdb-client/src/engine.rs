@@ -119,8 +119,8 @@ impl AimxConnection {
                 .await
                 .map_err(|_| ClientError::connection_failed(label, "handshake timed out"))?
                 .map_err(|e| match e {
-                    // The server refused our declared version (design 048 WI1) —
-                    // report it as such, not as an unreachable-engine failure.
+                    // The server refused our declared version — report it as
+                    // such, not as an unreachable-engine failure.
                     RpcError::VersionMismatch => ClientError::connection_failed(
                         label,
                         format!(

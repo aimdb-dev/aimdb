@@ -138,7 +138,7 @@ impl ConnectorBuilder for WsClientConnectorBuilder {
     ) -> Pin<Box<dyn core::future::Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>>
     {
         Box::pin(async move {
-            // ── Engine config from the WS-specific knobs (doc 039 § 5) ──
+            // ── Engine config from the WS-specific knobs ──
             // Reconnect/keepalive/offline-queue are `ClientConfig`/engine
             // concerns; subscriptions are id-routed like every AimX transport.
             let config = ClientConfig {

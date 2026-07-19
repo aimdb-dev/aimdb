@@ -21,8 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `QueryHandler` returns the shared `aimdb_core::remote::QueryRecord` rows;
   without a plugged-in handler the dispatch now falls back to the
   `QueryHandlerFn` registered by `aimdb-persistence::with_persistence`
-  (`NoQuery` is gone). `record.list` replies with `{name, schema_type,
-  entity}` rows (`TopicInfo` now lives in this crate and is serialize-only).
+  (`NoQuery` is gone). `record.list` replies with core's shared
+  `aimdb_core::remote::RecordMetadata` rows — the same shape every transport
+  serves, keyed by `record_key` — with the data-contract `schema_type` the
+  connector resolves stamped in. The connector-only `TopicInfo` row type and
+  its topic-scoped `{name, schema_type, entity}` shape are gone; `record.list`
+  now enumerates every record, not only WS-outbound topics.
 - **`with_raw_payload` removed** — its purpose was bypassing the ws `Data`
   envelope; under AimX the envelope is the protocol.
 - **`SnapshotProvider::snapshot(topic)` became `snapshots(pattern)`**,

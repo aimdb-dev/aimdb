@@ -481,10 +481,9 @@ mod tests {
     }
 
     // ── SingleLatest fresh-subscriber regression tests ──────────────────────
-    // Ported from the tokio adapter (`test_watch_fresh_subscriber_*`). Before
-    // the design-040 fix these all failed on WASM: a fresh subscriber snapshotted
-    // the current version and so never observed a value published before it
-    // subscribed.
+    // Ported from the tokio adapter (`test_watch_fresh_subscriber_*`). These
+    // used to fail on WASM: a fresh subscriber snapshotted the current version
+    // and so never observed a value published before it subscribed.
 
     #[test]
     fn test_single_latest_fresh_subscriber_sees_current_value() {
@@ -558,8 +557,8 @@ mod tests {
     // ========================================================================
     // peek() Tests — non-destructive buffer-native reads
     //
-    // Mirrors the tokio adapter's `peek_tests`; before design 040 WASM had no
-    // `peek()` override at all, so AimX `record.get` returned `None` on WASM.
+    // Mirrors the tokio adapter's `peek_tests`; WASM previously had no `peek()`
+    // override at all, so AimX `record.get` returned `None` on WASM.
     // ========================================================================
 
     mod peek_tests {

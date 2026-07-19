@@ -10,7 +10,7 @@
 //!
 //! The parity block at the bottom locks the AimX WS wire to the semantics the
 //! retired ws-protocol offered (subscribe ack, wildcard fan-out, late-join
-//! snapshot, query, list — design 045 §2.1).
+//! snapshot, query, list).
 //!
 //! Needs both halves (`server` + `client`); compiles away otherwise.
 
@@ -338,7 +338,7 @@ async fn server_query_and_record_list() {
             .with_serializer(|_ctx, t: &Temp| Ok(serde_json::to_vec(t).unwrap()))
             .finish();
     });
-    let (_db, runner) = sb.build().await.expect("build db");
+    let (db, runner) = sb.build().await.expect("build db");
     tokio::spawn(runner.run());
     wait_for_listen(addr).await;
 
@@ -359,7 +359,9 @@ async fn server_query_and_record_list() {
         json!([{"topic":"temp","payload":21.0,"ts":7}])
     );
 
-    // record.list returns `{name, schema_type, entity}` rows.
+    // record.list returns core's shared `RecordMetadata` rows — the same shape
+    // every transport serves — with the schema name the connector resolved
+    // stamped in.
     ws_send(
         &mut c,
         json!({"t":"req","id":11,"method":"record.list","params":null}),
@@ -367,10 +369,20 @@ async fn server_query_and_record_list() {
     .await;
     let reply = ws_recv_tag(&mut c, "reply").await;
     assert_eq!(reply["id"], 11);
-    assert_eq!(
-        reply["ok"],
-        json!([{"name":"temp","schema_type":"temperature","entity":"temp"}])
-    );
+    let rows = reply["ok"].as_array().expect("record.list array");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row["record_key"], "temp");
+    assert_eq!(row["entity"], "temp");
+    assert_eq!(row["buffer_type"], "single_latest");
+    assert_eq!(row["schema_type"], "temperature");
+
+    // The row is byte-for-byte what core produces for the same record, aside
+    // from the schema name only the connector can resolve.
+    let core_rows = serde_json::to_value(db.list_records()).unwrap();
+    let mut ws_row = row.clone();
+    ws_row.as_object_mut().unwrap().remove("schema_type");
+    assert_eq!(ws_row, core_rows[0]);
 }
 
 #[tokio::test]

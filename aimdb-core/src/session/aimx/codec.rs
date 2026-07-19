@@ -14,7 +14,7 @@
 //!   concrete record on wildcard/bus subscriptions (no server-side
 //!   `timestamp`/`dropped`).
 //! - snapshots carry the opening subscription's `sub` so the client demux
-//!   routes them like events (design 045 §3.3).
+//!   routes them like events.
 //! - the Hello/Welcome handshake is a normal `call("hello", …)`, so
 //!   `authenticate` stays peer-only.
 //!

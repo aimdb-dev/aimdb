@@ -1,4 +1,4 @@
-//! End-to-end handshake version gate (design 048 WI1).
+//! End-to-end handshake version gate.
 //!
 //! The AimX server must refuse a client whose declared protocol version is
 //! major-incompatible — or absent — rather than completing `hello` into a

@@ -144,7 +144,7 @@ async fn aimx_roundtrip_over_uds_production_server() {
 
 /// One wildcard subscription fans in every matching record: events arrive
 /// tagged with the concrete record topic, and matched records with a current
-/// value are delivered up front as snapshots (design 045 §3.1/§3.3).
+/// value are delivered up front as snapshots.
 #[tokio::test]
 async fn wildcard_subscribe_fans_in_matching_records() {
     let dir = tempfile::tempdir().unwrap();

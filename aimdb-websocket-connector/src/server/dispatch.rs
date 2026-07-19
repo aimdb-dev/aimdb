@@ -9,10 +9,11 @@
 //! The wire is AimX ([`aimdb_core::session::aimx::AimxCodec`]); this dispatch
 //! only supplies WS-specific semantics on top of the shared vocabulary:
 //! HTTP-upgrade auth, the bus-backed subscribe, and the `record.query` /
-//! `record.list` calls (design 045 §3.4). The `Subscribed` ack and late-join
-//! `Snapshot`s are engine emissions; this session only supplies the snapshot
-//! bytes and the subscription stream.
+//! `record.list` calls. The `Subscribed` ack and late-join `Snapshot`s are
+//! engine emissions; this session only supplies the snapshot bytes and the
+//! subscription stream.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams};
@@ -25,7 +26,7 @@ use serde_json::Value;
 use super::{
     auth::{AuthHandler, ClientId, ClientInfo, Permissions},
     client_manager::{ClientManager, ConnectionGuard},
-    session::{QueryHandler, Router, SnapshotProvider, TopicInfo},
+    session::{QueryHandler, Router, SnapshotProvider},
 };
 
 /// The shared WS dispatch — one `Arc<dyn Dispatch>` per server.
@@ -37,7 +38,9 @@ pub struct WsDispatch {
     pub(crate) snapshot_provider: Arc<dyn SnapshotProvider>,
     pub(crate) query_handler: Option<Arc<dyn QueryHandler>>,
     pub(crate) router: Arc<Router>,
-    pub(crate) known_topics: Arc<Vec<TopicInfo>>,
+    /// Record `type_id` string → data-contract schema name, used to stamp
+    /// `schema_type` onto the `record.list` rows core hands back.
+    pub(crate) schema_by_type: Arc<HashMap<String, String>>,
     pub(crate) auth: Arc<dyn AuthHandler>,
     pub(crate) late_join: bool,
     pub(crate) runtime_ctx: aimdb_core::RuntimeContext,
@@ -74,7 +77,7 @@ impl Dispatch for WsDispatch {
             snapshot_provider: self.snapshot_provider.clone(),
             query_handler: self.query_handler.clone(),
             router: self.router.clone(),
-            known_topics: self.known_topics.clone(),
+            schema_by_type: self.schema_by_type.clone(),
             auth: self.auth.clone(),
             late_join: self.late_join,
             runtime_ctx: self.runtime_ctx.clone(),
@@ -91,7 +94,7 @@ struct WsSession {
     snapshot_provider: Arc<dyn SnapshotProvider>,
     query_handler: Option<Arc<dyn QueryHandler>>,
     router: Arc<Router>,
-    known_topics: Arc<Vec<TopicInfo>>,
+    schema_by_type: Arc<HashMap<String, String>>,
     auth: Arc<dyn AuthHandler>,
     late_join: bool,
     runtime_ctx: aimdb_core::RuntimeContext,
@@ -108,7 +111,20 @@ impl Session for WsSession {
     ) -> BoxFut<'a, Result<Payload, RpcError>> {
         Box::pin(async move {
             let value = match method {
-                "record.list" => serde_json::json!(*self.known_topics),
+                "record.list" => {
+                    // Same `RecordMetadata` rows core serves over every other
+                    // transport; the connector only fills in the schema name core
+                    // can't resolve.
+                    let mut records = self.db.list_records();
+                    for record in &mut records {
+                        if record.schema_type.is_none() {
+                            if let Some(name) = self.schema_by_type.get(&record.type_id) {
+                                record.schema_type = Some(name.clone());
+                            }
+                        }
+                    }
+                    serde_json::json!(records)
+                }
                 "record.query" => {
                     let params: Value = serde_json::from_slice(&params).unwrap_or(Value::Null);
                     self.record_query(params).await?
@@ -164,7 +180,7 @@ impl Session for WsSession {
 
 impl WsSession {
     /// `record.query` with the shared `{name, limit, start, end}` params and
-    /// `{records, total}` result (design 045 §3.4): a plugged-in
+    /// `{records, total}` result: a plugged-in
     /// [`QueryHandler`] wins; otherwise delegate to the Extensions-registered
     /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {

@@ -32,7 +32,7 @@ impl WsServerConnection {
     /// message. Their ids count down from `u64::MAX` so they cannot collide
     /// with client-chosen ids (engine clients allocate from 1 upward); the
     /// resulting events carry these server-side sub ids, so engine-demuxed
-    /// clients should subscribe explicitly instead (design 045 §3.6).
+    /// clients should subscribe explicitly instead.
     pub fn new(ws: WebSocket, peer: PeerInfo, auto_subscribe: &[String]) -> Self {
         let pending = auto_subscribe
             .iter()

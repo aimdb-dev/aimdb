@@ -1,6 +1,6 @@
 //! The `QueryHandlerFn` registered by `with_persistence` produces the shared
 //! `record.query` result shape — `{"records": [{topic, payload, ts}, …],
-//! "total": N}`, rows sorted by `ts` ascending (design 045 §3.4).
+//! "total": N}`, rows sorted by `ts` ascending.
 
 use std::sync::Arc;
 use std::time::Duration;

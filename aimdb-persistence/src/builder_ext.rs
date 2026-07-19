@@ -55,8 +55,8 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
         });
 
         // Register a QueryHandlerFn so AimX record.query can delegate to us.
-        // Result shape is the shared `{records, total}` vocabulary (design 045
-        // §3.4) — one row type (`QueryRecord`) for every transport.
+        // Result shape is the shared `{records, total}` vocabulary — one row type
+        // (`QueryRecord`) for every transport.
         let query_backend = backend.clone();
         let handler: QueryHandlerFn = Box::new(move |params: QueryHandlerParams| {
             let backend = query_backend.clone();

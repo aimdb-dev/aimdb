@@ -4,7 +4,7 @@
 //! [`Connection`]/[`Dialer`] pair drives [`run_client`] with the AimX codec
 //! ([`AimxCodec`]), so reply/subscription correlation, reconnect backoff,
 //! keepalive, and the offline queue all live in
-//! `aimdb-core/src/session/client.rs` — exactly once (design 045 Phase 3).
+//! `aimdb-core/src/session/client.rs` — exactly once.
 //! This module only adapts the JS-event-driven socket to the engine's async
 //! `recv`/`send` interface and maps incoming updates to local buffer pushes.
 //!
@@ -427,9 +427,10 @@ impl WsBridge {
         self.call_as_promise("record.query", params)
     }
 
-    /// List all topics served by the endpoint (AimX `record.list`).
+    /// List all records served by the endpoint (AimX `record.list`).
     ///
-    /// Returns a `Promise<Array>` that resolves with `TopicInfo[]`.
+    /// Returns a `Promise<Array>` that resolves with one record-metadata object
+    /// per record.
     ///
     /// ```ts
     /// const topics = await bridge.listTopics();

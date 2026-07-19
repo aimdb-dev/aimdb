@@ -30,7 +30,7 @@ fn protocol_major(version: &str) -> Option<&str> {
 /// major (2.x → 3.0), a compatible additive change bumps only the minor. A
 /// missing or malformed version string is treated as **incompatible** (fail
 /// closed): a peer that cannot state a version it speaks is exactly the legacy
-/// client this gate exists to turn away (design 048 WI1).
+/// client this gate exists to turn away.
 pub fn version_compatible(their_version: &str) -> bool {
     match (
         protocol_major(their_version),

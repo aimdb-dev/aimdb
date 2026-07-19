@@ -42,7 +42,7 @@ use super::{
 
 /// State shared across upgrade/health handlers. The per-connection session engine
 /// (`run_session`) is driven from [`ws_upgrade_handler`]; only the *accept* loop
-/// stays axum's (Option A, doc 039 § 6).
+/// stays axum's.
 #[derive(Clone)]
 pub(crate) struct ServerState {
     /// Shared application dispatch (one `Arc<dyn Dispatch>` per server).
@@ -149,7 +149,7 @@ async fn ws_upgrade_handler(
     };
 
     // Resolve identity synchronously, before the upgrade, and carry it into the
-    // engine via `PeerInfo::ext` (WS-style `reads_hello:false`, doc 039 § 4).
+    // engine via `PeerInfo::ext` (WS-style `reads_hello:false`).
     let id = state.client_mgr.next_client_id();
     let info = ClientInfo {
         id,
@@ -168,7 +168,7 @@ async fn ws_upgrade_handler(
     let auto_subscribe = state.auto_subscribe.clone();
     let config = SessionConfig {
         limits: SessionLimits {
-            max_connections: usize::MAX, // axum owns the accept loop (Option A)
+            max_connections: usize::MAX, // axum owns the accept loop
             max_subs_per_connection: state.max_subs_per_connection,
         },
         reads_hello: false,
@@ -179,8 +179,8 @@ async fn ws_upgrade_handler(
         let peer = PeerInfo::default().with_ext(Arc::new(info));
         let conn: Box<dyn Connection> =
             Box::new(WsServerConnection::new(socket, peer, &auto_subscribe));
-        // The shared AimX codec + run_session drive this socket (doc 045);
-        // each codec blob rides as one WS text frame.
+        // The shared AimX codec + run_session drive this socket; each codec blob
+        // rides as one WS text frame.
         run_session(conn, &AimxCodec, dispatch.as_ref(), &config).await;
     })
     .into_response()

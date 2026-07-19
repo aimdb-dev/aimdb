@@ -15,7 +15,7 @@
 //!
 //! Both modes speak **AimX** ([`aimdb_core::session::aimx`]) — the same NDJSON
 //! tagged frames as the UDS/serial/TCP connectors, one frame per WS text
-//! message (design 045 retired the separate ws wire protocol).
+//! message. There is no separate WS wire protocol.
 //!
 //! ## Server Quick Start
 //!
@@ -81,9 +81,9 @@
 //!
 //! ## Wire Protocol
 //!
-//! AimX-v2 tagged frames — see [`aimdb_core::session::aimx`] and design doc
-//! 045 for the frame set (`req`/`reply`/`sub`/`subscribed`/`unsub`/`event`/
-//! `snap`/`write`/`ping`/`pong`).
+//! AimX-v2 tagged frames — see [`aimdb_core::session::aimx`] for the frame set
+//! (`req`/`reply`/`sub`/`subscribed`/`unsub`/`event`/`snap`/`write`/`ping`/
+//! `pong`).
 //!
 //! ## Authentication (server only)
 //!
@@ -140,4 +140,4 @@ pub type WsClientConnector = client::WsClientConnectorBuilder;
 pub use aimdb_core::remote::QueryRecord;
 
 #[cfg(feature = "server")]
-pub use server::session::{QueryFuture, QueryHandler, TopicInfo};
+pub use server::session::{QueryFuture, QueryHandler};

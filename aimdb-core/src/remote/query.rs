@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// A boxed async function that accepts query parameters (record pattern, limit,
 /// start/end timestamps) and returns a JSON value with the results, shaped
-/// `{"records": [QueryRecord…], "total": N}` (design 045 §3.4).
+/// `{"records": [QueryRecord…], "total": N}`.
 pub type QueryHandlerFn = Box<
     dyn Fn(
             QueryHandlerParams,

@@ -27,7 +27,7 @@ use aimdb_data_contracts::Streamable;
 use aimdb_core::{pump_sink, router::RouterBuilder, ConnectorBuilder, Dispatch};
 use axum::Router as AxumRouter;
 
-use aimdb_core::{topic_leaf, topic_matches};
+use aimdb_core::topic_matches;
 
 use super::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
@@ -36,7 +36,7 @@ use super::{
     dispatch::WsDispatch,
     http::{build_server_future, ServerState},
     registry::StreamableRegistry,
-    session::{NoSnapshot, QueryHandler, SnapshotProvider, TopicInfo},
+    session::{NoSnapshot, QueryHandler, SnapshotProvider},
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -280,28 +280,11 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 None => Arc::new(NoSnapshot),
             };
 
-            // ── Known topics (for list_topics responses) ──────────
-            // Use the registered streamable types to resolve TypeId → schema name.
-            let topic_type_ids = db.collect_outbound_topic_type_ids("ws");
-            let known_topics: Vec<TopicInfo> = topic_type_ids
-                .into_iter()
-                .map(|(topic, type_id)| {
-                    let schema_type = self
-                        .streamable_registry
-                        .resolve_name(&type_id)
-                        .map(|s| s.to_string());
-                    // Leaf segment of the topic ("sensors.temp.vienna" →
-                    // "vienna"). The server owns the
-                    // naming convention — clients receive the entity as a
-                    // first-class field and never parse topics.
-                    let entity = Some(topic_leaf(&topic).to_string());
-                    TopicInfo {
-                        name: topic,
-                        schema_type,
-                        entity,
-                    }
-                })
-                .collect();
+            // ── Schema names for record.list enrichment ───────────
+            // Core builds each `record.list` row but can't map a `TypeId` to a
+            // data-contract schema name; the connector's registry can, so hand
+            // the dispatch the name lookup to stamp onto core's rows.
+            let schema_by_type = Arc::new(self.streamable_registry.schema_by_type_id());
 
             // ── Shared dispatch (one Arc<dyn Dispatch> per server) ───
             let dispatch: Arc<dyn Dispatch> = Arc::new(WsDispatch {
@@ -310,7 +293,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 snapshot_provider,
                 query_handler: self.query_handler.clone(),
                 router: router.clone(),
-                known_topics: Arc::new(known_topics),
+                schema_by_type,
                 auth: self.auth.clone(),
                 late_join: self.late_join,
                 runtime_ctx: db.runtime_ctx(),

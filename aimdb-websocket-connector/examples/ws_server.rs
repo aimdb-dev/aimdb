@@ -1,5 +1,5 @@
-//! Minimal runnable WebSocket **server** demo (doc 039-validation Layer 5) — the
-//! first real consumer of the connector and a manual-smoke vehicle.
+//! Minimal runnable WebSocket **server** demo — the first real consumer of the
+//! connector and a manual-smoke vehicle.
 //!
 //! Run:
 //! ```text

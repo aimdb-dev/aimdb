@@ -155,8 +155,8 @@ impl Session for AimxSession {
 
 impl AimxSession {
     /// Record keys matching a wildcard pattern. The record set is frozen at
-    /// builder time, so matching once at subscribe time is complete (design
-    /// 045 §3.1 — dynamic membership waits for runtime registration).
+    /// builder time, so matching once at subscribe time is complete — dynamic
+    /// membership would require runtime registration.
     fn matched_keys(&self, pattern: &str) -> Vec<String> {
         self.db
             .list_records()
@@ -368,7 +368,7 @@ impl AimxSession {
     /// A pre-3.x — or version-less — client is refused **here** with
     /// [`RpcError::VersionMismatch`], rather than completing the handshake and
     /// letting the client trip over the new `reply`/`event` shapes on its first
-    /// `record.query` (design 048 WI1, decision 2: hard refusal at `hello`).
+    /// `record.query` — a hard refusal at `hello`.
     fn hello(&self, params: Value) -> Result<Value, RpcError> {
         let version = str_field(&params, "version").unwrap_or_default();
         if !crate::remote::version_compatible(&version) {
@@ -435,8 +435,8 @@ impl AimxSession {
     }
 }
 
-/// Serialize a JSON value into an owned record-value [`Payload`] (one serde pass
-/// at the reply boundary, per doc 037 Decision 1).
+/// Serialize a JSON value into an owned record-value [`Payload`] — one serde
+/// pass at the reply boundary.
 fn to_payload(v: &Value) -> Payload {
     Payload::from(serde_json::to_vec(v).unwrap_or_default().as_slice())
 }

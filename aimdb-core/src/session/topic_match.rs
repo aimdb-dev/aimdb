@@ -115,9 +115,9 @@ mod tests {
 
     #[test]
     fn star_matches_dotted_key_below_top_level() {
-        // The WI3 3a regression: a single-segment-below wildcard must match a
-        // dot-separated key. `temp.*` matches `temp.vienna`, not the old bug
-        // where `/`-splitting compared the literals `"temp.*"` and `"temp.vienna"`.
+        // A single-segment-below wildcard must match a dot-separated key:
+        // `temp.*` matches `temp.vienna`, not the old bug where `/`-splitting
+        // compared the literals `"temp.*"` and `"temp.vienna"`.
         assert!(topic_matches("temp.*", "temp.vienna"));
         assert!(topic_matches("temp.*", "temp.berlin"));
         assert!(!topic_matches("temp.*", "temp"));
