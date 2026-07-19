@@ -29,6 +29,13 @@ use super::{
 use crate::router::RouterBuilder;
 use crate::AimDb;
 
+/// Capacity of a subscription's client-side event sink. Bounded (was
+/// `unbounded`) so a slow consumer can't grow memory without limit under a fast
+/// wildcard set; matches the server's per-connection `EVENT_BUFFER`. On overflow
+/// the run loop drops the event and lets the loss surface as a `seq` gap
+/// (`SubUpdate::skipped`) on the next delivered update.
+const SUBSCRIBE_CHANNEL_CAP: usize = 256;
+
 /// Client engine knobs. Durations are in **milliseconds** so the engine stays
 /// `no_std`-clean; plain milliseconds turned into `core::time::Duration` for the clock.
 #[derive(Debug, Clone)]
@@ -150,7 +157,8 @@ impl ClientHandle {
         &self,
         topic: impl Into<String>,
     ) -> Result<BoxStream<'static, Result<SubUpdate, RpcError>>, RpcError> {
-        let (events, rx) = async_channel::unbounded::<Result<SubUpdate, RpcError>>();
+        let (events, rx) =
+            async_channel::bounded::<Result<SubUpdate, RpcError>>(SUBSCRIBE_CHANNEL_CAP);
         self.enqueue(ClientCmd::Subscribe {
             topic: topic.into(),
             events,
@@ -326,6 +334,11 @@ where
     // sub-id → event sink. The sub-id is `id.to_string()` of the opening
     // request, matching the server's derivation so `Event.sub` routes back.
     let mut subs: HashMap<String, Sender<Result<SubUpdate, RpcError>>> = HashMap::new();
+    // sub-id → last *delivered* wire `seq`. Baseline is 0, so the server's first
+    // seq (`1`) is the expected first delivery; any shortfall is loss. Not
+    // advanced on a locally-dropped event, so a full-channel drop also surfaces
+    // as a gap on the next delivery.
+    let mut last_seq: HashMap<String, u64> = HashMap::new();
     let mut out = Vec::new();
     let keepalive_ms = config.keepalive_interval;
     // Keepalive is deadline-based: activity only records a timestamp (one dyn
@@ -401,26 +414,45 @@ where
                             // stream end instead of re-subscribing forever.
                             if let Some(tx) = subs.remove(&id.to_string()) {
                                 let _ = tx.try_send(Err(err));
+                                last_seq.remove(&id.to_string());
                             }
                         }
                     }
                     Ok(Outbound::Event {
                         sub,
-                        seq: _,
+                        seq,
                         topic,
                         data,
                     }) => {
-                        let dead = match subs.get(sub) {
-                            Some(tx) => tx
-                                .try_send(Ok(SubUpdate {
-                                    topic: topic.map(Arc::from),
-                                    data,
-                                }))
-                                .is_err(),
-                            None => false, // late event for a dropped sub — ignore
-                        };
-                        if dead {
-                            subs.remove(sub);
+                        // Loss = the shortfall between the last delivered seq and
+                        // this one. Server `seq` counts true production (buffer lag
+                        // folded in via `+= skipped + 1`, funnel drops bump then
+                        // drop), so one delta captures every loss point, plus any
+                        // prior local full-channel drop that left `last_seq` behind.
+                        let prev = last_seq.get(sub).copied().unwrap_or(0);
+                        let skipped = seq.saturating_sub(prev + 1);
+                        // `None` here is a late event for a dropped sub — ignore.
+                        if let Some(tx) = subs.get(sub) {
+                            let update = SubUpdate {
+                                topic: topic.map(Arc::from),
+                                data,
+                                skipped,
+                            };
+                            match tx.try_send(Ok(update)) {
+                                // Delivered — advance the per-sub cursor.
+                                Ok(()) => {
+                                    last_seq.insert(sub.to_string(), seq);
+                                }
+                                // Slow consumer: drop this event but leave
+                                // `last_seq` so the shortfall folds into the next
+                                // delivered update's `skipped`.
+                                Err(e) if e.is_full() => {}
+                                // Receiver gone — the sub was dropped; prune it.
+                                Err(_) => {
+                                    subs.remove(sub);
+                                    last_seq.remove(sub);
+                                }
+                            }
                         }
                     }
                     Ok(Outbound::Snapshot { sub, topic, data }) => {

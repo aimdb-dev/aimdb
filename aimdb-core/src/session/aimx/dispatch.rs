@@ -111,8 +111,9 @@ impl Session for AimxSession {
             // Exact-topic fast path: resolve one key, untagged updates.
             let stream = crate::remote::stream::stream_record_updates(&self.db, topic)
                 .map_err(map_db_err)?;
-            Ok(Box::pin(stream.map(|v| SubUpdate::new(to_payload(&v))))
-                as BoxStream<'static, SubUpdate>)
+            Ok(Box::pin(
+                stream.map(|(v, skipped)| SubUpdate::new(to_payload(&v)).with_skipped(skipped)),
+            ) as BoxStream<'static, SubUpdate>)
         })
     }
 
@@ -174,9 +175,9 @@ impl AimxSession {
             match crate::remote::stream::stream_record_updates(&self.db, &key) {
                 Ok(stream) => {
                     let tag: Arc<str> = Arc::from(key.as_str());
-                    streams.push(Box::pin(
-                        stream.map(move |v| SubUpdate::tagged(tag.clone(), to_payload(&v))),
-                    ));
+                    streams.push(Box::pin(stream.map(move |(v, skipped)| {
+                        SubUpdate::tagged(tag.clone(), to_payload(&v)).with_skipped(skipped)
+                    })));
                 }
                 Err(_e) => {
                     log_warn!(

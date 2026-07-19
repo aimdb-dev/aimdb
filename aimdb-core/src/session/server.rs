@@ -337,7 +337,7 @@ async fn pump_subscription(
                 None => break, // stream exhausted
             },
         };
-        seq += 1;
+        seq += update.skipped + 1;
         // Non-blocking: drop on a full funnel (slow-client protection); only a
         // disconnected funnel ends the pump.
         match tx.try_send(SubEvent {

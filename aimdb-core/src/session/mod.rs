@@ -78,12 +78,18 @@ pub struct SubUpdate {
     pub topic: Option<Arc<str>>,
     /// The serialized record value.
     pub data: Payload,
+    /// Count of skipped records
+    pub skipped: u64,
 }
 
 impl SubUpdate {
     /// An untagged update (exact-topic subscription).
     pub fn new(data: Payload) -> Self {
-        Self { topic: None, data }
+        Self {
+            topic: None,
+            data,
+            skipped: 0,
+        }
     }
 
     /// A topic-tagged update (wildcard / bus subscription).
@@ -91,7 +97,16 @@ impl SubUpdate {
         Self {
             topic: Some(topic),
             data,
+            skipped: 0,
         }
+    }
+
+    /// Mark that `n` updates were lost on this subscription immediately before
+    /// this one (`0` leaves the update lossless). Builder form so the server's
+    /// subscribe-stream fold can attach a buffer's `BufferLagged` count.
+    pub fn with_skipped(mut self, n: u64) -> Self {
+        self.skipped = n;
+        self
     }
 }
 
