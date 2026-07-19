@@ -164,6 +164,10 @@ struct WasmWsConnection {
 }
 
 // SAFETY: wasm32 without atomics is single-threaded; see [`SendFuture`].
+// Gated to wasm32 — this crate's `wasm-runtime` feature can be enabled on a
+// native host build (e.g. for testing), where the single-threaded argument
+// does not hold.
+#[cfg(target_arch = "wasm32")]
 unsafe impl Send for WasmWsConnection {}
 
 impl Connection for WasmWsConnection {
@@ -216,6 +220,8 @@ struct WasmWsDialer {
 }
 
 // SAFETY: wasm32 without atomics is single-threaded; see [`SendFuture`].
+// Gated to wasm32 — see the identical note on `WasmWsConnection` above.
+#[cfg(target_arch = "wasm32")]
 unsafe impl Send for WasmWsDialer {}
 
 impl Dialer for WasmWsDialer {
@@ -334,7 +340,10 @@ pub struct WsBridge {
 }
 
 // SAFETY: wasm32-unknown-unknown is single-threaded.
+// Gated to wasm32 — see the identical note on `WasmWsConnection` above.
+#[cfg(target_arch = "wasm32")]
 unsafe impl Send for WsBridge {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl Sync for WsBridge {}
 
 #[wasm_bindgen]

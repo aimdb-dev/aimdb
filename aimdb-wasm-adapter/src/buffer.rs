@@ -411,10 +411,16 @@ pub(crate) struct CancelHandle {
     inner: Rc<CancelInner>,
 }
 
-// SAFETY: wasm32 is single-threaded — no concurrent access possible
+// SAFETY: wasm32 is single-threaded — no concurrent access possible.
+// Gated to wasm32 — `buffer.rs` is not feature-gated and compiles on any
+// host target, where `Rc`-backed types are not actually Send/Sync.
+#[cfg(target_arch = "wasm32")]
 unsafe impl Send for CancelToken {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl Sync for CancelToken {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl Send for CancelHandle {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl Sync for CancelHandle {}
 
 /// Create a linked cancel token/handle pair.
