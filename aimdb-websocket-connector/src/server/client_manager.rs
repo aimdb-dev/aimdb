@@ -153,14 +153,14 @@ mod tests {
     #[tokio::test]
     async fn broadcast_reaches_matching_subscriptions() {
         let mgr = ClientManager::new(256);
-        let (_id, mut stream) = mgr.subscribe("sensors/#");
+        let (_id, mut stream) = mgr.subscribe("sensors.#");
 
-        mgr.broadcast("sensors/temp/vienna", b"22.5").await;
+        mgr.broadcast("sensors.temp.vienna", b"22.5").await;
 
         // Delivery is the raw payload tagged with the real topic — even for the
         // wildcard sub; the envelope is the per-connection codec's job.
         let update = stream.next().await.expect("should receive");
-        assert_eq!(update.topic.as_deref(), Some("sensors/temp/vienna"));
+        assert_eq!(update.topic.as_deref(), Some("sensors.temp.vienna"));
         assert_eq!(&update.data[..], b"22.5");
     }
 
@@ -168,8 +168,8 @@ mod tests {
     async fn non_matching_topic_is_not_delivered() {
         use futures_util::FutureExt;
         let mgr = ClientManager::new(256);
-        let (_id, mut stream) = mgr.subscribe("commands/#");
-        mgr.broadcast("sensors/temp", b"22.5").await;
+        let (_id, mut stream) = mgr.subscribe("commands.#");
+        mgr.broadcast("sensors.temp", b"22.5").await;
         // Nothing queued: the next() future is not ready.
         assert!(stream.next().now_or_never().is_none());
     }

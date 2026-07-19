@@ -231,7 +231,7 @@ async fn server_subscribe_ack_and_wildcard_fanout() {
     let (addr, db) = spawn_default().await;
     let mut c = ws_connect(addr).await;
 
-    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"sensors/#"})).await;
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"sensors.#"})).await;
     // Explicit ack (acks_subscribe:true): the sub id echoes the request id.
     assert_eq!(
         ws_recv(&mut c).await,
@@ -241,10 +241,10 @@ async fn server_subscribe_ack_and_wildcard_fanout() {
 
     // The ack means the bus subscription is registered, so a fan-out reaches us
     // — tagged with the concrete topic the wildcard matched.
-    inject(&db, "sensors/temp/vienna", json!(22.5));
+    inject(&db, "sensors.temp.vienna", json!(22.5));
     let ev = ws_recv_tag(&mut c, "event").await;
     assert_eq!(ev["sub"], "1");
-    assert_eq!(ev["topic"], "sensors/temp/vienna");
+    assert_eq!(ev["topic"], "sensors.temp.vienna");
     assert_eq!(ev["data"], json!(22.5));
 }
 
@@ -288,29 +288,29 @@ async fn server_two_subscriptions_and_unsubscribe() {
 async fn server_late_join_snapshot() {
     let (addr, db) = spawn_default().await;
     // Produce the value first so the late-join cache holds it, then subscribe.
-    inject(&db, "sensors/temp", json!(99));
+    inject(&db, "sensors.temp", json!(99));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut c = ws_connect(addr).await;
-    ws_send(&mut c, json!({"t":"sub","id":4,"topic":"sensors/temp"})).await;
+    ws_send(&mut c, json!({"t":"sub","id":4,"topic":"sensors.temp"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"4"}));
     // The snapshot rides between the ack and the first event, tagged with the
     // subscription that triggered it.
     assert_eq!(
         ws_recv(&mut c).await,
-        json!({"t":"snap","sub":"4","topic":"sensors/temp","data":99})
+        json!({"t":"snap","sub":"4","topic":"sensors.temp","data":99})
     );
 }
 
 #[tokio::test]
 async fn server_wildcard_late_join_snapshots_per_match() {
     let (addr, db) = spawn_default().await;
-    inject(&db, "sensors/temp", json!(1));
-    inject(&db, "sensors/humidity", json!(2));
+    inject(&db, "sensors.temp", json!(1));
+    inject(&db, "sensors.humidity", json!(2));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut c = ws_connect(addr).await;
-    ws_send(&mut c, json!({"t":"sub","id":9,"topic":"sensors/#"})).await;
+    ws_send(&mut c, json!({"t":"sub","id":9,"topic":"sensors.#"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"9"}));
     // One snapshot per cached record under the pattern (order is map order).
     let mut snaps = Vec::new();
@@ -320,7 +320,7 @@ async fn server_wildcard_late_join_snapshots_per_match() {
         snaps.push(s["topic"].as_str().unwrap().to_string());
     }
     snaps.sort();
-    assert_eq!(snaps, vec!["sensors/humidity", "sensors/temp"]);
+    assert_eq!(snaps, vec!["sensors.humidity", "sensors.temp"]);
 }
 
 #[tokio::test]
@@ -474,12 +474,12 @@ async fn client_engine_receives_broadcast_over_real_socket() {
     );
     let driver = tokio::spawn(engine);
 
-    let mut stream = handle.subscribe("sensors/temp").unwrap();
+    let mut stream = handle.subscribe("sensors.temp").unwrap();
 
     // Subscription registration is async; re-inject until the value arrives.
     let mut got = None;
     for _ in 0..100 {
-        inject(&db, "sensors/temp", json!(42));
+        inject(&db, "sensors.temp", json!(42));
         if let Ok(Some(Ok(item))) = timeout(Duration::from_millis(20), stream.next()).await {
             got = Some(item);
             break;
@@ -488,7 +488,7 @@ async fn client_engine_receives_broadcast_over_real_socket() {
     // The record value round-trips; the bus tags every event with its topic.
     let update = got.expect("a value");
     assert_eq!(&update.data[..], b"42");
-    assert_eq!(update.topic.as_deref(), Some("sensors/temp"));
+    assert_eq!(update.topic.as_deref(), Some("sensors.temp"));
 
     drop(handle);
     drop(stream);
@@ -504,16 +504,16 @@ async fn many_clients_fanout() {
     let mut clients = Vec::new();
     for _ in 0..20 {
         let mut c = ws_connect(addr).await;
-        ws_send(&mut c, json!({"t":"sub","id":1,"topic":"evt/#"})).await;
+        ws_send(&mut c, json!({"t":"sub","id":1,"topic":"evt.#"})).await;
         assert_eq!(ws_recv(&mut c).await["t"], "subscribed");
         clients.push(c);
     }
 
     // One broadcast reaches all 20.
-    inject(&db, "evt/x", json!(1));
+    inject(&db, "evt.x", json!(1));
     for c in &mut clients {
         let ev = ws_recv_tag(c, "event").await;
-        assert_eq!(ev["topic"], "evt/x");
+        assert_eq!(ev["topic"], "evt.x");
     }
 }
 
@@ -581,16 +581,16 @@ async fn async_authorize_subscribe_gates_despite_allow_all_permissions() {
 
     // Denied topic: permissions are allow-all, but the *async* hook says no.
     // The refusal is a `reply` carrying the subscribe id + the 3-code error.
-    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"secret/x"})).await;
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"secret.x"})).await;
     assert_eq!(
         ws_recv(&mut c).await,
         json!({"t":"reply","id":1,"err":"denied"})
     );
 
     // An allowed topic still works end-to-end.
-    ws_send(&mut c, json!({"t":"sub","id":2,"topic":"public/x"})).await;
+    ws_send(&mut c, json!({"t":"sub","id":2,"topic":"public.x"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"2"}));
-    inject(&db, "public/x", json!(1));
+    inject(&db, "public.x", json!(1));
     let ev = ws_recv_tag(&mut c, "event").await;
-    assert_eq!(ev["topic"], "public/x");
+    assert_eq!(ev["topic"], "public.x");
 }

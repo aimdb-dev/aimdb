@@ -313,11 +313,11 @@ mod tests {
     fn subscribe_and_unsubscribe_roundtrip() {
         match roundtrip_inbound(Inbound::Subscribe {
             id: 3,
-            topic: "sensors/#".to_string(),
+            topic: "sensors.#".to_string(),
         }) {
             Inbound::Subscribe { id, topic } => {
                 assert_eq!(id, 3);
-                assert_eq!(topic, "sensors/#");
+                assert_eq!(topic, "sensors.#");
             }
             _ => panic!("expected Subscribe"),
         }

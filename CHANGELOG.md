@@ -52,6 +52,21 @@ exported from `aimdb_core::remote`); a missing/malformed version fails closed.
 - Schema-level record migration over AimX (the `Migratable` trait) is
   **out of scope** here and tracked as a follow-up (`with_migration`).
 
+### Changed — Design 048 WI3a: dot is the one topic separator (breaking)
+
+`topic_matches` (wildcard subscribe / WS fan-out) now splits topic patterns on
+**`.` only** — RabbitMQ topic-exchange semantics (dot segments, `*`
+single-level, `#` multi-level). Previously it split on `/`, so a dot-separated
+key like `temp.vienna` (the codebase's dominant key style) silently failed to
+match `temp.*` — a correctness bug. `/` is no longer a segment separator; it
+stays only in external broker addresses (`mqtt://sensors/temp/x`), which are
+unaffected.
+
+- **Breaking:** WebSocket / browser clients must subscribe with dot patterns
+  (`sensors.#`, not `sensors/#`). The WS connector, its e2e suite, ACL topics,
+  and the wasm-adapter README were migrated accordingly.
+- `topic_leaf` (entity extraction) remains tolerant of both `.` and `/`.
+
 ### Changed — Design 045: one wire protocol (AimX) for every transport (breaking)
 
 Implementation of [design 045](docs/design/045-retire-ws-protocol-converge-on-aimx.md)

@@ -202,7 +202,7 @@ impl WebSocketConnectorBuilder {
     /// ```no_run
     /// # use aimdb_websocket_connector::WebSocketConnector;
     /// WebSocketConnector::new()
-    ///     .with_auto_subscribe(["sensors/#"]); // or ["#"] to push everything
+    ///     .with_auto_subscribe(["sensors.#"]); // or ["#"] to push everything
     /// ```
     pub fn with_auto_subscribe(
         mut self,
@@ -290,8 +290,8 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                         .streamable_registry
                         .resolve_name(&type_id)
                         .map(|s| s.to_string());
-                    // Leaf segment of the topic ("temp.vienna" or
-                    // "sensors/temp/vienna" → "vienna"). The server owns the
+                    // Leaf segment of the topic ("sensors.temp.vienna" →
+                    // "vienna"). The server owns the
                     // naming convention — clients receive the entity as a
                     // first-class field and never parse topics.
                     let entity = Some(topic_leaf(&topic).to_string());

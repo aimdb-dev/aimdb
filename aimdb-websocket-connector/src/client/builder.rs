@@ -54,7 +54,7 @@ pub struct WsClientConnectorBuilder {
     /// Maximum queued writes while disconnected (default: 256).
     max_offline_queue: usize,
     /// Topics to subscribe to on the remote server immediately after connect.
-    /// Wildcards supported (e.g., `["sensors/#"]`).
+    /// Wildcards supported (e.g., `["sensors.#"]`).
     subscribe_topics: Vec<String>,
 }
 
@@ -110,7 +110,7 @@ impl WsClientConnectorBuilder {
     /// ```no_run
     /// # use aimdb_websocket_connector::WsClientConnector;
     /// WsClientConnector::new("wss://cloud/ws")
-    ///     .with_subscribe_topics(["sensors/#", "config/#"]);
+    ///     .with_subscribe_topics(["sensors.#", "config.#"]);
     /// ```
     pub fn with_subscribe_topics(
         mut self,

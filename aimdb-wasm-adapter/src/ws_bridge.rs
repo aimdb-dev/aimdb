@@ -67,7 +67,7 @@ impl ConnectionStatus {
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeOptions {
-    /// MQTT-style topic patterns to subscribe to (e.g. `["sensors/#"]`).
+    /// Dot-separated topic patterns to subscribe to (e.g. `["sensors.#"]`).
     #[serde(default)]
     pub subscribe_topics: Vec<String>,
     /// Re-connect automatically on close (default: true).

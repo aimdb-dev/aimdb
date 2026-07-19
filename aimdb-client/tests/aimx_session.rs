@@ -154,7 +154,7 @@ async fn wildcard_subscribe_fans_in_matching_records() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
-    for key in ["temp/vienna", "temp/berlin", "humidity/london"] {
+    for key in ["temp.vienna", "temp.berlin", "humidity.london"] {
         builder.configure::<Setting>(key, |reg| {
             reg.buffer(BufferCfg::SingleLatest).with_remote_access();
         });
@@ -165,14 +165,14 @@ async fn wildcard_subscribe_fans_in_matching_records() {
 
     // Seed one matched record before subscribing — it must arrive as a
     // late-join snapshot on the wildcard stream.
-    db.set_record_from_json("temp/vienna", json!({ "level": 1 }))
+    db.set_record_from_json("temp.vienna", json!({ "level": 1 }))
         .expect("seed vienna");
 
     let conn = AimxConnection::connect(sock.to_str().unwrap())
         .await
         .expect("connect");
     let mut stream = conn
-        .subscribe_with_topics("temp/#")
+        .subscribe_with_topics("temp.#")
         .expect("wildcard subscribe");
 
     // The snapshot for the seeded record arrives first, tagged with its topic.
@@ -180,7 +180,7 @@ async fn wildcard_subscribe_fans_in_matching_records() {
         .await
         .expect("snapshot within timeout")
         .expect("snapshot");
-    assert_eq!(topic.as_deref(), Some("temp/vienna"));
+    assert_eq!(topic.as_deref(), Some("temp.vienna"));
     assert_eq!(value, json!({ "level": 1 }));
 
     // Live updates from both matched records ride the one subscription, each
@@ -188,8 +188,8 @@ async fn wildcard_subscribe_fans_in_matching_records() {
     let db2 = db.clone();
     tokio::spawn(async move {
         for n in 1..=50u64 {
-            let _ = db2.set_record_from_json("temp/berlin", json!({ "level": n }));
-            let _ = db2.set_record_from_json("humidity/london", json!({ "level": n }));
+            let _ = db2.set_record_from_json("temp.berlin", json!({ "level": n }));
+            let _ = db2.set_record_from_json("humidity.london", json!({ "level": n }));
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
@@ -202,11 +202,11 @@ async fn wildcard_subscribe_fans_in_matching_records() {
             Ok(Some((topic, value))) => {
                 let topic = topic.expect("wildcard events are topic-tagged");
                 assert!(
-                    topic.starts_with("temp/"),
+                    topic.starts_with("temp."),
                     "event from outside the pattern: {topic}"
                 );
                 assert!(value.get("level").is_some());
-                if topic == "temp/berlin" {
+                if topic == "temp.berlin" {
                     saw_berlin = true;
                     break;
                 }
