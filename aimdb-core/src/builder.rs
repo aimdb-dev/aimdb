@@ -1132,30 +1132,6 @@ impl AimDb {
         routes
     }
 
-    /// Collect `(topic, TypeId)` pairs for all outbound routes matching `scheme`.
-    ///
-    /// Complements [`collect_outbound_routes`](Self::collect_outbound_routes) when
-    /// callers need to know the concrete record type behind each outbound topic
-    /// (e.g. to resolve a schema name for discovery responses).
-    ///
-    /// The returned TypeId is the `TypeId::of::<T>()` for the record type `T`
-    /// that was used in the corresponding `configure::<T>()` call.
-    pub fn collect_outbound_topic_type_ids(&self, scheme: &str) -> Vec<(String, TypeId)> {
-        let mut result = Vec::new();
-
-        for entry in self.inner.storages.iter() {
-            let type_id = entry.type_id;
-
-            for link in entry.record.outbound_connectors() {
-                if link.url.scheme() != scheme {
-                    continue;
-                }
-                result.push((link.url.resource_id().to_string(), type_id));
-            }
-        }
-
-        result
-    }
 
     /// Collects outbound routes for a specific protocol scheme
     ///
