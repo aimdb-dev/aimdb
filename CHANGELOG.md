@@ -29,6 +29,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Design 048 WI1: AimX protocol version handshake gate (breaking)
+
+`PROTOCOL_VERSION` is bumped **`"2.0"` → `"3.0"`** to mark the design-047/048
+convergence as a breaking wire change (`record.query` results moved from
+`{values, count}` to `{records, total}`; wildcard subscribe / auto-subscribe
+added). The `hello` handshake now **negotiates** the version instead of ignoring
+it: the server refuses a client whose declared major version is incompatible —
+or absent — with a new `RpcError::VersionMismatch` (wire code
+`version_mismatch`), and the client rejects a pre-3.x server's `welcome`
+symmetrically. Compatibility is by **major** version (`version_compatible()`,
+exported from `aimdb_core::remote`); a missing/malformed version fails closed.
+
+- **Breaking:** a pre-3.x client (including any hand-parsing the old
+  `ServerMessage` shape) is refused at `hello` and can no longer connect — it
+  fails fast at the handshake rather than tripping over the new reply shapes on
+  its first call. First-party clients (`aimdb-client`, and the `aimdb-cli` /
+  `aimdb-mcp` tools riding it) declare `"3.0"` and are unaffected.
+- **Caveat carried from design 047 §3.6:** server-seeded auto-subscriptions are
+  invisible to `run_client`-based consumers. Client authors upgrading to 3.0
+  must drive their own `subscribe` for records they want streamed.
+- Schema-level record migration over AimX (the `Migratable` trait) is
+  **out of scope** here and tracked as a follow-up (`with_migration`).
+
 ### Changed — Design 045: one wire protocol (AimX) for every transport (breaking)
 
 Implementation of [design 045](docs/design/045-retire-ws-protocol-converge-on-aimx.md)

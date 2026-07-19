@@ -219,6 +219,12 @@ pub enum RpcError {
     Denied,
     /// The handler failed.
     Internal,
+    /// The peer's declared protocol version is incompatible with this server's
+    /// [`PROTOCOL_VERSION`](crate::remote::PROTOCOL_VERSION). Raised at the
+    /// handshake so an old-version client is refused fast, rather than
+    /// completing `hello` and tripping over the new reply/event shapes on its
+    /// first call.
+    VersionMismatch,
 }
 
 /// Authentication failure raised by [`Dispatch::authenticate`].

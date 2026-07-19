@@ -6,8 +6,8 @@
 
 // Re-export protocol types from aimdb-core
 pub use aimdb_core::remote::{
-    ErrorObject, Event, HelloMessage, RecordMetadata, Request, Response, WelcomeMessage,
-    PROTOCOL_VERSION,
+    version_compatible, ErrorObject, Event, HelloMessage, RecordMetadata, Request, Response,
+    WelcomeMessage, PROTOCOL_VERSION,
 };
 
 /// Client identifier

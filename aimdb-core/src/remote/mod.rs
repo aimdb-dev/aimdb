@@ -54,7 +54,8 @@ pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
 pub use metadata::RecordMetadata;
 pub use protocol::{
-    ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage, PROTOCOL_VERSION,
+    version_compatible, ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage,
+    PROTOCOL_VERSION,
 };
 pub use query::{QueryHandlerFn, QueryHandlerParams, QueryRecord};
 

@@ -101,6 +101,7 @@ fn err_code(e: &RpcError) -> &'static str {
         RpcError::NotFound => "not_found",
         RpcError::Denied => "denied",
         RpcError::Internal => "internal",
+        RpcError::VersionMismatch => "version_mismatch",
     }
 }
 
@@ -108,6 +109,7 @@ fn code_err(s: &str) -> RpcError {
     match s {
         "not_found" => RpcError::NotFound,
         "denied" => RpcError::Denied,
+        "version_mismatch" => RpcError::VersionMismatch,
         _ => RpcError::Internal,
     }
 }
@@ -368,7 +370,12 @@ mod tests {
 
     #[test]
     fn reply_err_codes_roundtrip() {
-        for err in [RpcError::NotFound, RpcError::Denied, RpcError::Internal] {
+        for err in [
+            RpcError::NotFound,
+            RpcError::Denied,
+            RpcError::Internal,
+            RpcError::VersionMismatch,
+        ] {
             let frame = encode_outbound(Outbound::Reply {
                 id: 1,
                 result: Err(err.clone()),

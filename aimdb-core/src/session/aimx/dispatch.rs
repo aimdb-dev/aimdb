@@ -196,7 +196,7 @@ impl AimxSession {
     /// Match the method and produce its JSON result (or an [`RpcError`]).
     async fn dispatch_call(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
         match method {
-            "hello" => Ok(self.welcome()),
+            "hello" => self.hello(params),
             "record.list" => Ok(json!(self.db.list_records())),
             "record.get" => {
                 let name = str_field(&params, "name").ok_or(RpcError::NotFound)?;
@@ -358,6 +358,27 @@ impl AimxSession {
             start,
             end,
         }))
+    }
+
+    /// `hello`: the version-gated handshake.
+    ///
+    /// The client's declared `version` must be major-compatible with this
+    /// server's [`PROTOCOL_VERSION`] ([`version_compatible`](crate::remote::version_compatible)).
+    /// A pre-3.x — or version-less — client is refused **here** with
+    /// [`RpcError::VersionMismatch`], rather than completing the handshake and
+    /// letting the client trip over the new `reply`/`event` shapes on its first
+    /// `record.query` (design 048 WI1, decision 2: hard refusal at `hello`).
+    fn hello(&self, params: Value) -> Result<Value, RpcError> {
+        let version = str_field(&params, "version").unwrap_or_default();
+        if !crate::remote::version_compatible(&version) {
+            log_warn!(
+                "refusing handshake: client protocol version {:?} incompatible with server {}",
+                version,
+                PROTOCOL_VERSION
+            );
+            return Err(RpcError::VersionMismatch);
+        }
+        Ok(self.welcome())
     }
 
     /// Build the `Welcome` from the security policy + writable records.

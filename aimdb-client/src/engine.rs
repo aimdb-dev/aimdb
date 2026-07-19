@@ -27,7 +27,7 @@ use aimdb_core::session::{
 use aimdb_tokio_adapter::TokioAdapter;
 
 use crate::error::{ClientError, ClientResult};
-use crate::protocol::{RecordMetadata, WelcomeMessage};
+use crate::protocol::{version_compatible, RecordMetadata, WelcomeMessage, PROTOCOL_VERSION};
 
 /// Default deadline for the connect handshake (dial + `hello`/Welcome). Bounds
 /// the case where a peer accepts the socket but never replies — the engine has
@@ -114,17 +114,38 @@ impl AimxConnection {
         let engine = tokio::spawn(engine_fut);
 
         let server_info = async {
-            let hello = json!({ "client": "aimdb-client" });
+            let hello = json!({ "client": "aimdb-client", "version": PROTOCOL_VERSION });
             let reply = timeout(connect_timeout, handle.call("hello", to_payload(&hello)?))
                 .await
                 .map_err(|_| ClientError::connection_failed(label, "handshake timed out"))?
-                .map_err(|_| {
-                    ClientError::connection_failed(
+                .map_err(|e| match e {
+                    // The server refused our declared version (design 048 WI1) —
+                    // report it as such, not as an unreachable-engine failure.
+                    RpcError::VersionMismatch => ClientError::connection_failed(
+                        label,
+                        format!(
+                            "protocol version mismatch: server rejected client version {PROTOCOL_VERSION}"
+                        ),
+                    ),
+                    _ => ClientError::connection_failed(
                         label,
                         "handshake failed (engine could not reach server)",
-                    )
+                    ),
                 })?;
-            from_payload::<WelcomeMessage>(&reply)
+            let welcome = from_payload::<WelcomeMessage>(&reply)?;
+            // Reverse gate: a pre-3.x server ignores our `version` and completes
+            // the handshake with an old-shaped `welcome`. Detect that here so a
+            // new client fails fast instead of tripping over the old reply shapes.
+            if !version_compatible(&welcome.version) {
+                return Err(ClientError::connection_failed(
+                    label,
+                    format!(
+                        "protocol version mismatch: server speaks {}, client speaks {PROTOCOL_VERSION}",
+                        welcome.version
+                    ),
+                ));
+            }
+            Ok(welcome)
         }
         .await;
 
