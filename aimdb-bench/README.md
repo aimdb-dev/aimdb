@@ -22,6 +22,10 @@ Plus two informational benches that exercise the full runner-driven pipeline.
 - **Tokio** — `b0_alloc_tokio`, `b1_b2_tokio` (host).
 - **postcard `Linkable` codec** — `b0_alloc_linkable` (host). This isolates the
   issue #177 `encode_into` seam; it is not a whole-connector allocation claim.
+- **Type-erased remote representation** — `b0_alloc_remote_ir` and
+  `b1_b2_remote_ir` compare JSON tree/direct, CBOR-to-JSON, and native CBOR
+  paths for issue #156. `b1_b2_remote_envelope` conditionally compares the
+  production AimX JSON envelope with an isolated native-CBOR consumer.
 - **Embassy** — `b0_alloc_embassy`, `b1_b2_embassy`
   (host). These drive the real [`EmbassyBuffer`] backend via
   `futures::executor::block_on` over embassy-sync's poll methods — no
@@ -61,6 +65,11 @@ cargo bench -p aimdb-bench --bench b0_alloc_linkable
 # B1 + B2 — latency (time/iter) and throughput (msgs/sec), one Criterion suite
 cargo bench -p aimdb-bench --bench b1_b2_tokio
 
+# Issue #156 — allocation, representation latency, and envelope prototype
+cargo bench -p aimdb-bench --bench b0_alloc_remote_ir
+cargo bench -p aimdb-bench --bench b1_b2_remote_ir
+cargo bench -p aimdb-bench --bench b1_b2_remote_envelope
+
 # Embassy buffer backend (host) — same classes
 cargo bench -p aimdb-bench --bench b0_alloc_embassy
 cargo bench -p aimdb-bench --bench b1_b2_embassy
@@ -88,6 +97,35 @@ cargo bench -p aimdb-bench --bench b1_b2_tokio -- --baseline pre-w8
 ```
 
 Criterion writes HTML reports to `target/criterion/`.
+
+---
+
+## JSON/CBOR remote representation
+
+The shared fixtures cover numeric telemetry, nested state, and a byte-heavy
+record. Every representation is measured in both directions:
+
+| Path | Purpose |
+|---|---|
+| `json_tree` | current `T -> serde_json::Value -> bytes` model |
+| `json_direct` | control that removes only the dynamic JSON tree |
+| `cbor_json_transcode` | CBOR dynamic tree forced back through a JSON edge |
+| `cbor_tree_native` | dynamic native-CBOR consumer |
+| `cbor_direct` | control that isolates the dynamic CBOR tree cost |
+
+The envelope target runs request, write, and subscription-event flows. Its JSON
+paths use the production `AimxCodec`; the CBOR protocol is benchmark-only and
+does not modify `EnvelopeCodec` or a connector. It carries the record's CBOR
+bytes opaquely inside a CBOR byte string and decodes them to `ciborium::Value`
+at the consumer.
+
+The measured decision is documented in
+[`docs/design/046-cbor-self-describing-remote-access.md`](../docs/design/046-cbor-self-describing-remote-access.md):
+keep JSON for current consumers, avoid CBOR-to-JSON transcoding, and pursue a
+native binary edge only for a concrete byte-heavy workload with negotiation
+and bounded decoding. The isolated Cortex-M code-size comparison and exact
+commands live in
+[`fixtures/remote-representation-footprint`](fixtures/remote-representation-footprint/README.md).
 
 ---
 

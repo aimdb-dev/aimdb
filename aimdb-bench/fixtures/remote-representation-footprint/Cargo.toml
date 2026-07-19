@@ -1,0 +1,40 @@
+[package]
+name = "remote-representation-footprint"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Keep this measurement fixture out of AimDB's workspace dependency graph and
+# lockfile. It exists only to link two comparable Cortex-M images.
+[workspace]
+
+[features]
+default = []
+json = ["dep:serde_json"]
+cbor = ["dep:ciborium"]
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"], optional = true }
+ciborium = { version = "0.2.2", default-features = false, optional = true }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+embedded-alloc = { version = "0.6", features = ["llff"] }
+
+[[bin]]
+name = "remote-repr-json"
+path = "src/bin/json.rs"
+required-features = ["json"]
+
+[[bin]]
+name = "remote-repr-cbor"
+path = "src/bin/cbor.rs"
+required-features = ["cbor"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = 0
+strip = false

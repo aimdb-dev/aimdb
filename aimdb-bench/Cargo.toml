@@ -44,6 +44,18 @@ harness = false
 name = "b0_alloc_linkable"
 harness = false
 
+[[bench]]
+name = "b0_alloc_remote_ir"
+harness = false
+
+[[bench]]
+name = "b1_b2_remote_ir"
+harness = false
+
+[[bench]]
+name = "b1_b2_remote_envelope"
+harness = false
+
 [features]
 default = ["std"]
 # Gates `profiles`/`reports`/`harness` and their criterion/serde_json/
@@ -55,6 +67,7 @@ std = [
     "dep:tokio",
     "dep:serde",
     "dep:serde_json",
+    "dep:ciborium",
     "dep:criterion",
     "dep:futures",
     "dep:aimdb-data-contracts",
@@ -88,6 +101,9 @@ tokio = { workspace = true, optional = true }
 # JSON output for baseline snapshots
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+# Issue #156 prototype dependency. This stays isolated in the unpublished
+# benchmark crate while we measure whether a production CBOR path is justified.
+ciborium = { version = "0.2.2", default-features = false, optional = true }
 
 # migration_chain! for the b0_alloc_migration bench — std-gated like
 # criterion/serde_json above, since that's the only bench that needs it.

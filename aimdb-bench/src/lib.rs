@@ -22,7 +22,10 @@
 //! | `benches/b1_b2_tokio.rs`          | B1+B2 | Latency (time/iter) + throughput (Tokio) |
 //! | `benches/b0_alloc_embassy.rs`     | B0    | Per-message allocation (Embassy buffer)  |
 //! | `benches/b0_alloc_linkable.rs`    | B0    | Postcard `Linkable::encode_into` allocs  |
+//! | `benches/b0_alloc_remote_ir.rs`   | B0    | JSON/CBOR remote-IR allocation comparison|
 //! | `benches/b1_b2_embassy.rs`        | B1+B2 | Latency (time/iter) + throughput (Embassy)|
+//! | `benches/b1_b2_remote_ir.rs`      | B1+B2 | JSON/CBOR remote-IR latency + throughput |
+//! | `benches/b1_b2_remote_envelope.rs`| B1+B2 | Native consumer envelope prototype       |
 //! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
 //! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
 //! | `benches/b0_alloc_migration.rs`   | B0    | Per-call allocation (migrate_from_bytes) |
@@ -40,5 +43,9 @@ pub mod payloads;
 #[cfg(feature = "std")]
 pub mod profiles;
 pub mod profiles_embassy;
+#[cfg(feature = "std")]
+pub mod remote_envelope;
+#[cfg(feature = "std")]
+pub mod remote_ir;
 #[cfg(feature = "std")]
 pub mod reports;

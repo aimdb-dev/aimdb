@@ -66,6 +66,7 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
  "aimdb-tokio-adapter",
+ "ciborium",
  "criterion",
  "critical-section",
  "defmt 1.0.1",
