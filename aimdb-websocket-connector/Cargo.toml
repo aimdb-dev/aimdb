@@ -77,3 +77,10 @@ required-features = ["server"]
 [[example]]
 name = "ws_client"
 required-features = ["client"]
+
+# H-A socket-driven fan-out benchmark (design 048 WI4). Custom timing harness;
+# raw tokio-tungstenite clients (a dev-dependency) against the real server.
+[[bench]]
+name = "fanout_socket"
+harness = false
+required-features = ["server"]
