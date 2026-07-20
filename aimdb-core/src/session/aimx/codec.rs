@@ -122,6 +122,34 @@ fn write_frame(out: &mut alloc::vec::Vec<u8>, frame: &Frame<'_>) -> Result<(), C
     Ok(())
 }
 
+/// Encode a frame whose `data` field is already-serialized JSON (a record
+/// serializer's output), splicing `data` verbatim instead of re-validating it
+/// into a [`RawValue`]. Outbound event payloads are trusted-valid, so `as_raw`'s
+/// O(payload) scan is redundant — and on a fan-out subscription it would run
+/// once *per subscriber* over the shared payload (design 048 WI4, Improvement A).
+///
+/// `frame` must carry `data = None` so serde emits every other field; the
+/// spliced `data` is appended as the final member. Byte-identical to serializing
+/// the same frame with `data = Some(as_raw(payload))`, since `data` is the last
+/// field in declaration order.
+fn write_frame_splicing_data(
+    out: &mut alloc::vec::Vec<u8>,
+    frame: &Frame<'_>,
+    data: &[u8],
+) -> Result<(), CodecError> {
+    debug_assert!(frame.data.is_none(), "data must be spliced, not serialized");
+    let scaffold = serde_json::to_vec(frame).map_err(|_| CodecError::Malformed)?;
+    // A `Frame` always serializes to a JSON object closed by `}`.
+    let Some((&b'}', head)) = scaffold.split_last() else {
+        return Err(CodecError::Malformed);
+    };
+    out.extend_from_slice(head);
+    out.extend_from_slice(br#","data":"#);
+    out.extend_from_slice(data);
+    out.push(b'}');
+    Ok(())
+}
+
 impl EnvelopeCodec for AimxCodec {
     // --- server direction: read a request, write a reply/event -------------
     fn decode(&self, frame: &[u8]) -> Result<Inbound, CodecError> {
@@ -171,13 +199,13 @@ impl EnvelopeCodec for AimxCodec {
                 topic,
                 data,
             } => {
-                let raw = as_raw(&data)?;
                 let mut frame = Frame::tagged("event");
                 frame.sub = Some(sub);
                 frame.seq = Some(seq);
                 frame.topic = topic;
-                frame.data = Some(raw);
-                write_frame(out, &frame)
+                // `data` is spliced verbatim (Improvement A) — see
+                // `write_frame_splicing_data`.
+                write_frame_splicing_data(out, &frame, &data)
             }
             Outbound::Snapshot { sub, topic, data } => {
                 let raw = as_raw(&data)?;
@@ -426,6 +454,35 @@ mod tests {
             }
             _ => panic!("expected Event"),
         }
+    }
+
+    /// The verbatim-splice event encode (Improvement A) must be byte-identical
+    /// to the previous `data = Some(as_raw(payload))` serde path — the record
+    /// payload is spliced unchanged as the final `data` member, in both the
+    /// with-topic and without-topic layouts.
+    #[test]
+    fn event_encode_splices_data_byte_for_byte() {
+        let with_topic = encode_outbound(Outbound::Event {
+            sub: "5",
+            seq: 9,
+            topic: Some("temp.vienna"),
+            data: payload(r#"{"c":21.5,"a":[1,2,3]}"#),
+        });
+        assert_eq!(
+            with_topic,
+            br#"{"t":"event","seq":9,"topic":"temp.vienna","sub":"5","data":{"c":21.5,"a":[1,2,3]}}"#
+        );
+
+        let without_topic = encode_outbound(Outbound::Event {
+            sub: "5",
+            seq: 2,
+            topic: None,
+            data: payload("42"),
+        });
+        assert_eq!(
+            without_topic,
+            br#"{"t":"event","seq":2,"sub":"5","data":42}"#
+        );
     }
 
     #[test]
