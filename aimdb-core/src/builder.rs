@@ -1132,7 +1132,6 @@ impl AimDb {
         routes
     }
 
-
     /// Collects outbound routes for a specific protocol scheme
     ///
     /// Mirrors `collect_inbound_routes()` for symmetry. Iterates all records,
