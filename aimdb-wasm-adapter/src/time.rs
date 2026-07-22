@@ -21,13 +21,17 @@ use core::task::{Context, Poll};
 ///
 /// # Safety
 ///
-/// Only ever polled on `wasm32-unknown-unknown` without the `atomics` /
-/// shared-memory proposal — single-threaded by construction (see the compile
-/// guard below), so the inner future is never actually sent between threads.
-/// The `Send` impl is unconditional (not gated to `target_arch = "wasm32"`) so
-/// this type is also `Send` in the native test lane, where the WASM bridge
-/// compiles — to satisfy the same `dyn Future + Send` coercions — but never
-/// runs.
+/// `wasm-runtime` is a wasm32-only feature in practice: the JS-driven bridge it
+/// gates (`ws_bridge`) holds `Rc`/`Closure` state that is genuinely `!Send`, so
+/// the crate only compiles for `wasm32-unknown-unknown` once the feature is on
+/// (the native `cargo test` lane runs `--no-default-features`, which compiles
+/// this type and the bridge out entirely). That leaves
+/// `wasm32-unknown-unknown` without the `atomics` / shared-memory proposal as
+/// the only configuration where the `Send` impl is live — single-threaded by
+/// construction, so the inner future is never actually sent between threads.
+/// The `compile_error!` guard below is the backstop: enabling wasm threads
+/// invalidates that reasoning and fails the build rather than silently
+/// producing UB.
 #[cfg(feature = "wasm-runtime")]
 pub(crate) struct SendFuture<F>(pub(crate) F);
 
@@ -39,8 +43,8 @@ compile_error!(
      Disable the `atomics` target feature or provide a thread-safe implementation."
 );
 
-// SAFETY: see the type's docs — wasm32 (without atomics) is single-threaded, and
-// the native lane only compiles (never polls) this type.
+// SAFETY: see the type's docs — with `wasm-runtime` on, the only target this
+// compiles for is wasm32 (without atomics), which is single-threaded.
 #[cfg(feature = "wasm-runtime")]
 unsafe impl<F> Send for SendFuture<F> {}
 

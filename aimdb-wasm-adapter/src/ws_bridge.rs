@@ -173,7 +173,7 @@ unsafe impl Send for WasmWsConnection {}
 impl Connection for WasmWsConnection {
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
         // `Ok(None)` when the frame funnel closes (socket closed/errored).
-        Box::pin(SendFuture(async move { Ok(self.frames.next().await) }))
+        Box::pin(async move { Ok(self.frames.next().await) })
     }
 
     fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFut<'a, TransportResult<()>> {
