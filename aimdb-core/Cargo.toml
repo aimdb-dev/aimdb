@@ -35,10 +35,10 @@ alloc = ["serde"] # Enable heap in no_std
 # `RecordValue::as_json()`) plus the AimX remote-access data model
 # (`crate::remote`): record metadata + introspection (`RecordMetadata`,
 # `AimDb::list_records`), the JSON read/write/subscribe API
-# (`try_latest_as_json` / `set_record_from_json` / `JsonBufferReader`), and
-# the wire protocol/config/security/error types. The AimX *server* dispatch
-# (`session::aimx`) additionally needs `connector-session`. All compiles on
-# `no_std + alloc`.
+# (`try_latest_as_json[_bytes]` / `set_record_from_json` /
+# `JsonBufferReader`), and the wire protocol/config/security/error types. The
+# AimX *server* dispatch (`session::aimx`) additionally needs
+# `connector-session`. All compiles on `no_std + alloc`.
 remote = ["alloc", "serde_json"]
 
 # The connector-session substrate (`crate::session`): the dyn-safe trait set

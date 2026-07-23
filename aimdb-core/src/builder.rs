@@ -218,6 +218,22 @@ impl AimDbInner {
             .latest_json()
     }
 
+    /// Try to get a record's latest value as owned JSON bytes.
+    ///
+    /// This is the byte-oriented sibling of
+    /// [`try_latest_as_json`](Self::try_latest_as_json). The built-in Serde
+    /// codec serializes the typed record directly; compatibility codecs may
+    /// inherit a `Value`-based fallback.
+    #[cfg(feature = "remote")]
+    pub fn try_latest_as_json_bytes(&self, record_key: &str) -> Option<Vec<u8>> {
+        let id = self.resolve_str(record_key)?;
+        self.storages
+            .get(id.index())?
+            .record
+            .json_access()?
+            .latest_json_bytes()
+    }
+
     /// Sets a record value from JSON (remote access API)
     ///
     /// Deserializes the JSON value and writes it to the record's buffer.
@@ -1060,6 +1076,17 @@ impl AimDb {
     #[cfg(feature = "remote")]
     pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
         self.inner.try_latest_as_json(record_name)
+    }
+
+    /// Try to get a record's latest value as owned JSON bytes.
+    ///
+    /// Semantics match [`try_latest_as_json`](Self::try_latest_as_json):
+    /// buffers without a canonical latest value (notably `SpmcRing`) return
+    /// `None`. AimX `record.get` retains its per-connection drain fallback for
+    /// those records.
+    #[cfg(feature = "remote")]
+    pub fn try_latest_as_json_bytes(&self, record_name: &str) -> Option<Vec<u8>> {
+        self.inner.try_latest_as_json_bytes(record_name)
     }
 
     /// Sets a record value from JSON (remote access API)
