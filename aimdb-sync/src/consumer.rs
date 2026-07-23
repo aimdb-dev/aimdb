@@ -24,7 +24,7 @@ use std::time::Duration;
 /// # use serde::{Serialize, Deserialize};
 /// # #[derive(Debug, Clone, Serialize, Deserialize)]
 /// # struct Temperature { celsius: f32 }
-/// # fn example(consumer: &SyncConsumer<Temperature>) -> Result<(), Box<dyn std::error::Error>> {
+/// # fn example(consumer: &SyncConsumer<Temperature>) -> SyncResult<()> {
 /// // Get value (blocks until available)
 /// let temp = consumer.get()?;
 /// println!("Temperature: {}°C", temp.celsius);
@@ -81,13 +81,14 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -119,14 +120,15 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -160,13 +162,14 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -207,13 +210,14 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -258,14 +262,15 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # #[cfg(feature = "std")]
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;

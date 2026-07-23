@@ -46,15 +46,16 @@
 //! ```no_run
 //! use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-//! use aimdb_sync::AimDbBuilderSyncExt;
+//! use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
 //! use std::sync::Arc;
 //!
 //! #[derive(Debug, Clone)]
 //! struct Temperature {
 //!     celsius: f32,
 //! }
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Guard againts the use of TokioAdapter in case of "std"
+//! # #[cfg(feature = "std")]
+//! # fn main() -> SyncResult<()> {
 //! // Build and attach database (NO #[tokio::main] NEEDED!)
 //! let adapter = Arc::new(TokioAdapter::new()?);
 //! let mut builder = AimDbBuilder::new().runtime(adapter);
@@ -114,9 +115,9 @@
 //! will receive each value. For independent subscriptions, create multiple consumers:
 //!
 //! ```no_run
-//! # use aimdb_sync::AimDbHandle;
+//! # use aimdb_sync::{AimDbHandle, SyncResult};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//! # fn demo(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+//! # fn demo(handle: &AimDbHandle) -> SyncResult<()> {
 //! let consumer1 = handle.consumer::<Temperature>("sensor.temp")?;
 //! let consumer2 = handle.consumer::<Temperature>("sensor.temp")?;
 //!
@@ -131,11 +132,11 @@
 //! You can customize this per record type using the `_with_capacity` methods:
 //!
 //! ```no_run
-//! # use aimdb_sync::AimDbHandle;
+//! # use aimdb_sync::{AimDbHandle, SyncResult};
 //! # #[derive(Debug, Clone)] struct SensorData { value: f32 }
 //! # #[derive(Debug, Clone)] struct RareEvent { code: u8 }
 //! # #[derive(Debug, Clone)] struct LatestOnly { state: u8 }
-//! # fn demo(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+//! # fn demo(handle: &AimDbHandle) -> SyncResult<()> {
 //! // High-frequency sensor data needs larger buffer
 //! let producer = handle.producer_with_capacity::<SensorData>("sensor.fast", 1000)?;
 //!
@@ -167,8 +168,9 @@
 //!
 //! 1. **Use `get_latest()`** - Drains the channel to get the most recent value:
 //!    ```no_run
+//!    # use aimdb_sync::SyncResult;
 //!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> aimdb_sync::SyncResult<()> {
+//!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> SyncResult<()> {
 //!    // Always get the latest value, skipping queued intermediates
 //!    let latest = consumer.get_latest()?;
 //!    # Ok(())
@@ -223,13 +225,14 @@
 //!
 //! ```no_run
 //! # use aimdb_sync::{DbError, SyncError, SyncProducer};
+//! # use aimdb_core::{log_error};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
 //! # fn demo(producer: &SyncProducer<Temperature>, data: Temperature) {
 //! // Errors are properly propagated to the caller
 //! match producer.set(data) {
 //!     Ok(()) => println!("Successfully produced"),
-//!     Err(SyncError::Db(DbError::RecordKeyNotFound { .. })) => eprintln!("Record not registered"),
-//!     Err(e) => eprintln!("Production failed: {}", e),
+//!     Err(SyncError::Db(DbError::RecordKeyNotFound { .. })) => log_error!("Record not registered"),
+//!     Err(e) => log_error!("Production failed: {}", e),
 //! }
 //! # }
 //! ```
@@ -242,6 +245,8 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+extern crate alloc;
 
 mod consumer;
 mod error;
