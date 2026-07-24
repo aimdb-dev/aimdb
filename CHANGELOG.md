@@ -46,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   codec replaces both the owned and scratch serializers, so changing a route
   from bounded postcard to owned JSON cannot retain stale postcard output.
 
+### Added — direct JSON remote-access payloads
+
+- **Issue #196:** state `record.get` and AimX subscription events now serialize
+  typed records directly to JSON bytes and hand them to the existing opaque
+  `Payload`/`RawValue` envelope path, avoiding an intermediate
+  `serde_json::Value`. All public tree APIs and manual codec/reader
+  implementations remain compatible through defaulted byte methods; AimX v2,
+  write parsing/safety, ring drain fallback, WebSocket/client/CLI/MCP/WASM
+  behavior and `no_std + alloc` support are unchanged. The focused in-memory
+  production-boundary gate records 16 → 6 allocation calls per reply/event and
+  a 1.55x–1.61x Criterion slope-estimate speedup on the measured host.
+  ([aimdb-core](aimdb-core/CHANGELOG.md))
+
 ### Changed — Design 038 simplification pass (breaking)
 
 Implementation of the accepted items of [design 038](docs/design/038-technical-debt-and-simplification-review.md)

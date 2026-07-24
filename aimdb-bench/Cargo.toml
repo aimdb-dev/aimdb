@@ -44,6 +44,14 @@ harness = false
 name = "b0_alloc_linkable"
 harness = false
 
+[[bench]]
+name = "b0_alloc_remote_json"
+harness = false
+
+[[bench]]
+name = "b1_b2_remote_json"
+harness = false
+
 [features]
 default = ["std"]
 # Gates `profiles`/`reports`/`harness` and their criterion/serde_json/
