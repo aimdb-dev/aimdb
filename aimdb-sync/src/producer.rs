@@ -245,6 +245,7 @@ where
     /// ```no_run
     /// # #[cfg(feature = "data-contracts")]
     /// # #[cfg(feature = "std")]
+    /// # use aimdb_sync::SyncResult;
     /// # fn main() -> SyncResult<()> {
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_data_contracts::{SchemaType, Settable};
