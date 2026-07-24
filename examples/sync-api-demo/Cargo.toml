@@ -6,16 +6,24 @@ license.workspace = true
 description = "AimDB example demonstrating synchronous API usage"
 publish = false
 
+[features]
+# Demo cases where AimDBHandle is properly detached
+graceful-shutdown = []
+
 [dependencies]
 # AimDB dependencies
 aimdb-core = { path = "../../aimdb-core", features = ["std"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
 ] }
-aimdb-sync = { path = "../../aimdb-sync" }
+aimdb-sync = { path = "../../aimdb-sync", features = ["tracing"] }
 
 # Runtime for initialization
 tokio = { workspace = true, features = ["full"] }
+
+# For tracing
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
