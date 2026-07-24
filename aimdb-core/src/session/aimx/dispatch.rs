@@ -128,9 +128,10 @@ impl Session for AimxSession {
             // Exact-topic fast path: resolve one key, untagged updates.
             let stream = crate::remote::stream::stream_record_updates(&self.db, topic)
                 .map_err(map_db_err)?;
-            Ok(Box::pin(
-                stream.map(|(data, skipped)| SubUpdate::new(data).with_skipped(skipped)),
-            ) as BoxStream<'static, SubUpdate>)
+            Ok(
+                Box::pin(stream.map(|(data, skipped)| SubUpdate::new(data).with_skipped(skipped)))
+                    as BoxStream<'static, SubUpdate>,
+            )
         })
     }
 
