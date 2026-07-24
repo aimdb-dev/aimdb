@@ -391,7 +391,6 @@ version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
- "aimdb-ws-protocol",
  "futures",
  "futures-channel",
  "futures-util",
@@ -412,7 +411,6 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-tokio-adapter",
- "aimdb-ws-protocol",
  "axum",
  "dashmap",
  "futures-util",
@@ -422,14 +420,6 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tower-http",
  "tracing",
-]
-
-[[package]]
-name = "aimdb-ws-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1457,6 +1447,7 @@ version = "0.9.1"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
+ "embassy-futures",
  "embassy-net-driver",
  "embassy-sync",
  "embassy-time",

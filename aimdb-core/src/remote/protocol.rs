@@ -11,9 +11,35 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-/// Version of the AimX wire protocol spoken by this crate (v2 NDJSON tagged
-/// frames; not backward-compatible with the legacy v1 framing).
-pub const PROTOCOL_VERSION: &str = "2.0";
+/// Version of the AimX wire protocol spoken by this crate.
+pub const PROTOCOL_VERSION: &str = "3.0";
+
+/// Major-version component of a `"MAJOR.MINOR"` protocol string, or `None` if it
+/// is empty or not in that shape.
+fn protocol_major(version: &str) -> Option<&str> {
+    match version.split('.').next() {
+        Some(major) if !major.is_empty() => Some(major),
+        _ => None,
+    }
+}
+
+/// Whether a peer advertising `their_version` is wire-compatible with this
+/// crate's [`PROTOCOL_VERSION`].
+///
+/// Compatibility is by **major** version — a breaking wire change bumps the
+/// major (2.x → 3.0), a compatible additive change bumps only the minor. A
+/// missing or malformed version string is treated as **incompatible** (fail
+/// closed): a peer that cannot state a version it speaks is exactly the legacy
+/// client this gate exists to turn away.
+pub fn version_compatible(their_version: &str) -> bool {
+    match (
+        protocol_major(their_version),
+        protocol_major(PROTOCOL_VERSION),
+    ) {
+        (Some(theirs), Some(ours)) => theirs == ours,
+        _ => false,
+    }
+}
 
 /// Client hello message
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,8 +203,26 @@ mod tests {
         };
 
         let json = serde_json::to_string(&hello).unwrap();
-        assert!(json.contains("\"version\":\"2.0\""));
+        assert!(json.contains("\"version\":\"3.0\""));
         assert!(json.contains("\"client\":\"test-client\""));
+    }
+
+    #[test]
+    fn version_compatible_matches_on_major() {
+        // Same major (current + a hypothetical future minor) → compatible.
+        assert!(version_compatible(PROTOCOL_VERSION));
+        assert!(version_compatible("3.0"));
+        assert!(version_compatible("3.7"));
+        assert!(version_compatible("3")); // bare major
+
+        // Older major (the legacy WS-era wire) → refused.
+        assert!(!version_compatible("2.0"));
+        assert!(!version_compatible("1.0"));
+
+        // Missing / malformed → fail closed.
+        assert!(!version_compatible(""));
+        assert!(!version_compatible(".0"));
+        assert!(!version_compatible("garbage"));
     }
 
     #[test]

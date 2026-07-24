@@ -24,9 +24,17 @@ use hashbrown::HashMap;
 
 use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
+    SubUpdate, TransportError,
 };
 use crate::router::RouterBuilder;
 use crate::AimDb;
+
+/// Capacity of a subscription's client-side event sink. Bounded (was
+/// `unbounded`) so a slow consumer can't grow memory without limit under a fast
+/// wildcard set; matches the server's per-connection `EVENT_BUFFER`. On overflow
+/// the run loop drops the event and lets the loss surface as a `seq` gap
+/// (`SubUpdate::skipped`) on the next delivered update.
+const SUBSCRIBE_CHANNEL_CAP: usize = 256;
 
 /// Client engine knobs. Durations are in **milliseconds** so the engine stays
 /// `no_std`-clean; plain milliseconds turned into `core::time::Duration` for the clock.
@@ -51,10 +59,6 @@ pub struct ClientConfig {
     /// Cap on caller commands buffered while disconnected (oldest dropped past it).
     /// Defaults to `usize::MAX` (unbounded).
     pub max_offline_queue: usize,
-    /// Key the subscription demux by **topic** instead of the request `id`.
-    /// `false` (default): events echo the id. `true`: the wire pushes data keyed
-    /// by topic, so `decode_outbound` returns the topic as `Event.sub`.
-    pub topic_routed_subs: bool,
     /// Send a Ping handshake on connect and await the Pong before serving caller
     /// commands. A real protocol swaps Ping/Pong for its Hello.
     pub sends_hello: bool,
@@ -69,7 +73,6 @@ impl Default for ClientConfig {
             max_reconnect_attempts: 0,
             keepalive_interval: None,
             max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
             sends_hello: false,
         }
     }
@@ -107,7 +110,7 @@ enum ClientCmd {
     },
     Subscribe {
         topic: String,
-        events: Sender<Payload>,
+        events: Sender<Result<SubUpdate, RpcError>>,
     },
     Write {
         topic: String,
@@ -141,18 +144,26 @@ impl ClientHandle {
 
     /// Open a subscription; returns the stream of updates immediately (the engine
     /// sends the `Subscribe` request asynchronously). Dropping the stream stops
-    /// local delivery. The stream ends on disconnect and is not re-subscribed on
-    /// reconnect (see [`ClientConfig::reconnect`]) — re-call to resume.
+    /// local delivery. The stream is not re-subscribed on reconnect (see
+    /// [`ClientConfig::reconnect`]) — re-call to resume.
+    ///
+    /// Each item is `Ok(`[`SubUpdate`]`)` for a delivered update, carrying the
+    /// concrete record topic when the server tags it (wildcard subscriptions fan
+    /// in many records under this one stream). A server rejection surfaces as a
+    /// terminal `Err(`[`RpcError`]`)` item, letting the caller distinguish a
+    /// denied subscription (do not retry) from a disconnect-shaped stream end
+    /// (retry to resume).
     pub fn subscribe(
         &self,
         topic: impl Into<String>,
-    ) -> Result<BoxStream<'static, Payload>, RpcError> {
-        let (events, rx) = async_channel::unbounded::<Payload>();
+    ) -> Result<BoxStream<'static, Result<SubUpdate, RpcError>>, RpcError> {
+        let (events, rx) =
+            async_channel::bounded::<Result<SubUpdate, RpcError>>(SUBSCRIBE_CHANNEL_CAP);
         self.enqueue(ClientCmd::Subscribe {
             topic: topic.into(),
             events,
         })?;
-        // The receiver is itself a `Stream<Item = Payload>`.
+        // The receiver is itself a `Stream<Item = SubUpdate>`.
         Ok(Box::pin(rx))
     }
 
@@ -245,8 +256,16 @@ async fn client_loop<D, C>(
                 attempt = 0;
                 conn
             }
-            Err(_e) => {
-                log_warn!("client dial failed: {:?}", _e);
+            Err(e) => {
+                log_warn!("client dial failed: {:?}", e);
+                // `Closed` is terminal — the dialer signals it will never succeed
+                // again (e.g. the caller stopped the bridge), so retrying would
+                // spin a permanently-failing redial forever. Only transient
+                // failures (`Io`) earn a backoff+retry. Other transports' dialers
+                // map connect failures to `Io`, never `Closed`, so this is safe.
+                if e == TransportError::Closed {
+                    return;
+                }
                 match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
                     true => continue,
                     false => return,
@@ -314,7 +333,12 @@ where
     let mut pending: HashMap<u64, oneshot::Sender<Result<Payload, RpcError>>> = HashMap::new();
     // sub-id → event sink. The sub-id is `id.to_string()` of the opening
     // request, matching the server's derivation so `Event.sub` routes back.
-    let mut subs: HashMap<String, Sender<Payload>> = HashMap::new();
+    let mut subs: HashMap<String, Sender<Result<SubUpdate, RpcError>>> = HashMap::new();
+    // sub-id → last *delivered* wire `seq`. Baseline is 0, so the server's first
+    // seq (`1`) is the expected first delivery; any shortfall is loss. Not
+    // advanced on a locally-dropped event, so a full-channel drop also surfaces
+    // as a gap on the next delivery.
+    let mut last_seq: HashMap<String, u64> = HashMap::new();
     let mut out = Vec::new();
     let keepalive_ms = config.keepalive_interval;
     // Keepalive is deadline-based: activity only records a timestamp (one dyn
@@ -381,26 +405,59 @@ where
                     Ok(Outbound::Reply { id, result }) => {
                         if let Some(tx) = pending.remove(&id) {
                             let _ = tx.send(result);
-                        } else if result.is_err() {
+                        } else if let Err(err) = result {
                             // A subscribe is acked implicitly by its events; the
                             // server replies only on failure, carrying the subscribe
-                            // `id` (never a pending call). Drop the event sink so the
-                            // stream ends instead of hanging.
-                            subs.remove(&id.to_string());
+                            // `id` (never a pending call). Surface the rejection as a
+                            // terminal error item before dropping the sink, so the
+                            // subscriber can tell "denied" from a disconnect-shaped
+                            // stream end instead of re-subscribing forever.
+                            if let Some(tx) = subs.remove(&id.to_string()) {
+                                let _ = tx.try_send(Err(err));
+                                last_seq.remove(&id.to_string());
+                            }
                         }
                     }
-                    Ok(Outbound::Event { sub, seq: _, data }) => {
-                        let dead = match subs.get(sub) {
-                            Some(tx) => tx.try_send(data).is_err(),
-                            None => false, // late event for a dropped sub — ignore
-                        };
-                        if dead {
-                            subs.remove(sub);
+                    Ok(Outbound::Event {
+                        sub,
+                        seq,
+                        topic,
+                        data,
+                    }) => {
+                        // Loss = the shortfall between the last delivered seq and
+                        // this one. Server `seq` counts true production (buffer lag
+                        // folded in via `+= skipped + 1`, funnel drops bump then
+                        // drop), so one delta captures every loss point, plus any
+                        // prior local full-channel drop that left `last_seq` behind.
+                        let prev = last_seq.get(sub).copied().unwrap_or(0);
+                        let skipped = seq.saturating_sub(prev + 1);
+                        // `None` here is a late event for a dropped sub — ignore.
+                        if let Some(tx) = subs.get(sub) {
+                            let update = SubUpdate {
+                                topic: topic.map(Arc::from),
+                                data,
+                                skipped,
+                            };
+                            match tx.try_send(Ok(update)) {
+                                // Delivered — advance the per-sub cursor.
+                                Ok(()) => {
+                                    last_seq.insert(sub.to_string(), seq);
+                                }
+                                // Slow consumer: drop this event but leave
+                                // `last_seq` so the shortfall folds into the next
+                                // delivered update's `skipped`.
+                                Err(e) if e.is_full() => {}
+                                // Receiver gone — the sub was dropped; prune it.
+                                Err(_) => {
+                                    subs.remove(sub);
+                                    last_seq.remove(sub);
+                                }
+                            }
                         }
                     }
-                    Ok(Outbound::Snapshot { topic, data }) => {
-                        if let Some(tx) = subs.get(topic) {
-                            let _ = tx.try_send(data);
+                    Ok(Outbound::Snapshot { sub, topic, data }) => {
+                        if let Some(tx) = subs.get(sub) {
+                            let _ = tx.try_send(Ok(SubUpdate::tagged(Arc::from(topic), data)));
                         }
                     }
                     Ok(Outbound::Pong) => {}
@@ -468,13 +525,7 @@ where
                     ClientCmd::Subscribe { topic, events } => {
                         let id = next_id;
                         next_id += 1;
-                        // Demux key: topic (topic-routed) or the request id.
-                        let key = if config.topic_routed_subs {
-                            topic.clone()
-                        } else {
-                            id.to_string()
-                        };
-                        subs.insert(key, events);
+                        subs.insert(id.to_string(), events);
                         out.clear();
                         let sent = codec
                             .encode_inbound(Inbound::Subscribe { id, topic }, &mut out)
@@ -568,8 +619,14 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
                 Ok(s) => s,
                 Err(_e) => return,
             };
-            while let Some(payload) = stream.next().await {
-                let _ = router.route(id.as_ref(), &payload, &ctx);
+            while let Some(update) = stream.next().await {
+                match update {
+                    Ok(update) => {
+                        let _ = router.route(id.as_ref(), &update.data, &ctx);
+                    }
+                    // Server rejected the subscription — terminal, not replayed.
+                    Err(_e) => break,
+                }
             }
         }));
     }

@@ -51,7 +51,4 @@ pub use discovery::{discover_instances, find_instance, InstanceInfo};
 pub use endpoint::{dial, parse_endpoint, ParsedEndpoint, Scheme};
 pub use engine::{AimxConnection, DrainResponse};
 pub use error::{ClientError, ClientResult};
-pub use protocol::{
-    cli_hello, parse_message, serialize_message, Event, EventMessage, RecordMetadata, Request,
-    RequestExt, Response, ResponseExt, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION,
-};
+pub use protocol::{RecordMetadata, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION};

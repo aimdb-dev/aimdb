@@ -59,6 +59,20 @@ pub struct RecordMetadata {
     /// Number of outbound connector links registered
     pub outbound_connector_count: usize,
 
+    /// Data-contract schema name (e.g. `"temperature"`), when the serving
+    /// dispatch owns a schema registry that can resolve it (the WebSocket
+    /// connector's `StreamableRegistry`). Core alone cannot map a `TypeId` to a
+    /// contract name and leaves it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_type: Option<String>,
+
+    /// Entity / node identifier (e.g. `"vienna"` for `"temp.vienna"` or
+    /// `"sensors/temp/vienna"`), the record key's leaf segment after the last
+    /// `.` or `/` separator. The server is the authority on naming conventions —
+    /// clients use this field instead of parsing keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+
     // ===== Buffer metrics (feature-gated) =====
     /// Total items pushed to the buffer (metrics feature only)
     #[cfg(feature = "observability")]
@@ -125,6 +139,7 @@ impl RecordMetadata {
         writable: bool,
         outbound_connector_count: usize,
     ) -> Self {
+        let entity = Some(super::topic_leaf(record_key.as_str()).to_string());
         Self {
             record_id: record_id.raw(),
             record_key: record_key.as_str().to_string(),
@@ -137,6 +152,8 @@ impl RecordMetadata {
             consumer_count,
             writable,
             outbound_connector_count,
+            schema_type: None,
+            entity,
             #[cfg(feature = "observability")]
             produced_count: None,
             #[cfg(feature = "observability")]

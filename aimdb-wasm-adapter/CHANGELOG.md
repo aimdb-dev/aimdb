@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 045: `WsBridge` is an AimX engine client
+
+- **`WsBridge` rewritten on `run_client` + `ClientHandle`** over a
+  `web_sys::WebSocket`-backed `Connection`/`Dialer`: reply/subscription
+  correlation, reconnect backoff, keepalive, and the offline queue now live in
+  `aimdb-core`'s client engine — the hand-rolled 835-line demux is gone. The
+  `#[wasm_bindgen]` surface is preserved (`write`, `query`, `listTopics`,
+  `onStatusChange`, `status`, `disconnect`, `connectBridge` options), but the
+  wire is AimX, so the bridge only talks to design-045 servers.
+  `BridgeOptions.lateJoin` is retained for option-shape compatibility
+  (snapshots are server-driven under AimX).
+- **`WasmDb.discover` / the raw discovery path speak `record.list`** and
+  resolve with `{name, schema_type, entity}` rows.
+- Depends on `aimdb-core`'s `connector-session` + `remote` features (the
+  engines cross-compile to wasm32); the `aimdb-ws-protocol` dependency is
+  gone.
+
 ### Fixed
 
 - **SingleLatest fresh-subscriber parity (Design 040).** A subscriber created

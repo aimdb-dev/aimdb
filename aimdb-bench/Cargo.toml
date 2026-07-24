@@ -44,6 +44,16 @@ harness = false
 name = "b0_alloc_linkable"
 harness = false
 
+# Fan-out event-encoding microbench (design 048 WI4): naive per-subscriber
+# codec vs the shared-suffix fast path, N = 1/10/100/500.
+[[bench]]
+name = "b0_alloc_fanout_encode"
+harness = false
+
+[[bench]]
+name = "b1_b2_fanout_encode"
+harness = false
+
 [[bench]]
 name = "b0_alloc_remote_json"
 harness = false

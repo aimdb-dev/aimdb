@@ -72,7 +72,7 @@ Connect the browser-local AimDB to a remote server:
 import { WsBridge } from '@aimdb/wasm';
 
 const bridge = WsBridge.connect(db, 'wss://api.example.com/ws', {
-  subscribeTopics: ['sensors/#'],
+  subscribeTopics: ['sensors.#'],
   autoReconnect: true,
   lateJoin: true,
 });
@@ -96,7 +96,7 @@ function App() {
       records: [
         { key: 'sensors.temperature.vienna', schemaType: 'temperature', buffer: 'SingleLatest' },
       ],
-      bridge: { url: 'wss://api.example.com/ws', subscribeTopics: ['sensors/#'] },
+      bridge: { url: 'wss://api.example.com/ws', subscribeTopics: ['sensors.#'] },
     }}>
       <Dashboard />
     </AimDbProvider>

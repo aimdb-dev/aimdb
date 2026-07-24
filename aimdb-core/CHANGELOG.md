@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 045: one protocol (AimX) for every transport
+
+- **Wildcard / multi-record subscribe.** `Inbound::Subscribe` topics may carry
+  MQTT-style wildcards (`#`, `*`): `AimxDispatch` matches the pattern against
+  the registry once at subscribe time (the record set is builder-frozen),
+  merges the matched records' update streams under the one subscription id,
+  and emits one late-join `Snapshot` per matched record. The matcher moved in
+  from the retired `aimdb-ws-protocol` crate as
+  `session::topic_match::{topic_matches, is_wildcard}` (re-exported at the
+  crate root).
+- **Subscription streams carry the firing record.** `Session::subscribe` and
+  `ClientHandle::subscribe` now yield `SubUpdate { topic: Option<Arc<str>>,
+  data: Payload }` instead of bare `Payload`; `Outbound::Event` gains an
+  optional `topic` and `Outbound::Snapshot` gains the routing `sub` (frames
+  without them are unchanged on the wire). `Session::snapshot` became
+  `Session::snapshots(topic) -> Vec<(String, Payload)>` (one per covered
+  record).
+- **`AimxCodec` learned the `subscribed` ack frame** (`{"t":"subscribed",
+  "sub":S}`) for servers running `acks_subscribe:true` (the WebSocket
+  connector); UDS/serial/TCP keep the implicit ack. A dedicated `AimxCodec`
+  roundtrip suite now locks the frame set.
+- **`ClientConfig::topic_routed_subs` removed** — it existed solely for the
+  retired ws wire; all subscriptions are id-routed.
+- **Shared query/list vocabulary.** New `remote::QueryRecord { topic, payload,
+  ts }` is the canonical `record.query` result row (result shape
+  `{records, total}`); `RecordMetadata` gains optional `schema_type` /
+  `entity` fields (`entity` derived from the record key's final `.` segment).
+
+### Performance
+
+- **Subscribe path carries JSON bytes, not a `serde_json::Value` tree.**
+  `stream_record_updates` now reads owned JSON bytes (`recv_json_bytes`) and
+  yields `(Payload, u64)`, so a record update flows buffer → wire without the
+  parse-into-`Value`-then-re-serialize round-trip the dispatch layer used to
+  pay per update (design 048: "removing the intermediate `serde_json::Value`").
+  The `remote_json` subscription-event benchmark measures the direct-bytes path
+  at ~2× the throughput of the former tree path. No wire or API change — the
+  `skipped` loss signal still rides each `SubUpdate`.
+
 ### Added
 
 - **Issue #196 — direct JSON bytes for type-erased remote reads.** The public

@@ -1,20 +1,21 @@
-//! Minimal runnable WebSocket **server** demo (doc 039-validation Layer 5) — the
-//! first real consumer of the connector and a manual-smoke vehicle.
+//! Minimal runnable WebSocket **server** demo — the first real consumer of the
+//! connector and a manual-smoke vehicle.
 //!
 //! Run:
 //! ```text
 //! cargo run -p aimdb-websocket-connector --example ws_server
 //! ```
-//! Then connect a client and subscribe to the ticking `counter` record:
+//! Then connect a client and subscribe to the ticking `counter` record (the
+//! wire is AimX — the same tagged frames as UDS/serial/TCP):
 //! ```text
 //! wscat -c ws://127.0.0.1:8080/ws
-//! > {"type":"subscribe","topics":["counter"]}
-//! < {"type":"subscribed","topics":["counter"]}
-//! < {"type":"data","topic":"counter","payload":{"n":1},"ts":...}
+//! > {"t":"sub","id":1,"topic":"counter"}
+//! < {"t":"subscribed","sub":"1"}
+//! < {"t":"event","sub":"1","seq":1,"topic":"counter","data":{"n":1}}
 //! ```
 //! Or write to the inbound `echo` record:
 //! ```text
-//! > {"type":"write","topic":"echo","payload":{"msg":"hi"}}
+//! > {"t":"write","topic":"echo","payload":{"msg":"hi"}}
 //! ```
 
 use std::sync::Arc;
@@ -74,7 +75,9 @@ async fn main() {
     tokio::spawn(runner.run());
 
     println!("WS server listening on ws://{addr}/ws");
-    println!("  subscribe:  wscat -c ws://{addr}/ws  →  {{\"type\":\"subscribe\",\"topics\":[\"counter\"]}}");
+    println!(
+        "  subscribe:  wscat -c ws://{addr}/ws  →  {{\"t\":\"sub\",\"id\":1,\"topic\":\"counter\"}}"
+    );
 
     let mut n = 0u64;
     loop {

@@ -75,13 +75,18 @@ pub use typed_record::{AnyRecord, AnyRecordExt, TypedRecord};
 #[cfg(feature = "remote")]
 pub use codec::{JsonCodec, RemoteSerialize, SerdeJsonCodec};
 
+// Record-key leaf/entity derivation, shared by record metadata and the
+// connectors that surface the `entity` field.
+#[cfg(feature = "remote")]
+pub use remote::topic_leaf;
+
 // connector-session contracts (feature `connector-session`, no_std + alloc
 // compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
-    pump_sink, pump_source, AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch,
-    EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, SessionCtx,
-    SessionLimits, Source, TransportError, TransportResult,
+    is_wildcard, pump_sink, pump_source, topic_matches, AuthError, BoxFut, BoxStream, CodecError,
+    Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo,
+    RpcError, SessionCtx, SessionLimits, Source, SubUpdate, TransportError, TransportResult,
 };
 
 // Signal gauge handle (always available; inert without `observability`)

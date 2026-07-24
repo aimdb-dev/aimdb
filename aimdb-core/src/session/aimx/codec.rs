@@ -6,9 +6,15 @@
 //! backward-compatible with the legacy AimX wire:
 //!
 //! - `record.subscribe` is an [`Inbound::Subscribe`] keyed by the request `id`;
-//!   there is no `subscription_id` ack — events carry the `id` back as
-//!   [`Outbound::Event::sub`].
-//! - events carry only `{sub, seq, data}` (no server-side `timestamp`/`dropped`).
+//!   events carry the `id` back as [`Outbound::Event::sub`]. An explicit
+//!   `{"t":"subscribed"}` ack exists for servers running
+//!   `acks_subscribe:true` (the WebSocket connector); UDS/serial/TCP leave it
+//!   off and the ack stays implicit.
+//! - events carry `{sub, seq, data}` plus an optional `topic` naming the
+//!   concrete record on wildcard/bus subscriptions (no server-side
+//!   `timestamp`/`dropped`).
+//! - snapshots carry the opening subscription's `sub` so the client demux
+//!   routes them like events.
 //! - the Hello/Welcome handshake is a normal `call("hello", …)`, so
 //!   `authenticate` stays peer-only.
 //!
@@ -95,6 +101,7 @@ fn err_code(e: &RpcError) -> &'static str {
         RpcError::NotFound => "not_found",
         RpcError::Denied => "denied",
         RpcError::Internal => "internal",
+        RpcError::VersionMismatch => "version_mismatch",
     }
 }
 
@@ -102,6 +109,7 @@ fn code_err(s: &str) -> RpcError {
     match s {
         "not_found" => RpcError::NotFound,
         "denied" => RpcError::Denied,
+        "version_mismatch" => RpcError::VersionMismatch,
         _ => RpcError::Internal,
     }
 }
@@ -111,6 +119,34 @@ fn write_frame(out: &mut alloc::vec::Vec<u8>, frame: &Frame<'_>) -> Result<(), C
     // workspace builds it on `alloc` only), so serialize via `to_vec` and splice.
     let bytes = serde_json::to_vec(frame).map_err(|_| CodecError::Malformed)?;
     out.extend_from_slice(&bytes);
+    Ok(())
+}
+
+/// Encode a frame whose `data` field is already-serialized JSON (a record
+/// serializer's output), splicing `data` verbatim instead of re-validating it
+/// into a [`RawValue`]. Outbound event payloads are trusted-valid, so `as_raw`'s
+/// O(payload) scan is redundant — and on a fan-out subscription it would run
+/// once *per subscriber* over the shared payload (design 048 WI4, Improvement A).
+///
+/// `frame` must carry `data = None` so serde emits every other field; the
+/// spliced `data` is appended as the final member. Byte-identical to serializing
+/// the same frame with `data = Some(as_raw(payload))`, since `data` is the last
+/// field in declaration order.
+fn write_frame_splicing_data(
+    out: &mut alloc::vec::Vec<u8>,
+    frame: &Frame<'_>,
+    data: &[u8],
+) -> Result<(), CodecError> {
+    debug_assert!(frame.data.is_none(), "data must be spliced, not serialized");
+    let scaffold = serde_json::to_vec(frame).map_err(|_| CodecError::Malformed)?;
+    // A `Frame` always serializes to a JSON object closed by `}`.
+    let Some((&b'}', head)) = scaffold.split_last() else {
+        return Err(CodecError::Malformed);
+    };
+    out.extend_from_slice(head);
+    out.extend_from_slice(br#","data":"#);
+    out.extend_from_slice(data);
+    out.push(b'}');
     Ok(())
 }
 
@@ -157,25 +193,36 @@ impl EnvelopeCodec for AimxCodec {
                     }
                 }
             }
-            Outbound::Event { sub, seq, data } => {
-                let raw = as_raw(&data)?;
+            Outbound::Event {
+                sub,
+                seq,
+                topic,
+                data,
+            } => {
                 let mut frame = Frame::tagged("event");
                 frame.sub = Some(sub);
                 frame.seq = Some(seq);
-                frame.data = Some(raw);
-                write_frame(out, &frame)
+                frame.topic = topic;
+                // `data` is spliced verbatim (Improvement A) — see
+                // `write_frame_splicing_data`.
+                write_frame_splicing_data(out, &frame, &data)
             }
-            Outbound::Snapshot { topic, data } => {
+            Outbound::Snapshot { sub, topic, data } => {
                 let raw = as_raw(&data)?;
                 let mut frame = Frame::tagged("snap");
+                frame.sub = Some(sub);
                 frame.topic = Some(topic);
                 frame.data = Some(raw);
                 write_frame(out, &frame)
             }
             Outbound::Pong => write_frame(out, &Frame::tagged("pong")),
-            // AimX has no explicit subscribe ack; `run_session` only emits this
-            // when `acks_subscribe` is set, which the AimX server leaves off.
-            Outbound::Subscribed { .. } => Err(CodecError::Malformed),
+            // Explicit subscribe ack — only emitted by servers running
+            // `acks_subscribe:true` (the WebSocket connector).
+            Outbound::Subscribed { sub } => {
+                let mut frame = Frame::tagged("subscribed");
+                frame.sub = Some(sub);
+                write_frame(out, &frame)
+            }
         }
     }
 
@@ -231,14 +278,249 @@ impl EnvelopeCodec for AimxCodec {
             "event" => Ok(Outbound::Event {
                 sub: f.sub.ok_or(CodecError::Malformed)?,
                 seq: f.seq.ok_or(CodecError::Malformed)?,
+                topic: f.topic,
                 data: payload_of(f.data),
             }),
             "snap" => Ok(Outbound::Snapshot {
+                sub: f.sub.ok_or(CodecError::Malformed)?,
                 topic: f.topic.ok_or(CodecError::Malformed)?,
                 data: payload_of(f.data),
+            }),
+            "subscribed" => Ok(Outbound::Subscribed {
+                sub: f.sub.ok_or(CodecError::Malformed)?,
             }),
             "pong" => Ok(Outbound::Pong),
             _ => Err(CodecError::Malformed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
+
+    fn payload(s: &str) -> Payload {
+        Arc::from(s.as_bytes())
+    }
+
+    /// Encode client-direction, decode server-direction (the request path).
+    fn roundtrip_inbound(msg: Inbound) -> Inbound {
+        let codec = AimxCodec;
+        let mut out = Vec::new();
+        codec.encode_inbound(msg, &mut out).expect("encode_inbound");
+        codec.decode(&out).expect("decode")
+    }
+
+    /// Encode server-direction, return the frame bytes (the reply/event path).
+    fn encode_outbound(msg: Outbound<'_>) -> Vec<u8> {
+        let codec = AimxCodec;
+        let mut out = Vec::new();
+        codec.encode(msg, &mut out).expect("encode");
+        out
+    }
+
+    #[test]
+    fn request_roundtrip() {
+        match roundtrip_inbound(Inbound::Request {
+            id: 7,
+            method: "record.get".to_string(),
+            params: payload(r#"{"name":"temp"}"#),
+        }) {
+            Inbound::Request { id, method, params } => {
+                assert_eq!(id, 7);
+                assert_eq!(method, "record.get");
+                assert_eq!(&params[..], br#"{"name":"temp"}"#);
+            }
+            _ => panic!("expected Request"),
+        }
+    }
+
+    #[test]
+    fn subscribe_and_unsubscribe_roundtrip() {
+        match roundtrip_inbound(Inbound::Subscribe {
+            id: 3,
+            topic: "sensors.#".to_string(),
+        }) {
+            Inbound::Subscribe { id, topic } => {
+                assert_eq!(id, 3);
+                assert_eq!(topic, "sensors.#");
+            }
+            _ => panic!("expected Subscribe"),
+        }
+        match roundtrip_inbound(Inbound::Unsubscribe {
+            sub: "3".to_string(),
+        }) {
+            Inbound::Unsubscribe { sub } => assert_eq!(sub, "3"),
+            _ => panic!("expected Unsubscribe"),
+        }
+    }
+
+    #[test]
+    fn write_roundtrip_splices_payload_verbatim() {
+        match roundtrip_inbound(Inbound::Write {
+            topic: "cfg".to_string(),
+            payload: payload(r#"{"value":{"level":9}}"#),
+        }) {
+            Inbound::Write { topic, payload } => {
+                assert_eq!(topic, "cfg");
+                assert_eq!(&payload[..], br#"{"value":{"level":9}}"#);
+            }
+            _ => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn ping_pong_roundtrip() {
+        assert!(matches!(roundtrip_inbound(Inbound::Ping), Inbound::Ping));
+        let frame = encode_outbound(Outbound::Pong);
+        assert!(matches!(
+            AimxCodec.decode_outbound(&frame).unwrap(),
+            Outbound::Pong
+        ));
+    }
+
+    #[test]
+    fn reply_ok_roundtrip() {
+        let frame = encode_outbound(Outbound::Reply {
+            id: 11,
+            result: Ok(payload(r#"{"status":"success"}"#)),
+        });
+        match AimxCodec.decode_outbound(&frame).unwrap() {
+            Outbound::Reply { id, result } => {
+                assert_eq!(id, 11);
+                assert_eq!(&result.unwrap()[..], br#"{"status":"success"}"#);
+            }
+            _ => panic!("expected Reply"),
+        }
+    }
+
+    #[test]
+    fn reply_err_codes_roundtrip() {
+        for err in [
+            RpcError::NotFound,
+            RpcError::Denied,
+            RpcError::Internal,
+            RpcError::VersionMismatch,
+        ] {
+            let frame = encode_outbound(Outbound::Reply {
+                id: 1,
+                result: Err(err.clone()),
+            });
+            match AimxCodec.decode_outbound(&frame).unwrap() {
+                Outbound::Reply { result, .. } => assert_eq!(result.unwrap_err(), err),
+                _ => panic!("expected Reply"),
+            }
+        }
+    }
+
+    #[test]
+    fn event_roundtrip_without_topic() {
+        let frame = encode_outbound(Outbound::Event {
+            sub: "5",
+            seq: 2,
+            topic: None,
+            data: payload("42"),
+        });
+        // The optional field skip-serializes — the exact-topic wire is unchanged.
+        assert!(!frame.windows(7).any(|w| w == b"\"topic\""));
+        match AimxCodec.decode_outbound(&frame).unwrap() {
+            Outbound::Event {
+                sub,
+                seq,
+                topic,
+                data,
+            } => {
+                assert_eq!((sub, seq, topic), ("5", 2, None));
+                assert_eq!(&data[..], b"42");
+            }
+            _ => panic!("expected Event"),
+        }
+    }
+
+    #[test]
+    fn event_roundtrip_with_topic() {
+        let frame = encode_outbound(Outbound::Event {
+            sub: "5",
+            seq: 9,
+            topic: Some("temp.vienna"),
+            data: payload(r#"{"c":21.5}"#),
+        });
+        match AimxCodec.decode_outbound(&frame).unwrap() {
+            Outbound::Event { sub, topic, .. } => {
+                assert_eq!(sub, "5");
+                assert_eq!(topic, Some("temp.vienna"));
+            }
+            _ => panic!("expected Event"),
+        }
+    }
+
+    /// The verbatim-splice event encode (Improvement A) must be byte-identical
+    /// to the previous `data = Some(as_raw(payload))` serde path — the record
+    /// payload is spliced unchanged as the final `data` member, in both the
+    /// with-topic and without-topic layouts.
+    #[test]
+    fn event_encode_splices_data_byte_for_byte() {
+        let with_topic = encode_outbound(Outbound::Event {
+            sub: "5",
+            seq: 9,
+            topic: Some("temp.vienna"),
+            data: payload(r#"{"c":21.5,"a":[1,2,3]}"#),
+        });
+        assert_eq!(
+            with_topic,
+            br#"{"t":"event","seq":9,"topic":"temp.vienna","sub":"5","data":{"c":21.5,"a":[1,2,3]}}"#
+        );
+
+        let without_topic = encode_outbound(Outbound::Event {
+            sub: "5",
+            seq: 2,
+            topic: None,
+            data: payload("42"),
+        });
+        assert_eq!(
+            without_topic,
+            br#"{"t":"event","seq":2,"sub":"5","data":42}"#
+        );
+    }
+
+    #[test]
+    fn snapshot_roundtrip_carries_sub_and_topic() {
+        let frame = encode_outbound(Outbound::Snapshot {
+            sub: "8",
+            topic: "temp.berlin",
+            data: payload(r#"{"c":18.0}"#),
+        });
+        match AimxCodec.decode_outbound(&frame).unwrap() {
+            Outbound::Snapshot { sub, topic, data } => {
+                assert_eq!((sub, topic), ("8", "temp.berlin"));
+                assert_eq!(&data[..], br#"{"c":18.0}"#);
+            }
+            _ => panic!("expected Snapshot"),
+        }
+    }
+
+    #[test]
+    fn subscribed_ack_roundtrip() {
+        let frame = encode_outbound(Outbound::Subscribed { sub: "13" });
+        match AimxCodec.decode_outbound(&frame).unwrap() {
+            Outbound::Subscribed { sub } => assert_eq!(sub, "13"),
+            _ => panic!("expected Subscribed"),
+        }
+    }
+
+    #[test]
+    fn malformed_frames_are_rejected() {
+        let codec = AimxCodec;
+        assert!(codec.decode(b"{not json").is_err());
+        assert!(codec.decode(br#"{"t":"nope"}"#).is_err());
+        // A `sub` frame missing its topic is malformed.
+        assert!(codec.decode(br#"{"t":"sub","id":1}"#).is_err());
+        assert!(codec.decode_outbound(br#"{"t":"reply","id":1}"#).is_err());
+        // A snap without its routing sub is malformed on the new wire.
+        assert!(codec
+            .decode_outbound(br#"{"t":"snap","topic":"x","data":1}"#)
+            .is_err());
     }
 }

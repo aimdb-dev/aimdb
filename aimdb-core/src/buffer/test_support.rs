@@ -3,9 +3,9 @@
 //! Each adapter crate calls these from a test running under its own executor
 //! (`#[tokio::test]`, `block_on`, or a host `#[test]` + `block_on`), so the one
 //! contract is exercised against every runtime buffer implementation — the
-//! buffer analogue of [`crate::executor::test_support`]. This is the structural
-//! fix behind design 040: cross-runtime buffer parity moves from per-adapter
-//! discipline to a single suite every adapter must pass.
+//! buffer analogue of [`crate::executor::test_support`]. It moves cross-runtime
+//! buffer parity from per-adapter discipline to a single suite every adapter
+//! must pass.
 //!
 //! # Executor-agnostic by construction
 //!
@@ -35,9 +35,9 @@ fn reader<B: Buffer<i32>>(buffer: &B) -> Reader<i32> {
 
 /// Asserts the behavioral contract every `SingleLatest` buffer must hold.
 ///
-/// Covers the design-040 fresh-subscriber rule (the divergence this suite
-/// exists to prevent from recurring), plus overwrite collapsing and non-
-/// destructive [`peek`](DynBuffer::peek).
+/// Covers the fresh-subscriber rule (the divergence this suite exists to
+/// prevent from recurring), plus overwrite collapsing and non-destructive
+/// [`peek`](DynBuffer::peek).
 pub async fn assert_single_latest_contract<B, F>(mk: F)
 where
     B: Buffer<i32> + DynBuffer<i32>,

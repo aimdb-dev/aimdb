@@ -18,8 +18,8 @@
 //! ```text
 //! AimDB (local) ←─ WsClientConnector ──WebSocket──→ AimDB (remote server)
 //!     │                                                    │
-//!     ├─ link_to  → serialize → ClientMessage::Write  ───→│
-//!     └─ link_from ← deserialize ← ServerMessage::Data ←──│
+//!     ├─ link_to  → serialize → AimX `write` frame  ─────→│
+//!     └─ link_from ← deserialize ← AimX `event` frame ←───│
 //! ```
 
 mod builder;

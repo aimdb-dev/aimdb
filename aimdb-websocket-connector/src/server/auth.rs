@@ -68,14 +68,14 @@ impl Permissions {
     pub fn can_subscribe(&self, topic: &str) -> bool {
         self.subscribe_patterns
             .iter()
-            .any(|p| crate::protocol::topic_matches(p, topic))
+            .any(|p| aimdb_core::topic_matches(p, topic))
     }
 
     /// Returns `true` if the client is allowed to write to `topic`.
     pub fn can_write(&self, topic: &str) -> bool {
         self.write_patterns
             .iter()
-            .any(|p| crate::protocol::topic_matches(p, topic))
+            .any(|p| aimdb_core::topic_matches(p, topic))
     }
 }
 

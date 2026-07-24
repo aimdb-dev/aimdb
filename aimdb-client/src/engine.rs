@@ -27,7 +27,7 @@ use aimdb_core::session::{
 use aimdb_tokio_adapter::TokioAdapter;
 
 use crate::error::{ClientError, ClientResult};
-use crate::protocol::{RecordMetadata, WelcomeMessage};
+use crate::protocol::{version_compatible, RecordMetadata, WelcomeMessage, PROTOCOL_VERSION};
 
 /// Default deadline for the connect handshake (dial + `hello`/Welcome). Bounds
 /// the case where a peer accepts the socket but never replies — the engine has
@@ -114,17 +114,38 @@ impl AimxConnection {
         let engine = tokio::spawn(engine_fut);
 
         let server_info = async {
-            let hello = json!({ "client": "aimdb-client" });
+            let hello = json!({ "client": "aimdb-client", "version": PROTOCOL_VERSION });
             let reply = timeout(connect_timeout, handle.call("hello", to_payload(&hello)?))
                 .await
                 .map_err(|_| ClientError::connection_failed(label, "handshake timed out"))?
-                .map_err(|_| {
-                    ClientError::connection_failed(
+                .map_err(|e| match e {
+                    // The server refused our declared version — report it as
+                    // such, not as an unreachable-engine failure.
+                    RpcError::VersionMismatch => ClientError::connection_failed(
+                        label,
+                        format!(
+                            "protocol version mismatch: server rejected client version {PROTOCOL_VERSION}"
+                        ),
+                    ),
+                    _ => ClientError::connection_failed(
                         label,
                         "handshake failed (engine could not reach server)",
-                    )
+                    ),
                 })?;
-            from_payload::<WelcomeMessage>(&reply)
+            let welcome = from_payload::<WelcomeMessage>(&reply)?;
+            // Reverse gate: a pre-3.x server ignores our `version` and completes
+            // the handshake with an old-shaped `welcome`. Detect that here so a
+            // new client fails fast instead of tripping over the old reply shapes.
+            if !version_compatible(&welcome.version) {
+                return Err(ClientError::connection_failed(
+                    label,
+                    format!(
+                        "protocol version mismatch: server speaks {}, client speaks {PROTOCOL_VERSION}",
+                        welcome.version
+                    ),
+                ));
+            }
+            Ok(welcome)
         }
         .await;
 
@@ -194,8 +215,28 @@ impl AimxConnection {
     /// `subscription_id` to track. Dropping the stream stops local delivery.
     pub fn subscribe(&self, name: &str) -> ClientResult<BoxStream<'static, serde_json::Value>> {
         let raw = self.handle.subscribe(name).map_err(rpc_err)?;
-        // Decode each Payload into a JSON value; drop any that fail to parse.
-        let decoded = raw.filter_map(|p| async move { serde_json::from_slice(&p).ok() });
+        // Decode each update's payload into a JSON value; drop any that fail to
+        // parse. A terminal rejection item ends the stream. For the per-record
+        // topic (wildcard subscriptions), see
+        // [`subscribe_with_topics`](Self::subscribe_with_topics).
+        let decoded = raw.filter_map(|u| async move { serde_json::from_slice(&u.ok()?.data).ok() });
+        Ok(Box::pin(decoded))
+    }
+
+    /// Subscribe to a topic pattern (wildcards supported: `#`, `*`), yielding
+    /// `(topic, value)` pairs. One wildcard subscription fans in every matching
+    /// record; each update names the record that fired. The topic is `None`
+    /// only when the server left the event untagged (exact-topic subscribe).
+    pub fn subscribe_with_topics(
+        &self,
+        pattern: &str,
+    ) -> ClientResult<BoxStream<'static, (Option<String>, serde_json::Value)>> {
+        let raw = self.handle.subscribe(pattern).map_err(rpc_err)?;
+        let decoded = raw.filter_map(|u| async move {
+            let u = u.ok()?;
+            let value = serde_json::from_slice(&u.data).ok()?;
+            Some((u.topic.as_deref().map(String::from), value))
+        });
         Ok(Box::pin(decoded))
     }
 

@@ -8,10 +8,13 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 
+use serde::{Deserialize, Serialize};
+
 /// Type-erased query handler registered by `aimdb-persistence` via Extensions.
 ///
 /// A boxed async function that accepts query parameters (record pattern, limit,
-/// start/end timestamps) and returns a JSON value with the results.
+/// start/end timestamps) and returns a JSON value with the results, shaped
+/// `{"records": [QueryRecord…], "total": N}`.
 pub type QueryHandlerFn = Box<
     dyn Fn(
             QueryHandlerParams,
@@ -20,6 +23,18 @@ pub type QueryHandlerFn = Box<
         > + Send
         + Sync,
 >;
+
+/// One row of a `record.query` result — the canonical shape every transport
+/// shares.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryRecord {
+    /// Record key / topic the value was stored under (e.g. `"temp.vienna"`).
+    pub topic: String,
+    /// Deserialized record value.
+    pub payload: serde_json::Value,
+    /// Storage timestamp (milliseconds since Unix epoch).
+    pub ts: u64,
+}
 
 /// Parameters for the type-erased query handler.
 #[derive(Debug, Clone)]
