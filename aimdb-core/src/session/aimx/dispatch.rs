@@ -25,8 +25,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 
-use futures_util::StreamExt;
 use serde_json::{json, Value};
+
+use futures_util::StreamExt;
 
 use crate::buffer::JsonBufferReader;
 use crate::remote::{AimxConfig, RecordMetadata, SecurityPolicy, WelcomeMessage, PROTOCOL_VERSION};
@@ -84,6 +85,22 @@ struct AimxSession {
     drain_readers: HashMap<String, Box<dyn JsonBufferReader + Send>>,
 }
 
+/// Internal dispatch result. Most methods still build a JSON tree; hot record
+/// paths can hand already-serialized JSON to the session engine.
+enum DispatchReply {
+    Value(Value),
+    RawJson(Payload),
+}
+
+impl DispatchReply {
+    fn into_payload(self) -> Payload {
+        match self {
+            Self::Value(value) => to_payload(&value),
+            Self::RawJson(payload) => payload,
+        }
+    }
+}
+
 impl Session for AimxSession {
     fn call<'a>(
         &'a mut self,
@@ -94,7 +111,7 @@ impl Session for AimxSession {
             let params: Value = serde_json::from_slice(&params).unwrap_or(Value::Null);
             self.dispatch_call(method, params)
                 .await
-                .map(|v| to_payload(&v))
+                .map(DispatchReply::into_payload)
         })
     }
 
@@ -194,15 +211,24 @@ impl AimxSession {
         Box::pin(futures_util::stream::select_all(streams))
     }
 
-    /// Match the method and produce its JSON result (or an [`RpcError`]).
-    async fn dispatch_call(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
-        match method {
+    /// Match the method and produce a tree or already-serialized JSON reply.
+    async fn dispatch_call(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<DispatchReply, RpcError> {
+        // Hot record read: hand already-serialized JSON straight to the engine,
+        // skipping the `serde_json::Value` round-trip (main's clone-avoidance).
+        if method == "record.get" {
+            let name = str_field(&params, "name").ok_or(RpcError::NotFound)?;
+            return self.record_get(&name).map(DispatchReply::RawJson);
+        }
+
+        let value = match method {
+            // WI1 version gate: refuse an incompatible/absent client version at
+            // the handshake rather than letting it trip over the new wire shapes.
             "hello" => self.hello(params),
             "record.list" => Ok(json!(self.db.list_records())),
-            "record.get" => {
-                let name = str_field(&params, "name").ok_or(RpcError::NotFound)?;
-                self.record_get(&name)
-            }
             "record.set" => self.record_set(params),
             "record.drain" => self.record_drain(params),
             "record.query" => self
@@ -225,7 +251,9 @@ impl AimxSession {
                 Ok(json!({ "reset": true }))
             }
             _ => Err(RpcError::NotFound),
-        }
+        }?;
+
+        Ok(DispatchReply::Value(value))
     }
 
     /// `record.set` (RPC): permission-checked write that echoes the new value.
@@ -246,7 +274,8 @@ impl AimxSession {
     /// `record.get`: the record's current value.
     ///
     /// A `SingleLatest`/state record exposes a non-destructive canonical latest
-    /// ([`try_latest_as_json`](crate::AimDb::try_latest_as_json)). A ring
+    /// ([`try_latest_as_json_bytes`](crate::AimDb::try_latest_as_json_bytes)).
+    /// A ring
     /// ([`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)) has none, so we fall back
     /// to the connection's drain cursor and return the **most recent** available
     /// value. Two consequences of that fallback: it *advances the shared drain
@@ -254,13 +283,14 @@ impl AimxSession {
     /// and it yields `NotFound` until the ring produces a value *after* the cursor
     /// is first opened (a fresh broadcast reader starts at the tail). Use
     /// `record.drain` for a ring's full backlog.
-    fn record_get(&mut self, name: &str) -> Result<Value, RpcError> {
-        if let Some(v) = self.db.try_latest_as_json(name) {
-            return Ok(v);
+    fn record_get(&mut self, name: &str) -> Result<Payload, RpcError> {
+        if let Some(bytes) = self.db.try_latest_as_json_bytes(name) {
+            return Ok(Payload::from(bytes));
         }
         // Ring fallback: drain to the newest currently-available value (or NotFound).
         self.drain_values(name, usize::MAX)?
             .pop()
+            .map(|value| to_payload(&value))
             .ok_or(RpcError::NotFound)
     }
 

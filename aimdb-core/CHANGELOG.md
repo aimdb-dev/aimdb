@@ -37,6 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Issue #196 — direct JSON bytes for type-erased remote reads.** The public
+  `RemoteSerialize`, `JsonCodec<T>`, `JsonRecordAccess` and
+  `JsonBufferReader` traits gain defaulted byte methods, preserving existing
+  manual implementations; the blanket Serde codec overrides them with direct
+  `to_vec`/`from_slice`. State `record.get` and subscription events now pass
+  owned JSON bytes into the existing opaque `Payload`/`RawValue` AimX path
+  without materializing an intermediate record `serde_json::Value`.
+  `RecordValue::as_json`, value-based APIs, custom codecs, AimX v2, ring-drain
+  fallback, write safety, lag/cancellation/backpressure behavior and
+  `no_std + alloc` remain unchanged. Focused production-boundary benchmarks
+  reduce allocation calls from 16 to 6 per reply/event; Criterion slope point
+  estimates show a 1.55x–1.61x in-memory record-to-envelope speedup on the
+  measured host.
 - **Issue #177 — bounded into-slice serialization for outbound links.** New
   `OutboundConnectorBuilder::with_serializer_into` and the additive
   `SerializedReader::recv_into`/`SerializedPayload` SPI let a fused typed reader

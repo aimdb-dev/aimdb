@@ -22,6 +22,8 @@
 //! | `benches/b1_b2_tokio.rs`          | B1+B2 | Latency (time/iter) + throughput (Tokio) |
 //! | `benches/b0_alloc_embassy.rs`     | B0    | Per-message allocation (Embassy buffer)  |
 //! | `benches/b0_alloc_linkable.rs`    | B0    | Postcard `Linkable::encode_into` allocs  |
+//! | `benches/b0_alloc_remote_json.rs` | B0    | Direct-vs-tree AimX JSON allocations     |
+//! | `benches/b1_b2_remote_json.rs`     | B1+B2 | Direct-vs-tree AimX JSON latency         |
 //! | `benches/b1_b2_embassy.rs`        | B1+B2 | Latency (time/iter) + throughput (Embassy)|
 //! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
 //! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
@@ -44,5 +46,7 @@ pub mod payloads;
 #[cfg(feature = "std")]
 pub mod profiles;
 pub mod profiles_embassy;
+#[cfg(feature = "std")]
+pub mod remote_json;
 #[cfg(feature = "std")]
 pub mod reports;
