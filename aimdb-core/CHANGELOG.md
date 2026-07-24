@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{records, total}`); `RecordMetadata` gains optional `schema_type` /
   `entity` fields (`entity` derived from the record key's final `.` segment).
 
+### Performance
+
+- **Subscribe path carries JSON bytes, not a `serde_json::Value` tree.**
+  `stream_record_updates` now reads owned JSON bytes (`recv_json_bytes`) and
+  yields `(Payload, u64)`, so a record update flows buffer → wire without the
+  parse-into-`Value`-then-re-serialize round-trip the dispatch layer used to
+  pay per update (design 048: "removing the intermediate `serde_json::Value`").
+  The `remote_json` subscription-event benchmark measures the direct-bytes path
+  at ~2× the throughput of the former tree path. No wire or API change — the
+  `skipped` loss signal still rides each `SubUpdate`.
+
 ### Added
 
 - **Issue #196 — direct JSON bytes for type-erased remote reads.** The public

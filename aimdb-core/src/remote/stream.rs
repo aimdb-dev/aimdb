@@ -1,8 +1,12 @@
 //! Record-update streaming helper for AimX remote access.
 //!
 //! [`stream_record_updates`] adapts a record's [`JsonBufferReader`] into a
-//! [`Stream`] of `(JSON value, skipped)` pairs, where `skipped` is the number
-//! of updates the buffer dropped immediately before this one.
+//! [`Stream`] of `(JSON bytes, skipped)` pairs, where `skipped` is the number
+//! of updates the buffer dropped immediately before this one. The value is
+//! carried as already-serialized bytes ([`Payload`](crate::session::Payload)),
+//! not a `serde_json::Value` tree — the subscribe path never inspects it, so
+//! parsing it only to re-serialize at the dispatch boundary is pure overhead
+//! (design 048: "removing the intermediate `serde_json::Value`").
 //! Cancellation is by `drop`; backpressure is the underlying buffer's
 //! responsibility. The handler holds the
 //! returned stream inside its per-subscription future so that the
@@ -16,7 +20,7 @@ use crate::{AimDb, DbError, DbResult};
 use futures_core::Stream;
 use futures_util::stream::unfold;
 
-/// Subscribe to a record and yield each update as a `(JSON value, skipped)`
+/// Subscribe to a record and yield each update as a `(JSON bytes, skipped)`
 /// pair.
 ///
 /// The returned stream owns the underlying [`JsonBufferReader`]; dropping
@@ -32,7 +36,7 @@ use futures_util::stream::unfold;
 pub(crate) fn stream_record_updates(
     db: &AimDb,
     record_key: &str,
-) -> DbResult<impl Stream<Item = (serde_json::Value, u64)> + Send + 'static> {
+) -> DbResult<impl Stream<Item = (crate::session::Payload, u64)> + Send + 'static> {
     let inner = db.inner();
     let id = inner
         .resolve_str(record_key)
@@ -62,8 +66,11 @@ pub(crate) fn stream_record_updates(
 
     Ok(unfold(state, |(mut reader, key, mut skipped)| async move {
         loop {
-            match reader.recv_json().await {
-                Ok(value) => return Some(((value, skipped), (reader, key, 0))),
+            match reader.recv_json_bytes().await {
+                Ok(bytes) => {
+                    let data = crate::session::Payload::from(bytes);
+                    return Some(((data, skipped), (reader, key, 0)));
+                }
                 Err(DbError::BufferLagged { lag_count, .. }) => {
                     log_warn!(
                         "stream_record_updates: record '{}' subscription lagged by {} messages",
@@ -133,12 +140,13 @@ mod tests {
             step: Arc::new(AtomicUsize::new(0)),
         }));
 
-        // Mirrors `stream_record_updates`'s unfold: accumulate `lag_count` into
-        // `skipped` and let it ride the next yielded value.
+        // Mirrors `stream_record_updates`'s unfold: read owned JSON *bytes*
+        // (not a `Value` tree), accumulate `lag_count` into `skipped`, and let
+        // it ride the next yielded value.
         let stream = unfold((reader, 0_u64), |(mut reader, mut skipped)| async move {
             loop {
-                match reader.recv_json().await {
-                    Ok(v) => return Some(((v, skipped), (reader, 0))),
+                match reader.recv_json_bytes().await {
+                    Ok(bytes) => return Some(((bytes, skipped), (reader, 0))),
                     Err(DbError::BufferLagged { lag_count, .. }) => {
                         skipped = skipped.saturating_add(lag_count);
                         continue;
@@ -149,11 +157,20 @@ mod tests {
             }
         });
 
-        let values: Vec<_> = stream.collect().await;
+        let values: Vec<(Vec<u8>, u64)> = stream.collect().await;
         assert_eq!(values.len(), 2);
         // First value delivered cleanly; the Lagged(7) between the two folds
-        // into the second value's `skipped`, not swallowed.
-        assert_eq!(values[0], (serde_json::json!({"v": 1}), 0));
-        assert_eq!(values[1], (serde_json::json!({"v": 2}), 7));
+        // into the second value's `skipped`, not swallowed. The value rides as
+        // raw JSON bytes, so decode before comparing.
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&values[0].0).unwrap(),
+            serde_json::json!({"v": 1})
+        );
+        assert_eq!(values[0].1, 0);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&values[1].0).unwrap(),
+            serde_json::json!({"v": 2})
+        );
+        assert_eq!(values[1].1, 7);
     }
 }
