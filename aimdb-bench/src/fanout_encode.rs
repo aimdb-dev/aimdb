@@ -1,4 +1,5 @@
-//! Fan-out event-encoding microbenchmark for design 048 WI4.
+//! Fan-out event-encoding microbenchmark.
+//! See `docs/design/048-fanout-event-encoding.md`.
 //!
 //! Measures the per-broadcast cost of turning one shared record value into
 //! `N` per-subscriber AimX `event` frames — the only work that differs
@@ -18,7 +19,8 @@
 //!
 //! The record payload is copied into each frame by **both** strategies
 //! (a contiguous WS text frame embeds it), so this isolates the serialization
-//! delta, not a copy the fast path avoids — see design 048 WI4's caveat.
+//! delta, not a copy the fast path avoids — see the benchmark doc's caveat
+//! (`docs/design/048-fanout-event-encoding.md`).
 
 use std::io::Write as _;
 

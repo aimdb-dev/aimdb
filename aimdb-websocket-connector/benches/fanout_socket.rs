@@ -1,4 +1,5 @@
-//! H-A socket-driven fan-out benchmark (design 048 WI4).
+//! H-A socket-driven fan-out benchmark.
+//! See `docs/design/048-fanout-event-encoding.md`.
 //!
 //! Unlike the `aimdb-bench` encoding microbench (which isolates the codec),
 //! this drives the **real** converged path end-to-end: a live WebSocket server

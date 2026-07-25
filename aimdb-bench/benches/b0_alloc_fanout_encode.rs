@@ -1,4 +1,5 @@
-//! B0 fan-out encoding allocation comparison — design 048 WI4 (H-C).
+//! B0 fan-out encoding allocation comparison (H-C).
+//! See `docs/design/048-fanout-event-encoding.md`.
 //!
 //! Allocation counts are deterministic, so this is the most reproducible
 //! signal for whether the shared-suffix fast path is worth its special-case

@@ -226,8 +226,8 @@ impl AimxSession {
         }
 
         let value = match method {
-            // WI1 version gate: refuse an incompatible/absent client version at
-            // the handshake rather than letting it trip over the new wire shapes.
+            // Version gate: refuse an incompatible/absent client version at the
+            // handshake rather than letting it trip over the new wire shapes.
             "hello" => self.hello(params),
             "record.list" => Ok(json!(self.db.list_records())),
             "record.set" => self.record_set(params),

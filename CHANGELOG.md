@@ -29,9 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — Design 048 WI1: AimX protocol version handshake gate (breaking)
+### Changed — Design 047: AimX protocol version handshake gate (breaking)
 
-`PROTOCOL_VERSION` is bumped **`"2.0"` → `"3.0"`** to mark the design-047/048
+`PROTOCOL_VERSION` is bumped **`"2.0"` → `"3.0"`** to mark the design-047
 convergence as a breaking wire change (`record.query` results moved from
 `{values, count}` to `{records, total}`; wildcard subscribe / auto-subscribe
 added). The `hello` handshake now **negotiates** the version instead of ignoring
@@ -61,7 +61,7 @@ exported from `aimdb_core::remote`); a missing/malformed version fails closed.
 - Schema-level record migration over AimX (the `Migratable` trait) is
   **out of scope** here and tracked as a follow-up (`with_migration`).
 
-### Changed — Design 048 WI3a: dot is the one topic separator (breaking)
+### Changed — Design 047: dot is the one topic separator (breaking)
 
 `topic_matches` (wildcard subscribe / WS fan-out) now splits topic patterns on
 **`.` only** — RabbitMQ topic-exchange semantics (dot segments, `*`

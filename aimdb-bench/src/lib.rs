@@ -28,8 +28,8 @@
 //! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
 //! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
 //! | `benches/b0_alloc_migration.rs`   | B0    | Per-call allocation (migrate_from_bytes) |
-//! | `benches/b0_alloc_fanout_encode.rs`| B0   | Fan-out event-encode allocation (048 WI4)|
-//! | `benches/b1_b2_fanout_encode.rs`  | B1+B2 | Fan-out event-encode latency (048 WI4)   |
+//! | `benches/b0_alloc_fanout_encode.rs`| B0   | Fan-out event-encode allocation          |
+//! | `benches/b1_b2_fanout_encode.rs`  | B1+B2 | Fan-out event-encode latency             |
 //!
 //! On-target cycle profiling (B3) lives in the hardware-only
 //! `examples/embassy-bench-stm32h5` crate, since DWT cycle counting cannot run

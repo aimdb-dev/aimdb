@@ -1,4 +1,5 @@
-//! B1/B2 fan-out encoding — design 048 WI4 (H-B scaling, H-C payoff).
+//! B1/B2 fan-out encoding (H-B scaling, H-C payoff).
+//! See `docs/design/048-fanout-event-encoding.md`.
 //!
 //! One timed iteration is **one broadcast to N subscribers**: turning a single
 //! shared record value into N per-subscriber AimX `event` frames. Compares the

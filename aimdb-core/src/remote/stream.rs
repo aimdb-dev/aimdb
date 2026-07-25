@@ -6,7 +6,7 @@
 //! carried as already-serialized bytes ([`Payload`](crate::session::Payload)),
 //! not a `serde_json::Value` tree — the subscribe path never inspects it, so
 //! parsing it only to re-serialize at the dispatch boundary is pure overhead
-//! (design 048: "removing the intermediate `serde_json::Value`").
+//! (removing the intermediate `serde_json::Value`).
 //! Cancellation is by `drop`; backpressure is the underlying buffer's
 //! responsibility. The handler holds the
 //! returned stream inside its per-subscription future so that the

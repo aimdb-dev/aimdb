@@ -126,7 +126,8 @@ fn write_frame(out: &mut alloc::vec::Vec<u8>, frame: &Frame<'_>) -> Result<(), C
 /// serializer's output), splicing `data` verbatim instead of re-validating it
 /// into a [`RawValue`]. Outbound event payloads are trusted-valid, so `as_raw`'s
 /// O(payload) scan is redundant — and on a fan-out subscription it would run
-/// once *per subscriber* over the shared payload (design 048 WI4, Improvement A).
+/// once *per subscriber* over the shared payload (the fan-out encode fast path;
+/// see `docs/design/048-fanout-event-encoding.md`).
 ///
 /// `frame` must carry `data = None` so serde emits every other field; the
 /// spliced `data` is then appended as the final member. This is byte-identical
