@@ -289,7 +289,7 @@ impl WasmDb {
     /// # Example (TypeScript)
     /// ```ts
     /// const bridge = db.connectBridge('wss://api.example.com/ws', {
-    ///   subscribeTopics: ['sensors/#'],
+    ///   subscribeTopics: ['sensors.#'],
     ///   autoReconnect: true,
     /// });
     /// bridge.onStatusChange((status) => console.log(status));

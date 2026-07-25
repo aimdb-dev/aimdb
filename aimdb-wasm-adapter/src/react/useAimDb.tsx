@@ -16,7 +16,7 @@
  *         { key: 'sensors.humidity.vienna',    schemaType: 'humidity',    buffer: 'SingleLatest' },
  *       ],
  *       // Optional: connect to server
- *       bridge: { url: 'wss://api.cloud.aimdb.dev/ws', subscribeTopics: ['sensors/#'] },
+ *       bridge: { url: 'wss://api.cloud.aimdb.dev/ws', subscribeTopics: ['sensors.#'] },
  *     }}>
  *       <Dashboard />
  *     </AimDbProvider>

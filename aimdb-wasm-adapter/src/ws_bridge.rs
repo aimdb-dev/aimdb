@@ -327,7 +327,7 @@ impl Dialer for WasmWsDialer {
 /// # Example (TypeScript)
 /// ```ts
 /// const bridge = db.connectBridge('wss://api.example.com/ws', {
-///   subscribeTopics: ['sensors/#'],
+///   subscribeTopics: ['sensors.#'],
 ///   autoReconnect: true,
 /// });
 /// bridge.onStatusChange((status) => updateIndicator(status));
@@ -564,11 +564,14 @@ impl WsBridge {
     }
 }
 
-/// Human-readable form of the engine's 3-code error vocabulary.
+/// Human-readable form of the engine's `RpcError` vocabulary.
 fn rpc_err_str(e: &RpcError) -> &'static str {
     match e {
         RpcError::NotFound => "not_found",
         RpcError::Denied => "denied",
+        RpcError::VersionMismatch => {
+            "version_mismatch (server rejected the client protocol version)"
+        }
         _ => "internal (engine stopped, disconnected, or server error)",
     }
 }
