@@ -65,13 +65,26 @@ impl Permissions {
     }
 
     /// Returns `true` if the client is allowed to subscribe to `topic`.
+    ///
+    /// `topic` is the client's requested subscription, which may itself be a
+    /// wildcard — so this asks **pattern containment** ([`pattern_contains`]):
+    /// does a granted pattern cover the *whole* requested pattern? Plain
+    /// [`topic_matches`](aimdb_core::topic_matches) would let a one-level grant
+    /// (`sensors.*`) admit an all-levels request (`sensors.#`) by having the
+    /// `*` swallow the `#`, silently widening the grant. For a concrete request
+    /// `pattern_contains` collapses to `topic_matches`, so exact subscribes are
+    /// unaffected.
     pub fn can_subscribe(&self, topic: &str) -> bool {
         self.subscribe_patterns
             .iter()
-            .any(|p| aimdb_core::topic_matches(p, topic))
+            .any(|p| aimdb_core::pattern_contains(p, topic))
     }
 
     /// Returns `true` if the client is allowed to write to `topic`.
+    ///
+    /// Writes target a single concrete record, so `topic` is never a wildcard
+    /// here and plain [`topic_matches`](aimdb_core::topic_matches) is the right
+    /// check (a wildcard write topic would resolve to no record downstream).
     pub fn can_write(&self, topic: &str) -> bool {
         self.write_patterns
             .iter()
@@ -190,3 +203,36 @@ impl AuthHandler for NoAuth {
 
 /// Type-erased auth handler stored inside the connector.
 pub(crate) type DynAuthHandler = Arc<dyn AuthHandler>;
+
+#[cfg(test)]
+mod tests {
+    use super::Permissions;
+
+    fn perms(subscribe: &[&str]) -> Permissions {
+        Permissions {
+            subscribe_patterns: subscribe.iter().map(|s| s.to_string()).collect(),
+            write_patterns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn subscribe_grant_is_not_widened_by_a_wildcard_request() {
+        // A one-level grant must not admit an all-levels request (the `*`-eats-`#`
+        // escalation): `sensors.*` covers one level, `sensors.#` covers all.
+        let p = perms(&["sensors.*"]);
+        assert!(p.can_subscribe("sensors.temp")); // in scope
+        assert!(!p.can_subscribe("sensors.#")); // escalation — denied
+        assert!(!p.can_subscribe("sensors.temp.vienna")); // deeper — denied
+    }
+
+    #[test]
+    fn subscribe_allows_requests_the_grant_actually_covers() {
+        assert!(perms(&["#"]).can_subscribe("sensors.#"));
+        let p = perms(&["sensors.#"]);
+        assert!(p.can_subscribe("sensors.#"));
+        assert!(p.can_subscribe("sensors.temp.#"));
+        assert!(p.can_subscribe("sensors.temp"));
+        // Out of the granted subtree stays denied.
+        assert!(!p.can_subscribe("commands.#"));
+    }
+}

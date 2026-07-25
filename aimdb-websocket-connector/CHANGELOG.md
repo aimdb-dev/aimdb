@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Subscribe ACL now checks pattern *containment*, not topic matching.** A
+  granted subscribe pattern is honored only if it covers the *whole* pattern the
+  client requests. Previously the check matched the requested pattern as if it
+  were a concrete topic, so a one-level grant (`sensors.*`) admitted an
+  all-levels request (`sensors.#`) — the grant's `*` swallowed the request's
+  `#` — silently widening the grant. Concrete (wildcard-free) subscribes are
+  unaffected. (Latent before Design 047's `/`→`.` separator fix, which is what
+  made dot-keyed grant patterns match at all.)
+
 ### Changed (breaking) — Design 047: the WS wire is now AimX
 
 - **The wire protocol is AimX** (`aimdb-core::session::aimx`), one tagged JSON

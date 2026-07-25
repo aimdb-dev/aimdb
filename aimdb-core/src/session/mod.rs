@@ -36,7 +36,7 @@ mod server;
 pub mod aimx;
 
 mod topic_match;
-pub use topic_match::{is_wildcard, topic_matches};
+pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
 
 #[cfg(feature = "connector-session")]
 pub use client::{pump_client, run_client, ClientConfig, ClientHandle};

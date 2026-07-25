@@ -65,6 +65,59 @@ pub fn is_wildcard(pattern: &str) -> bool {
     pattern.contains('#') || pattern.contains('*')
 }
 
+/// Returns `true` if every topic matched by `requested` is also matched by
+/// `grant` — i.e. `grant`'s match set ⊇ `requested`'s match set (`grant`
+/// *contains* `requested`).
+///
+/// This is **pattern containment**, not topic matching, and the two diverge
+/// once `requested` is itself a wildcard. An access check must ask containment:
+/// "does my grant cover the whole pattern this client asked to subscribe to?"
+/// [`topic_matches`] answers a different question ("does this pattern match
+/// this string?") and would treat the requested pattern as an opaque topic —
+/// so a one-level grant `a.*` "matches" the all-levels request `a.#` (the `*`
+/// swallows the `#`) and silently widens the grant. Containment denies that:
+/// `a.#` reaches deeper than `a.*` covers.
+///
+/// When `requested` is a concrete topic (no wildcard) this collapses to exactly
+/// [`topic_matches`]`(grant, requested)`, so it is a safe drop-in for an ACL
+/// that must accept both concrete and wildcard subscription requests.
+///
+/// Grammar is the same dot-separated `*` (single-level) / `#` (multi-level, and
+/// as `grant`'s tail, zero-or-more) set as [`topic_matches`].
+pub fn pattern_contains(grant: &str, requested: &str) -> bool {
+    let mut g = grant.split('.');
+    let mut r = requested.split('.');
+    loop {
+        match (g.next(), r.next()) {
+            // A `#` in the grant absorbs the entire remaining request tail
+            // (including an already-exhausted one, e.g. `a.#` contains `a`).
+            (Some("#"), _) => return true,
+            // Both exhausted together: an exact structural cover.
+            (None, None) => return true,
+            // Request reaches past where the grant stops covering.
+            (None, Some(_)) => return false,
+            // Grant still requires ≥1 concrete segment the request never yields.
+            (Some(_), None) => return false,
+            // A grant `*` covers exactly one segment. A request `#` here could
+            // expand to zero or many segments, so `*` cannot contain it; a
+            // request `*` or literal is exactly one segment and is covered.
+            (Some("*"), Some(rs)) => {
+                if rs == "#" {
+                    return false;
+                }
+            }
+            // A grant literal covers only itself: the request segment must be
+            // that same literal (a request `*`/`#` here would reach topics the
+            // literal doesn't, so it is not contained).
+            (Some(gs), Some(rs)) => {
+                if gs != rs {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +201,69 @@ mod tests {
         // Literal dotted keys are wildcards only when `#`/`*` appears.
         assert!(!is_wildcard("temp.vienna"));
         assert!(is_wildcard("temp.*"));
+    }
+
+    #[test]
+    fn containment_denies_wildcard_escalation() {
+        // The bug this function exists to prevent: a one-level grant must not
+        // cover an all-levels request just because `topic_matches` lets the
+        // grant's `*` swallow the request's `#`.
+        assert!(!pattern_contains("sensors.*", "sensors.#"));
+        assert!(topic_matches("sensors.*", "sensors.#")); // the trap it avoids
+                                                          // `*` also can't cover a deeper concrete request.
+        assert!(!pattern_contains("sensors.*", "sensors.temp.vienna"));
+    }
+
+    #[test]
+    fn containment_allows_when_grant_is_broader_or_equal() {
+        // `#` covers everything.
+        assert!(pattern_contains("#", "sensors.#"));
+        assert!(pattern_contains("#", "anything.deep.here"));
+        // A grant `#` tail covers deeper requests and the prefix itself.
+        assert!(pattern_contains("sensors.#", "sensors.temp.#"));
+        assert!(pattern_contains("sensors.#", "sensors.*"));
+        assert!(pattern_contains("sensors.#", "sensors.temp"));
+        assert!(pattern_contains("sensors.#", "sensors")); // `a.#` contains `a`
+                                                           // Equal patterns contain each other.
+        assert!(pattern_contains("sensors.#", "sensors.#"));
+        assert!(pattern_contains("a.*.c", "a.*.c"));
+        // One-level grant covers one-level requests (literal or `*`).
+        assert!(pattern_contains("sensors.*", "sensors.temp"));
+        assert!(pattern_contains("sensors.*", "sensors.*"));
+    }
+
+    #[test]
+    fn containment_denies_out_of_scope_or_shallower() {
+        // Different subtree.
+        assert!(!pattern_contains("sensors.#", "commands.#"));
+        assert!(!pattern_contains("sensors.temp", "sensors.humidity"));
+        // A deeper grant does not cover a shallower request.
+        assert!(!pattern_contains("a.b.c", "a.b"));
+        // A literal grant is not widened by a `*`/`#` request.
+        assert!(!pattern_contains("sensors.temp", "sensors.*"));
+        assert!(!pattern_contains("sensors.temp", "sensors.#"));
+    }
+
+    #[test]
+    fn containment_matches_topic_matches_on_concrete_requests() {
+        // For a concrete (wildcard-free) request, containment must be exactly
+        // `topic_matches` — the safe-drop-in property the ACL relies on.
+        let grants = ["#", "sensors.#", "sensors.*", "sensors.temp", "*.temp"];
+        let topics = [
+            "sensors.temp",
+            "sensors.temp.vienna",
+            "sensors",
+            "commands.on",
+            "a.temp",
+        ];
+        for g in grants {
+            for t in topics {
+                assert_eq!(
+                    pattern_contains(g, t),
+                    topic_matches(g, t),
+                    "grant={g:?} topic={t:?}"
+                );
+            }
+        }
     }
 }

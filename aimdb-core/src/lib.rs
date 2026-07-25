@@ -84,9 +84,10 @@ pub use remote::topic_leaf;
 // compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
-    is_wildcard, pump_sink, pump_source, topic_matches, AuthError, BoxFut, BoxStream, CodecError,
-    Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo,
-    RpcError, SessionCtx, SessionLimits, Source, SubUpdate, TransportError, TransportResult,
+    is_wildcard, pattern_contains, pump_sink, pump_source, topic_matches, AuthError, BoxFut,
+    BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener,
+    Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Source, SubUpdate,
+    TransportError, TransportResult,
 };
 
 // Signal gauge handle (always available; inert without `observability`)
