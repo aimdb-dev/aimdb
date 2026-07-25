@@ -15,23 +15,22 @@ use core::pin::Pin;
 #[cfg(feature = "wasm-runtime")]
 use core::task::{Context, Poll};
 
-/// A wrapper that unconditionally implements `Send` for a future, so a
+/// A wrapper that implements `Send` for a future **on wasm32 only**, so a
 /// JS-touching (`!Send`) future can satisfy the engine's `Send` bounds and box
 /// into the `dyn Future + Send` transport shapes.
 ///
 /// # Safety
 ///
-/// `wasm-runtime` is a wasm32-only feature in practice: the JS-driven bridge it
-/// gates (`ws_bridge`) holds `Rc`/`Closure` state that is genuinely `!Send`, so
-/// the crate only compiles for `wasm32-unknown-unknown` once the feature is on
-/// (the native `cargo test` lane runs `--no-default-features`, which compiles
-/// this type and the bridge out entirely). That leaves
-/// `wasm32-unknown-unknown` without the `atomics` / shared-memory proposal as
-/// the only configuration where the `Send` impl is live — single-threaded by
-/// construction, so the inner future is never actually sent between threads.
-/// The `compile_error!` guard below is the backstop: enabling wasm threads
-/// invalidates that reasoning and fails the build rather than silently
-/// producing UB.
+/// The blanket `unsafe impl Send for SendFuture<F>` is sound only where
+/// execution is single-threaded, so it is gated on `target_arch = "wasm32"`
+/// (matching the per-type `unsafe impl Send` gates in `ws_bridge` and
+/// `buffer`). The gate is the guarantee, not the incidental fact that the
+/// crate's JS bridge fails to compile off-wasm: on any other target
+/// `SendFuture` remains a plain `Future` that is only `Send` when `F: Send`,
+/// the correct default. The `compile_error!` guard below is the backstop for
+/// the one unsound wasm configuration — `wasm32` *with* the `atomics` /
+/// shared-memory proposal (multi-threaded) — failing the build rather than
+/// silently producing UB.
 #[cfg(feature = "wasm-runtime")]
 pub(crate) struct SendFuture<F>(pub(crate) F);
 
@@ -43,9 +42,10 @@ compile_error!(
      Disable the `atomics` target feature or provide a thread-safe implementation."
 );
 
-// SAFETY: see the type's docs — with `wasm-runtime` on, the only target this
-// compiles for is wasm32 (without atomics), which is single-threaded.
-#[cfg(feature = "wasm-runtime")]
+// SAFETY: single-threaded wasm32 (without atomics) — the future is never
+// actually sent between threads. Arch-gated so it can't satisfy a `Send` bound
+// on a multi-threaded native target.
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 unsafe impl<F> Send for SendFuture<F> {}
 
 #[cfg(feature = "wasm-runtime")]
