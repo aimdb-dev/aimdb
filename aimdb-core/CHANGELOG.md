@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (breaking) — Design 045: one protocol (AimX) for every transport
+### Changed (breaking) — Design 047: one protocol (AimX) for every transport
 
 - **Wildcard / multi-record subscribe.** `Inbound::Subscribe` topics may carry
   MQTT-style wildcards (`#`, `*`): `AimxDispatch` matches the pattern against

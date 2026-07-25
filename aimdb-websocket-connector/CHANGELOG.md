@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (breaking) — Design 045: the WS wire is now AimX
+### Changed (breaking) — Design 047: the WS wire is now AimX
 
 - **The wire protocol is AimX** (`aimdb-core::session::aimx`), one tagged JSON
   frame per WS text message — the same envelope as UDS/serial/TCP. The
@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subscriptions late-join every covered record (previously wildcard patterns
   never hit the exact-key cache).
 - **Auto-subscribe ids are server-chosen** (counting down from `u64::MAX`);
-  engine-demuxed clients should subscribe explicitly (design 045 §3.6).
+  engine-demuxed clients should subscribe explicitly (design 047 §3.6).
 
 ### Internal refactors
 

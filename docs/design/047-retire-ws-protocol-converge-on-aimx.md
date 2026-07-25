@@ -1,4 +1,4 @@
-# 045 — Retire `aimdb-ws-protocol`: every transport speaks AimX
+# 047 — Retire `aimdb-ws-protocol`: every transport speaks AimX
 
 **Status:** ✅ Implemented (mapping-table gate from 036 A2; shipped on
 `feat/retire-aimdb-ws-protocol`)

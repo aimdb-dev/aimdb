@@ -67,9 +67,9 @@ unaffected.
   and the wasm-adapter README were migrated accordingly.
 - `topic_leaf` (entity extraction) remains tolerant of both `.` and `/`.
 
-### Changed — Design 045: one wire protocol (AimX) for every transport (breaking)
+### Changed — Design 047: one wire protocol (AimX) for every transport (breaking)
 
-Implementation of [design 045](docs/design/045-retire-ws-protocol-converge-on-aimx.md)
+Implementation of [design 047](docs/design/047-retire-ws-protocol-converge-on-aimx.md)
 (the 038 §3.9 / 036 A2 protocol unification). The `aimdb-ws-protocol` crate is
 **deleted**; the WebSocket connector and the browser `WsBridge` now speak the
 same AimX tagged frames as UDS/serial/TCP, over the same session engines.
@@ -82,6 +82,22 @@ rows). **Breaking for browser clients** (the JS `WsBridge` API is unchanged,
 but the wire is new); breaking Rust API changes are listed per crate
 (`aimdb-core`, `aimdb-websocket-connector`, `aimdb-wasm-adapter`,
 `aimdb-client`, `aimdb-persistence`).
+
+### Changed — knx-pico submodule
+
+- **Submodule:** bump `_external/knx-pico` to upstream `0.3` (commit 158325bd4)
+
+### Added — per-link record codecs
+
+- **Issue #178:** one `Linkable` record type can now select JSON, bounded
+  Postcard, or a custom codec independently on each inbound/outbound connector
+  route through `linked_*_with(url, codec)` or builder-level
+  `with_link_codec(codec)`. Selection is fused at registration time; bounded
+  Postcard routes retain the reusable scratch/owned-overflow behavior from
+  issue #177 without a per-message registry, lock, or lookup. See
+  [Design 045](docs/design/045-per-link-codec-selection.md). Re-selecting a
+  codec replaces both the owned and scratch serializers, so changing a route
+  from bounded postcard to owned JSON cannot retain stale postcard output.
 
 ### Added — direct JSON remote-access payloads
 

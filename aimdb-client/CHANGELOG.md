@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (breaking) — Design 045
+### Changed (breaking) — Design 047
 
 - **Wildcard subscriptions:** new `AimxConnection::subscribe_with_topics`
   yields `(Option<String>, Value)` pairs so one pattern subscription (`#`,

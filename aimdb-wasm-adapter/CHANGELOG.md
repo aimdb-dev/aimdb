@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (breaking) — Design 045: `WsBridge` is an AimX engine client
+### Changed (breaking) — Design 047: `WsBridge` is an AimX engine client
 
 - **`WsBridge` rewritten on `run_client` + `ClientHandle`** over a
   `web_sys::WebSocket`-backed `Connection`/`Dialer`: reply/subscription
