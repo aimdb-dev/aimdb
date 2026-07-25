@@ -129,9 +129,14 @@ fn write_frame(out: &mut alloc::vec::Vec<u8>, frame: &Frame<'_>) -> Result<(), C
 /// once *per subscriber* over the shared payload (design 048 WI4, Improvement A).
 ///
 /// `frame` must carry `data = None` so serde emits every other field; the
-/// spliced `data` is appended as the final member. Byte-identical to serializing
-/// the same frame with `data = Some(as_raw(payload))`, since `data` is the last
-/// field in declaration order.
+/// spliced `data` is then appended as the final member. This is byte-identical
+/// to serializing the same frame with `data = Some(as_raw(payload))` **only
+/// while `data` is the last member serde emits** — i.e. every field declared
+/// after `data` in [`Frame`] (`ok`, `err`) also skip-serializes. That holds for
+/// the frames this path encodes (`Event` never sets `ok`/`err`), and the
+/// `debug_assert` below makes the precondition explicit rather than incidental:
+/// splicing a frame that set `ok`/`err` would emit `…,"ok":X,"data":Y}` with
+/// `data` no longer last, breaking the byte-identical claim.
 ///
 /// # Contract (deliberately unchecked)
 ///
@@ -153,6 +158,10 @@ fn write_frame_splicing_data(
     data: &[u8],
 ) -> Result<(), CodecError> {
     debug_assert!(frame.data.is_none(), "data must be spliced, not serialized");
+    debug_assert!(
+        frame.ok.is_none() && frame.err.is_none(),
+        "fields declared after `data` must be None so the spliced `data` stays last"
+    );
     let scaffold = serde_json::to_vec(frame).map_err(|_| CodecError::Malformed)?;
     // A `Frame` always serializes to a JSON object closed by `}`.
     let Some((&b'}', head)) = scaffold.split_last() else {
