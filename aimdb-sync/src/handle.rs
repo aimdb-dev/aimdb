@@ -151,51 +151,7 @@ impl AimDbHandle {
         // Spawn the runtime thread
         let thread_handle = thread::Builder::new()
             .name("aimdb-sync-runtime".to_string())
-            .spawn(move || {
-                // Create a new Tokio runtime for this thread
-                let runtime = match tokio::runtime::Runtime::new() {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        log_error!("Failed to create Tokio runtime: {}", e);
-                        return;
-                    }
-                };
-
-                // Get the runtime handle before moving into block_on
-                let rt_handle = runtime.handle().clone();
-
-                // Send the runtime handle to the main thread
-                if handle_tx.blocking_send(rt_handle).is_err() {
-                    log_error!("Failed to send runtime handle to main thread");
-                    return;
-                }
-
-                // Build the database inside the async context
-                runtime.block_on(async move {
-                    let (db, runner) = match builder.build().await {
-                        Ok(d) => (Arc::new(d.0), d.1),
-                        Err(e) => {
-                            log_error!("Failed to build database: {}", e);
-                            return;
-                        }
-                    };
-
-                    // Send the database to the main thread
-                    if db_tx.send(db.clone()).await.is_err() {
-                        log_error!("Failed to send database to main thread");
-                        return;
-                    }
-
-                    // Drive the runner until shutdown.
-                    // If runner.run() completes early (e.g. all tap futures finish),
-                    // we must NOT drop the runtime — tasks spawned via runtime_handle
-                    // would be aborted. Keep waiting for the explicit shutdown signal.
-                    tokio::select! {
-                        _ = runner.run() => { let _ = shutdown_rx.recv().await; }
-                        _ = shutdown_rx.recv() => {}
-                    }
-                });
-            })
+            .spawn(|| Self::setup_background(builder, shutdown_rx, db_tx, handle_tx))
             .map_err(|e| SyncError::AttachFailed {
                 message: format!("Failed to spawn runtime thread: {}", e),
             })?;
@@ -632,6 +588,50 @@ impl AimDbHandle {
 
         Ok(())
     }
+
+    fn setup_background(builder: AimDbBuilder, mut shutdown_rx: mpsc::Receiver<ShutdownSignal>, db_tx: mpsc::Sender<Arc<AimDb>>, handle_tx: mpsc::Sender<tokio::runtime::Handle>) {
+        // Create a new Tokio runtime for this thread
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                log_error!("Failed to create Tokio runtime: {}", e);
+                return;
+            }
+        };
+        // Get the runtime handle before moving into block_on
+        let rt_handle = runtime.handle().clone();
+        // Send the runtime handle to the main thread
+        if handle_tx.blocking_send(rt_handle).is_err() {
+            log_error!("Failed to send runtime handle to main thread");
+            return;
+        }
+        runtime.block_on(async move {
+            // Build the database inside the async context
+            let (db, runner) = match builder.build().await {
+                Ok(d) => (Arc::new(d.0), d.1),
+                Err(e) => {
+                    log_error!("Failed to build database: {}", e);
+                    return;
+                }
+            };
+
+            // Send the database to the main thread
+            if db_tx.send(db.clone()).await.is_err() {
+                log_error!("Failed to send database to main thread");
+                return;
+            }
+
+            // Drive the runner until shutdown.
+            // If runner.run() completes early (e.g. all tap futures finish),
+            // we must NOT drop the runtime — tasks spawned via runtime_handle
+            // would be aborted. Keep waiting for the explicit shutdown signal.
+            tokio::select! {
+                _ = runner.run() => { let _ = shutdown_rx.recv().await; }
+                _ = shutdown_rx.recv() => {}
+            }
+    });    
+}
+
 }
 
 impl Drop for AimDbHandle {
