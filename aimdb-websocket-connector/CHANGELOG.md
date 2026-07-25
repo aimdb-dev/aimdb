@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fan-out broadcast drops are now observable as `seq` gaps.** When a
+  subscription's bounded channel is full, `ClientManager::broadcast` still drops
+  the update (slow-client protection) but now records it and folds the count
+  into the next delivered update's `skipped`, so a broadcast-stage drop surfaces
+  as a `seq` gap downstream — the same loss signal buffer lag and the connection
+  funnel already emit. Previously this drop happened upstream of where the pump
+  assigns `seq`, so a slow fan-out consumer silently under-reported its loss.
+
 ### Security
 
 - **Subscribe ACL now checks pattern *containment*, not topic matching.** A

@@ -27,6 +27,13 @@ struct SubEntry {
     pattern: String,
     /// Bounded; `broadcast` drops on a full channel (slow-client protection).
     tx: mpsc::Sender<SubUpdate>,
+    /// Updates dropped (full channel) since the last one that got through, to be
+    /// folded into the next delivered [`SubUpdate::skipped`] so a broadcast-stage
+    /// drop still surfaces as a `seq` gap downstream — the same loss signal the
+    /// per-record buffer lag and the connection funnel already emit. Without
+    /// this, a drop *here* (upstream of where the pump assigns `seq`) would be
+    /// silent, and a slow fan-out consumer would under-report its loss.
+    dropped: AtomicU64,
 }
 
 /// Shared per-topic broadcast bus. Cloning is cheap (all clones share state).
@@ -86,6 +93,7 @@ impl ClientManager {
             SubEntry {
                 pattern: pattern.to_string(),
                 tx,
+                dropped: AtomicU64::new(0),
             },
         );
         let stream = futures_util::stream::unfold(rx, |mut rx| async move {
@@ -100,6 +108,11 @@ impl ClientManager {
     /// The payload and the topic tag are `Arc`-shared to every matching
     /// subscription (refcount bumps, no per-subscriber copies); the per-frame
     /// envelope is applied downstream by each connection's codec.
+    ///
+    /// A full channel drops the update (slow-client protection) but records it on
+    /// the subscription's [`dropped`](SubEntry::dropped) counter, folded into the
+    /// next delivered update's `skipped` so the loss still surfaces as a `seq`
+    /// gap — see that field.
     pub async fn broadcast(&self, topic: &str, payload_bytes: &[u8]) {
         let payload = Payload::from(payload_bytes);
         let tag: Arc<str> = Arc::from(topic);
@@ -108,13 +121,21 @@ impl ClientManager {
             if !topic_matches(&entry.pattern, topic) {
                 continue;
             }
+            // Carry any drops accumulated since the last delivered update, so a
+            // broadcast-stage loss rides this update's `skipped` into a `seq`
+            // gap. Take them now; restore on failure so nothing is lost.
+            let carried = entry.dropped.swap(0, Ordering::Relaxed);
+            let update = SubUpdate::tagged(tag.clone(), payload.clone()).with_skipped(carried);
             // Bounded: drop on a full queue (slow-client protection), prune only
             // when the receiver is gone (stream dropped).
-            if let Err(mpsc::error::TrySendError::Closed(_)) = entry
-                .tx
-                .try_send(SubUpdate::tagged(tag.clone(), payload.clone()))
-            {
-                dead.push(*entry.key());
+            match entry.tx.try_send(update) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    // This update is dropped too: restore the carried count and
+                    // add one for it, to ride the next delivered update.
+                    entry.dropped.fetch_add(carried + 1, Ordering::Relaxed);
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => dead.push(*entry.key()),
             }
         }
         for id in dead {
@@ -172,6 +193,34 @@ mod tests {
         mgr.broadcast("sensors.temp", b"22.5").await;
         // Nothing queued: the next() future is not ready.
         assert!(stream.next().now_or_never().is_none());
+    }
+
+    #[tokio::test]
+    async fn full_channel_drops_surface_as_skipped_on_next_delivery() {
+        // Capacity 1: the second and third broadcasts have nowhere to go and are
+        // dropped, but the loss must ride the next delivered update's `skipped`
+        // so it becomes a `seq` gap downstream (not a silent hole).
+        let mgr = ClientManager::new(1);
+        let (_id, mut stream) = mgr.subscribe("#");
+
+        mgr.broadcast("t", b"1").await; // fills the one slot
+        mgr.broadcast("t", b"2").await; // full → dropped (counter = 1)
+        mgr.broadcast("t", b"3").await; // full → dropped (counter = 2)
+
+        // First delivery is the update that got through, lossless.
+        let first = stream.next().await.expect("first update");
+        assert_eq!(&first.data[..], b"1");
+        assert_eq!(first.skipped, 0);
+
+        // With the slot now free, the next broadcast is delivered and carries the
+        // two drops that happened while the channel was full.
+        mgr.broadcast("t", b"4").await;
+        let second = stream.next().await.expect("second update");
+        assert_eq!(&second.data[..], b"4");
+        assert_eq!(
+            second.skipped, 2,
+            "the two full-channel drops must be reported"
+        );
     }
 
     #[tokio::test]
