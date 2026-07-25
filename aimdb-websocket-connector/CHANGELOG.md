@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never hit the exact-key cache).
 - **Auto-subscribe ids are server-chosen** (counting down from `u64::MAX`);
   engine-demuxed clients should subscribe explicitly (design 047 §3.6).
+- **Protocol-version gate at the WS upgrade.** The client declares its AimX
+  version as `?v=<PROTOCOL_VERSION>` on the upgrade URL (browsers cannot set
+  handshake headers, and the server runs `reads_hello:false`); an
+  incompatible/absent version is refused with **HTTP 426 Upgrade Required**
+  before the socket opens, so a stale client fails at the handshake instead of
+  on its first frame. The bundled `WsClientConnector` appends it automatically.
 
 ### Internal refactors
 

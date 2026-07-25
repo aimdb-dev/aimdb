@@ -14,6 +14,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
 use aimdb_core::{
+    remote::{version_compatible, PROTOCOL_VERSION, VERSION_PARAM},
     session::{aimx::AimxCodec, run_session, SessionConfig},
     Connection, Dispatch, PeerInfo, SessionLimits,
 };
@@ -137,6 +138,33 @@ async fn ws_upgrade_handler(
         query_params,
         remote_addr,
     };
+
+    // Protocol-version gate, before auth: the socket transports negotiate the
+    // version inside `hello`, but the WS server runs `reads_hello:false` and a
+    // browser cannot set handshake headers — so the client declares its version
+    // in the URL (`?v=3.0`, see `ws_url_with_version`). A missing or
+    // major-incompatible version is refused here with 426 so a stale client
+    // fails at the upgrade rather than on its first frame's new shape. Absent
+    // fails closed (`version_compatible("")` is false), matching the socket gate.
+    let client_version = auth_req
+        .query_params
+        .get(VERSION_PARAM)
+        .map(String::as_str)
+        .unwrap_or_default();
+    if !version_compatible(client_version) {
+        #[cfg(feature = "tracing")]
+        tracing::warn!(
+            "WebSocket upgrade from {} refused: incompatible protocol version {:?} (server speaks {})",
+            remote_addr,
+            client_version,
+            PROTOCOL_VERSION
+        );
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            format!("incompatible AimX protocol version (server speaks {PROTOCOL_VERSION})"),
+        )
+            .into_response();
+    }
 
     // Authenticate at the HTTP upgrade — returns permissions or rejects (401).
     let permissions = match state.auth.authenticate(&auth_req).await {

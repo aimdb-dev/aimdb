@@ -15,11 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `aimdb-core`'s client engine — the hand-rolled 835-line demux is gone. The
   `#[wasm_bindgen]` surface is preserved (`write`, `query`, `listTopics`,
   `onStatusChange`, `status`, `disconnect`, `connectBridge` options), but the
-  wire is AimX, so the bridge only talks to design-045 servers.
+  wire is AimX, so the bridge only talks to design-047 servers.
   `BridgeOptions.lateJoin` is retained for option-shape compatibility
   (snapshots are server-driven under AimX).
 - **`WasmDb.discover` / the raw discovery path speak `record.list`** and
   resolve with `{name, schema_type, entity}` rows.
+- **The bridge and discovery declare their AimX version** on the WebSocket
+  upgrade URL (`?v=3.0`, via `aimdb_core::remote::ws_url_with_version`), which a
+  design-047 server gates on (HTTP 426 on mismatch) — a browser cannot set
+  handshake headers, so the version rides the URL.
 - Depends on `aimdb-core`'s `connector-session` + `remote` features (the
   engines cross-compile to wasm32); the `aimdb-ws-protocol` dependency is
   gone.

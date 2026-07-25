@@ -49,6 +49,15 @@ exported from `aimdb_core::remote`); a missing/malformed version fails closed.
 - **Caveat carried from design 047 §3.6:** server-seeded auto-subscriptions are
   invisible to `run_client`-based consumers. Client authors upgrading to 3.0
   must drive their own `subscribe` for records they want streamed.
+- **WebSocket / browser upgrade gate.** The socket transports negotiate the
+  version inside `hello`, but the WS server runs `reads_hello:false` and a
+  browser cannot set WebSocket handshake headers — so a WS client declares its
+  version in the upgrade URL (`…/ws?v=3.0`) and the server refuses an
+  incompatible/absent one with **HTTP 426 Upgrade Required** before the socket
+  opens. New `aimdb_core::remote::{VERSION_PARAM, ws_url_with_version}` hold the
+  contract; the browser `WsBridge`/`WasmDb.discover` and the Rust
+  `WsClientConnector` append it automatically. A stale browser client now fails
+  at the upgrade rather than on its first frame.
 - Schema-level record migration over AimX (the `Migratable` trait) is
   **out of scope** here and tracked as a follow-up (`with_migration`).
 

@@ -226,7 +226,10 @@ unsafe impl Send for WasmWsDialer {}
 
 impl Dialer for WasmWsDialer {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
-        let url = self.url.clone();
+        // Declare our AimX version in the URL so the server's upgrade-time gate
+        // admits us — a browser cannot set custom WebSocket handshake headers,
+        // so the version rides the query string (`?v=3.0`).
+        let url = aimdb_core::remote::ws_url_with_version(&self.url);
         let shared = self.shared.clone();
         Box::pin(SendFuture(async move {
             if shared.stopped.get() {

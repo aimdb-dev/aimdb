@@ -14,6 +14,26 @@ use serde_json::Value as JsonValue;
 /// Version of the AimX wire protocol spoken by this crate.
 pub const PROTOCOL_VERSION: &str = "3.0";
 
+/// Query-parameter name a WebSocket client uses to declare its
+/// [`PROTOCOL_VERSION`] at the HTTP upgrade. The socket transports gate the
+/// version inside the `hello` handshake, but a browser cannot set custom
+/// headers on the WebSocket handshake **and** the WS server runs
+/// `reads_hello:false`, so the WS upgrade carries the version in the URL
+/// instead (`…/ws?v=3.0`) and the server refuses an incompatible/absent one
+/// before the socket opens. See [`ws_url_with_version`].
+pub const VERSION_PARAM: &str = "v";
+
+/// Append this crate's [`PROTOCOL_VERSION`] as the [`VERSION_PARAM`] query
+/// parameter to a WebSocket upgrade `url`, joining with `&` if `url` already
+/// carries a query string and `?` otherwise. Every first-party WS client
+/// dialer routes its URL through this so the server's upgrade-time gate sees a
+/// version; keeping the `NAME=VALUE` contract here means the reader
+/// (the server) and the writers (the dialers) never drift.
+pub fn ws_url_with_version(url: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    alloc::format!("{url}{sep}{VERSION_PARAM}={PROTOCOL_VERSION}")
+}
+
 /// Major-version component of a `"MAJOR.MINOR"` protocol string, or `None` if it
 /// is empty or not in that shape.
 fn protocol_major(version: &str) -> Option<&str> {

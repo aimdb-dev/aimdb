@@ -185,7 +185,10 @@ type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn ws_connect(addr: SocketAddr) -> WsClient {
-    tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+    // Every real client declares its AimX version at the upgrade; go through the
+    // shared helper so the tests exercise the exact URL the dialers produce.
+    let url = aimdb_core::remote::ws_url_with_version(&format!("ws://{addr}/ws"));
+    tokio_tungstenite::connect_async(url)
         .await
         .expect("connect")
         .0
@@ -412,9 +415,31 @@ async fn server_ping_pong() {
 #[tokio::test]
 async fn server_rejects_unauthenticated_upgrade() {
     let (addr, _db) = spawn(WebSocketConnector::new().with_auth(DenyAuth)).await;
-    // The upgrade must be refused with HTTP 401 → the WS handshake fails.
-    let result = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await;
+    // A compatible version so the request reaches auth; the upgrade must then be
+    // refused with HTTP 401 → the WS handshake fails.
+    let url = aimdb_core::remote::ws_url_with_version(&format!("ws://{addr}/ws"));
+    let result = tokio_tungstenite::connect_async(url).await;
     assert!(result.is_err(), "auth-rejected upgrade should not connect");
+}
+
+#[tokio::test]
+async fn server_rejects_incompatible_protocol_version() {
+    let (addr, _db) = spawn_default().await;
+    // A pre-3.x client (or one omitting `?v`) is refused at the upgrade (426),
+    // before the socket opens — it never reaches the AimX frame loop.
+    let stale = tokio_tungstenite::connect_async(format!("ws://{addr}/ws?v=2.0")).await;
+    assert!(stale.is_err(), "incompatible version must not upgrade");
+    let missing = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await;
+    assert!(
+        missing.is_err(),
+        "absent version must not upgrade (fail closed)"
+    );
+    // The current version still connects fine.
+    let ok = tokio_tungstenite::connect_async(aimdb_core::remote::ws_url_with_version(&format!(
+        "ws://{addr}/ws"
+    )))
+    .await;
+    assert!(ok.is_ok(), "current version must upgrade");
 }
 
 #[tokio::test]

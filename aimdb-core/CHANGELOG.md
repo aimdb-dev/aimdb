@@ -16,7 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and emits one late-join `Snapshot` per matched record. The matcher moved in
   from the retired `aimdb-ws-protocol` crate as
   `session::topic_match::{topic_matches, is_wildcard}` (re-exported at the
-  crate root).
+  crate root), alongside a new `pattern_contains(grant, requested)` — pattern
+  *containment* (grant's match set ⊇ requested's), the check an ACL needs when
+  the requested subscription is itself a wildcard (see the WS connector's
+  subscribe-ACL fix).
+- **AimX version handshake.** New `remote::{VERSION_PARAM, ws_url_with_version}`
+  carry the WS upgrade-URL version contract (`?v=3.0`) that the WS server gates
+  on; `version_compatible` is now also re-exported from `remote` for reuse by
+  transports that check the version out-of-band.
 - **Subscription streams carry the firing record.** `Session::subscribe` and
   `ClientHandle::subscribe` now yield `SubUpdate { topic: Option<Arc<str>>,
   data: Payload }` instead of bare `Payload`; `Outbound::Event` gains an

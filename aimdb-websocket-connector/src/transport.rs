@@ -115,7 +115,11 @@ impl aimdb_core::Dialer for WsDialer {
         &self,
     ) -> aimdb_core::BoxFut<'_, aimdb_core::TransportResult<Box<dyn aimdb_core::Connection>>> {
         Box::pin(async move {
-            let (ws, _resp) = tokio_tungstenite::connect_async(&self.url)
+            // Declare our AimX version in the URL so the server's upgrade-time
+            // gate admits us (browsers can't set handshake headers; the Rust
+            // client follows the same contract for symmetry).
+            let url = aimdb_core::remote::ws_url_with_version(&self.url);
+            let (ws, _resp) = tokio_tungstenite::connect_async(&url)
                 .await
                 .map_err(|_| aimdb_core::TransportError::Io)?;
             Ok(Box::new(WsClientConnection {
