@@ -1,11 +1,11 @@
 //! Synchronous producer for typed records.
 
-use crate::{SyncError, SyncResult};
-use aimdb_core::DbResult;
-use alloc::sync::Arc;
+use crate::{AimDbHandle, SyncError, SyncResult};
+use aimdb_core::{AimDb, DbResult};
+use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
+use core::marker::PhantomData;
 use core::time::Duration;
-use tokio::sync::{mpsc, oneshot};
 
 /// Synchronous producer for records of type `T`.
 ///
@@ -47,13 +47,10 @@ pub struct SyncProducer<T>
 where
     T: Send + 'static + Debug + Clone,
 {
-    /// Channel sender for producer commands
-    /// Wrapped in Arc so it can be cloned across threads
-    /// Sends (value, result_sender) tuples to propagate produce errors back to caller
-    tx: Arc<mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>>,
-
-    /// Runtime handle for executing async operations with timeout
-    runtime_handle: tokio::runtime::Handle,
+    db: Weak<AimDb>,
+    key: String,
+    // same reasons as for Producer in aimdb-core/src/typed_api.rs
+    _phantom: PhantomData<fn() -> T>,
 }
 
 impl<T> SyncProducer<T>
@@ -61,46 +58,12 @@ where
     T: Send + 'static + Debug + Clone,
 {
     /// Create a new sync producer (internal use only)
-    pub(crate) fn new(
-        tx: mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>,
-        runtime_handle: tokio::runtime::Handle,
-    ) -> Self {
+    pub(crate) fn new(db: Weak<AimDb>, key: impl AsRef<str>) -> Self {
         Self {
-            tx: Arc::new(tx),
-            runtime_handle,
+            db,
+            key: key.as_ref().into(),
+            _phantom: PhantomData,
         }
-    }
-
-    /// Internal helper: send value and wait for result with optional timeout
-    fn send_internal(&self, value: T, timeout: Option<Duration>) -> SyncResult<()> {
-        let (result_tx, result_rx) = oneshot::channel();
-        let tx = self.tx.clone();
-
-        self.runtime_handle.block_on(async move {
-            // Send with optional timeout
-            let send_result = match timeout {
-                Some(duration) => tokio::time::timeout(duration, tx.send((value, result_tx))).await,
-                None => Ok(tx.send((value, result_tx)).await),
-            };
-
-            match send_result {
-                Ok(Ok(())) => {
-                    // Successfully sent, now wait for produce result
-                    let recv_result = match timeout {
-                        Some(duration) => tokio::time::timeout(duration, result_rx).await,
-                        None => Ok(result_rx.await),
-                    };
-
-                    match recv_result {
-                        Ok(Ok(result)) => result.map_err(SyncError::from),
-                        Ok(Err(_)) => Err(SyncError::RuntimeShutdown),
-                        Err(_) => Err(SyncError::SetTimeout),
-                    }
-                }
-                Ok(Err(_)) => Err(SyncError::RuntimeShutdown),
-                Err(_) => Err(SyncError::SetTimeout),
-            }
-        })
     }
 
     /// Set the value, blocking until it can be sent.
@@ -134,7 +97,11 @@ where
     /// # }
     /// ```
     pub fn set(&self, value: T) -> SyncResult<()> {
-        self.send_internal(value, None)
+        if let Some(db) = self.db.upgrade() {
+            db.produce(&self.key, value).map_err(|e| SyncError::Db(e))
+        } else {
+            Err(SyncError::RuntimeShutdown)
+        }
     }
 
     /// Set the value with a timeout.
