@@ -132,6 +132,21 @@ fn write_frame(out: &mut alloc::vec::Vec<u8>, frame: &Frame<'_>) -> Result<(), C
 /// spliced `data` is appended as the final member. Byte-identical to serializing
 /// the same frame with `data = Some(as_raw(payload))`, since `data` is the last
 /// field in declaration order.
+///
+/// # Contract (deliberately unchecked)
+///
+/// `data` **must** be exactly one well-formed JSON value. The splice does not
+/// validate it, that is the entire point of Improvement A and re-checking
+/// here (or per-subscriber) is the O(payload) cost this path exists to avoid.
+/// The invariant is upheld upstream, not defended here: `data` is a record
+/// serializer's output and every record reachable over an AimX transport
+/// serializes to JSON (the wire envelope *is* JSON). A caller that feeds
+/// non-JSON bytes — e.g. a non-JSON per-link codec (`linked_*_with`) on a
+/// `ws://` route, which is a JSON-envelope transport — violates the contract
+/// and produces a corrupt frame (empty `data` yields `…,"data":}`); such a
+/// codec/transport pairing is a misconfiguration, not an input to guard against.
+/// The `debug_assert` below is a dev-time tripwire for the `frame.data` half of
+/// the contract; there is intentionally no release-mode check on `data` itself.
 fn write_frame_splicing_data(
     out: &mut alloc::vec::Vec<u8>,
     frame: &Frame<'_>,
