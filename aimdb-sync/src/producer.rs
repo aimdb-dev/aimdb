@@ -1,7 +1,7 @@
 //! Synchronous producer for typed records.
 
 use crate::{AimDbHandle, SyncError, SyncResult};
-use aimdb_core::{AimDb, DbResult};
+use aimdb_core::{AimDb, DbResult, TryProduceError};
 use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
 use core::marker::PhantomData;
@@ -27,13 +27,6 @@ use core::time::Duration;
 /// # fn example(producer: &SyncProducer<Temperature>) -> SyncResult<()> {
 /// // Set value (blocks until sent)
 /// producer.set(Temperature { celsius: 25.0 })?;
-///
-/// // Set with timeout
-/// use std::time::Duration;
-/// producer.set_with_timeout(
-///     Temperature { celsius: 26.0 },
-///     Duration::from_millis(100)
-/// )?;
 ///
 /// // Try to set (non-blocking)
 /// match producer.try_set(Temperature { celsius: 27.0 }) {
@@ -104,49 +97,13 @@ where
         }
     }
 
-    /// Set the value with a timeout.
-    ///
-    /// Attempts to send the value to the runtime thread and wait for produce completion,
-    /// blocking for at most `timeout` duration.
-    ///
-    /// # Errors
-    ///
-    /// Returns `SyncError::SetTimeout` if the timeout expires before the value can be sent
-    /// or if waiting for the produce result exceeds the timeout.
-    /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
-    /// Returns any error from the underlying `produce()` operation.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-    /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use std::sync::Arc;
-    /// use std::time::Duration;
-    ///
-    /// # #[derive(Debug, Clone)]
-    /// # struct MyData { value: i32 }
-    /// # fn main() -> SyncResult<()> {
-    /// let handle = AimDbBuilder::new()
-    ///     .runtime(Arc::new(TokioAdapter))
-    ///     .attach()?;
-    /// let producer = handle.producer::<MyData>("my_data")?;
-    /// producer.set_with_timeout(MyData { value: 42 }, Duration::from_millis(100))?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn set_with_timeout(&self, value: T, timeout: Duration) -> SyncResult<()> {
-        self.send_internal(value, Some(timeout))
-    }
-
     /// Try to set the value without blocking.
     ///
     /// Attempts to send the value immediately. Returns an error if the channel is full
     /// or the runtime thread has shut down.
     ///
     /// **Note**: This method returns immediately after sending to the channel, but does NOT
-    /// wait for the produce operation to complete. Use `set()` or `set_with_timeout()` if
+    /// wait for the produce operation to complete. Use `set()` if
     /// you need to know whether the produce operation succeeded.
     ///
     /// # Errors
@@ -177,13 +134,15 @@ where
     /// # }
     /// ```
     pub fn try_set(&self, value: T) -> SyncResult<()> {
-        // Create a oneshot channel but don't wait for the result
-        let (result_tx, _result_rx) = oneshot::channel();
-
-        self.tx.try_send((value, result_tx)).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => SyncError::SetTimeout,
-            mpsc::error::TrySendError::Closed(_) => SyncError::RuntimeShutdown,
-        })
+        if let Some(db) = self.db.upgrade() {
+            let producer = db.producer(&self.key)?;
+            producer.try_produce(value).map_err(|e| match e {
+                TryProduceError::Full(_) => SyncError::SetTimeout,
+                TryProduceError::Closed(_) => SyncError::RuntimeShutdown,
+            })
+        } else {
+            Err(SyncError::RuntimeShutdown)
+        }
     }
 }
 
@@ -268,8 +227,9 @@ where
     /// Multiple clones can set values concurrently.
     fn clone(&self) -> Self {
         Self {
-            tx: self.tx.clone(),
-            runtime_handle: self.runtime_handle.clone(),
+            db: self.db.clone(),
+            key: self.key.clone(),
+            _phantom: PhantomData,
         }
     }
 }

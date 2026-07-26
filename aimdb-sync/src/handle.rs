@@ -2,7 +2,7 @@
 
 use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
 use core::time::Duration;
 use std::thread::{self, JoinHandle};
@@ -347,25 +347,7 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        // Create a bounded tokio channel for async/sync bridging
-        // Channel carries (value, result_sender) tuples to propagate errors back
-        let (tx, mut rx) =
-            mpsc::channel::<(T, tokio::sync::oneshot::Sender<DbResult<()>>)>(capacity);
-
-        // Spawn a task on the runtime to forward values to the database
-        let db = self.db.clone();
-        let record_key = key.as_ref().to_string();
-        self.runtime_handle.spawn(async move {
-            while let Some((value, result_tx)) = rx.recv().await {
-                // Forward the value to the database's produce pipeline
-                let result = db.produce(&record_key, value);
-
-                // Send the result back to the caller (may fail if caller dropped)
-                let _ = result_tx.send(result);
-            }
-        });
-
-        Ok(crate::SyncProducer::new(tx, self.runtime_handle.clone()))
+        Ok(crate::SyncProducer::new(Arc::downgrade(&self.db), key))
     }
 
     /// Create a synchronous consumer with custom channel capacity.
@@ -589,7 +571,12 @@ impl AimDbHandle {
         Ok(())
     }
 
-    fn setup_background(builder: AimDbBuilder, mut shutdown_rx: mpsc::Receiver<ShutdownSignal>, db_tx: mpsc::Sender<Arc<AimDb>>, handle_tx: mpsc::Sender<tokio::runtime::Handle>) {
+    fn setup_background(
+        builder: AimDbBuilder,
+        mut shutdown_rx: mpsc::Receiver<ShutdownSignal>,
+        db_tx: mpsc::Sender<Arc<AimDb>>,
+        handle_tx: mpsc::Sender<tokio::runtime::Handle>,
+    ) {
         // Create a new Tokio runtime for this thread
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -629,9 +616,8 @@ impl AimDbHandle {
                 _ = runner.run() => { let _ = shutdown_rx.recv().await; }
                 _ = shutdown_rx.recv() => {}
             }
-    });    
-}
-
+        });
+    }
 }
 
 impl Drop for AimDbHandle {
