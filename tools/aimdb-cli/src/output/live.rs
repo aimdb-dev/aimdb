@@ -34,6 +34,21 @@ pub fn print_event(seq: u64, data: &serde_json::Value, show_full: bool) {
     println!("{}", format_event(seq, data, show_full));
 }
 
+/// Format a delivery-gap notice: `skipped` updates were lost between the
+/// previous printed event and the next one.
+pub fn format_gap(skipped: u64) -> String {
+    let plural = if skipped == 1 { "update" } else { "updates" };
+    format!("⚠️  gap: {skipped} {plural} dropped before the next event")
+        .yellow()
+        .to_string()
+}
+
+/// Print a delivery-gap notice to stdout (immediately before the event that
+/// follows the gap).
+pub fn print_gap(skipped: u64) {
+    println!("{}", format_gap(skipped));
+}
+
 /// Print subscription start message
 pub fn print_watch_start(record_name: &str) {
     println!("📡 Watching record: {}", record_name.bold());
@@ -41,9 +56,16 @@ pub fn print_watch_start(record_name: &str) {
     println!();
 }
 
-/// Print subscription stop message
-pub fn print_watch_stop() {
+/// Print subscription stop message, reporting the total updates lost across the
+/// session (`0` stays silent — the common lossless case).
+pub fn print_watch_stop(skipped_total: u64) {
     println!();
+    if skipped_total > 0 {
+        println!(
+            "{}",
+            format!("⚠️  {skipped_total} update(s) dropped during this session").yellow()
+        );
+    }
     println!("{}", "✅ Stopped watching".green());
 }
 
@@ -58,6 +80,12 @@ mod tests {
         let formatted = format_event(42, &data, false);
         assert!(formatted.contains("seq:42"));
         assert!(formatted.contains("temperature"));
+    }
+
+    #[test]
+    fn test_format_gap() {
+        assert!(format_gap(1).contains("1 update dropped"));
+        assert!(format_gap(7).contains("7 updates dropped"));
     }
 
     #[test]

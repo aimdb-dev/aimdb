@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Loss-aware subscription stream: `AimxConnection::subscribe_updates`.** Yields `RecordUpdate { topic, value, skipped }`, exposing the delivery gap the engine already tracks (`SubUpdate::skipped`) — previously reachable only from raw `ClientHandle` streams, so ordinary client/CLI/bridge consumers could not tell a buffer overrun from an idle producer. `subscribe` and `subscribe_with_topics` are unchanged value-only views over the same stream. A payload that fails to decode is itself counted as a gap and folded into the next delivered update's `skipped`, rather than being dropped silently.
+
 - **Transport-agnostic endpoint resolver — pick the transport at runtime via a `scheme://` URL (Issue #123, follow-up to #39 / #122).** New `endpoint` module: `parse_endpoint` (pure, feature-independent grammar) and `dial(url) -> Box<dyn Dialer>` map an endpoint string to a transport `Dialer`, the way records already pick one for links. Schemes: `unix://PATH` / `uds://PATH`, a bare path (the `unix://` shorthand), and `serial://DEVICE?baud=N`. An unknown scheme — or one whose transport isn't compiled in — is rejected with a clear error. New `AimxConnection::connect_over(dialer)` / `connect_over_with_timeout` dial over an explicit `Dialer`, bypassing resolution. (Rides a new `impl Dialer for Box<dyn Dialer>` in `aimdb-core`.)
 
 ### Fixed

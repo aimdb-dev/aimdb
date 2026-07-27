@@ -50,8 +50,9 @@ async fn watch_record(
     let conn = connect_endpoint(endpoint).await?;
 
     // Subscribe to the record (the engine routes updates back by request id; no
-    // server-allocated subscription id to track).
-    let mut stream = conn.subscribe(record_name)?;
+    // server-allocated subscription id to track). The loss-aware form, so the
+    // watcher can report gaps instead of skipping over them silently.
+    let mut stream = conn.subscribe_updates(record_name)?;
 
     live::print_watch_start(record_name);
 
@@ -64,17 +65,23 @@ async fn watch_record(
     });
 
     // Receive updates. The reshaped wire carries no server sequence, so the
-    // watcher counts locally.
+    // watcher counts locally; `skipped` is what the engine observed as lost
+    // between deliveries, tallied for the closing summary.
     let mut count: u64 = 0;
+    let mut skipped_total: u64 = 0;
     let unlimited = max_count == 0;
 
     loop {
         tokio::select! {
             next = stream.next() => {
                 match next {
-                    Some(data) => {
+                    Some(update) => {
                         count += 1;
-                        live::print_event(count, &data, show_full);
+                        if update.skipped > 0 {
+                            skipped_total += update.skipped;
+                            live::print_gap(update.skipped);
+                        }
+                        live::print_event(count, &update.value, show_full);
                         if !unlimited && count >= max_count as u64 {
                             break;
                         }
@@ -87,6 +94,6 @@ async fn watch_record(
     }
 
     // Dropping the stream stops local delivery (no explicit unsubscribe needed).
-    live::print_watch_stop();
+    live::print_watch_stop(skipped_total);
     Ok(())
 }

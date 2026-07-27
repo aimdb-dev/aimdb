@@ -117,6 +117,26 @@ async fn aimx_roundtrip_over_uds_production_server() {
         assert!(ev.get("n").is_some(), "event carries a Reading: {ev}");
     }
 
+    // The loss-aware form carries the same values plus the engine's gap count;
+    // a keeping-up consumer sees no gaps.
+    let mut updates = conn
+        .subscribe_updates("events")
+        .expect("loss-aware subscribe");
+    for _ in 0..3 {
+        let update = tokio::time::timeout(Duration::from_secs(2), updates.next())
+            .await
+            .expect("update within timeout")
+            .expect("update");
+        assert!(
+            update.value.get("n").is_some(),
+            "update carries a Reading: {}",
+            update.value
+        );
+        assert_eq!(update.skipped, 0, "consumer keeps up, so no gap");
+        assert!(!update.has_gap());
+    }
+    drop(updates);
+
     // Graph introspection wrappers.
     let nodes = conn.graph_nodes().await.expect("graph nodes");
     assert!(

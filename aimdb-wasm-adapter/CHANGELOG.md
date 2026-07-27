@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`WsBridge` surfaces subscription delivery gaps: `onGap(topic, skipped)` +
+  `droppedUpdates()`.** The pump reads the engine's per-update `skipped` count
+  and reports it (console warning always; the registered handler in addition),
+  instead of routing the payload and discarding the gap. A mirror that jumped
+  ahead because the server-side buffer overran a slow consumer is no longer
+  indistinguishable from an idle producer.
+
 - **Host-run buffer unit tests + shared contract suite (Design 040).** `buffer.rs`
   now has native (`cargo test`) unit tests for the fresh-subscriber and `peek()`
   semantics, plus the `aimdb-core` `buffer::test_support` conformance suite run

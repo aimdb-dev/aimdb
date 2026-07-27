@@ -118,6 +118,10 @@ impl Default for BridgeOptions {
 struct BridgeShared {
     status: Cell<ConnectionStatus>,
     on_status: RefCell<Option<js_sys::Function>>,
+    /// Notified when a subscription reports a delivery gap.
+    on_gap: RefCell<Option<js_sys::Function>>,
+    /// Cumulative updates the server sent that never reached the local mirror.
+    dropped_total: Cell<u64>,
     /// Set by `disconnect()` — stops redials and ends the pumps.
     stopped: Cell<bool>,
     /// Whether a connection ever succeeded (Connecting vs Reconnecting).
@@ -135,6 +139,13 @@ impl BridgeShared {
         }
         self.status.set(status);
         emit_status(&self.on_status, status);
+    }
+
+    /// Record a delivery gap on `topic` and notify JS.
+    fn report_gap(&self, topic: &str, skipped: u64) {
+        self.dropped_total
+            .set(self.dropped_total.get().saturating_add(skipped));
+        emit_gap(&self.on_gap, topic, skipped);
     }
 
     /// The status to report when a connection ends.
@@ -366,6 +377,28 @@ impl WsBridge {
         *self.shared.on_status.borrow_mut() = Some(callback);
     }
 
+    /// Register a callback for subscription delivery gaps.
+    ///
+    /// Fires with `(topic, skipped)` whenever the server-side buffer dropped
+    /// updates before the one just mirrored — the local record jumped ahead and
+    /// intermediate values are gone for good. Without this, a gap is
+    /// indistinguishable from an idle producer.
+    ///
+    /// ```ts
+    /// bridge.onGap((topic, skipped) => console.warn(`${topic}: lost ${skipped}`));
+    /// ```
+    #[wasm_bindgen(js_name = "onGap")]
+    pub fn on_gap(&self, callback: js_sys::Function) {
+        *self.shared.on_gap.borrow_mut() = Some(callback);
+    }
+
+    /// Total updates dropped before reaching the local mirror since the bridge
+    /// was created (`0` while delivery has been lossless).
+    #[wasm_bindgen(js_name = "droppedUpdates")]
+    pub fn dropped_updates(&self) -> f64 {
+        self.shared.dropped_total.get() as f64
+    }
+
     /// Send a value to the server for a given topic (AimX `write` frame).
     ///
     /// While disconnected the command is queued by the engine (up to
@@ -471,6 +504,8 @@ impl WsBridge {
         let shared = Rc::new(BridgeShared {
             status: Cell::new(ConnectionStatus::Connecting),
             on_status: RefCell::new(None),
+            on_gap: RefCell::new(None),
+            dropped_total: Cell::new(0),
             stopped: Cell::new(false),
             ever_connected: Cell::new(false),
             auto_reconnect: config.auto_reconnect,
@@ -609,6 +644,12 @@ async fn pump_pattern(
             // Wildcard events carry the concrete record topic; an exact-topic
             // subscription may leave it implicit.
             let topic = update.topic.as_deref().unwrap_or(&pattern);
+            // A non-zero gap means the mirror missed values the server did send:
+            // the local record jumps ahead. Surface it — a silent hole looks
+            // identical to an idle producer from JS.
+            if update.skipped > 0 {
+                shared.report_gap(topic, update.skipped);
+            }
             route_update(&db, &schema_map, &registry, topic, &update.data);
         }
         // Stream ended without a rejection — a disconnect. Pace the re-subscribe
@@ -721,6 +762,32 @@ fn emit_status(on_status: &RefCell<Option<js_sys::Function>>, status: Connection
     }
     // Secondary: DOM CustomEvent for non-React listeners
     dispatch_status_event(status);
+}
+
+/// Notify JS that `skipped` updates were lost on `topic`.
+///
+/// Always warns on the console (a gap is a data-loss event a developer should
+/// see even with no handler registered), then calls the registered handler —
+/// deferred to a microtask for the same re-entrancy reason as [`emit_status`],
+/// since the pump is polled from inside the WebSocket message callback.
+fn emit_gap(on_gap: &RefCell<Option<js_sys::Function>>, topic: &str, skipped: u64) {
+    web_sys::console::warn_1(
+        &format!("[WsBridge] delivery gap: {skipped} update(s) dropped for topic='{topic}'").into(),
+    );
+    let Some(cb) = on_gap.borrow().as_ref().cloned() else {
+        return;
+    };
+    let topic = JsValue::from_str(topic);
+    let skipped = JsValue::from_f64(skipped as f64);
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ =
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL)).await;
+        if let Err(e) = cb.call2(&JsValue::NULL, &topic, &skipped) {
+            web_sys::console::error_1(
+                &format!("[WsBridge] emit_gap callback threw: {:?}", e).into(),
+            );
+        }
+    });
 }
 
 /// Dispatch a `CustomEvent("aimdb:status")` on `window` with the status

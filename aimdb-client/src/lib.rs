@@ -49,6 +49,6 @@ pub mod protocol;
 #[cfg(feature = "transport-uds")]
 pub use discovery::{discover_instances, find_instance, InstanceInfo};
 pub use endpoint::{dial, parse_endpoint, ParsedEndpoint, Scheme};
-pub use engine::{AimxConnection, DrainResponse};
+pub use engine::{AimxConnection, DrainResponse, RecordUpdate};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{RecordMetadata, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION};

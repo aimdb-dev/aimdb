@@ -81,6 +81,14 @@ bridge.onStatusChange((status) => {
   console.log('Connection:', status); // 'Connected' | 'Reconnecting' | ...
 });
 
+// Delivery gaps: the server sent updates the mirror never received (a slow
+// consumer overran the server-side buffer). Without this, a gap looks exactly
+// like an idle producer.
+bridge.onGap((topic, skipped) => {
+  console.warn(`${topic}: lost ${skipped} update(s)`);
+});
+bridge.droppedUpdates(); // cumulative count since connect
+
 bridge.write('commands.setpoint', { target: 21.0 });
 bridge.disconnect();
 ```
