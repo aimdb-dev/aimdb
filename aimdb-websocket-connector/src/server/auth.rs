@@ -226,6 +226,19 @@ mod tests {
     }
 
     #[test]
+    fn subscribe_grant_with_an_interior_hash_keeps_its_suffix() {
+        // A grant scoped to `secret` leaves at any depth must not admit the rest
+        // of the subtree: the `#` used to short-circuit the whole match, so every
+        // segment after it was ignored and this grant behaved like `tenant.#`.
+        let p = perms(&["tenant.#.secret"]);
+        assert!(p.can_subscribe("tenant.secret"));
+        assert!(p.can_subscribe("tenant.a.b.secret"));
+        assert!(!p.can_subscribe("tenant.public"));
+        assert!(!p.can_subscribe("tenant.a.b.public"));
+        assert!(!p.can_subscribe("tenant.#")); // no escalation to the subtree
+    }
+
+    #[test]
     fn subscribe_allows_requests_the_grant_actually_covers() {
         assert!(perms(&["#"]).can_subscribe("sensors.#"));
         let p = perms(&["sensors.#"]);

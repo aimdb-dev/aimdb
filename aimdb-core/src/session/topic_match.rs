@@ -9,19 +9,24 @@
 //! The one segment separator is `.` — AimDB record keys are dot-delimited
 //! (`temp.vienna`, `app.config`), so wildcards split on `.`. The grammar
 //! (dot segments, `*` single-level, `#` multi-level) is RabbitMQ topic-exchange
-//! semantics. `/` is an ordinary character here — it belongs to external broker
-//! addresses (`mqtt://sensors/temp/x`), not to AimDB's subscription grammar.
+//! semantics: `#` absorbs **zero or more** segments and the pattern continues
+//! after it, so a `#` in the middle still has to line its suffix up. `/` is an
+//! ordinary character here — it belongs to external broker addresses
+//! (`mqtt://sensors/temp/x`), not to AimDB's subscription grammar.
+
+use core::str::Split;
 
 /// Returns `true` if `topic` matches `pattern`.
 ///
 /// Wildcard conventions over **dot-separated** segments:
 ///
-/// | Pattern  | Semantics                         |
-/// |----------|-----------------------------------|
-/// | `#`      | Multi-level wildcard (all topics) |
-/// | `a.#`    | Everything under `a.`             |
-/// | `a.*.c`  | Single-level wildcard in segment  |
-/// | `a.b.c`  | Exact match                       |
+/// | Pattern  | Semantics                               |
+/// |----------|-----------------------------------------|
+/// | `#`      | Multi-level wildcard (all topics)       |
+/// | `a.#`    | `a` and everything under `a.`           |
+/// | `a.#.c`  | `a.c` and any `c` at any depth under it |
+/// | `a.*.c`  | Single-level wildcard in segment        |
+/// | `a.b.c`  | Exact match                             |
 pub fn topic_matches(pattern: &str, topic: &str) -> bool {
     // Fast path: exact match
     if pattern == topic {
@@ -34,8 +39,8 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
     }
 
     // `prefix.#` matches everything under prefix — only when prefix is literal
-    // (no wildcards in the prefix). When wildcards are present, fall through to
-    // the segment loop which handles `#` at any position.
+    // (no wildcards in the prefix). Same answer as the general walk below, just
+    // without splitting: this is the shape the WS fan-out matches per broadcast.
     if let Some(prefix) = pattern.strip_suffix(".#") {
         if !prefix.contains('*') && !prefix.contains('#') {
             return topic.starts_with(prefix)
@@ -44,17 +49,65 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
         }
     }
 
-    // Segment-by-segment matching with `*` single-level wildcard
-    let mut pattern_parts = pattern.split('.');
-    let mut topic_parts = topic.split('.');
+    // A topic segment is always a literal, so a pattern segment covers it when
+    // it is that same literal or the single-level wildcard.
+    match_segments(pattern, topic, |p, t| p == "*" || p == t)
+}
+
+/// Segment walk shared by [`topic_matches`] and [`pattern_contains`]: the two
+/// differ only in when one `pattern` segment covers one `subject` segment, which
+/// is what `covers` decides. `#` is handled here because it is the one construct
+/// that spans segments.
+///
+/// `#` absorbs **zero or more** subject segments and the pattern *continues*
+/// after it — it is not a "match everything from here" escape hatch. That
+/// distinction is load-bearing: returning `true` at the `#` would make the
+/// suffix of `a.#.secret` dead text and let it cover `a.public`.
+///
+/// Only the most recent `#` is retained as a backtrack point. That is the
+/// standard glob trick, and it is what bounds this at `O(|pattern| · |subject|)`
+/// rather than exponential — worth keeping deliberate, since `subject` is the
+/// client-supplied pattern on the [`pattern_contains`] ACL path.
+fn match_segments<F>(pattern: &str, subject: &str, covers: F) -> bool
+where
+    F: Fn(&str, &str) -> bool,
+{
+    let mut pat = pattern.split('.');
+    let mut sub = subject.split('.');
+    // The pattern tail following the most recent `#`, paired with the subject
+    // position that `#` currently stops absorbing at. `None` until a `#` is seen.
+    let mut resume: Option<(Split<'_, char>, Split<'_, char>)> = None;
 
     loop {
-        match (pattern_parts.next(), topic_parts.next()) {
-            (Some("#"), _) => return true,
-            (Some("*"), Some(_)) => {} // single-level wildcard — consume one segment
-            (Some(p), Some(t)) if p == t => {} // literal match
-            (None, None) => return true, // both exhausted at the same time
-            _ => return false,
+        let mut pat_rest = pat.clone();
+        let mut sub_rest = sub.clone();
+        match (pat_rest.next(), sub_rest.next()) {
+            // `#` starts out absorbing nothing; `resume` is how it grows.
+            (Some("#"), _) => {
+                pat = pat_rest;
+                resume = Some((pat.clone(), sub.clone()));
+            }
+            (Some(p), Some(s)) if covers(p, s) => {
+                pat = pat_rest;
+                sub = sub_rest;
+            }
+            // Both exhausted together — every segment was covered.
+            (None, None) => return true,
+            // Mismatch, or one side ran out while the other still has segments.
+            // The only way forward is to let the most recent `#` swallow one
+            // more subject segment and retry its suffix from there.
+            _ => {
+                let Some((pat_after_hash, sub_at_hash)) = resume.take() else {
+                    return false; // no `#` to fall back on
+                };
+                let mut grown = sub_at_hash;
+                if grown.next().is_none() {
+                    return false; // `#` has nothing left to absorb
+                }
+                pat = pat_after_hash.clone();
+                sub = grown.clone();
+                resume = Some((pat_after_hash, grown));
+            }
         }
     }
 }
@@ -82,40 +135,41 @@ pub fn is_wildcard(pattern: &str) -> bool {
 /// [`topic_matches`]`(grant, requested)`, so it is a safe drop-in for an ACL
 /// that must accept both concrete and wildcard subscription requests.
 ///
-/// Grammar is the same dot-separated `*` (single-level) / `#` (multi-level, and
-/// as `grant`'s tail, zero-or-more) set as [`topic_matches`].
+/// Grammar is the same dot-separated `*` (single-level) / `#` (multi-level,
+/// zero-or-more) set as [`topic_matches`]. A grant's `#` absorbs zero or more
+/// *requested* segments and the grant continues after it, so an interior `#`
+/// constrains rather than blanket-allows: `a.#.secret` contains `a.b.secret`
+/// but not `a.public`.
+///
+/// # Conservative by construction
+///
+/// This decides containment with a single left-to-right walk, which is sound
+/// (it never reports containment that does not hold) but not complete. Deciding
+/// the remaining cases means reasoning about every expansion of the *request's*
+/// `#`, and that ∀-branch is exactly the intricate, blowup-prone code an ACL on
+/// client-supplied input should not carry.
+///
+/// The gap is confined to a grant whose `*` meets a request's `#`, where a later
+/// segment would have ruled out the short expansions — e.g. `a.*.#` does contain
+/// `a.#.a` (every topic the request admits has ≥2 segments), but this returns
+/// `false`. Such a pair denies access that could have been allowed; it never
+/// allows access that should have been denied. Grants without a `*`/`#`
+/// adjacency — every ordinary shape, including `a.#`, `a.*`, `a.#.b`, `#` — are
+/// decided exactly.
 pub fn pattern_contains(grant: &str, requested: &str) -> bool {
-    let mut g = grant.split('.');
-    let mut r = requested.split('.');
-    loop {
-        match (g.next(), r.next()) {
-            // A `#` in the grant absorbs the entire remaining request tail
-            // (including an already-exhausted one, e.g. `a.#` contains `a`).
-            (Some("#"), _) => return true,
-            // Both exhausted together: an exact structural cover.
-            (None, None) => return true,
-            // Request reaches past where the grant stops covering.
-            (None, Some(_)) => return false,
-            // Grant still requires ≥1 concrete segment the request never yields.
-            (Some(_), None) => return false,
-            // A grant `*` covers exactly one segment. A request `#` here could
-            // expand to zero or many segments, so `*` cannot contain it; a
-            // request `*` or literal is exactly one segment and is covered.
-            (Some("*"), Some(rs)) => {
-                if rs == "#" {
-                    return false;
-                }
-            }
+    match_segments(grant, requested, |g, r| {
+        if g == "*" {
+            // A grant `*` covers exactly one segment. A request `#` could expand
+            // to zero or many, so `*` cannot contain it; a request `*` or literal
+            // is exactly one segment and is covered.
+            r != "#"
+        } else {
             // A grant literal covers only itself: the request segment must be
             // that same literal (a request `*`/`#` here would reach topics the
-            // literal doesn't, so it is not contained).
-            (Some(gs), Some(rs)) => {
-                if gs != rs {
-                    return false;
-                }
-            }
+            // literal doesn't). A grant `#` never arrives here — the walk owns it.
+            g == r
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -185,6 +239,45 @@ mod tests {
     }
 
     #[test]
+    fn non_terminal_hash_still_matches_its_suffix() {
+        // Regression: `#` used to return `true` on sight, which made every
+        // segment after it dead text — `a.#.secret` matched *anything* under
+        // `a`. It absorbs zero or more segments and the suffix must still line up.
+        assert!(!topic_matches("a.#.secret", "a.public"));
+        assert!(!topic_matches("a.#.secret", "a.b.c.public"));
+        assert!(!topic_matches("a.#.secret", "b.secret")); // prefix still binds
+        assert!(!topic_matches("a.#.secret", "a.secret.tail"));
+        // Zero-or-more: the `#` may absorb nothing, one segment, or many.
+        assert!(topic_matches("a.#.secret", "a.secret"));
+        assert!(topic_matches("a.#.secret", "a.b.secret"));
+        assert!(topic_matches("a.#.secret", "a.b.c.d.secret"));
+    }
+
+    #[test]
+    fn hash_backtracks_to_find_a_later_suffix() {
+        // The suffix appears twice: the `#` has to keep growing past the first
+        // occurrence to line the pattern up on the last one.
+        assert!(topic_matches("a.#.c", "a.c.b.c"));
+        assert!(!topic_matches("a.#.c", "a.c.b.d"));
+        // Several `#` in one pattern each need their own extension.
+        assert!(topic_matches("a.#.b.#.c", "a.x.y.b.z.c"));
+        assert!(!topic_matches("a.#.b.#.c", "a.x.y.b.z.d"));
+        // A trailing `#` after an interior one still absorbs the remainder.
+        assert!(topic_matches("a.#.b.#", "a.x.b.y.z"));
+        assert!(topic_matches("a.#.b.#", "a.b")); // both absorb zero
+        assert!(!topic_matches("a.#.b.#", "a.x.y"));
+    }
+
+    #[test]
+    fn hash_does_not_match_a_shorter_topic_than_its_suffix() {
+        // `#` absorbing zero segments must not let the pattern outrun the topic.
+        assert!(!topic_matches("a.#.b.c", "a.b"));
+        assert!(!topic_matches("#.a", "b"));
+        assert!(topic_matches("#.a", "a")); // leading `#` absorbs zero
+        assert!(topic_matches("#.a", "x.y.a"));
+    }
+
+    #[test]
     fn slash_is_not_a_separator() {
         // `/` is an ordinary character — a slash key is one literal segment, so a
         // dot wildcard doesn't reach into it and a slash "wildcard" isn't one.
@@ -245,16 +338,82 @@ mod tests {
     }
 
     #[test]
+    fn containment_honours_a_non_terminal_hash_in_the_grant() {
+        // Regression: the grant's `#` used to return `true` on sight, so a grant
+        // written to reach only `secret` leaves widened the ACL to the whole
+        // subtree. The suffix after the `#` must still constrain the request.
+        assert!(!pattern_contains("a.#.secret", "a.public"));
+        assert!(!pattern_contains("a.#.secret", "a.b.public"));
+        assert!(!pattern_contains("a.#.secret", "a.#")); // no escalation to the subtree
+        assert!(!pattern_contains("a.#.secret", "a.*"));
+        // What the grant genuinely covers stays covered.
+        assert!(pattern_contains("a.#.secret", "a.secret"));
+        assert!(pattern_contains("a.#.secret", "a.b.secret"));
+        assert!(pattern_contains("a.#.secret", "a.#.secret"));
+        assert!(pattern_contains("a.#.secret", "a.b.#.secret"));
+    }
+
+    #[test]
+    fn containment_denies_requests_reaching_past_an_interior_hash() {
+        // A request `#` where the grant demands a concrete tail is unbounded and
+        // must be denied — it would reach topics the grant's suffix excludes.
+        assert!(!pattern_contains("a.#.b", "a.#"));
+        assert!(!pattern_contains("a.#.b", "#"));
+        assert!(!pattern_contains("a.#.b.c", "a.b"));
+        // A `*` cannot stand in for a request `#`, before or after a grant `#`.
+        assert!(!pattern_contains("a.#.*", "a.#"));
+        assert!(pattern_contains("a.#.*", "a.b.c"));
+        assert!(!pattern_contains("a.#.*", "a"));
+    }
+
+    #[test]
+    fn containment_is_conservative_where_a_grant_star_meets_a_request_hash() {
+        // Pins the documented soundness/completeness trade-off so a future change
+        // has to be deliberate. `a.*.#` genuinely contains `a.#.a` — every topic
+        // the request admits has ≥2 segments, which is exactly what `*.#`
+        // requires — but deciding that needs reasoning over every expansion of
+        // the request's `#`, which this walk does not do. It denies instead.
+        assert!(!pattern_contains("a.*.#", "a.#.a"));
+        assert!(!pattern_contains("a.#.*", "a.b.#"));
+        // The direction that matters: the denial is fail-closed, so no topic the
+        // request admits is reachable in a way the grant would not have allowed.
+        // (Sanity: the grant really is the broader pattern here.)
+        for topic in ["a.a", "a.b.a", "a.b.c.a"] {
+            assert!(topic_matches("a.#.a", topic));
+            assert!(topic_matches("a.*.#", topic));
+        }
+        // Ordinary grants — no `*`/`#` adjacency — stay exact, not conservative.
+        assert!(pattern_contains("a.#", "a.b.#"));
+        assert!(pattern_contains("a.#.b", "a.x.b"));
+        assert!(pattern_contains("a.*", "a.b"));
+    }
+
+    #[test]
     fn containment_matches_topic_matches_on_concrete_requests() {
         // For a concrete (wildcard-free) request, containment must be exactly
         // `topic_matches` — the safe-drop-in property the ACL relies on.
-        let grants = ["#", "sensors.#", "sensors.*", "sensors.temp", "*.temp"];
+        let grants = [
+            "#",
+            "sensors.#",
+            "sensors.*",
+            "sensors.temp",
+            "*.temp",
+            // Interior `#` — the shape that used to short-circuit both walks.
+            "sensors.#.temp",
+            "#.temp",
+            "sensors.#.*",
+            "a.#.b.#.c",
+        ];
         let topics = [
             "sensors.temp",
             "sensors.temp.vienna",
             "sensors",
             "commands.on",
             "a.temp",
+            "sensors.rack.temp",
+            "sensors.rack.shelf.temp",
+            "a.x.b.y.c",
+            "a.b.c",
         ];
         for g in grants {
             for t in topics {

@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A grant with a non-terminal `#` no longer covers its whole subtree.** Both
+  `Permissions::can_subscribe` (via `pattern_contains`) and
+  `Permissions::can_write` (via `topic_matches`) stopped matching at the first
+  `#`, so every segment after it was ignored: a grant of `tenant.#.secret`
+  admitted `tenant.public`. `#` now absorbs zero or more segments with the
+  suffix still applying, so that grant covers `tenant.secret` and
+  `tenant.a.b.secret` only. Grants using a trailing `#` (`sensors.#`, `#`) or
+  `*` are unaffected — the change only tightens what an interior `#` admits.
 - **Subscribe ACL now checks pattern *containment*, not topic matching.** A
   granted subscribe pattern is honored only if it covers the *whole* pattern the
   client requests. Previously the check matched the requested pattern as if it
