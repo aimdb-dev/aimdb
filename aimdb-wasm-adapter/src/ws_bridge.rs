@@ -148,6 +148,22 @@ impl BridgeShared {
         emit_gap(&self.on_gap, topic, skipped);
     }
 
+    /// Publish a freshly-opened socket as the live one, moving to `Connected`.
+    ///
+    /// Returns `false` when [`WsBridge::disconnect`] ran while the handshake was
+    /// still pending: back then `self.ws` was `None`, so `disconnect()` had no
+    /// socket to close — the caller must abandon this one instead of installing
+    /// it, or a completed disconnect would silently come back as `Connected`.
+    fn accept_dial(&self, ws: &web_sys::WebSocket) -> bool {
+        if self.stopped.get() {
+            return false;
+        }
+        self.ever_connected.set(true);
+        *self.ws.borrow_mut() = Some(ws.clone());
+        self.set_status(ConnectionStatus::Connected);
+        true
+    }
+
     /// The status to report when a connection ends.
     fn drop_status(&self) -> ConnectionStatus {
         if self.stopped.get() || !self.auto_reconnect {
@@ -201,15 +217,24 @@ impl Connection for WasmWsConnection {
     }
 }
 
+/// Detach every JS callback and close `ws`.
+///
+/// Detaching first matters: the `Closure`s are dropped right after (they live in
+/// the dial future or the connection), and a socket still holding them would
+/// call into freed WASM closures on its final `close`/`error` event.
+fn shutdown_socket(ws: &web_sys::WebSocket) {
+    ws.set_onopen(None);
+    ws.set_onmessage(None);
+    ws.set_onclose(None);
+    ws.set_onerror(None);
+    let _ = ws.close();
+}
+
 impl Drop for WasmWsConnection {
     fn drop(&mut self) {
-        // Detach the JS callbacks before they drop, and close the socket if the
-        // engine lets go of a still-open connection (graceful stop).
-        self.ws.set_onopen(None);
-        self.ws.set_onmessage(None);
-        self.ws.set_onclose(None);
-        self.ws.set_onerror(None);
-        let _ = self.ws.close();
+        // Close the socket if the engine lets go of a still-open connection
+        // (graceful stop).
+        shutdown_socket(&self.ws);
         if self
             .shared
             .ws
@@ -308,13 +333,24 @@ impl Dialer for WasmWsDialer {
             ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
             plain_callbacks.push(on_error);
 
+            // Handshake failed (`onclose` before `onopen`, or the sender was
+            // dropped). The socket is closing but still holds the callbacks,
+            // which are freed when this future returns — detach them first so a
+            // trailing `close`/`error` event cannot invoke a dropped `Closure`.
             if open_rx.await != Ok(true) {
+                shutdown_socket(&ws);
                 return Err(TransportError::Io);
             }
 
-            shared.ever_connected.set(true);
-            *shared.ws.borrow_mut() = Some(ws.clone());
-            shared.set_status(ConnectionStatus::Connected);
+            // `disconnect()` may have run while this handshake was pending — it
+            // could not close a socket that was not published yet. Abandon it
+            // rather than reporting `Connected` after a completed disconnect;
+            // `Closed` is terminal, so the engine stops and the subscription
+            // pumps release their `ClientHandle` clones.
+            if !shared.accept_dial(&ws) {
+                shutdown_socket(&ws);
+                return Err(TransportError::Closed);
+            }
 
             Ok(Box::new(WasmWsConnection {
                 ws,
@@ -801,5 +837,117 @@ fn dispatch_status_event(status: ConnectionStatus) {
     init.set_bubbles(false);
     if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("aimdb:status", &init) {
         let _ = web_sys::EventTarget::from(window).dispatch_event(&event);
+    }
+}
+
+// ─── Tests ─────────────────────────────────────────────────────────────────
+
+// Needs a real `web_sys::WebSocket`, so this is the browser lane only
+// (`make wasm-test`); off-target the socket constructor is an unusable stub.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod dial_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    /// TEST-NET-1 (RFC 5737) on a port the browser does not block: the address
+    /// is unroutable, so the handshake stays pending for the duration of a test
+    /// and a socket built from it never opens or closes on its own — nothing can
+    /// race the assertions.
+    const PENDING_URL: &str = "ws://192.0.2.1:8443/aimdb-test";
+
+    fn shared() -> Rc<BridgeShared> {
+        Rc::new(BridgeShared {
+            status: Cell::new(ConnectionStatus::Connecting),
+            on_status: RefCell::new(None),
+            on_gap: RefCell::new(None),
+            dropped_total: Cell::new(0),
+            stopped: Cell::new(false),
+            ever_connected: Cell::new(false),
+            auto_reconnect: true,
+            ws: RefCell::new(None),
+        })
+    }
+
+    #[wasm_bindgen_test]
+    fn accept_dial_publishes_the_socket_while_running() {
+        let shared = shared();
+        let ws = web_sys::WebSocket::new(PENDING_URL).unwrap();
+
+        assert!(shared.accept_dial(&ws));
+        assert!(shared.ws.borrow().is_some());
+        assert!(shared.ever_connected.get());
+        assert_eq!(shared.status.get(), ConnectionStatus::Connected);
+
+        shutdown_socket(&ws);
+        shared.ws.borrow_mut().take();
+    }
+
+    /// Regression: `disconnect()` during a pending handshake.
+    ///
+    /// While the dial is in flight `shared.ws` is still `None`, so `disconnect()`
+    /// has no socket to close. When `onopen` lands afterwards the dial must be
+    /// abandoned — otherwise the socket is installed and the status flips back to
+    /// `Connected` after the bridge was already disconnected.
+    #[wasm_bindgen_test]
+    fn accept_dial_is_refused_after_disconnect_during_handshake() {
+        let shared = shared();
+
+        // What `disconnect()` can do mid-handshake: no live socket to close.
+        assert!(shared.ws.borrow().is_none());
+        shared.stopped.set(true);
+        shared.set_status(ConnectionStatus::Disconnected);
+
+        // The in-flight socket completes its handshake only now.
+        let ws = web_sys::WebSocket::new(PENDING_URL).unwrap();
+        assert!(
+            !shared.accept_dial(&ws),
+            "a stopped bridge must not adopt a late socket"
+        );
+        assert!(
+            shared.ws.borrow().is_none(),
+            "late socket must not become the live one"
+        );
+        assert_eq!(
+            shared.status.get(),
+            ConnectionStatus::Disconnected,
+            "a late onopen must not undo a completed disconnect"
+        );
+        assert!(!shared.ever_connected.get());
+
+        shutdown_socket(&ws);
+    }
+
+    /// `disconnect()` while the bridge is still connecting settles on
+    /// `Disconnected` and rejects further commands, with no socket left behind.
+    #[wasm_bindgen_test]
+    async fn bridge_disconnect_while_connecting_settles_disconnected() {
+        // No records configured, so the runner owns no futures — dropping it is
+        // the whole of "running" this database.
+        let (db, _runner) = aimdb_core::AimDbBuilder::new()
+            .runtime(Arc::new(WasmAdapter))
+            .build()
+            .await
+            .unwrap();
+        let bridge = WsBridge::new_internal(
+            db,
+            BTreeMap::new(),
+            SchemaRegistry::new(),
+            PENDING_URL,
+            JsValue::NULL,
+        )
+        .unwrap();
+
+        // Let the engine start its (never-completing) dial.
+        let _ =
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL)).await;
+        assert_eq!(bridge.status(), "connecting");
+
+        bridge.disconnect();
+        assert_eq!(bridge.status(), "disconnected");
+        assert!(bridge.shared.stopped.get());
+        assert!(bridge.shared.ws.borrow().is_none());
+        assert!(bridge.write("test::topic", JsValue::NULL).is_err());
     }
 }

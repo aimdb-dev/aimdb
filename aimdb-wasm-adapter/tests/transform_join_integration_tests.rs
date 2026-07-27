@@ -36,11 +36,14 @@ async fn transform_join_produces_sum_on_both_inputs() {
     let runtime = Arc::new(WasmAdapter);
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
+    // SpmcRing inputs (vs SingleLatest) so that values produced before the join
+    // transform's forwarders subscribe are still buffered and replayed — removes
+    // a startup race where the test might otherwise need a hand-tuned barrier.
     builder.configure::<ValueA>("test::A", |reg| {
-        reg.buffer(BufferCfg::SingleLatest);
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
     builder.configure::<ValueB>("test::B", |reg| {
-        reg.buffer(BufferCfg::SingleLatest);
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
     builder.configure::<Sum>("test::Sum", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
@@ -64,7 +67,10 @@ async fn transform_join_produces_sum_on_both_inputs() {
             });
     });
 
-    let db = builder.build().await.unwrap();
+    let (db, runner) = builder.build().await.unwrap();
+    // The join transform lives in the runner's future set; on wasm the browser
+    // microtask queue is the executor, so `spawn_local` is the `tokio::spawn`.
+    wasm_bindgen_futures::spawn_local(runner.run());
     let mut sum_rx = db.subscribe::<Sum>("test::Sum").unwrap();
 
     // Yield to let the join transform task spawn its input forwarders and subscribe.
@@ -73,18 +79,18 @@ async fn transform_join_produces_sum_on_both_inputs() {
         .unwrap();
 
     // A=1, B=10 → Sum=11
-    db.produce::<ValueA>("test::A", ValueA(1)).await.unwrap();
-    db.produce::<ValueB>("test::B", ValueB(10)).await.unwrap();
+    db.produce::<ValueA>("test::A", ValueA(1)).unwrap();
+    db.produce::<ValueB>("test::B", ValueB(10)).unwrap();
     let s = sum_rx.recv().await.unwrap();
     assert_eq!(s.0, 11, "expected 1+10=11");
 
     // A=2 → Sum=12 (B stays 10)
-    db.produce::<ValueA>("test::A", ValueA(2)).await.unwrap();
+    db.produce::<ValueA>("test::A", ValueA(2)).unwrap();
     let s = sum_rx.recv().await.unwrap();
     assert_eq!(s.0, 12, "expected 2+10=12");
 
     // B=20 → Sum=22 (A stays 2)
-    db.produce::<ValueB>("test::B", ValueB(20)).await.unwrap();
+    db.produce::<ValueB>("test::B", ValueB(20)).unwrap();
     let s = sum_rx.recv().await.unwrap();
     assert_eq!(s.0, 22, "expected 2+20=22");
 }
