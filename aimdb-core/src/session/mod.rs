@@ -316,6 +316,13 @@ pub enum Outbound<'a> {
         /// it like an [`Event`](Outbound::Event) (a wildcard subscription's
         /// snapshots carry topics that don't string-match the pattern key).
         sub: &'a str,
+        /// Monotonic sequence number, in the **same space** as this
+        /// subscription's [`Event`](Outbound::Event)s: the burst is numbered
+        /// `1..=N` and the first event continues at `N + 1`. So a snapshot lost
+        /// anywhere between here and the subscriber surfaces as a gap in the
+        /// next delivered update's [`SubUpdate::skipped`] — including a loss at
+        /// the tail of the burst, which the first event reveals.
+        seq: u64,
         /// Topic the snapshot is for.
         topic: &'a str,
         /// Unparsed record value.
@@ -429,6 +436,11 @@ pub trait Session: Send {
     /// [`Outbound::Snapshot`] right after a successful
     /// [`subscribe`](Session::subscribe) and before the first event. Defaulted
     /// to empty (no snapshots).
+    ///
+    /// The engine numbers the returned burst `1..=N` and starts the event
+    /// stream at `N + 1`, so "one snapshot per matched record" is *auditable*
+    /// downstream rather than merely intended: any snapshot dropped in transit
+    /// shows up as [`SubUpdate::skipped`] on the next delivered update.
     fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
         let _ = topic;
         Vec::new()

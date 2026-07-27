@@ -195,8 +195,13 @@ impl EnvelopeCodec for LineCodec {
                     utf8(&data)?
                 )
             }
-            Outbound::Snapshot { sub, topic, data } => {
-                format!("SNAP\n{}\n{}\n{}", sub, topic, utf8(&data)?)
+            Outbound::Snapshot {
+                sub,
+                seq,
+                topic,
+                data,
+            } => {
+                format!("SNAP\n{}\n{}\n{}\n{}", sub, seq, topic, utf8(&data)?)
             }
             Outbound::Pong => "PONG".to_string(),
             Outbound::Subscribed { sub } => format!("SUBSCRIBED\n{}", sub),
@@ -250,9 +255,11 @@ impl EnvelopeCodec for LineCodec {
             }
             "SNAP" => {
                 let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (seq, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Snapshot {
                     sub,
+                    seq: seq.parse().map_err(|_| CodecError::Malformed)?,
                     topic,
                     data: payload_from(data),
                 })
@@ -335,6 +342,85 @@ impl Session for EchoSession {
             writes.lock().unwrap().push((topic, payload.to_vec()));
             Ok(())
         })
+    }
+}
+
+// ===========================================================================
+// Late-join snapshot dispatch (Layer 3) — a wildcard subscription whose
+// snapshot burst is larger than the client's per-subscription sink.
+// ===========================================================================
+
+/// Records covered by the wildcard subscription below. Deliberately larger than
+/// the client's private `SUBSCRIBE_CHANNEL_CAP` (256) so the late-join burst
+/// *must* overrun a consumer that hasn't started draining yet.
+const SNAPSHOT_RECORDS: usize = 300;
+
+/// The subscription's live event source, handed over once at `subscribe` so the
+/// test can push events *after* draining the snapshot burst.
+type EventFeed = Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<SubUpdate>>>>;
+
+struct SnapshotDispatch {
+    feed: EventFeed,
+}
+
+impl Dispatch for SnapshotDispatch {
+    fn authenticate<'a>(
+        &'a self,
+        _peer: &'a PeerInfo,
+        _first: Option<&'a [u8]>,
+    ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
+        Box::pin(async { Ok(SessionCtx::default()) })
+    }
+
+    fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
+        Box::new(SnapshotSession {
+            feed: self.feed.clone(),
+        })
+    }
+}
+
+struct SnapshotSession {
+    feed: EventFeed,
+}
+
+impl Session for SnapshotSession {
+    fn call<'a>(
+        &'a mut self,
+        _method: &'a str,
+        params: Payload,
+    ) -> BoxFut<'a, Result<Payload, RpcError>> {
+        Box::pin(async move { Ok(params) })
+    }
+
+    fn snapshots(&mut self, _topic: &str) -> Vec<(String, Payload)> {
+        (1..=SNAPSHOT_RECORDS)
+            .map(|i| (format!("rec.{i}"), payload_from(&format!("snap#{i}"))))
+            .collect()
+    }
+
+    fn subscribe<'a>(
+        &'a mut self,
+        _topic: &'a str,
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
+        let feed = self.feed.clone();
+        Box::pin(async move {
+            // One subscription per test run; a second would find the feed taken.
+            let rx = feed.lock().unwrap().take().ok_or(RpcError::Internal)?;
+            let stream =
+                futures::stream::unfold(
+                    rx,
+                    |mut rx| async move { rx.recv().await.map(|u| (u, rx)) },
+                );
+            Ok(Box::pin(stream) as BoxStream<'static, SubUpdate>)
+        })
+    }
+
+    fn write<'a>(
+        &'a mut self,
+        _topic: &'a str,
+        _payload: Payload,
+    ) -> BoxFut<'a, Result<(), RpcError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -462,6 +548,122 @@ async fn failed_subscribe_ends_stream_via_ack() {
     assert!(
         ended.is_none(),
         "stream should end after the terminal error"
+    );
+
+    drop(handle);
+    drop(stream);
+    let _ = client.await;
+    server.abort();
+}
+
+/// A late-join snapshot burst larger than the client's per-subscription sink
+/// must not vanish silently. Regression for the bug where the client demux
+/// discarded the snapshot `try_send` result *and* snapshots carried no `seq`: a
+/// wildcard subscription over 300 records delivered exactly
+/// `SUBSCRIBE_CHANNEL_CAP` (256) updates with no error and no gap, and because
+/// event `seq` then restarted at 1, no later event could reveal which initial
+/// states were lost — quietly breaking "one snapshot per matched record".
+///
+/// Snapshots now share the subscription's `seq` space (`1..=N`, events continue
+/// at `N + 1`), so every dropped snapshot is reported as `skipped` on the next
+/// delivered update — including the tail of the burst, which the first event
+/// accounts for.
+#[tokio::test]
+async fn oversized_snapshot_burst_surfaces_as_a_gap() {
+    let (listener, dialer) = transport_pair();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubUpdate>();
+    let dispatch = Arc::new(SnapshotDispatch {
+        feed: Arc::new(Mutex::new(Some(event_rx))),
+    });
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        dispatch,
+        SessionConfig::default(),
+    ));
+    let (handle, client_fut) = run_client(
+        dialer,
+        LineCodec,
+        ClientConfig {
+            reconnect: false,
+            reconnect_delay: 10,
+            max_reconnect_delay: 10,
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: usize::MAX,
+            sends_hello: false,
+        },
+        Arc::new(TestClock),
+    );
+    let client = tokio::spawn(client_fut);
+
+    let mut stream = handle.subscribe("rec.#").unwrap();
+
+    // RPC barrier. The server serves frames in order and emits the whole burst
+    // inline while handling the Subscribe, so this reply is the *last* frame
+    // behind all 300 snapshots: once it resolves, the client demux has already
+    // pushed every snapshot at a sink nothing has drained yet — a deterministic
+    // overflow rather than a timing race.
+    let reply = handle.call("echo", payload_from("barrier")).await.unwrap();
+    assert_eq!(&*reply, b"barrier");
+
+    // Drain whatever actually landed in the sink.
+    let mut delivered = Vec::new();
+    while let Ok(next) = tokio::time::timeout(Duration::from_millis(50), stream.next()).await {
+        let item = next.expect("stream must stay open while the subscription lives");
+        delivered.push(item.expect("a snapshot burst must not be a terminal error"));
+    }
+
+    // Guard against a vacuous pass: raising SUBSCRIBE_CHANNEL_CAP past
+    // SNAPSHOT_RECORDS would make the burst fit and test nothing.
+    assert!(
+        delivered.len() < SNAPSHOT_RECORDS,
+        "burst must overrun the sink for this regression to mean anything; \
+         all {} snapshots fit — raise SNAPSHOT_RECORDS above SUBSCRIBE_CHANNEL_CAP",
+        delivered.len()
+    );
+
+    // What did land is the contiguous head of the burst, in order and untagged
+    // by loss — the drops are all at the tail.
+    for (i, update) in delivered.iter().enumerate() {
+        assert_eq!(
+            update.topic.as_deref(),
+            Some(format!("rec.{}", i + 1).as_str()),
+            "snapshot {i} should carry its concrete record topic, in burst order"
+        );
+        assert_eq!(&*update.data, format!("snap#{}", i + 1).as_bytes());
+        assert_eq!(
+            update.skipped, 0,
+            "the delivered head of the burst is contiguous"
+        );
+    }
+
+    // The sink is empty again, so one live event gets through — and it must
+    // report every snapshot lost at the tail of the burst. Pre-fix this event
+    // arrived with `skipped == 0`.
+    event_tx
+        .send(SubUpdate::new(payload_from("live")))
+        .expect("subscription stream should still be feeding");
+    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("the live event must arrive")
+        .expect("stream must still be open")
+        .expect("a live event must not be a terminal error");
+
+    assert_eq!(&*event.data, b"live");
+    assert_eq!(
+        event.skipped,
+        (SNAPSHOT_RECORDS - delivered.len()) as u64,
+        "the first event must report the snapshots dropped at the tail of the burst"
+    );
+
+    // The whole point, stated as a balance: every matched record is either
+    // delivered or accounted for as skipped — nothing goes missing quietly.
+    let reported: u64 = delivered.iter().map(|u| u.skipped).sum::<u64>() + event.skipped;
+    assert_eq!(
+        delivered.len() as u64 + reported,
+        SNAPSHOT_RECORDS as u64,
+        "every matched record must be either delivered or reported lost"
     );
 
     drop(handle);

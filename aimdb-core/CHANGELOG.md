@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without them are unchanged on the wire). `Session::snapshot` became
   `Session::snapshots(topic) -> Vec<(String, Payload)>` (one per covered
   record).
+- **Late-join snapshots are sequence-numbered and no longer lost silently.**
+  `Outbound::Snapshot` gains a required `seq` in the *same* space as the
+  subscription's events: `run_session` numbers the burst `1..=N` and
+  `pump_subscription` continues at `N + 1`. The client demux routes snapshots
+  through the identical gap accounting as events, so one that overruns the
+  consumer's `SUBSCRIBE_CHANNEL_CAP`-bounded sink is reported as
+  `SubUpdate::skipped` on the next delivered update — and a loss at the tail of
+  the burst surfaces on the first event. Previously the client discarded the
+  snapshot `try_send` result and snapshots carried no `seq`, so a wildcard
+  subscription over more than 256 matched records silently delivered only 256,
+  with no error, no gap, and no way for later event `seq`s to reveal which
+  initial states were missing — quietly breaking "one snapshot per matched
+  record". Also fixes two smaller leaks on that path: a snapshot dropped by an
+  encode failure is now counted as loss, and a snapshot for a subscription
+  whose receiver is gone now prunes the sub instead of lingering.
+  Wire: `snap` frames carry `"seq"`, and one without it is `Malformed`.
 - **`AimxCodec` learned the `subscribed` ack frame** (`{"t":"subscribed",
   "sub":S}`) for servers running `acks_subscribe:true` (the WebSocket
   connector); UDS/serial/TCP keep the implicit ack. A dedicated `AimxCodec`

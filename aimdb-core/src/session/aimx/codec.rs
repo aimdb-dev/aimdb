@@ -232,10 +232,16 @@ impl EnvelopeCodec for AimxCodec {
                 // `write_frame_splicing_data`.
                 write_frame_splicing_data(out, &frame, &data)
             }
-            Outbound::Snapshot { sub, topic, data } => {
+            Outbound::Snapshot {
+                sub,
+                seq,
+                topic,
+                data,
+            } => {
                 let raw = as_raw(&data)?;
                 let mut frame = Frame::tagged("snap");
                 frame.sub = Some(sub);
+                frame.seq = Some(seq);
                 frame.topic = Some(topic);
                 frame.data = Some(raw);
                 write_frame(out, &frame)
@@ -308,6 +314,7 @@ impl EnvelopeCodec for AimxCodec {
             }),
             "snap" => Ok(Outbound::Snapshot {
                 sub: f.sub.ok_or(CodecError::Malformed)?,
+                seq: f.seq.ok_or(CodecError::Malformed)?,
                 topic: f.topic.ok_or(CodecError::Malformed)?,
                 data: payload_of(f.data),
             }),
@@ -511,19 +518,37 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_roundtrip_carries_sub_and_topic() {
+    fn snapshot_roundtrip_carries_sub_seq_and_topic() {
         let frame = encode_outbound(Outbound::Snapshot {
             sub: "8",
+            seq: 3,
             topic: "temp.berlin",
             data: payload(r#"{"c":18.0}"#),
         });
         match AimxCodec.decode_outbound(&frame).unwrap() {
-            Outbound::Snapshot { sub, topic, data } => {
-                assert_eq!((sub, topic), ("8", "temp.berlin"));
+            Outbound::Snapshot {
+                sub,
+                seq,
+                topic,
+                data,
+            } => {
+                assert_eq!((sub, seq, topic), ("8", 3, "temp.berlin"));
                 assert_eq!(&data[..], br#"{"c":18.0}"#);
             }
             _ => panic!("expected Snapshot"),
         }
+    }
+
+    /// A `snap` frame without `seq` is not decodable: snapshots share the
+    /// subscription's sequence space, so an unnumbered one would silently
+    /// defeat the client's gap accounting.
+    #[test]
+    fn snapshot_without_seq_is_malformed() {
+        let frame = br#"{"t":"snap","sub":"8","topic":"temp.berlin","data":1}"#;
+        assert!(matches!(
+            AimxCodec.decode_outbound(frame),
+            Err(CodecError::Malformed)
+        ));
     }
 
     #[test]

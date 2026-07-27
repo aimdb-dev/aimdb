@@ -220,14 +220,24 @@ pub async fn run_session<C, D>(
                                     }
                                 }
                                 // Optional late-join snapshots (one per covered
-                                // record), before the first event.
+                                // record), before the first event. They share
+                                // the subscription's `seq` space — numbered
+                                // `1..=N` here, events continue at `N + 1` — so
+                                // every snapshot is accounted for end-to-end:
+                                // one dropped by a slow client sink (or skipped
+                                // by the encode failure below) leaves a hole the
+                                // client reports as `skipped`, and a loss at the
+                                // tail of the burst surfaces on the first event.
+                                let mut seq: u64 = 0;
                                 let mut send_failed = false;
                                 for (snap_topic, data) in session.snapshots(&topic) {
+                                    seq += 1;
                                     out.clear();
                                     if codec
                                         .encode(
                                             Outbound::Snapshot {
                                                 sub: &sub_id,
+                                                seq,
                                                 topic: &snap_topic,
                                                 data,
                                             },
@@ -250,6 +260,7 @@ pub async fn run_session<C, D>(
                                     stream,
                                     event_tx.clone(),
                                     cancel_rx,
+                                    seq,
                                 )));
                             }
                             Err(e) => {
@@ -311,6 +322,11 @@ async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
 /// tagging each update with a monotonic `seq`. Ends when the stream finishes or
 /// the cancel handle is dropped/fired (Unsubscribe or connection teardown).
 ///
+/// `start_seq` is the last sequence number the late-join snapshot burst used
+/// (`0` when there were none), so events continue the *same* counter and a
+/// snapshot lost at the tail of the burst still shows up as a gap on the first
+/// event.
+///
 /// Returns its `sub_id` so [`run_session`] can prune the `cancels` entry for a
 /// pump that ended on its own; the Unsubscribe path already removed it, so that
 /// later prune is a no-op.
@@ -319,13 +335,14 @@ async fn pump_subscription(
     mut stream: BoxStream<'static, SubUpdate>,
     tx: Sender<SubEvent>,
     cancel: oneshot::Receiver<()>,
+    start_seq: u64,
 ) -> String {
     // Fuse the cancel receiver: a bare `oneshot::Receiver` reports
     // `is_terminated()` once its sender drops, and `select_biased!` skips
     // terminated arms — so the cancel would never fire. `Fuse` keeps the arm
     // polled until it actually resolves.
     let mut cancel = cancel.fuse();
-    let mut seq: u64 = 0;
+    let mut seq: u64 = start_seq;
     loop {
         // Independent arms, so a direct `select_biased!` is fine here.
         let update = select_biased! {

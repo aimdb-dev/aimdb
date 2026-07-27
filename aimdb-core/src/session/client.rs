@@ -32,8 +32,9 @@ use crate::AimDb;
 /// Capacity of a subscription's client-side event sink. Bounded (was
 /// `unbounded`) so a slow consumer can't grow memory without limit under a fast
 /// wildcard set; matches the server's per-connection `EVENT_BUFFER`. On overflow
-/// the run loop drops the event and lets the loss surface as a `seq` gap
-/// (`SubUpdate::skipped`) on the next delivered update.
+/// the run loop drops the update and lets the loss surface as a `seq` gap
+/// (`SubUpdate::skipped`) on the next delivered update — for late-join snapshots
+/// too, which a wildcard subscription can burst well past this cap.
 const SUBSCRIBE_CHANNEL_CAP: usize = 256;
 
 /// Client engine knobs. Durations are in **milliseconds** so the engine stays
@@ -222,6 +223,49 @@ impl Drop for DrainOnExit<'_> {
     fn drop(&mut self) {
         self.0.close();
         while self.0.try_recv().is_ok() {}
+    }
+}
+
+/// Route one subscription update (snapshot or event) to its sink, folding any
+/// loss since the last delivery into its [`SubUpdate::skipped`].
+///
+/// Server `seq` counts true production across the *whole* subscription — the
+/// late-join snapshot burst (`1..=N`) and then its events (`N + 1`…), with
+/// server-side buffer lag folded in via `+= skipped + 1` and funnel drops
+/// bumping the counter before dropping. So one delta against the last delivered
+/// seq captures every loss point, plus any prior local full-channel drop that
+/// left `last_seq` behind.
+fn deliver(
+    subs: &mut HashMap<String, Sender<Result<SubUpdate, RpcError>>>,
+    last_seq: &mut HashMap<String, u64>,
+    sub: &str,
+    seq: u64,
+    topic: Option<Arc<str>>,
+    data: Payload,
+) {
+    let prev = last_seq.get(sub).copied().unwrap_or(0);
+    let skipped = seq.saturating_sub(prev + 1);
+    // `None` here is a late update for a dropped sub — ignore.
+    if let Some(tx) = subs.get(sub) {
+        let update = SubUpdate {
+            topic,
+            data,
+            skipped,
+        };
+        match tx.try_send(Ok(update)) {
+            // Delivered — advance the per-sub cursor.
+            Ok(()) => {
+                last_seq.insert(sub.to_string(), seq);
+            }
+            // Slow consumer: drop this update but leave `last_seq` so the
+            // shortfall folds into the next delivered update's `skipped`.
+            Err(e) if e.is_full() => {}
+            // Receiver gone — the sub was dropped; prune it.
+            Err(_) => {
+                subs.remove(sub);
+                last_seq.remove(sub);
+            }
+        }
     }
 }
 
@@ -423,43 +467,32 @@ where
                         seq,
                         topic,
                         data,
-                    }) => {
-                        // Loss = the shortfall between the last delivered seq and
-                        // this one. Server `seq` counts true production (buffer lag
-                        // folded in via `+= skipped + 1`, funnel drops bump then
-                        // drop), so one delta captures every loss point, plus any
-                        // prior local full-channel drop that left `last_seq` behind.
-                        let prev = last_seq.get(sub).copied().unwrap_or(0);
-                        let skipped = seq.saturating_sub(prev + 1);
-                        // `None` here is a late event for a dropped sub — ignore.
-                        if let Some(tx) = subs.get(sub) {
-                            let update = SubUpdate {
-                                topic: topic.map(Arc::from),
-                                data,
-                                skipped,
-                            };
-                            match tx.try_send(Ok(update)) {
-                                // Delivered — advance the per-sub cursor.
-                                Ok(()) => {
-                                    last_seq.insert(sub.to_string(), seq);
-                                }
-                                // Slow consumer: drop this event but leave
-                                // `last_seq` so the shortfall folds into the next
-                                // delivered update's `skipped`.
-                                Err(e) if e.is_full() => {}
-                                // Receiver gone — the sub was dropped; prune it.
-                                Err(_) => {
-                                    subs.remove(sub);
-                                    last_seq.remove(sub);
-                                }
-                            }
-                        }
-                    }
-                    Ok(Outbound::Snapshot { sub, topic, data }) => {
-                        if let Some(tx) = subs.get(sub) {
-                            let _ = tx.try_send(Ok(SubUpdate::tagged(Arc::from(topic), data)));
-                        }
-                    }
+                    }) => deliver(
+                        &mut subs,
+                        &mut last_seq,
+                        sub,
+                        seq,
+                        topic.map(Arc::from),
+                        data,
+                    ),
+                    // Snapshots ride the same accounting as events (they share
+                    // the subscription's `seq` space), so a late-join burst that
+                    // overruns a slow consumer's sink is reported as `skipped`
+                    // instead of vanishing — "one snapshot per matched record"
+                    // stays checkable by the subscriber.
+                    Ok(Outbound::Snapshot {
+                        sub,
+                        seq,
+                        topic,
+                        data,
+                    }) => deliver(
+                        &mut subs,
+                        &mut last_seq,
+                        sub,
+                        seq,
+                        Some(Arc::from(topic)),
+                        data,
+                    ),
                     Ok(Outbound::Pong) => {}
                     // Explicit subscribe ack — informational; the sink already exists.
                     Ok(Outbound::Subscribed { .. }) => {}

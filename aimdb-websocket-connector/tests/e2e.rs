@@ -298,10 +298,12 @@ async fn server_late_join_snapshot() {
     ws_send(&mut c, json!({"t":"sub","id":4,"topic":"sensors.temp"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"4"}));
     // The snapshot rides between the ack and the first event, tagged with the
-    // subscription that triggered it.
+    // subscription that triggered it and numbered in that subscription's `seq`
+    // space (events continue after the burst) so a dropped snapshot shows up as
+    // a gap rather than vanishing.
     assert_eq!(
         ws_recv(&mut c).await,
-        json!({"t":"snap","sub":"4","topic":"sensors.temp","data":99})
+        json!({"t":"snap","sub":"4","seq":1,"topic":"sensors.temp","data":99})
     );
 }
 
@@ -596,13 +598,16 @@ async fn golden_wire_frames() {
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"1"}));
     assert_eq!(
         ws_recv(&mut c).await,
-        json!({"t":"snap","sub":"1","topic":"t","data":5})
+        json!({"t":"snap","sub":"1","seq":1,"topic":"t","data":5})
     );
 
+    // The event continues the snapshot burst's `seq` (one snapshot, so `seq:2`)
+    // — a single counter over the whole subscription, so loss anywhere in it is
+    // visible as a gap.
     inject(&db, "t", json!(42));
     assert_eq!(
         ws_recv(&mut c).await,
-        json!({"t":"event","sub":"1","seq":1,"topic":"t","data":42})
+        json!({"t":"event","sub":"1","seq":2,"topic":"t","data":42})
     );
 
     ws_send(&mut c, json!({"t":"ping"})).await;

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking, wire)
+
+- **`snap` frames now carry `seq`.** Late-join snapshots are numbered in the
+  subscription's sequence space (`1..=N`), and the first `event` continues at
+  `N + 1` rather than restarting at `1` — so a snapshot dropped by a slow
+  client is visible as a gap instead of vanishing (see `aimdb-core`). Clients
+  reading the golden frame shape must expect `"seq"` on `snap` and an event
+  sequence offset by the snapshot count.
+
 ### Fixed
 
 - **Fan-out broadcast drops are now observable as `seq` gaps.** When a
