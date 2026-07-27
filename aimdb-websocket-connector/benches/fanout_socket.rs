@@ -146,7 +146,8 @@ fn spawn_client(
     ready: mpsc::Sender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        let url = aimdb_core::remote::ws_url_with_version(&format!("ws://{addr}/ws"));
+        let (mut ws, _) = tokio_tungstenite::connect_async(url)
             .await
             .expect("client connect");
         ws.send(Message::Text(
