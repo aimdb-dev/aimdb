@@ -614,6 +614,10 @@ impl WsBridge {
                 let timeout =
                     WasmAdapter.sleep(core::time::Duration::from_millis(timeout_ms as u64));
                 futures_util::pin_mut!(call);
+                // Losing the race drops `call`, i.e. the reply channel's
+                // receiver. The engine reclaims its side on the next call or
+                // keepalive tick, so timing out against an unanswering peer
+                // doesn't accumulate pending entries for the connection's life.
                 match futures_util::future::select(call, timeout).await {
                     futures_util::future::Either::Left((reply, _)) => reply,
                     futures_util::future::Either::Right(((), _)) => {

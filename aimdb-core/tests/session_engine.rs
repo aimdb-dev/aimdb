@@ -761,3 +761,138 @@ async fn ended_subscription_frees_its_cap_slot() {
     let _ = client.await;
     server.abort();
 }
+
+// ===========================================================================
+// Abandoned calls (Layer 4) — a peer that keeps the link open but never replies
+// ===========================================================================
+
+/// Engine config for the silent-peer tests: one connection, no redial, no
+/// keepalive, so the only thing under test is the pending-call bookkeeping.
+fn silent_peer_config() -> ClientConfig {
+    ClientConfig {
+        reconnect: false,
+        keepalive_interval: None,
+        ..Default::default()
+    }
+}
+
+/// Read the next `REQ` frame the client engine put on the wire, as
+/// `(id, method, params)`.
+async fn read_request(peer: &mut Box<dyn Connection>) -> (u64, String, String) {
+    let frame = tokio::time::timeout(Duration::from_secs(2), peer.recv())
+        .await
+        .expect("the client must send its request")
+        .expect("the pipe must stay open")
+        .expect("the pipe must stay open");
+    let text = String::from_utf8(frame).expect("test frames are utf-8");
+    let mut parts = text.splitn(4, '\n');
+    assert_eq!(
+        parts.next(),
+        Some("REQ"),
+        "expected a request frame: {text}"
+    );
+    let id = parts
+        .next()
+        .and_then(|id| id.parse().ok())
+        .expect("request id");
+    let method = parts.next().expect("request method").to_string();
+    (id, method, parts.next().unwrap_or("").to_string())
+}
+
+/// Regression: callers that time out and drop their `call` future must not
+/// accumulate in the engine's pending-call map.
+///
+/// A `Reply` or a disconnect used to be the only things that removed an entry,
+/// so a peer holding the connection open while never answering (the shape the
+/// WASM bridge's `query_timeout_ms` produces) cost one live `oneshot::Sender`
+/// per timed-out request for the life of the connection. The engine now reclaims
+/// abandoned entries; this test drives that path end-to-end and pins the
+/// property it must not break — reply correlation still works afterwards.
+#[tokio::test]
+async fn repeated_call_timeouts_leave_the_connection_usable() {
+    let (mut listener, dialer) = transport_pair();
+    let (handle, client_fut) =
+        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let client = tokio::spawn(client_fut);
+    // The test *is* the peer: it reads every request and answers only the last.
+    let mut peer = listener.accept().await.expect("the client must dial");
+
+    for i in 0..64 {
+        let call = handle.call("hang", payload_from(&format!("{i}")));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), call)
+                .await
+                .is_err(),
+            "an unanswered call must not resolve"
+        );
+        let (_, method, _) = read_request(&mut peer).await;
+        assert_eq!(method, "hang", "each request must still reach the peer");
+    }
+
+    // The demux survived the reclaim sweeps: a call the peer *does* answer
+    // resolves with its own reply, so no live entry was pruned by mistake.
+    let answered = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.call("ping", payload_from("hi")).await }
+    });
+    let (id, method, params) = read_request(&mut peer).await;
+    assert_eq!((method.as_str(), params.as_str()), ("ping", "hi"));
+    peer.send(format!("REPLY\n{id}\nOK\npong").as_bytes())
+        .await
+        .expect("the pipe must stay open");
+    let reply = tokio::time::timeout(Duration::from_secs(2), answered)
+        .await
+        .expect("the answered call must resolve")
+        .expect("the call task must not panic")
+        .expect("the peer replied with OK");
+    assert_eq!(&*reply, b"pong");
+
+    drop(handle);
+    drop(peer);
+    let _ = client.await;
+}
+
+/// A call abandoned while its command still sits in the engine's queue is
+/// dropped instead of dialed out: nobody is left to receive the reply, so the
+/// request would only make the peer do work whose answer is discarded.
+#[tokio::test]
+async fn a_call_abandoned_before_dispatch_is_never_sent() {
+    let (mut listener, dialer) = transport_pair();
+    let (handle, client_fut) =
+        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+
+    // Zero deadline: `timeout` polls the call once — enough to enqueue the
+    // command — then gives up and drops it, all before the engine is driven.
+    assert!(
+        tokio::time::timeout(Duration::ZERO, handle.call("ghost", payload_from("x")))
+            .await
+            .is_err(),
+        "the call must be abandoned before the engine dequeues it"
+    );
+
+    let client = tokio::spawn(client_fut);
+    let mut peer = listener.accept().await.expect("the client must dial");
+
+    let answered = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.call("real", payload_from("hi")).await }
+    });
+    let (id, method, _) = read_request(&mut peer).await;
+    assert_eq!(
+        method, "real",
+        "an abandoned call must not be sent to the peer"
+    );
+    peer.send(format!("REPLY\n{id}\nOK\npong").as_bytes())
+        .await
+        .expect("the pipe must stay open");
+    let reply = tokio::time::timeout(Duration::from_secs(2), answered)
+        .await
+        .expect("the answered call must resolve")
+        .expect("the call task must not panic")
+        .expect("the peer replied with OK");
+    assert_eq!(&*reply, b"pong");
+
+    drop(handle);
+    drop(peer);
+    let _ = client.await;
+}

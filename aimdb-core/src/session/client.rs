@@ -358,11 +358,43 @@ async fn reconnect_after(
     true
 }
 
+/// What a caller awaiting [`ClientHandle::call`] eventually receives.
+type CallReply = Result<Payload, RpcError>;
+
+/// The engine's in-flight call table: correlation `id` → the caller's reply
+/// channel.
+type PendingCalls = HashMap<u64, oneshot::Sender<CallReply>>;
+
+/// Drop every entry whose caller has gone away.
+///
+/// A caller that gives up on [`ClientHandle::call`] — a timeout racing the
+/// future, or any other cancellation — drops only its `oneshot::Receiver`; the
+/// matching sender stays in the engine's map, since a peer that holds the
+/// connection open but never answers produces neither a `Reply` nor a
+/// disconnect. `futures_channel` records the drop on the sender, so this sweep
+/// is a flag check per entry with no wakeups or allocation.
+fn prune_canceled(pending: &mut PendingCalls) {
+    pending.retain(|_, tx| !tx.is_canceled());
+}
+
+/// Register a call's reply channel, first reclaiming any abandoned entry.
+///
+/// Pruning here (rather than per frame) is what bounds the table: the sweep is
+/// O(in-flight calls) and runs only when a new call is issued, so a stream of
+/// timed-out requests over a live connection costs one lingering entry each
+/// until the next call, instead of one for the life of the connection.
+fn track_call(pending: &mut PendingCalls, id: u64, reply: oneshot::Sender<CallReply>) {
+    prune_canceled(pending);
+    pending.insert(id, reply);
+}
+
 /// Drive one dialed [`Connection`]: optional handshake, then `biased` demux of
 /// server frames (resolve `Reply` by `id`, route `Event`/`Snapshot` to their
 /// subscription channels) interleaved with caller commands. Pending state is
 /// per-connection: a disconnect fails outstanding calls (their `oneshot`
-/// senders drop → callers see [`RpcError::Internal`]).
+/// senders drop → callers see [`RpcError::Internal`]). Calls the *caller*
+/// abandoned are reclaimed by [`prune_canceled`], so an unanswering peer that
+/// keeps the link open can't grow the table.
 async fn drive_connection<C>(
     mut conn: Box<dyn Connection>,
     codec: &C,
@@ -374,7 +406,7 @@ where
     C: EnvelopeCodec + ?Sized,
 {
     let mut next_id: u64 = 1;
-    let mut pending: HashMap<u64, oneshot::Sender<Result<Payload, RpcError>>> = HashMap::new();
+    let mut pending: PendingCalls = HashMap::new();
     // sub-id → event sink. The sub-id is `id.to_string()` of the opening
     // request, matching the server's derivation so `Event.sub` routes back.
     let mut subs: HashMap<String, Sender<Result<SubUpdate, RpcError>>> = HashMap::new();
@@ -501,6 +533,10 @@ where
             }
 
             ClientStep::Keepalive => {
+                // Also the reclaim tick: a caller that times out and then stops
+                // issuing calls would otherwise hold its entries until the next
+                // call or the disconnect.
+                prune_canceled(&mut pending);
                 // `keepalive_timer` is `Some` whenever this step fires.
                 let interval_ms = keepalive_ms.unwrap_or(0);
                 let idle_ms = clock.now_nanos().saturating_sub(last_activity) / 1_000_000;
@@ -540,9 +576,16 @@ where
                         params,
                         reply,
                     } => {
+                        // The caller may have given up while the command sat in
+                        // the queue — don't spend a wire request (or an `id`) on
+                        // a reply nobody is waiting for.
+                        if reply.is_canceled() {
+                            prune_canceled(&mut pending);
+                            continue;
+                        }
                         let id = next_id;
                         next_id += 1;
-                        pending.insert(id, reply);
+                        track_call(&mut pending, id, reply);
                         out.clear();
                         let sent = codec
                             .encode_inbound(Inbound::Request { id, method, params }, &mut out)
@@ -665,4 +708,77 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
     }
 
     pumps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call_slot() -> (oneshot::Sender<CallReply>, oneshot::Receiver<CallReply>) {
+        oneshot::channel()
+    }
+
+    /// A caller that gave up is reclaimed; one still awaiting its reply is not,
+    /// and stays deliverable.
+    #[test]
+    fn prune_canceled_drops_only_abandoned_calls() {
+        let mut pending = PendingCalls::new();
+        let (tx1, rx1) = call_slot();
+        let (tx2, rx2) = call_slot();
+        pending.insert(1, tx1);
+        pending.insert(2, tx2);
+
+        drop(rx1); // caller 1 timed out and dropped its `call` future
+        prune_canceled(&mut pending);
+
+        assert_eq!(pending.len(), 1, "the abandoned call must be reclaimed");
+        assert!(pending.contains_key(&2), "a live call must be kept");
+        pending
+            .remove(&2)
+            .unwrap()
+            .send(Ok(Payload::from(&b"ok"[..])))
+            .expect("the retained sender must still reach its caller");
+        drop(rx2);
+    }
+
+    /// Regression: a peer that keeps the connection open but never replies used
+    /// to cost one permanent entry per timed-out request, since only a `Reply`
+    /// or a disconnect removed one. Repeated timeouts must not grow the table.
+    #[test]
+    fn repeated_timeouts_do_not_grow_pending() {
+        let mut pending = PendingCalls::new();
+        for id in 1..=1_000u64 {
+            let (tx, rx) = call_slot();
+            track_call(&mut pending, id, tx);
+            // The caller times out immediately; nothing ever replies.
+            drop(rx);
+            assert!(
+                pending.len() <= 1,
+                "pending grew to {} at id {id}; abandoned calls are leaking",
+                pending.len()
+            );
+        }
+    }
+
+    /// The reclaim sweep must not disturb calls that are still outstanding, so
+    /// a long-lived call survives a burst of timed-out ones around it.
+    #[test]
+    fn track_call_keeps_outstanding_calls_across_prunes() {
+        let mut pending = PendingCalls::new();
+        let (slow_tx, slow_rx) = call_slot();
+        track_call(&mut pending, 1, slow_tx);
+
+        for id in 2..=100u64 {
+            let (tx, rx) = call_slot();
+            track_call(&mut pending, id, tx);
+            drop(rx);
+        }
+
+        assert!(
+            pending.contains_key(&1),
+            "an outstanding call must survive the reclaim sweep"
+        );
+        assert_eq!(pending.len(), 2, "only the outstanding calls remain");
+        drop(slow_rx);
+    }
 }
