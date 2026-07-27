@@ -261,6 +261,7 @@ mod error;
 mod handle;
 #[cfg(feature = "std")]
 mod producer;
+mod waiter;
 
 #[cfg(feature = "std")]
 pub use consumer::SyncConsumer;

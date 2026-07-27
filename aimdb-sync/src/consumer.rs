@@ -1,5 +1,8 @@
 //! Synchronous consumer for typed records.
 
+use aimdb_core::buffer::BufferReader;
+
+use crate::waiter::{BlockingBridge, Waiter};
 use crate::{SyncError, SyncResult};
 use alloc::sync::Arc;
 use core::fmt::Debug;
@@ -49,9 +52,8 @@ pub struct SyncConsumer<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
-    /// Channel receiver for consumer data
-    /// Wrapped in `Arc<Mutex>` so it can be shared but only one thread receives at a time
-    rx: Arc<Mutex<mpsc::Receiver<T>>>,
+    waiter: Waiter,
+    reader: Box<dyn BufferReader<T> + Send>,
 }
 
 impl<T> SyncConsumer<T>
@@ -59,10 +61,8 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     /// Create a new sync consumer (internal use only)
-    pub(crate) fn new(rx: mpsc::Receiver<T>) -> Self {
-        Self {
-            rx: Arc::new(Mutex::new(rx)),
-        }
+    pub(crate) fn new(waiter: Waiter, reader: Box<dyn BufferReader<T> + Send>) -> Self {
+        Self { waiter, reader }
     }
 
     /// Get a value, blocking until one is available.
