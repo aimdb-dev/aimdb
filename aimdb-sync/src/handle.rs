@@ -403,45 +403,9 @@ impl AimDbHandle {
         self.runtime_handle.spawn(async move {
             // Subscribe to the database buffer for type T
             match db.subscribe::<T>(&record_key) {
-                Ok(mut reader) => {
-                    // Signal that subscription succeeded
+                Ok(reader) => {
                     let _ = ready_tx.send(());
-
-                    // Forward all values from the buffer reader to the std channel
-                    loop {
-                        match reader.recv().await {
-                            Ok(value) => {
-                                // Send to std channel (non-async operation)
-                                // If the receiver is dropped, send() will fail
-                                if std_tx.send(value).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(DbError::BufferLagged { lag_count, .. }) => {
-                                // Consumer fell behind - this is not fatal
-                                // Log warning but continue receiving
-                                log_warn!(
-                                    "Warning: Consumer for {} lagged by {} messages",
-                                    std::any::type_name::<T>(),
-                                    lag_count
-                                );
-                                // Don't break - next recv() will get latest data
-                            }
-                            Err(DbError::BufferClosed { .. }) => {
-                                // Buffer closed (shutdown) - exit gracefully
-                                break;
-                            }
-                            Err(e) => {
-                                // Other unexpected errors - log and stop
-                                log_error!(
-                                    "Error reading from buffer for {}: {}",
-                                    std::any::type_name::<T>(),
-                                    e
-                                );
-                                break;
-                            }
-                        }
-                    }
+                    Self::forward_buffered(std_tx, reader).await;
                 }
                 Err(e) => {
                     log_error!(
@@ -617,6 +581,49 @@ impl AimDbHandle {
                 _ = shutdown_rx.recv() => {}
             }
         });
+    }
+
+    async fn forward_buffered<T>(
+        std_tx: std::sync::mpsc::SyncSender<T>,
+        mut reader: aimdb_core::Reader<T>,
+    ) where
+        T: Send + Clone,
+    {
+        // Forward all values from the buffer reader to the std channel
+        loop {
+            match reader.recv().await {
+                Ok(value) => {
+                    // Send to std channel (non-async operation)
+                    // If the receiver is dropped, send() will fail
+                    if std_tx.send(value).is_err() {
+                        break;
+                    }
+                }
+                Err(DbError::BufferLagged { lag_count, .. }) => {
+                    // Consumer fell behind - this is not fatal
+                    // Log warning but continue receiving
+                    log_warn!(
+                        "Warning: Consumer for {} lagged by {} messages",
+                        std::any::type_name::<T>(),
+                        lag_count
+                    );
+                    // Don't break - next recv() will get latest data
+                }
+                Err(DbError::BufferClosed { .. }) => {
+                    // Buffer closed (shutdown) - exit gracefully
+                    break;
+                }
+                Err(e) => {
+                    // Other unexpected errors - log and stop
+                    log_error!(
+                        "Error reading from buffer for {}: {}",
+                        std::any::type_name::<T>(),
+                        e
+                    );
+                    break;
+                }
+            }
+        }
     }
 }
 
