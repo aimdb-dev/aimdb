@@ -45,8 +45,10 @@
 //!
 //! ```no_run
 //! use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
+//! # #[cfg(feature = "std")]
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
+//! # #[cfg(feature = "std")]
 //! use std::sync::Arc;
 //!
 //! #[derive(Debug, Clone)]
@@ -245,16 +247,23 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
 mod consumer;
 mod error;
+#[cfg(feature = "std")]
 mod handle;
+#[cfg(feature = "std")]
 mod producer;
 
+#[cfg(feature = "std")]
 pub use consumer::SyncConsumer;
+#[cfg(feature = "std")]
 pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt, DEFAULT_SYNC_CHANNEL_CAPACITY};
+#[cfg(feature = "std")]
 pub use producer::SyncProducer;
 
 pub use error::{SyncError, SyncResult};

@@ -1,10 +1,13 @@
 //! Synchronous consumer for typed records.
 
 use crate::{SyncError, SyncResult};
-use std::fmt::Debug;
+use alloc::sync::Arc;
+use core::fmt::Debug;
+use core::time::Duration;
+#[cfg(feature = "std")]
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+#[cfg(feature = "std")]
+use std::sync::Mutex;
 
 /// Synchronous consumer for records of type `T`.
 ///
@@ -121,6 +124,7 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
+    /// #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;
@@ -163,6 +167,7 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
+    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
@@ -211,6 +216,7 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
+    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
@@ -263,6 +269,7 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
+    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;

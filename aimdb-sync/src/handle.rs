@@ -2,10 +2,12 @@
 
 use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
-use std::fmt::Debug;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::fmt::Debug;
+use core::time::Duration;
+#[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+#[cfg(feature = "std")]
 use tokio::sync::mpsc;
 
 /// Default channel capacity for sync producers and consumers.
@@ -45,6 +47,7 @@ pub trait AimDbBuilderSyncExt {
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
+    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use std::sync::Arc;
@@ -121,6 +124,7 @@ impl AimDbSyncExt for AimDb {
 /// Call `detach()` explicitly to ensure clean shutdown. If the handle
 /// is dropped without calling `detach()`, a warning will be logged
 /// and an emergency shutdown will be attempted.
+#[cfg(feature = "std")]
 pub struct AimDbHandle {
     /// Thread handle for the runtime thread
     thread_handle: Option<JoinHandle<()>>,
@@ -139,6 +143,7 @@ pub struct AimDbHandle {
 #[derive(Debug, Clone, Copy)]
 struct ShutdownSignal;
 
+#[cfg(feature = "std")]
 impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
     pub(crate) fn new_from_builder(builder: AimDbBuilder) -> SyncResult<Self> {

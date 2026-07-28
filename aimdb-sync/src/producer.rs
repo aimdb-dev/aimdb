@@ -2,9 +2,10 @@
 
 use crate::{SyncError, SyncResult};
 use aimdb_core::DbResult;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::sync::Arc;
+use core::fmt::Debug;
+use core::time::Duration;
+#[cfg(feature = "std")]
 use tokio::sync::{mpsc, oneshot};
 
 /// Synchronous producer for records of type `T`.

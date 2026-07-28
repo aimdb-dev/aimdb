@@ -86,6 +86,8 @@ build:
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
+	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
+	cargo build --package aimdb-sync --no-default-features
 	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
 	cargo build --package aimdb-codegen
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
