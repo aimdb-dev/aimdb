@@ -154,6 +154,14 @@ impl ClientHandle {
     /// terminal `Err(`[`RpcError`]`)` item, letting the caller distinguish a
     /// denied subscription (do not retry) from a disconnect-shaped stream end
     /// (retry to resume).
+    ///
+    /// Late-join snapshots arrive first, the last of them flagged
+    /// [`SubUpdate::snapshot_end`] with the burst's total loss in `skipped` (see
+    /// [`Session::snapshots`](super::Session::snapshots)). Read that flag to
+    /// close out the initial state, but drive the stream normally rather than
+    /// looping *until* it: a subscription matching no records never emits one,
+    /// and neither does one whose final snapshot frame was lost — the stream
+    /// stays open and simply proceeds to live events.
     pub fn subscribe(
         &self,
         topic: impl Into<String>,

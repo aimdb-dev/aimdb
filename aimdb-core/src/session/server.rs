@@ -235,23 +235,38 @@ pub async fn run_session<C, D>(
                                 for (i, (snap_topic, data)) in snaps.into_iter().enumerate() {
                                     seq += 1;
                                     out.clear();
-                                    if codec
-                                        .encode(
-                                            Outbound::Snapshot {
-                                                sub: &sub_id,
-                                                seq,
-                                                // The client reserves a sink slot
-                                                // for this one, so the burst's
-                                                // loss total always lands.
-                                                last: i + 1 == total,
-                                                topic: &snap_topic,
-                                                data,
-                                            },
-                                            &mut out,
-                                        )
-                                        .is_ok()
-                                        && conn.send(&out).await.is_err()
-                                    {
+                                    let encoded = codec.encode(
+                                        Outbound::Snapshot {
+                                            sub: &sub_id,
+                                            seq,
+                                            // The client reserves a sink slot
+                                            // for this one, so the burst's
+                                            // loss total always lands.
+                                            last: i + 1 == total,
+                                            topic: &snap_topic,
+                                            data,
+                                        },
+                                        &mut out,
+                                    );
+                                    if let Err(_e) = encoded {
+                                        // A record whose serialized bytes aren't
+                                        // valid for this envelope — broken for
+                                        // every read of it, not just here, so say
+                                        // so rather than dropping it in silence.
+                                        // `seq` already advanced, so the client
+                                        // still counts it as loss; if this was the
+                                        // burst's last snapshot the `last` flag
+                                        // goes with it and no `snapshot_end`
+                                        // reaches the subscriber.
+                                        log_warn!(
+                                            "snapshot encode failed, skipping: sub={} topic={} err={:?}",
+                                            sub_id,
+                                            snap_topic,
+                                            _e
+                                        );
+                                        continue;
+                                    }
+                                    if conn.send(&out).await.is_err() {
                                         send_failed = true;
                                         break;
                                     }

@@ -464,8 +464,16 @@ pub trait Session: Send {
     /// consumer. Its `skipped` then carries the burst's whole loss, letting a
     /// subscriber distinguish a complete initial state from a truncated one
     /// *without* waiting for a live event, which a static subscription may
-    /// never produce. A `topic` matching no records emits no burst, and so no
-    /// such update.
+    /// never produce.
+    ///
+    /// That covers the slow consumer, which is the case worth engineering for,
+    /// but it is not an unconditional promise and a subscriber must not *block*
+    /// on it: no such update arrives when `topic` matches no records (there is
+    /// no burst), nor when the final snapshot fails to encode or its frame is
+    /// rejected as malformed — the flag rides that frame and is lost with it.
+    /// Loss accounting itself survives all of these (the shortfall still folds
+    /// into the next delivered update's `skipped`); only the end-of-burst
+    /// signal is missing. Treat end-of-stream as terminal too.
     fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
         let _ = topic;
         Vec::new()

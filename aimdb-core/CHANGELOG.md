@@ -45,17 +45,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Because a gap only reaches a subscriber on an update that is *actually
   delivered*, mid-burst snapshots now stop one slot short of filling the sink,
-  reserving it for the flagged final snapshot. That one is therefore always
-  delivered, arriving as the single update with the new
-  `SubUpdate::snapshot_end` set and carrying the burst's whole loss count. A
-  subscriber can tell a complete initial state from a truncated one the moment
-  the burst ends — without waiting for a live event, which a *static*
-  subscription may never produce. (A `topic` matching no records emits no burst,
-  so nothing carries the flag.)
+  reserving it for the flagged final snapshot — which therefore survives an
+  overrun, arriving as the single update with the new `SubUpdate::snapshot_end`
+  set and carrying the burst's whole loss count. A subscriber can tell a
+  complete initial state from a truncated one the moment the burst ends, without
+  waiting for a live event that a *static* subscription may never produce.
+
+  The flag is not an unconditional promise, so do not *block* on it: it rides
+  the final snapshot's frame and is lost with it if that frame fails to encode
+  or is rejected as malformed, and a `topic` matching no records emits no burst
+  at all. Loss accounting survives all of these — only the end-of-burst signal
+  goes missing.
 
   Also fixes two smaller leaks on that path: a snapshot dropped by an encode
-  failure is now counted as loss, and a snapshot for a subscription whose
-  receiver is gone now prunes the sub instead of lingering.
+  failure is now counted as loss (and logged, rather than skipped in silence),
+  and a snapshot for a subscription whose receiver is gone now prunes the sub
+  instead of lingering.
 
   Wire: `snap` frames carry `"seq"` (one without it is `Malformed`) and the
   burst's last frame adds `"last":true`; mid-burst frames are byte-identical to

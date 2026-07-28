@@ -166,19 +166,36 @@ next delivered update is the first live event — and a **static** subscription
 may never produce one, leaving the consumer unable to tell a complete initial
 state from a truncated one. So the burst is explicitly terminated: the server
 flags its final snapshot (`"last":true`), and the client holds one sink slot in
-reserve through the burst so that frame is always deliverable. Because only the
-demux loop sends, an observed free slot cannot be taken by anyone else — the
-final delivery is infallible, not merely likely.
+reserve through the burst so that frame always has somewhere to land. Against
+sink pressure this is infallible rather than merely likely: only the demux loop
+sends on that channel and the consumer only removes, so a slot observed free
+stays free; each subscription has its own channel; and the server emits the
+whole burst inline in the Subscribe handler before starting the event pump, so
+none of that subscription's events can interleave and take the slot.
 
 The subscriber therefore sees exactly one update with `SubUpdate::snapshot_end`
 set, carrying the burst's whole loss count in `skipped`, and can audit "one
 snapshot per matched record" the moment the burst ends. Backpressure was
 rejected as the alternative: the client demux loop also carries every other
 subscription and every pending RPC on the connection, so blocking it on a full
-sink would deadlock any consumer that awaits an RPC before draining. The one
-remaining gap is definitional — a pattern matching *no* records emits no burst,
-so "nothing matched" and "nothing yet" stay indistinguishable on a silent
-subscription.
+sink would deadlock any consumer that awaits an RPC before draining.
+
+The reserve bounds *sink overflow*, which is the failure this design exists to
+fix, and nothing else. The flag rides the final snapshot's frame, so it is lost
+whenever that frame is: if the payload fails to encode (`log_warn` + skip) or
+the client rejects the frame as malformed, no `snapshot_end` arrives — and a
+pattern matching *no* records emits no burst at all. Loss accounting survives
+all three (the shortfall still folds into the next delivered update's
+`skipped`); only the end-of-burst signal goes missing, so consumers must drive
+the stream normally rather than looping until the flag. Hardening these was
+weighed and declined: requiring `"last"` on every frame would tax every
+mid-burst snapshot to guard a version skew the release process already
+prevents, and a one-frame server-side lookahead would buy an encode failure
+that must *also* land on the burst's last record of a *static* subscription
+before it differs from an ordinary broken record. Closing them properly needs a
+terminator independent of the snapshot payloads — the burst size `N` in the
+subscribe ack, or a dedicated `snapend` frame — deferred until something
+demands it.
 
 ### 3.4 Query / list result shapes (DECIDED)
 
