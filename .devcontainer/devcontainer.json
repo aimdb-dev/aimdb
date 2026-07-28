@@ -2,6 +2,13 @@
   "name": "Rust Dev-Container",
   "image": "ghcr.io/aimdb-dev/devcontainer:latest",
   "workspaceFolder": "/aimdb",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": true,
+      "installDockerBuildx": true,
+      "dockerDashComposeVersion": "v2"
+    }
+  },
   "runArgs": [
     "--privileged",
     "--network=host",
