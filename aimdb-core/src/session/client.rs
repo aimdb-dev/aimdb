@@ -226,6 +226,21 @@ impl Drop for DrainOnExit<'_> {
     }
 }
 
+/// How an inbound update competes for room in its subscription's sink.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// A live event: dropped when the sink is full.
+    Event,
+    /// A snapshot with more of its burst to come: dropped when the sink is
+    /// full, and additionally stops one slot short so [`Delivery::BurstEnd`]
+    /// always fits.
+    BurstBody,
+    /// The burst's final snapshot: guaranteed delivery into the slot
+    /// [`Delivery::BurstBody`] kept free, carrying the burst's whole loss count
+    /// and [`SubUpdate::snapshot_end`].
+    BurstEnd,
+}
+
 /// Route one subscription update (snapshot or event) to its sink, folding any
 /// loss since the last delivery into its [`SubUpdate::skipped`].
 ///
@@ -235,6 +250,11 @@ impl Drop for DrainOnExit<'_> {
 /// bumping the counter before dropping. So one delta against the last delivered
 /// seq captures every loss point, plus any prior local full-channel drop that
 /// left `last_seq` behind.
+///
+/// A gap only *reaches* the subscriber on an update that is actually delivered,
+/// which is why the burst reserves a slot for its final snapshot: a burst
+/// truncated at the tail would otherwise stay silent until some later event
+/// closed the sequence, and a static subscription may never produce one.
 fn deliver(
     subs: &mut HashMap<String, Sender<Result<SubUpdate, RpcError>>>,
     last_seq: &mut HashMap<String, u64>,
@@ -242,15 +262,24 @@ fn deliver(
     seq: u64,
     topic: Option<Arc<str>>,
     data: Payload,
+    mode: Delivery,
 ) {
     let prev = last_seq.get(sub).copied().unwrap_or(0);
     let skipped = seq.saturating_sub(prev + 1);
     // `None` here is a late update for a dropped sub — ignore.
     if let Some(tx) = subs.get(sub) {
+        // Hold the last slot back for the burst's final snapshot. Only this
+        // loop ever sends, so `len()` can only *fall* before the `try_send`
+        // below — a slot seen free here stays free, making that final delivery
+        // infallible rather than merely likely.
+        if mode == Delivery::BurstBody && tx.capacity().is_some_and(|cap| tx.len() + 1 >= cap) {
+            return; // folds into the next delivered update's `skipped`
+        }
         let update = SubUpdate {
             topic,
             data,
             skipped,
+            snapshot_end: mode == Delivery::BurstEnd,
         };
         match tx.try_send(Ok(update)) {
             // Delivered — advance the per-sub cursor.
@@ -506,15 +535,19 @@ where
                         seq,
                         topic.map(Arc::from),
                         data,
+                        Delivery::Event,
                     ),
                     // Snapshots ride the same accounting as events (they share
                     // the subscription's `seq` space), so a late-join burst that
                     // overruns a slow consumer's sink is reported as `skipped`
-                    // instead of vanishing — "one snapshot per matched record"
-                    // stays checkable by the subscriber.
+                    // instead of vanishing. The burst's final snapshot is
+                    // delivered unconditionally, so "one snapshot per matched
+                    // record" is checkable the moment the burst ends — no live
+                    // event required.
                     Ok(Outbound::Snapshot {
                         sub,
                         seq,
+                        last,
                         topic,
                         data,
                     }) => deliver(
@@ -524,6 +557,11 @@ where
                         seq,
                         Some(Arc::from(topic)),
                         data,
+                        if last {
+                            Delivery::BurstEnd
+                        } else {
+                            Delivery::BurstBody
+                        },
                     ),
                     Ok(Outbound::Pong) => {}
                     // Explicit subscribe ack — informational; the sink already exists.

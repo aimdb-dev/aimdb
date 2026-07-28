@@ -9,12 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking, wire)
 
-- **`snap` frames now carry `seq`.** Late-join snapshots are numbered in the
-  subscription's sequence space (`1..=N`), and the first `event` continues at
-  `N + 1` rather than restarting at `1` — so a snapshot dropped by a slow
-  client is visible as a gap instead of vanishing (see `aimdb-core`). Clients
-  reading the golden frame shape must expect `"seq"` on `snap` and an event
-  sequence offset by the snapshot count.
+- **`snap` frames now carry `seq`, and the burst's last one carries `last`.**
+  Late-join snapshots are numbered in the subscription's sequence space
+  (`1..=N`), and the first `event` continues at `N + 1` rather than restarting
+  at `1` — so a snapshot dropped by a slow client is visible as a gap instead of
+  vanishing. The final `snap` of a burst adds `"last":true`, which the client
+  engine reserves a sink slot for; it surfaces as `SubUpdate::snapshot_end` and
+  closes out the initial state without needing a live event (see `aimdb-core`).
+  Clients reading the golden frame shape must expect `"seq"` on every `snap`,
+  `"last"` on the final one, and an event sequence offset by the snapshot count.
 
 ### Fixed
 

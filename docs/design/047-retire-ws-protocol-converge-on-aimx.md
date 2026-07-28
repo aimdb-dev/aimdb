@@ -73,7 +73,7 @@ AimX wire tags from `session/aimx/codec.rs`; ws-protocol messages from
 | Subscribe ack | `Subscribed{topics}` | `{"t":"subscribed","sub":S}` (**new**) | §3.2. |
 | Unsubscribe | `Unsubscribe{topics}` | `{"t":"unsub","sub":S}` | By sub id, not topic. |
 | Live data | `Data{topic,payload,ts}` | `{"t":"event","sub":S,"seq":N,"topic":T,"data":V}` | `topic` is **new**, present when the server tags it (always on WS; on wildcard subs elsewhere). Server-side `ts` is dropped — timestamps belong to the record layer / query results. `seq` is new for WS clients (drop detection). |
-| Late-join snapshot | `Snapshot{topic,payload}` | `{"t":"snap","sub":S,"seq":N,"topic":T,"data":V}` | `sub` and `seq` are **new** (§3.3). `seq` shares the subscription's event sequence space: the burst is `1..=N` and the first `event` continues at `N+1`, so a dropped snapshot is a detectable gap. |
+| Late-join snapshot | `Snapshot{topic,payload}` | `{"t":"snap","sub":S,"seq":N,"topic":T,"data":V}`, final frame adds `"last":true` | `sub`, `seq` and `last` are **new** (§3.3). `seq` shares the subscription's event sequence space: the burst is `1..=N` and the first `event` continues at `N+1`, so a dropped snapshot is a detectable gap. `last` terminates the burst so the gap lands even with no event. |
 | Client write | `Write{topic,payload}` | `{"t":"write","topic":T,"payload":V}` | Identical semantics (fire-and-forget, producer/arbiter path). |
 | Keepalive | `Ping`/`Pong` | `{"t":"ping"}` / `{"t":"pong"}` | Identical. |
 | Discovery | `ListTopics` over a raw socket | `record.list` req over a raw socket | UI's `discoverTopics` and `WasmDb.discover` reissue as AimX. |
@@ -158,11 +158,27 @@ pending RPC on the connection, so a subscriber that (say) awaits an RPC before
 draining would deadlock itself. So snapshots take the same route as events:
 they are numbered in the subscription's sequence space (`1..=N`, events
 continuing at `N+1`), dropped on a full sink, and the shortfall folds into the
-next delivered update's `SubUpdate::skipped`. Numbering them jointly with
-events is what makes a loss at the *tail* of the burst recoverable — the first
-event's `seq` reveals it. The residual blind spot is a tail loss on a
-subscription that never fires another event; closing that needs an explicit
-end-of-burst marker, deliberately deferred.
+next delivered update's `SubUpdate::skipped`.
+
+Numbering alone is not enough, because a gap only *reaches* the subscriber on an
+update that is actually delivered. If the burst is truncated at its tail, the
+next delivered update is the first live event — and a **static** subscription
+may never produce one, leaving the consumer unable to tell a complete initial
+state from a truncated one. So the burst is explicitly terminated: the server
+flags its final snapshot (`"last":true`), and the client holds one sink slot in
+reserve through the burst so that frame is always deliverable. Because only the
+demux loop sends, an observed free slot cannot be taken by anyone else — the
+final delivery is infallible, not merely likely.
+
+The subscriber therefore sees exactly one update with `SubUpdate::snapshot_end`
+set, carrying the burst's whole loss count in `skipped`, and can audit "one
+snapshot per matched record" the moment the burst ends. Backpressure was
+rejected as the alternative: the client demux loop also carries every other
+subscription and every pending RPC on the connection, so blocking it on a full
+sink would deadlock any consumer that awaits an RPC before draining. The one
+remaining gap is definitional — a pattern matching *no* records emits no burst,
+so "nothing matched" and "nothing yet" stay indistinguishable on a silent
+subscription.
 
 ### 3.4 Query / list result shapes (DECIDED)
 

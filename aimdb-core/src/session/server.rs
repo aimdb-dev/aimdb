@@ -228,9 +228,11 @@ pub async fn run_session<C, D>(
                                 // by the encode failure below) leaves a hole the
                                 // client reports as `skipped`, and a loss at the
                                 // tail of the burst surfaces on the first event.
+                                let snaps = session.snapshots(&topic);
+                                let total = snaps.len();
                                 let mut seq: u64 = 0;
                                 let mut send_failed = false;
-                                for (snap_topic, data) in session.snapshots(&topic) {
+                                for (i, (snap_topic, data)) in snaps.into_iter().enumerate() {
                                     seq += 1;
                                     out.clear();
                                     if codec
@@ -238,6 +240,10 @@ pub async fn run_session<C, D>(
                                             Outbound::Snapshot {
                                                 sub: &sub_id,
                                                 seq,
+                                                // The client reserves a sink slot
+                                                // for this one, so the burst's
+                                                // loss total always lands.
+                                                last: i + 1 == total,
                                                 topic: &snap_topic,
                                                 data,
                                             },

@@ -44,6 +44,9 @@ struct Frame<'a> {
     id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     seq: Option<u64>,
+    /// Marks the final `snap` of a late-join burst; absent everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last: Option<bool>,
     #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
     method: Option<&'a str>,
     #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
@@ -69,6 +72,7 @@ impl<'a> Frame<'a> {
             t,
             id: None,
             seq: None,
+            last: None,
             method: None,
             topic: None,
             sub: None,
@@ -235,6 +239,7 @@ impl EnvelopeCodec for AimxCodec {
             Outbound::Snapshot {
                 sub,
                 seq,
+                last,
                 topic,
                 data,
             } => {
@@ -242,6 +247,9 @@ impl EnvelopeCodec for AimxCodec {
                 let mut frame = Frame::tagged("snap");
                 frame.sub = Some(sub);
                 frame.seq = Some(seq);
+                // Only the burst's final frame carries it, so mid-burst frames
+                // stay byte-identical to before.
+                frame.last = last.then_some(true);
                 frame.topic = Some(topic);
                 frame.data = Some(raw);
                 write_frame(out, &frame)
@@ -315,6 +323,7 @@ impl EnvelopeCodec for AimxCodec {
             "snap" => Ok(Outbound::Snapshot {
                 sub: f.sub.ok_or(CodecError::Malformed)?,
                 seq: f.seq.ok_or(CodecError::Malformed)?,
+                last: f.last.unwrap_or(false),
                 topic: f.topic.ok_or(CodecError::Malformed)?,
                 data: payload_of(f.data),
             }),
@@ -522,19 +531,43 @@ mod tests {
         let frame = encode_outbound(Outbound::Snapshot {
             sub: "8",
             seq: 3,
+            last: false,
             topic: "temp.berlin",
             data: payload(r#"{"c":18.0}"#),
         });
+        // A mid-burst snapshot omits `last` entirely.
+        assert_eq!(
+            frame,
+            br#"{"t":"snap","seq":3,"topic":"temp.berlin","sub":"8","data":{"c":18.0}}"#
+        );
         match AimxCodec.decode_outbound(&frame).unwrap() {
             Outbound::Snapshot {
                 sub,
                 seq,
+                last,
                 topic,
                 data,
             } => {
-                assert_eq!((sub, seq, topic), ("8", 3, "temp.berlin"));
+                assert_eq!((sub, seq, last, topic), ("8", 3, false, "temp.berlin"));
                 assert_eq!(&data[..], br#"{"c":18.0}"#);
             }
+            _ => panic!("expected Snapshot"),
+        }
+    }
+
+    /// The burst's final snapshot is flagged, so the client can attach the
+    /// burst's loss total to an update it is guaranteed to deliver.
+    #[test]
+    fn last_snapshot_of_a_burst_is_flagged() {
+        let frame = encode_outbound(Outbound::Snapshot {
+            sub: "8",
+            seq: 4,
+            last: true,
+            topic: "temp.berlin",
+            data: payload("1"),
+        });
+        match AimxCodec.decode_outbound(&frame).unwrap() {
+            Outbound::Snapshot { seq, last, .. } => assert_eq!((seq, last), (4, true)),
             _ => panic!("expected Snapshot"),
         }
     }

@@ -198,10 +198,19 @@ impl EnvelopeCodec for LineCodec {
             Outbound::Snapshot {
                 sub,
                 seq,
+                last,
                 topic,
                 data,
             } => {
-                format!("SNAP\n{}\n{}\n{}\n{}", sub, seq, topic, utf8(&data)?)
+                // `L` marks the burst's final snapshot, `-` a mid-burst one.
+                format!(
+                    "SNAP\n{}\n{}\n{}\n{}\n{}",
+                    sub,
+                    seq,
+                    if last { "L" } else { "-" },
+                    topic,
+                    utf8(&data)?
+                )
             }
             Outbound::Pong => "PONG".to_string(),
             Outbound::Subscribed { sub } => format!("SUBSCRIBED\n{}", sub),
@@ -256,10 +265,12 @@ impl EnvelopeCodec for LineCodec {
             "SNAP" => {
                 let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (seq, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (last, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Snapshot {
                     sub,
                     seq: seq.parse().map_err(|_| CodecError::Malformed)?,
+                    last: last == "L",
                     topic,
                     data: payload_from(data),
                 })
@@ -564,12 +575,14 @@ async fn failed_subscribe_ends_stream_via_ack() {
 /// event `seq` then restarted at 1, no later event could reveal which initial
 /// states were lost — quietly breaking "one snapshot per matched record".
 ///
-/// Snapshots now share the subscription's `seq` space (`1..=N`, events continue
-/// at `N + 1`), so every dropped snapshot is reported as `skipped` on the next
-/// delivered update — including the tail of the burst, which the first event
-/// accounts for.
+/// Sharing the `seq` space fixed that only once *some* later update arrived, so
+/// this test deliberately checks the whole accounting **before any event is
+/// injected**: a static subscription may never produce one, and a consumer must
+/// still be able to tell a complete initial state from a truncated one. The
+/// engine therefore reserves a sink slot for the burst's final snapshot, which
+/// arrives flagged `snapshot_end` and carrying the burst's whole loss count.
 #[tokio::test]
-async fn oversized_snapshot_burst_surfaces_as_a_gap() {
+async fn oversized_snapshot_burst_completes_without_a_live_event() {
     let (listener, dialer) = transport_pair();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubUpdate>();
     let dispatch = Arc::new(SnapshotDispatch {
@@ -623,9 +636,40 @@ async fn oversized_snapshot_burst_surfaces_as_a_gap() {
         delivered.len()
     );
 
-    // What did land is the contiguous head of the burst, in order and untagged
-    // by loss — the drops are all at the tail.
-    for (i, update) in delivered.iter().enumerate() {
+    // --- everything below holds with NO event ever produced ----------------
+
+    // The burst terminates on an update the subscriber is guaranteed to see,
+    // and it is the *last* thing delivered — not buried mid-stream.
+    let (end_idx, end) = delivered
+        .iter()
+        .enumerate()
+        .find(|(_, u)| u.snapshot_end)
+        .expect(
+            "the burst must deliver its final snapshot even when it overran the sink — \
+             otherwise a static subscription can never tell truncated from complete",
+        );
+    assert_eq!(
+        end_idx,
+        delivered.len() - 1,
+        "the snapshot_end update must be the last one delivered"
+    );
+    assert_eq!(
+        delivered.iter().filter(|u| u.snapshot_end).count(),
+        1,
+        "exactly one update may close the burst"
+    );
+
+    // It is genuinely the burst's last record, so "initial state complete"
+    // means what it says.
+    assert_eq!(
+        end.topic.as_deref(),
+        Some(format!("rec.{SNAPSHOT_RECORDS}").as_str())
+    );
+    assert_eq!(&*end.data, format!("snap#{SNAPSHOT_RECORDS}").as_bytes());
+
+    // What landed before it is the contiguous head of the burst; all the loss
+    // is folded into the closing update.
+    for (i, update) in delivered[..end_idx].iter().enumerate() {
         assert_eq!(
             update.topic.as_deref(),
             Some(format!("rec.{}", i + 1).as_str()),
@@ -637,10 +681,22 @@ async fn oversized_snapshot_burst_surfaces_as_a_gap() {
             "the delivered head of the burst is contiguous"
         );
     }
+    assert!(
+        end.skipped > 0,
+        "this burst overran the sink, so the closing update must report the loss"
+    );
 
-    // The sink is empty again, so one live event gets through — and it must
-    // report every snapshot lost at the tail of the burst. Pre-fix this event
-    // arrived with `skipped == 0`.
+    // The whole point, stated as a balance the consumer can compute itself,
+    // without waiting for anything further: every matched record is either
+    // delivered or accounted for as skipped.
+    let reported: u64 = delivered.iter().map(|u| u.skipped).sum();
+    assert_eq!(
+        delivered.len() as u64 + reported,
+        SNAPSHOT_RECORDS as u64,
+        "every matched record must be either delivered or reported lost"
+    );
+
+    // --- and the sequence is closed, so live events resume clean ------------
     event_tx
         .send(SubUpdate::new(payload_from("live")))
         .expect("subscription stream should still be feeding");
@@ -651,19 +707,10 @@ async fn oversized_snapshot_burst_surfaces_as_a_gap() {
         .expect("a live event must not be a terminal error");
 
     assert_eq!(&*event.data, b"live");
+    assert!(!event.snapshot_end, "a live event does not close a burst");
     assert_eq!(
-        event.skipped,
-        (SNAPSHOT_RECORDS - delivered.len()) as u64,
-        "the first event must report the snapshots dropped at the tail of the burst"
-    );
-
-    // The whole point, stated as a balance: every matched record is either
-    // delivered or accounted for as skipped — nothing goes missing quietly.
-    let reported: u64 = delivered.iter().map(|u| u.skipped).sum::<u64>() + event.skipped;
-    assert_eq!(
-        delivered.len() as u64 + reported,
-        SNAPSHOT_RECORDS as u64,
-        "every matched record must be either delivered or reported lost"
+        event.skipped, 0,
+        "the closing snapshot already accounted for the burst; the event adds no phantom gap"
     );
 
     drop(handle);

@@ -80,6 +80,8 @@ pub struct SubUpdate {
     pub data: Payload,
     /// Count of skipped records
     pub skipped: u64,
+    /// Set on the last update of the late-join snapshot burst, carrying its total `skipped`
+    pub snapshot_end: bool,
 }
 
 impl SubUpdate {
@@ -89,6 +91,7 @@ impl SubUpdate {
             topic: None,
             data,
             skipped: 0,
+            snapshot_end: false,
         }
     }
 
@@ -98,6 +101,7 @@ impl SubUpdate {
             topic: Some(topic),
             data,
             skipped: 0,
+            snapshot_end: false,
         }
     }
 
@@ -106,6 +110,13 @@ impl SubUpdate {
     /// subscribe-stream fold can attach a buffer's `BufferLagged` count.
     pub fn with_skipped(mut self, n: u64) -> Self {
         self.skipped = n;
+        self
+    }
+
+    /// Mark this update as the last of the late-join snapshot burst (see
+    /// [`snapshot_end`](Self::snapshot_end)).
+    pub fn with_snapshot_end(mut self) -> Self {
+        self.snapshot_end = true;
         self
     }
 }
@@ -320,9 +331,14 @@ pub enum Outbound<'a> {
         /// subscription's [`Event`](Outbound::Event)s: the burst is numbered
         /// `1..=N` and the first event continues at `N + 1`. So a snapshot lost
         /// anywhere between here and the subscriber surfaces as a gap in the
-        /// next delivered update's [`SubUpdate::skipped`] — including a loss at
-        /// the tail of the burst, which the first event reveals.
+        /// next delivered update's [`SubUpdate::skipped`].
         seq: u64,
+        /// Set on the last snapshot of the burst, so the loss total lands on an
+        /// update the subscriber is *guaranteed* to see. Without it a burst
+        /// truncated at its tail would stay silent until some later event
+        /// happened to close the sequence — which on a static subscription may
+        /// be never. The client engine reserves a sink slot for this frame.
+        last: bool,
         /// Topic the snapshot is for.
         topic: &'a str,
         /// Unparsed record value.
@@ -441,6 +457,15 @@ pub trait Session: Send {
     /// stream at `N + 1`, so "one snapshot per matched record" is *auditable*
     /// downstream rather than merely intended: any snapshot dropped in transit
     /// shows up as [`SubUpdate::skipped`] on the next delivered update.
+    ///
+    /// The burst's last snapshot is flagged, reaching the subscriber as the one
+    /// update with [`SubUpdate::snapshot_end`] set — the client engine reserves
+    /// a sink slot so it lands even when the rest of the burst overran a slow
+    /// consumer. Its `skipped` then carries the burst's whole loss, letting a
+    /// subscriber distinguish a complete initial state from a truncated one
+    /// *without* waiting for a live event, which a static subscription may
+    /// never produce. A `topic` matching no records emits no burst, and so no
+    /// such update.
     fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
         let _ = topic;
         Vec::new()

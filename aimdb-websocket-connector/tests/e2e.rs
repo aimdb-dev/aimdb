@@ -300,10 +300,11 @@ async fn server_late_join_snapshot() {
     // The snapshot rides between the ack and the first event, tagged with the
     // subscription that triggered it and numbered in that subscription's `seq`
     // space (events continue after the burst) so a dropped snapshot shows up as
-    // a gap rather than vanishing.
+    // a gap rather than vanishing. `last` closes the burst — here the only
+    // snapshot is also the final one.
     assert_eq!(
         ws_recv(&mut c).await,
-        json!({"t":"snap","sub":"4","seq":1,"topic":"sensors.temp","data":99})
+        json!({"t":"snap","sub":"4","seq":1,"last":true,"topic":"sensors.temp","data":99})
     );
 }
 
@@ -317,15 +318,25 @@ async fn server_wildcard_late_join_snapshots_per_match() {
     let mut c = ws_connect(addr).await;
     ws_send(&mut c, json!({"t":"sub","id":9,"topic":"sensors.#"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"9"}));
-    // One snapshot per cached record under the pattern (order is map order).
+    // One snapshot per cached record under the pattern (order is map order),
+    // numbered 1..=N with only the final one flagged `last` — that flag is what
+    // lets a client close out the burst without waiting for a live event.
     let mut snaps = Vec::new();
-    for _ in 0..2 {
+    let mut flags = Vec::new();
+    for i in 1..=2 {
         let s = ws_recv_tag(&mut c, "snap").await;
         assert_eq!(s["sub"], "9");
+        assert_eq!(s["seq"], i, "snapshots are numbered in burst order");
         snaps.push(s["topic"].as_str().unwrap().to_string());
+        flags.push(s["last"].as_bool().unwrap_or(false));
     }
     snaps.sort();
     assert_eq!(snaps, vec!["sensors.humidity", "sensors.temp"]);
+    assert_eq!(
+        flags,
+        vec![false, true],
+        "only the burst's final snapshot carries `last`"
+    );
 }
 
 #[tokio::test]
@@ -598,7 +609,7 @@ async fn golden_wire_frames() {
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"1"}));
     assert_eq!(
         ws_recv(&mut c).await,
-        json!({"t":"snap","sub":"1","seq":1,"topic":"t","data":5})
+        json!({"t":"snap","sub":"1","seq":1,"last":true,"topic":"t","data":5})
     );
 
     // The event continues the snapshot burst's `seq` (one snapshot, so `seq:2`)
