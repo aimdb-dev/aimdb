@@ -16,6 +16,7 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use async_channel::{Receiver, Sender};
 use futures_channel::oneshot;
@@ -99,17 +100,39 @@ fn bound_offline_queue(cmd_rx: &Receiver<ClientCmd>, cap: usize) {
 #[derive(Clone)]
 pub struct ClientHandle {
     cmd_tx: Sender<ClientCmd>,
+    /// Correlation ids, allocated caller-side and shared by every clone.
+    ///
+    /// The *caller* numbers its requests so that abandoning one is race-free:
+    /// the id is known before the command is queued, so the cancellation that
+    /// follows on the same FIFO channel always names an entry the engine has
+    /// already created (see [`CancelOnDrop`]). With engine-assigned ids there is
+    /// an unavoidable window in which the caller gives up before learning the id
+    /// and has nothing to cancel. Calls and subscriptions draw from this one
+    /// counter because they share an id space on the wire.
+    ///
+    /// `usize` rather than `u64`: 64-bit atomics are not native on every
+    /// supported MCU (thumbv7em), and the width only bounds the ids one process
+    /// can issue — 2^32 on a 32-bit target, all of them JSON-safe.
+    next_id: Arc<AtomicUsize>,
 }
 
-/// Commands the [`ClientHandle`] funnels to the engine (the engine assigns the
-/// correlation `id`, so it stays the sole owner of the demux map).
+/// Commands the [`ClientHandle`] funnels to the engine. The caller allocates the
+/// correlation `id`; the engine owns the demux maps keyed by it.
 enum ClientCmd {
     Call {
+        id: u64,
         method: String,
         params: Payload,
-        reply: oneshot::Sender<Result<Payload, RpcError>>,
+        reply: oneshot::Sender<CallReply>,
+    },
+    /// The caller abandoned call `id` (its future was dropped). Frees the
+    /// pending-call entry immediately, without waiting for a reply that may
+    /// never come.
+    CancelCall {
+        id: u64,
     },
     Subscribe {
+        id: u64,
         topic: String,
         events: Sender<Result<SubUpdate, RpcError>>,
     },
@@ -119,6 +142,31 @@ enum ClientCmd {
     },
 }
 
+/// Frees a call's engine-side state if the caller stops awaiting it.
+///
+/// A dropped [`ClientHandle::call`] future takes the reply channel's receiver
+/// with it, which the engine cannot observe: a peer that holds the connection
+/// open but never answers produces neither a `Reply` nor a disconnect. The guard
+/// turns that silent drop into a [`ClientCmd::CancelCall`], so reclamation is
+/// exact and immediate — it needs no later call, no keepalive tick, and no scan
+/// of the pending table.
+struct CancelOnDrop<'a> {
+    handle: &'a ClientHandle,
+    id: u64,
+    /// Cleared once the call resolves — a completed call has already left the
+    /// table, so cancelling it would only add channel traffic.
+    armed: bool,
+}
+
+impl Drop for CancelOnDrop<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // A closed channel means the engine is already gone with its table.
+            let _ = self.handle.enqueue(ClientCmd::CancelCall { id: self.id });
+        }
+    }
+}
+
 impl ClientHandle {
     /// Funnel a command to the engine. The channel is unbounded, so `try_send`
     /// never blocks and only fails once the engine has stopped (receiver closed).
@@ -126,21 +174,42 @@ impl ClientHandle {
         self.cmd_tx.try_send(cmd).map_err(|_| RpcError::Internal)
     }
 
+    /// Allocate the next correlation id. Monotonic across reconnects, so an id
+    /// is never reused by a later connection.
+    fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed) as u64
+    }
+
     /// One-shot RPC: send a request and await its single reply. Returns
     /// [`RpcError::Internal`] if the engine has stopped or the connection drops
     /// before the reply arrives.
+    ///
+    /// Cancel-safe: dropping this future (a timeout losing the race, an aborted
+    /// task) releases the engine's pending-call entry rather than leaving it
+    /// until the connection ends.
     pub async fn call(
         &self,
         method: impl Into<String>,
         params: Payload,
     ) -> Result<Payload, RpcError> {
+        let id = self.next_id();
         let (reply, rx) = oneshot::channel();
         self.enqueue(ClientCmd::Call {
+            id,
             method: method.into(),
             params,
             reply,
         })?;
-        rx.await.map_err(|_| RpcError::Internal)?
+        // Armed across the await only: from here, any exit path that isn't the
+        // reply itself tells the engine to drop the entry.
+        let mut cancel = CancelOnDrop {
+            handle: self,
+            id,
+            armed: true,
+        };
+        let reply = rx.await;
+        cancel.armed = false;
+        reply.map_err(|_| RpcError::Internal)?
     }
 
     /// Open a subscription; returns the stream of updates immediately (the engine
@@ -169,6 +238,7 @@ impl ClientHandle {
         let (events, rx) =
             async_channel::bounded::<Result<SubUpdate, RpcError>>(SUBSCRIBE_CHANNEL_CAP);
         self.enqueue(ClientCmd::Subscribe {
+            id: self.next_id(),
             topic: topic.into(),
             events,
         })?;
@@ -205,7 +275,12 @@ where
     C: EnvelopeCodec + 'static,
 {
     let (cmd_tx, cmd_rx) = async_channel::unbounded();
-    let handle = ClientHandle { cmd_tx };
+    let handle = ClientHandle {
+        cmd_tx,
+        // Ids start at 1: `0` stays free as a "no correlation" sentinel for
+        // protocols that want one.
+        next_id: Arc::new(AtomicUsize::new(1)),
+    };
     let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx, clock));
     (handle, fut)
 }
@@ -402,36 +477,14 @@ type CallReply = Result<Payload, RpcError>;
 /// channel.
 type PendingCalls = HashMap<u64, oneshot::Sender<CallReply>>;
 
-/// Drop every entry whose caller has gone away.
-///
-/// A caller that gives up on [`ClientHandle::call`] — a timeout racing the
-/// future, or any other cancellation — drops only its `oneshot::Receiver`; the
-/// matching sender stays in the engine's map, since a peer that holds the
-/// connection open but never answers produces neither a `Reply` nor a
-/// disconnect. `futures_channel` records the drop on the sender, so this sweep
-/// is a flag check per entry with no wakeups or allocation.
-fn prune_canceled(pending: &mut PendingCalls) {
-    pending.retain(|_, tx| !tx.is_canceled());
-}
-
-/// Register a call's reply channel, first reclaiming any abandoned entry.
-///
-/// Pruning here (rather than per frame) is what bounds the table: the sweep is
-/// O(in-flight calls) and runs only when a new call is issued, so a stream of
-/// timed-out requests over a live connection costs one lingering entry each
-/// until the next call, instead of one for the life of the connection.
-fn track_call(pending: &mut PendingCalls, id: u64, reply: oneshot::Sender<CallReply>) {
-    prune_canceled(pending);
-    pending.insert(id, reply);
-}
-
 /// Drive one dialed [`Connection`]: optional handshake, then `biased` demux of
 /// server frames (resolve `Reply` by `id`, route `Event`/`Snapshot` to their
 /// subscription channels) interleaved with caller commands. Pending state is
 /// per-connection: a disconnect fails outstanding calls (their `oneshot`
 /// senders drop → callers see [`RpcError::Internal`]). Calls the *caller*
-/// abandoned are reclaimed by [`prune_canceled`], so an unanswering peer that
-/// keeps the link open can't grow the table.
+/// abandoned arrive as [`ClientCmd::CancelCall`] and are removed by id in O(1),
+/// so an unanswering peer that keeps the link open can't grow the table — with
+/// no dependence on later traffic or on the keepalive being enabled.
 async fn drive_connection<C>(
     mut conn: Box<dyn Connection>,
     codec: &C,
@@ -442,7 +495,6 @@ async fn drive_connection<C>(
 where
     C: EnvelopeCodec + ?Sized,
 {
-    let mut next_id: u64 = 1;
     let mut pending: PendingCalls = HashMap::new();
     // sub-id → event sink. The sub-id is `id.to_string()` of the opening
     // request, matching the server's derivation so `Event.sub` routes back.
@@ -579,10 +631,6 @@ where
             }
 
             ClientStep::Keepalive => {
-                // Also the reclaim tick: a caller that times out and then stops
-                // issuing calls would otherwise hold its entries until the next
-                // call or the disconnect.
-                prune_canceled(&mut pending);
                 // `keepalive_timer` is `Some` whenever this step fires.
                 let interval_ms = keepalive_ms.unwrap_or(0);
                 let idle_ms = clock.now_nanos().saturating_sub(last_activity) / 1_000_000;
@@ -618,20 +666,19 @@ where
                 };
                 match cmd {
                     ClientCmd::Call {
+                        id,
                         method,
                         params,
                         reply,
                     } => {
                         // The caller may have given up while the command sat in
-                        // the queue — don't spend a wire request (or an `id`) on
-                        // a reply nobody is waiting for.
+                        // the queue — don't spend a wire request on a reply
+                        // nobody is waiting for. Its `CancelCall` is already
+                        // queued behind this one and will find nothing to free.
                         if reply.is_canceled() {
-                            prune_canceled(&mut pending);
                             continue;
                         }
-                        let id = next_id;
-                        next_id += 1;
-                        track_call(&mut pending, id, reply);
+                        pending.insert(id, reply);
                         out.clear();
                         let sent = codec
                             .encode_inbound(Inbound::Request { id, method, params }, &mut out)
@@ -644,9 +691,14 @@ where
                             return Ended::Disconnected;
                         }
                     }
-                    ClientCmd::Subscribe { topic, events } => {
-                        let id = next_id;
-                        next_id += 1;
+                    // The caller abandoned this call: drop its reply channel now
+                    // rather than holding it until a reply that may never arrive
+                    // (or the disconnect). A resolved or never-dispatched call
+                    // is simply absent — removing it is a no-op.
+                    ClientCmd::CancelCall { id } => {
+                        pending.remove(&id);
+                    }
+                    ClientCmd::Subscribe { id, topic, events } => {
                         subs.insert(id.to_string(), events);
                         out.clear();
                         let sent = codec
@@ -759,72 +811,175 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::{CodecError, PeerInfo, TransportResult};
+    use core::future::pending;
 
-    fn call_slot() -> (oneshot::Sender<CallReply>, oneshot::Receiver<CallReply>) {
-        oneshot::channel()
+    /// Sink connection: swallows every frame and never yields one, i.e. a peer
+    /// that keeps the link open and answers nothing.
+    #[derive(Default)]
+    struct SilentPeer {
+        peer: PeerInfo,
     }
 
-    /// A caller that gave up is reclaimed; one still awaiting its reply is not,
-    /// and stays deliverable.
-    #[test]
-    fn prune_canceled_drops_only_abandoned_calls() {
-        let mut pending = PendingCalls::new();
-        let (tx1, rx1) = call_slot();
-        let (tx2, rx2) = call_slot();
-        pending.insert(1, tx1);
-        pending.insert(2, tx2);
-
-        drop(rx1); // caller 1 timed out and dropped its `call` future
-        prune_canceled(&mut pending);
-
-        assert_eq!(pending.len(), 1, "the abandoned call must be reclaimed");
-        assert!(pending.contains_key(&2), "a live call must be kept");
-        pending
-            .remove(&2)
-            .unwrap()
-            .send(Ok(Payload::from(&b"ok"[..])))
-            .expect("the retained sender must still reach its caller");
-        drop(rx2);
-    }
-
-    /// Regression: a peer that keeps the connection open but never replies used
-    /// to cost one permanent entry per timed-out request, since only a `Reply`
-    /// or a disconnect removed one. Repeated timeouts must not grow the table.
-    #[test]
-    fn repeated_timeouts_do_not_grow_pending() {
-        let mut pending = PendingCalls::new();
-        for id in 1..=1_000u64 {
-            let (tx, rx) = call_slot();
-            track_call(&mut pending, id, tx);
-            // The caller times out immediately; nothing ever replies.
-            drop(rx);
-            assert!(
-                pending.len() <= 1,
-                "pending grew to {} at id {id}; abandoned calls are leaking",
-                pending.len()
-            );
+    impl Connection for SilentPeer {
+        fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
+            Box::pin(pending())
+        }
+        fn send<'a>(&'a mut self, _frame: &'a [u8]) -> BoxFut<'a, TransportResult<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn peer(&self) -> &PeerInfo {
+            &self.peer
         }
     }
 
-    /// The reclaim sweep must not disturb calls that are still outstanding, so
-    /// a long-lived call survives a burst of timed-out ones around it.
-    #[test]
-    fn track_call_keeps_outstanding_calls_across_prunes() {
-        let mut pending = PendingCalls::new();
-        let (slow_tx, slow_rx) = call_slot();
-        track_call(&mut pending, 1, slow_tx);
+    /// Frames are never inspected in these tests — only the pending-call
+    /// bookkeeping is.
+    struct NullCodec;
 
-        for id in 2..=100u64 {
-            let (tx, rx) = call_slot();
-            track_call(&mut pending, id, tx);
-            drop(rx);
+    impl EnvelopeCodec for NullCodec {
+        fn decode(&self, _frame: &[u8]) -> Result<Inbound, CodecError> {
+            Err(CodecError::Malformed)
         }
+        fn encode(&self, _msg: Outbound<'_>, _out: &mut Vec<u8>) -> Result<(), CodecError> {
+            Ok(())
+        }
+        fn encode_inbound(&self, _msg: Inbound, _out: &mut Vec<u8>) -> Result<(), CodecError> {
+            Ok(())
+        }
+        fn decode_outbound<'a>(&self, _frame: &'a [u8]) -> Result<Outbound<'a>, CodecError> {
+            Err(CodecError::Malformed)
+        }
+    }
 
+    fn test_handle() -> (ClientHandle, Receiver<ClientCmd>) {
+        let (cmd_tx, cmd_rx) = async_channel::unbounded();
+        (
+            ClientHandle {
+                cmd_tx,
+                next_id: Arc::new(AtomicUsize::new(1)),
+            },
+            cmd_rx,
+        )
+    }
+
+    /// Poll a call once — enough to queue its command — then abandon it, which
+    /// is what a lost timeout race does to the future.
+    async fn abandon_call(handle: &ClientHandle, method: &'static str) {
+        let call = handle.call(method, Payload::from(&b"x"[..]));
         assert!(
-            pending.contains_key(&1),
-            "an outstanding call must survive the reclaim sweep"
+            tokio::time::timeout(core::time::Duration::ZERO, call)
+                .await
+                .is_err(),
+            "the call must not resolve"
         );
-        assert_eq!(pending.len(), 2, "only the outstanding calls remain");
-        drop(slow_rx);
+    }
+
+    /// The caller half of the reclaim path: abandoning a call queues a
+    /// `CancelCall` naming exactly that call, so the engine never has to guess
+    /// which entry died.
+    #[tokio::test]
+    async fn abandoning_a_call_queues_its_cancellation() {
+        let (handle, cmd_rx) = test_handle();
+        abandon_call(&handle, "one").await;
+
+        match cmd_rx.try_recv() {
+            Ok(ClientCmd::Call { id: 1, .. }) => {}
+            _ => panic!("the call must be queued first"),
+        }
+        match cmd_rx.try_recv() {
+            Ok(ClientCmd::CancelCall { id: 1 }) => {}
+            _ => panic!("abandoning the call must queue its cancellation"),
+        }
+        assert!(cmd_rx.is_empty(), "no other command is emitted");
+    }
+
+    /// A call that resolves normally must not also queue a cancellation — the
+    /// engine already dropped its entry when it routed the reply.
+    #[tokio::test]
+    async fn a_resolved_call_queues_no_cancellation() {
+        let (handle, cmd_rx) = test_handle();
+        let call = handle.call("one", Payload::from(&b"x"[..]));
+        let answer = async {
+            // Take the reply channel out of the queued command and answer it.
+            match cmd_rx.recv().await {
+                Ok(ClientCmd::Call { reply, .. }) => {
+                    let _ = reply.send(Ok(Payload::from(&b"ok"[..])));
+                }
+                _ => panic!("the call must be queued"),
+            }
+        };
+        let (reply, ()) = futures_util::future::join(call, answer).await;
+        assert_eq!(&*reply.expect("the call resolves"), b"ok");
+        assert!(
+            cmd_rx.is_empty(),
+            "a resolved call must not queue a cancellation"
+        );
+    }
+
+    /// Regression for the *concurrent* timeout batch: every call is issued and
+    /// tracked while its receiver is live, then all of them are abandoned at
+    /// once, with keepalive disabled and no later call to trigger a sweep.
+    ///
+    /// Each entry the engine frees drops its reply sender, which the (retained)
+    /// receiver observes as `Canceled` — so this asserts the table actually
+    /// empties rather than that some reclaim path merely ran. Pre-fix all 1000
+    /// entries stayed until the connection ended.
+    #[tokio::test]
+    async fn a_concurrent_batch_of_cancellations_frees_every_entry() {
+        const BATCH: u64 = 1_000;
+        let (cmd_tx, cmd_rx) = async_channel::unbounded::<ClientCmd>();
+        let config = ClientConfig {
+            reconnect: false,
+            // The point of the test: nothing but the cancellations can reclaim.
+            keepalive_interval: None,
+            ..Default::default()
+        };
+        let clock = crate::executor::test_support::NoopRuntimeOps;
+        let engine = drive_connection(
+            Box::new(SilentPeer::default()),
+            &NullCodec,
+            &cmd_rx,
+            &config,
+            &clock,
+        );
+
+        let exercise = async {
+            // All in flight at once: every receiver is alive as its call is
+            // tracked, so nothing is reclaimable until the batch is abandoned.
+            let mut replies = Vec::new();
+            for id in 1..=BATCH {
+                let (reply, rx) = oneshot::channel();
+                cmd_tx
+                    .try_send(ClientCmd::Call {
+                        id,
+                        method: String::from("hang"),
+                        params: Payload::from(&b"x"[..]),
+                        reply,
+                    })
+                    .expect("the channel is unbounded");
+                replies.push(rx);
+            }
+            // Then the whole batch times out.
+            for id in 1..=BATCH {
+                cmd_tx
+                    .try_send(ClientCmd::CancelCall { id })
+                    .expect("the channel is unbounded");
+            }
+            for (i, rx) in replies.into_iter().enumerate() {
+                assert!(
+                    rx.await.is_err(),
+                    "call {} was still held by the engine",
+                    i + 1
+                );
+            }
+        };
+
+        futures_util::pin_mut!(engine);
+        futures_util::pin_mut!(exercise);
+        match futures_util::future::select(engine, exercise).await {
+            futures_util::future::Either::Left(_) => panic!("the engine ended early"),
+            futures_util::future::Either::Right(((), _)) => {}
+        }
     }
 }

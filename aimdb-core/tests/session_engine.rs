@@ -846,15 +846,17 @@ async fn read_request(peer: &mut Box<dyn Connection>) -> (u64, String, String) {
     (id, method, parts.next().unwrap_or("").to_string())
 }
 
-/// Regression: callers that time out and drop their `call` future must not
-/// accumulate in the engine's pending-call map.
+/// Callers that time out and drop their `call` future must not accumulate in
+/// the engine's pending-call map.
 ///
 /// A `Reply` or a disconnect used to be the only things that removed an entry,
 /// so a peer holding the connection open while never answering (the shape the
 /// WASM bridge's `query_timeout_ms` produces) cost one live `oneshot::Sender`
-/// per timed-out request for the life of the connection. The engine now reclaims
-/// abandoned entries; this test drives that path end-to-end and pins the
-/// property it must not break — reply correlation still works afterwards.
+/// per timed-out request for the life of the connection. Each abandoned call now
+/// cancels itself by id; the emptying of the table is asserted in the engine's
+/// own unit tests (`session::client::tests`), which can see it. This drives the
+/// same path end-to-end and pins the property the reclaim must not break —
+/// reply correlation still works afterwards.
 #[tokio::test]
 async fn repeated_call_timeouts_leave_the_connection_usable() {
     let (mut listener, dialer) = transport_pair();
@@ -929,6 +931,66 @@ async fn a_call_abandoned_before_dispatch_is_never_sent() {
         method, "real",
         "an abandoned call must not be sent to the peer"
     );
+    peer.send(format!("REPLY\n{id}\nOK\npong").as_bytes())
+        .await
+        .expect("the pipe must stay open");
+    let reply = tokio::time::timeout(Duration::from_secs(2), answered)
+        .await
+        .expect("the answered call must resolve")
+        .expect("the call task must not panic")
+        .expect("the peer replied with OK");
+    assert_eq!(&*reply, b"pong");
+
+    drop(handle);
+    drop(peer);
+    let _ = client.await;
+}
+
+/// The concurrent shape of the same regression: every call is in flight (so
+/// none is reclaimable) and the whole batch then times out at once, with no
+/// later call and no keepalive to drive a sweep. Each abandoned call carries its
+/// own cancellation, so the engine frees all of them and stays usable.
+#[tokio::test]
+async fn a_concurrent_batch_of_timeouts_leaves_the_connection_usable() {
+    const BATCH: usize = 256;
+    let (mut listener, dialer) = transport_pair();
+    let (handle, client_fut) =
+        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let client = tokio::spawn(client_fut);
+    let mut peer = listener.accept().await.expect("the client must dial");
+
+    let batch: Vec<_> = (0..BATCH)
+        .map(|i| {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::timeout(
+                    Duration::from_millis(50),
+                    handle.call("hang", payload_from(&format!("{i}"))),
+                )
+                .await
+            })
+        })
+        .collect();
+
+    // Every request reaches the peer while its caller is still waiting.
+    for _ in 0..BATCH {
+        let (_, method, _) = read_request(&mut peer).await;
+        assert_eq!(method, "hang", "each request must reach the peer");
+    }
+    for task in batch {
+        assert!(
+            task.await.expect("the call task must not panic").is_err(),
+            "an unanswered call must not resolve"
+        );
+    }
+
+    // Correlation is intact after the batch was reclaimed.
+    let answered = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.call("ping", payload_from("hi")).await }
+    });
+    let (id, method, params) = read_request(&mut peer).await;
+    assert_eq!((method.as_str(), params.as_str()), ("ping", "hi"));
     peer.send(format!("REPLY\n{id}\nOK\npong").as_bytes())
         .await
         .expect("the pipe must stay open");

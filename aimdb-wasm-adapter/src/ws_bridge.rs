@@ -614,10 +614,10 @@ impl WsBridge {
                 let timeout =
                     WasmAdapter.sleep(core::time::Duration::from_millis(timeout_ms as u64));
                 futures_util::pin_mut!(call);
-                // Losing the race drops `call`, i.e. the reply channel's
-                // receiver. The engine reclaims its side on the next call or
-                // keepalive tick, so timing out against an unanswering peer
-                // doesn't accumulate pending entries for the connection's life.
+                // Losing the race drops `call`, which cancels the request in the
+                // engine (`ClientHandle::call` is cancel-safe: the dropped
+                // future frees its pending-call entry by id). Timing out against
+                // an unanswering peer therefore costs nothing per request.
                 match futures_util::future::select(call, timeout).await {
                     futures_util::future::Either::Left((reply, _)) => reply,
                     futures_util::future::Either::Right(((), _)) => {
