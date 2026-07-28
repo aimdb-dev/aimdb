@@ -176,8 +176,15 @@ impl BridgeShared {
 
 // ─── Transport: web_sys::WebSocket as Connection/Dialer ──────────────────
 
+/// Depth of the funnel between the JS message callback and the engine's `recv`.
+/// Bounded so a fast server (or a main thread stuck in synchronous JS) can't
+/// grow Rust-owned browser memory without limit before the engine's own bounded
+/// subscription sinks apply. Sized well above the engine's `SUBSCRIBE_CHANNEL_CAP`
+/// so an ordinary late-join snapshot burst passes through untouched.
+const FRAME_QUEUE_CAP: usize = 1024;
+
 /// Frames arriving from JS event callbacks, funneled to the engine's `recv`.
-type FrameRx = futures_channel::mpsc::UnboundedReceiver<Vec<u8>>;
+type FrameRx = futures_channel::mpsc::Receiver<Vec<u8>>;
 
 /// A dialed browser WebSocket serving the engine's [`Connection`] contract.
 struct WasmWsConnection {
@@ -279,7 +286,7 @@ impl Dialer for WasmWsDialer {
 
             // Frame funnel: onmessage pushes text frames; onclose closes it so
             // the engine's `recv` observes end-of-stream.
-            let (frame_tx, frames) = futures_channel::mpsc::unbounded::<Vec<u8>>();
+            let (mut frame_tx, frames) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
             // Open handshake: whichever of onopen/onclose fires first wins.
             let opened: Rc<RefCell<Option<futures_channel::oneshot::Sender<bool>>>> =
                 Rc::new(RefCell::new(None));
@@ -301,10 +308,26 @@ impl Dialer for WasmWsDialer {
             plain_callbacks.push(on_open);
 
             let on_message = {
-                let frame_tx = frame_tx.clone();
+                let mut frame_tx = frame_tx.clone();
                 Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
                     if let Some(text) = event.data().as_string() {
-                        let _ = frame_tx.unbounded_send(text.into_bytes());
+                        // A full funnel means the engine fell far enough behind
+                        // that we can no longer say *what* is being lost — a
+                        // reply, events across topics, part of a snapshot burst.
+                        // So don't drop frames: end the stream, which the engine
+                        // reads as a disconnect (failing pending calls rather
+                        // than leaving them unresolved) and redials. The pumps'
+                        // re-subscribe then re-syncs from scratch — the only
+                        // sound recovery for a loss of unknown shape.
+                        if let Err(e) = frame_tx.try_send(text.into_bytes()) {
+                            if e.is_full() {
+                                web_sys::console::warn_1(
+                                    &"WsBridge: frame queue full — dropping the connection to resync"
+                                        .into(),
+                                );
+                                frame_tx.close_channel();
+                            }
+                        }
                     }
                 }) as Box<dyn FnMut(web_sys::MessageEvent)>)
             };
