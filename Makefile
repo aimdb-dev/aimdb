@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test examples deny audit security publish publish-check readme-check codegen-drift check-no-sim
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -55,6 +55,7 @@ help:
 	@printf "  $(YELLOW)WASM Commands:$(NC)\n"
 	@printf "    wasm                 Build WASM adapter with wasm-pack\n"
 	@printf "    wasm-test            Run WASM tests in headless browser\n"
+	@printf "    wasm-test-deps       Install Chrome + matching chromedriver for wasm-test\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Convenience:$(NC)\n"
 	@printf "    all           Build everything\n"
@@ -640,8 +641,50 @@ wasm-test:
 		printf "$(YELLOW)  ⚠ wasm-pack not found, installing...$(NC)\n"; \
 		cargo install wasm-pack --locked; \
 	fi
-	cd aimdb-wasm-adapter && wasm-pack test --headless --chrome
+	@if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1; then \
+		printf "$(RED)  ✗ No Chrome/Chromium on PATH — headless WASM tests need a browser.$(NC)\n"; \
+		printf "$(YELLOW)    Run 'make wasm-test-deps' (or rebuild the devcontainer).$(NC)\n"; \
+		exit 1; \
+	fi
+	@if ! command -v chromedriver >/dev/null 2>&1; then \
+		printf "$(RED)  ✗ chromedriver not on PATH.$(NC)\n"; \
+		printf "$(YELLOW)    Run 'make wasm-test-deps' — the copy wasm-pack downloads itself$(NC)\n"; \
+		printf "$(YELLOW)    tracks Chrome stable and drifts out of sync with the installed browser.$(NC)\n"; \
+		exit 1; \
+	fi
+	cd aimdb-wasm-adapter && CHROMEDRIVER="$$(command -v chromedriver)" wasm-pack test --headless --chrome
 	@printf "$(GREEN)✓ WASM tests passed!$(NC)\n"
+
+# Installs Chrome plus the chromedriver build that matches its major version.
+# wasm-pack downloads a chromedriver on its own, but always the newest one, which
+# refuses to drive an older Chrome ("only supports Chrome version N").  Pinning the
+# driver to the installed browser is what keeps wasm-test reproducible.
+wasm-test-deps:
+	@printf "$(GREEN)Installing headless WASM test dependencies...$(NC)\n"
+	@if ! command -v google-chrome >/dev/null 2>&1; then \
+		printf "$(YELLOW)  → Installing google-chrome-stable$(NC)\n"; \
+		curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+			| sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg; \
+		echo "deb [arch=$$(dpkg --print-architecture) signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+			| sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null; \
+		sudo apt-get update -qq; \
+		sudo apt-get install -y -qq google-chrome-stable unzip; \
+	fi
+	@printf "$(YELLOW)  → Installing matching chromedriver$(NC)\n"
+	@set -e; \
+	major="$$(google-chrome --version | sed -E 's/[^0-9]*([0-9]+).*/\1/')"; \
+	url="$$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json \
+		| jq -r --arg m "$$major." '[.versions[] | select(.version | startswith($$m))] | last \
+			| .downloads.chromedriver[] | select(.platform == "linux64") | .url')"; \
+	if [ -z "$$url" ] || [ "$$url" = "null" ]; then \
+		printf "$(RED)  ✗ No chromedriver published for Chrome $$major$(NC)\n"; exit 1; \
+	fi; \
+	tmp="$$(mktemp -d)"; \
+	curl -fsSL -o "$$tmp/chromedriver.zip" "$$url"; \
+	unzip -oq "$$tmp/chromedriver.zip" -d "$$tmp"; \
+	sudo install -m 0755 "$$tmp/chromedriver-linux64/chromedriver" /usr/local/bin/chromedriver; \
+	rm -rf "$$tmp"
+	@printf "$(GREEN)✓ $$(google-chrome --version) / $$(chromedriver --version | cut -d' ' -f1-2)$(NC)\n"
 
 all: build test examples
 	@printf "$(GREEN)Build and test completed!$(NC)\n"
