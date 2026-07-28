@@ -1,6 +1,7 @@
 //! Synchronous consumer for typed records.
 
 use aimdb_core::buffer::BufferReader;
+use aimdb_core::{DbError, Reader};
 
 use crate::waiter::{BlockingBridge, Waiter};
 use crate::{SyncError, SyncResult};
@@ -53,7 +54,7 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     waiter: Waiter,
-    reader: Box<dyn BufferReader<T> + Send>,
+    reader: Reader<T>,
 }
 
 impl<T> SyncConsumer<T>
@@ -61,8 +62,16 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     /// Create a new sync consumer (internal use only)
-    pub(crate) fn new(waiter: Waiter, reader: Box<dyn BufferReader<T> + Send>) -> Self {
+    pub(crate) fn new(waiter: Waiter, reader: Reader<T>) -> Self {
         Self { waiter, reader }
+    }
+
+    async fn get_impl(reader: &mut Reader<T>) -> SyncResult<T> {
+        let res = reader.recv().await;
+        res.map_err(|e| match e {
+            DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
+            e => SyncError::Db(e),
+        })
     }
 
     /// Get a value, blocking until one is available.
@@ -98,9 +107,8 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get(&self) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-        rx.recv().map_err(|_| SyncError::RuntimeShutdown)
+    pub fn get(&mut self) -> SyncResult<T> {
+        self.waiter.block_on(Self::get_impl(&mut self.reader))
     }
 
     /// Get a value with a timeout.
@@ -139,12 +147,10 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_with_timeout(&self, timeout: Duration) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-        rx.recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => SyncError::GetTimeout,
-            mpsc::RecvTimeoutError::Disconnected => SyncError::RuntimeShutdown,
-        })
+    pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
+        let fut = tokio::time::timeout(timeout, Self::get_impl(&mut self.reader));
+        let res = self.waiter.block_on(fut);
+        res.unwrap_or_else(|_| Err(SyncError::GetTimeout))
     }
 
     /// Try to get a value without blocking.
@@ -179,11 +185,12 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn try_get(&self) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-        rx.try_recv().map_err(|e| match e {
-            mpsc::TryRecvError::Empty => SyncError::GetTimeout,
-            mpsc::TryRecvError::Disconnected => SyncError::RuntimeShutdown,
+    pub fn try_get(&mut self) -> SyncResult<T> {
+        let res = self.reader.try_recv();
+        res.map_err(|e| match e {
+            DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
+            DbError::BufferEmpty => SyncError::GetTimeout,
+            e => SyncError::Db(e),
         })
     }
 
@@ -226,17 +233,16 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest(&self) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-
-        // First, block until we have at least one value
-        let mut latest = rx.recv().map_err(|_| SyncError::RuntimeShutdown)?;
-
-        // Then drain all remaining values to get the most recent
-        while let Ok(value) = rx.try_recv() {
-            latest = value;
+    pub fn get_latest(&mut self) -> SyncResult<T> {
+        // 1) can simply sequence get and try_get -
+        //    no one else does it simultaneously thanks to &mut self
+        // 2) if draining ends up with an error, we follow the previous impl
+        //    and return the latest succesfully read value
+        // 3) potentially loops forever if producer keeps producing
+        let mut latest = self.get()?;
+        while let Ok(upd) = self.try_get() {
+            latest = upd;
         }
-
         Ok(latest)
     }
 
@@ -280,20 +286,12 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest_with_timeout(&self, timeout: Duration) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-
-        // First, block with timeout until we have at least one value
-        let mut latest = rx.recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => SyncError::GetTimeout,
-            mpsc::RecvTimeoutError::Disconnected => SyncError::RuntimeShutdown,
-        })?;
-
-        // Then drain all remaining values to get the most recent
-        while let Ok(value) = rx.try_recv() {
-            latest = value;
+    pub fn get_latest_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
+        // see internal comments for get_latest
+        let mut latest = self.get_with_timeout(timeout)?;
+        while let Ok(upd) = self.try_get() {
+            latest = upd;
         }
-
         Ok(latest)
     }
 }
