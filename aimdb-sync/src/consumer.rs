@@ -4,7 +4,6 @@ use crate::{SyncError, SyncResult};
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
-#[cfg(feature = "std")]
 use std::sync::mpsc;
 #[cfg(feature = "std")]
 use std::sync::Mutex;
