@@ -45,10 +45,8 @@
 //!
 //! ```no_run
 //! use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
-//! # #[cfg(feature = "std")]
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-//! # #[cfg(feature = "std")]
 //! use std::sync::Arc;
 //!
 //! #[derive(Debug, Clone)]
