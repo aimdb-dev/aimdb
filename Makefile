@@ -88,6 +88,16 @@ build:
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
 	cargo build --package aimdb-sync --no-default-features
+	@printf "$(YELLOW)  → Asserting no tokio in sync wrapper (no_std)$(NC)\n"
+	@out=$$(cargo tree -p aimdb-sync --no-default-features -e features,no-dev 2>&1) || { \
+		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
+		printf '%s\n' "$$out"; exit 1; \
+	}; \
+	if printf '%s\n' "$$out" | grep -qi tokio; then \
+		printf "$(RED)✗ tokio leaked into the no_std build$(NC)\n"; \
+		printf '%s\n' "$$out" | grep -i tokio; exit 1; \
+	fi
+	@printf "$(BLUE)✓ no_std graph is tokio-free$(NC)\n"
 	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
 	cargo build --package aimdb-codegen
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
