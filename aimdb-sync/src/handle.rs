@@ -123,7 +123,6 @@ impl AimDbSyncExt for AimDb {
 /// Call `detach()` explicitly to ensure clean shutdown. If the handle
 /// is dropped without calling `detach()`, a warning will be logged
 /// and an emergency shutdown will be attempted.
-#[cfg(feature = "std")]
 pub struct AimDbHandle {
     /// Thread handle for the runtime thread
     thread_handle: Option<JoinHandle<()>>,
