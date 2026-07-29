@@ -5,9 +5,7 @@ use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
-#[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
-#[cfg(feature = "std")]
 use tokio::sync::mpsc;
 
 /// Default channel capacity for sync producers and consumers.
@@ -52,7 +50,6 @@ pub trait AimDbBuilderSyncExt {
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)] struct MyData { value: f32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let mut builder = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter::new()?));

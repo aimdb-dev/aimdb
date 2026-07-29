@@ -43,7 +43,8 @@
 //!
 //! ## Quick Start
 //!
-//! ```no_run
+#![cfg_attr(feature = "std", doc = "```no_run")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
@@ -53,8 +54,6 @@
 //! struct Temperature {
 //!     celsius: f32,
 //! }
-//! // Guard againts the use of TokioAdapter in case of "std"
-//! # #[cfg(feature = "std")]
 //! # fn main() -> SyncResult<()> {
 //! // Build and attach database (NO #[tokio::main] NEEDED!)
 //! let adapter = Arc::new(TokioAdapter::new()?);
@@ -87,7 +86,8 @@
 //!
 //! Both `SyncProducer` and `SyncConsumer` can be cloned and shared across threads:
 //!
-//! ```no_run
+#![cfg_attr(feature = "std", doc = "```no_run")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! use std::thread;
 //! # use aimdb_sync::{SyncConsumer, SyncProducer};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
@@ -114,7 +114,8 @@
 //! Note: Cloning a `SyncConsumer` shares the same channel, so only one thread
 //! will receive each value. For independent subscriptions, create multiple consumers:
 //!
-//! ```no_run
+#![cfg_attr(feature = "std", doc = "```no_run")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! # use aimdb_sync::{AimDbHandle, SyncResult};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
 //! # fn demo(handle: &AimDbHandle) -> SyncResult<()> {
@@ -131,7 +132,8 @@
 //! By default, both producers and consumers use a channel capacity of 100.
 //! You can customize this per record type using the `_with_capacity` methods:
 //!
-//! ```no_run
+#![cfg_attr(feature = "std", doc = "```no_run")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! # use aimdb_sync::{AimDbHandle, SyncResult};
 //! # #[derive(Debug, Clone)] struct SensorData { value: f32 }
 //! # #[derive(Debug, Clone)] struct RareEvent { code: u8 }
@@ -167,7 +169,8 @@
 //! ### Solutions for SingleLatest Semantics
 //!
 //! 1. **Use `get_latest()`** - Drains the channel to get the most recent value:
-//!    ```no_run
+#![cfg_attr(feature = "std", doc = "```no_run")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //!    # use aimdb_sync::SyncResult;
 //!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
 //!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> SyncResult<()> {
@@ -178,7 +181,8 @@
 //!    ```
 //!
 //! 2. **Use capacity=1** - Minimize queueing:
-//!    ```no_run
+#![cfg_attr(feature = "std", doc = "```no_run")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
 //!    # fn demo(handle: &aimdb_sync::AimDbHandle) -> aimdb_sync::SyncResult<()> {
 //!    let consumer = handle.consumer_with_capacity::<Temperature>("sensor.temp", 1)?;
@@ -223,7 +227,8 @@
 //!   and return any errors that occur in the async context
 //! - `try_set()` sends immediately without waiting for the produce result (fire-and-forget)
 //!
-//! ```no_run
+#![cfg_attr(feature = "std", doc = "```no_run")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! # use aimdb_sync::{DbError, SyncError, SyncProducer};
 //! # use aimdb_core::{log_error};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }

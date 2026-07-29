@@ -169,6 +169,12 @@ test:
 	cargo test --package aimdb-wasm-adapter --no-default-features --features observability --lib
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
+	# --lib only: the crate-level doc examples document the std API (AimDbHandle /
+	# SyncProducer / SyncConsumer), which does not exist without `std`, so they
+	# cannot compile in this configuration.  docs.rs builds the crate with
+	# all-features (aimdb-sync/Cargo.toml `[package.metadata.docs.rs]`).
+	@printf "$(YELLOW)  → Testing sync wrapper (no_std)$(NC)\n"
+	cargo test --package aimdb-sync --no-default-features --lib
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
 	cargo test --package aimdb-codegen
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"

@@ -124,7 +124,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
@@ -161,7 +160,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
@@ -199,7 +197,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
@@ -243,8 +240,6 @@ where
     /// # Example
     ///
     /// ```no_run
-    /// # #[cfg(feature = "data-contracts")]
-    /// # #[cfg(feature = "std")]
     /// # use aimdb_sync::SyncResult;
     /// # fn main() -> SyncResult<()> {
     /// use aimdb_core::AimDbBuilder;
@@ -272,8 +267,6 @@ where
     /// producer.set_value(22.5)?; // constructs Temperature::set(22.5, now_ms) and sends
     /// # Ok(())
     /// # }
-    /// # #[cfg(not(feature = "data-contracts"))]
-    /// # fn main() {}
     /// ```
     pub fn set_value(&self, value: T::Value) -> SyncResult<()> {
         self.set(T::set(value, unix_now_ms()))
