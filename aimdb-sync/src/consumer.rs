@@ -5,7 +5,6 @@ use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
 use std::sync::mpsc;
-#[cfg(feature = "std")]
 use std::sync::Mutex;
 
 /// Synchronous consumer for records of type `T`.
