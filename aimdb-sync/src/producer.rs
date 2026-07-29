@@ -5,7 +5,6 @@ use aimdb_core::DbResult;
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
-#[cfg(feature = "std")]
 use tokio::sync::{mpsc, oneshot};
 
 /// Synchronous producer for records of type `T`.
