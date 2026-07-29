@@ -44,7 +44,7 @@ serde_json = "1.0"
 [features]
 default = ["std"]
 
-std = ["tokio", "aimdb-tokio-adapter"]
+std = ["aimdb-core/std", "dep:tokio", "dep:aimdb-tokio-adapter"]
 
 # Enable tracing for debugging
 tracing = ["dep:tracing", "aimdb-core/tracing"]
