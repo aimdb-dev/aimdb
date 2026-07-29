@@ -169,12 +169,8 @@ test:
 	cargo test --package aimdb-wasm-adapter --no-default-features --features observability --lib
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
-	# --lib only: the crate-level doc examples document the std API (AimDbHandle /
-	# SyncProducer / SyncConsumer), which does not exist without `std`, so they
-	# cannot compile in this configuration.  docs.rs builds the crate with
-	# all-features (aimdb-sync/Cargo.toml `[package.metadata.docs.rs]`).
 	@printf "$(YELLOW)  → Testing sync wrapper (no_std)$(NC)\n"
-	cargo test --package aimdb-sync --no-default-features --lib
+	cargo test --package aimdb-sync --no-default-features
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
 	cargo test --package aimdb-codegen
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
@@ -258,6 +254,8 @@ clippy:
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime,embassy-net-support" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
+	cargo clippy --package aimdb-sync --no-default-features --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library$(NC)\n"
 	cargo clippy --package aimdb-client --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library (serial transport arm)$(NC)\n"
@@ -410,6 +408,8 @@ test-embedded:
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-tcp-connector (Embassy TCP client + defmt) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
+	@printf "$(YELLOW)  → Checking aimdb-sync (no_std) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-sync --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features
 
 ## Example projects
 examples:

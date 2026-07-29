@@ -50,7 +50,7 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     /// Channel receiver for consumer data
-    /// Wrapped in Arc<Mutex> so it can be shared but only one thread receives at a time
+    /// Wrapped in `Arc<Mutex>` so it can be shared but only one thread receives at a time
     rx: Arc<Mutex<mpsc::Receiver<T>>>,
 }
 
@@ -121,7 +121,6 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-    /// #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;
@@ -163,7 +162,6 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
@@ -211,7 +209,6 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
@@ -263,7 +260,6 @@ where
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;
