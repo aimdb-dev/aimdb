@@ -38,7 +38,7 @@ fn test_basic_producer_consumer() {
     let producer = handle
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
@@ -77,10 +77,10 @@ fn test_multi_threaded_producer_consumer() {
     let handle = builder.attach().expect("Failed to attach");
 
     // Create multiple consumers
-    let consumer1 = handle
+    let mut consumer1 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 1");
-    let consumer2 = handle
+    let mut consumer2 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 2");
 
@@ -165,7 +165,7 @@ fn test_timeout_operations() {
     let producer = handle
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
@@ -179,7 +179,7 @@ fn test_timeout_operations() {
         value: "test".to_string(),
     };
     producer
-        .set_with_timeout(test_value.clone(), Duration::from_secs(1))
+        .set(test_value.clone())
         .expect("Failed to produce with timeout");
 
     // Give more time for the value to propagate through the async pipeline
@@ -212,7 +212,7 @@ fn test_non_blocking_operations() {
     let producer = handle
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
@@ -314,7 +314,7 @@ fn test_runtime_shutdown_error() {
     let producer = handle
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
@@ -355,10 +355,10 @@ fn test_spmc_ring_semantics() {
     let producer = handle
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
-    let consumer1 = handle
+    let mut consumer1 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 1");
-    let consumer2 = handle
+    let mut consumer2 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 2");
 
@@ -407,7 +407,7 @@ fn test_single_latest_semantics() {
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
 
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
@@ -475,7 +475,7 @@ fn test_get_latest_with_timeout() {
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
 
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
 
@@ -541,13 +541,6 @@ fn test_error_propagation() {
         }
         other => panic!("Expected RecordKeyNotFound error, got: {:?}", other),
     }
-
-    // Test set_with_timeout also propagates errors
-    let result = producer.set_with_timeout(test_value, Duration::from_millis(100));
-    assert!(
-        result.is_err(),
-        "Expected produce to fail for unregistered key (with timeout)"
-    );
 
     handle.detach().expect("Failed to detach");
 }

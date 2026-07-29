@@ -160,7 +160,7 @@ where
     /// # }
     /// ```
     pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
-        let fut = tokio::time::timeout(timeout, Self::get_impl(&mut self.reader));
+        let fut = async { tokio::time::timeout(timeout, Self::get_impl(&mut self.reader)).await };
         let res = self.waiter.block_on(fut);
         res.unwrap_or_else(|_| Err(SyncError::GetTimeout))
     }
