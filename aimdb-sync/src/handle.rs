@@ -47,7 +47,6 @@ pub trait AimDbBuilderSyncExt {
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// # #[cfg(feature = "std")]
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use std::sync::Arc;
