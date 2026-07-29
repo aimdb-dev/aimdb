@@ -171,6 +171,8 @@ test:
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing sync wrapper (no_std)$(NC)\n"
 	cargo test --package aimdb-sync --no-default-features
+	@printf "$(YELLOW)  → Testing sync wrapper (data-contracts: set_value family)$(NC)\n"
+	cargo test --package aimdb-sync --features data-contracts
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
 	cargo test --package aimdb-codegen
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
@@ -256,6 +258,8 @@ clippy:
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
 	cargo clippy --package aimdb-sync --no-default-features --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on sync wrapper (data-contracts)$(NC)\n"
+	cargo clippy --package aimdb-sync --features data-contracts --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library$(NC)\n"
 	cargo clippy --package aimdb-client --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library (serial transport arm)$(NC)\n"
