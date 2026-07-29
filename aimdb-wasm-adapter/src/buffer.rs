@@ -19,7 +19,9 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
+#[cfg(feature = "wasm-runtime")]
+use core::cell::Cell;
+use core::cell::RefCell;
 use core::task::{Context, Poll, Waker};
 
 use aimdb_core::buffer::{Buffer, BufferCfg, BufferReader, DynBuffer};
@@ -389,6 +391,7 @@ fn wake_all(wakers: &mut Vec<Waker>) {
 // ============================================================================
 
 /// Shared state between [`CancelToken`] and [`CancelHandle`].
+#[cfg(feature = "wasm-runtime")]
 struct CancelInner {
     cancelled: Cell<bool>,
     waker: RefCell<Option<Waker>>,
@@ -399,6 +402,7 @@ struct CancelInner {
 /// Polled in a `futures_util::future::select` alongside `reader.recv()`.
 /// When [`CancelHandle::cancel()`] fires, the stored waker is woken and
 /// `is_cancelled()` returns `true`, causing the select to resolve.
+#[cfg(feature = "wasm-runtime")]
 pub(crate) struct CancelToken {
     inner: Rc<CancelInner>,
 }
@@ -407,17 +411,23 @@ pub(crate) struct CancelToken {
 ///
 /// Calling [`cancel()`](CancelHandle::cancel) sets the flag and wakes the
 /// subscription task so it exits immediately — even if `recv()` is blocked.
+#[cfg(feature = "wasm-runtime")]
 pub(crate) struct CancelHandle {
     inner: Rc<CancelInner>,
 }
 
 // SAFETY: wasm32 is single-threaded — no concurrent access possible
+#[cfg(feature = "wasm-runtime")]
 unsafe impl Send for CancelToken {}
+#[cfg(feature = "wasm-runtime")]
 unsafe impl Sync for CancelToken {}
+#[cfg(feature = "wasm-runtime")]
 unsafe impl Send for CancelHandle {}
+#[cfg(feature = "wasm-runtime")]
 unsafe impl Sync for CancelHandle {}
 
 /// Create a linked cancel token/handle pair.
+#[cfg(feature = "wasm-runtime")]
 pub(crate) fn cancel_pair() -> (CancelToken, CancelHandle) {
     let inner = Rc::new(CancelInner {
         cancelled: Cell::new(false),
@@ -431,6 +441,7 @@ pub(crate) fn cancel_pair() -> (CancelToken, CancelHandle) {
     )
 }
 
+#[cfg(feature = "wasm-runtime")]
 impl CancelToken {
     /// Returns `true` if [`CancelHandle::cancel()`] has been called.
     pub(crate) fn is_cancelled(&self) -> bool {
@@ -443,6 +454,7 @@ impl CancelToken {
     }
 }
 
+#[cfg(feature = "wasm-runtime")]
 impl CancelHandle {
     /// Signal cancellation and wake the subscription task.
     ///
