@@ -2,10 +2,10 @@
 
 use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
-use std::fmt::Debug;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::fmt::Debug;
+use core::time::Duration;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Default channel capacity for sync producers and consumers.
@@ -50,7 +50,6 @@ pub trait AimDbBuilderSyncExt {
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)] struct MyData { value: f32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let mut builder = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter::new()?));

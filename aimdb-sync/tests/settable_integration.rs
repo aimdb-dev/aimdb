@@ -2,7 +2,7 @@
 //! construct via `Settable::set`, produce, and consume end-to-end through the
 //! real sync bridge.
 
-#![cfg(feature = "data-contracts")]
+#![cfg(all(feature = "std", feature = "data-contracts"))]
 
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_data_contracts::{SchemaType, Settable};

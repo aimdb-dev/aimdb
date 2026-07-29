@@ -1,10 +1,11 @@
 //! Synchronous consumer for typed records.
 
 use crate::{SyncError, SyncResult};
-use std::fmt::Debug;
+use alloc::sync::Arc;
+use core::fmt::Debug;
+use core::time::Duration;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
 
 /// Synchronous consumer for records of type `T`.
 ///
@@ -49,7 +50,7 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     /// Channel receiver for consumer data
-    /// Wrapped in Arc<Mutex> so it can be shared but only one thread receives at a time
+    /// Wrapped in `Arc<Mutex>` so it can be shared but only one thread receives at a time
     rx: Arc<Mutex<mpsc::Receiver<T>>>,
 }
 
@@ -87,7 +88,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
@@ -127,7 +127,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
@@ -168,7 +167,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
@@ -216,7 +214,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
@@ -269,7 +266,6 @@ where
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # #[cfg(feature = "std")]
     /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
