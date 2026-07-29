@@ -141,7 +141,6 @@ pub struct AimDbHandle {
 #[derive(Debug, Clone, Copy)]
 struct ShutdownSignal;
 
-#[cfg(feature = "std")]
 impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
     pub(crate) fn new_from_builder(builder: AimDbBuilder) -> SyncResult<Self> {
