@@ -1,5 +1,6 @@
 //! AimDB handle for managing the sync API runtime thread.
 
+use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
 use alloc::sync::{Arc, Weak};
@@ -391,42 +392,39 @@ impl AimDbHandle {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        // Create std::sync::mpsc channel for sync API
-        let (std_tx, std_rx) = std::sync::mpsc::sync_channel::<T>(capacity);
-
-        // Create a oneshot channel to confirm subscription succeeded
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
-        // Spawn a task on the runtime to forward buffer data to the std channel
-        let db = self.db.clone();
         let record_key = key.as_ref().to_string();
-        self.runtime_handle.spawn(async move {
-            // Subscribe to the database buffer for type T
-            match db.subscribe::<T>(&record_key) {
-                Ok(reader) => {
-                    let _ = ready_tx.send(());
-                    Self::forward_buffered(std_tx, reader).await;
-                }
-                Err(e) => {
-                    log_error!(
-                        "Failed to subscribe to record type {}: {}",
-                        std::any::type_name::<T>(),
-                        e
-                    );
-                    // Signal failure (will be ignored if receiver dropped)
-                    let _ = ready_tx.send(());
-                }
-            }
-        });
+        let reader = self.db.subscribe::<T>(&record_key).map_err(SyncError::Db)?;
+        let waiter = Waiter::new(self.runtime_handle.clone());
+        Ok(crate::SyncConsumer::new(waiter, reader))
 
-        // Wait for subscription to complete (with timeout)
-        ready_rx
-            .blocking_recv()
-            .map_err(|_| SyncError::AttachFailed {
-                message: format!("Failed to subscribe to {}", std::any::type_name::<T>()),
-            })?;
+        //     match  {
+        //         Ok(reader) => {
+        //             let _ = ready_tx.send(());
+        //             Self::forward_buffered(std_tx, reader).await;
+        //         }
+        //         Err(e) => {
+        //             log_error!(
+        //                 "Failed to subscribe to record type {}: {}",
+        //                 std::any::type_name::<T>(),
+        //                 e
+        //             );
+        //             // Signal failure (will be ignored if receiver dropped)
+        //             let _ = ready_tx.send(());
+        //         }
+        //     }
 
-        Ok(crate::SyncConsumer::new(std_rx))
+        // self.runtime_handle.spawn(async move {
+        //     // Subscribe to the database buffer for type T
+        // });
+
+        // // Wait for subscription to complete (with timeout)
+        // ready_rx
+        //     .blocking_recv()
+        //     .map_err(|_| SyncError::AttachFailed {
+        //         message: format!("Failed to subscribe to {}", std::any::type_name::<T>()),
+        //     })?;
+
+        // Ok(crate::SyncConsumer::new(std_rx))
     }
 
     /// Gracefully shut down the runtime thread.
@@ -581,49 +579,6 @@ impl AimDbHandle {
                 _ = shutdown_rx.recv() => {}
             }
         });
-    }
-
-    async fn forward_buffered<T>(
-        std_tx: std::sync::mpsc::SyncSender<T>,
-        mut reader: aimdb_core::Reader<T>,
-    ) where
-        T: Send + Clone,
-    {
-        // Forward all values from the buffer reader to the std channel
-        loop {
-            match reader.recv().await {
-                Ok(value) => {
-                    // Send to std channel (non-async operation)
-                    // If the receiver is dropped, send() will fail
-                    if std_tx.send(value).is_err() {
-                        break;
-                    }
-                }
-                Err(DbError::BufferLagged { lag_count, .. }) => {
-                    // Consumer fell behind - this is not fatal
-                    // Log warning but continue receiving
-                    log_warn!(
-                        "Warning: Consumer for {} lagged by {} messages",
-                        std::any::type_name::<T>(),
-                        lag_count
-                    );
-                    // Don't break - next recv() will get latest data
-                }
-                Err(DbError::BufferClosed { .. }) => {
-                    // Buffer closed (shutdown) - exit gracefully
-                    break;
-                }
-                Err(e) => {
-                    // Other unexpected errors - log and stop
-                    log_error!(
-                        "Error reading from buffer for {}: {}",
-                        std::any::type_name::<T>(),
-                        e
-                    );
-                    break;
-                }
-            }
-        }
     }
 }
 

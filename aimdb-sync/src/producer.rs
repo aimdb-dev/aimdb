@@ -234,9 +234,20 @@ where
     }
 }
 
-// Safety: SyncProducer uses Arc internally and is safe to send/share
-unsafe impl<T> Send for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
-unsafe impl<T> Sync for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
+// // Safety: SyncProducer uses Arc internally and is safe to send/share
+// unsafe impl<T> Send for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
+// unsafe impl<T> Sync for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
+
+// TODO: remove or replace with static_assertions
+const _: () = {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+
+    fn check<X: Send + 'static + Debug + Clone>() {
+        assert_send::<SyncProducer<X>>();
+        assert_sync::<SyncProducer<X>>();
+    }
+};
 
 #[cfg(test)]
 mod tests {

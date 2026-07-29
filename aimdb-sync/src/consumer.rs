@@ -1,9 +1,8 @@
 //! Synchronous consumer for typed records.
 
-use aimdb_core::buffer::BufferReader;
 use aimdb_core::{DbError, Reader};
 
-use crate::waiter::{BlockingBridge, Waiter};
+use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
 use alloc::sync::Arc;
 use core::fmt::Debug;
@@ -12,6 +11,8 @@ use std::sync::mpsc;
 use std::sync::Mutex;
 
 /// Synchronous consumer for records of type `T`.
+///
+/// TODO: **doc below is wrong, update it**
 ///
 /// Thread-safe, can be cloned and shared across threads.
 /// Each clone receives data independently according to buffer semantics (SPMC, etc.).
@@ -51,15 +52,26 @@ use std::sync::Mutex;
 /// ```
 pub struct SyncConsumer<T>
 where
-    T: Send + Sync + 'static + Debug + Clone,
+    T: Send + 'static + Debug + Clone,
 {
     waiter: Waiter,
     reader: Reader<T>,
 }
 
+// TODO: remove or replace with static_assertions
+const _: () = {
+    fn assert_send<T: Send>() {}
+    // fn assert_sync<T: Sync>() {}
+
+    fn check<X: Send + 'static + Debug + Clone>() {
+        assert_send::<SyncConsumer<X>>();
+        // assert_sync::<MyType>();
+    }
+};
+
 impl<T> SyncConsumer<T>
 where
-    T: Send + Sync + 'static + Debug + Clone,
+    T: Send + 'static + Debug + Clone,
 {
     /// Create a new sync consumer (internal use only)
     pub(crate) fn new(waiter: Waiter, reader: Reader<T>) -> Self {
@@ -295,26 +307,6 @@ where
         Ok(latest)
     }
 }
-
-impl<T> Clone for SyncConsumer<T>
-where
-    T: Send + Sync + 'static + Debug + Clone,
-{
-    /// Clone the consumer to share across threads.
-    ///
-    /// Note: All clones share the same receiver, so only one thread
-    /// will receive each value. For independent subscriptions, call
-    /// `handle.consumer()` multiple times instead.
-    fn clone(&self) -> Self {
-        Self {
-            rx: self.rx.clone(),
-        }
-    }
-}
-
-// Safety: SyncConsumer uses Arc internally and is safe to send/share
-unsafe impl<T> Send for SyncConsumer<T> where T: Send + Sync + 'static + Debug + Clone {}
-unsafe impl<T> Sync for SyncConsumer<T> where T: Send + Sync + 'static + Debug + Clone {}
 
 #[cfg(test)]
 mod tests {

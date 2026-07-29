@@ -9,6 +9,10 @@ pub struct Waiter {
 
 #[cfg(feature = "std")]
 impl Waiter {
+    pub fn new(handle: tokio::runtime::Handle) -> Self {
+        Self { handle }
+    }
+
     pub fn block_on<F: Future>(&self, fut: F) -> F::Output {
         self.handle.block_on(fut)
     }
