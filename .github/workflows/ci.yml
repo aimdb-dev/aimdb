@@ -104,6 +104,43 @@ jobs:
     - name: Test embedded cross-compilation
       run: make test-embedded
 
+  wasm-browser-tests:
+    name: WASM Browser Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    # Prebuilt: the Makefile's fallback is `cargo install wasm-pack --locked`,
+    # a multi-minute source build on a cold runner.
+    - name: Install wasm-pack
+      uses: taiki-e/install-action@wasm-pack
+
+    - name: Cache dependencies
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cache/.wasm-pack
+          target
+        key: ${{ runner.os }}-cargo-wasm-browser-${{ hashFiles('**/Cargo.lock') }}
+
+    # Chrome is preinstalled on the runner image, so this pins chromedriver to
+    # its major version; chromedriver refuses a browser it does not match.
+    - name: Install browser toolchain
+      run: make wasm-test-deps
+
+    - name: Run browser test suite
+      run: make wasm-test
+
   # Miri: catches undefined behavior (e.g. use-after-free) in the embassy
   # adapter's unsafe 'static lifetime extension (design 039 F1). Scoped to
   # aimdb-embassy-adapter's host-std sync tests only — Miri is slow and can't

@@ -1,0 +1,8 @@
+{
+  "goog:chromeOptions": {
+    "args": [
+      "--no-sandbox",
+      "--disable-dev-shm-usage"
+    ]
+  }
+}

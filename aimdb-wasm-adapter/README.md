@@ -157,10 +157,16 @@ wasm-pack test --headless --chrome
 From the workspace root (`make` targets):
 
 ```bash
-make wasm        # Build WASM adapter
-make wasm-test   # Run WASM tests
-make check       # Full workspace check (includes WASM)
+make wasm            # Build WASM adapter
+make wasm-test-deps  # Chrome + version-matched chromedriver (one-off)
+make wasm-test       # Run the browser suite (CI: `wasm-browser-tests`)
+make check           # Full workspace check — wasm32 `cargo check` only, no browser
 ```
+
+`webdriver.json` passes `--no-sandbox` / `--disable-dev-shm-usage` to headless
+Chrome. `wasm-bindgen-test-runner` does not set them itself and without them
+the sandbox fails to start on CI images that restrict unprivileged user
+namespaces.
 
 ## Feature Flags
 
