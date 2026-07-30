@@ -138,32 +138,6 @@ jobs:
     - name: Install browser toolchain
       run: make wasm-test-deps
 
-    # TEMPORARY DIAGNOSTIC — remove once the transform_join hang is understood.
-    # That target hangs at "Loading scripts..." in CI while the lib target in
-    # the same job passes; it loads fine locally, including on a single core.
-    # Ruled out by prior runs: Chrome sandbox, harness timeout (it hung the
-    # full 120 s), module size (3 MB stripped behaves like 23 MB), CPU, and
-    # session order (it fails alone, as the job's first browser session).
-    # The page dies before the harness starts, so the harness's own console
-    # divs stay empty and report nothing. Chrome's stderr goes to the verbose
-    # chromedriver log instead — capture that.
-    - name: 'DIAGNOSTIC: capture Chrome failure detail'
-      continue-on-error: true
-      run: |
-        google-chrome --version
-        chromedriver --version
-        free -m
-        df -h /tmp | tail -1
-        cd aimdb-wasm-adapter
-        CHROMEDRIVER="$(command -v chromedriver)" \
-        CHROMEDRIVER_ARGS="--verbose --log-path=${RUNNER_TEMP}/chromedriver.log" \
-          wasm-pack test --headless --chrome --test transform_join_integration_tests || true
-        echo '===== driver log: errors / crashes ====='
-        grep -aiE "error|crash|fatal|killed|oom|wasm|memory|renderer|compile" \
-          "${RUNNER_TEMP}/chromedriver.log" | tail -120 || true
-        echo '===== driver log: tail ====='
-        tail -c 20000 "${RUNNER_TEMP}/chromedriver.log" || true
-
     - name: Run browser test suite
       run: make wasm-test
 
