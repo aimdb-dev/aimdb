@@ -41,6 +41,12 @@ tokio = { version = "1.40", features = ["full", "test-util"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Self-dependency to force `data-contracts` on for test targets only (feature
+# unification is per-target under resolver = "2"), so `settable_integration.rs`
+# runs under plain `cargo test -p aimdb-sync` without making `data-contracts`
+# a default feature for downstream consumers of the lib.
+aimdb-sync = { path = ".", features = ["data-contracts"] }
+
 [features]
 default = ["std"]
 
