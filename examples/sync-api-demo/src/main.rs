@@ -69,8 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: Create consumers before producing
     println!("2. Creating consumers for Temperature...");
-    let consumer1 = handle.consumer::<Temperature>("sensor.temperature")?;
-    let consumer2 = handle.consumer::<Temperature>("sensor.temperature")?;
+    let mut consumer1 = handle.consumer::<Temperature>("sensor.temperature")?;
+    let mut consumer2 = handle.consumer::<Temperature>("sensor.temperature")?;
     // Alternative with custom capacity for high-frequency data:
     // let consumer1 = handle.consumer_with_capacity::<Temperature>("sensor.temperature", 1000)?;
     println!("   ✓ Two consumers created\n");
@@ -160,6 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("7. Shutting down...");
     // Give async tasks time to process remaining values
     thread::sleep(Duration::from_millis(200));
+    handle.detach().expect("Failed to detach");
 
     // Detach the handle to gracefully shut down the runtime thread
     #[cfg(feature = "graceful-shutdown")]
