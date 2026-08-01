@@ -330,11 +330,8 @@ fn test_runtime_shutdown_error() {
     let result = producer.set(test_value);
     assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 
-    let result = consumer.get_with_timeout(Duration::from_millis(100));
-    assert!(matches!(
-        result,
-        Err(SyncError::RuntimeShutdown) | Err(SyncError::GetTimeout)
-    ));
+    let result = consumer.get();
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 }
 
 /// Test buffer semantics - SPMC Ring
