@@ -36,6 +36,7 @@ use core::time::Duration;
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Clone)]
 pub struct SyncProducer<T>
 where
     T: Send + 'static + Debug + Clone,
@@ -216,22 +217,6 @@ fn unix_now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-impl<T> Clone for SyncProducer<T>
-where
-    T: Send + 'static + Debug + Clone,
-{
-    /// Clone the producer to share across threads.
-    ///
-    /// Multiple clones can set values concurrently.
-    fn clone(&self) -> Self {
-        Self {
-            db: self.db.clone(),
-            key: self.key.clone(),
-            _phantom: PhantomData,
-        }
-    }
 }
 
 #[cfg(test)]

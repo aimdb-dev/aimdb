@@ -274,6 +274,7 @@ impl AimDbHandle {
     ///
     /// - `DbError::RecordNotFound` if type `T` was not registered
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db` for other errors upon subscribing
     ///
     /// # Example
     ///
@@ -492,15 +493,14 @@ impl Drop for AimDbHandle {
     }
 }
 
-// Safety: AimDbHandle owns the runtime thread and channels are Send + Sync
-unsafe impl Send for AimDbHandle {}
-unsafe impl Sync for AimDbHandle {}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_extension_trait_exists() {
-        // Just ensure the module compiles
-        // Actual functionality tests will come later
+    // TODO: is it possible with static_assertions?
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    #[allow(dead_code)]
+    fn check() {
+        assert_send::<crate::AimDbHandle>();
+        assert_sync::<crate::AimDbHandle>();
     }
 }

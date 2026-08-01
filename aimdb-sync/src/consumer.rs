@@ -12,16 +12,9 @@ use std::sync::Mutex;
 
 /// Synchronous consumer for records of type `T`.
 ///
-/// TODO: **doc below is wrong, update it**
-///
-/// Thread-safe, can be cloned and shared across threads.
-/// Each clone receives data independently according to buffer semantics (SPMC, etc.).
-///
-/// # Thread Safety
-///
-/// Multiple clones of `SyncConsumer<T>` can be used concurrently from
-/// different threads. Each receives data independently based on the
-/// configured buffer type (SPMC, SingleLatest, etc.).
+/// Not thread-safe - can be moved to another thread, but not cloned.
+/// Each instance of SyncConsumer<T> reading from the same producer
+/// receives data independently according to buffer semantics (SPMC, etc.).
 ///
 /// # Example
 ///
@@ -52,7 +45,7 @@ use std::sync::Mutex;
 /// ```
 pub struct SyncConsumer<T>
 where
-    T: Send + 'static + Debug + Clone,
+    T: Send + Debug + Clone,
 {
     waiter: Waiter,
     reader: Reader<T>,
@@ -60,7 +53,7 @@ where
 
 impl<T> SyncConsumer<T>
 where
-    T: Send + 'static + Debug + Clone,
+    T: Send + Debug + Clone,
 {
     /// Create a new sync consumer (internal use only)
     pub(crate) fn new(waiter: Waiter, reader: Reader<T>) -> Self {
@@ -87,6 +80,7 @@ where
     /// # Errors
     ///
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db` for other errors occured during read
     ///
     /// # Example
     ///
@@ -124,6 +118,7 @@ where
     ///
     /// - `SyncError::GetTimeout` if the timeout expires
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db` for other errors occured during read
     ///
     /// # Example
     ///
@@ -163,6 +158,7 @@ where
     ///
     /// - `SyncError::GetTimeout` if no data is available (non-blocking)
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db` for other errors occured during read
     ///
     /// # Example
     ///
@@ -209,8 +205,10 @@ where
     /// The most recent available record of type `T`.
     ///
     /// # Errors
-    ///
+    /// Note that the error is only reported if no value was retrieved at all.
+    /// Errors occuring after that are ignored; the latest obtained value is returned instead.
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db` if another error occured upon the very first read.
     ///
     /// # Example
     ///
@@ -302,7 +300,7 @@ mod tests {
     // TODO: is it possible with static_assertions?
     fn assert_send<T: Send>() {}
     #[allow(dead_code)]
-    fn check<X: Send + 'static + std::fmt::Debug + Clone>() {
+    fn check<X: Send + std::fmt::Debug + Clone>() {
         assert_send::<crate::SyncConsumer<X>>();
     }
 }
