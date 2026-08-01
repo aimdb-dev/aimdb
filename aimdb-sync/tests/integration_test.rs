@@ -517,7 +517,7 @@ fn test_error_propagation() {
     // Create a producer for an unregistered type/key
     // Note: producer creation succeeds, but set() should fail
     let producer = handle
-        .producer_with_capacity::<TestData>("test.data", 10)
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
 
     // Try to produce a value - this should fail because the key is not registered
