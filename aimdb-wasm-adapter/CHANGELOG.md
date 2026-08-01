@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`WsBridge` no longer reports a zombie `"connected"` after a silent
+  teardown (Design 049 D1).** Dropping a connection without an `onclose` — a
+  frame-funnel overflow ending the stream, an engine stop — left
+  `onStatusChange` / `status()` reporting `"connected"` forever with
+  `autoReconnect: false`, because `Drop` detaches `onclose` before closing the
+  socket. The teardown now reports the transition itself (`"disconnected"`, or
+  `"reconnecting"` when auto-reconnect will redial), deduplicated so the paths
+  that already reported stay idempotent.
+- **`disconnect()` interrupts a pending handshake (Design 049 D2).** The dialer
+  publishes its socket before awaiting `onopen`, so `disconnect()` during a
+  dial closes the in-flight socket instead of leaving it to the browser's
+  connect timeout (tens of seconds) — and the interrupted dial reports a
+  *terminal* failure, stopping the engine on that attempt rather than after a
+  further reconnect backoff.
 - **SingleLatest fresh-subscriber parity (Design 040).** A subscriber created
   *after* a value has been published now receives that current value on its
   first `recv()` / `try_recv()`, instead of waiting for the next push. This
