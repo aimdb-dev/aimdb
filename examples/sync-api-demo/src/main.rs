@@ -71,8 +71,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("2. Creating consumers for Temperature...");
     let mut consumer1 = handle.consumer::<Temperature>("sensor.temperature")?;
     let mut consumer2 = handle.consumer::<Temperature>("sensor.temperature")?;
-    // Alternative with custom capacity for high-frequency data:
-    // let consumer1 = handle.consumer_with_capacity::<Temperature>("sensor.temperature", 1000)?;
     println!("   ✓ Two consumers created\n");
 
     // Step 3: Spawn consumer threads
@@ -126,8 +124,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 4: Create a synchronous producer
     println!("4. Creating producer and producing values...");
     let producer = handle.producer::<Temperature>("sensor.temperature")?;
-    // Alternative with custom capacity:
-    // let producer = handle.producer_with_capacity::<Temperature>("sensor.temperature", 500)?;
     println!("   ✓ Producer created\n");
 
     // Step 5: Produce values
@@ -160,7 +156,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("7. Shutting down...");
     // Give async tasks time to process remaining values
     thread::sleep(Duration::from_millis(200));
-    handle.detach().expect("Failed to detach");
 
     // Detach the handle to gracefully shut down the runtime thread
     #[cfg(feature = "graceful-shutdown")]
@@ -172,8 +167,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nThis example demonstrated:");
     println!("  • Pure synchronous context (no #[tokio::main])");
     println!("  • Multiple independent consumers");
-    println!("  • Blocking (get), timeout (get_timeout), and non-blocking (try_get) reads");
-    println!("  • Blocking (set), timeout (set_timeout), and non-blocking (try_set) writes");
+    println!("  • Blocking (get), timeout (get_with_timeout), and non-blocking (try_get) reads");
+    println!("  • Blocking (set) and non-blocking (try_set) writes");
     println!("  • Multi-threaded producer-consumer patterns");
 
     Ok(())

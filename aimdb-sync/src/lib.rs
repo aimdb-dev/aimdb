@@ -13,16 +13,16 @@
 //!
 //! ### Producer Operations
 //! - **`set()`**: Blocking send, waits if channel is full
-//! - **`set_timeout()`**: Blocking send with timeout
 //! - **`try_set()`**: Non-blocking send, returns immediately
 //!
 //! ### Consumer Operations
 //! - **`get()`**: Blocking receive, waits for value
-//! - **`get_timeout()`**: Blocking receive with timeout
+//! - **`get_with_timeout()`**: Blocking receive with timeout
 //! - **`try_get()`**: Non-blocking receive, returns immediately
 //!
 //! ### General
-//! - **Thread-Safe**: All types are `Send + Sync` and can be shared across threads
+//! - **Thread-Safe**: `SyncProducer` is `Send + Sync` and can be cloned and shared across
+//!   threads; `SyncConsumer` is `Send` only — move it to a thread, don't share it
 //! - **Type-Safe**: Full compile-time type safety with generics
 //! - **Pure Sync Context**: No `#[tokio::main]` required - works in plain `fn main()`
 //!
@@ -150,9 +150,10 @@
 //! ### Error Propagation
 //!
 //! Producer errors are propagated synchronously back to the caller:
-//! - `set()` and `set_with_timeout()` block until the produce operation completes
-//!   and return any errors that occur in the async context
-//! - `try_set()` sends immediately without waiting for the produce result (fire-and-forget)
+//! - `set()` blocks until the produce operation completes and returns any errors
+//!   that occur
+//! - `try_set()` returns immediately: `Ok(())` if the record's buffer accepted the
+//!   value, `SyncError::SetTimeout` if it didn't (bounded, non-overwriting buffer, full)
 //!
 #![cfg_attr(feature = "std", doc = "```no_run")]
 #![cfg_attr(not(feature = "std"), doc = "```ignore")]
@@ -171,7 +172,9 @@
 //!
 //! ## Safety
 //!
-//! All types are thread-safe and can be shared across threads via `Clone`.
+//! `SyncProducer` is `Clone`, `Send + Sync` — share it freely across threads.
+//! `SyncConsumer` is `Send` only, not `Clone` — move it to a thread, don't share it;
+//! get independent readers via separate `handle.consumer()` calls instead.
 //! The API ensures proper resource cleanup through RAII and explicit `detach()`.
 
 #![warn(missing_docs)]
