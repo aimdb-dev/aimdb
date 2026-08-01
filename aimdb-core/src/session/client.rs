@@ -111,8 +111,12 @@ pub struct ClientHandle {
     /// counter because they share an id space on the wire.
     ///
     /// `usize` rather than `u64`: 64-bit atomics are not native on every
-    /// supported MCU (thumbv7em), and the width only bounds the ids one process
-    /// can issue — 2^32 on a 32-bit target, all of them JSON-safe.
+    /// supported MCU (thumbv7em), and `portable_atomic::AtomicU64` covers that
+    /// only via its `critical-section` fallback — a dependency the engine will
+    /// not impose on every no_std consumer for a counter. The width bounds the
+    /// ids one process can issue — 2^32 on a 32-bit target, all of them
+    /// JSON-safe — and [`ClientHandle::next_id`] refuses rather than wraps at
+    /// the ceiling.
     next_id: Arc<AtomicUsize>,
 }
 
@@ -176,8 +180,23 @@ impl ClientHandle {
 
     /// Allocate the next correlation id. Monotonic across reconnects, so an id
     /// is never reused by a later connection.
-    fn next_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed) as u64
+    ///
+    /// Exhaustion is *refused*, not wrapped: `fetch_add` at the ceiling would
+    /// restart at `0` and re-issue ids still held by live subscriptions, whose
+    /// updates would then be demuxed into the wrong sink. Refusing turns that
+    /// silent mis-route into a failed `call`/`subscribe`. The ceiling is
+    /// `usize::MAX` — 2^32−1 on a 32-bit target, i.e. unreachable in practice
+    /// (4 billion allocations on one connection lineage).
+    ///
+    /// [`RpcError::Internal`] doubles as "engine stopped" (see [`Self::enqueue`]);
+    /// a dedicated variant would add wire surface (`session::aimx`'s codec maps
+    /// every variant to a protocol string) for a case that cannot be recovered
+    /// from anyway.
+    fn next_id(&self) -> Result<u64, RpcError> {
+        self.next_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map(|id| id as u64)
+            .map_err(|_| RpcError::Internal)
     }
 
     /// One-shot RPC: send a request and await its single reply. Returns
@@ -192,7 +211,7 @@ impl ClientHandle {
         method: impl Into<String>,
         params: Payload,
     ) -> Result<Payload, RpcError> {
-        let id = self.next_id();
+        let id = self.next_id()?;
         let (reply, rx) = oneshot::channel();
         self.enqueue(ClientCmd::Call {
             id,
@@ -238,7 +257,7 @@ impl ClientHandle {
         let (events, rx) =
             async_channel::bounded::<Result<SubUpdate, RpcError>>(SUBSCRIBE_CHANNEL_CAP);
         self.enqueue(ClientCmd::Subscribe {
-            id: self.next_id(),
+            id: self.next_id()?,
             topic: topic.into(),
             events,
         })?;
@@ -734,7 +753,8 @@ where
 /// - **inbound** routes (`db.collect_inbound_routes`) subscribe to the remote and
 ///   produce each update into the local record through the producer/arbiter path
 ///   — single-writer-per-key stays intact (a mirrored-in record is produced
-///   through its inbound producer, never a direct co-writer).
+///   through its inbound producer, never a direct co-writer). Mirroring is
+///   latest-state and best-effort: see [`inbound_pump`] for the loss contract.
 ///
 /// Returns one spawn-free pump future per route for the runner to drive
 /// (mirroring the `ConnectorBuilder::build -> Vec<BoxFuture>` spine); it drives
@@ -785,27 +805,63 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
     // subscription per unique remote topic feeds it.
     let router = Arc::new(RouterBuilder::from_routes(db.collect_inbound_routes(scheme)).build());
     for id in router.resource_ids() {
-        let handle = handle.clone();
-        let router = router.clone();
-        let ctx = ctx.clone();
-        pumps.push(Box::pin(async move {
-            let mut stream = match handle.subscribe(id.as_ref()) {
-                Ok(s) => s,
-                Err(_e) => return,
-            };
-            while let Some(update) = stream.next().await {
-                match update {
-                    Ok(update) => {
-                        let _ = router.route(id.as_ref(), &update.data, &ctx);
-                    }
-                    // Server rejected the subscription — terminal, not replayed.
-                    Err(_e) => break,
-                }
-            }
-        }));
+        pumps.push(Box::pin(inbound_pump(
+            handle.clone(),
+            router.clone(),
+            id,
+            ctx.clone(),
+        )));
     }
 
     pumps
+}
+
+/// Drive one inbound mirror: subscribe to remote topic `id` and produce every
+/// update into the local record through the [`Router`](crate::router::Router).
+///
+/// **Loss contract: a mirror is latest-state, best-effort.** A mirrored record
+/// answers "what is the current value", not "what was every value" — so a gap
+/// reported by the server ([`SubUpdate::skipped`], raised when a subscription's
+/// sink overran) is *logged and stepped over*, never backfilled. The mirror does
+/// not resync, and a consumer must not read a mirrored record as a complete
+/// history. Callers that need gap-aware delivery subscribe through
+/// `AimxConnection` (`aimdb-client`), which surfaces `skipped` per update;
+/// [`ClientHandle::subscribe`] carries the same metadata for anyone riding the
+/// handle directly.
+async fn inbound_pump(
+    handle: ClientHandle,
+    router: Arc<crate::router::Router>,
+    id: Arc<str>,
+    ctx: crate::RuntimeContext,
+) {
+    let mut stream = match handle.subscribe(id.as_ref()) {
+        Ok(s) => s,
+        Err(_e) => return,
+    };
+    while let Some(update) = stream.next().await {
+        match update {
+            Ok(update) => {
+                // Per the loss contract above: surface the hole, keep mirroring.
+                if update.skipped > 0 {
+                    log_warn!(
+                        "mirror gap on '{}': {} update(s) lost (latest-state, no resync)",
+                        id.as_ref(),
+                        update.skipped
+                    );
+
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!(
+                        "mirror gap on '{}': {} update(s) lost (latest-state, no resync)",
+                        id.as_ref(),
+                        update.skipped
+                    );
+                }
+                let _ = router.route(id.as_ref(), &update.data, &ctx);
+            }
+            // Server rejected the subscription — terminal, not replayed.
+            Err(_e) => break,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -981,5 +1037,95 @@ mod tests {
             futures_util::future::Either::Left(_) => panic!("the engine ended early"),
             futures_util::future::Either::Right(((), _)) => {}
         }
+    }
+
+    /// The id counter refuses rather than wraps at its ceiling: a wrapped id
+    /// would re-issue one a live subscription still holds, and the engine would
+    /// demux that subscription's updates into the wrong sink. Both allocating
+    /// call sites fail, and neither reaches the engine — so no pending entry is
+    /// ever created under an id that would be mis-routed.
+    #[tokio::test]
+    async fn exhausted_ids_are_refused_not_wrapped() {
+        let (cmd_tx, cmd_rx) = async_channel::unbounded();
+        let handle = ClientHandle {
+            cmd_tx,
+            next_id: Arc::new(AtomicUsize::new(usize::MAX)),
+        };
+
+        // Bounded at zero: the refusal happens before the id is queued, so it
+        // resolves on the first poll. A wrapping counter would instead queue the
+        // call and await a reply forever — the timeout turns that regression
+        // into a failure rather than a hang.
+        let refused = tokio::time::timeout(
+            core::time::Duration::ZERO,
+            handle.call("one", Payload::from(&b"x"[..])),
+        )
+        .await
+        .expect("a refused call must not reach the engine and await a reply");
+        assert!(
+            matches!(refused, Err(RpcError::Internal)),
+            "a call at the id ceiling must be refused"
+        );
+        assert!(
+            handle.subscribe("tele").is_err(),
+            "a subscription at the id ceiling must be refused"
+        );
+        assert!(
+            cmd_rx.is_empty(),
+            "a refused allocation must not reach the engine"
+        );
+    }
+
+    /// The mirror's loss contract (see [`inbound_pump`]): a server-reported gap
+    /// is stepped over, not treated as a fault. The update *carrying* `skipped`
+    /// is itself produced into the local record — it is current state, which is
+    /// all a mirror promises — and delivery continues past it.
+    #[tokio::test]
+    async fn a_mirror_gap_still_routes_and_keeps_mirroring() {
+        let seen: Arc<spin::Mutex<Vec<Vec<u8>>>> = Arc::new(spin::Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let ingest: crate::connector::IngestFn =
+            Arc::new(move |_ctx: &crate::RuntimeContext, bytes: &[u8]| {
+                recorder.lock().push(bytes.to_vec());
+                Ok(())
+            });
+        let routes = alloc::vec![(String::from("tele"), ingest)];
+        let router = Arc::new(RouterBuilder::from_routes(routes).build());
+        let ctx =
+            crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        let (handle, cmd_rx) = test_handle();
+
+        let pump = inbound_pump(handle, router, Arc::from("tele"), ctx);
+        let remote = async {
+            // The pump subscribes on its first poll; take its sink and play a
+            // gapped update followed by a clean one.
+            let events = match cmd_rx.recv().await {
+                Ok(ClientCmd::Subscribe { events, .. }) => events,
+                _ => panic!("the pump must subscribe"),
+            };
+            for (data, skipped) in [(&b"gapped"[..], 7u64), (&b"after"[..], 0)] {
+                events
+                    .send(Ok(SubUpdate {
+                        topic: None,
+                        data: Payload::from(data),
+                        skipped,
+                        snapshot_end: false,
+                    }))
+                    .await
+                    .expect("the pump holds the receiver");
+            }
+            // Dropping the sink ends the stream, so the pump returns.
+            drop(events);
+        };
+        futures_util::future::join(pump, remote).await;
+
+        let seen = seen.lock();
+        assert_eq!(seen.len(), 2, "the gap must not drop or end the mirror");
+        assert_eq!(
+            seen[0].as_slice(),
+            b"gapped",
+            "the update reporting the gap must still be produced"
+        );
+        assert_eq!(seen[1].as_slice(), b"after", "mirroring must continue");
     }
 }
