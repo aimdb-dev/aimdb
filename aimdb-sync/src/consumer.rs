@@ -193,7 +193,7 @@ where
 
     /// Get the latest value by draining all queued values.
     ///
-    /// This method drains the internal channel to get the most recent value,
+    /// This method drains the buffer to get the most recent value,
     /// discarding any intermediate values. This is useful for SingleLatest-like
     /// semantics where you only care about the most recent data.
     ///

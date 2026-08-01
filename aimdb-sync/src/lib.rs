@@ -6,8 +6,8 @@
 //! ## Overview
 //!
 //! This crate provides a synchronous interface to AimDB by running the
-//! async runtime on a dedicated background thread and using channels
-//! to bridge between synchronous and asynchronous contexts.
+//! async runtime on a dedicated background thread, blocking on it directly
+//! for reads that must wait for data.
 //!
 //! ## Features
 //!
@@ -127,11 +127,9 @@
 //!
 //! - **User threads**: Unlimited - any number of threads can call operations concurrently
 //! - **Runtime thread**: One dedicated thread named "aimdb-sync-runtime"
-//! - **Channels**: Lock-free MPSC channels for efficient communication
 //!
 //! ## Performance
 //!
-//! - **Overhead**: ~100-500μs per operation vs pure async (channel + context switch)
 //! - **Latency**: Excellent for <50ms target, not suitable for hard low-latency requirements
 //!
 //! ## Error Handling

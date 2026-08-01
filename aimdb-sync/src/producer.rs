@@ -10,7 +10,7 @@ use core::time::Duration;
 /// Synchronous producer for records of type `T`.
 ///
 /// Thread-safe, can be cloned and shared across threads.
-/// Values are moved (not cloned) through channels for zero-copy performance.
+/// Values are moved (not cloned) directly into the record's buffer.
 ///
 /// # Thread Safety
 ///
@@ -31,7 +31,7 @@ use core::time::Duration;
 /// // Try to set (non-blocking)
 /// match producer.try_set(Temperature { celsius: 27.0 }) {
 ///     Ok(()) => println!("Success"),
-///     Err(_) => println!("Channel full, try later"),
+///     Err(_) => println!("Buffer full, try later"),
 /// }
 /// # Ok(())
 /// # }
@@ -100,16 +100,13 @@ where
 
     /// Try to set the value without blocking.
     ///
-    /// Attempts to send the value immediately. Returns an error if the channel is full
-    /// or the runtime thread has shut down.
-    ///
-    /// **Note**: This method returns immediately after sending to the channel, but does NOT
-    /// wait for the produce operation to complete. Use `set()` if
-    /// you need to know whether the produce operation succeeded.
+    /// Pushes the value directly into the record's buffer. Unlike `set()`, this never
+    /// blocks: it fails immediately if the buffer is full instead of waiting for space.
     ///
     /// # Errors
     ///
-    /// Returns `SyncError::SetTimeout` if the channel is full.
+    /// Returns `SyncError::SetTimeout` for bounded, non-overwriting buffer
+    /// implementations if the buffer is full.
     /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
     ///
     /// # Example
@@ -129,7 +126,7 @@ where
     /// let producer = handle.producer::<MyData>("my_data")?;
     /// match producer.try_set(MyData { value: 42 }) {
     ///     Ok(()) => println!("Sent immediately"),
-    ///     Err(_) => println!("Channel full or runtime shutdown"),
+    ///     Err(_) => println!("Buffer full or runtime shutdown"),
     /// }
     /// # Ok(())
     /// # }

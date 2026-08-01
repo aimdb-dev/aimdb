@@ -5,9 +5,9 @@ use aimdb_core::DbError;
 
 /// Errors from the synchronous (blocking) API.
 ///
-/// Facade-specific failures (attach/detach, channel timeouts, runtime-thread
-/// shutdown) are their own variants; anything from the underlying database
-/// wraps a [`DbError`] via [`SyncError::Db`].
+/// Facade-specific failures (attach/detach, runtime-thread shutdown) are their
+/// own variants; anything from the underlying database wraps a [`DbError`]
+/// via [`SyncError::Db`].
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     /// Failed to attach the database to the runtime thread.
