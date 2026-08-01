@@ -334,6 +334,47 @@ fn test_runtime_shutdown_error() {
     assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 }
 
+/// Test error handling - reading messages sent before the shutdown
+#[test]
+fn test_runtime_shutdown_after_produce_read_error() {
+    let adapter = Arc::new(TokioAdapter);
+    let mut builder = AimDbBuilder::new().runtime(adapter);
+
+    builder.configure::<TestData>("test.data", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
+            .tap(|_ctx, _consumer| async move {
+                // No-op tap just to satisfy validation
+            });
+    });
+
+    let handle = builder.attach().expect("Failed to attach");
+
+    let producer = handle
+        .producer::<TestData>("test.data")
+        .expect("Failed to create producer");
+    let mut consumer = handle
+        .consumer::<TestData>("test.data")
+        .expect("Failed to create consumer");
+
+    let test_value = TestData {
+        id: 1,
+        value: "test".to_string(),
+    };
+
+    let result = producer.set(test_value.clone());
+    assert!(matches!(result, Ok(())));
+
+    // Shut down the runtime
+    handle.detach().expect("Failed to detach");
+
+    let result = consumer.get().expect("Failed to get the value");
+    assert_eq!(result, test_value);
+
+    let result = consumer.get();
+    println!("{:?}", result);
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
+}
+
 /// Test buffer semantics - SPMC Ring
 #[test]
 fn test_spmc_ring_semantics() {
