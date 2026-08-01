@@ -9,9 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`aimdb watch` reports delivery gaps.** The watcher subscribes via the loss-aware `AimxConnection::subscribe_updates`, printing a `⚠️ gap: N update(s) dropped` line before the event that follows a gap, plus a session total when watching stops. A silent hole in the value stream is no longer indistinguishable from an idle producer.
+- **`aimdb watch` reports delivery gaps.** The watcher rides the loss-aware `AimxConnection::subscribe`, printing a `⚠️ gap: N update(s) dropped` line before the event that follows a gap, plus a session total when watching stops. A silent hole in the value stream is no longer indistinguishable from an idle producer. It also prints a `📸 snapshot complete (N records)` line when the late-join burst closes — the one marker that tells a complete initial state from a truncated one — and a notice in place of any frame whose payload did not decode.
 
 - **Global `--connect <endpoint>` flag + `AIMDB_CONNECT` env (Issue #123).** Choose the target instance by `scheme://` URL — `unix://PATH`, `serial://DEVICE?baud=N` (with the `transport-serial` feature), or a bare path (the `unix://` shorthand). Precedence: `--connect` → `AIMDB_CONNECT` → UDS auto-discovery. `instance info`/`ping` now work over any endpoint (not just discovered sockets). New `transport-serial` feature (off by default; pulls libudev) adds the serial transport to the resolver.
+
+### Fixed
+
+- **`aimdb watch` no longer exits 0 on a refused subscription.** A denied subscribe (or one over the server's per-connection limit) reached the watcher as a silent end of stream, so it printed its closing summary and reported success on a session that never started. The refusal now arrives as a terminal error item: `watch` reports it and exits non-zero, skipping the summary.
 
 ### Changed (breaking)
 

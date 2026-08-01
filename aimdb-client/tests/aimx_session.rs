@@ -108,34 +108,24 @@ async fn aimx_roundtrip_over_uds_production_server() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
+    // Each update carries the engine's gap count alongside the value; a
+    // consumer that keeps up sees no gaps.
     let mut stream = conn.subscribe("events").expect("subscribe");
     for _ in 0..3 {
-        let ev = tokio::time::timeout(Duration::from_secs(2), stream.next())
-            .await
-            .expect("event within timeout")
-            .expect("event");
-        assert!(ev.get("n").is_some(), "event carries a Reading: {ev}");
-    }
-
-    // The loss-aware form carries the same values plus the engine's gap count;
-    // a keeping-up consumer sees no gaps.
-    let mut updates = conn
-        .subscribe_updates("events")
-        .expect("loss-aware subscribe");
-    for _ in 0..3 {
-        let update = tokio::time::timeout(Duration::from_secs(2), updates.next())
+        let update = tokio::time::timeout(Duration::from_secs(2), stream.next())
             .await
             .expect("update within timeout")
-            .expect("update");
-        assert!(
-            update.value.get("n").is_some(),
-            "update carries a Reading: {}",
-            update.value
-        );
+            .expect("update")
+            .expect("a live subscription is not a terminal error");
         assert_eq!(update.skipped, 0, "consumer keeps up, so no gap");
         assert!(!update.has_gap());
+        let value = update.value.expect("the server sends decodable JSON");
+        assert!(
+            value.get("n").is_some(),
+            "update carries a Reading: {value}"
+        );
     }
-    drop(updates);
+    drop(stream);
 
     // Graph introspection wrappers.
     let nodes = conn.graph_nodes().await.expect("graph nodes");
@@ -191,17 +181,23 @@ async fn wildcard_subscribe_fans_in_matching_records() {
     let conn = AimxConnection::connect(sock.to_str().unwrap())
         .await
         .expect("connect");
-    let mut stream = conn
-        .subscribe_with_topics("temp.#")
-        .expect("wildcard subscribe");
+    let mut stream = conn.subscribe("temp.#").expect("wildcard subscribe");
 
-    // The snapshot for the seeded record arrives first, tagged with its topic.
-    let (topic, value) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+    // The snapshot for the seeded record arrives first, tagged with its topic,
+    // and closes the late-join burst (it is the only matched record with a
+    // current value) — so a consumer can tell the initial state is complete
+    // without waiting for a live event.
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
         .expect("snapshot within timeout")
-        .expect("snapshot");
-    assert_eq!(topic.as_deref(), Some("temp.vienna"));
-    assert_eq!(value, json!({ "level": 1 }));
+        .expect("snapshot")
+        .expect("a wildcard subscribe is not refused");
+    assert_eq!(snapshot.topic.as_deref(), Some("temp.vienna"));
+    assert_eq!(snapshot.value, Some(json!({ "level": 1 })));
+    assert!(
+        snapshot.snapshot_end,
+        "the burst's only snapshot must close it"
+    );
 
     // Live updates from both matched records ride the one subscription, each
     // tagged; the non-matching record must never appear.
@@ -219,12 +215,13 @@ async fn wildcard_subscribe_fans_in_matching_records() {
     let mut saw_berlin = false;
     for _ in 0..20 {
         match tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
-            Ok(Some((topic, value))) => {
-                let topic = topic.expect("wildcard events are topic-tagged");
+            Ok(Some(Ok(update))) => {
+                let topic = update.topic.expect("wildcard events are topic-tagged");
                 assert!(
                     topic.starts_with("temp."),
                     "event from outside the pattern: {topic}"
                 );
+                let value = update.value.expect("the server sends decodable JSON");
                 assert!(value.get("level").is_some());
                 if topic == "temp.berlin" {
                     saw_berlin = true;
@@ -282,6 +279,57 @@ async fn record_get_on_ring_falls_back_to_drain() {
     }
     let got = got.expect("ring get returns a value after producing");
     assert!(got.get("n").is_some(), "ring get yields a Reading: {got}");
+
+    drop(conn);
+}
+
+/// A refused subscription reaches the caller as one terminal `Err` item, not as
+/// a silent end of stream.
+///
+/// A consumer that cannot tell "denied" from "the record closed" either
+/// re-subscribes forever or reports a clean session for a subscription that
+/// never started. `max_subs_per_connection(0)` makes the server refuse the very
+/// first subscribe deterministically.
+#[tokio::test]
+async fn a_refused_subscription_is_a_terminal_error_not_a_silent_eof() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+
+    let config = AimxConfig::uds_default()
+        .socket_path(sock.to_str().unwrap())
+        .max_subs_per_connection(0);
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    builder.configure::<Setting>("denied", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    let (_db, runner) = builder.build().await.expect("build db");
+    tokio::spawn(runner.run());
+
+    let conn = AimxConnection::connect(sock.to_str().unwrap())
+        .await
+        .expect("connect");
+
+    // `subscribe` itself succeeds — the refusal rides the stream, since the
+    // server answers a subscribe only on failure.
+    let mut stream = conn.subscribe("denied").expect("subscribe is dispatched");
+
+    let item = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("the refusal must arrive, not hang")
+        .expect("a refused subscription yields an item, not an empty stream");
+    let err = item.expect_err("the refusal is an Err item");
+    assert!(
+        matches!(&err, aimdb_client::ClientError::ServerError { code, .. } if code == "denied"),
+        "unexpected error for a refused subscription: {err}"
+    );
+
+    // ...and the stream ends after it.
+    let after = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("the stream must end promptly after the refusal");
+    assert!(after.is_none(), "the terminal error is the last item");
 
     drop(conn);
 }

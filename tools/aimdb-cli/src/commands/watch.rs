@@ -50,9 +50,9 @@ async fn watch_record(
     let conn = connect_endpoint(endpoint).await?;
 
     // Subscribe to the record (the engine routes updates back by request id; no
-    // server-allocated subscription id to track). The loss-aware form, so the
-    // watcher can report gaps instead of skipping over them silently.
-    let mut stream = conn.subscribe_updates(record_name)?;
+    // server-allocated subscription id to track). The stream is loss-aware, so
+    // the watcher reports gaps instead of skipping over them silently.
+    let mut stream = conn.subscribe(record_name)?;
 
     live::print_watch_start(record_name);
 
@@ -75,18 +75,34 @@ async fn watch_record(
         tokio::select! {
             next = stream.next() => {
                 match next {
-                    Some(update) => {
+                    Some(Ok(update)) => {
                         count += 1;
                         if update.skipped > 0 {
                             skipped_total += update.skipped;
                             live::print_gap(update.skipped);
                         }
-                        live::print_event(count, &update.value, show_full);
+                        match &update.value {
+                            Some(value) => live::print_event(count, value, show_full),
+                            // The frame counted toward the tally above but
+                            // carried no usable value — say so rather than
+                            // printing nothing.
+                            None => live::print_undecodable(count),
+                        }
+                        // The late-join burst is complete; everything after this
+                        // is a live event. It is the only marker that tells a
+                        // truncated initial state from a complete one, so it is
+                        // always reported.
+                        if update.snapshot_end {
+                            live::print_snapshot_complete(count, skipped_total);
+                        }
                         if !unlimited && count >= max_count as u64 {
                             break;
                         }
                     }
-                    None => break, // stream ended (record closed or subscribe rejected)
+                    // A refusal is terminal: report it and exit non-zero rather
+                    // than closing out as if the session had run.
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break, // stream ended (record closed, or disconnect)
                 }
             }
             _ = &mut cancel_rx => break, // Ctrl+C

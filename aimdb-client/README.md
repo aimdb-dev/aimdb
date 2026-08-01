@@ -39,7 +39,8 @@ or a bare path), serial (`serial://DEVICE?baud=N`), and TCP
 - **Discovery**: `discover_instances()`, `find_instance()`
 - **Connection**: `AimxConnection::connect(endpoint)`, `connect_over(dialer)`
 - **Records**: `list_records()`, `get_record()`, `set_record()`, `drain_record()`
-- **Subscriptions**: `subscribe()` (returns a `Stream` of values)
+- **Subscriptions**: `subscribe()` (returns a `Stream` of `Result<RecordUpdate, ClientError>` —
+  value, topic, gap count, snapshot-burst marker; a refused subscription is one `Err` item)
 - **Introspection**: `graph_nodes()`, `graph_edges()`, `graph_topo_order()`, `query()`
 
 ### Discovery
