@@ -91,7 +91,7 @@ where
     /// ```
     pub fn set(&self, value: T) -> SyncResult<()> {
         if let Some(db) = self.db.upgrade() {
-            db.produce(&self.key, value).map_err(|e| SyncError::Db(e))
+            db.produce(&self.key, value).map_err(SyncError::Db)
         } else {
             Err(SyncError::RuntimeShutdown)
         }
@@ -234,26 +234,14 @@ where
     }
 }
 
-// // Safety: SyncProducer uses Arc internally and is safe to send/share
-// unsafe impl<T> Send for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
-// unsafe impl<T> Sync for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
-
-// TODO: remove or replace with static_assertions
-const _: () = {
-    fn assert_send<T: Send>() {}
-    fn assert_sync<T: Sync>() {}
-
-    fn check<X: Send + 'static + Debug + Clone>() {
-        assert_send::<SyncProducer<X>>();
-        assert_sync::<SyncProducer<X>>();
-    }
-};
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_sync_producer_is_send_sync() {
-        // Just checking that the type implements Send + Sync
-        // Actual functionality tests will come later
+    // TODO: is it possible with static_assertions?
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    #[allow(dead_code)]
+    fn check<X: Send + 'static + std::fmt::Debug + Clone>() {
+        assert_send::<crate::SyncProducer<X>>();
+        assert_sync::<crate::SyncProducer<X>>();
     }
 }

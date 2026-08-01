@@ -30,7 +30,7 @@ use std::sync::Mutex;
 /// # use serde::{Serialize, Deserialize};
 /// # #[derive(Debug, Clone, Serialize, Deserialize)]
 /// # struct Temperature { celsius: f32 }
-/// # fn example(consumer: &SyncConsumer<Temperature>) -> SyncResult<()> {
+/// # fn example(consumer: &mut SyncConsumer<Temperature>) -> SyncResult<()> {
 /// // Get value (blocks until available)
 /// let temp = consumer.get()?;
 /// println!("Temperature: {}°C", temp.celsius);
@@ -57,17 +57,6 @@ where
     waiter: Waiter,
     reader: Reader<T>,
 }
-
-// TODO: remove or replace with static_assertions
-const _: () = {
-    fn assert_send<T: Send>() {}
-    // fn assert_sync<T: Sync>() {}
-
-    fn check<X: Send + 'static + Debug + Clone>() {
-        assert_send::<SyncConsumer<X>>();
-        // assert_sync::<MyType>();
-    }
-};
 
 impl<T> SyncConsumer<T>
 where
@@ -113,7 +102,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     /// let data = consumer.get()?; // blocks until value available
     /// println!("Got: {:?}", data);
     /// # Ok(())
@@ -151,7 +140,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     /// match consumer.get_with_timeout(Duration::from_millis(100)) {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data available"),
@@ -189,7 +178,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     /// match consumer.try_get() {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data yet"),
@@ -237,7 +226,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     ///
     /// // Get the latest value, skipping any queued intermediate values
     /// let latest = consumer.get_latest()?;
@@ -288,7 +277,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     ///
     /// // Get the latest value within 100ms
     /// match consumer.get_latest_with_timeout(Duration::from_millis(100)) {
@@ -310,9 +299,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_sync_consumer_is_send_sync() {
-        // Just checking that the type implements Send + Sync
-        // Actual functionality tests will come later
+    // TODO: is it possible with static_assertions?
+    fn assert_send<T: Send>() {}
+    #[allow(dead_code)]
+    fn check<X: Send + 'static + std::fmt::Debug + Clone>() {
+        assert_send::<crate::SyncConsumer<X>>();
     }
 }

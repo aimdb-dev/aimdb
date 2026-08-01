@@ -143,7 +143,7 @@ impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
     pub(crate) fn new_from_builder(builder: AimDbBuilder) -> SyncResult<Self> {
         // Create shutdown channel
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
         // Create channels for passing the built database and runtime handle back
         let (db_tx, mut db_rx) = mpsc::channel::<Arc<AimDb>>(1);
@@ -295,7 +295,7 @@ impl AimDbHandle {
     /// # #[derive(Clone, Debug, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
     /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// let consumer = handle.consumer::<Temperature>("sensor::temp")?;
+    /// let mut consumer = handle.consumer::<Temperature>("sensor::temp")?;
     /// let temp = consumer.get()?;
     /// # Ok(())
     /// # }
@@ -379,7 +379,7 @@ impl AimDbHandle {
     /// # struct RareEvent { id: u32 }
     /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
     /// // Rare events need smaller buffer
-    /// let consumer = handle.consumer_with_capacity::<RareEvent>("events::rare", 10)?;
+    /// let mut consumer = handle.consumer_with_capacity::<RareEvent>("events::rare", 10)?;
     /// let event = consumer.get()?;
     /// # Ok(())
     /// # }
@@ -396,35 +396,6 @@ impl AimDbHandle {
         let reader = self.db.subscribe::<T>(&record_key).map_err(SyncError::Db)?;
         let waiter = Waiter::new(self.runtime_handle.clone());
         Ok(crate::SyncConsumer::new(waiter, reader))
-
-        //     match  {
-        //         Ok(reader) => {
-        //             let _ = ready_tx.send(());
-        //             Self::forward_buffered(std_tx, reader).await;
-        //         }
-        //         Err(e) => {
-        //             log_error!(
-        //                 "Failed to subscribe to record type {}: {}",
-        //                 std::any::type_name::<T>(),
-        //                 e
-        //             );
-        //             // Signal failure (will be ignored if receiver dropped)
-        //             let _ = ready_tx.send(());
-        //         }
-        //     }
-
-        // self.runtime_handle.spawn(async move {
-        //     // Subscribe to the database buffer for type T
-        // });
-
-        // // Wait for subscription to complete (with timeout)
-        // ready_rx
-        //     .blocking_recv()
-        //     .map_err(|_| SyncError::AttachFailed {
-        //         message: format!("Failed to subscribe to {}", std::any::type_name::<T>()),
-        //     })?;
-
-        // Ok(crate::SyncConsumer::new(std_rx))
     }
 
     /// Gracefully shut down the runtime thread.

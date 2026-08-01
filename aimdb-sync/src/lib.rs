@@ -67,7 +67,7 @@
 //!
 //! // Create producer and consumer
 //! let producer = handle.producer::<Temperature>("sensor.temp")?;
-//! let consumer = handle.consumer::<Temperature>("sensor.temp")?;
+//! let mut consumer = handle.consumer::<Temperature>("sensor.temp")?;
 //!
 //! // Producer: blocking operations
 //! producer.set(Temperature { celsius: 25.0 })?;
@@ -84,28 +84,25 @@
 //!
 //! ## Multi-threaded Usage
 //!
-//! Both `SyncProducer` and `SyncConsumer` can be cloned and shared across threads:
+//! `SyncProducer` can be cloned and shared across threads:
 //!
 #![cfg_attr(feature = "std", doc = "```no_run")]
 #![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! use std::thread;
 //! # use aimdb_sync::{SyncConsumer, SyncProducer};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//! # fn demo(producer: SyncProducer<Temperature>, consumer: SyncConsumer<Temperature>) {
+//! # fn demo(producer: SyncProducer<Temperature>, mut consumer: SyncConsumer<Temperature>) {
 //!
 //! // Clone for use in another thread
 //! let producer_clone = producer.clone();
-//! let consumer_clone = consumer.clone();
 //!
 //! thread::spawn(move || {
 //!     producer_clone.set(Temperature { celsius: 22.0 }).ok();
 //! });
 //!
-//! thread::spawn(move || {
-//!     if let Ok(temp) = consumer_clone.get() {
-//!         println!("Got: {:.1}°C", temp.celsius);
-//!     }
-//! });
+//! if let Ok(temp) = consumer.get() {
+//!     println!("Got: {:.1}°C", temp.celsius);
+//! };
 //! # }
 //! ```
 //!
@@ -173,7 +170,7 @@
 #![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //!    # use aimdb_sync::SyncResult;
 //!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> SyncResult<()> {
+//!    # fn demo(consumer: &mut aimdb_sync::SyncConsumer<Temperature>) -> SyncResult<()> {
 //!    // Always get the latest value, skipping queued intermediates
 //!    let latest = consumer.get_latest()?;
 //!    # Ok(())
