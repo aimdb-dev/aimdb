@@ -293,7 +293,10 @@ impl AimDbHandle {
         T: Send + Sync + 'static + Debug + Clone,
     {
         let record_key = key.as_ref().to_string();
-        let reader = self.db.subscribe::<T>(&record_key).map_err(SyncError::Db)?;
+        let reader = self
+            .db
+            .subscribe::<T>(&record_key)
+            .map_err(lift_subscribe_error)?;
         let waiter = Waiter::new(self.runtime_handle.clone());
         Ok(crate::SyncConsumer::new(waiter, reader))
     }
@@ -450,6 +453,24 @@ impl AimDbHandle {
                 _ = shutdown_rx.recv() => {}
             }
         });
+    }
+}
+
+fn lift_subscribe_error(e: aimdb_core::DbError) -> SyncError {
+    use aimdb_core::DbError;
+    match e {
+        DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
+        DbError::ConnectionFailed { .. } => SyncError::RuntimeShutdown,
+        DbError::RecordNotFound { record_name } => {
+            SyncError::Db(DbError::RecordNotFound { record_name })
+        }
+        DbError::RecordKeyNotFound { key } => {
+            SyncError::Db(DbError::RecordNotFound { record_name: key })
+        }
+        DbError::InvalidRecordId { id } => SyncError::Db(DbError::RecordNotFound {
+            record_name: id.to_string(),
+        }),
+        e => SyncError::Db(e),
     }
 }
 
