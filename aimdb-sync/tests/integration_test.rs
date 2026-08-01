@@ -246,6 +246,24 @@ fn test_runtime_shutdown_error() {
     assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 }
 
+/// Test error handling - runtime shutdown, non-blocking operations
+#[test]
+fn test_runtime_shutdown_error_non_blocking() {
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
+
+    // Shut down the runtime
+    handle.detach().expect("Failed to detach");
+
+    // Non-blocking operations should now fail with RuntimeShutdown too
+    let test_value = test_value();
+
+    let result = producer.try_set(test_value);
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
+
+    let result = consumer.try_get();
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
+}
+
 /// Test error handling - reading messages sent before the shutdown
 #[test]
 fn test_runtime_shutdown_after_produce_read_error() {
