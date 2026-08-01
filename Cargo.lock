@@ -327,6 +327,7 @@ version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
+ "aimdb-sync",
  "aimdb-tokio-adapter",
  "serde",
  "serde_json",
