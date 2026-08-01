@@ -9,18 +9,6 @@ use core::time::Duration;
 use std::thread::{self, JoinHandle};
 use tokio::sync::mpsc;
 
-/// Default channel capacity for sync producers and consumers.
-///
-/// This is the buffer size used by `producer()` and `consumer()` methods.
-/// A capacity of 100 provides a good balance between:
-/// - Memory usage (100 × sizeof(T) per channel)
-/// - Latency (small bursts don't block)
-/// - Backpressure (prevents unbounded growth)
-///
-/// Use `producer_with_capacity()` or `consumer_with_capacity()` if you need
-/// different buffering for specific record types.
-pub const DEFAULT_SYNC_CHANNEL_CAPACITY: usize = 100;
-
 /// Extension trait to add `attach()` method to `AimDbBuilder`.
 ///
 /// This trait provides the entry point to the sync API by allowing
@@ -269,7 +257,7 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        self.producer_with_capacity(key, DEFAULT_SYNC_CHANNEL_CAPACITY)
+        Ok(crate::SyncProducer::new(Arc::downgrade(&self.db), key))
     }
 
     /// Create a synchronous consumer for type `T`.
@@ -301,94 +289,6 @@ impl AimDbHandle {
     /// # }
     /// ```
     pub fn consumer<T>(&self, key: impl AsRef<str>) -> SyncResult<crate::SyncConsumer<T>>
-    where
-        T: Send + Sync + 'static + Debug + Clone,
-    {
-        self.consumer_with_capacity(key, DEFAULT_SYNC_CHANNEL_CAPACITY)
-    }
-
-    /// Create a synchronous producer with custom channel capacity.
-    ///
-    /// Like `producer()` but allows specifying the channel buffer size.
-    /// Use this when you need different buffering characteristics for specific record types.
-    ///
-    /// # Arguments
-    ///
-    /// - `key`: The record key identifying this record instance
-    /// - `capacity`: Channel buffer size (number of items that can be buffered)
-    ///
-    /// # Type Parameters
-    ///
-    /// - `T`: The record type, must implement `TypedRecord`
-    ///
-    /// # Errors
-    ///
-    /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use aimdb_sync::*;
-    /// # use serde::{Serialize, Deserialize};
-    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
-    /// # struct HighFrequencySensor { value: f32 }
-    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// // High-frequency sensor needs larger buffer
-    /// let producer = handle.producer_with_capacity::<HighFrequencySensor>("sensor::high_freq", 1000)?;
-    /// producer.set(HighFrequencySensor { value: 42.0 })?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn producer_with_capacity<T>(
-        &self,
-        key: impl AsRef<str>,
-        capacity: usize,
-    ) -> SyncResult<crate::SyncProducer<T>>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        Ok(crate::SyncProducer::new(Arc::downgrade(&self.db), key))
-    }
-
-    /// Create a synchronous consumer with custom channel capacity.
-    ///
-    /// Like `consumer()` but allows specifying the channel buffer size.
-    /// Use this when you need different buffering characteristics for specific record types.
-    ///
-    /// # Arguments
-    ///
-    /// - `key`: The record key identifying this record instance
-    /// - `capacity`: Channel buffer size (number of items that can be buffered)
-    ///
-    /// # Type Parameters
-    ///
-    /// - `T`: The record type, must implement `TypedRecord`
-    ///
-    /// # Errors
-    ///
-    /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # use aimdb_sync::*;
-    /// # use serde::{Serialize, Deserialize};
-    /// # #[derive(Clone, Debug, Serialize, Deserialize)]
-    /// # struct RareEvent { id: u32 }
-    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// // Rare events need smaller buffer
-    /// let mut consumer = handle.consumer_with_capacity::<RareEvent>("events::rare", 10)?;
-    /// let event = consumer.get()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn consumer_with_capacity<T>(
-        &self,
-        key: impl AsRef<str>,
-        capacity: usize,
-    ) -> SyncResult<crate::SyncConsumer<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {

@@ -108,8 +108,7 @@
 //!
 //! ## Independent Subscriptions
 //!
-//! Note: Cloning a `SyncConsumer` shares the same channel, so only one thread
-//! will receive each value. For independent subscriptions, create multiple consumers:
+//! For independent subscriptions, create multiple consumers:
 //!
 #![cfg_attr(feature = "std", doc = "```no_run")]
 #![cfg_attr(not(feature = "std"), doc = "```ignore")]
@@ -124,74 +123,6 @@
 //! # }
 //! ```
 //!
-//! ## Channel Capacity Configuration
-//!
-//! By default, both producers and consumers use a channel capacity of 100.
-//! You can customize this per record type using the `_with_capacity` methods:
-//!
-#![cfg_attr(feature = "std", doc = "```no_run")]
-#![cfg_attr(not(feature = "std"), doc = "```ignore")]
-//! # use aimdb_sync::{AimDbHandle, SyncResult};
-//! # #[derive(Debug, Clone)] struct SensorData { value: f32 }
-//! # #[derive(Debug, Clone)] struct RareEvent { code: u8 }
-//! # #[derive(Debug, Clone)] struct LatestOnly { state: u8 }
-//! # fn demo(handle: &AimDbHandle) -> SyncResult<()> {
-//! // High-frequency sensor data needs larger buffer
-//! let producer = handle.producer_with_capacity::<SensorData>("sensor.fast", 1000)?;
-//!
-//! // Rare events can use smaller buffer
-//! let consumer = handle.consumer_with_capacity::<RareEvent>("events.rare", 10)?;
-//!
-//! // SingleLatest-like behavior: use capacity=1 to minimize queueing
-//! let consumer = handle.consumer_with_capacity::<LatestOnly>("state.latest", 1)?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! **When to adjust capacity:**
-//! - **Increase**: High-frequency data, bursty traffic, slow consumers
-//! - **Decrease**: Memory-constrained, rare events, strict backpressure needed
-//! - **Capacity=1**: Approximate SingleLatest semantics (see limitation below)
-//! - **Default (100)**: Good for most use cases
-//!
-//! ## Buffer Semantics Limitation
-//!
-//! **Important**: The sync API adds a queueing layer (`std::sync::mpsc` channel)
-//! between the database buffer and your code. This means:
-//!
-//! - ✅ **SPMC Ring**: Works as expected - each consumer gets independent data
-//! - ✅ **Mailbox**: Works well - last value is preserved
-//! - ⚠️ **SingleLatest**: Best effort only - the sync channel may queue multiple values
-//!
-//! ### Solutions for SingleLatest Semantics
-//!
-//! 1. **Use `get_latest()`** - Drains the channel to get the most recent value:
-#![cfg_attr(feature = "std", doc = "```no_run")]
-#![cfg_attr(not(feature = "std"), doc = "```ignore")]
-//!    # use aimdb_sync::SyncResult;
-//!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(consumer: &mut aimdb_sync::SyncConsumer<Temperature>) -> SyncResult<()> {
-//!    // Always get the latest value, skipping queued intermediates
-//!    let latest = consumer.get_latest()?;
-//!    # Ok(())
-//!    # }
-//!    ```
-//!
-//! 2. **Use capacity=1** - Minimize queueing:
-#![cfg_attr(feature = "std", doc = "```no_run")]
-#![cfg_attr(not(feature = "std"), doc = "```ignore")]
-//!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(handle: &aimdb_sync::AimDbHandle) -> aimdb_sync::SyncResult<()> {
-//!    let consumer = handle.consumer_with_capacity::<Temperature>("sensor.temp", 1)?;
-//!    # Ok(())
-//!    # }
-//!    ```
-//!
-//! 3. **Use the async API directly** - For perfect semantic preservation.
-//!
-//! The sync API is optimized for simplicity and ease of use, not for perfect
-//! semantic preservation across all buffer types.
-//!
 //! ## Threading Model
 //!
 //! - **User threads**: Unlimited - any number of threads can call operations concurrently
@@ -201,7 +132,6 @@
 //! ## Performance
 //!
 //! - **Overhead**: ~100-500μs per operation vs pure async (channel + context switch)
-//! - **Throughput**: Limited by channel capacity (default: 100 items)
 //! - **Latency**: Excellent for <50ms target, not suitable for hard low-latency requirements
 //!
 //! ## Error Handling
@@ -263,7 +193,7 @@ mod waiter;
 #[cfg(feature = "std")]
 pub use consumer::SyncConsumer;
 #[cfg(feature = "std")]
-pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt, DEFAULT_SYNC_CHANNEL_CAPACITY};
+pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt};
 #[cfg(feature = "std")]
 pub use producer::SyncProducer;
 
