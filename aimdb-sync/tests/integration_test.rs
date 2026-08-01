@@ -66,13 +66,8 @@ fn test_basic_producer_consumer() {
     let test_value = test_value();
     producer.set(test_value.clone()).expect("Failed to produce");
 
-    // Give time for async propagation
-    thread::sleep(Duration::from_millis(100));
-
-    // Consume the value (use timeout to avoid hanging)
-    let received = consumer
-        .get_with_timeout(Duration::from_secs(2))
-        .expect("Failed to consume");
+    // Consume the value
+    let received = consumer.get().expect("Failed to consume");
     assert_eq!(received, test_value);
 
     handle.detach().expect("Failed to detach");
@@ -111,9 +106,6 @@ fn test_multi_threaded_producer_consumer() {
         }
         received
     });
-
-    // Give consumers time to start
-    thread::sleep(Duration::from_millis(50));
 
     // Create multiple producers
     let producer1 = handle
@@ -168,9 +160,6 @@ fn test_timeout_operations() {
     producer
         .set(test_value.clone())
         .expect("Failed to produce with timeout");
-
-    // Give more time for the value to propagate through the async pipeline
-    thread::sleep(Duration::from_millis(200));
 
     // Get with timeout (should succeed)
     let received = consumer
@@ -298,9 +287,6 @@ fn test_spmc_ring_semantics() {
         producer.set(data(i)).expect("Failed to produce");
     }
 
-    // Give time for values to propagate
-    thread::sleep(Duration::from_millis(100));
-
     // Both consumers should be able to get values independently
     let c1_data = consumer1.get().expect("Consumer 1 failed");
     let c2_data = consumer2.get().expect("Consumer 2 failed");
@@ -326,7 +312,6 @@ fn test_single_latest_semantics() {
         value: "initial".to_string(),
     };
     producer.set(initial_value).expect("Failed to produce");
-    thread::sleep(Duration::from_millis(100));
 
     // Consume first value to establish the subscription
     let first = consumer.get().expect("Failed to consume initial value");
@@ -335,11 +320,7 @@ fn test_single_latest_semantics() {
     // Now produce multiple values rapidly
     for i in 1..=5 {
         producer.set(data(i)).expect("Failed to produce value");
-        thread::sleep(Duration::from_millis(5));
     }
-
-    // Wait for all values to propagate
-    thread::sleep(Duration::from_millis(100));
 
     // Use get_latest() to drain the channel and get the most recent value
     let latest = consumer.get_latest().expect("Failed to get latest");
@@ -374,8 +355,6 @@ fn test_get_latest_with_timeout() {
     for i in 1..=3 {
         producer.set(data(i)).expect("Failed to produce value");
     }
-
-    thread::sleep(Duration::from_millis(50));
 
     // Should get the latest value with timeout
     let latest = consumer
