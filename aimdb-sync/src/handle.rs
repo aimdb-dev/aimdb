@@ -493,7 +493,6 @@ impl Drop for AimDbHandle {
 
 #[cfg(test)]
 mod tests {
-    // TODO: is it possible with static_assertions?
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
     #[allow(dead_code)]

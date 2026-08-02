@@ -294,7 +294,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    // TODO: is it possible with static_assertions?
     fn assert_send<T: Send>() {}
     #[allow(dead_code)]
     fn check<X: Send + std::fmt::Debug + Clone>() {
