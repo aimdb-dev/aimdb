@@ -1,13 +1,11 @@
-/// Runtime-specific implementations of Waiter define how to
-/// running the given future on the current thread until completion
+/// tokio-specific implementation of running the given future
+/// on the current thread until completion
 use std::future::Future;
 
-#[cfg(feature = "std")]
 pub struct Waiter {
     handle: tokio::runtime::Handle,
 }
 
-#[cfg(feature = "std")]
 impl Waiter {
     pub fn new(handle: tokio::runtime::Handle) -> Self {
         Self { handle }

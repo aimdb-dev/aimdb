@@ -2,8 +2,8 @@
 
 use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
-use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
-use alloc::sync::{Arc, Weak};
+use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder};
+use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
 use std::thread::{self, JoinHandle};
@@ -167,8 +167,6 @@ impl AimDbHandle {
         })
     }
 
-    /// Create a new handle from an already-built database (legacy method).
-    #[allow(dead_code)]
     pub(crate) fn new(db: AimDb) -> SyncResult<Self> {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);

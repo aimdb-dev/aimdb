@@ -4,11 +4,8 @@ use aimdb_core::{DbError, Reader};
 
 use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
-use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
-use std::sync::mpsc;
-use std::sync::Mutex;
 
 /// Synchronous consumer for records of type `T`.
 ///

@@ -189,6 +189,7 @@ mod error;
 mod handle;
 #[cfg(feature = "std")]
 mod producer;
+#[cfg(feature = "std")]
 mod waiter;
 
 #[cfg(feature = "std")]

@@ -1,11 +1,10 @@
 //! Synchronous producer for typed records.
 
-use crate::{AimDbHandle, SyncError, SyncResult};
-use aimdb_core::{AimDb, DbResult, TryProduceError};
-use alloc::sync::{Arc, Weak};
+use crate::{SyncError, SyncResult};
+use aimdb_core::{AimDb, TryProduceError};
+use alloc::sync::Weak;
 use core::fmt::Debug;
 use core::marker::PhantomData;
-use core::time::Duration;
 
 /// Synchronous producer for records of type `T`.
 ///
@@ -222,7 +221,7 @@ mod tests {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
     #[allow(dead_code)]
-    fn check<X: Send + 'static + std::fmt::Debug + Clone>() {
+    fn check<X: Send + 'static + core::fmt::Debug + Clone>() {
         assert_send::<crate::SyncProducer<X>>();
         assert_sync::<crate::SyncProducer<X>>();
     }
