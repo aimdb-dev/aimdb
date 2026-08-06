@@ -729,44 +729,37 @@ fn parse_telegram(cemi_data: &[u8]) -> Option<(GroupAddress, Vec<u8>)> {
     // Only process group addresses (not individual addresses)
     let dest = ldata.destination_group()?;
 
-    // Extract payload (application data)
-    // For 6-bit encoded values (DPT1 boolean), ldata.data is empty
-    // and the value is encoded in the APCI byte. We need to extract it manually.
-    // Note: npdu_length can be 1 (combined TPCI+APCI) or 2 (separate TPCI and APCI)
-    let payload = if ldata.data.is_empty() {
-        // 6-bit encoding: extract value from APCI byte in raw cEMI data
-        // cEMI structure: [msg_code, add_info_len, <add_info>, ctrl1, ctrl2, src(2), dest(2), npdu_len, tpci, apci, ...]
-        // APCI byte position = 2 + add_info_len + 6 (ctrl1, ctrl2, src(2), dest(2), npdu_len) + 1 (tpci) = 2 + add_info_len + 7 + 1
-        let add_info_len = if cemi_data.len() > 1 { cemi_data[1] } else { 0 } as usize;
-        let apci_pos = 2 + add_info_len + 8; // TPCI is at +7, APCI is at +8
+    // Extract the application payload straight from the raw cEMI bytes.
+    //
+    // cEMI structure: [msg_code, add_info_len, <add_info>, ctrl1, ctrl2,
+    //                  src(2), dest(2), npdu_len, tpci, apci, data…]
+    //
+    // The NPDU length octet is the authority on the encoding, not
+    // `ldata.data`: knx-pico derives that slice as `[9 .. 7 + npdu_len]`,
+    // which is one octet short of the KNX encoding (`npdu_len` counts the
+    // APCI octet plus the data octets), so it comes back empty for a
+    // single-octet telegram — a real DPT 5.001 sensor reading would then be
+    // taken for a 6-bit one and decode to 0.
+    let add_info_len = if cemi_data.len() > 1 { cemi_data[1] } else { 0 } as usize;
+    let ldata_offset = 2 + add_info_len;
+    let npdu_len_pos = ldata_offset + 6;
+    let apci_pos = ldata_offset + 8;
+    if cemi_data.len() <= apci_pos {
+        return None;
+    }
 
-        if cemi_data.len() > apci_pos {
-            let apci_byte = cemi_data[apci_pos];
-            let value = apci_byte & 0x3F; // Extract 6-bit value
-            vec![value]
-        } else {
-            vec![]
-        }
+    let payload = if cemi_data[npdu_len_pos] <= 1 {
+        // 6-bit encoding (DPT1 and friends): the value rides in the low bits
+        // of the APCI octet, no data octets follow.
+        vec![cemi_data[apci_pos] & 0x3F]
     } else {
-        // Standard encoding: multi-byte data (DPT5, DPT7, DPT9, etc.)
-        //
-        // cEMI L_Data structure (after msg_code and add_info):
-        // [0] ctrl1, [1] ctrl2, [2-3] src, [4-5] dest, [6] npdu_len, [7] TPCI, [8] APCI_low, [9+] data
-        //
-        // According to knx-pico parser: data starts at position 9 in L_Data
-        // In full cEMI frame: position = 2 + add_info_len + 9 = 11 (when add_info_len=0)
-        let add_info_len = if cemi_data.len() > 1 { cemi_data[1] } else { 0 } as usize;
-
-        // Data starts at: msg_code(0) + add_info_len_field(1) + add_info(variable) + L_Data_header(9)
-        let ldata_offset = 2 + add_info_len;
-        let data_start = ldata_offset + 9; // Position 11 when add_info_len=0
-
-        if cemi_data.len() > data_start {
-            cemi_data[data_start..].to_vec()
-        } else {
-            // Fallback to knx-pico's parsed data if extraction fails
-            ldata.data.to_vec()
-        }
+        // Standard encoding: `npdu_len - 1` data octets after the APCI octet
+        // (DPT5 → 1, DPT9 → 2, DPT14 → 4, …). A frame that promises more
+        // octets than it carries is truncated rather than rejected, leaving
+        // the length check to the DPT decoder.
+        let data_start = ldata_offset + 9;
+        let data_end = (data_start + cemi_data[npdu_len_pos] as usize - 1).min(cemi_data.len());
+        cemi_data.get(data_start..data_end).unwrap_or(&[]).to_vec()
     };
 
     Some((dest, payload))
@@ -967,6 +960,49 @@ mod tests {
             Action::Telegram {
                 addr,
                 payload: vec![0x01]
+            }
+        );
+    }
+
+    /// A single-octet datapoint (DPT5, e.g. 5.001 humidity in percent) is
+    /// carried in its own octet after the APCI, not in the APCI's low bits.
+    /// Reading it as a 6-bit value would silently publish 0.
+    #[test]
+    fn inbound_single_octet_telegram_keeps_its_data_byte() {
+        let addr: GroupAddress = "9/1/1".parse().unwrap();
+
+        for raw in [0x7F_u8, 0x80, 0xFF] {
+            let mut engine = connected_engine(0);
+            let datagram = inbound_group_write(7, 1, addr, &[raw]);
+            engine.handle_datagram(&datagram, 100);
+            let actions = drain(&mut engine);
+            assert_eq!(
+                actions[1],
+                Action::Telegram {
+                    addr,
+                    payload: vec![raw]
+                },
+                "raw byte 0x{raw:02X} did not survive the round trip"
+            );
+        }
+    }
+
+    /// The NPDU length octet decides how many data octets follow, so a frame
+    /// with trailing bytes beyond it does not lengthen the payload.
+    #[test]
+    fn inbound_telegram_payload_is_bounded_by_npdu_length() {
+        let addr: GroupAddress = "9/1/0".parse().unwrap();
+        let mut cemi = build_group_write_cemi(addr, &[0x0C, 0x1A]).to_vec();
+        cemi.extend_from_slice(&[0xDE, 0xAD]); // trailing padding some gateways append
+
+        let mut engine = connected_engine(0);
+        engine.handle_datagram(&build_tunneling_request(7, 1, &cemi), 100);
+        let actions = drain(&mut engine);
+        assert_eq!(
+            actions[1],
+            Action::Telegram {
+                addr,
+                payload: vec![0x0C, 0x1A]
             }
         );
     }
