@@ -7,6 +7,11 @@
 //! 2. **Topic subscriptions** — `authorize_subscribe()`: gate which topics a client can
 //!    receive data from.
 //! 3. **Inbound writes** — `authorize_write()`: gate which topics a client may write to.
+//! 4. **Historical reads** — `authorize_query()`: gate the `record.query` pattern.
+//! 5. **Introspection** — `authorize_list()`: gate which `record.list` rows a client sees.
+//!
+//! (4) and (5) default to (2), so overriding `authorize_subscribe` governs all
+//! three read paths.
 //!
 //! The default implementation ([`NoAuth`]) allows all operations.
 
@@ -182,6 +187,37 @@ pub trait AuthHandler: Send + Sync + 'static {
         topic: &'a str,
     ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(async move { client.permissions.can_write(topic) })
+    }
+
+    /// Called before serving a `record.query` (historical read).
+    ///
+    /// `pattern` is the query's `name`, possibly wildcarded — so this is the
+    /// containment check [`authorize_subscribe`](Self::authorize_subscribe)
+    /// performs, which it delegates to by default. A query omitting `name` asks
+    /// for `"*"`, which a narrower grant does not contain: it fails closed.
+    fn authorize_query<'a>(
+        &'a self,
+        client: &'a ClientInfo,
+        pattern: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        self.authorize_subscribe(client, pattern)
+    }
+
+    /// Called for each `record.list` row; `false` drops the row and the call
+    /// still succeeds. Defaults to
+    /// [`authorize_subscribe`](Self::authorize_subscribe).
+    ///
+    /// `record_key` is the row's database key, *not* its WebSocket topic. The
+    /// two coincide under `link_to("ws://<key>")`, but a `TopicProvider` that
+    /// computes the topic per value has no single topic to check against —
+    /// grant the record key itself (`["sensors.#", "inject"]`) to keep such a
+    /// record introspectable.
+    fn authorize_list<'a>(
+        &'a self,
+        client: &'a ClientInfo,
+        record_key: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        self.authorize_subscribe(client, record_key)
     }
 }
 

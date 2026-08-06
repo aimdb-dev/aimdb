@@ -113,15 +113,24 @@ impl Session for WsSession {
             let value = match method {
                 "record.list" => {
                     // Same `RecordMetadata` rows core serves over every other
-                    // transport; the connector only fills in the schema name core
-                    // can't resolve.
-                    let mut records = self.db.list_records();
-                    for record in &mut records {
+                    // transport — the whole database, so narrow it to the rows
+                    // this client may see; the connector only fills in the schema
+                    // name core can't resolve.
+                    let mut records = Vec::new();
+                    for mut record in self.db.list_records() {
+                        if !self
+                            .auth
+                            .authorize_list(&self.info, &record.record_key)
+                            .await
+                        {
+                            continue;
+                        }
                         if record.schema_type.is_none() {
                             if let Some(name) = self.schema_by_type.get(&record.type_id) {
                                 record.schema_type = Some(name.clone());
                             }
                         }
+                        records.push(record);
                     }
                     serde_json::json!(records)
                 }
@@ -182,7 +191,8 @@ impl WsSession {
     /// `record.query` with the shared `{name, limit, start, end}` params and
     /// `{records, total}` result: a plugged-in
     /// [`QueryHandler`] wins; otherwise delegate to the Extensions-registered
-    /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`.
+    /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`. The pattern
+    /// passes [`AuthHandler::authorize_query`] before either is consulted.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
         let name = params
             .get("name")
@@ -195,6 +205,10 @@ impl WsSession {
             .and_then(|v| usize::try_from(v).ok());
         let start = params.get("start").and_then(|v| v.as_u64());
         let end = params.get("end").and_then(|v| v.as_u64());
+
+        if !self.auth.authorize_query(&self.info, &name).await {
+            return Err(RpcError::Denied);
+        }
 
         if let Some(handler) = &self.query_handler {
             let (records, total) = handler

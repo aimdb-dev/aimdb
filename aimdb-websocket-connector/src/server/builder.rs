@@ -216,7 +216,8 @@ impl WebSocketConnectorBuilder {
     ///
     /// Without this, `record.query` delegates to the `QueryHandlerFn` that
     /// `aimdb-persistence::with_persistence` registers in Extensions; with
-    /// neither, clients get `not_found`.
+    /// neither, clients get `not_found`. Either way the requested pattern passes
+    /// [`AuthHandler::authorize_query`] first.
     pub fn with_query_handler(mut self, handler: impl QueryHandler + 'static) -> Self {
         self.query_handler = Some(Arc::new(handler));
         self

@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::TopicProvider;
+use aimdb_core::remote::QueryHandlerFn;
 use aimdb_core::session::{aimx::AimxCodec, run_client, ClientConfig};
 use aimdb_core::{AimDb, AimDbBuilder};
 use aimdb_data_contracts::{SchemaType, Streamable};
@@ -67,6 +68,15 @@ impl SchemaType for Temp {
 }
 impl Streamable for Temp {}
 
+// ── A record type the connector is never told about ──────────────────
+// No `register::<Ledger>()`, so it carries no `schema_type` — but a granted
+// client still enumerates it: registration resolves names, it is not an ACL.
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Ledger {
+    balance: i64,
+}
+
 // ── Auth + query fixtures ────────────────────────────────────────────
 
 struct DenyAuth;
@@ -99,6 +109,29 @@ impl AuthHandler for AsyncTopicAuth {
         Box::pin(async move {
             tokio::task::yield_now().await; // simulate an async ACL lookup
             !denied
+        })
+    }
+}
+
+/// Grants everything to a client that asks via `?grant=all`, nothing to anyone
+/// else — one server, two very differently privileged clients. Only
+/// `authenticate` is overridden, so the read paths ride the trait defaults.
+struct GrantByQuery;
+impl AuthHandler for GrantByQuery {
+    fn authenticate<'a>(
+        &'a self,
+        request: &'a AuthRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>> {
+        let all = request
+            .query_params
+            .get("grant")
+            .is_some_and(|g| g == "all");
+        Box::pin(async move {
+            Ok(if all {
+                Permissions::allow_all()
+            } else {
+                Permissions::default()
+            })
         })
     }
 }
@@ -185,10 +218,16 @@ type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn ws_connect(addr: SocketAddr) -> WsClient {
+    ws_connect_with(addr, "").await
+}
+
+/// [`ws_connect`] with `extra` query params appended after the version
+/// (e.g. `"&grant=all"`), so one server can hand clients different grants.
+async fn ws_connect_with(addr: SocketAddr, extra: &str) -> WsClient {
     // Every real client declares its AimX version at the upgrade; go through the
     // shared helper so the tests exercise the exact URL the dialers produce.
     let url = aimdb_core::remote::ws_url_with_version(&format!("ws://{addr}/ws"));
-    tokio_tungstenite::connect_async(url)
+    tokio_tungstenite::connect_async(format!("{url}{extra}"))
         .await
         .expect("connect")
         .0
@@ -415,6 +454,112 @@ async fn server_query_without_handler_is_not_found() {
         ws_recv_tag(&mut c, "reply").await,
         json!({"t":"reply","id":3,"err":"not_found"})
     );
+}
+
+/// Regression (design 049 §2): `record.list` / `record.query` consulted nothing,
+/// so a client with *empty* grants could enumerate core's whole database and
+/// read whatever history `with_persistence` left in Extensions. Same server,
+/// same database, two clients — the grant is the only difference.
+#[tokio::test]
+async fn record_list_and_query_answer_to_the_client_grants() {
+    let addr = free_addr();
+    let mut ws = WebSocketConnector::new().with_auth(GrantByQuery);
+    ws.register::<Temp>();
+    let mut sb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(ws.bind(addr).path("/ws"));
+
+    // History on the *database*, as `with_persistence` registers it. No
+    // `with_query_handler` here, so this exercises the Extensions fallback.
+    let handler: QueryHandlerFn = Box::new(|_params| {
+        Box::pin(async {
+            Ok(json!({"records": [{"topic":"ledger","payload":42,"ts":1}], "total": 1}))
+        })
+    });
+    sb.extensions_mut().insert(handler);
+
+    sb.configure::<Temp>("temp", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .link_to("ws://temp")
+            .with_serializer(|_ctx, t: &Temp| Ok(serde_json::to_vec(t).unwrap()))
+            .finish();
+    });
+    sb.configure::<Ledger>("ledger", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    let (db, runner) = sb.build().await.expect("build db");
+    assert_eq!(db.list_records().len(), 2, "two records to discriminate on");
+    tokio::spawn(runner.run());
+    wait_for_listen(addr).await;
+
+    // ── No grants ────────────────────────────────────────────────────
+    let mut c = ws_connect(addr).await;
+
+    // The grants really are empty (the premise the rest of the test rests on).
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"temp"})).await;
+    assert_eq!(
+        ws_recv(&mut c).await,
+        json!({"t":"reply","id":1,"err":"denied"})
+    );
+
+    // `denied` either way — configured handler or not — so it leaks nothing.
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":2,"method":"record.query","params":{}}),
+    )
+    .await;
+    assert_eq!(
+        ws_recv_tag(&mut c, "reply").await,
+        json!({"t":"reply","id":2,"err":"denied"}),
+        "the database's persistence handler must not be reachable ungranted"
+    );
+
+    // Nothing granted, nothing listed — the call still succeeds.
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":3,"method":"record.list","params":null}),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut c, "reply").await;
+    assert_eq!(
+        reply["ok"],
+        json!([]),
+        "an ungranted client must not enumerate the database"
+    );
+
+    // ── Full grants, same server ─────────────────────────────────────
+    let mut a = ws_connect_with(addr, "&grant=all").await;
+
+    // The Extensions fallback still serves history — it is gated, not removed.
+    ws_send(
+        &mut a,
+        json!({"t":"req","id":4,"method":"record.query","params":{"name":"#"}}),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut a, "reply").await;
+    assert_eq!(reply["ok"]["total"], 1);
+    assert_eq!(
+        reply["ok"]["records"],
+        json!([{"topic":"ledger","payload":42,"ts":1}])
+    );
+
+    // …and the full database is enumerable, unregistered `Ledger` included.
+    ws_send(
+        &mut a,
+        json!({"t":"req","id":5,"method":"record.list","params":null}),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut a, "reply").await;
+    let rows = reply["ok"].as_array().expect("record.list array");
+    let mut keys: Vec<&str> = rows
+        .iter()
+        .map(|r| r["record_key"].as_str().unwrap())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["ledger", "temp"]);
+    let temp = rows.iter().find(|r| r["record_key"] == "temp").unwrap();
+    assert_eq!(temp["schema_type"], "temperature");
 }
 
 #[tokio::test]

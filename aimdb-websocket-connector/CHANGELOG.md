@@ -31,6 +31,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`record.list` and `record.query` now consult the `AuthHandler`.** Both
+  consulted nothing: `record.list` returned core's whole database and
+  `record.query` fell through to the `QueryHandlerFn` that
+  `aimdb-persistence::with_persistence` registers, with `name` defaulting to
+  `"*"` — so a client authenticated with empty subscribe/write grants could
+  enumerate and historically read records it could not subscribe to. Two new
+  `AuthHandler` methods gate them, `authorize_query(client, pattern)` and
+  `authorize_list(client, record_key)`, both defaulting to
+  `authorize_subscribe`; an existing handler that overrides `authorize_subscribe`
+  (async ACL included) therefore governs all three read paths unchanged. A denied
+  query answers `denied` whether or not a handler is configured; denied
+  `record.list` rows are dropped from an otherwise successful reply. `NoAuth`
+  allows everything, as before.
+
+  Two caveats: grants live in ws-topic space while `record.list` rows are keyed
+  by `record_key`, so a record whose topic comes from a `TopicProvider` needs a
+  grant covering its *key*; and a `record.query` omitting `name` asks for `"*"`,
+  which a narrower grant does not contain — it fails closed.
+
 - **A grant with a non-terminal `#` no longer covers its whole subtree.** Both
   `Permissions::can_subscribe` (via `pattern_contains`) and
   `Permissions::can_write` (via `topic_matches`) stopped matching at the first
@@ -67,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves, keyed by `record_key` — with the data-contract `schema_type` the
   connector resolves stamped in. The connector-only `TopicInfo` row type and
   its topic-scoped `{name, schema_type, entity}` shape are gone; `record.list`
-  now enumerates every record, not only WS-outbound topics.
+  now enumerates every record the client is granted, not only WS-outbound topics
+  (see the `AuthHandler` gating under **Security**).
 - **`with_raw_payload` removed** — its purpose was bypassing the ws `Data`
   envelope; under AimX the envelope is the protocol.
 - **`SnapshotProvider::snapshot(topic)` became `snapshots(pattern)`**,
