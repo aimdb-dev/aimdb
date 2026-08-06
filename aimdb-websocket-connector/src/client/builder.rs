@@ -91,9 +91,9 @@ impl WsClientConnectorBuilder {
         self
     }
 
-    /// Set the maximum number of queued writes while disconnected (default: 256).
+    /// Set the maximum number of queued commands while disconnected (default: 256).
     ///
-    /// When the queue is full, new writes are silently dropped.
+    /// Past the cap the *oldest* queued command is dropped.
     pub fn with_max_offline_queue(mut self, max: usize) -> Self {
         self.max_offline_queue = max;
         self

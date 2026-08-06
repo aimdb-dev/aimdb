@@ -74,7 +74,7 @@ pub struct BridgeOptions {
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
     /// Maximum queued commands (writes/subscribes) while disconnected
-    /// (default: 256).
+    /// (default: 256); past the cap the oldest is dropped.
     #[serde(default = "default_queue_size")]
     pub max_offline_queue: usize,
     /// Keepalive interval in milliseconds (default: 30 000).

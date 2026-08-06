@@ -58,8 +58,11 @@ pub struct ClientConfig {
     /// Send a keepalive `Ping` after this many ms of an idle connection; any
     /// traffic resets the idle window. `None` (default) disables it.
     pub keepalive_interval: Option<u64>,
-    /// Cap on caller commands buffered while disconnected (oldest dropped past it).
-    /// Defaults to `usize::MAX` (unbounded).
+    /// Cap on caller commands buffered while the engine isn't draining them (a
+    /// pending dial, the backoff between redials), enforced at enqueue. Drop
+    /// policy is oldest-first, so the newest command always survives; a dropped
+    /// `call` resolves [`RpcError::Internal`] and a dropped `subscribe` ends its
+    /// stream. Defaults to `usize::MAX` (unbounded).
     pub max_offline_queue: usize,
     /// Send a Ping handshake on connect and await the Pong before serving caller
     /// commands. A real protocol swaps Ping/Pong for its Hello.
@@ -89,9 +92,9 @@ fn backoff_delay(config: &ClientConfig, attempt: usize) -> u64 {
     base.saturating_mul(1u64 << shift).min(cap)
 }
 
-/// Bound the offline backlog: drop the oldest buffered commands beyond `cap`.
-fn bound_offline_queue(cmd_rx: &Receiver<ClientCmd>, cap: usize) {
-    while cmd_rx.len() > cap && cmd_rx.try_recv().is_ok() {}
+/// Bound the offline backlog: drop the oldest buffered commands beyond `keep`.
+fn bound_offline_queue(cmd_rx: &Receiver<ClientCmd>, keep: usize) {
+    while cmd_rx.len() > keep && cmd_rx.try_recv().is_ok() {}
 }
 
 /// A cheap-clone handle to a running [`run_client`] engine — the caller-facing
@@ -100,6 +103,13 @@ fn bound_offline_queue(cmd_rx: &Receiver<ClientCmd>, cap: usize) {
 #[derive(Clone)]
 pub struct ClientHandle {
     cmd_tx: Sender<ClientCmd>,
+    /// The receiving end of `cmd_tx`, held only to *trim* the backlog (see
+    /// [`Self::enqueue`]), never to consume a command. The channel is MPMC, so a
+    /// `try_recv` here drops the oldest. It does not keep the engine alive:
+    /// closure follows the last *sender*, so dropping every handle still stops it.
+    cmd_rx: Receiver<ClientCmd>,
+    /// [`ClientConfig::max_offline_queue`], enforced on every enqueue.
+    max_offline_queue: usize,
     /// Correlation ids, allocated caller-side and shared by every clone.
     ///
     /// The *caller* numbers its requests so that abandoning one is race-free:
@@ -174,7 +184,14 @@ impl Drop for CancelOnDrop<'_> {
 impl ClientHandle {
     /// Funnel a command to the engine. The channel is unbounded, so `try_send`
     /// never blocks and only fails once the engine has stopped (receiver closed).
+    ///
+    /// Unbounded is why [`ClientConfig::max_offline_queue`] is enforced here: the
+    /// engine drains only while a connection is up, so trimming on the reconnect
+    /// path bounds neither the initial pending dial nor the backoff sleep.
     fn enqueue(&self, cmd: ClientCmd) -> Result<(), RpcError> {
+        // Trim first, leaving the slot `cmd` is about to take: the command being
+        // enqueued is never the one dropped.
+        bound_offline_queue(&self.cmd_rx, self.max_offline_queue.saturating_sub(1));
         self.cmd_tx.try_send(cmd).map_err(|_| RpcError::Internal)
     }
 
@@ -296,6 +313,8 @@ where
     let (cmd_tx, cmd_rx) = async_channel::unbounded();
     let handle = ClientHandle {
         cmd_tx,
+        cmd_rx: cmd_rx.clone(),
+        max_offline_queue: config.max_offline_queue,
         // Ids start at 1: `0` stays free as a "no correlation" sentinel for
         // protocols that want one.
         next_id: Arc::new(AtomicUsize::new(1)),
@@ -441,7 +460,7 @@ async fn client_loop<D, C>(
                 if e == TransportError::Closed {
                     return;
                 }
-                match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
+                match reconnect_after(&mut attempt, &config, &*clock).await {
                     true => continue,
                     false => return,
                 }
@@ -450,23 +469,22 @@ async fn client_loop<D, C>(
 
         match drive_connection(conn, &codec, &cmd_rx, &config, &*clock).await {
             Ended::HandlesDropped => return,
-            Ended::Disconnected => {
-                match reconnect_after(&mut attempt, &config, &cmd_rx, &*clock).await {
-                    true => continue,
-                    false => return,
-                }
-            }
+            Ended::Disconnected => match reconnect_after(&mut attempt, &config, &*clock).await {
+                true => continue,
+                false => return,
+            },
         }
     }
 }
 
-/// Decide whether to redial: honor `reconnect`, the attempt cap, the offline-queue
-/// bound, and the exponential backoff sleep (via the runtime clock). Returns
-/// `true` to retry, `false` to stop the engine.
+/// Decide whether to redial: honor `reconnect`, the attempt cap, and the
+/// exponential backoff sleep (via the runtime clock). Returns `true` to retry,
+/// `false` to stop the engine. The offline-queue bound is
+/// [`ClientHandle::enqueue`]'s — trimming once per redial would leave the
+/// backlog unbounded across the sleep below.
 async fn reconnect_after(
     attempt: &mut usize,
     config: &ClientConfig,
-    cmd_rx: &Receiver<ClientCmd>,
     clock: &dyn crate::executor::RuntimeOps,
 ) -> bool {
     if !config.reconnect {
@@ -480,7 +498,6 @@ async fn reconnect_after(
         );
         return false;
     }
-    bound_offline_queue(cmd_rx, config.max_offline_queue);
     clock
         .sleep(core::time::Duration::from_millis(backoff_delay(
             config, *attempt,
@@ -908,15 +925,23 @@ mod tests {
         }
     }
 
-    fn test_handle() -> (ClientHandle, Receiver<ClientCmd>) {
+    /// A handle whose channel nobody drains — an engine still dialing, or
+    /// sleeping between redials. `cap` is [`ClientConfig::max_offline_queue`].
+    fn test_handle_capped(cap: usize) -> (ClientHandle, Receiver<ClientCmd>) {
         let (cmd_tx, cmd_rx) = async_channel::unbounded();
         (
             ClientHandle {
                 cmd_tx,
+                cmd_rx: cmd_rx.clone(),
+                max_offline_queue: cap,
                 next_id: Arc::new(AtomicUsize::new(1)),
             },
             cmd_rx,
         )
+    }
+
+    fn test_handle() -> (ClientHandle, Receiver<ClientCmd>) {
+        test_handle_capped(usize::MAX)
     }
 
     /// Poll a call once — enough to queue its command — then abandon it, which
@@ -1049,6 +1074,8 @@ mod tests {
         let (cmd_tx, cmd_rx) = async_channel::unbounded();
         let handle = ClientHandle {
             cmd_tx,
+            cmd_rx: cmd_rx.clone(),
+            max_offline_queue: usize::MAX,
             next_id: Arc::new(AtomicUsize::new(usize::MAX)),
         };
 
@@ -1073,6 +1100,56 @@ mod tests {
         assert!(
             cmd_rx.is_empty(),
             "a refused allocation must not reach the engine"
+        );
+    }
+
+    /// The cap is a hard bound: nothing drains this channel, as during a pending
+    /// dial or a backoff sleep. Pre-fix the trim ran once per redial, so the
+    /// backlog grew unbounded and was flushed untrimmed on the next dial.
+    #[tokio::test]
+    async fn the_offline_queue_is_bounded_at_enqueue() {
+        let (handle, cmd_rx) = test_handle_capped(2);
+
+        for topic in ["one", "two", "three", "four"] {
+            handle
+                .write(topic, Payload::from(&b"x"[..]))
+                .expect("the engine is still running");
+        }
+
+        assert_eq!(cmd_rx.len(), 2, "the backlog must not exceed the cap");
+        // Oldest-first: the two most recent writes are the ones kept.
+        for expected in ["three", "four"] {
+            match cmd_rx.try_recv() {
+                Ok(ClientCmd::Write { topic, .. }) => assert_eq!(topic, expected),
+                _ => panic!("the newest writes must survive the trim"),
+            }
+        }
+    }
+
+    /// A trimmed command is not silently lost: it carried the only sender of its
+    /// reply channel, so the caller resolves rather than awaiting a reply the
+    /// engine will never send.
+    #[tokio::test]
+    async fn a_trimmed_call_fails_its_caller() {
+        let (handle, _cmd_rx) = test_handle_capped(1);
+        let (reply, rx) = oneshot::channel();
+        handle
+            .enqueue(ClientCmd::Call {
+                id: 1,
+                method: String::from("one"),
+                params: Payload::from(&b"x"[..]),
+                reply,
+            })
+            .expect("the engine is still running");
+
+        // At cap 1 the next command displaces it.
+        handle
+            .write("later", Payload::from(&b"x"[..]))
+            .expect("the engine is still running");
+
+        assert!(
+            rx.await.is_err(),
+            "a trimmed call must not leave its caller waiting"
         );
     }
 
