@@ -185,19 +185,30 @@ impl BridgeShared {
 /// so an ordinary late-join snapshot burst passes through untouched.
 const FRAME_QUEUE_CAP: usize = 1024;
 
+/// Ceiling on a single inbound frame, in bytes.
+///
+/// [`FRAME_QUEUE_CAP`] bounds queued *frames*; without a per-frame ceiling the
+/// queued byte total is whatever the peer chooses to send, so the two together
+/// are what bounds the funnel's memory. Sized well above any frame an ordinary
+/// bridge sees — the largest is a `record.query` reply, which the caller pages
+/// with `limit`.
+const MAX_FRAME_BYTES: usize = 1024 * 1024;
+
 /// Frames arriving from JS event callbacks, funneled to the engine's `recv`.
 type FrameRx = futures_channel::mpsc::Receiver<Vec<u8>>;
 
 /// Sending half of the frame funnel, held by the `onmessage` callback.
 type FrameTx = futures_channel::mpsc::Sender<Vec<u8>>;
 
-/// What [`funnel_frame`] did with one inbound frame.
+/// What [`funnel_text`] / [`funnel_frame`] did with one inbound frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Funneled {
     /// Queued for the engine's `recv`.
     Accepted,
     /// The funnel was full; the stream is now closed.
     Overflowed,
+    /// The frame was past [`MAX_FRAME_BYTES`]; the stream is now closed.
+    Oversize,
     /// The funnel was already closed; the frame is discarded.
     Closed,
 }
@@ -230,6 +241,32 @@ fn funnel_frame(tx: &mut FrameTx, frame: Vec<u8>) -> Funneled {
         }
         // Receiver gone: the engine dropped the connection.
         Err(_) => Funneled::Closed,
+    }
+}
+
+/// Size-check one inbound text frame, then hand it to [`funnel_frame`].
+///
+/// A frame past [`MAX_FRAME_BYTES`] is refused the way a full funnel is —
+/// end the stream, let the engine redial and the pumps re-subscribe. A frame
+/// that never reaches the engine is a loss of unknown shape either way.
+///
+/// The length is read on the JS side first: copying the frame into wasm-owned
+/// memory is the allocation being guarded, so an oversize frame must not be
+/// materialized just to be refused. UTF-8 is never shorter than UTF-16, so past
+/// the ceiling in code units is past it in bytes; the converse does not hold
+/// (one unit is up to three bytes), hence the exact re-check on the copy.
+fn funnel_text(tx: &mut FrameTx, text: &js_sys::JsString) -> Funneled {
+    // Closure is checked ahead of the ceiling for the reason `funnel_frame`
+    // gives: one announcement per stream end, not one per frame still arriving.
+    if tx.is_closed() {
+        return Funneled::Closed;
+    }
+    match (text.length() as usize <= MAX_FRAME_BYTES).then(|| String::from(text)) {
+        Some(frame) if frame.len() <= MAX_FRAME_BYTES => funnel_frame(tx, frame.into_bytes()),
+        _ => {
+            tx.close_channel();
+            Funneled::Oversize
+        }
     }
 }
 
@@ -404,13 +441,24 @@ impl Dialer for WasmWsDialer {
             let on_message = {
                 let mut frame_tx = frame_tx.clone();
                 Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
-                    if let Some(text) = event.data().as_string() {
-                        if funnel_frame(&mut frame_tx, text.into_bytes()) == Funneled::Overflowed {
-                            web_sys::console::warn_1(
-                                &"WsBridge: frame queue full — dropping the connection to resync"
-                                    .into(),
-                            );
-                        }
+                    // AimX is a text protocol; a binary frame is not ours.
+                    let data = event.data();
+                    let Some(text) = data.dyn_ref::<js_sys::JsString>() else {
+                        return;
+                    };
+                    match funnel_text(&mut frame_tx, text) {
+                        Funneled::Overflowed => web_sys::console::warn_1(
+                            &"WsBridge: frame queue full — dropping the connection to resync"
+                                .into(),
+                        ),
+                        Funneled::Oversize => web_sys::console::warn_1(
+                            &format!(
+                                "WsBridge: inbound frame past the {MAX_FRAME_BYTES}-byte ceiling \
+                                 — dropping the connection to resync"
+                            )
+                            .into(),
+                        ),
+                        Funneled::Accepted | Funneled::Closed => {}
                     }
                 }) as Box<dyn FnMut(web_sys::MessageEvent)>)
             };
@@ -1128,6 +1176,8 @@ mod dial_tests {
                 Funneled::Accepted => accepted += 1,
                 Funneled::Overflowed => break,
                 Funneled::Closed => panic!("funnel closed before it ever filled"),
+                // Only `funnel_text` weighs a frame; these are one byte each.
+                Funneled::Oversize => unreachable!(),
             }
             assert!(accepted < 16, "funnel never filled");
         }
@@ -1150,6 +1200,64 @@ mod dial_tests {
             rx.next().await,
             None,
             "an overflowed funnel must end the stream, not stall it"
+        );
+    }
+
+    /// Regression: `FRAME_QUEUE_CAP` bounds queued frames, not bytes, so a frame
+    /// past the per-frame ceiling ends the stream the way an overflow does — and
+    /// like one, announces itself once, not per frame still arriving.
+    #[wasm_bindgen_test]
+    async fn oversize_frame_ends_the_frame_stream() {
+        let (mut tx, mut rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+
+        assert_eq!(
+            funnel_text(&mut tx, &js_sys::JsString::from("keep me")),
+            Funneled::Accepted
+        );
+        // Built JS-side: the point of the ceiling is that this never becomes a
+        // `String`, so the test must not make one either.
+        let oversize = js_sys::JsString::from("x").repeat(MAX_FRAME_BYTES as i32 + 1);
+        assert_eq!(funnel_text(&mut tx, &oversize), Funneled::Oversize);
+        assert_eq!(
+            funnel_text(&mut tx, &js_sys::JsString::from("late")),
+            Funneled::Closed
+        );
+
+        assert_eq!(rx.next().await, Some(b"keep me".to_vec()));
+        assert_eq!(
+            rx.next().await,
+            None,
+            "an oversize frame must end the stream, not stall it"
+        );
+    }
+
+    /// The JS-side length is in UTF-16 code units and undercounts a multi-byte
+    /// frame; the ceiling is bytes, so the copy is re-checked exactly.
+    #[wasm_bindgen_test]
+    fn multibyte_frame_over_the_byte_ceiling_is_refused() {
+        let (mut tx, _rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+
+        // One code unit, three UTF-8 bytes: half the ceiling in units is 1.5×
+        // the ceiling in bytes.
+        let frame = js_sys::JsString::from("€").repeat((MAX_FRAME_BYTES / 2) as i32);
+        assert!(
+            frame.length() as usize <= MAX_FRAME_BYTES,
+            "the JS-side gate must not be what refuses this"
+        );
+
+        assert_eq!(funnel_text(&mut tx, &frame), Funneled::Oversize);
+    }
+
+    /// The ceiling is inclusive: a frame exactly at it still reaches the engine.
+    #[wasm_bindgen_test]
+    async fn frame_at_the_ceiling_is_accepted() {
+        let (mut tx, mut rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+
+        let frame = js_sys::JsString::from("x").repeat(MAX_FRAME_BYTES as i32);
+        assert_eq!(funnel_text(&mut tx, &frame), Funneled::Accepted);
+        assert_eq!(
+            rx.next().await.map(|frame| frame.len()),
+            Some(MAX_FRAME_BYTES)
         );
     }
 
