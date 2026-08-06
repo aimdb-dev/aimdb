@@ -345,7 +345,20 @@ impl Dialer for WasmWsDialer {
                 return Err(TransportError::Closed);
             }
 
-            let ws = web_sys::WebSocket::new(&url).map_err(|_| TransportError::Io)?;
+            // The constructor throws only on a URL the browser will never
+            // accept, so fail terminally: as `Io` the engine would redial it
+            // forever while the status stayed `Connecting`. Nothing is
+            // published yet, so report the transition here.
+            let ws = match web_sys::WebSocket::new(&url) {
+                Ok(ws) => ws,
+                Err(_) => {
+                    web_sys::console::error_1(
+                        &format!("WsBridge: rejected WebSocket URL '{url}'").into(),
+                    );
+                    shared.set_status(ConnectionStatus::Disconnected);
+                    return Err(TransportError::Closed);
+                }
+            };
 
             // Publish *before* awaiting the handshake, so `disconnect()` can
             // reach a dial in flight: it takes and closes `shared.ws`, the
@@ -970,6 +983,12 @@ mod dial_tests {
     /// race the assertions.
     const PENDING_URL: &str = "ws://192.0.2.1:8443/aimdb-test";
 
+    /// A URL `WebSocket::new` throws on: `ftp:` is neither `ws`/`wss` nor an
+    /// `http`/`https` the constructor normalizes to one. Preferred over an
+    /// unparseable string, which would resolve against the test page's base
+    /// and come out a *valid* `ws://` URL.
+    const REJECTED_URL: &str = "ftp://192.0.2.1:8443/aimdb-test";
+
     fn shared() -> Rc<BridgeShared> {
         shared_with_reconnect(true)
     }
@@ -1190,6 +1209,66 @@ mod dial_tests {
             }
         }
         assert!(shared.ws.borrow().is_none());
+    }
+
+    /// Regression: a rejected URL is permanent, so the dial fails *terminally*
+    /// and reports it. As `Io` the engine redialed forever on `"connecting"`.
+    #[wasm_bindgen_test]
+    async fn rejected_url_fails_the_dial_terminally() {
+        let shared = shared();
+        let dialer = WasmWsDialer {
+            url: REJECTED_URL.to_string(),
+            shared: shared.clone(),
+        };
+
+        assert_eq!(
+            dialer.connect().await.err(),
+            Some(TransportError::Closed),
+            "a URL no redial can fix must not be reported as transient"
+        );
+        assert_eq!(
+            shared.status.get(),
+            ConnectionStatus::Disconnected,
+            "the dial that stops the engine is the only place left to report it"
+        );
+        assert!(
+            shared.ws.borrow().is_none(),
+            "a dial that never built a socket must publish nothing"
+        );
+    }
+
+    /// The same failure end-to-end through the JS surface, with reconnect on:
+    /// the bridge settles on `"disconnected"` instead of spinning redials.
+    #[wasm_bindgen_test]
+    async fn bridge_with_rejected_url_settles_disconnected() {
+        let (db, _runner) = aimdb_core::AimDbBuilder::new()
+            .runtime(Arc::new(WasmAdapter))
+            .build()
+            .await
+            .unwrap();
+        let bridge = WsBridge::new_internal(
+            db,
+            BTreeMap::new(),
+            SchemaRegistry::new(),
+            REJECTED_URL,
+            JsValue::NULL,
+        )
+        .unwrap();
+
+        // The engine dials from a spawned task; the failure is synchronous
+        // once it runs, so a bounded number of microtask turns suffices.
+        for _ in 0..32 {
+            let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
+                .await;
+            if bridge.status() == "disconnected" {
+                break;
+            }
+        }
+        assert_eq!(
+            bridge.status(),
+            "disconnected",
+            "a permanently unusable URL must not leave JS reading \"connecting\""
+        );
     }
 
     /// The same interruption end-to-end through the JS surface: `disconnect()`
