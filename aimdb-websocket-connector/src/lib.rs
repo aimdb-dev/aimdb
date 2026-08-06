@@ -81,7 +81,7 @@
 //!
 //! ## Wire Protocol
 //!
-//! AimX-v2 tagged frames — see [`aimdb_core::session::aimx`] for the frame set
+//! AimX tagged frames — see [`aimdb_core::session::aimx`] for the frame set
 //! (`req`/`reply`/`sub`/`subscribed`/`unsub`/`event`/`snap`/`write`/`ping`/
 //! `pong`).
 //!

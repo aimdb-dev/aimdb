@@ -249,16 +249,18 @@ impl WasmDb {
     /// Discover topics served at `url` without building a full database.
     ///
     /// Opens a one-shot WebSocket, sends an AimX `record.list` request, and
-    /// resolves with one record-metadata object per record once the server
+    /// resolves with one `RecordMetadata` object per record once the server
     /// responds. Rejects after 30 s if no response arrives, or immediately on
     /// connection error.
+    ///
+    /// The topic is `record_key`; `name` is the Rust type name, not the topic.
     ///
     /// # Example (TypeScript)
     /// ```ts
     /// const wasm = await import("aimdb-wasm-adapter");
     /// await wasm.default();
-    /// const topics = await wasm.WasmDb.discover("wss://api.example.com/ws");
-    /// topics.forEach(t => db.configureRecord(t.entity, { schemaType: t.schemaType, buffer: "SingleLatest" }));
+    /// const rows = await wasm.WasmDb.discover("wss://api.example.com/ws");
+    /// rows.forEach(r => db.configureRecord(r.record_key, { schemaType: r.schema_type, buffer: "SingleLatest" }));
     /// ```
     pub async fn discover(url: &str) -> Result<JsValue, JsError> {
         wasm_bindgen_futures::JsFuture::from(discover_impl(url.to_string()))
@@ -268,8 +270,8 @@ impl WasmDb {
 
     /// Returns the list of schema type names known to this WASM adapter.
     ///
-    /// Use this to filter discovered topics before calling `configureRecord` —
-    /// topics whose `schemaType` is not in this list cannot be handled by the
+    /// Use this to filter discovered rows before calling `configureRecord` —
+    /// records whose `schema_type` is not in this list cannot be handled by the
     /// WASM runtime and should be skipped.
     #[wasm_bindgen(js_name = "knownSchemas")]
     pub fn known_schemas(&self) -> Vec<String> {

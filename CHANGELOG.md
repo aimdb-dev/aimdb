@@ -86,8 +86,9 @@ AimX gained the two features that justified the ws fork: wildcard /
 multi-record subscribe (one subscription fans in every matching record, events
 tagged with the record that fired, one late-join snapshot per match) and the
 shared `record.query`/`record.list` result shapes (`{records, total}` with
-`QueryRecord{topic, payload, ts}` rows; `{name, schema_type, entity}` topic
-rows). **Breaking for browser clients** (the JS `WsBridge` API is unchanged,
+`QueryRecord{topic, payload, ts}` rows; `record.list` replies with core's full
+`RecordMetadata` rows, keyed by `record_key`, now carrying `schema_type` /
+`entity`). **Breaking for browser clients** (the JS `WsBridge` API is unchanged,
 but the wire is new); breaking Rust API changes are listed per crate
 (`aimdb-core`, `aimdb-websocket-connector`, `aimdb-wasm-adapter`,
 `aimdb-client`, `aimdb-persistence`).

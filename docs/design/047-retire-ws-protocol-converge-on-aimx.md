@@ -6,7 +6,7 @@
 **Scope:** delete the `aimdb-ws-protocol` crate and the WS-JSON envelope it
 defines, porting the WebSocket connector (`aimdb-websocket-connector`), the
 browser bridge (`aimdb-wasm-adapter::ws_bridge`), and the UI's raw discovery
-path onto the AimX-v2 envelope (`aimdb-core::session::aimx`). Extends AimX
+path onto the AimX envelope (`aimdb-core::session::aimx`). Extends AimX
 with the two features that originally justified the WS fork — wildcard /
 multi-record live subscribe and a query passthrough result shape — as
 additive core changes.
@@ -64,7 +64,7 @@ exact key.
 AimX wire tags from `session/aimx/codec.rs`; ws-protocol messages from
 `aimdb-ws-protocol/src/lib.rs`. "→" marks the surviving form.
 
-| Semantics | ws-protocol | AimX-v2 (surviving) | Notes |
+| Semantics | ws-protocol | AimX (surviving) | Notes |
 |---|---|---|---|
 | RPC request | `Query{id,pattern,from,to,limit}`, `ListTopics{id}` | `{"t":"req","id":N,"method":M,"params":P}` | String ids → engine-owned `u64` ids. `query`→`record.query` `{name,limit,start,end}`; `list_topics`→`record.list`. |
 | RPC reply | `QueryResult{id,records,total}`, `TopicList{id,topics}` | `{"t":"reply","id":N,"ok":V}` | Result shapes: §3.4. |
@@ -208,13 +208,17 @@ demands it.
   `aimdb-persistence::with_persistence` registration is updated to produce
   it (was `{values:[{record,value,stored_at}],count}`).
 - `record.list`: `RecordMetadata` gains optional `schema_type` and `entity`
-  fields. Core populates `entity` from the record key's final `.` segment
-  (the server owns the naming convention; clients must not parse topics).
-  `schema_type` is populated by dispatches that own a schema registry — the
-  WS dispatch answers `record.list` from its `StreamableRegistry`-derived
-  topic list as `[{name, schema_type, entity}]` (the old `TopicInfo` rows),
-  which is what the browser discovery path consumes. Core alone cannot
-  resolve contract schema names and leaves it `None`.
+  fields. Core populates `entity` from the record key's leaf segment after the
+  last `.` or `/` (the server owns the naming convention; clients must not
+  parse topics). `schema_type` is populated by dispatches that own a schema
+  registry — the WS dispatch stamps in the name its `StreamableRegistry`
+  resolves. Core alone cannot resolve contract schema names and leaves it
+  `None`.
+
+  The rows are **full `RecordMetadata`**, not the old topic-scoped
+  `TopicInfo` shape: the topic is `record_key`, and `name` is the Rust type
+  name — a migrating client must read `record_key`, never `name`, as the
+  topic. `TopicInfo` is deleted.
 
 ### 3.5 Error vocabulary (DECIDED: keep the 3-code core)
 

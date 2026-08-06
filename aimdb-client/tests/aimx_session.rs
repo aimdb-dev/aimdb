@@ -1,4 +1,4 @@
-//! The engine-based [`AimxConnection`] round-trips the AimX-v2 wire — `hello`
+//! The engine-based [`AimxConnection`] round-trips the AimX wire — `hello`
 //! handshake, RPC (`record.get`/`record.set`), a streaming subscription, and a
 //! fire-and-forget write — against the **production** server (`UdsServer` →
 //! `serve`/`run_session` + `AimxDispatch`) over a real Unix-domain socket,

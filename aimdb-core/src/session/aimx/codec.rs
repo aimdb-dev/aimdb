@@ -1,4 +1,4 @@
-//! AimX-v2 NDJSON envelope codec (`no_std + alloc`, features `connector-session`
+//! AimX NDJSON envelope codec (`no_std + alloc`, features `connector-session`
 //! + `remote`).
 //!
 //! One JSON object per line, tagged by a `"t"` field, mapping onto the engine's
@@ -29,7 +29,7 @@ use serde_json::value::RawValue;
 
 use crate::session::{CodecError, EnvelopeCodec, Inbound, Outbound, Payload, RpcError};
 
-/// The zero-sized AimX-v2 NDJSON codec.
+/// The zero-sized AimX NDJSON codec.
 #[derive(Clone, Copy, Default)]
 pub struct AimxCodec;
 

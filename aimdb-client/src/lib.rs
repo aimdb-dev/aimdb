@@ -8,7 +8,7 @@
 //!
 //! The client library offers:
 //! - **Connection Management**: [`AimxConnection`] over the shared session engine
-//! - **Protocol Implementation**: the reshaped AimX-v2 handshake + RPC/streaming
+//! - **Protocol Implementation**: the reshaped AimX handshake + RPC/streaming
 //! - **Instance Discovery**: Automatic detection of running AimDB instances
 //! - **Record Operations**: list, get, set, subscribe, drain, graph, query
 //!

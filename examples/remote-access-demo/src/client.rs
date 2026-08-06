@@ -1,7 +1,7 @@
 //! Remote Access Demo - Client
 //!
 //! Connects to the demo server over the engine-based [`AimxConnection`] (the
-//! shared session engine + reshaped AimX-v2 wire) and walks through the AimX
+//! shared session engine + reshaped AimX wire) and walks through the AimX
 //! surface: list / get / set, the producer-override safety check, `record.drain`
 //! history, and a live subscription.
 //!

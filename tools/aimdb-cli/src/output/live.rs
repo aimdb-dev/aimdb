@@ -5,7 +5,7 @@ use colored::Colorize;
 
 /// Format a subscription update for live display.
 ///
-/// The reshaped AimX-v2 wire drops the server-minted `timestamp`/`dropped`
+/// The reshaped AimX wire drops the server-minted `timestamp`/`dropped`
 /// fields, so the watcher stamps the receipt time locally and tracks its own
 /// sequence counter; `data` is the decoded record value.
 pub fn format_event(seq: u64, data: &serde_json::Value, show_full: bool) -> String {
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_format_event_with_dropped() {
-        // AimX-v2 wire does not carry dropped counts; format_event receives
+        // AimX wire does not carry dropped counts; format_event receives
         // only the decoded value. Verify data is still rendered correctly.
         let data = json!({"value": 1});
         let formatted = format_event(42, &data, false);

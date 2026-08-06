@@ -2,7 +2,7 @@
 //!
 //! Defines the method-level payloads for the remote access protocol: the
 //! hello/welcome handshake bodies and the request/response/event shapes.
-//! These ride the **AimX-v2** NDJSON envelope; the wire framing itself lives
+//! These ride the **AimX** NDJSON envelope; the wire framing itself lives
 //! in [`crate::session::aimx`] (feature `connector-session`). See
 //! `docs/design/remote-access-via-connectors.md` for the architecture.
 

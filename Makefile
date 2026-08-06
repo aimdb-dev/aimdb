@@ -575,7 +575,7 @@ publish:
 	@sleep 10
 	@printf "$(YELLOW)  → Publishing aimdb-mcp (16/16)$(NC)\n"
 	@cargo publish -p aimdb-mcp
-	@printf "$(GREEN)✓ All 17 crates published successfully!$(NC)\n"
+	@printf "$(GREEN)✓ All 16 crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
 
 ## Drift guards

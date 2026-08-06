@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BridgeOptions.lateJoin` is retained for option-shape compatibility
   (snapshots are server-driven under AimX).
 - **`WasmDb.discover` / the raw discovery path speak `record.list`** and
-  resolve with `{name, schema_type, entity}` rows.
+  resolve with core's full `RecordMetadata` rows (was the topic-scoped
+  `{name, schema_type, entity}` shape). The topic is `record_key` — `name` is
+  the Rust type name — so `discover(…)` results feed `configureRecord` as
+  `configureRecord(row.record_key, { schemaType: row.schema_type, … })`.
 - **The bridge and discovery declare their AimX version** on the WebSocket
   upgrade URL (`?v=3.0`, via `aimdb_core::remote::ws_url_with_version`), which a
   design-047 server gates on (HTTP 426 on mismatch) — a browser cannot set
