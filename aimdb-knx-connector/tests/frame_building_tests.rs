@@ -61,8 +61,8 @@ mod tests {
         let npdu_len = cemi[8] as usize;
         assert_eq!(
             npdu_len,
-            2 + data.len(),
-            "NPDU length should be TPCI + APCI + data"
+            1 + data.len(),
+            "NPDU length should be APCI + data"
         );
     }
 
@@ -136,7 +136,8 @@ mod tests {
             frame.push(0x00);
             frame.push(0x80 | (data[0] & 0x3F));
         } else {
-            let npdu_len = 2 + data.len();
+            // NPDU length counts the APCI octet plus the data octets.
+            let npdu_len = 1 + data.len();
             frame.push(npdu_len as u8);
             frame.push(0x00);
             frame.push(0x80);

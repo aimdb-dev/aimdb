@@ -729,37 +729,14 @@ fn parse_telegram(cemi_data: &[u8]) -> Option<(GroupAddress, Vec<u8>)> {
     // Only process group addresses (not individual addresses)
     let dest = ldata.destination_group()?;
 
-    // Extract the application payload straight from the raw cEMI bytes.
-    //
-    // cEMI structure: [msg_code, add_info_len, <add_info>, ctrl1, ctrl2,
-    //                  src(2), dest(2), npdu_len, tpci, apci, data…]
-    //
-    // The NPDU length octet is the authority on the encoding, not
-    // `ldata.data`: knx-pico derives that slice as `[9 .. 7 + npdu_len]`,
-    // which is one octet short of the KNX encoding (`npdu_len` counts the
-    // APCI octet plus the data octets), so it comes back empty for a
-    // single-octet telegram — a real DPT 5.001 sensor reading would then be
-    // taken for a 6-bit one and decode to 0.
-    let add_info_len = if cemi_data.len() > 1 { cemi_data[1] } else { 0 } as usize;
-    let ldata_offset = 2 + add_info_len;
-    let npdu_len_pos = ldata_offset + 6;
-    let apci_pos = ldata_offset + 8;
-    if cemi_data.len() <= apci_pos {
-        return None;
-    }
-
-    let payload = if cemi_data[npdu_len_pos] <= 1 {
-        // 6-bit encoding (DPT1 and friends): the value rides in the low bits
-        // of the APCI octet, no data octets follow.
-        vec![cemi_data[apci_pos] & 0x3F]
+    // An empty `data` slice means the telegram is 6-bit encoded (DPT1 and
+    // friends): the value rides in the low bits of the APCI octet with no
+    // data octets following. Everything else carries its value in `data`,
+    // already bounded by the NPDU length octet.
+    let payload = if ldata.data.is_empty() {
+        vec![ldata.six_bit_value()]
     } else {
-        // Standard encoding: `npdu_len - 1` data octets after the APCI octet
-        // (DPT5 → 1, DPT9 → 2, DPT14 → 4, …). A frame that promises more
-        // octets than it carries is truncated rather than rejected, leaving
-        // the length check to the DPT decoder.
-        let data_start = ldata_offset + 9;
-        let data_end = (data_start + cemi_data[npdu_len_pos] as usize - 1).min(cemi_data.len());
-        cemi_data.get(data_start..data_end).unwrap_or(&[]).to_vec()
+        ldata.data.to_vec()
     };
 
     Some((dest, payload))
@@ -993,7 +970,7 @@ mod tests {
     fn inbound_telegram_payload_is_bounded_by_npdu_length() {
         let addr: GroupAddress = "9/1/0".parse().unwrap();
         let mut cemi = build_group_write_cemi(addr, &[0x0C, 0x1A]).to_vec();
-        cemi.extend_from_slice(&[0xDE, 0xAD]); // trailing padding some gateways append
+        cemi.extend_from_slice(&[0xDE, 0xAD]); // trailing octets past the NPDU
 
         let mut engine = connected_engine(0);
         engine.handle_datagram(&build_tunneling_request(7, 1, &cemi), 100);
