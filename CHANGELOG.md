@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Issue #200**: the implementation of the synchronous interface (`aimdb-sync`)
+  has been simplified by removing the channels used internally to communicate
+  with the `tokio` thread, with a number of API changes.
+  ([aimdb-sync](aimdb-sync/CHANGELOG.md))
+
 ### Changed — knx-pico submodule
 
 - **Submodule:** bump `_external/knx-pico` to upstream `0.3` (commit 158325bd4)
