@@ -1,5 +1,6 @@
-/// tokio-specific implementation of running the given future
-/// on the current thread until completion
+//! tokio-specific implementation of running the given future
+//! on the current thread until completion
+
 use std::future::Future;
 
 pub struct Waiter {

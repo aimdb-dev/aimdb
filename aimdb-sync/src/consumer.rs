@@ -77,7 +77,9 @@ where
     /// # Errors
     ///
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    /// - `SyncError::Db` for other errors occured during read
+    /// - `SyncError::Db(DbError::BufferLagged)` if this consumer fell behind and
+    ///   values were dropped. Not fatal, the next call resumes.
+    /// - `SyncError::Db` for other errors that occurred during the read
     ///
     /// # Example
     ///
@@ -115,7 +117,9 @@ where
     ///
     /// - `SyncError::GetTimeout` if the timeout expires
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    /// - `SyncError::Db` for other errors occured during read
+    /// - `SyncError::Db(DbError::BufferLagged)` if this consumer fell behind and
+    ///   values were dropped. Not fatal, the next call resumes.
+    /// - `SyncError::Db` for other errors that occurred during the read
     ///
     /// # Example
     ///
@@ -155,7 +159,9 @@ where
     ///
     /// - `SyncError::GetTimeout` if no data is available (non-blocking)
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    /// - `SyncError::Db` for other errors occured during read
+    /// - `SyncError::Db(DbError::BufferLagged)` if this consumer fell behind and
+    ///   values were dropped. Not fatal, the next call resumes.
+    /// - `SyncError::Db` for other errors that occurred during the read
     ///
     /// # Example
     ///
