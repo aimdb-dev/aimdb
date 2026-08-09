@@ -6,6 +6,7 @@ use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
 use core::fmt::Debug;
 use core::time::Duration;
+use std::time::Instant;
 
 /// Synchronous consumer for records of type `T`.
 ///
@@ -236,15 +237,13 @@ where
     /// # }
     /// ```
     pub fn get_latest(&mut self) -> SyncResult<T> {
-        // 1) can simply sequence get and try_get -
+        // 1) can simply sequence get_catch_up and try_get -
         //    no one else does it simultaneously thanks to &mut self
         // 2) if draining ends up with an error, we follow the previous impl
         //    and return the latest succesfully read value
         // 3) potentially loops forever if producer keeps producing
-        let mut latest = self.get()?;
-        while let Ok(upd) = self.try_get() {
-            latest = upd;
-        }
+        let oldest = self.get_catch_up(None)?;
+        let latest = self.drain_remaining(oldest);
         Ok(latest)
     }
 
@@ -290,11 +289,46 @@ where
     /// ```
     pub fn get_latest_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
         // see internal comments for get_latest
-        let mut latest = self.get_with_timeout(timeout)?;
-        while let Ok(upd) = self.try_get() {
-            latest = upd;
-        }
+        let deadline = Instant::now() + timeout;
+        let oldest = self.get_catch_up(Some(deadline))?;
+        let latest = self.drain_remaining(oldest);
         Ok(latest)
+    }
+
+    // Blocks until get() retrieves a value, or until the deadline is missed.
+    // Skips BufferLagged occuring in the process, and raises all other errors
+    fn get_catch_up(&mut self, deadline: Option<Instant>) -> SyncResult<T> {
+        loop {
+            let res = match deadline {
+                Some(deadline) => {
+                    let timeout = deadline.saturating_duration_since(Instant::now());
+                    // From tokio docs: "the future is polled before the timeout is checked".
+                    // We rather check if the last poll can be skipped
+                    if timeout.is_zero() {
+                        return Err(SyncError::GetTimeout);
+                    }
+                    // timeout error is handled as all other non-lag errors below
+                    self.get_with_timeout(timeout)
+                }
+                None => self.get(),
+            };
+            if let Err(SyncError::Db(DbError::BufferLagged { .. })) = res {
+                continue;
+            } else {
+                return res;
+            }
+        }
+    }
+
+    fn drain_remaining(&mut self, mut cur: T) -> T {
+        loop {
+            match self.try_get() {
+                Ok(next) => cur = next,
+                Err(SyncError::Db(DbError::BufferLagged { .. })) => continue,
+                // errors occured during draining will be ignored
+                Err(_) => return cur,
+            }
+        }
     }
 }
 
