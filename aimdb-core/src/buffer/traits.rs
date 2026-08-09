@@ -8,6 +8,8 @@
 use core::task::{Context, Poll};
 
 use alloc::boxed::Box;
+#[cfg(feature = "remote")]
+use alloc::vec::Vec;
 
 use super::BufferCfg;
 use crate::DbError;
@@ -232,18 +234,19 @@ pub trait BufferReader<T: Clone + Send>: Send {
     fn try_recv(&mut self) -> Result<T, DbError>;
 }
 
-/// Reader trait for consuming JSON-serialized values from a buffer
+/// Reader trait for consuming JSON-serialized values from a buffer.
 ///
-/// Type-erased reader that subscribes to a typed buffer and emits values as
-/// `serde_json::Value`. Used by remote access protocol for subscriptions.
+/// Type-erased reader that subscribes to a typed buffer and emits either
+/// `serde_json::Value` or already-serialized JSON bytes. Used by the remote
+/// access protocol for subscriptions.
 ///
 /// This trait enables subscribing to a buffer without knowing the concrete type `T`
 /// at compile time, by serializing values to JSON on each poll.
 ///
 /// Object-safe and poll-based for the same reason as [`BufferReader`].
 /// Consumers use the [`JsonReader`](super::JsonReader) handle, whose
-/// `recv_json()` is `async` and wraps [`poll_recv_json`](JsonBufferReader::poll_recv_json)
-/// with no allocation.
+/// receive methods are `async` wrappers over the corresponding poll methods
+/// and do not box a per-message future.
 ///
 /// # Requirements
 /// - Record must be configured with `.with_remote_access()`
@@ -267,6 +270,32 @@ pub trait JsonBufferReader: Send {
     ///
     /// Returns `Err(DbError::BufferEmpty)` if no pending values.
     fn try_recv_json(&mut self) -> Result<serde_json::Value, DbError>;
+
+    /// Poll for the next value as owned JSON bytes.
+    ///
+    /// Existing implementations inherit a compatibility path that calls
+    /// [`poll_recv_json`](Self::poll_recv_json) and serializes the returned
+    /// tree. Typed record readers override this to encode `T` directly.
+    fn poll_recv_json_bytes(&mut self, cx: &mut Context<'_>) -> Poll<Result<Vec<u8>, DbError>> {
+        match self.poll_recv_json(cx) {
+            Poll::Ready(Ok(value)) => Poll::Ready(
+                serde_json::to_vec(&value)
+                    .map_err(|_| DbError::runtime_error("Failed to serialize value to JSON")),
+            ),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    /// Non-blocking receive as owned JSON bytes.
+    ///
+    /// Existing implementations inherit a compatibility path through
+    /// [`try_recv_json`](Self::try_recv_json).
+    fn try_recv_json_bytes(&mut self) -> Result<Vec<u8>, DbError> {
+        let value = self.try_recv_json()?;
+        serde_json::to_vec(&value)
+            .map_err(|_| DbError::runtime_error("Failed to serialize value to JSON"))
+    }
 }
 
 /// Snapshot of buffer metrics at a point in time

@@ -12,7 +12,8 @@
 //!   and `record.latest()?.as_json()` reads it.
 //! - **`remote`**: record metadata (`collect_metadata` → `RecordMetadata`,
 //!   the `writable` flag) plus the type-erased JSON read/write/subscribe methods
-//!   (`latest_json` / `set_from_json` / `subscribe_json`) used by the AimX server.
+//!   (`latest_json[_bytes]` / `set_from_json[_bytes]` / `subscribe_json`) used
+//!   by the AimX server.
 //!
 //! Without `remote`, use `record.latest()` + `Deref` for value access and
 //! implement custom serialization for embedded protocols (CBOR, MessagePack, etc.).
@@ -57,10 +58,11 @@ use crate::buffer::DynBuffer;
 #[cfg(feature = "remote")]
 type RecordCodec<T> = Arc<dyn crate::codec::JsonCodec<T>>;
 
-/// Wrapper for a record's latest value with optional serialization
+/// Wrapper for a record's latest value with optional serialization.
 ///
 /// Created by `TypedRecord::latest()`. Core methods (`get()`, `into_inner()`, `Deref`) work in
-/// both std and no_std. JSON serialization (`.as_json()`) requires std feature.
+/// both std and no_std. JSON serialization (`.as_json()`) requires the
+/// `remote` feature.
 pub struct RecordValue<T> {
     value: T,
     #[cfg(feature = "remote")]
@@ -110,13 +112,13 @@ impl<T> core::ops::Deref for RecordValue<T> {
     }
 }
 
-/// Adapter that wraps a typed BufferReader and serializes values to JSON (std only)
+/// Adapter that wraps a typed `BufferReader` and serializes values to JSON.
 ///
 /// Bridges the gap between typed buffers and type-erased JSON streaming for
-/// remote access subscriptions. Each `recv_json()` call:
+/// remote access subscriptions. Each receive:
 /// 1. Receives a typed value `T` from the buffer
-/// 2. Serializes it to JSON using the configured serializer
-/// 3. Returns the JSON value
+/// 2. Serializes it through the configured codec
+/// 3. Returns either a JSON tree (compatibility API) or owned JSON bytes
 ///
 /// Used internally by `TypedRecord::subscribe_json()`.
 #[cfg(feature = "remote")]
@@ -153,6 +155,28 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
         // Serialize to JSON using the configured codec
         self.codec
             .encode(&value)
+            .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
+    }
+
+    fn poll_recv_json_bytes(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Vec<u8>, crate::DbError>> {
+        match self.inner.poll_recv(cx) {
+            Poll::Ready(Ok(value)) => {
+                Poll::Ready(self.codec.encode_to_vec(&value).ok_or_else(|| {
+                    crate::DbError::runtime_error("Failed to serialize value to JSON")
+                }))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn try_recv_json_bytes(&mut self) -> Result<Vec<u8>, crate::DbError> {
+        let value = self.inner.try_recv()?;
+        self.codec
+            .encode_to_vec(&value)
             .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
     }
 }
@@ -318,6 +342,15 @@ pub trait JsonRecordAccess {
     /// Used internally by remote access protocol. **Users should use `record.latest()?.as_json()`.**
     fn latest_json(&self) -> Option<serde_json::Value>;
 
+    /// Returns owned JSON bytes for type-erased remote access.
+    ///
+    /// Existing implementations inherit a compatibility path through
+    /// [`latest_json`](Self::latest_json). `TypedRecord<T>` overrides this and
+    /// asks its codec to encode `T` directly.
+    fn latest_json_bytes(&self) -> Option<Vec<u8>> {
+        serde_json::to_vec(&self.latest_json()?).ok()
+    }
+
     /// Subscribe to record updates as JSON stream
     ///
     /// Creates a type-erased subscription that emits `serde_json::Value` instead of
@@ -360,6 +393,18 @@ pub trait JsonRecordAccess {
     /// - Record not configured with buffer
     /// - Record not configured with `.with_remote_access()`
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
+
+    /// Sets a record from one complete JSON value encoded as bytes.
+    ///
+    /// Existing implementations inherit a parser-backed compatibility path
+    /// through [`set_from_json`](Self::set_from_json). This accepts the exact
+    /// record value, not an AimX request/write wrapper; the wire dispatch keeps
+    /// wrapper extraction on its existing tree path.
+    fn set_from_json_bytes(&self, bytes: &[u8]) -> crate::DbResult<()> {
+        let value = serde_json::from_slice(bytes)
+            .map_err(|_| crate::DbError::runtime_error("Failed to parse JSON value"))?;
+        self.set_from_json(value)
+    }
 }
 
 // Helper extension trait for type-safe downcasting
@@ -498,12 +543,11 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     #[cfg(feature = "remote")]
     writable: portable_atomic::AtomicBool,
 
-    /// Type-erased JSON value codec (feature `remote`).
+    /// Type-erased JSON tree/byte codec (feature `remote`).
     /// `Some` iff the record opted into JSON via `.with_remote_access()`.
-    /// `RecordValue::as_json` and — under `remote` — the AimX read
-    /// (`latest_json`), write (`set_from_json`), and subscribe (`subscribe_json`)
-    /// paths route through it. Built from a `SerdeJsonCodec` where the
-    /// `T: RemoteSerialize` bound is known at the call site.
+    /// `RecordValue::as_json` and — under `remote` — the AimX read, write, and
+    /// subscribe paths route through it. Built from a `SerdeJsonCodec` where
+    /// the `T: RemoteSerialize` bound is known at the call site.
     #[cfg(feature = "remote")]
     remote_codec: Option<RecordCodec<T>>,
 
@@ -517,7 +561,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
 impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Creates a new empty typed record
     ///
-    /// Call `.with_remote_access()` to enable JSON (std only).
+    /// Call `.with_remote_access()` to enable JSON (feature `remote`).
     pub fn new() -> Self {
         Self {
             producer: Mutex::new(None),
@@ -863,6 +907,65 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         );
 
         self
+    }
+
+    /// Validate a type-erased remote write and return its configured codec.
+    ///
+    /// Both the JSON-tree and JSON-byte entrypoints use this helper so the
+    /// no-producer/no-transform rule and error ordering cannot drift apart.
+    #[cfg(feature = "remote")]
+    fn remote_write_codec(&self, operation: &str) -> crate::DbResult<RecordCodec<T>> {
+        use crate::DbError;
+
+        if self.has_producer() || self.has_transform() {
+            log_warn!(
+                "Rejected {} for '{}': has active producer or transform",
+                operation,
+                core::any::type_name::<T>()
+            );
+
+            return Err(DbError::permission_denied(alloc::format!(
+                "Cannot set record '{}' - has active producer or transform. \
+                 Use internal application logic instead. \
+                 Remote access can only set configuration records without producers.",
+                core::any::type_name::<T>()
+            )));
+        }
+
+        let codec = self.remote_codec.clone().ok_or_else(|| {
+            DbError::runtime_error(alloc::format!(
+                "Record '{}' not configured with .with_remote_access(). \
+                 Cannot deserialize from JSON.",
+                core::any::type_name::<T>()
+            ))
+        })?;
+
+        if self.buffer.is_none() {
+            return Err(DbError::runtime_error(alloc::format!(
+                "Record '{}' has no buffer configured. \
+                 Cannot produce value without buffer.",
+                core::any::type_name::<T>()
+            )));
+        }
+
+        Ok(codec)
+    }
+
+    #[cfg(feature = "remote")]
+    fn commit_remote_write(&self, value: T) {
+        log_debug!(
+            "Successfully deserialized JSON to type: {}",
+            core::any::type_name::<T>()
+        );
+
+        // Push through the unified write path. This also marks metadata as
+        // updated, matching the original `set_from_json` path.
+        self.writer_handle().push(value);
+
+        log_info!(
+            "Successfully set value from JSON for record: {}",
+            core::any::type_name::<T>()
+        );
     }
 
     /// Returns a reference to the registered outbound connectors
@@ -1221,6 +1324,20 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
         result
     }
 
+    fn latest_json_bytes(&self) -> Option<Vec<u8>> {
+        log_debug!(
+            "latest_json_bytes called for type: {}",
+            core::any::type_name::<T>()
+        );
+
+        let value = self.buffer.as_ref()?.peek()?;
+        let result = self.remote_codec.as_ref()?.encode_to_vec(&value);
+
+        log_debug!("Byte serialization result: {:?}", result.is_some());
+
+        result
+    }
+
     fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>> {
         use crate::DbError;
 
@@ -1268,40 +1385,8 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             core::any::type_name::<T>()
         );
 
-        // SAFETY CHECK 1: Enforce "No Producer Override" rule
-        if self.has_producer() || self.has_transform() {
-            log_warn!(
-                "Rejected set_from_json for '{}': has active producer or transform",
-                core::any::type_name::<T>()
-            );
+        let codec = self.remote_write_codec("set_from_json")?;
 
-            return Err(DbError::permission_denied(alloc::format!(
-                "Cannot set record '{}' - has active producer or transform. \
-                 Use internal application logic instead. \
-                 Remote access can only set configuration records without producers.",
-                core::any::type_name::<T>()
-            )));
-        }
-
-        // Check if the codec is configured (set by .with_remote_access())
-        let codec = self.remote_codec.clone().ok_or_else(|| {
-            DbError::runtime_error(alloc::format!(
-                "Record '{}' not configured with .with_remote_access(). \
-                 Cannot deserialize from JSON.",
-                core::any::type_name::<T>()
-            ))
-        })?;
-
-        // Check if buffer exists
-        if self.buffer.is_none() {
-            return Err(DbError::runtime_error(alloc::format!(
-                "Record '{}' has no buffer configured. \
-                 Cannot produce value without buffer.",
-                core::any::type_name::<T>()
-            )));
-        }
-
-        // Deserialize JSON -> T
         let value: T = codec.decode(&json_value).ok_or_else(|| {
             DbError::runtime_error(alloc::format!(
                 "Failed to deserialize JSON to type '{}'. \
@@ -1310,20 +1395,115 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             ))
         })?;
 
-        log_debug!(
-            "Successfully deserialized JSON to type: {}",
-            core::any::type_name::<T>()
-        );
-
-        // Push through the unified write path. This also marks
-        // metadata as updated — previously skipped on this path.
-        self.writer_handle().push(value);
-
-        log_info!(
-            "Successfully set value from JSON for record: {}",
-            core::any::type_name::<T>()
-        );
+        self.commit_remote_write(value);
 
         Ok(())
+    }
+
+    fn set_from_json_bytes(&self, bytes: &[u8]) -> crate::DbResult<()> {
+        use crate::DbError;
+
+        log_debug!(
+            "set_from_json_bytes called for type: {}",
+            core::any::type_name::<T>()
+        );
+
+        let codec = self.remote_write_codec("set_from_json_bytes")?;
+        let value: T = codec.decode_slice(bytes).ok_or_else(|| {
+            DbError::runtime_error(alloc::format!(
+                "Failed to deserialize JSON to type '{}'. \
+                 JSON structure does not match the expected schema.",
+                core::any::type_name::<T>()
+            ))
+        })?;
+
+        self.commit_remote_write(value);
+
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "remote"))]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::buffer::{BufferReader, DynBuffer};
+    use crate::codec::JsonCodec;
+
+    struct OneReader(Option<u32>);
+
+    impl BufferReader<u32> for OneReader {
+        fn poll_recv(&mut self, _cx: &mut Context<'_>) -> Poll<Result<u32, crate::DbError>> {
+            Poll::Ready(self.try_recv())
+        }
+
+        fn try_recv(&mut self) -> Result<u32, crate::DbError> {
+            self.0.take().ok_or(crate::DbError::BufferEmpty)
+        }
+    }
+
+    struct PeekBuffer(u32);
+
+    impl DynBuffer<u32> for PeekBuffer {
+        fn push(&self, _value: u32) {}
+
+        fn subscribe_boxed(&self) -> Box<dyn BufferReader<u32> + Send> {
+            Box::new(OneReader(Some(self.0)))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn peek(&self) -> Option<u32> {
+            Some(self.0)
+        }
+    }
+
+    struct TrackingCodec {
+        tree_calls: Arc<AtomicUsize>,
+        byte_calls: Arc<AtomicUsize>,
+    }
+
+    impl JsonCodec<u32> for TrackingCodec {
+        fn encode(&self, value: &u32) -> Option<serde_json::Value> {
+            self.tree_calls.fetch_add(1, Ordering::Relaxed);
+            Some(serde_json::json!(value))
+        }
+
+        fn decode(&self, value: &serde_json::Value) -> Option<u32> {
+            value.as_u64()?.try_into().ok()
+        }
+
+        fn encode_to_vec(&self, value: &u32) -> Option<Vec<u8>> {
+            self.byte_calls.fetch_add(1, Ordering::Relaxed);
+            serde_json::to_vec(value).ok()
+        }
+    }
+
+    #[test]
+    fn typed_latest_and_subscription_select_the_codec_byte_path() {
+        let tree_calls = Arc::new(AtomicUsize::new(0));
+        let byte_calls = Arc::new(AtomicUsize::new(0));
+        let codec: RecordCodec<u32> = Arc::new(TrackingCodec {
+            tree_calls: tree_calls.clone(),
+            byte_calls: byte_calls.clone(),
+        });
+
+        let mut record = TypedRecord::<u32>::new();
+        record.remote_codec = Some(codec);
+        record.buffer = Some(Arc::new(PeekBuffer(17)));
+
+        assert_eq!(record.latest_json_bytes().unwrap(), b"17");
+
+        let mut reader = record.subscribe_json().unwrap();
+        assert_eq!(reader.try_recv_json_bytes().unwrap(), b"17");
+
+        assert_eq!(byte_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(tree_calls.load(Ordering::Relaxed), 0);
+
+        assert_eq!(record.latest_json(), Some(serde_json::json!(17)));
+        assert_eq!(tree_calls.load(Ordering::Relaxed), 1);
     }
 }

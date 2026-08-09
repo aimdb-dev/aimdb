@@ -1,4 +1,5 @@
 //! Errors of the blocking facade.
+use alloc::string::String;
 
 use aimdb_core::DbError;
 

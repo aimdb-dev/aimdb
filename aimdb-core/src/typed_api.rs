@@ -659,8 +659,8 @@ where
 
     /// Installs the JSON codec for this record (feature `remote`)
     ///
-    /// Enables `record.latest()?.as_json()`, and on `std` the AimX `record.get`
-    /// / `set` / `subscribe` protocol. Requires `T: RemoteSerialize`
+    /// Enables `record.latest()?.as_json()` and the AimX `record.get` / `set` /
+    /// `subscribe` protocol. Requires `T: RemoteSerialize`
     /// (blanket-impl'd for every `Serialize + DeserializeOwned` type). Works on
     /// no_std + alloc.
     #[cfg(feature = "remote")]

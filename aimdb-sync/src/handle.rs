@@ -1,11 +1,11 @@
 //! AimDB handle for managing the sync API runtime thread.
 
 use crate::{SyncError, SyncResult};
-use aimdb_core::{AimDb, AimDbBuilder, DbError, DbResult};
-use std::fmt::Debug;
-use std::sync::Arc;
+use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
+use alloc::sync::Arc;
+use core::fmt::Debug;
+use core::time::Duration;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Default channel capacity for sync producers and consumers.
@@ -46,11 +46,11 @@ pub trait AimDbBuilderSyncExt {
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
     /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)] struct MyData { value: f32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn main() -> SyncResult<()> {
     /// let mut builder = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter::new()?));
     /// builder.configure::<MyData>("my.data", |reg| {
@@ -87,10 +87,10 @@ pub trait AimDbSyncExt {
     ///
     /// ```no_run
     /// use aimdb_core::AimDb;
-    /// use aimdb_sync::AimDbSyncExt;
+    /// use aimdb_sync::{AimDbSyncExt, SyncResult};
     ///
     /// // `db` comes out of an async `AimDbBuilder::build()` elsewhere
-    /// # fn demo(db: AimDb) -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn demo(db: AimDb) -> SyncResult<()> {
     /// let handle = db.attach()?;
     /// # Ok(())
     /// # }
@@ -156,7 +156,7 @@ impl AimDbHandle {
                 let runtime = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        eprintln!("Failed to create Tokio runtime: {}", e);
+                        log_error!("Failed to create Tokio runtime: {}", e);
                         return;
                     }
                 };
@@ -166,7 +166,7 @@ impl AimDbHandle {
 
                 // Send the runtime handle to the main thread
                 if handle_tx.blocking_send(rt_handle).is_err() {
-                    eprintln!("Failed to send runtime handle to main thread");
+                    log_error!("Failed to send runtime handle to main thread");
                     return;
                 }
 
@@ -175,14 +175,14 @@ impl AimDbHandle {
                     let (db, runner) = match builder.build().await {
                         Ok(d) => (Arc::new(d.0), d.1),
                         Err(e) => {
-                            eprintln!("Failed to build database: {}", e);
+                            log_error!("Failed to build database: {}", e);
                             return;
                         }
                     };
 
                     // Send the database to the main thread
                     if db_tx.send(db.clone()).await.is_err() {
-                        eprintln!("Failed to send database to main thread");
+                        log_error!("Failed to send database to main thread");
                         return;
                     }
 
@@ -242,7 +242,7 @@ impl AimDbHandle {
                 let runtime = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        eprintln!("Failed to create Tokio runtime: {}", e);
+                        log_error!("Failed to create Tokio runtime: {}", e);
                         return;
                     }
                 };
@@ -302,7 +302,7 @@ impl AimDbHandle {
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Debug, Clone, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
-    /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
     /// let producer = handle.producer::<Temperature>("sensor::temp")?;
     /// producer.set(Temperature { celsius: 25.0 })?;
     /// # Ok(())
@@ -337,7 +337,7 @@ impl AimDbHandle {
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Clone, Debug, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
-    /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
     /// let consumer = handle.consumer::<Temperature>("sensor::temp")?;
     /// let temp = consumer.get()?;
     /// # Ok(())
@@ -376,7 +376,7 @@ impl AimDbHandle {
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Debug, Clone, Serialize, Deserialize)]
     /// # struct HighFrequencySensor { value: f32 }
-    /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
     /// // High-frequency sensor needs larger buffer
     /// let producer = handle.producer_with_capacity::<HighFrequencySensor>("sensor::high_freq", 1000)?;
     /// producer.set(HighFrequencySensor { value: 42.0 })?;
@@ -438,7 +438,7 @@ impl AimDbHandle {
     /// # use serde::{Serialize, Deserialize};
     /// # #[derive(Clone, Debug, Serialize, Deserialize)]
     /// # struct RareEvent { id: u32 }
-    /// # fn example(handle: &AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
     /// // Rare events need smaller buffer
     /// let consumer = handle.consumer_with_capacity::<RareEvent>("events::rare", 10)?;
     /// let event = consumer.get()?;
@@ -482,7 +482,7 @@ impl AimDbHandle {
                             Err(DbError::BufferLagged { lag_count, .. }) => {
                                 // Consumer fell behind - this is not fatal
                                 // Log warning but continue receiving
-                                eprintln!(
+                                log_warn!(
                                     "Warning: Consumer for {} lagged by {} messages",
                                     std::any::type_name::<T>(),
                                     lag_count
@@ -495,7 +495,7 @@ impl AimDbHandle {
                             }
                             Err(e) => {
                                 // Other unexpected errors - log and stop
-                                eprintln!(
+                                log_error!(
                                     "Error reading from buffer for {}: {}",
                                     std::any::type_name::<T>(),
                                     e
@@ -506,7 +506,7 @@ impl AimDbHandle {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
+                    log_error!(
                         "Failed to subscribe to record type {}: {}",
                         std::any::type_name::<T>(),
                         e
@@ -541,7 +541,7 @@ impl AimDbHandle {
     ///
     /// ```rust,no_run
     /// # use aimdb_sync::*;
-    /// # fn example(handle: AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn example(handle: AimDbHandle) -> SyncResult<()> {
     /// handle.detach()?;
     /// # Ok(())
     /// # }
@@ -568,7 +568,7 @@ impl AimDbHandle {
     /// ```rust,no_run
     /// # use aimdb_sync::*;
     /// # use std::time::Duration;
-    /// # fn example(handle: AimDbHandle) -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn example(handle: AimDbHandle) -> SyncResult<()> {
     /// handle.detach_timeout(Duration::from_secs(5))?;
     /// # Ok(())
     /// # }
@@ -641,12 +641,12 @@ impl Drop for AimDbHandle {
     /// If shutdown fails, the runtime thread may be left running.
     fn drop(&mut self) {
         if self.thread_handle.is_some() {
-            eprintln!("Warning: AimDbHandle dropped without calling detach()");
-            eprintln!("Attempting emergency shutdown with 5 second timeout");
+            log_warn!("Warning: AimDbHandle dropped without calling detach()");
+            log_warn!("Attempting emergency shutdown with 5 second timeout");
 
             let timeout = Duration::from_secs(5);
             if let Err(e) = self.detach_internal(Some(timeout)) {
-                eprintln!("Error during emergency shutdown: {}", e);
+                log_error!("Error during emergency shutdown: {}", e);
             }
         }
     }

@@ -1,10 +1,11 @@
 //! Synchronous consumer for typed records.
 
 use crate::{SyncError, SyncResult};
-use std::fmt::Debug;
+use alloc::sync::Arc;
+use core::fmt::Debug;
+use core::time::Duration;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
 
 /// Synchronous consumer for records of type `T`.
 ///
@@ -24,7 +25,7 @@ use std::time::Duration;
 /// # use serde::{Serialize, Deserialize};
 /// # #[derive(Debug, Clone, Serialize, Deserialize)]
 /// # struct Temperature { celsius: f32 }
-/// # fn example(consumer: &SyncConsumer<Temperature>) -> Result<(), Box<dyn std::error::Error>> {
+/// # fn example(consumer: &SyncConsumer<Temperature>) -> SyncResult<()> {
 /// // Get value (blocks until available)
 /// let temp = consumer.get()?;
 /// println!("Temperature: {}°C", temp.celsius);
@@ -49,7 +50,7 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     /// Channel receiver for consumer data
-    /// Wrapped in Arc<Mutex> so it can be shared but only one thread receives at a time
+    /// Wrapped in `Arc<Mutex>` so it can be shared but only one thread receives at a time
     rx: Arc<Mutex<mpsc::Receiver<T>>>,
 }
 
@@ -81,13 +82,13 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -119,14 +120,14 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -160,13 +161,13 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -207,13 +208,13 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
@@ -258,14 +259,14 @@ where
     ///
     /// ```no_run
     /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::AimDbBuilderSyncExt;
+    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
     /// use aimdb_tokio_adapter::TokioAdapter;
     /// use std::sync::Arc;
     /// use std::time::Duration;
     ///
     /// # #[derive(Debug, Clone)]
     /// # struct MyData { value: i32 }
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn main() -> SyncResult<()> {
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;

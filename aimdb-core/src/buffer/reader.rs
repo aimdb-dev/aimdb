@@ -10,6 +10,8 @@
 //! The wrapped future is `Send` because the boxed reader is `Send`.
 
 use alloc::boxed::Box;
+#[cfg(feature = "remote")]
+use alloc::vec::Vec;
 use core::future::poll_fn;
 
 use crate::buffer::BufferReader;
@@ -56,9 +58,9 @@ impl<T: Clone + Send> Reader<T> {
 
 /// Owned, ergonomic handle over an erased [`JsonBufferReader`].
 ///
-/// Returned by `subscribe_json`. Awaiting `recv_json` is allocation-free: it
-/// wraps [`poll_recv_json`](JsonBufferReader::poll_recv_json) via
-/// `core::future::poll_fn` — no extra per-message box.
+/// Returned by `subscribe_json`. Awaiting `recv_json` or
+/// `recv_json_bytes` wraps the corresponding poll method via
+/// `core::future::poll_fn` — no extra per-message future box.
 #[cfg(feature = "remote")]
 pub struct JsonReader {
     inner: Box<dyn JsonBufferReader + Send>,
@@ -76,10 +78,22 @@ impl JsonReader {
         poll_fn(|cx| self.inner.poll_recv_json(cx)).await
     }
 
+    /// Receive the next value as owned JSON bytes.
+    pub async fn recv_json_bytes(&mut self) -> Result<Vec<u8>, DbError> {
+        poll_fn(|cx| self.inner.poll_recv_json_bytes(cx)).await
+    }
+
     /// Non-blocking receive as JSON — returns immediately.
     ///
     /// Returns `Err(DbError::BufferEmpty)` if no pending values.
     pub fn try_recv_json(&mut self) -> Result<serde_json::Value, DbError> {
         self.inner.try_recv_json()
+    }
+
+    /// Non-blocking receive as owned JSON bytes — returns immediately.
+    ///
+    /// Returns `Err(DbError::BufferEmpty)` if no pending values.
+    pub fn try_recv_json_bytes(&mut self) -> Result<Vec<u8>, DbError> {
+        self.inner.try_recv_json_bytes()
     }
 }

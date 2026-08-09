@@ -86,6 +86,18 @@ build:
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
+	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
+	cargo build --package aimdb-sync --no-default-features
+	@printf "$(YELLOW)  → Asserting no tokio in sync wrapper (no_std)$(NC)\n"
+	@out=$$(cargo tree -p aimdb-sync --no-default-features -e features,no-dev 2>&1) || { \
+		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
+		printf '%s\n' "$$out"; exit 1; \
+	}; \
+	if printf '%s\n' "$$out" | grep -qi tokio; then \
+		printf "$(RED)✗ tokio leaked into the no_std build$(NC)\n"; \
+		printf '%s\n' "$$out" | grep -i tokio; exit 1; \
+	fi
+	@printf "$(BLUE)✓ no_std graph is tokio-free$(NC)\n"
 	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
 	cargo build --package aimdb-codegen
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
@@ -157,6 +169,10 @@ test:
 	cargo test --package aimdb-wasm-adapter --no-default-features --features observability --lib
 	@printf "$(YELLOW)  → Testing sync wrapper$(NC)\n"
 	cargo test --package aimdb-sync
+	@printf "$(YELLOW)  → Testing sync wrapper (no_std)$(NC)\n"
+	cargo test --package aimdb-sync --no-default-features
+	@printf "$(YELLOW)  → Testing sync wrapper (data-contracts: set_value family)$(NC)\n"
+	cargo test --package aimdb-sync --features data-contracts
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
 	cargo test --package aimdb-codegen
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
@@ -240,6 +256,10 @@ clippy:
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime,embassy-net-support" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
+	cargo clippy --package aimdb-sync --no-default-features --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on sync wrapper (data-contracts)$(NC)\n"
+	cargo clippy --package aimdb-sync --features data-contracts --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library$(NC)\n"
 	cargo clippy --package aimdb-client --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library (serial transport arm)$(NC)\n"
@@ -392,6 +412,8 @@ test-embedded:
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-tcp-connector (Embassy TCP client + defmt) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
+	@printf "$(YELLOW)  → Checking aimdb-sync (no_std) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-sync --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features
 
 ## Example projects
 examples:

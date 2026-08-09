@@ -14,6 +14,7 @@
 //!   `Vec<String>`). The few sites that mirror events to defmt (router.rs)
 //!   keep explicit `#[cfg(feature = "defmt")]` gates next to these macros.
 
+#[macro_export]
 macro_rules! log_debug {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]
@@ -23,6 +24,7 @@ macro_rules! log_debug {
     }};
 }
 
+#[macro_export]
 macro_rules! log_info {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]
@@ -32,6 +34,7 @@ macro_rules! log_info {
     }};
 }
 
+#[macro_export]
 macro_rules! log_warn {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]
@@ -41,6 +44,7 @@ macro_rules! log_warn {
     }};
 }
 
+#[macro_export]
 macro_rules! log_error {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]

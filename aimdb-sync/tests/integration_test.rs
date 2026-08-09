@@ -1,7 +1,9 @@
 //! Integration tests for aimdb-sync
 //!
 //! These tests verify end-to-end functionality of the synchronous API wrapper.
-
+// The whole file exercises `attach()` / `SyncProducer` / `SyncConsumer`, none of
+// which exist without `std`.
+#![cfg(feature = "std")]
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, DbError};
 use aimdb_sync::AimDbBuilderSyncExt;
 use aimdb_sync::SyncError;

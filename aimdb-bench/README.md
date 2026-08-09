@@ -22,6 +22,10 @@ Plus two informational benches that exercise the full runner-driven pipeline.
 - **Tokio** — `b0_alloc_tokio`, `b1_b2_tokio` (host).
 - **postcard `Linkable` codec** — `b0_alloc_linkable` (host). This isolates the
   issue #177 `encode_into` seam; it is not a whole-connector allocation claim.
+- **type-erased remote JSON** — `b0_alloc_remote_json` and
+  `b1_b2_remote_json` (host). These compare issue #196's direct JSON bytes with
+  the compatibility `serde_json::Value` tree through the real typed record,
+  buffer, `Payload` and AimX envelope. Socket I/O and scheduling are excluded.
 - **Embassy** — `b0_alloc_embassy`, `b1_b2_embassy`
   (host). These drive the real [`EmbassyBuffer`] backend via
   `futures::executor::block_on` over embassy-sync's poll methods — no
@@ -58,8 +62,14 @@ cargo bench -p aimdb-bench --bench b0_alloc_tokio
 # B0 — allocation gate (Postcard Linkable::encode_into codec seam)
 cargo bench -p aimdb-bench --bench b0_alloc_linkable
 
+# B0 — direct-vs-tree JSON allocations through the AimX envelope boundary
+cargo bench -p aimdb-bench --bench b0_alloc_remote_json
+
 # B1 + B2 — latency (time/iter) and throughput (msgs/sec), one Criterion suite
 cargo bench -p aimdb-bench --bench b1_b2_tokio
+
+# B1 + B2 — direct-vs-tree JSON latency at the same in-memory boundary
+cargo bench -p aimdb-bench --bench b1_b2_remote_json
 
 # Embassy buffer backend (host) — same classes
 cargo bench -p aimdb-bench --bench b0_alloc_embassy
@@ -112,6 +122,8 @@ The committed baseline lives in `data/baselines/b0_alloc_tokio.json`. When a cha
 `b0_alloc_linkable` warms up for 1,000 iterations, then measures 10,000 generated-shape postcard `Linkable::encode_into` calls into one stack buffer.
 The required result is **0 allocation calls and 0 allocated bytes**. It isolates the codec seam: `SerializedReader` still returns a boxed future, dynamic topics may allocate and connector implementations may copy payload ownership after the core pump lends them the scratch slice.
 
+`b0_alloc_remote_json` warms the production in-memory `record.get` and subscription-event paths, then compares 5000 tree/direct operations. Its gate is relative: direct JSON must reduce both allocation calls and allocated bytes. It does not require zero allocations because the owned JSON `Vec`, `Arc<[u8]>` payload and AimX envelope serialization still own storage.
+
 > **Embassy eager registration (design 039 F8/F9).** An Embassy `SpmcRing` reader registers its embassy `Subscriber` eagerly, at `subscribe()` time — matching Tokio's `broadcast` — so no separate priming step is needed before the first `push`.
 
 **Noise reduction:** a `new_current_thread()` Tokio executor is used so there are no work-stealing threads and Tokio's scheduler does not allocate per-poll in the hot path.
@@ -134,5 +146,8 @@ Use them as a comparison point, not a regression gate. If they regress, `b0_allo
 - B0 is a counter, not a memory profiler. It reports allocation count and byte total; not per-call precision or heap fragmentation.
 - B0's `bytes_per_msg` measures AimDB-added per-message heap allocations, not the message payload. Pre-W8 this was the `Box::pin` boxed `recv()` future (a single ~144 B type shared across all three buffer arms, hence identical byte counts); since design 037 / W8 the consume path is poll-based and this is **0 B/msg** on the clean path. A nonzero value flags a regression — e.g. the broadcast error path still allocates its `buffer_name` string, so a B0 run that triggers `BufferLagged`/`BufferClosed` will report > 0.
 - Criterion p99 can vary ±5–10% on noisy CI runners. Use p50 medians for trend comparisons.
+- The remote JSON benches stop at an encoded in-memory AimX frame. They do not
+  include connector queues, wakeups, syscalls, DMA/interrupt work or physical
+  wire time, so their speedup is not a whole-system latency claim.
 - Always specify `--release` or debug build consistently when comparing runs; optimizations differ by 5–50×.
 - `b_alloc_pipeline` uses a paced source: per-message pace tokens and notification channels. The coordination overhead is included in the measured window.

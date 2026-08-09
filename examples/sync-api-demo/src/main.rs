@@ -33,6 +33,15 @@ struct Temperature {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Subscribe to tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr) // Log to stderr, stdout is for JSON-RPC
+        .init();
+
     println!("=== AimDB Sync API Demo ===\n");
 
     // Step 1: Build the database and attach it for sync API usage
@@ -153,7 +162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::sleep(Duration::from_millis(200));
 
     // Detach the handle to gracefully shut down the runtime thread
+    #[cfg(feature = "graceful-shutdown")]
     handle.detach()?;
+    #[cfg(feature = "graceful-shutdown")]
     println!("   ✓ Database detached successfully\n");
 
     println!("=== Demo Complete ===");

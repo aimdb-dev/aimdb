@@ -330,8 +330,9 @@ dependencies = [
  "aimdb-tokio-adapter",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.17",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4063,6 +4064,8 @@ dependencies = [
  "aimdb-tokio-adapter",
  "serde",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
