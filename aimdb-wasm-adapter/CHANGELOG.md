@@ -72,16 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (behavioral)
 
-- **`WsBridge`'s inbound frame funnel is bounded (1024 frames) and overflow ends
-  the connection.** The queue between the browser `onmessage` callback and the
-  engine's `recv` was unbounded, so a fast server or a main thread stuck in
-  synchronous JS could grow Rust-owned memory without limit. It now closes the
-  stream instead of dropping frames: the engine reads that as a disconnect, so
-  pending `query`/`listTopics` promises reject rather than hanging, and the
-  redial + re-subscribe re-syncs from scratch — the only sound recovery, since an
-  overflow gives no way to tell *what* was lost (a reply, events across topics,
-  part of a snapshot burst). Visible from JS as a `reconnecting` status flap plus
-  a console warning.
+- **`WsBridge`'s inbound frame funnel is bounded and overflow ends the
+  connection.** The queue between the browser `onmessage` callback and the
+  engine's `recv` was unbounded; it is now capped at 1024 frames, 1 MiB per
+  frame, and 8 MiB total. Past any limit the stream ends without draining the
+  backlog — dropping frames instead would lose data of unknown shape — so the
+  engine reads a disconnect, pending `query`/`listTopics` promises reject
+  rather than hang, and the redial + re-subscribe re-syncs from scratch.
+  Visible from JS as a `reconnecting` status flap plus a console warning.
 - **JS/WASM `SingleLatest` subscribers may observe one extra initial delivery.**
   As a consequence of the fresh-subscriber fix above, `subscribe` /
   `subscribe_typed` (bindings and `WsBridge`) now fire an immediate callback with
