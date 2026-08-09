@@ -29,13 +29,13 @@
 //! ## Architecture
 //!
 //! ```text
-//! User Threads (sync)  →  Channels  →  Runtime Thread (async)
-//!                                        ↓
-//!                                     AimDB (async)
-//!                                        ↓
-//!                                    Buffers (SPMC, etc.)
-//!                                        ↓
-//!                                     Channels  →  Consumer Threads (sync)
+//! User Threads (sync)  →  Runtime Thread (async)
+//!                                 ↓
+//!                         AimDB (async)
+//!                                 ↓
+//!                         Buffers (SPMC, etc.)
+//!                                 ↓
+//!                         Consumer Threads (sync)
 //! ```
 //!
 //! The runtime thread is created automatically when you call `attach()` on the builder.

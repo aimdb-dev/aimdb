@@ -233,11 +233,6 @@ impl AimDbHandle {
     ///
     /// - `T`: The record type, must implement `TypedRecord`
     ///
-    /// # Errors
-    ///
-    /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    ///
     /// # Example
     ///
     /// ```no_run
