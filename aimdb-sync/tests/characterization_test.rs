@@ -2,6 +2,8 @@
 //!
 //! These tests capture the observable behavior of aimdb-sync
 
+#![cfg(feature = "std")]
+
 use std::sync::mpsc;
 use std::{sync::Arc, thread, time::Duration};
 
