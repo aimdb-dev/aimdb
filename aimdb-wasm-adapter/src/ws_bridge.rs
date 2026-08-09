@@ -127,10 +127,9 @@ struct BridgeShared {
     /// Whether a connection ever succeeded (Connecting vs Reconnecting).
     ever_connected: Cell<bool>,
     auto_reconnect: bool,
-    /// The current socket, for a prompt close on `disconnect()`. Held from the
-    /// start of the dial — while still `CONNECTING`, so `disconnect()` reaches
-    /// a pending handshake — until the owner releases it (see
-    /// [`unpublish_socket`]).
+    /// The current socket, for a prompt close on `disconnect()`. Published from
+    /// the start of the dial (still `CONNECTING`, so a pending handshake is
+    /// reachable) until the owner releases it via [`unpublish_socket`].
     ws: RefCell<Option<web_sys::WebSocket>>,
 }
 
@@ -151,12 +150,9 @@ impl BridgeShared {
         emit_gap(&self.on_gap, topic, skipped);
     }
 
-    /// Adopt a completed handshake, moving to `Connected`.
-    ///
-    /// `false` when [`WsBridge::disconnect`] landed between `onopen` and this
-    /// call: the caller abandons the socket rather than let a completed
-    /// disconnect come back as `Connected`. The socket is already published
-    /// (see [`Dialer::connect`]), so only that re-check is left here.
+    /// Adopt a completed handshake, moving to `Connected`; `false` when
+    /// [`WsBridge::disconnect`] landed between `onopen` and this call, telling
+    /// the caller to abandon the socket.
     fn accept_dial(&self) -> bool {
         if self.stopped.get() {
             return false;
@@ -178,27 +174,37 @@ impl BridgeShared {
 
 // ─── Transport: web_sys::WebSocket as Connection/Dialer ──────────────────
 
-/// Depth of the funnel between the JS message callback and the engine's `recv`.
-/// Bounded so a fast server (or a main thread stuck in synchronous JS) can't
-/// grow Rust-owned browser memory without limit before the engine's own bounded
-/// subscription sinks apply. Sized well above the engine's `SUBSCRIBE_CHANNEL_CAP`
-/// so an ordinary late-join snapshot burst passes through untouched.
+/// Depth of the funnel between the JS message callback and the engine's `recv`,
+/// sized well above the engine's `SUBSCRIBE_CHANNEL_CAP` so an ordinary
+/// late-join snapshot burst passes untouched.
 const FRAME_QUEUE_CAP: usize = 1024;
 
-/// Ceiling on a single inbound frame, in bytes.
-///
-/// [`FRAME_QUEUE_CAP`] bounds queued *frames*; without a per-frame ceiling the
-/// queued byte total is whatever the peer chooses to send, so the two together
-/// are what bounds the funnel's memory. Sized well above any frame an ordinary
-/// bridge sees — the largest is a `record.query` reply, which the caller pages
-/// with `limit`.
+/// Ceiling on a single inbound frame, in bytes. Sized well above any frame an
+/// ordinary bridge sees — the largest is a `record.query` reply, which the caller
+/// pages with `limit`.
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+
+/// Ceiling on the funnel's *total* queued bytes — the actual memory bound:
+/// [`FRAME_QUEUE_CAP`] × [`MAX_FRAME_BYTES`] is ~1 GiB, far past any browser
+/// tab's budget. Leaves headroom for several max-size frames.
+const FRAME_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Frames arriving from JS event callbacks, funneled to the engine's `recv`.
 type FrameRx = futures_channel::mpsc::Receiver<Vec<u8>>;
 
 /// Sending half of the frame funnel, held by the `onmessage` callback.
 type FrameTx = futures_channel::mpsc::Sender<Vec<u8>>;
+
+/// Funnel accounting shared by the `onmessage` callback and the engine's `recv`.
+/// `Cell` suffices: wasm32 without atomics is single-threaded.
+#[derive(Default)]
+struct FunnelState {
+    /// Bytes currently queued — raised on enqueue, lowered as `recv` drains.
+    queued_bytes: Cell<usize>,
+    /// Set when a limit is breached; `recv` then reports EOF instead of
+    /// draining, freeing the backlog with the connection.
+    overflowed: Cell<bool>,
+}
 
 /// What [`funnel_text`] / [`funnel_frame`] did with one inbound frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,56 +220,65 @@ enum Funneled {
 }
 
 /// Hand one inbound frame to the engine, ending the stream if the funnel is
-/// full.
+/// over a limit.
 ///
-/// A full funnel means the engine fell far enough behind that we can no longer
-/// say *what* is being lost — a reply, events across topics, part of a snapshot
-/// burst. So don't drop frames: end the stream, which the engine reads as a
-/// disconnect (failing pending calls rather than leaving them unresolved) and
-/// redials. The pumps' re-subscribe then re-syncs from scratch — the only sound
-/// recovery for a loss of unknown shape.
+/// A full funnel is a loss of unknown shape (a reply, events, part of a
+/// snapshot), so the stream ends rather than dropping frames: the engine reads
+/// EOF as a disconnect, redials, and the pumps re-subscribe from scratch.
 ///
-/// Lives outside the `onmessage` closure so the overflow path is testable: that
-/// closure is only installed by a handshake that completes, and the browser test
-/// lane has no WebSocket peer to complete one against.
-fn funnel_frame(tx: &mut FrameTx, frame: Vec<u8>) -> Funneled {
-    // Closure is checked, not inferred from `try_send`: a sender that reported
-    // full stays parked and keeps reporting full, which would re-announce one
-    // overflow for every frame still arriving before the socket closes.
+/// A free function so the overflow path is testable: the `onmessage` closure
+/// is only installed by a completed handshake, which the test lane has no peer
+/// for.
+fn funnel_frame(tx: &mut FrameTx, state: &FunnelState, frame: Vec<u8>) -> Funneled {
+    // Explicit closure check: a sender that reported full stays parked and
+    // keeps reporting full, which would re-announce one overflow per late frame.
     if tx.is_closed() {
         return Funneled::Closed;
     }
+    // Bytes before slots. `futures_channel` grants each sender a slot beyond the
+    // requested capacity, so the frame count is the softer of the two bounds.
+    let queued = state.queued_bytes.get();
+    if queued.saturating_add(frame.len()) > FRAME_QUEUE_BYTES {
+        return overflow(tx, state);
+    }
+    let len = frame.len();
     match tx.try_send(frame) {
-        Ok(()) => Funneled::Accepted,
-        Err(e) if e.is_full() => {
-            tx.close_channel();
-            Funneled::Overflowed
+        Ok(()) => {
+            state.queued_bytes.set(queued + len);
+            Funneled::Accepted
         }
+        Err(e) if e.is_full() => overflow(tx, state),
         // Receiver gone: the engine dropped the connection.
         Err(_) => Funneled::Closed,
     }
 }
 
+/// End the stream over a limit, and mark it so `recv` drops the backlog rather
+/// than delivering it first.
+fn overflow(tx: &mut FrameTx, state: &FunnelState) -> Funneled {
+    state.overflowed.set(true);
+    tx.close_channel();
+    Funneled::Overflowed
+}
+
 /// Size-check one inbound text frame, then hand it to [`funnel_frame`].
 ///
-/// A frame past [`MAX_FRAME_BYTES`] is refused the way a full funnel is —
-/// end the stream, let the engine redial and the pumps re-subscribe. A frame
-/// that never reaches the engine is a loss of unknown shape either way.
-///
-/// The length is read on the JS side first: copying the frame into wasm-owned
-/// memory is the allocation being guarded, so an oversize frame must not be
-/// materialized just to be refused. UTF-8 is never shorter than UTF-16, so past
-/// the ceiling in code units is past it in bytes; the converse does not hold
-/// (one unit is up to three bytes), hence the exact re-check on the copy.
-fn funnel_text(tx: &mut FrameTx, text: &js_sys::JsString) -> Funneled {
-    // Closure is checked ahead of the ceiling for the reason `funnel_frame`
-    // gives: one announcement per stream end, not one per frame still arriving.
+/// A frame past [`MAX_FRAME_BYTES`] ends the stream the way a full funnel does.
+/// Its length is read JS-side first so an oversize frame is never copied into
+/// wasm memory just to be refused; UTF-8 is never shorter than UTF-16, so over
+/// the ceiling in code units is over it in bytes — the converse does not hold,
+/// hence the exact re-check on the copy.
+fn funnel_text(tx: &mut FrameTx, state: &FunnelState, text: &js_sys::JsString) -> Funneled {
+    // Same explicit closure check as `funnel_frame`: one report per stream end.
     if tx.is_closed() {
         return Funneled::Closed;
     }
     match (text.length() as usize <= MAX_FRAME_BYTES).then(|| String::from(text)) {
-        Some(frame) if frame.len() <= MAX_FRAME_BYTES => funnel_frame(tx, frame.into_bytes()),
+        Some(frame) if frame.len() <= MAX_FRAME_BYTES => {
+            funnel_frame(tx, state, frame.into_bytes())
+        }
         _ => {
+            state.overflowed.set(true);
             tx.close_channel();
             Funneled::Oversize
         }
@@ -274,6 +289,7 @@ fn funnel_text(tx: &mut FrameTx, text: &js_sys::JsString) -> Funneled {
 struct WasmWsConnection {
     ws: web_sys::WebSocket,
     frames: FrameRx,
+    funnel: Rc<FunnelState>,
     shared: Rc<BridgeShared>,
     peer: PeerInfo,
     /// JS callbacks kept alive for the socket's lifetime.
@@ -291,7 +307,21 @@ unsafe impl Send for WasmWsConnection {}
 impl Connection for WasmWsConnection {
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
         // `Ok(None)` when the frame funnel closes (socket closed/errored).
-        Box::pin(async move { Ok(self.frames.next().await) })
+        Box::pin(async move {
+            // Overflow reports EOF without draining: `close_channel` leaves the
+            // backlog queued, and dropping the connection is what frees it.
+            if self.funnel.overflowed.get() {
+                return Ok(None);
+            }
+            let frame = self.frames.next().await;
+            if let Some(frame) = &frame {
+                let queued = self.funnel.queued_bytes.get();
+                self.funnel
+                    .queued_bytes
+                    .set(queued.saturating_sub(frame.len()));
+            }
+            Ok(frame)
+        })
     }
 
     fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFut<'a, TransportResult<()>> {
@@ -308,10 +338,8 @@ impl Connection for WasmWsConnection {
     }
 }
 
-/// Detach every JS callback and close `ws`.
-///
-/// Detaching first matters: the `Closure`s are dropped right after (they live in
-/// the dial future or the connection), and a socket still holding them would
+/// Detach every JS callback and close `ws`. Detaching first matters: the
+/// `Closure`s are dropped right after, and a socket still holding them would
 /// call into freed WASM closures on its final `close`/`error` event.
 fn shutdown_socket(ws: &web_sys::WebSocket) {
     ws.set_onopen(None);
@@ -322,11 +350,9 @@ fn shutdown_socket(ws: &web_sys::WebSocket) {
 }
 
 /// Release `ws` from [`BridgeShared::ws`] if it is still the current socket,
-/// reporting whether it was.
-///
-/// The borrow ends here by design: callers answer `true` by emitting a status,
-/// which re-enters JS synchronously (see [`dispatch_status_event`]), and a
-/// listener calling [`WsBridge::disconnect`] borrows `shared.ws` mutably.
+/// reporting whether it was. Holds no borrow on return: callers answer `true`
+/// by emitting a status, which re-enters JS, and a listener calling
+/// [`WsBridge::disconnect`] borrows `shared.ws` mutably.
 fn unpublish_socket(shared: &BridgeShared, ws: &web_sys::WebSocket) -> bool {
     let is_current = shared
         .ws
@@ -341,16 +367,11 @@ fn unpublish_socket(shared: &BridgeShared, ws: &web_sys::WebSocket) -> bool {
 
 impl Drop for WasmWsConnection {
     fn drop(&mut self) {
-        // Close the socket if the engine lets go of a still-open connection
-        // (graceful stop, engine stop, or a funnel overflow that ended the
-        // frame stream).
         shutdown_socket(&self.ws);
-        // `shutdown_socket` detached `onclose`, so this is the only place left
-        // to report the transition — and the one exit every non-`onclose`
-        // teardown passes through. Skipped unless we still own the socket:
-        // otherwise `disconnect()` took it or a newer dial replaced it, and the
-        // status is not ours to move. `set_status` deduplicates, so teardowns
-        // that did reach `onclose` stay idempotent.
+        // With `onclose` detached, this is the only place left to report the
+        // transition — skipped unless we still own the published socket, since
+        // otherwise `disconnect()` or a newer dial owns the status.
+        // `set_status` deduplicates for teardowns that did reach `onclose`.
         if unpublish_socket(&self.shared, &self.ws) {
             self.shared.set_status(self.shared.drop_status());
         }
@@ -397,18 +418,14 @@ impl Dialer for WasmWsDialer {
                 }
             };
 
-            // Publish *before* awaiting the handshake, so `disconnect()` can
-            // reach a dial in flight: it takes and closes `shared.ws`, the
-            // browser fires `close`, and the handshake below resolves `false`
-            // rather than hanging until the browser's connect timeout.
+            // Publish *before* awaiting the handshake so `disconnect()` can
+            // reach a dial in flight and the handshake below resolves `false`
+            // instead of waiting out the browser's connect timeout.
             //
             // Nothing between the `stopped` check above and this line may
-            // `.await` or re-enter JS: a `disconnect()` slipping in there would
-            // be undone by the publish, stranding a live socket behind a
-            // completed disconnect. Single-threaded wasm makes a synchronous
-            // prologue enough to keep the pair atomic. (`set_status` below does
-            // re-enter JS — hence its position: a listener disconnecting from
-            // it finds the socket and closes it.)
+            // `.await` or re-enter JS — a `disconnect()` slipping in would be
+            // undone by the publish. (`set_status` below does re-enter JS,
+            // hence its position after the publish.)
             *shared.ws.borrow_mut() = Some(ws.clone());
 
             if shared.ever_connected.get() {
@@ -418,6 +435,7 @@ impl Dialer for WasmWsDialer {
             // Frame funnel: onmessage pushes text frames; onclose closes it so
             // the engine's `recv` observes end-of-stream.
             let (mut frame_tx, frames) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+            let funnel = Rc::new(FunnelState::default());
             // Open handshake: whichever of onopen/onclose fires first wins.
             let opened: Rc<RefCell<Option<futures_channel::oneshot::Sender<bool>>>> =
                 Rc::new(RefCell::new(None));
@@ -440,16 +458,20 @@ impl Dialer for WasmWsDialer {
 
             let on_message = {
                 let mut frame_tx = frame_tx.clone();
+                let funnel = funnel.clone();
                 Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
                     // AimX is a text protocol; a binary frame is not ours.
                     let data = event.data();
                     let Some(text) = data.dyn_ref::<js_sys::JsString>() else {
                         return;
                     };
-                    match funnel_text(&mut frame_tx, text) {
+                    match funnel_text(&mut frame_tx, &funnel, text) {
                         Funneled::Overflowed => web_sys::console::warn_1(
-                            &"WsBridge: frame queue full — dropping the connection to resync"
-                                .into(),
+                            &format!(
+                                "WsBridge: frame funnel past {FRAME_QUEUE_CAP} frames or \
+                                 {FRAME_QUEUE_BYTES} bytes — dropping the connection to resync"
+                            )
+                            .into(),
                         ),
                         Funneled::Oversize => web_sys::console::warn_1(
                             &format!(
@@ -487,19 +509,16 @@ impl Dialer for WasmWsDialer {
             ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
             plain_callbacks.push(on_error);
 
-            // Handshake failed: `onclose` before `onopen` (a refused dial, or
-            // `disconnect()` closing the socket published above), or the sender
-            // dropped. The socket is closing but still holds the callbacks,
-            // which this future frees on return — detach them first so a
-            // trailing `close`/`error` cannot invoke a dropped `Closure`, and
-            // unpublish so a dead socket never passes for the live one.
+            // Handshake failed: `onclose` before `onopen`, or the sender
+            // dropped. Detach the callbacks before this future frees them on
+            // return, and unpublish so a dead socket never passes for the
+            // live one.
             if open_rx.await != Ok(true) {
                 shutdown_socket(&ws);
                 unpublish_socket(&shared, &ws);
-                // A stopped bridge will never dial successfully again. `Closed`
-                // is terminal, stopping the engine on this attempt; `Io` would
-                // read as transient and cost a full reconnect backoff before
-                // the next dial learns the same thing.
+                // A stopped bridge never dials again: terminal `Closed` stops
+                // the engine now, where transient `Io` would cost a reconnect
+                // backoff first.
                 return Err(if shared.stopped.get() {
                     TransportError::Closed
                 } else {
@@ -520,6 +539,7 @@ impl Dialer for WasmWsDialer {
             Ok(Box::new(WasmWsConnection {
                 ws,
                 frames,
+                funnel,
                 shared,
                 peer: PeerInfo::default(),
                 _callbacks: msg_callbacks,
@@ -570,11 +590,10 @@ impl WsBridge {
     /// ```
     #[wasm_bindgen(js_name = "onStatusChange")]
     pub fn on_status_change(&self, callback: js_sys::Function) {
-        // Immediately replay current status so late registrations don't
-        // miss the "connected" transition that may have already fired.
+        // Replay the current status so late registrations don't miss a
+        // transition that already fired.
         let current = self.shared.status.get();
         let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(current.as_str()));
-        // Store for subsequent status changes
         *self.shared.on_status.borrow_mut() = Some(callback);
     }
 
@@ -619,15 +638,12 @@ impl WsBridge {
     /// Close the WebSocket and stop reconnection attempts.
     pub fn disconnect(&self) {
         self.shared.stopped.set(true);
-        // Setting `stopped` makes the dialer return a terminal `Closed` on its
-        // next redial, which stops the engine — dropping this handle alone would
-        // not, since the subscription pumps hold their own clones. Dropping it
-        // still rejects pending calls once the engine drains its command channel.
+        // `stopped` fails the next redial terminally, which stops the engine —
+        // dropping this handle alone would not, since the pumps hold clones.
         self.handle.borrow_mut().take();
-        // Reaches a pending handshake as well as an established connection: the
-        // dialer publishes its socket before awaiting `onopen`, so a dial that
-        // would otherwise hang until the browser's connect timeout fails
-        // promptly and terminally instead.
+        // The dialer publishes its socket before awaiting `onopen`, so this
+        // also interrupts a pending handshake rather than waiting out the
+        // browser's connect timeout.
         let ws = self.shared.ws.borrow_mut().take();
         if let Some(ws) = ws {
             let _ = ws.close();
@@ -737,9 +753,8 @@ impl WsBridge {
             run_client(dialer, AimxCodec, engine_config, Arc::new(WasmAdapter));
         wasm_bindgen_futures::spawn_local(engine_fut);
 
-        // One pump per configured pattern: mirror tagged updates into local
-        // records, re-subscribing when a stream ends (disconnect) — the
-        // subscribe command queues offline and replays after the redial.
+        // One pump per configured pattern; the subscribe command queues offline
+        // and replays after a redial.
         for pattern in &config.subscribe_topics {
             wasm_bindgen_futures::spawn_local(pump_pattern(
                 shared.clone(),
@@ -784,10 +799,8 @@ impl WsBridge {
                 let timeout =
                     WasmAdapter.sleep(core::time::Duration::from_millis(timeout_ms as u64));
                 futures_util::pin_mut!(call);
-                // Losing the race drops `call`, which cancels the request in the
-                // engine (`ClientHandle::call` is cancel-safe: the dropped
-                // future frees its pending-call entry by id). Timing out against
-                // an unanswering peer therefore costs nothing per request.
+                // Losing the race drops `call`, which is cancel-safe: the
+                // dropped future frees its pending-call entry in the engine.
                 match futures_util::future::select(call, timeout).await {
                     futures_util::future::Either::Left((reply, _)) => reply,
                     futures_util::future::Either::Right(((), _)) => {
@@ -854,9 +867,8 @@ async fn pump_pattern(
             // Wildcard events carry the concrete record topic; an exact-topic
             // subscription may leave it implicit.
             let topic = update.topic.as_deref().unwrap_or(&pattern);
-            // A non-zero gap means the mirror missed values the server did send:
-            // the local record jumps ahead. Surface it — a silent hole looks
-            // identical to an idle producer from JS.
+            // Surface gaps: from JS a silent hole looks identical to an idle
+            // producer.
             if update.skipped > 0 {
                 shared.report_gap(topic, update.skipped);
             }
@@ -944,16 +956,12 @@ where
 
 // ─── Status emission ───────────────────────────────────────────────────────
 
-/// Emit status change to the registered JS callback **and** via DOM
+/// Emit a status change to the registered JS callback and as a DOM
 /// `CustomEvent` on `window` (secondary channel for non-React consumers).
 ///
-/// The callback is deferred to a microtask via `spawn_local` so that it
-/// executes outside the re-entrant WASM↔JS call stack created by
-/// WebSocket event handlers (on_open, on_close, on_message). Direct
-/// `cb.call1()` from inside those handlers silently fails — the call
-/// returns `Ok` but the JS function body never runs.  Yielding once via
-/// `Promise.resolve().await` puts us in a clean microtask context (same
-/// as `subscribe_typed`), where React state updates flush correctly.
+/// The callback is deferred to a microtask: called directly from inside a
+/// WebSocket event handler it silently never runs, so a single
+/// `Promise.resolve().await` escapes the re-entrant WASM↔JS stack first.
 fn emit_status(on_status: &RefCell<Option<js_sys::Function>>, status: ConnectionStatus) {
     // Primary: deferred callback via microtask
     let cb = on_status.borrow().as_ref().cloned();
@@ -974,12 +982,9 @@ fn emit_status(on_status: &RefCell<Option<js_sys::Function>>, status: Connection
     dispatch_status_event(status);
 }
 
-/// Notify JS that `skipped` updates were lost on `topic`.
-///
-/// Always warns on the console (a gap is a data-loss event a developer should
-/// see even with no handler registered), then calls the registered handler —
-/// deferred to a microtask for the same re-entrancy reason as [`emit_status`],
-/// since the pump is polled from inside the WebSocket message callback.
+/// Notify JS that `skipped` updates were lost on `topic`: always warn on the
+/// console, then call the registered handler — deferred to a microtask for the
+/// same re-entrancy reason as [`emit_status`].
 fn emit_gap(on_gap: &RefCell<Option<js_sys::Function>>, topic: &str, skipped: u64) {
     web_sys::console::warn_1(
         &format!("[WsBridge] delivery gap: {skipped} update(s) dropped for topic='{topic}'").into(),
@@ -1025,16 +1030,13 @@ mod dial_tests {
 
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-    /// TEST-NET-1 (RFC 5737) on a port the browser does not block: the address
-    /// is unroutable, so the handshake stays pending for the duration of a test
-    /// and a socket built from it never opens or closes on its own — nothing can
-    /// race the assertions.
+    /// TEST-NET-1 (RFC 5737) on an unblocked port: unroutable, so the handshake
+    /// stays pending and a socket built from it never opens or closes on its
+    /// own.
     const PENDING_URL: &str = "ws://192.0.2.1:8443/aimdb-test";
 
-    /// A URL `WebSocket::new` throws on: `ftp:` is neither `ws`/`wss` nor an
-    /// `http`/`https` the constructor normalizes to one. Preferred over an
-    /// unparseable string, which would resolve against the test page's base
-    /// and come out a *valid* `ws://` URL.
+    /// A URL `WebSocket::new` throws on. An unparseable string would not do —
+    /// it resolves against the test page's base into a *valid* `ws://` URL.
     const REJECTED_URL: &str = "ftp://192.0.2.1:8443/aimdb-test";
 
     fn shared() -> Rc<BridgeShared> {
@@ -1063,9 +1065,8 @@ mod dial_tests {
         assert_eq!(shared.status.get(), ConnectionStatus::Connected);
     }
 
-    /// Regression: `disconnect()` landing between `onopen` and adoption. A
-    /// handshake that already resolved races the close of its socket; adopting
-    /// it would flip the status back to `Connected` on a disconnected bridge.
+    /// Regression: `disconnect()` landing between `onopen` and adoption must
+    /// not flip the status back to `Connected`.
     #[wasm_bindgen_test]
     fn accept_dial_is_refused_after_disconnect_during_handshake() {
         let shared = shared();
@@ -1085,8 +1086,7 @@ mod dial_tests {
     }
 
     /// A published connection over a socket that never opens, plus the funnel's
-    /// sending half. Enough for the teardown seam: `Drop` touches only the
-    /// socket and the shared state.
+    /// sending half — enough for the `Drop` seam.
     fn test_connection(shared: &Rc<BridgeShared>) -> (WasmWsConnection, FrameTx) {
         let ws = web_sys::WebSocket::new(PENDING_URL).unwrap();
         *shared.ws.borrow_mut() = Some(ws.clone());
@@ -1094,6 +1094,7 @@ mod dial_tests {
         let conn = WasmWsConnection {
             ws,
             frames,
+            funnel: Rc::new(FunnelState::default()),
             shared: shared.clone(),
             peer: PeerInfo::default(),
             _callbacks: Vec::new(),
@@ -1102,10 +1103,8 @@ mod dial_tests {
         (conn, frame_tx)
     }
 
-    /// Regression: a connection dropped without an `onclose` — funnel overflow,
-    /// engine stop — still moves the observable status. `Drop` detaches
-    /// `onclose` before closing, so nothing else can report it, and JS would
-    /// read `"connected"` indefinitely.
+    /// Regression: a connection dropped without an `onclose` (funnel overflow,
+    /// engine stop) still moves the observable status — nothing else can.
     #[wasm_bindgen_test]
     fn connection_drop_reports_disconnected_without_auto_reconnect() {
         let shared = shared_with_reconnect(false);
@@ -1159,20 +1158,18 @@ mod dial_tests {
         assert_eq!(shared.status.get(), ConnectionStatus::Disconnected);
     }
 
-    /// Regression: the overflow trigger — a full funnel ends the frame stream,
-    /// which the engine reads as a disconnect and which therefore arrives at the
-    /// `Drop` seam above. Socket-free by necessity: the `onmessage` closure this
-    /// mirrors is installed only by a handshake that completes, and this lane has
-    /// no WebSocket peer to complete one against.
+    /// Regression: a full funnel ends the frame stream, which the engine reads
+    /// as a disconnect.
     #[wasm_bindgen_test]
     async fn funnel_overflow_ends_the_frame_stream() {
-        let (mut tx, mut rx) = futures_channel::mpsc::channel::<Vec<u8>>(2);
+        let (mut tx, rx) = futures_channel::mpsc::channel::<Vec<u8>>(2);
+        let funnel = Rc::new(FunnelState::default());
 
         // `futures_channel` grants each sender a guaranteed slot on top of the
         // requested capacity, so fill by outcome rather than by count.
         let mut accepted = 0u8;
         loop {
-            match funnel_frame(&mut tx, alloc::vec![accepted]) {
+            match funnel_frame(&mut tx, &funnel, alloc::vec![accepted]) {
                 Funneled::Accepted => accepted += 1,
                 Funneled::Overflowed => break,
                 Funneled::Closed => panic!("funnel closed before it ever filled"),
@@ -1186,47 +1183,103 @@ mod dial_tests {
         // Frames still arriving before the socket closes are discarded, not
         // re-reported — one warning per overflow, not per frame.
         assert_eq!(
-            funnel_frame(&mut tx, alloc::vec![u8::MAX]),
+            funnel_frame(&mut tx, &funnel, alloc::vec![u8::MAX]),
             Funneled::Closed
         );
 
-        // What the engine's `recv` sees: everything queued, then end-of-stream
-        // (`Ok(None)`), which `drive_connection` treats as a disconnect.
-        // The funnel is already closed, so neither await can park.
-        for expected in 0..accepted {
-            assert_eq!(rx.next().await, Some(alloc::vec![expected]));
-        }
-        assert_eq!(
-            rx.next().await,
-            None,
-            "an overflowed funnel must end the stream, not stall it"
+        // The engine's `recv` sees end-of-stream at once, not the backlog.
+        let mut conn = funnel_connection(rx, funnel);
+        assert!(
+            conn.recv().await.unwrap().is_none(),
+            "an overflowed funnel must end the stream, not drain it"
         );
     }
 
-    /// Regression: `FRAME_QUEUE_CAP` bounds queued frames, not bytes, so a frame
-    /// past the per-frame ceiling ends the stream the way an overflow does — and
-    /// like one, announces itself once, not per frame still arriving.
+    /// A connection over `funnel`, for the `recv` seam alone.
+    fn funnel_connection(frames: FrameRx, funnel: Rc<FunnelState>) -> WasmWsConnection {
+        WasmWsConnection {
+            ws: web_sys::WebSocket::new(PENDING_URL).unwrap(),
+            frames,
+            funnel,
+            shared: shared(),
+            peer: PeerInfo::default(),
+            _callbacks: Vec::new(),
+            _plain_callbacks: Vec::new(),
+        }
+    }
+
+    /// Regression: the aggregate byte budget refuses max-size frames long
+    /// before the frame cap would.
     #[wasm_bindgen_test]
-    async fn oversize_frame_ends_the_frame_stream() {
-        let (mut tx, mut rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+    async fn the_funnel_bounds_total_queued_bytes() {
+        let (mut tx, _rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+        let funnel = Rc::new(FunnelState::default());
+
+        // Frames at the per-frame ceiling, far fewer than the frame cap, so
+        // only the aggregate can refuse them.
+        let frame_len = MAX_FRAME_BYTES;
+        let mut queued = 0usize;
+        loop {
+            match funnel_frame(&mut tx, &funnel, alloc::vec![0u8; frame_len]) {
+                Funneled::Accepted => queued += frame_len,
+                Funneled::Overflowed => break,
+                other => panic!("unexpected outcome: {other:?}"),
+            }
+            assert!(
+                queued <= FRAME_QUEUE_BYTES,
+                "the byte budget must never be exceeded"
+            );
+        }
+
+        assert!(
+            queued + frame_len > FRAME_QUEUE_BYTES,
+            "overflow must be the budget talking, not the frame count"
+        );
+        assert_eq!(funnel.queued_bytes.get(), queued);
+    }
+
+    /// The counter falls as the engine drains, so a funnel that stays level does
+    /// not creep toward the budget over a long connection.
+    #[wasm_bindgen_test]
+    async fn draining_returns_the_budget() {
+        let (mut tx, rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+        let funnel = Rc::new(FunnelState::default());
 
         assert_eq!(
-            funnel_text(&mut tx, &js_sys::JsString::from("keep me")),
+            funnel_frame(&mut tx, &funnel, alloc::vec![0u8; 4096]),
+            Funneled::Accepted
+        );
+        assert_eq!(funnel.queued_bytes.get(), 4096);
+
+        let mut conn = funnel_connection(rx, funnel.clone());
+        assert_eq!(conn.recv().await.unwrap().map(|f| f.len()), Some(4096));
+        assert_eq!(funnel.queued_bytes.get(), 0, "drained bytes are returned");
+    }
+
+    /// Regression: a frame past the per-frame ceiling ends the stream the way
+    /// an overflow does — announced once, not per late frame.
+    #[wasm_bindgen_test]
+    async fn oversize_frame_ends_the_frame_stream() {
+        let (mut tx, rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+        let funnel = Rc::new(FunnelState::default());
+
+        assert_eq!(
+            funnel_text(&mut tx, &funnel, &js_sys::JsString::from("keep me")),
             Funneled::Accepted
         );
         // Built JS-side: the point of the ceiling is that this never becomes a
         // `String`, so the test must not make one either.
         let oversize = js_sys::JsString::from("x").repeat(MAX_FRAME_BYTES as i32 + 1);
-        assert_eq!(funnel_text(&mut tx, &oversize), Funneled::Oversize);
+        assert_eq!(funnel_text(&mut tx, &funnel, &oversize), Funneled::Oversize);
         assert_eq!(
-            funnel_text(&mut tx, &js_sys::JsString::from("late")),
+            funnel_text(&mut tx, &funnel, &js_sys::JsString::from("late")),
             Funneled::Closed
         );
 
-        assert_eq!(rx.next().await, Some(b"keep me".to_vec()));
-        assert_eq!(
-            rx.next().await,
-            None,
+        // Same teardown as a full funnel: EOF at once, backlog dropped.
+        let mut conn = funnel_connection(rx, funnel);
+        assert!(
+            conn.recv().await.unwrap().is_none(),
             "an oversize frame must end the stream, not stall it"
         );
     }
@@ -1236,6 +1289,7 @@ mod dial_tests {
     #[wasm_bindgen_test]
     fn multibyte_frame_over_the_byte_ceiling_is_refused() {
         let (mut tx, _rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+        let funnel = Rc::new(FunnelState::default());
 
         // One code unit, three UTF-8 bytes: half the ceiling in units is 1.5×
         // the ceiling in bytes.
@@ -1245,16 +1299,17 @@ mod dial_tests {
             "the JS-side gate must not be what refuses this"
         );
 
-        assert_eq!(funnel_text(&mut tx, &frame), Funneled::Oversize);
+        assert_eq!(funnel_text(&mut tx, &funnel, &frame), Funneled::Oversize);
     }
 
     /// The ceiling is inclusive: a frame exactly at it still reaches the engine.
     #[wasm_bindgen_test]
     async fn frame_at_the_ceiling_is_accepted() {
         let (mut tx, mut rx) = futures_channel::mpsc::channel::<Vec<u8>>(FRAME_QUEUE_CAP);
+        let funnel = Rc::new(FunnelState::default());
 
         let frame = js_sys::JsString::from("x").repeat(MAX_FRAME_BYTES as i32);
-        assert_eq!(funnel_text(&mut tx, &frame), Funneled::Accepted);
+        assert_eq!(funnel_text(&mut tx, &funnel, &frame), Funneled::Accepted);
         assert_eq!(
             rx.next().await.map(|frame| frame.len()),
             Some(MAX_FRAME_BYTES)
