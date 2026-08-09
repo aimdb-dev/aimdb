@@ -47,8 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Two caveats: grants live in ws-topic space while `record.list` rows are keyed
   by `record_key`, so a record whose topic comes from a `TopicProvider` needs a
-  grant covering its *key*; and a `record.query` omitting `name` asks for `"*"`,
+  grant covering its *key*; and a `record.query` omitting `name` asks for `"#"`,
   which a narrower grant does not contain — it fails closed.
+
+- **`record.query` results stay inside the pattern that was authorized.** A
+  `sensors.*` query returned `sensors.secret.deep` too: the persistence backend
+  rewrote `*` to SQL `%`, which crosses `.`, so rows outside the grant reached
+  the client even though `can_subscribe("sensors.secret.deep")` is false. Fixed
+  in `aimdb-persistence-sqlite` by matching with `topic_matches`; authorization
+  needs no per-row hook, since `pattern_contains` already guarantees every topic
+  matching an authorized pattern is covered by the grant. An omitted `name` now
+  defaults to `"#"` rather than `"*"` — under MQTT semantics `*` is a single
+  segment, so the old default silently excluded every dotted record key.
 
 - **A grant with a non-terminal `#` no longer covers its whole subtree.** Both
   `Permissions::can_subscribe` (via `pattern_contains`) and

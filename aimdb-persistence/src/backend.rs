@@ -51,8 +51,14 @@ pub trait PersistenceBackend: Send + Sync {
 
     /// Query stored values, with optional pattern and time-range support.
     ///
-    /// `record_pattern` supports `*` as a glob wildcard. For example,
-    /// `"accuracy::*"` matches all records whose name starts with `"accuracy::"`.
+    /// `record_pattern` is MQTT-style over dot-separated record keys, as
+    /// subscriptions use: `*` covers exactly one segment, `#` zero or more, so
+    /// `"sensors.*"` matches `"sensors.temp"` but not `"sensors.temp.vienna"`.
+    ///
+    /// Narrow with [`literal_prefix`](crate::literal_prefix) and decide with
+    /// [`topic_matches`](crate::topic_matches) rather than approximating the
+    /// grammar in a store-native pattern language: returning keys outside the
+    /// pattern leaks records the caller may not be allowed to see.
     fn query<'a>(
         &'a self,
         record_pattern: &'a str,

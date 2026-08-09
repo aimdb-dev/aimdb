@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `record.query` shape** `{"records": [{topic, payload, ts}, …], "total": N}`
   (rows sorted by `ts` ascending) instead of `{values: [{record, value,
   stored_at}], count}`, so every transport shares one query vocabulary.
+- **`PersistenceBackend::query` patterns are MQTT-style**, the grammar
+  subscriptions already use: `*` covers exactly one segment and `#` zero or more,
+  over dot-separated record keys. Previously the contract was a prefix glob
+  (`"accuracy::*"`), so one pattern meant different things live and historically
+  — and a query could return records outside it. New `pattern::{literal_prefix,
+  prefix_upper_bound}` build the index range a backend narrows with, and
+  `topic_matches` is re-exported so it decides with the same implementation core
+  uses. Backends matching `*` themselves must switch to that pair.
 
 ### Changed (breaking)
 

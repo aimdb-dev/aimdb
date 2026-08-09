@@ -27,6 +27,7 @@ use std::path::Path;
 
 use aimdb_persistence::backend::{BoxFuture, PersistenceBackend, QueryParams, StoredValue};
 use aimdb_persistence::error::PersistenceError;
+use aimdb_persistence::{literal_prefix, prefix_upper_bound, topic_matches};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
@@ -172,13 +173,18 @@ fn run_db_thread(conn: Connection, rx: std::sync::mpsc::Receiver<DbCommand>) {
 // SQL helpers
 // ---------------------------------------------------------------------------
 
-/// Escape SQL LIKE special characters, then replace `*` with `%`.
-fn sanitize_pattern(pattern: &str) -> String {
-    pattern
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-        .replace('*', "%")
+/// Half-open `record_name` range covering every key `pattern` can match, as
+/// `(lower, upper)`; `None` on either side is unbounded.
+///
+/// A prefilter, not the pattern — the wildcards are left to [`topic_matches`]. A
+/// range rather than `LIKE` because SQLite's `LIKE` is ASCII-case-insensitive, so
+/// it both disagrees with that matcher and cannot use `idx_record_time` (BINARY).
+fn scan_range(pattern: &str) -> (Option<String>, Option<Vec<u8>>) {
+    let prefix = literal_prefix(pattern);
+    if prefix.is_empty() {
+        return (None, None);
+    }
+    (Some(prefix.to_string()), prefix_upper_bound(prefix))
 }
 
 fn query_sync(
@@ -195,7 +201,7 @@ fn query_sync(
             })
         })
         .transpose()?;
-    let sql_pattern = sanitize_pattern(pattern);
+    let (scan_from, scan_until) = scan_range(pattern);
 
     // Checked conversion: timestamps must fit in SQLite's signed i64.
     let start_time: Option<i64> = params
@@ -218,7 +224,8 @@ fn query_sync(
                            ORDER BY stored_at DESC, id DESC
                        ) AS rn
                 FROM record_history
-                WHERE record_name LIKE ?1 ESCAPE '\\'
+                WHERE (?1 IS NULL OR record_name >= ?1)
+                  AND (?5 IS NULL OR record_name < CAST(?5 AS TEXT))
                   AND (?2 IS NULL OR stored_at >= ?2)
                   AND (?3 IS NULL OR stored_at <= ?3)
             )
@@ -230,7 +237,7 @@ fn query_sync(
 
     let rows = stmt
         .query_map(
-            rusqlite::params![sql_pattern, start_time, end_time, limit],
+            rusqlite::params![scan_from, start_time, end_time, limit, scan_until],
             |row| {
                 let value_str: String = row.get(1)?;
                 Ok(StoredValue {
@@ -251,8 +258,16 @@ fn query_sync(
         )
         .map_err(|e| PersistenceError::Backend(e.to_string()))?;
 
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| PersistenceError::Backend(e.to_string()))
+    // The range only narrowed; the wildcards apply here. A drop takes a whole
+    // record, so the per-record `rn <= limit` still holds for those that survive.
+    let mut matched = Vec::new();
+    for row in rows {
+        let row = row.map_err(|e| PersistenceError::Backend(e.to_string()))?;
+        if topic_matches(pattern, &row.record_name) {
+            matched.push(row);
+        }
+    }
+    Ok(matched)
 }
 
 // ---------------------------------------------------------------------------
@@ -337,14 +352,14 @@ mod tests {
 
         // Store a value
         let value = serde_json::json!({"celsius": 21.5, "city": "vienna"});
-        backend.store("temp::vienna", &value, 1000).await.unwrap();
-        backend.store("temp::vienna", &value, 2000).await.unwrap();
-        backend.store("temp::berlin", &value, 1500).await.unwrap();
+        backend.store("temp.vienna", &value, 1000).await.unwrap();
+        backend.store("temp.vienna", &value, 2000).await.unwrap();
+        backend.store("temp.berlin", &value, 1500).await.unwrap();
 
         // Query latest 1 per record with wildcard
         let results = backend
             .query(
-                "temp::*",
+                "temp.*",
                 QueryParams {
                     limit_per_record: Some(1),
                     ..Default::default()
@@ -354,13 +369,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 2); // 1 per city
-        assert!(results.iter().any(|r| r.record_name == "temp::vienna"));
-        assert!(results.iter().any(|r| r.record_name == "temp::berlin"));
+        assert!(results.iter().any(|r| r.record_name == "temp.vienna"));
+        assert!(results.iter().any(|r| r.record_name == "temp.berlin"));
 
         // The vienna result should be the latest (timestamp 2000)
         let vienna = results
             .iter()
-            .find(|r| r.record_name == "temp::vienna")
+            .find(|r| r.record_name == "temp.vienna")
             .unwrap();
         assert_eq!(vienna.stored_at, 2000);
     }
@@ -373,12 +388,12 @@ mod tests {
 
         let value = serde_json::json!({"celsius": 20.0});
         for ts in [1000u64, 2000, 3000, 4000, 5000] {
-            backend.store("temp::vienna", &value, ts).await.unwrap();
+            backend.store("temp.vienna", &value, ts).await.unwrap();
         }
 
         let results = backend
             .query(
-                "temp::vienna",
+                "temp.vienna",
                 QueryParams {
                     start_time: Some(2000),
                     end_time: Some(4000),
@@ -398,9 +413,9 @@ mod tests {
         let backend = SqliteBackend::new(&db_path).unwrap();
 
         let value = serde_json::json!({"celsius": 20.0});
-        backend.store("temp::a", &value, 1000).await.unwrap();
-        backend.store("temp::b", &value, 2000).await.unwrap();
-        backend.store("temp::c", &value, 3000).await.unwrap();
+        backend.store("temp.a", &value, 1000).await.unwrap();
+        backend.store("temp.b", &value, 2000).await.unwrap();
+        backend.store("temp.c", &value, 3000).await.unwrap();
 
         // Delete rows older than 2500
         let deleted = backend.cleanup(2500).await.unwrap();
@@ -409,7 +424,7 @@ mod tests {
         // Only the 3000 row remains
         let results = backend
             .query(
-                "temp::*",
+                "temp.*",
                 QueryParams {
                     ..Default::default()
                 },
@@ -442,5 +457,77 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].record_name, "test_record");
+    }
+
+    /// `*` is one segment, so a query cannot reach past its own depth —
+    /// `sensors.secret.deep` sits inside the scan range, and only the matcher
+    /// keeps it out.
+    #[tokio::test]
+    async fn a_single_level_query_does_not_return_deeper_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("depth.db");
+        let backend = SqliteBackend::new(&db_path).unwrap();
+
+        let value = serde_json::json!({"v": 1});
+        backend.store("sensors.public", &value, 1000).await.unwrap();
+        backend
+            .store("sensors.secret.deep", &value, 1000)
+            .await
+            .unwrap();
+
+        let results = backend
+            .query("sensors.*", QueryParams::default())
+            .await
+            .unwrap();
+
+        let names: Vec<&str> = results.iter().map(|r| r.record_name.as_str()).collect();
+        assert_eq!(names, ["sensors.public"]);
+    }
+
+    /// `#` spans segments — it once reached SQLite as a literal, matching nothing.
+    #[tokio::test]
+    async fn a_multi_level_query_spans_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("multi.db");
+        let backend = SqliteBackend::new(&db_path).unwrap();
+
+        let value = serde_json::json!({"v": 1});
+        backend.store("sensors.public", &value, 1000).await.unwrap();
+        backend
+            .store("sensors.secret.deep", &value, 1000)
+            .await
+            .unwrap();
+        // A key that merely *starts with* the prefix string is a different record.
+        backend
+            .store("sensors_extra.x", &value, 1000)
+            .await
+            .unwrap();
+
+        let results = backend
+            .query("sensors.#", QueryParams::default())
+            .await
+            .unwrap();
+
+        let mut names: Vec<&str> = results.iter().map(|r| r.record_name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["sensors.public", "sensors.secret.deep"]);
+    }
+
+    /// The matcher is case-sensitive; `LIKE` was not.
+    #[tokio::test]
+    async fn matching_is_case_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("case.db");
+        let backend = SqliteBackend::new(&db_path).unwrap();
+
+        let value = serde_json::json!({"v": 1});
+        backend.store("Sensors.temp", &value, 1000).await.unwrap();
+
+        let results = backend
+            .query("sensors.*", QueryParams::default())
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
     }
 }

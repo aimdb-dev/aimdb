@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 047
+
+- **`query` honors MQTT pattern semantics.** The `*` → SQL `%` rewrite is gone:
+  `%` crosses `.`, so `sensors.*` also returned `sensors.secret.deep` — outside
+  the pattern, and on the WebSocket path outside the grant that authorized it.
+  Queries now scan a `record_name` range derived from the pattern's literal
+  prefix and filter rows with `topic_matches`. Three consequences: `#` works (it
+  reached SQLite as a literal and matched nothing), matching is case-sensitive
+  (`LIKE` is ASCII-case-insensitive, so `sensors.*` matched `Sensors.temp`), and
+  the scan can use `idx_record_time`, which case-insensitive `LIKE` never could.
+  Patterns over keys that are not dot-separated (`"temp::*"`) no longer wildcard.
+
 ## [0.1.1] - 2026-05-22
 
 ### Changed

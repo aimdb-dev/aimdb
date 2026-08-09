@@ -194,10 +194,12 @@ impl WsSession {
     /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`. The pattern
     /// passes [`AuthHandler::authorize_query`] before either is consulted.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
+        // `#`, not `*`: names are MQTT patterns, so an omitted name means
+        // "everything", which only `#` spans.
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
-            .unwrap_or("*")
+            .unwrap_or("#")
             .to_string();
         let limit = params
             .get("limit")
