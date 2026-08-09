@@ -256,8 +256,11 @@ discovery), so nothing user-visible changes.
   `ClientHandle` over a `web_sys::WebSocket`-backed `Connection`/`Dialer`
   (single-threaded wasm `Send` wrappers, same pattern as `SendFuture`);
   reply/subscription correlation then exists exactly once
-  (`aimdb-core/src/session/client.rs`). JS API (`write`, `query`,
-  `listTopics`, `onStatusChange`, offline queue, reconnect) is preserved.
+  (`aimdb-core/src/session/client.rs`). The JS *methods* (`write`, `query`,
+  `listTopics`, `onStatusChange`, offline queue, reconnect) are preserved;
+  `connectBridge` itself changes, since the socket is now the dialer's to
+  build — a URL the browser rejects no longer throws synchronously, it
+  resolves and reports `"disconnected"` (see the wasm CHANGELOG).
   `useAimDb.tsx` discovery reissued as a raw `record.list` req.
 - **Phase 4 (delete):** `aimdb-ws-protocol` crate, `WsCodec`,
   `protocol.rs` shims, `aimdb-client` dead helpers; design 038 §2.5/§3.9
@@ -275,5 +278,5 @@ codec, two error mappings, a hand-rolled 835-line browser demux duplicating
 additive AimX extension (wildcard subscribe + two result-shape changes)
 whose features every other transport inherits (CLI `watch 'temp.#'`, MCP
 wildcard reads, serial/TCP browsers-of-the-future). The browser break is
-contained to the bridge's wire (JS API preserved) and lands in a release
-already flagged protocol-breaking. **Go.**
+the bridge's wire plus one `connectBridge` behavior change, and lands in a
+release already flagged protocol-breaking. **Go.**

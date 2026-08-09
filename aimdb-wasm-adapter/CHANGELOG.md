@@ -13,11 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `web_sys::WebSocket`-backed `Connection`/`Dialer`: reply/subscription
   correlation, reconnect backoff, keepalive, and the offline queue now live in
   `aimdb-core`'s client engine — the hand-rolled 835-line demux is gone. The
-  `#[wasm_bindgen]` surface is preserved (`write`, `query`, `listTopics`,
-  `onStatusChange`, `status`, `disconnect`, `connectBridge` options), but the
+  `#[wasm_bindgen]` *method* surface is preserved (`write`, `query`,
+  `listTopics`, `onStatusChange`, `status`, `disconnect`, `connectBridge`
+  options) — with the one `connectBridge` behavior change noted below — but the
   wire is AimX, so the bridge only talks to design-047 servers.
   `BridgeOptions.lateJoin` is retained for option-shape compatibility
   (snapshots are server-driven under AimX).
+- **`connectBridge` no longer throws on a URL the browser rejects.** The socket
+  is the dialer's to build now, so construction succeeds and the failure arrives
+  as a terminal `"disconnected"` status (logged to the console, engine stopped —
+  it does not retry a URL no redial can fix). A caller that wrapped
+  `connectBridge` in `try`/`catch` to detect a bad URL must observe
+  `onStatusChange` instead, where a rejected URL is no longer distinguishable
+  from an unreachable server.
 - **`WasmDb.discover` / the raw discovery path speak `record.list`** and
   resolve with core's full `RecordMetadata` rows (was the topic-scoped
   `{name, schema_type, entity}` shape). The topic is `record_key` — `name` is
