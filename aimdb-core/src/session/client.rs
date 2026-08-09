@@ -365,6 +365,12 @@ enum Delivery {
 /// which is why the burst reserves a slot for its final snapshot: a burst
 /// truncated at the tail would otherwise stay silent until some later event
 /// closed the sequence, and a static subscription may never produce one.
+///
+/// `seq` is peer-supplied and unvalidated, so neither its monotonicity nor its
+/// range can be assumed: the arithmetic saturates, and the cursor only ever
+/// advances. A repeated or reordered frame is still delivered — dropping it
+/// would discard data over a number — but it cannot rewind the cursor into
+/// reporting a gap that never happened.
 fn deliver(
     subs: &mut HashMap<String, Sender<Result<SubUpdate, RpcError>>>,
     last_seq: &mut HashMap<String, u64>,
@@ -375,7 +381,7 @@ fn deliver(
     mode: Delivery,
 ) {
     let prev = last_seq.get(sub).copied().unwrap_or(0);
-    let skipped = seq.saturating_sub(prev + 1);
+    let skipped = seq.saturating_sub(prev.saturating_add(1));
     // `None` here is a late update for a dropped sub — ignore.
     if let Some(tx) = subs.get(sub) {
         // Hold the last slot back for the burst's final snapshot. Only this
@@ -392,9 +398,9 @@ fn deliver(
             snapshot_end: mode == Delivery::BurstEnd,
         };
         match tx.try_send(Ok(update)) {
-            // Delivered — advance the per-sub cursor.
+            // Delivered — advance the per-sub cursor, never rewind it.
             Ok(()) => {
-                last_seq.insert(sub.to_string(), seq);
+                last_seq.insert(sub.to_string(), seq.max(prev));
             }
             // Slow consumer: drop this update but leave `last_seq` so the
             // shortfall folds into the next delivered update's `skipped`.
@@ -1204,6 +1210,68 @@ mod tests {
             rx.await.is_err(),
             "a trimmed call must not leave its caller waiting"
         );
+    }
+
+    type SubSinks = HashMap<String, Sender<Result<SubUpdate, RpcError>>>;
+    type SubCursors = HashMap<String, u64>;
+
+    /// One sink and its cursor, for driving [`deliver`] directly.
+    fn test_sink() -> (SubSinks, SubCursors, Receiver<Result<SubUpdate, RpcError>>) {
+        let (tx, rx) = async_channel::bounded(SUBSCRIBE_CHANNEL_CAP);
+        let mut subs = HashMap::new();
+        subs.insert(String::from("1"), tx);
+        (subs, HashMap::new(), rx)
+    }
+
+    fn deliver_event(subs: &mut SubSinks, last_seq: &mut SubCursors, seq: u64) {
+        deliver(
+            subs,
+            last_seq,
+            "1",
+            seq,
+            None,
+            Payload::from(&b"x"[..]),
+            Delivery::Event,
+        );
+    }
+
+    /// `seq` arrives off the wire unvalidated, so the ceiling is reachable by a
+    /// peer. Computing the gap as `prev + 1` panicked in debug on the *next*
+    /// frame, and wrapped to a nonsense gap in release.
+    #[tokio::test]
+    async fn a_saturated_sequence_does_not_overflow() {
+        let (mut subs, mut last_seq, rx) = test_sink();
+
+        deliver_event(&mut subs, &mut last_seq, u64::MAX);
+        deliver_event(&mut subs, &mut last_seq, 5);
+
+        let skips: Vec<u64> = core::iter::from_fn(|| rx.try_recv().ok())
+            .map(|u| u.unwrap().skipped)
+            .collect();
+        assert_eq!(skips.len(), 2, "both frames must be delivered");
+        assert_eq!(skips[1], 0, "a saturated cursor cannot manufacture a gap");
+    }
+
+    /// A repeated or reordered `seq` is delivered but must not rewind the cursor:
+    /// a lower cursor makes the *next* valid frame look like a jump, reporting a
+    /// loss that never happened.
+    #[tokio::test]
+    async fn a_rewound_sequence_does_not_invent_a_gap() {
+        let (mut subs, mut last_seq, rx) = test_sink();
+
+        for seq in [1, 3, 2, 4] {
+            deliver_event(&mut subs, &mut last_seq, seq);
+        }
+
+        let skips: Vec<u64> = core::iter::from_fn(|| rx.try_recv().ok())
+            .map(|u| u.unwrap().skipped)
+            .collect();
+        assert_eq!(
+            skips,
+            alloc::vec![0, 1, 0, 0],
+            "only the real gap (2 missing between 1 and 3) may be reported"
+        );
+        assert_eq!(last_seq.get("1"), Some(&4));
     }
 
     /// The mirror's loss contract (see [`inbound_pump`]): a server-reported gap
