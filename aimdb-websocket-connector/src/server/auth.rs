@@ -49,7 +49,7 @@ pub struct ClientInfo {
 /// Per-client permission set assigned during authentication.
 ///
 /// Each field is a list of topic *patterns* (supporting `*` and `#` wildcards
-/// as defined in [`crate::protocol`]).
+/// as defined by [`aimdb_core::topic_matches`]).
 ///
 /// An empty `Vec` means *"no access"*. Use `["#"]` for unrestricted access.
 #[derive(Debug, Clone, Default)]
@@ -72,7 +72,8 @@ impl Permissions {
     /// Returns `true` if the client is allowed to subscribe to `topic`.
     ///
     /// `topic` is the client's requested subscription, which may itself be a
-    /// wildcard — so this asks **pattern containment** ([`pattern_contains`]):
+    /// wildcard — so this asks **pattern containment**
+    /// ([`pattern_contains`](aimdb_core::pattern_contains)):
     /// does a granted pattern cover the *whole* requested pattern? Plain
     /// [`topic_matches`](aimdb_core::topic_matches) would let a one-level grant
     /// (`sensors.*`) admit an all-levels request (`sensors.#`) by having the

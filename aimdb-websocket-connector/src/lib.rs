@@ -87,7 +87,7 @@
 //!
 //! ## Authentication (server only)
 //!
-//! See [`auth`] for the [`AuthHandler`] trait.
+//! See [`server::auth`] for the [`AuthHandler`] trait.
 
 // ════════════════════════════════════════════════════════════════════
 // Server modules (feature = "server")
