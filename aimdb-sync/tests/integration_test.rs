@@ -316,13 +316,13 @@ fn test_spmc_ring_semantics() {
     handle.detach().expect("Failed to detach");
 }
 
-/// Test buffer semantics - SingleLatest with get_latest()
+/// Test buffer semantics - get_latest()
 ///
-/// This test demonstrates the proper way to use SingleLatest semantics
-/// with the sync API by using the get_latest() method.
+/// This test demonstrates how to imitate SingleLatest semantics
+/// with a non-singleton buffer with the sync API by using the get_latest
 #[test]
 fn test_single_latest_semantics() {
-    let (handle, producer, mut consumer) = setup(BufferCfg::SingleLatest);
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 3 });
 
     // Produce first value and wait for it to propagate
     let initial_value = TestData {
@@ -340,7 +340,8 @@ fn test_single_latest_semantics() {
         producer.set(data(i)).expect("Failed to produce value");
     }
 
-    // Use get_latest() to drain the channel and get the most recent value
+    // Use get_latest() to drain the channel and get the most recent value.
+    // The BufferLagged errors occuring during it are ignored
     let latest = consumer.get_latest().expect("Failed to get latest");
 
     // Should get the last value (5) since get_latest() drains the channel
@@ -363,14 +364,14 @@ fn test_single_latest_semantics() {
 /// Test get_latest() with timeout
 #[test]
 fn test_get_latest_with_timeout() {
-    let (handle, producer, mut consumer) = setup(BufferCfg::SingleLatest);
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 3 });
 
     // Test timeout on empty buffer
     let result = consumer.get_latest_with_timeout(Duration::from_millis(50));
     assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     // Produce values rapidly
-    for i in 1..=3 {
+    for i in 1..=5 {
         producer.set(data(i)).expect("Failed to produce value");
     }
 
@@ -379,7 +380,7 @@ fn test_get_latest_with_timeout() {
         .get_latest_with_timeout(Duration::from_secs(1))
         .expect("Failed to get latest with timeout");
 
-    assert_eq!(latest.id, 3, "Should get the most recent value (3)");
+    assert_eq!(latest.id, 5, "Should get the most recent value (5)");
 
     handle.detach().expect("Failed to detach");
 }
