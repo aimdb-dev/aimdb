@@ -76,6 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ts }` is the canonical `record.query` result row (result shape
   `{records, total}`); `RecordMetadata` gains optional `schema_type` /
   `entity` fields (`entity` derived from the record key's final `.` segment).
+- **`ClientConfig::max_offline_queue` is now the command channel's capacity.**
+  The channel is `async_channel::bounded` and `enqueue` uses `force_send`, so a
+  full channel evicts its oldest and the bound holds across cloned
+  `ClientHandle`s without an admission lock. Default `usize::MAX` → **256**,
+  clamped to `1..=8192`: the ring is preallocated, so zero could never deliver
+  and `usize::MAX` would abort rather than mean "unbounded". An evicted `call`
+  resolves `RpcError::Internal`; an evicted `subscribe` ends its stream.
 
 ### Performance
 
