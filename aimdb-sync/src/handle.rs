@@ -1,24 +1,13 @@
 //! AimDB handle for managing the sync API runtime thread.
 
+use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
-use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError, DbResult};
+use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder};
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
 use std::thread::{self, JoinHandle};
 use tokio::sync::mpsc;
-
-/// Default channel capacity for sync producers and consumers.
-///
-/// This is the buffer size used by `producer()` and `consumer()` methods.
-/// A capacity of 100 provides a good balance between:
-/// - Memory usage (100 × sizeof(T) per channel)
-/// - Latency (small bursts don't block)
-/// - Backpressure (prevents unbounded growth)
-///
-/// Use `producer_with_capacity()` or `consumer_with_capacity()` if you need
-/// different buffering for specific record types.
-pub const DEFAULT_SYNC_CHANNEL_CAPACITY: usize = 100;
 
 /// Extension trait to add `attach()` method to `AimDbBuilder`.
 ///
@@ -142,7 +131,7 @@ impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
     pub(crate) fn new_from_builder(builder: AimDbBuilder) -> SyncResult<Self> {
         // Create shutdown channel
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
         // Create channels for passing the built database and runtime handle back
         let (db_tx, mut db_rx) = mpsc::channel::<Arc<AimDb>>(1);
@@ -151,51 +140,7 @@ impl AimDbHandle {
         // Spawn the runtime thread
         let thread_handle = thread::Builder::new()
             .name("aimdb-sync-runtime".to_string())
-            .spawn(move || {
-                // Create a new Tokio runtime for this thread
-                let runtime = match tokio::runtime::Runtime::new() {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        log_error!("Failed to create Tokio runtime: {}", e);
-                        return;
-                    }
-                };
-
-                // Get the runtime handle before moving into block_on
-                let rt_handle = runtime.handle().clone();
-
-                // Send the runtime handle to the main thread
-                if handle_tx.blocking_send(rt_handle).is_err() {
-                    log_error!("Failed to send runtime handle to main thread");
-                    return;
-                }
-
-                // Build the database inside the async context
-                runtime.block_on(async move {
-                    let (db, runner) = match builder.build().await {
-                        Ok(d) => (Arc::new(d.0), d.1),
-                        Err(e) => {
-                            log_error!("Failed to build database: {}", e);
-                            return;
-                        }
-                    };
-
-                    // Send the database to the main thread
-                    if db_tx.send(db.clone()).await.is_err() {
-                        log_error!("Failed to send database to main thread");
-                        return;
-                    }
-
-                    // Drive the runner until shutdown.
-                    // If runner.run() completes early (e.g. all tap futures finish),
-                    // we must NOT drop the runtime — tasks spawned via runtime_handle
-                    // would be aborted. Keep waiting for the explicit shutdown signal.
-                    tokio::select! {
-                        _ = runner.run() => { let _ = shutdown_rx.recv().await; }
-                        _ = shutdown_rx.recv() => {}
-                    }
-                });
-            })
+            .spawn(|| Self::setup_background(builder, shutdown_rx, db_tx, handle_tx))
             .map_err(|e| SyncError::AttachFailed {
                 message: format!("Failed to spawn runtime thread: {}", e),
             })?;
@@ -222,8 +167,6 @@ impl AimDbHandle {
         })
     }
 
-    /// Create a new handle from an already-built database (legacy method).
-    #[allow(dead_code)]
     pub(crate) fn new(db: AimDb) -> SyncResult<Self> {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
@@ -290,11 +233,6 @@ impl AimDbHandle {
     ///
     /// - `T`: The record type, must implement `TypedRecord`
     ///
-    /// # Errors
-    ///
-    /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    ///
     /// # Example
     ///
     /// ```no_run
@@ -312,7 +250,7 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        self.producer_with_capacity(key, DEFAULT_SYNC_CHANNEL_CAPACITY)
+        Ok(crate::SyncProducer::new(Arc::downgrade(&self.db), key))
     }
 
     /// Create a synchronous consumer for type `T`.
@@ -325,10 +263,11 @@ impl AimDbHandle {
     ///
     /// - `T`: The record type, must implement `TypedRecord`
     ///
-    /// # Errors
+    /// # Errors (wrapped in SyncError::Db)
     ///
-    /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `DbError::RecordKeyNotFound` if type `T` was not registered
+    /// - `DbError::TypeMismatch` if the record type does not match `T`
+    /// - `DbError::MissingConfiguration` if the corresponding buffer was not configured
     ///
     /// # Example
     ///
@@ -338,7 +277,7 @@ impl AimDbHandle {
     /// # #[derive(Clone, Debug, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
     /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// let consumer = handle.consumer::<Temperature>("sensor::temp")?;
+    /// let mut consumer = handle.consumer::<Temperature>("sensor::temp")?;
     /// let temp = consumer.get()?;
     /// # Ok(())
     /// # }
@@ -347,184 +286,10 @@ impl AimDbHandle {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        self.consumer_with_capacity(key, DEFAULT_SYNC_CHANNEL_CAPACITY)
-    }
-
-    /// Create a synchronous producer with custom channel capacity.
-    ///
-    /// Like `producer()` but allows specifying the channel buffer size.
-    /// Use this when you need different buffering characteristics for specific record types.
-    ///
-    /// # Arguments
-    ///
-    /// - `key`: The record key identifying this record instance
-    /// - `capacity`: Channel buffer size (number of items that can be buffered)
-    ///
-    /// # Type Parameters
-    ///
-    /// - `T`: The record type, must implement `TypedRecord`
-    ///
-    /// # Errors
-    ///
-    /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use aimdb_sync::*;
-    /// # use serde::{Serialize, Deserialize};
-    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
-    /// # struct HighFrequencySensor { value: f32 }
-    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// // High-frequency sensor needs larger buffer
-    /// let producer = handle.producer_with_capacity::<HighFrequencySensor>("sensor::high_freq", 1000)?;
-    /// producer.set(HighFrequencySensor { value: 42.0 })?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn producer_with_capacity<T>(
-        &self,
-        key: impl AsRef<str>,
-        capacity: usize,
-    ) -> SyncResult<crate::SyncProducer<T>>
-    where
-        T: Send + 'static + Debug + Clone,
-    {
-        // Create a bounded tokio channel for async/sync bridging
-        // Channel carries (value, result_sender) tuples to propagate errors back
-        let (tx, mut rx) =
-            mpsc::channel::<(T, tokio::sync::oneshot::Sender<DbResult<()>>)>(capacity);
-
-        // Spawn a task on the runtime to forward values to the database
-        let db = self.db.clone();
         let record_key = key.as_ref().to_string();
-        self.runtime_handle.spawn(async move {
-            while let Some((value, result_tx)) = rx.recv().await {
-                // Forward the value to the database's produce pipeline
-                let result = db.produce(&record_key, value);
-
-                // Send the result back to the caller (may fail if caller dropped)
-                let _ = result_tx.send(result);
-            }
-        });
-
-        Ok(crate::SyncProducer::new(tx, self.runtime_handle.clone()))
-    }
-
-    /// Create a synchronous consumer with custom channel capacity.
-    ///
-    /// Like `consumer()` but allows specifying the channel buffer size.
-    /// Use this when you need different buffering characteristics for specific record types.
-    ///
-    /// # Arguments
-    ///
-    /// - `key`: The record key identifying this record instance
-    /// - `capacity`: Channel buffer size (number of items that can be buffered)
-    ///
-    /// # Type Parameters
-    ///
-    /// - `T`: The record type, must implement `TypedRecord`
-    ///
-    /// # Errors
-    ///
-    /// - `DbError::RecordNotFound` if type `T` was not registered
-    /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # use aimdb_sync::*;
-    /// # use serde::{Serialize, Deserialize};
-    /// # #[derive(Clone, Debug, Serialize, Deserialize)]
-    /// # struct RareEvent { id: u32 }
-    /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// // Rare events need smaller buffer
-    /// let consumer = handle.consumer_with_capacity::<RareEvent>("events::rare", 10)?;
-    /// let event = consumer.get()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn consumer_with_capacity<T>(
-        &self,
-        key: impl AsRef<str>,
-        capacity: usize,
-    ) -> SyncResult<crate::SyncConsumer<T>>
-    where
-        T: Send + Sync + 'static + Debug + Clone,
-    {
-        // Create std::sync::mpsc channel for sync API
-        let (std_tx, std_rx) = std::sync::mpsc::sync_channel::<T>(capacity);
-
-        // Create a oneshot channel to confirm subscription succeeded
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
-        // Spawn a task on the runtime to forward buffer data to the std channel
-        let db = self.db.clone();
-        let record_key = key.as_ref().to_string();
-        self.runtime_handle.spawn(async move {
-            // Subscribe to the database buffer for type T
-            match db.subscribe::<T>(&record_key) {
-                Ok(mut reader) => {
-                    // Signal that subscription succeeded
-                    let _ = ready_tx.send(());
-
-                    // Forward all values from the buffer reader to the std channel
-                    loop {
-                        match reader.recv().await {
-                            Ok(value) => {
-                                // Send to std channel (non-async operation)
-                                // If the receiver is dropped, send() will fail
-                                if std_tx.send(value).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(DbError::BufferLagged { lag_count, .. }) => {
-                                // Consumer fell behind - this is not fatal
-                                // Log warning but continue receiving
-                                log_warn!(
-                                    "Warning: Consumer for {} lagged by {} messages",
-                                    std::any::type_name::<T>(),
-                                    lag_count
-                                );
-                                // Don't break - next recv() will get latest data
-                            }
-                            Err(DbError::BufferClosed { .. }) => {
-                                // Buffer closed (shutdown) - exit gracefully
-                                break;
-                            }
-                            Err(e) => {
-                                // Other unexpected errors - log and stop
-                                log_error!(
-                                    "Error reading from buffer for {}: {}",
-                                    std::any::type_name::<T>(),
-                                    e
-                                );
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    log_error!(
-                        "Failed to subscribe to record type {}: {}",
-                        std::any::type_name::<T>(),
-                        e
-                    );
-                    // Signal failure (will be ignored if receiver dropped)
-                    let _ = ready_tx.send(());
-                }
-            }
-        });
-
-        // Wait for subscription to complete (with timeout)
-        ready_rx
-            .blocking_recv()
-            .map_err(|_| SyncError::AttachFailed {
-                message: format!("Failed to subscribe to {}", std::any::type_name::<T>()),
-            })?;
-
-        Ok(crate::SyncConsumer::new(std_rx))
+        let reader = self.db.subscribe::<T>(&record_key).map_err(SyncError::Db)?;
+        let waiter = Waiter::new(self.runtime_handle.clone());
+        Ok(crate::SyncConsumer::new(waiter, reader))
     }
 
     /// Gracefully shut down the runtime thread.
@@ -632,6 +397,54 @@ impl AimDbHandle {
 
         Ok(())
     }
+
+    fn setup_background(
+        builder: AimDbBuilder,
+        mut shutdown_rx: mpsc::Receiver<ShutdownSignal>,
+        db_tx: mpsc::Sender<Arc<AimDb>>,
+        handle_tx: mpsc::Sender<tokio::runtime::Handle>,
+    ) {
+        // Create a new Tokio runtime for this thread
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                log_error!("Failed to create Tokio runtime: {}", e);
+                return;
+            }
+        };
+        // Get the runtime handle before moving into block_on
+        let rt_handle = runtime.handle().clone();
+        // Send the runtime handle to the main thread
+        if handle_tx.blocking_send(rt_handle).is_err() {
+            log_error!("Failed to send runtime handle to main thread");
+            return;
+        }
+        runtime.block_on(async move {
+            // Build the database inside the async context
+            let (db, runner) = match builder.build().await {
+                Ok(d) => (Arc::new(d.0), d.1),
+                Err(e) => {
+                    log_error!("Failed to build database: {}", e);
+                    return;
+                }
+            };
+
+            // Send the database to the main thread
+            if db_tx.send(db.clone()).await.is_err() {
+                log_error!("Failed to send database to main thread");
+                return;
+            }
+
+            // Drive the runner until shutdown.
+            // If runner.run() completes early (e.g. all tap futures finish),
+            // we must NOT drop the runtime — tasks spawned via runtime_handle
+            // would be aborted. Keep waiting for the explicit shutdown signal.
+            tokio::select! {
+                _ = runner.run() => { let _ = shutdown_rx.recv().await; }
+                _ = shutdown_rx.recv() => {}
+            }
+        });
+    }
 }
 
 impl Drop for AimDbHandle {
@@ -652,15 +465,13 @@ impl Drop for AimDbHandle {
     }
 }
 
-// Safety: AimDbHandle owns the runtime thread and channels are Send + Sync
-unsafe impl Send for AimDbHandle {}
-unsafe impl Sync for AimDbHandle {}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_extension_trait_exists() {
-        // Just ensure the module compiles
-        // Actual functionality tests will come later
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    #[allow(dead_code)]
+    fn check() {
+        assert_send::<crate::AimDbHandle>();
+        assert_sync::<crate::AimDbHandle>();
     }
 }

@@ -1,16 +1,15 @@
 //! Synchronous producer for typed records.
 
 use crate::{SyncError, SyncResult};
-use aimdb_core::DbResult;
-use alloc::sync::Arc;
+use aimdb_core::{AimDb, TryProduceError};
+use alloc::sync::Weak;
 use core::fmt::Debug;
-use core::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use core::marker::PhantomData;
 
 /// Synchronous producer for records of type `T`.
 ///
 /// Thread-safe, can be cloned and shared across threads.
-/// Values are moved (not cloned) through channels for zero-copy performance.
+/// Values are moved (not cloned) directly into the record's buffer.
 ///
 /// # Thread Safety
 ///
@@ -28,32 +27,23 @@ use tokio::sync::{mpsc, oneshot};
 /// // Set value (blocks until sent)
 /// producer.set(Temperature { celsius: 25.0 })?;
 ///
-/// // Set with timeout
-/// use std::time::Duration;
-/// producer.set_with_timeout(
-///     Temperature { celsius: 26.0 },
-///     Duration::from_millis(100)
-/// )?;
-///
 /// // Try to set (non-blocking)
 /// match producer.try_set(Temperature { celsius: 27.0 }) {
 ///     Ok(()) => println!("Success"),
-///     Err(_) => println!("Channel full, try later"),
+///     Err(_) => println!("Buffer full, try later"),
 /// }
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Clone)]
 pub struct SyncProducer<T>
 where
     T: Send + 'static + Debug + Clone,
 {
-    /// Channel sender for producer commands
-    /// Wrapped in Arc so it can be cloned across threads
-    /// Sends (value, result_sender) tuples to propagate produce errors back to caller
-    tx: Arc<mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>>,
-
-    /// Runtime handle for executing async operations with timeout
-    runtime_handle: tokio::runtime::Handle,
+    db: Weak<AimDb>,
+    key: String,
+    // same reasons as for Producer in aimdb-core/src/typed_api.rs
+    _phantom: PhantomData<fn() -> T>,
 }
 
 impl<T> SyncProducer<T>
@@ -61,46 +51,12 @@ where
     T: Send + 'static + Debug + Clone,
 {
     /// Create a new sync producer (internal use only)
-    pub(crate) fn new(
-        tx: mpsc::Sender<(T, oneshot::Sender<DbResult<()>>)>,
-        runtime_handle: tokio::runtime::Handle,
-    ) -> Self {
+    pub(crate) fn new(db: Weak<AimDb>, key: impl AsRef<str>) -> Self {
         Self {
-            tx: Arc::new(tx),
-            runtime_handle,
+            db,
+            key: key.as_ref().into(),
+            _phantom: PhantomData,
         }
-    }
-
-    /// Internal helper: send value and wait for result with optional timeout
-    fn send_internal(&self, value: T, timeout: Option<Duration>) -> SyncResult<()> {
-        let (result_tx, result_rx) = oneshot::channel();
-        let tx = self.tx.clone();
-
-        self.runtime_handle.block_on(async move {
-            // Send with optional timeout
-            let send_result = match timeout {
-                Some(duration) => tokio::time::timeout(duration, tx.send((value, result_tx))).await,
-                None => Ok(tx.send((value, result_tx)).await),
-            };
-
-            match send_result {
-                Ok(Ok(())) => {
-                    // Successfully sent, now wait for produce result
-                    let recv_result = match timeout {
-                        Some(duration) => tokio::time::timeout(duration, result_rx).await,
-                        None => Ok(result_rx.await),
-                    };
-
-                    match recv_result {
-                        Ok(Ok(result)) => result.map_err(SyncError::from),
-                        Ok(Err(_)) => Err(SyncError::RuntimeShutdown),
-                        Err(_) => Err(SyncError::SetTimeout),
-                    }
-                }
-                Ok(Err(_)) => Err(SyncError::RuntimeShutdown),
-                Err(_) => Err(SyncError::SetTimeout),
-            }
-        })
     }
 
     /// Set the value, blocking until it can be sent.
@@ -134,57 +90,22 @@ where
     /// # }
     /// ```
     pub fn set(&self, value: T) -> SyncResult<()> {
-        self.send_internal(value, None)
-    }
-
-    /// Set the value with a timeout.
-    ///
-    /// Attempts to send the value to the runtime thread and wait for produce completion,
-    /// blocking for at most `timeout` duration.
-    ///
-    /// # Errors
-    ///
-    /// Returns `SyncError::SetTimeout` if the timeout expires before the value can be sent
-    /// or if waiting for the produce result exceeds the timeout.
-    /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
-    /// Returns any error from the underlying `produce()` operation.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-    /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use std::sync::Arc;
-    /// use std::time::Duration;
-    ///
-    /// # #[derive(Debug, Clone)]
-    /// # struct MyData { value: i32 }
-    /// # fn main() -> SyncResult<()> {
-    /// let handle = AimDbBuilder::new()
-    ///     .runtime(Arc::new(TokioAdapter))
-    ///     .attach()?;
-    /// let producer = handle.producer::<MyData>("my_data")?;
-    /// producer.set_with_timeout(MyData { value: 42 }, Duration::from_millis(100))?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn set_with_timeout(&self, value: T, timeout: Duration) -> SyncResult<()> {
-        self.send_internal(value, Some(timeout))
+        if let Some(db) = self.db.upgrade() {
+            db.produce(&self.key, value).map_err(SyncError::Db)
+        } else {
+            Err(SyncError::RuntimeShutdown)
+        }
     }
 
     /// Try to set the value without blocking.
     ///
-    /// Attempts to send the value immediately. Returns an error if the channel is full
-    /// or the runtime thread has shut down.
-    ///
-    /// **Note**: This method returns immediately after sending to the channel, but does NOT
-    /// wait for the produce operation to complete. Use `set()` or `set_with_timeout()` if
-    /// you need to know whether the produce operation succeeded.
+    /// Pushes the value directly into the record's buffer. Unlike `set()`, this never
+    /// blocks: it fails immediately if the buffer is full instead of waiting for space.
     ///
     /// # Errors
     ///
-    /// Returns `SyncError::SetTimeout` if the channel is full.
+    /// Returns `SyncError::SetTimeout` for bounded, non-overwriting buffer
+    /// implementations if the buffer is full.
     /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
     ///
     /// # Example
@@ -204,19 +125,21 @@ where
     /// let producer = handle.producer::<MyData>("my_data")?;
     /// match producer.try_set(MyData { value: 42 }) {
     ///     Ok(()) => println!("Sent immediately"),
-    ///     Err(_) => println!("Channel full or runtime shutdown"),
+    ///     Err(_) => println!("Buffer full or runtime shutdown"),
     /// }
     /// # Ok(())
     /// # }
     /// ```
     pub fn try_set(&self, value: T) -> SyncResult<()> {
-        // Create a oneshot channel but don't wait for the result
-        let (result_tx, _result_rx) = oneshot::channel();
-
-        self.tx.try_send((value, result_tx)).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => SyncError::SetTimeout,
-            mpsc::error::TrySendError::Closed(_) => SyncError::RuntimeShutdown,
-        })
+        if let Some(db) = self.db.upgrade() {
+            let producer = db.producer(&self.key)?;
+            producer.try_produce(value).map_err(|e| match e {
+                TryProduceError::Full(_) => SyncError::SetTimeout,
+                TryProduceError::Closed(_) => SyncError::RuntimeShutdown,
+            })
+        } else {
+            Err(SyncError::RuntimeShutdown)
+        }
     }
 }
 
@@ -292,30 +215,13 @@ fn unix_now_ms() -> u64 {
         .as_millis() as u64
 }
 
-impl<T> Clone for SyncProducer<T>
-where
-    T: Send + 'static + Debug + Clone,
-{
-    /// Clone the producer to share across threads.
-    ///
-    /// Multiple clones can set values concurrently.
-    fn clone(&self) -> Self {
-        Self {
-            tx: self.tx.clone(),
-            runtime_handle: self.runtime_handle.clone(),
-        }
-    }
-}
-
-// Safety: SyncProducer uses Arc internally and is safe to send/share
-unsafe impl<T> Send for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
-unsafe impl<T> Sync for SyncProducer<T> where T: Send + 'static + Debug + Clone {}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_sync_producer_is_send_sync() {
-        // Just checking that the type implements Send + Sync
-        // Actual functionality tests will come later
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    #[allow(dead_code)]
+    fn check<X: Send + 'static + core::fmt::Debug + Clone>() {
+        assert_send::<crate::SyncProducer<X>>();
+        assert_sync::<crate::SyncProducer<X>>();
     }
 }

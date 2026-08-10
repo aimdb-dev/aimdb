@@ -6,36 +6,36 @@
 //! ## Overview
 //!
 //! This crate provides a synchronous interface to AimDB by running the
-//! async runtime on a dedicated background thread and using channels
-//! to bridge between synchronous and asynchronous contexts.
+//! async runtime on a dedicated background thread, blocking on it directly
+//! for reads that must wait for data.
 //!
 //! ## Features
 //!
 //! ### Producer Operations
 //! - **`set()`**: Blocking send, waits if channel is full
-//! - **`set_timeout()`**: Blocking send with timeout
 //! - **`try_set()`**: Non-blocking send, returns immediately
 //!
 //! ### Consumer Operations
 //! - **`get()`**: Blocking receive, waits for value
-//! - **`get_timeout()`**: Blocking receive with timeout
+//! - **`get_with_timeout()`**: Blocking receive with timeout
 //! - **`try_get()`**: Non-blocking receive, returns immediately
 //!
 //! ### General
-//! - **Thread-Safe**: All types are `Send + Sync` and can be shared across threads
+//! - **Thread-Safe**: `SyncProducer` is `Send + Sync` and can be cloned and shared across
+//!   threads; `SyncConsumer` is `Send` only — move it to a thread, don't share it
 //! - **Type-Safe**: Full compile-time type safety with generics
 //! - **Pure Sync Context**: No `#[tokio::main]` required - works in plain `fn main()`
 //!
 //! ## Architecture
 //!
 //! ```text
-//! User Threads (sync)  →  Channels  →  Runtime Thread (async)
-//!                                        ↓
-//!                                     AimDB (async)
-//!                                        ↓
-//!                                    Buffers (SPMC, etc.)
-//!                                        ↓
-//!                                     Channels  →  Consumer Threads (sync)
+//! User Threads (sync)  →  Runtime Thread (async)
+//!                                 ↓
+//!                         AimDB (async)
+//!                                 ↓
+//!                         Buffers (SPMC, etc.)
+//!                                 ↓
+//!                         Consumer Threads (sync)
 //! ```
 //!
 //! The runtime thread is created automatically when you call `attach()` on the builder.
@@ -67,7 +67,7 @@
 //!
 //! // Create producer and consumer
 //! let producer = handle.producer::<Temperature>("sensor.temp")?;
-//! let consumer = handle.consumer::<Temperature>("sensor.temp")?;
+//! let mut consumer = handle.consumer::<Temperature>("sensor.temp")?;
 //!
 //! // Producer: blocking operations
 //! producer.set(Temperature { celsius: 25.0 })?;
@@ -84,35 +84,31 @@
 //!
 //! ## Multi-threaded Usage
 //!
-//! Both `SyncProducer` and `SyncConsumer` can be cloned and shared across threads:
+//! `SyncProducer` can be cloned and shared across threads:
 //!
 #![cfg_attr(feature = "std", doc = "```no_run")]
 #![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! use std::thread;
 //! # use aimdb_sync::{SyncConsumer, SyncProducer};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//! # fn demo(producer: SyncProducer<Temperature>, consumer: SyncConsumer<Temperature>) {
+//! # fn demo(producer: SyncProducer<Temperature>, mut consumer: SyncConsumer<Temperature>) {
 //!
 //! // Clone for use in another thread
 //! let producer_clone = producer.clone();
-//! let consumer_clone = consumer.clone();
 //!
 //! thread::spawn(move || {
 //!     producer_clone.set(Temperature { celsius: 22.0 }).ok();
 //! });
 //!
-//! thread::spawn(move || {
-//!     if let Ok(temp) = consumer_clone.get() {
-//!         println!("Got: {:.1}°C", temp.celsius);
-//!     }
-//! });
+//! if let Ok(temp) = consumer.get() {
+//!     println!("Got: {:.1}°C", temp.celsius);
+//! };
 //! # }
 //! ```
 //!
 //! ## Independent Subscriptions
 //!
-//! Note: Cloning a `SyncConsumer` shares the same channel, so only one thread
-//! will receive each value. For independent subscriptions, create multiple consumers:
+//! For independent subscriptions, create multiple consumers:
 //!
 #![cfg_attr(feature = "std", doc = "```no_run")]
 #![cfg_attr(not(feature = "std"), doc = "```ignore")]
@@ -127,84 +123,13 @@
 //! # }
 //! ```
 //!
-//! ## Channel Capacity Configuration
-//!
-//! By default, both producers and consumers use a channel capacity of 100.
-//! You can customize this per record type using the `_with_capacity` methods:
-//!
-#![cfg_attr(feature = "std", doc = "```no_run")]
-#![cfg_attr(not(feature = "std"), doc = "```ignore")]
-//! # use aimdb_sync::{AimDbHandle, SyncResult};
-//! # #[derive(Debug, Clone)] struct SensorData { value: f32 }
-//! # #[derive(Debug, Clone)] struct RareEvent { code: u8 }
-//! # #[derive(Debug, Clone)] struct LatestOnly { state: u8 }
-//! # fn demo(handle: &AimDbHandle) -> SyncResult<()> {
-//! // High-frequency sensor data needs larger buffer
-//! let producer = handle.producer_with_capacity::<SensorData>("sensor.fast", 1000)?;
-//!
-//! // Rare events can use smaller buffer
-//! let consumer = handle.consumer_with_capacity::<RareEvent>("events.rare", 10)?;
-//!
-//! // SingleLatest-like behavior: use capacity=1 to minimize queueing
-//! let consumer = handle.consumer_with_capacity::<LatestOnly>("state.latest", 1)?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! **When to adjust capacity:**
-//! - **Increase**: High-frequency data, bursty traffic, slow consumers
-//! - **Decrease**: Memory-constrained, rare events, strict backpressure needed
-//! - **Capacity=1**: Approximate SingleLatest semantics (see limitation below)
-//! - **Default (100)**: Good for most use cases
-//!
-//! ## Buffer Semantics Limitation
-//!
-//! **Important**: The sync API adds a queueing layer (`std::sync::mpsc` channel)
-//! between the database buffer and your code. This means:
-//!
-//! - ✅ **SPMC Ring**: Works as expected - each consumer gets independent data
-//! - ✅ **Mailbox**: Works well - last value is preserved
-//! - ⚠️ **SingleLatest**: Best effort only - the sync channel may queue multiple values
-//!
-//! ### Solutions for SingleLatest Semantics
-//!
-//! 1. **Use `get_latest()`** - Drains the channel to get the most recent value:
-#![cfg_attr(feature = "std", doc = "```no_run")]
-#![cfg_attr(not(feature = "std"), doc = "```ignore")]
-//!    # use aimdb_sync::SyncResult;
-//!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(consumer: &aimdb_sync::SyncConsumer<Temperature>) -> SyncResult<()> {
-//!    // Always get the latest value, skipping queued intermediates
-//!    let latest = consumer.get_latest()?;
-//!    # Ok(())
-//!    # }
-//!    ```
-//!
-//! 2. **Use capacity=1** - Minimize queueing:
-#![cfg_attr(feature = "std", doc = "```no_run")]
-#![cfg_attr(not(feature = "std"), doc = "```ignore")]
-//!    # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
-//!    # fn demo(handle: &aimdb_sync::AimDbHandle) -> aimdb_sync::SyncResult<()> {
-//!    let consumer = handle.consumer_with_capacity::<Temperature>("sensor.temp", 1)?;
-//!    # Ok(())
-//!    # }
-//!    ```
-//!
-//! 3. **Use the async API directly** - For perfect semantic preservation.
-//!
-//! The sync API is optimized for simplicity and ease of use, not for perfect
-//! semantic preservation across all buffer types.
-//!
 //! ## Threading Model
 //!
 //! - **User threads**: Unlimited - any number of threads can call operations concurrently
 //! - **Runtime thread**: One dedicated thread named "aimdb-sync-runtime"
-//! - **Channels**: Lock-free MPSC channels for efficient communication
 //!
 //! ## Performance
 //!
-//! - **Overhead**: ~100-500μs per operation vs pure async (channel + context switch)
-//! - **Throughput**: Limited by channel capacity (default: 100 items)
 //! - **Latency**: Excellent for <50ms target, not suitable for hard low-latency requirements
 //!
 //! ## Error Handling
@@ -223,9 +148,10 @@
 //! ### Error Propagation
 //!
 //! Producer errors are propagated synchronously back to the caller:
-//! - `set()` and `set_with_timeout()` block until the produce operation completes
-//!   and return any errors that occur in the async context
-//! - `try_set()` sends immediately without waiting for the produce result (fire-and-forget)
+//! - `set()` blocks until the produce operation completes and returns any errors
+//!   that occur
+//! - `try_set()` returns immediately: `Ok(())` if the record's buffer accepted the
+//!   value, `SyncError::SetTimeout` if it didn't (bounded, non-overwriting buffer, full)
 //!
 #![cfg_attr(feature = "std", doc = "```no_run")]
 #![cfg_attr(not(feature = "std"), doc = "```ignore")]
@@ -244,7 +170,9 @@
 //!
 //! ## Safety
 //!
-//! All types are thread-safe and can be shared across threads via `Clone`.
+//! `SyncProducer` is `Clone`, `Send + Sync` — share it freely across threads.
+//! `SyncConsumer` is `Send` only, not `Clone` — move it to a thread, don't share it;
+//! get independent readers via separate `handle.consumer()` calls instead.
 //! The API ensures proper resource cleanup through RAII and explicit `detach()`.
 
 #![warn(missing_docs)]
@@ -261,11 +189,13 @@ mod error;
 mod handle;
 #[cfg(feature = "std")]
 mod producer;
+#[cfg(feature = "std")]
+mod waiter;
 
 #[cfg(feature = "std")]
 pub use consumer::SyncConsumer;
 #[cfg(feature = "std")]
-pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt, DEFAULT_SYNC_CHANNEL_CAPACITY};
+pub use handle::{AimDbBuilderSyncExt, AimDbHandle, AimDbSyncExt};
 #[cfg(feature = "std")]
 pub use producer::SyncProducer;
 
