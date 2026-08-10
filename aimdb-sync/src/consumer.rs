@@ -1,22 +1,18 @@
 //! Synchronous consumer for typed records.
 
+use aimdb_core::{DbError, Reader};
+
+use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
-use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
-use std::sync::mpsc;
-use std::sync::Mutex;
+use std::time::Instant;
 
 /// Synchronous consumer for records of type `T`.
 ///
-/// Thread-safe, can be cloned and shared across threads.
-/// Each clone receives data independently according to buffer semantics (SPMC, etc.).
-///
-/// # Thread Safety
-///
-/// Multiple clones of `SyncConsumer<T>` can be used concurrently from
-/// different threads. Each receives data independently based on the
-/// configured buffer type (SPMC, SingleLatest, etc.).
+/// Not thread-safe - can be moved to another thread, but not cloned.
+/// Each instance of SyncConsumer<T> reading from the same producer
+/// receives data independently according to buffer semantics (SPMC, etc.).
 ///
 /// # Example
 ///
@@ -25,7 +21,7 @@ use std::sync::Mutex;
 /// # use serde::{Serialize, Deserialize};
 /// # #[derive(Debug, Clone, Serialize, Deserialize)]
 /// # struct Temperature { celsius: f32 }
-/// # fn example(consumer: &SyncConsumer<Temperature>) -> SyncResult<()> {
+/// # fn example(consumer: &mut SyncConsumer<Temperature>) -> SyncResult<()> {
 /// // Get value (blocks until available)
 /// let temp = consumer.get()?;
 /// println!("Temperature: {}°C", temp.celsius);
@@ -47,22 +43,27 @@ use std::sync::Mutex;
 /// ```
 pub struct SyncConsumer<T>
 where
-    T: Send + Sync + 'static + Debug + Clone,
+    T: Send + Debug + Clone,
 {
-    /// Channel receiver for consumer data
-    /// Wrapped in `Arc<Mutex>` so it can be shared but only one thread receives at a time
-    rx: Arc<Mutex<mpsc::Receiver<T>>>,
+    waiter: Waiter,
+    reader: Reader<T>,
 }
 
 impl<T> SyncConsumer<T>
 where
-    T: Send + Sync + 'static + Debug + Clone,
+    T: Send + Debug + Clone,
 {
     /// Create a new sync consumer (internal use only)
-    pub(crate) fn new(rx: mpsc::Receiver<T>) -> Self {
-        Self {
-            rx: Arc::new(Mutex::new(rx)),
-        }
+    pub(crate) fn new(waiter: Waiter, reader: Reader<T>) -> Self {
+        Self { waiter, reader }
+    }
+
+    async fn get_impl(reader: &mut Reader<T>) -> SyncResult<T> {
+        let res = reader.recv().await;
+        res.map_err(|e| match e {
+            DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
+            e => SyncError::Db(e),
+        })
     }
 
     /// Get a value, blocking until one is available.
@@ -77,6 +78,9 @@ where
     /// # Errors
     ///
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db(DbError::BufferLagged)` if this consumer fell behind and
+    ///   values were dropped. Not fatal, the next call resumes.
+    /// - `SyncError::Db` for other errors that occurred during the read
     ///
     /// # Example
     ///
@@ -92,15 +96,14 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     /// let data = consumer.get()?; // blocks until value available
     /// println!("Got: {:?}", data);
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get(&self) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-        rx.recv().map_err(|_| SyncError::RuntimeShutdown)
+    pub fn get(&mut self) -> SyncResult<T> {
+        self.waiter.block_on(Self::get_impl(&mut self.reader))
     }
 
     /// Get a value with a timeout.
@@ -115,6 +118,9 @@ where
     ///
     /// - `SyncError::GetTimeout` if the timeout expires
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db(DbError::BufferLagged)` if this consumer fell behind and
+    ///   values were dropped. Not fatal, the next call resumes.
+    /// - `SyncError::Db` for other errors that occurred during the read
     ///
     /// # Example
     ///
@@ -131,7 +137,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     /// match consumer.get_with_timeout(Duration::from_millis(100)) {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data available"),
@@ -139,12 +145,10 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_with_timeout(&self, timeout: Duration) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-        rx.recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => SyncError::GetTimeout,
-            mpsc::RecvTimeoutError::Disconnected => SyncError::RuntimeShutdown,
-        })
+    pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
+        let fut = async { tokio::time::timeout(timeout, Self::get_impl(&mut self.reader)).await };
+        let res = self.waiter.block_on(fut);
+        res.unwrap_or_else(|_| Err(SyncError::GetTimeout))
     }
 
     /// Try to get a value without blocking.
@@ -156,6 +160,9 @@ where
     ///
     /// - `SyncError::GetTimeout` if no data is available (non-blocking)
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db(DbError::BufferLagged)` if this consumer fell behind and
+    ///   values were dropped. Not fatal, the next call resumes.
+    /// - `SyncError::Db` for other errors that occurred during the read
     ///
     /// # Example
     ///
@@ -171,7 +178,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     /// match consumer.try_get() {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data yet"),
@@ -179,17 +186,18 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn try_get(&self) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-        rx.try_recv().map_err(|e| match e {
-            mpsc::TryRecvError::Empty => SyncError::GetTimeout,
-            mpsc::TryRecvError::Disconnected => SyncError::RuntimeShutdown,
+    pub fn try_get(&mut self) -> SyncResult<T> {
+        let res = self.reader.try_recv();
+        res.map_err(|e| match e {
+            DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
+            DbError::BufferEmpty => SyncError::GetTimeout,
+            e => SyncError::Db(e),
         })
     }
 
     /// Get the latest value by draining all queued values.
     ///
-    /// This method drains the internal channel to get the most recent value,
+    /// This method drains the buffer to get the most recent value,
     /// discarding any intermediate values. This is useful for SingleLatest-like
     /// semantics where you only care about the most recent data.
     ///
@@ -201,8 +209,10 @@ where
     /// The most recent available record of type `T`.
     ///
     /// # Errors
-    ///
+    /// Note that the error is only reported if no value was retrieved at all.
+    /// Errors occuring after that are ignored; the latest obtained value is returned instead.
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db` if another error occured upon the very first read.
     ///
     /// # Example
     ///
@@ -218,7 +228,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     ///
     /// // Get the latest value, skipping any queued intermediate values
     /// let latest = consumer.get_latest()?;
@@ -226,17 +236,14 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest(&self) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-
-        // First, block until we have at least one value
-        let mut latest = rx.recv().map_err(|_| SyncError::RuntimeShutdown)?;
-
-        // Then drain all remaining values to get the most recent
-        while let Ok(value) = rx.try_recv() {
-            latest = value;
-        }
-
+    pub fn get_latest(&mut self) -> SyncResult<T> {
+        // 1) can simply sequence get_catch_up and try_get -
+        //    no one else does it simultaneously thanks to &mut self
+        // 2) if draining ends up with an error, we follow the previous impl
+        //    and return the latest succesfully read value
+        // 3) potentially loops forever if producer keeps producing
+        let oldest = self.get_catch_up(None)?;
+        let latest = self.drain_remaining(oldest);
         Ok(latest)
     }
 
@@ -270,7 +277,7 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let consumer = handle.consumer::<MyData>("my_data")?;
+    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
     ///
     /// // Get the latest value within 100ms
     /// match consumer.get_latest_with_timeout(Duration::from_millis(100)) {
@@ -280,49 +287,56 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest_with_timeout(&self, timeout: Duration) -> SyncResult<T> {
-        let rx = self.rx.lock().unwrap();
-
-        // First, block with timeout until we have at least one value
-        let mut latest = rx.recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => SyncError::GetTimeout,
-            mpsc::RecvTimeoutError::Disconnected => SyncError::RuntimeShutdown,
-        })?;
-
-        // Then drain all remaining values to get the most recent
-        while let Ok(value) = rx.try_recv() {
-            latest = value;
-        }
-
+    pub fn get_latest_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
+        // see internal comments for get_latest
+        let deadline = Instant::now() + timeout;
+        let oldest = self.get_catch_up(Some(deadline))?;
+        let latest = self.drain_remaining(oldest);
         Ok(latest)
     }
-}
 
-impl<T> Clone for SyncConsumer<T>
-where
-    T: Send + Sync + 'static + Debug + Clone,
-{
-    /// Clone the consumer to share across threads.
-    ///
-    /// Note: All clones share the same receiver, so only one thread
-    /// will receive each value. For independent subscriptions, call
-    /// `handle.consumer()` multiple times instead.
-    fn clone(&self) -> Self {
-        Self {
-            rx: self.rx.clone(),
+    // Blocks until get() retrieves a value, or until the deadline is missed.
+    // Skips BufferLagged occuring in the process, and raises all other errors
+    fn get_catch_up(&mut self, deadline: Option<Instant>) -> SyncResult<T> {
+        loop {
+            let res = match deadline {
+                Some(deadline) => {
+                    let timeout = deadline.saturating_duration_since(Instant::now());
+                    // From tokio docs: "the future is polled before the timeout is checked".
+                    // We rather check if the last poll can be skipped
+                    if timeout.is_zero() {
+                        return Err(SyncError::GetTimeout);
+                    }
+                    // timeout error is handled as all other non-lag errors below
+                    self.get_with_timeout(timeout)
+                }
+                None => self.get(),
+            };
+            if let Err(SyncError::Db(DbError::BufferLagged { .. })) = res {
+                continue;
+            } else {
+                return res;
+            }
+        }
+    }
+
+    fn drain_remaining(&mut self, mut cur: T) -> T {
+        loop {
+            match self.try_get() {
+                Ok(next) => cur = next,
+                Err(SyncError::Db(DbError::BufferLagged { .. })) => continue,
+                // errors occured during draining will be ignored
+                Err(_) => return cur,
+            }
         }
     }
 }
-
-// Safety: SyncConsumer uses Arc internally and is safe to send/share
-unsafe impl<T> Send for SyncConsumer<T> where T: Send + Sync + 'static + Debug + Clone {}
-unsafe impl<T> Sync for SyncConsumer<T> where T: Send + Sync + 'static + Debug + Clone {}
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_sync_consumer_is_send_sync() {
-        // Just checking that the type implements Send + Sync
-        // Actual functionality tests will come later
+    fn assert_send<T: Send>() {}
+    #[allow(dead_code)]
+    fn check<X: Send + std::fmt::Debug + Clone>() {
+        assert_send::<crate::SyncConsumer<X>>();
     }
 }

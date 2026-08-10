@@ -457,8 +457,14 @@ knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master
 ```
 
 **Carried patches in the fork (on top of upstream 0.3.0):**
-1. **Panic prevention**: Handles telegrams with npdu_length=1 (not yet upstreamed)
-2. **Embassy compatibility**: Uses workspace-local embassy checkout
+1. **NPDU length off-by-one** (not yet upstreamed, see [cc90202/knx-pico#4](https://github.com/cc90202/knx-pico/issues/4)):
+   the length octet counts the APCI octet plus the data octets, so the data
+   slice is `[9 .. 8 + npdu_length)`. Upstream uses `7 + npdu_length`, which
+   panics on 6-bit telegrams (`npdu_length = 1`) and silently drops the value
+   of single-octet ones (`npdu_length = 2`, e.g. DPT 5.001).
+2. **`LDataFrame::six_bit_value`**: reads the 6-bit datapoint out of the APCI
+   octet, so callers need no raw-byte indexing.
+3. **Embassy compatibility**: Uses workspace-local embassy checkout
 
 The DPT 9 (float) encoding/decoding fix landed upstream in knx-pico 0.3.0.
 

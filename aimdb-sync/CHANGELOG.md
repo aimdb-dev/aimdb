@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - **Issue #131:** `AimDbSyncExt` extends the non-generic `aimdb_core::AimDb`; internal handles drop the `TokioAdapter` type parameter.
+- **Issue #200:** the internal channel bridge to the `tokio` thread is gone — blocking calls now call the runtime directly using the `block_on` seam. API implications:
+  - `SyncProducer::set_with_timeout` removed
+  - Capacity-related API removed: `AimDbBuilderSyncExt::producer_with_capacity`/`consumer_with_capacity` and the `DEFAULT_SYNC_CHANNEL_CAPACITY` constant are gone.
+  - `SyncConsumer`: `get`, `try_get`, `get_with_timeout`, `get_latest`, and `get_latest_with_timeout` now take `&mut self` (was `&self`)
+  - `SyncConsumer` no longer implements `Clone` or `Sync` (still `Send`).
 
 ### Changed
 
