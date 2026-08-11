@@ -5,6 +5,7 @@
 #![cfg(feature = "std")]
 
 use std::sync::mpsc;
+use std::time::Instant;
 use std::{sync::Arc, thread, time::Duration};
 
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
@@ -105,6 +106,22 @@ fn test_consumer_get_ordering() {
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
+    // Create mpsc channel to set explicit synchronization
+    let (ready_sender, ready_receiver) = mpsc::channel::<()>();
+
+    // Create consumer thread and receive the values
+    let consumer_handle = thread::spawn(move || {
+        let mut received_values: Vec<TestData> = Vec::new();
+
+        ready_sender.send(()).expect("Failed to send ready signal");
+
+        for _ in 0..10 {
+            received_values.push(consumer.get().expect("Failed to consume"));
+        }
+
+        received_values
+    });
+
     // Store the values to send in a vector
     let mut test_val_arr: Vec<TestData> = Vec::new();
 
@@ -121,6 +138,10 @@ fn test_consumer_get_ordering() {
 
     // Create producer thread and send the data
     let producer_handle = thread::spawn(move || {
+        ready_receiver
+            .recv()
+            .expect("Failed to receive ready signal");
+
         for data in test_val_arr {
             producer.set(data).expect("Failed to produce");
         }
@@ -128,17 +149,6 @@ fn test_consumer_get_ordering() {
 
     // Join producer thread
     producer_handle.join().unwrap();
-
-    // Create consumer thread and receive the values
-    let consumer_handle = thread::spawn(move || {
-        let mut received_values: Vec<TestData> = Vec::new();
-
-        for _ in 0..10 {
-            received_values.push(consumer.get().expect("Failed to consume"));
-        }
-
-        received_values
-    });
 
     // Assert the values are received fully and in the same order they were sent
     match consumer_handle.join() {
@@ -178,9 +188,7 @@ fn test_consumer_shutdown() {
 
     // Create consumer thread and wait with `get()`
     let consumer_handle = thread::spawn(move || {
-        ready_sender
-            .send(())
-            .expect("Failed to send the ready signal");
+        ready_sender.send(()).expect("Failed to send ready signal");
         consumer.get()
     });
 
@@ -331,11 +339,23 @@ fn test_consumer_try_get() {
         .expect("Failed to create consumer");
 
     // Create consumer thread and try get the value
-    let consumer_no_val_handler = thread::spawn(move || consumer_no_val.try_get());
+    let consumer_no_val_handler = thread::spawn(move || {
+        let stopwatch = Instant::now();
+        let result = consumer_no_val.try_get();
+        let elapsed = stopwatch.elapsed();
+
+        (result, elapsed)
+    });
 
     // Assert that consumer returned `GetTimeout` error because no value was produced
     match consumer_no_val_handler.join() {
-        Ok(val) => assert!(matches!(val, Err(SyncError::GetTimeout))),
+        Ok((result, elapsed)) => {
+            assert!(matches!(result, Err(SyncError::GetTimeout)));
+            assert!(
+                elapsed < Duration::from_millis(250),
+                "try_get() took too long: {elapsed:?}"
+            )
+        }
         Err(_) => panic!("Failed to join consumer handle"),
     }
 
