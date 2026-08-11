@@ -47,7 +47,7 @@ fn set_value_constructs_produces_and_is_consumed() {
     let producer = handle
         .producer::<Temperature>("temperature")
         .expect("failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<Temperature>("temperature")
         .expect("failed to create consumer");
 
@@ -77,7 +77,7 @@ fn try_set_value_is_non_blocking_and_produces() {
     let producer = handle
         .producer::<Temperature>("temperature")
         .expect("failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<Temperature>("temperature")
         .expect("failed to create consumer");
 
@@ -109,7 +109,7 @@ fn set_value_at_stamps_the_explicit_timestamp() {
     let producer = handle
         .producer::<Temperature>("temperature")
         .expect("failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<Temperature>("temperature")
         .expect("failed to create consumer");
 

@@ -6,7 +6,7 @@
 #![cfg(feature = "std")]
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, DbError};
 use aimdb_sync::AimDbBuilderSyncExt;
-use aimdb_sync::SyncError;
+use aimdb_sync::{AimDbHandle, SyncConsumer, SyncError, SyncProducer};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -19,43 +19,55 @@ struct TestData {
     value: String,
 }
 
-/// Test basic producer-consumer flow
-#[test]
-fn test_basic_producer_consumer() {
+fn test_value() -> TestData {
+    TestData {
+        id: 1,
+        value: "test".to_string(),
+    }
+}
+
+fn data(id: u32) -> TestData {
+    TestData {
+        id,
+        value: format!("value-{}", id),
+    }
+}
+
+fn attach(cfg: BufferCfg) -> AimDbHandle {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
     builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
+        reg.buffer(cfg).tap(|_ctx, _consumer| async move {
+            // No-op tap just to satisfy validation
+        });
     });
 
-    let handle = builder.attach().expect("Failed to attach");
+    builder.attach().expect("Failed to attach")
+}
 
-    // Create producer and consumer
+fn setup(cfg: BufferCfg) -> (AimDbHandle, SyncProducer<TestData>, SyncConsumer<TestData>) {
+    let handle = attach(cfg);
     let producer = handle
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
     let consumer = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer");
+    (handle, producer, consumer)
+}
+
+/// Test basic producer-consumer flow
+#[test]
+fn test_basic_producer_consumer() {
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
 
     // Produce a value
-    let test_value = TestData {
-        id: 1,
-        value: "test".to_string(),
-    };
+    let test_value = test_value();
     producer.set(test_value.clone()).expect("Failed to produce");
 
-    // Give time for async propagation
-    thread::sleep(Duration::from_millis(100));
-
-    // Consume the value (use timeout to avoid hanging)
-    let received = consumer
-        .get_with_timeout(Duration::from_secs(2))
-        .expect("Failed to consume");
+    // Consume the value
+    let received = consumer.get().expect("Failed to consume");
     assert_eq!(received, test_value);
 
     handle.detach().expect("Failed to detach");
@@ -64,23 +76,13 @@ fn test_basic_producer_consumer() {
 /// Test multiple producers and consumers
 #[test]
 fn test_multi_threaded_producer_consumer() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
+    let handle = attach(BufferCfg::SpmcRing { capacity: 100 });
 
     // Create multiple consumers
-    let consumer1 = handle
+    let mut consumer1 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 1");
-    let consumer2 = handle
+    let mut consumer2 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 2");
 
@@ -104,9 +106,6 @@ fn test_multi_threaded_producer_consumer() {
         }
         received
     });
-
-    // Give consumers time to start
-    thread::sleep(Duration::from_millis(50));
 
     // Create multiple producers
     let producer1 = handle
@@ -150,40 +149,17 @@ fn test_multi_threaded_producer_consumer() {
 /// Test timeout operations
 #[test]
 fn test_timeout_operations() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
-
-    let producer = handle
-        .producer::<TestData>("test.data")
-        .expect("Failed to create producer");
-    let consumer = handle
-        .consumer::<TestData>("test.data")
-        .expect("Failed to create consumer");
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
 
     // Test get_timeout on empty buffer (should timeout)
     let result = consumer.get_with_timeout(Duration::from_millis(100));
     assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     // Produce a value
-    let test_value = TestData {
-        id: 1,
-        value: "test".to_string(),
-    };
+    let test_value = test_value();
     producer
-        .set_with_timeout(test_value.clone(), Duration::from_secs(1))
+        .set(test_value.clone())
         .expect("Failed to produce with timeout");
-
-    // Give more time for the value to propagate through the async pipeline
-    thread::sleep(Duration::from_millis(200));
 
     // Get with timeout (should succeed)
     let received = consumer
@@ -197,34 +173,14 @@ fn test_timeout_operations() {
 /// Test non-blocking operations
 #[test]
 fn test_non_blocking_operations() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
-
-    let producer = handle
-        .producer::<TestData>("test.data")
-        .expect("Failed to create producer");
-    let consumer = handle
-        .consumer::<TestData>("test.data")
-        .expect("Failed to create consumer");
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
 
     // Try get on empty buffer (should fail)
     let result = consumer.try_get();
     assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     // Try set (should succeed immediately)
-    let test_value = TestData {
-        id: 1,
-        value: "test".to_string(),
-    };
+    let test_value = test_value();
     producer
         .try_set(test_value.clone())
         .expect("Failed to try_set");
@@ -246,17 +202,7 @@ fn test_non_blocking_operations() {
 /// Test graceful shutdown
 #[test]
 fn test_graceful_shutdown() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
+    let handle = attach(BufferCfg::SpmcRing { capacity: 10 });
 
     let producer = handle
         .producer::<TestData>("test.data")
@@ -264,11 +210,7 @@ fn test_graceful_shutdown() {
 
     // Produce some values
     for i in 0..5 {
-        let data = TestData {
-            id: i,
-            value: format!("value-{}", i),
-        };
-        producer.set(data).expect("Failed to produce");
+        producer.set(data(i)).expect("Failed to produce");
     }
 
     // Detach should succeed
@@ -278,17 +220,7 @@ fn test_graceful_shutdown() {
 /// Test detach with timeout
 #[test]
 fn test_detach_with_timeout() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
+    let handle = attach(BufferCfg::SpmcRing { capacity: 10 });
 
     // Detach with timeout should succeed quickly
     handle
@@ -299,80 +231,79 @@ fn test_detach_with_timeout() {
 /// Test error handling - runtime shutdown
 #[test]
 fn test_runtime_shutdown_error() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
-
-    let producer = handle
-        .producer::<TestData>("test.data")
-        .expect("Failed to create producer");
-    let consumer = handle
-        .consumer::<TestData>("test.data")
-        .expect("Failed to create consumer");
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
 
     // Shut down the runtime
     handle.detach().expect("Failed to detach");
 
     // Operations should now fail with RuntimeShutdown
-    let test_value = TestData {
-        id: 1,
-        value: "test".to_string(),
-    };
+    let test_value = test_value();
 
     let result = producer.set(test_value);
     assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 
-    let result = consumer.get_with_timeout(Duration::from_millis(100));
-    assert!(matches!(
-        result,
-        Err(SyncError::RuntimeShutdown) | Err(SyncError::GetTimeout)
-    ));
+    let result = consumer.get();
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
+}
+
+/// Test error handling - runtime shutdown, non-blocking operations
+#[test]
+fn test_runtime_shutdown_error_non_blocking() {
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
+
+    // Shut down the runtime
+    handle.detach().expect("Failed to detach");
+
+    // Non-blocking operations should now fail with RuntimeShutdown too
+    let test_value = test_value();
+
+    let result = producer.try_set(test_value);
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
+
+    let result = consumer.try_get();
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
+}
+
+/// Test error handling - reading messages sent before the shutdown
+#[test]
+fn test_runtime_shutdown_after_produce_read_error() {
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
+
+    let test_value = test_value();
+
+    let result = producer.set(test_value.clone());
+    assert!(matches!(result, Ok(())));
+
+    // Shut down the runtime
+    handle.detach().expect("Failed to detach");
+
+    let result = consumer.get().expect("Failed to get the value");
+    assert_eq!(result, test_value);
+
+    let result = consumer.get();
+    println!("{:?}", result);
+    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 }
 
 /// Test buffer semantics - SPMC Ring
 #[test]
 fn test_spmc_ring_semantics() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 5 })
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
+    let handle = attach(BufferCfg::SpmcRing { capacity: 5 });
 
     let producer = handle
         .producer::<TestData>("test.data")
         .expect("Failed to create producer");
-    let consumer1 = handle
+    let mut consumer1 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 1");
-    let consumer2 = handle
+    let mut consumer2 = handle
         .consumer::<TestData>("test.data")
         .expect("Failed to create consumer 2");
 
     // Produce multiple values
     for i in 0..5 {
-        let data = TestData {
-            id: i,
-            value: format!("value-{}", i),
-        };
-        producer.set(data).expect("Failed to produce");
+        producer.set(data(i)).expect("Failed to produce");
     }
-
-    // Give time for values to propagate
-    thread::sleep(Duration::from_millis(100));
 
     // Both consumers should be able to get values independently
     let c1_data = consumer1.get().expect("Consumer 1 failed");
@@ -385,39 +316,20 @@ fn test_spmc_ring_semantics() {
     handle.detach().expect("Failed to detach");
 }
 
-/// Test buffer semantics - SingleLatest with get_latest()
+/// Test buffer semantics - get_latest()
 ///
-/// This test demonstrates the proper way to use SingleLatest semantics
-/// with the sync API by using the get_latest() method.
+/// This test demonstrates how to imitate SingleLatest semantics
+/// with a non-singleton buffer with the sync API by using the get_latest
 #[test]
 fn test_single_latest_semantics() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SingleLatest)
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
-
-    let producer = handle
-        .producer::<TestData>("test.data")
-        .expect("Failed to create producer");
-
-    let consumer = handle
-        .consumer::<TestData>("test.data")
-        .expect("Failed to create consumer");
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 3 });
 
     // Produce first value and wait for it to propagate
-    let data = TestData {
+    let initial_value = TestData {
         id: 100,
         value: "initial".to_string(),
     };
-    producer.set(data).expect("Failed to produce");
-    thread::sleep(Duration::from_millis(100));
+    producer.set(initial_value).expect("Failed to produce");
 
     // Consume first value to establish the subscription
     let first = consumer.get().expect("Failed to consume initial value");
@@ -425,18 +337,11 @@ fn test_single_latest_semantics() {
 
     // Now produce multiple values rapidly
     for i in 1..=5 {
-        let data = TestData {
-            id: i,
-            value: format!("value-{}", i),
-        };
-        producer.set(data).expect("Failed to produce value");
-        thread::sleep(Duration::from_millis(5));
+        producer.set(data(i)).expect("Failed to produce value");
     }
 
-    // Wait for all values to propagate
-    thread::sleep(Duration::from_millis(100));
-
-    // Use get_latest() to drain the channel and get the most recent value
+    // Use get_latest() to drain the channel and get the most recent value.
+    // The BufferLagged errors occuring during it are ignored
     let latest = consumer.get_latest().expect("Failed to get latest");
 
     // Should get the last value (5) since get_latest() drains the channel
@@ -459,47 +364,23 @@ fn test_single_latest_semantics() {
 /// Test get_latest() with timeout
 #[test]
 fn test_get_latest_with_timeout() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<TestData>("test.data", |reg| {
-        reg.buffer(BufferCfg::SingleLatest)
-            .tap(|_ctx, _consumer| async move {
-                // No-op tap just to satisfy validation
-            });
-    });
-
-    let handle = builder.attach().expect("Failed to attach");
-
-    let producer = handle
-        .producer::<TestData>("test.data")
-        .expect("Failed to create producer");
-
-    let consumer = handle
-        .consumer::<TestData>("test.data")
-        .expect("Failed to create consumer");
+    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 3 });
 
     // Test timeout on empty buffer
     let result = consumer.get_latest_with_timeout(Duration::from_millis(50));
     assert!(matches!(result, Err(SyncError::GetTimeout)));
 
     // Produce values rapidly
-    for i in 1..=3 {
-        let data = TestData {
-            id: i,
-            value: format!("value-{}", i),
-        };
-        producer.set(data).expect("Failed to produce value");
+    for i in 1..=5 {
+        producer.set(data(i)).expect("Failed to produce value");
     }
-
-    thread::sleep(Duration::from_millis(50));
 
     // Should get the latest value with timeout
     let latest = consumer
         .get_latest_with_timeout(Duration::from_secs(1))
         .expect("Failed to get latest with timeout");
 
-    assert_eq!(latest.id, 3, "Should get the most recent value (3)");
+    assert_eq!(latest.id, 5, "Should get the most recent value (5)");
 
     handle.detach().expect("Failed to detach");
 }
@@ -517,14 +398,11 @@ fn test_error_propagation() {
     // Create a producer for an unregistered type/key
     // Note: producer creation succeeds, but set() should fail
     let producer = handle
-        .producer_with_capacity::<TestData>("test.data", 10)
+        .producer::<TestData>("test.data")
         .expect("Failed to create producer");
 
     // Try to produce a value - this should fail because the key is not registered
-    let test_value = TestData {
-        id: 1,
-        value: "test".to_string(),
-    };
+    let test_value = test_value();
 
     let result = producer.set(test_value.clone());
 
@@ -541,13 +419,6 @@ fn test_error_propagation() {
         }
         other => panic!("Expected RecordKeyNotFound error, got: {:?}", other),
     }
-
-    // Test set_with_timeout also propagates errors
-    let result = producer.set_with_timeout(test_value, Duration::from_millis(100));
-    assert!(
-        result.is_err(),
-        "Expected produce to fail for unregistered key (with timeout)"
-    );
 
     handle.detach().expect("Failed to detach");
 }
