@@ -41,7 +41,7 @@ fn test_consumer_get() {
     let producer = handle
         .producer::<TestData>("test-data")
         .expect("Failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
@@ -101,7 +101,7 @@ fn test_consumer_get_ordering() {
     let producer = handle
         .producer::<TestData>("test-data")
         .expect("Failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
@@ -172,7 +172,7 @@ fn test_consumer_shutdown() {
     let (ready_sender, ready_receiver) = mpsc::channel::<()>();
 
     // Create sync consumer
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
@@ -216,7 +216,7 @@ fn test_consumer_get_with_timeout() {
     let handle = builder.attach().expect("Failed to attach");
 
     // Create consumer thread, send a ready signal, and wait to receive a value for 100ms
-    let consumer_timeout = handle
+    let mut consumer_timeout = handle
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
@@ -235,7 +235,7 @@ fn test_consumer_get_with_timeout() {
     let producer_send = handle
         .producer::<TestData>("test-data")
         .expect("Failed to create producer");
-    let consumer_get = handle
+    let mut consumer_get = handle
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
@@ -297,7 +297,7 @@ fn test_consumer_try_get() {
     let producer = handle
         .producer::<TestData>("test-data")
         .expect("Failed to create producer");
-    let consumer = handle
+    let mut consumer = handle
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
@@ -326,7 +326,7 @@ fn test_consumer_try_get() {
     }
 
     // Create sync consumer thread
-    let consumer_no_val = handle
+    let mut consumer_no_val = handle
         .consumer::<TestData>("test-data")
         .expect("Failed to create consumer");
 
