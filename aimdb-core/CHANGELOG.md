@@ -83,6 +83,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clamped to `1..=8192`: the ring is preallocated, so zero could never deliver
   and `usize::MAX` would abort rather than mean "unbounded". An evicted `call`
   resolves `RpcError::Internal`; an evicted `subscribe` ends its stream.
+  A cancellation is never the command evicted to make room: `CancelOnDrop` uses
+  a plain `try_send`, so abandoning a call cannot displace a caller's queued
+  `Write`.
+- **An evicted `CancelCall` no longer re-opens the pending-call leak.** Making
+  the channel evict-oldest put cancellation on the same lossy footing as data,
+  and `enqueue` discarded the evictee unexamined — so a `Write` behind a queued
+  cancellation could displace it, stranding that call's entry until the
+  connection ended (the leak cancel-safety exists to close, below in *Fixed*).
+  A lost cancellation now degrades to a *prune* signal and the engine reclaims
+  by inspection (`oneshot::Sender::is_canceled` identifies the abandoned set
+  exactly). The sweep is idempotent, so one signal covers any number of losses;
+  it is `O(N)` but reached only from the eviction path, leaving `O(1)` by-id
+  removal as the common case.
 
 ### Performance
 

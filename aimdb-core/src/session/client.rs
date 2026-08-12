@@ -102,6 +102,15 @@ fn backoff_delay(config: &ClientConfig, attempt: usize) -> u64 {
 #[derive(Clone)]
 pub struct ClientHandle {
     cmd_tx: Sender<ClientCmd>,
+    /// Wakes the engine to reclaim abandoned calls by inspection, when the exact
+    /// [`ClientCmd::CancelCall`] never reaches it (see [`Self::enqueue`]).
+    ///
+    /// A channel, not a flag: the caller learns of an eviction only from
+    /// `force_send`'s return value, by which point the engine may already have
+    /// looked, and a flag set then sits unread beside a parked engine. Capacity
+    /// one suffices — the sweep is idempotent, so one queued signal covers any
+    /// number of lost cancellations.
+    prune_tx: Sender<()>,
     /// Correlation ids, allocated caller-side and shared by every clone.
     ///
     /// The *caller* numbers its requests so that abandoning one is race-free:
@@ -156,6 +165,10 @@ enum ClientCmd {
 /// turns that silent drop into a [`ClientCmd::CancelCall`], so reclamation is
 /// exact and immediate — it needs no later call, no keepalive tick, and no scan
 /// of the pending table.
+///
+/// Alone among the commands it does not evict to make room — that would trade a
+/// caller's queued `Write` for bookkeeping. A full queue falls back to
+/// [`ClientHandle::prune_tx`], which frees the same entry without naming it.
 struct CancelOnDrop<'a> {
     handle: &'a ClientHandle,
     id: u64,
@@ -167,8 +180,16 @@ struct CancelOnDrop<'a> {
 impl Drop for CancelOnDrop<'_> {
     fn drop(&mut self) {
         if self.armed {
-            // A closed channel means the engine is already gone with its table.
-            let _ = self.handle.enqueue(ClientCmd::CancelCall { id: self.id });
+            // Closed: the engine is gone with its table. Full: the sweep stands
+            // in for the exact id.
+            if self
+                .handle
+                .cmd_tx
+                .try_send(ClientCmd::CancelCall { id: self.id })
+                .is_err()
+            {
+                self.handle.request_prune();
+            }
         }
     }
 }
@@ -178,11 +199,29 @@ impl ClientHandle {
     /// oldest, so the bound is the channel's own and holds across cloned handles
     /// without an admission lock. Dropping the evictee drops its reply sender,
     /// which is how the displaced caller learns. Fails once the engine has stopped.
+    ///
+    /// A [`ClientCmd::CancelCall`] is the one command that must not be evicted
+    /// *silently*: its entry is already in the engine's table, and nothing else
+    /// frees it before the connection ends. Eviction is FIFO-oldest and a
+    /// cancellation is always younger than its own request, so an evicted one
+    /// names an entry the engine already holds or never created — never one
+    /// still in flight. It degrades to a [`Self::request_prune`] signal, which
+    /// carries no id and so cannot itself be evicted.
     fn enqueue(&self, cmd: ClientCmd) -> Result<(), RpcError> {
-        self.cmd_tx
-            .force_send(cmd)
-            .map(|_evicted| ())
-            .map_err(|_| RpcError::Internal)
+        match self.cmd_tx.force_send(cmd) {
+            Ok(Some(ClientCmd::CancelCall { .. })) => {
+                self.request_prune();
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(_) => Err(RpcError::Internal),
+        }
+    }
+
+    /// Ask the engine to reclaim every abandoned pending call. The sweep is
+    /// idempotent, so a full channel already carries the request.
+    fn request_prune(&self) {
+        let _ = self.prune_tx.try_send(());
     }
 
     /// Allocate the next correlation id. Monotonic across reconnects, so an id
@@ -302,13 +341,16 @@ where
 {
     let (cmd_tx, cmd_rx) =
         async_channel::bounded(config.max_offline_queue.clamp(1, MAX_COMMAND_QUEUE_CAP));
+    // Capacity one: the signal is a request to sweep, not a queue of them.
+    let (prune_tx, prune_rx) = async_channel::bounded(1);
     let handle = ClientHandle {
         cmd_tx,
+        prune_tx,
         // Ids start at 1: `0` stays free as a "no correlation" sentinel for
         // protocols that want one.
         next_id: Arc::new(AtomicUsize::new(1)),
     };
-    let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx, clock));
+    let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx, prune_rx, clock));
     (handle, fut)
 }
 
@@ -421,6 +463,9 @@ enum ClientStep {
     Inbound(super::TransportResult<Option<Vec<u8>>>),
     /// The keepalive timer fired — send a `Ping`.
     Keepalive,
+    /// A cancellation was lost on the way here — reclaim abandoned calls by
+    /// inspecting the pending table instead of by id.
+    Prune,
     /// A caller command (or `None` = all handles dropped).
     Cmd(Option<ClientCmd>),
 }
@@ -430,6 +475,7 @@ async fn client_loop<D, C>(
     codec: C,
     config: ClientConfig,
     cmd_rx: Receiver<ClientCmd>,
+    prune_rx: Receiver<()>,
     clock: Arc<dyn crate::executor::RuntimeOps>,
 ) where
     D: Dialer,
@@ -462,7 +508,7 @@ async fn client_loop<D, C>(
             }
         };
 
-        match drive_connection(conn, &codec, &cmd_rx, &config, &*clock).await {
+        match drive_connection(conn, &codec, &cmd_rx, &prune_rx, &config, &*clock).await {
             Ended::HandlesDropped => return,
             Ended::Disconnected => match reconnect_after(&mut attempt, &config, &*clock).await {
                 true => continue,
@@ -506,6 +552,16 @@ type CallReply = Result<Payload, RpcError>;
 /// channel.
 type PendingCalls = HashMap<u64, oneshot::Sender<CallReply>>;
 
+/// Reclaim every entry whose caller stopped waiting — the fallback for a
+/// [`ClientCmd::CancelCall`] the bounded command queue dropped.
+///
+/// A dropped receiver is exactly what an abandoned [`ClientHandle::call`] leaves
+/// behind, so this needs no id and cannot miss an earlier loss. `O(N)`, but
+/// reached only from the eviction path; a surviving cancellation stays `O(1)`.
+fn sweep_abandoned(pending: &mut PendingCalls) {
+    pending.retain(|_, reply| !reply.is_canceled());
+}
+
 /// Drive one dialed [`Connection`]: optional handshake, then `biased` demux of
 /// server frames (resolve `Reply` by `id`, route `Event`/`Snapshot` to their
 /// subscription channels) interleaved with caller commands. Pending state is
@@ -513,11 +569,15 @@ type PendingCalls = HashMap<u64, oneshot::Sender<CallReply>>;
 /// senders drop → callers see [`RpcError::Internal`]). Calls the *caller*
 /// abandoned arrive as [`ClientCmd::CancelCall`] and are removed by id in O(1),
 /// so an unanswering peer that keeps the link open can't grow the table — with
-/// no dependence on later traffic or on the keepalive being enabled.
+/// no dependence on later traffic or on the keepalive being enabled. One the
+/// command queue dropped instead arrives on `prune_rx` as a request to sweep.
+/// `pending` is per-connection, so a signal raised while dialing lands on a
+/// fresh table — a no-op, since the disconnect already dropped every entry.
 async fn drive_connection<C>(
     mut conn: Box<dyn Connection>,
     codec: &C,
     cmd_rx: &Receiver<ClientCmd>,
+    prune_rx: &Receiver<()>,
     config: &ClientConfig,
     clock: &dyn crate::executor::RuntimeOps,
 ) -> Ended
@@ -572,11 +632,24 @@ where
             };
             // `recv()` is `!Unpin`, so pin it for the arm.
             let mut cmd = core::pin::pin!(cmd_rx.recv().fuse());
+            let mut prune = core::pin::pin!(async {
+                if prune_rx.recv().await.is_err() {
+                    // Handles all dropped — the `cmd` arm reports that. A closed
+                    // channel resolves immediately and this arm outranks `cmd`,
+                    // so park rather than spin ahead of the shutdown.
+                    futures_util::future::pending::<()>().await;
+                }
+            }
+            .fuse());
             select_biased! {
                 // ---- inbound from server: Reply / Event / Snapshot / Pong --
                 r = recv => ClientStep::Inbound(r),
                 // ---- keepalive: the idle timer fired ------------------------
                 _ = keepalive => ClientStep::Keepalive,
+                // ---- a lost cancellation asked for a sweep ------------------
+                // Above `cmd`: a full command queue is what raises the signal,
+                // so a lower arm would be starved by its own trigger.
+                _ = prune => ClientStep::Prune,
                 // ---- caller commands from ClientHandle ---------------------
                 // `recv()` errors only when every `ClientHandle` is dropped → `None`.
                 c = cmd => ClientStep::Cmd(c.ok()),
@@ -584,8 +657,9 @@ where
         };
 
         // Frames and commands are link activity; only a genuinely idle link
-        // needs a Ping.
-        if !matches!(step, ClientStep::Keepalive) {
+        // needs a Ping. A sweep is local bookkeeping with no wire traffic, so a
+        // busy-cancelling caller must not suppress the keepalive with it.
+        if !matches!(step, ClientStep::Keepalive | ClientStep::Prune) {
             last_activity = clock.now_nanos();
         }
 
@@ -658,6 +732,10 @@ where
                     Err(_e) => continue, // skip a malformed frame, keep the connection
                 }
             }
+
+            // A cancellation was dropped by the bounded command queue, so the
+            // engine can't be told *which* entry died — but it can see it.
+            ClientStep::Prune => sweep_abandoned(&mut pending),
 
             ClientStep::Keepalive => {
                 // `keepalive_timer` is `Some` whenever this step fires.
@@ -920,18 +998,23 @@ mod tests {
 
     /// A handle whose channel nobody drains — an engine still dialing, or
     /// sleeping between redials. `cap` is [`ClientConfig::max_offline_queue`].
-    fn test_handle_capped(cap: usize) -> (ClientHandle, Receiver<ClientCmd>) {
+    /// The prune receiver comes back too: dropping it would close the signal
+    /// channel and silently no-op every [`ClientHandle::request_prune`].
+    fn test_handle_capped(cap: usize) -> (ClientHandle, Receiver<ClientCmd>, Receiver<()>) {
         let (cmd_tx, cmd_rx) = async_channel::bounded(cap.max(1));
+        let (prune_tx, prune_rx) = async_channel::bounded(1);
         (
             ClientHandle {
                 cmd_tx,
+                prune_tx,
                 next_id: Arc::new(AtomicUsize::new(1)),
             },
             cmd_rx,
+            prune_rx,
         )
     }
 
-    fn test_handle() -> (ClientHandle, Receiver<ClientCmd>) {
+    fn test_handle() -> (ClientHandle, Receiver<ClientCmd>, Receiver<()>) {
         test_handle_capped(256)
     }
 
@@ -952,7 +1035,7 @@ mod tests {
     /// which entry died.
     #[tokio::test]
     async fn abandoning_a_call_queues_its_cancellation() {
-        let (handle, cmd_rx) = test_handle();
+        let (handle, cmd_rx, _prune_rx) = test_handle();
         abandon_call(&handle, "one").await;
 
         match cmd_rx.try_recv() {
@@ -970,7 +1053,7 @@ mod tests {
     /// engine already dropped its entry when it routed the reply.
     #[tokio::test]
     async fn a_resolved_call_queues_no_cancellation() {
-        let (handle, cmd_rx) = test_handle();
+        let (handle, cmd_rx, _prune_rx) = test_handle();
         let call = handle.call("one", Payload::from(&b"x"[..]));
         let answer = async {
             // Take the reply channel out of the queued command and answer it.
@@ -1008,10 +1091,13 @@ mod tests {
             ..Default::default()
         };
         let clock = crate::executor::test_support::NoopRuntimeOps;
+        // Never signalled: this asserts the by-id path reclaims on its own.
+        let (_prune_tx, prune_rx) = async_channel::bounded::<()>(1);
         let engine = drive_connection(
             Box::new(SilentPeer::default()),
             &NullCodec,
             &cmd_rx,
+            &prune_rx,
             &config,
             &clock,
         );
@@ -1063,8 +1149,10 @@ mod tests {
     #[tokio::test]
     async fn exhausted_ids_are_refused_not_wrapped() {
         let (cmd_tx, cmd_rx) = async_channel::bounded(256);
+        let (prune_tx, _prune_rx) = async_channel::bounded(1);
         let handle = ClientHandle {
             cmd_tx,
+            prune_tx,
             next_id: Arc::new(AtomicUsize::new(usize::MAX)),
         };
 
@@ -1092,11 +1180,188 @@ mod tests {
         );
     }
 
+    /// Evict-oldest puts a cancellation on the same lossy footing as a write,
+    /// but dropping one silently strands its pending entry until the connection
+    /// ends — so the eviction has to be noticed. Nothing drains the queue here:
+    /// the saturated state a pending dial or a backoff sleep produces.
+    #[tokio::test]
+    async fn an_evicted_cancellation_raises_the_prune_signal() {
+        let (handle, cmd_rx, prune_rx) = test_handle_capped(1);
+
+        handle
+            .enqueue(ClientCmd::CancelCall { id: 1 })
+            .expect("the engine is still running");
+        assert!(prune_rx.is_empty(), "nothing has been evicted yet");
+
+        // Fills the single slot, displacing the cancellation.
+        handle
+            .write("tele", Payload::from(&b"x"[..]))
+            .expect("the engine is still running");
+
+        assert_eq!(cmd_rx.len(), 1, "the cap still holds");
+        assert_eq!(
+            prune_rx.len(),
+            1,
+            "an evicted cancellation must fall back to a sweep"
+        );
+    }
+
+    /// The negative control: eviction is the documented, caller-visible cost of
+    /// the bound for ordinary commands. Signalling on every one would drag an
+    /// `O(N)` sweep into steady-state backpressure.
+    #[tokio::test]
+    async fn an_evicted_write_raises_no_prune_signal() {
+        let (handle, _cmd_rx, prune_rx) = test_handle_capped(1);
+
+        for topic in ["one", "two"] {
+            handle
+                .write(topic, Payload::from(&b"x"[..]))
+                .expect("the engine is still running");
+        }
+
+        assert!(
+            prune_rx.is_empty(),
+            "an evicted write is expected loss, not a leak"
+        );
+    }
+
+    /// A cancellation is bookkeeping; a queued `Write` is work the caller asked
+    /// for. Cap 2, so the write and the call itself both fit and the
+    /// cancellation is the only command that finds the queue full.
+    #[tokio::test]
+    async fn a_cancellation_never_evicts_a_queued_write() {
+        let (handle, cmd_rx, prune_rx) = test_handle_capped(2);
+
+        handle
+            .write("tele", Payload::from(&b"x"[..]))
+            .expect("the engine is still running");
+        abandon_call(&handle, "hang").await;
+
+        assert_eq!(cmd_rx.len(), 2, "the cap still holds");
+        match cmd_rx.try_recv() {
+            Ok(ClientCmd::Write { topic, .. }) => assert_eq!(topic, "tele"),
+            _ => panic!("the caller's write must survive the cancellation"),
+        }
+        match cmd_rx.try_recv() {
+            Ok(ClientCmd::Call { id: 1, .. }) => {}
+            _ => panic!("the call itself must still be queued"),
+        }
+        assert_eq!(
+            prune_rx.len(),
+            1,
+            "the cancellation it could not queue must fall back to a sweep"
+        );
+    }
+
+    /// The reclaim itself: an abandoned entry goes, a live one stays. Identity
+    /// is the dropped receiver, which is why the sweep can stand in for a
+    /// cancellation that never arrived.
+    #[test]
+    fn the_sweep_frees_abandoned_entries_and_keeps_live_ones() {
+        let mut pending: PendingCalls = HashMap::new();
+        let (abandoned, rx) = oneshot::channel();
+        let (live, _live_rx) = oneshot::channel();
+        pending.insert(1, abandoned);
+        pending.insert(2, live);
+        drop(rx); // the caller's future went away
+
+        sweep_abandoned(&mut pending);
+
+        assert!(
+            !pending.contains_key(&1),
+            "the abandoned call must be freed"
+        );
+        assert!(
+            pending.contains_key(&2),
+            "a caller still awaiting its reply must not be dropped"
+        );
+    }
+
+    /// End to end at capacity 1 against a peer that answers nothing: the exact
+    /// loss the bound can inflict. The engine files a call while its caller
+    /// still waits, the caller then abandons it — the cancellation lands in the
+    /// drained queue — and a write evicts that cancellation. The engine still
+    /// reclaims: keepalive off and no later command, so the signal is the only
+    /// thing that can wake the sweep.
+    ///
+    /// Consuming the signal *is* the sweep running (one match arm), and
+    /// [`the_sweep_frees_abandoned_entries_and_keeps_live_ones`] pins what it
+    /// then does. The table is engine-local, and it cannot be watched from a
+    /// retained receiver either: an entry whose receiver is retained is exactly
+    /// the entry the sweep must keep. The timeout turns "never woke" into a
+    /// failure rather than a hang.
+    #[tokio::test]
+    async fn an_evicted_cancellation_is_still_reclaimed() {
+        use core::future::Future;
+
+        let (handle, cmd_rx, prune_rx) = test_handle_capped(1);
+        let config = ClientConfig {
+            reconnect: false,
+            // Nothing but the signal may reclaim.
+            keepalive_interval: None,
+            ..Default::default()
+        };
+        let clock = crate::executor::test_support::NoopRuntimeOps;
+        let engine = drive_connection(
+            Box::new(SilentPeer::default()),
+            &NullCodec,
+            &cmd_rx,
+            &prune_rx,
+            &config,
+            &clock,
+        );
+
+        let exercise = async {
+            // Queue the call, then let the engine file it *while the caller
+            // still waits* — a receiver already dropped when the command is
+            // read is discarded on arrival and never reaches the table.
+            let mut call = Box::pin(handle.call("hang", Payload::from(&b"x"[..])));
+            core::future::poll_fn(|cx| {
+                assert!(
+                    call.as_mut().poll(cx).is_pending(),
+                    "the call must not resolve"
+                );
+                core::task::Poll::Ready(())
+            })
+            .await;
+            tokio::task::yield_now().await;
+            assert!(cmd_rx.is_empty(), "the engine must have filed the call");
+
+            // Abandon it: the queue is drained, so the cancellation lands. No
+            // yield before the write — the engine must not get the chance to
+            // remove the entry by id.
+            drop(call);
+            assert_eq!(cmd_rx.len(), 1, "the cancellation must be queued");
+            assert!(prune_rx.is_empty(), "nothing has fallen back to a sweep");
+            handle
+                .write("tele", Payload::from(&b"x"[..]))
+                .expect("the engine is still running");
+            assert_eq!(prune_rx.len(), 1, "the eviction must have been noticed");
+
+            // The wake-up is the point: the engine is parked on a silent peer
+            // with keepalive off, so only the signal itself can reach it.
+            tokio::time::timeout(core::time::Duration::from_secs(5), async {
+                while !prune_rx.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the signal must wake the engine and be consumed");
+        };
+
+        futures_util::pin_mut!(engine);
+        futures_util::pin_mut!(exercise);
+        match futures_util::future::select(engine, exercise).await {
+            futures_util::future::Either::Left(_) => panic!("the engine ended early"),
+            futures_util::future::Either::Right(((), _)) => {}
+        }
+    }
+
     /// The cap is a hard bound: nothing drains this channel, as during a pending
     /// dial or a backoff sleep.
     #[tokio::test]
     async fn the_command_queue_is_bounded() {
-        let (handle, cmd_rx) = test_handle_capped(2);
+        let (handle, cmd_rx, _prune_rx) = test_handle_capped(2);
 
         for topic in ["one", "two", "three", "four"] {
             handle
@@ -1145,7 +1410,7 @@ mod tests {
     /// through this channel, so a zero-capacity one could never deliver.
     #[tokio::test]
     async fn a_zero_cap_is_clamped_to_one() {
-        let (handle, cmd_rx) = test_handle_capped(0);
+        let (handle, cmd_rx, _prune_rx) = test_handle_capped(0);
         let (reply, rx) = oneshot::channel();
 
         handle
@@ -1168,7 +1433,7 @@ mod tests {
     /// admission lock: a full channel evicts rather than admitting a second sender.
     #[tokio::test]
     async fn cloned_handles_cannot_exceed_the_cap() {
-        let (handle, cmd_rx) = test_handle_capped(1);
+        let (handle, cmd_rx, _prune_rx) = test_handle_capped(1);
         let other = handle.clone();
 
         handle
@@ -1190,7 +1455,7 @@ mod tests {
     /// engine will never send.
     #[tokio::test]
     async fn a_trimmed_call_fails_its_caller() {
-        let (handle, _cmd_rx) = test_handle_capped(1);
+        let (handle, _cmd_rx, _prune_rx) = test_handle_capped(1);
         let (reply, rx) = oneshot::channel();
         handle
             .enqueue(ClientCmd::Call {
@@ -1291,7 +1556,7 @@ mod tests {
         let router = Arc::new(RouterBuilder::from_routes(routes).build());
         let ctx =
             crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
-        let (handle, cmd_rx) = test_handle();
+        let (handle, cmd_rx, _prune_rx) = test_handle();
 
         let pump = inbound_pump(handle, router, Arc::from("tele"), ctx);
         let remote = async {
