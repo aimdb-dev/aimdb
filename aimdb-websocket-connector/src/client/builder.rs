@@ -51,7 +51,8 @@ pub struct WsClientConnectorBuilder {
     max_reconnect_attempts: usize,
     /// Keepalive ping interval in milliseconds (default: 30_000).
     keepalive_ms: u64,
-    /// Maximum queued writes while disconnected (default: 256).
+    /// Command-channel capacity, covering every command and not just writes
+    /// (default: 256, clamped to `1..=8192`).
     max_offline_queue: usize,
     /// Topics to subscribe to on the remote server immediately after connect.
     /// Wildcards supported (e.g., `["sensors.#"]`).
@@ -91,9 +92,13 @@ impl WsClientConnectorBuilder {
         self
     }
 
-    /// Set the maximum number of queued commands while disconnected (default: 256).
-    ///
+    /// Set the capacity of the client engine's command channel (default: 256).
     /// Past the cap the *oldest* queued command is dropped.
+    ///
+    /// Every command shares this channel — writes, subscribes and RPC calls
+    /// alike — and it only fills while the engine isn't draining it (a pending
+    /// dial, the backoff between reconnects). Clamped to `1..=8192`: the ring is
+    /// preallocated, so `0` could never deliver and is raised to `1`.
     pub fn with_max_offline_queue(mut self, max: usize) -> Self {
         self.max_offline_queue = max;
         self

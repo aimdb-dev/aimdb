@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connectBridge` in `try`/`catch` to detect a bad URL must observe
   `onStatusChange` instead, where a rejected URL is no longer distinguishable
   from an unreachable server.
+- **`BridgeOptions.maxOfflineQueue` keeps its name but not its contract.** It is
+  now the capacity of the shared client engine's *command channel*, so RPC calls
+  share the bound with writes and subscribes: an evicted `query`/`listTopics`
+  rejects its promise, an evicted `subscribe` ends its stream. It still only
+  fills while the engine isn't draining it (a pending dial, the reconnect
+  backoff), and eviction is still oldest-first. The value is now clamped to
+  `1..=8192` — the ring is preallocated, so `0` could never deliver anything and
+  is raised to `1`, and larger values are capped rather than honored.
 - **`WasmDb.discover` / the raw discovery path speak `record.list`** and
   resolve with core's full `RecordMetadata` rows (was the topic-scoped
   `{name, schema_type, entity}` shape). The topic is `record_key` — `name` is

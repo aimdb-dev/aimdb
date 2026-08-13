@@ -261,6 +261,10 @@ discovery), so nothing user-visible changes.
   `connectBridge` itself changes, since the socket is now the dialer's to
   build — a URL the browser rejects no longer throws synchronously, it
   resolves and reports `"disconnected"` (see the wasm CHANGELOG).
+  `maxOfflineQueue` keeps its name but widens: it is the engine's whole
+  command channel, so RPC calls (`query`, `listTopics`) share the bound with
+  writes and subscribes, and it is clamped to `1..=8192` because the ring is
+  preallocated (see the wasm CHANGELOG).
   `useAimDb.tsx` discovery reissued as a raw `record.list` req.
 - **Phase 4 (delete):** `aimdb-ws-protocol` crate, `WsCodec`,
   `protocol.rs` shims, `aimdb-client` dead helpers; design 038 §2.5/§3.9

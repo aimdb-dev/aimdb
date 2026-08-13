@@ -51,8 +51,10 @@
 //!
 //! let (db, runner) = builder.build().await?;
 //!
-//! // Query historical data (any `DeserializeOwned` shape; `Value` shown here)
-//! let latest: Vec<serde_json::Value> = db.query_latest("my_record::*", 1).await?;
+//! // Query historical data (any `DeserializeOwned` shape; `Value` shown here).
+//! // The name is an MQTT-style pattern over the record key: `my.#` would span
+//! // every record under `my.`, `#` the whole store.
+//! let latest: Vec<serde_json::Value> = db.query_latest("my.record", 1).await?;
 //! # Ok(())
 //! # }
 //! ```

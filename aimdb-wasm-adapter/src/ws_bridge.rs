@@ -73,8 +73,17 @@ pub struct BridgeOptions {
     /// Re-connect automatically on close (default: true).
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
-    /// Maximum queued commands (writes/subscribes) while disconnected
-    /// (default: 256); past the cap the oldest is dropped.
+    /// Capacity of the shared client engine's command channel (default: 256);
+    /// past the cap the oldest queued command is dropped.
+    ///
+    /// This is the whole command channel, not an offline-writes buffer: every
+    /// `write`, `subscribe`, `query` and `listTopics` passes through it, so an
+    /// evicted `query` rejects its promise and an evicted `subscribe` ends its
+    /// stream. It only *fills* while the engine isn't draining it — during a
+    /// pending dial or the backoff between reconnects.
+    ///
+    /// Clamped to `1..=8192`: the ring is preallocated, so `0` cannot deliver
+    /// anything and is raised to `1`, and larger values are capped.
     #[serde(default = "default_queue_size")]
     pub max_offline_queue: usize,
     /// Keepalive interval in milliseconds (default: 30 000).
@@ -621,8 +630,9 @@ impl WsBridge {
 
     /// Send a value to the server for a given topic (AimX `write` frame).
     ///
-    /// While disconnected the command is queued by the engine (up to
-    /// `maxOfflineQueue`) and flushed on reconnect.
+    /// While disconnected the command is queued by the engine and flushed on
+    /// reconnect. The queue is shared with every other command and bounded by
+    /// `maxOfflineQueue`; past the cap the oldest is dropped.
     pub fn write(&self, topic: &str, payload: JsValue) -> Result<(), JsError> {
         let json_payload: serde_json::Value = serde_wasm_bindgen::from_value(payload)
             .map_err(|e| JsError::new(&format!("Payload serialization failed: {e}")))?;
@@ -658,10 +668,14 @@ impl WsBridge {
 
     /// Query historical / persisted records (AimX `record.query`).
     ///
+    /// `pattern` is MQTT-style over the record key: `*` matches exactly one
+    /// dot-separated segment, `#` zero or more — so `#`, not `*`, is "every
+    /// record".
+    ///
     /// Returns a `Promise<Object>` that resolves with `{ records, total }`.
     ///
     /// ```ts
-    /// const result = await bridge.query('*', { from: 1700000000000, to: 1700003600000, limit: 500 });
+    /// const result = await bridge.query('#', { from: 1700000000000, to: 1700003600000, limit: 500 });
     /// ```
     pub fn query(&self, pattern: &str, options: JsValue) -> js_sys::Promise {
         #[derive(Deserialize, Default)]
