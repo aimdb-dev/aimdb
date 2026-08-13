@@ -376,7 +376,7 @@ impl AimxSession {
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
-            .unwrap_or("*")
+            .unwrap_or(crate::remote::QUERY_ALL_PATTERN)
             .to_string();
         let limit = params
             .get("limit")
@@ -483,5 +483,50 @@ fn map_db_err(e: DbError) -> RpcError {
         DbError::RecordKeyNotFound { .. } | DbError::InvalidRecordId { .. } => RpcError::NotFound,
         DbError::PermissionDenied { .. } => RpcError::Denied,
         _ => RpcError::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::{QueryHandlerFn, QUERY_ALL_PATTERN};
+    use std::sync::Mutex;
+
+    /// `record.query` with no `name` must reach the handler as the same pattern
+    /// on every transport. It is a *record set*, not a formatting detail: under
+    /// the MQTT grammar `*` spans exactly one dot-separated segment, so the old
+    /// default silently dropped every nested record here while the WS connector
+    /// returned them — the same request answering differently per link.
+    ///
+    /// Driven through the real dispatch (`Dispatch::open` → `Session::call`),
+    /// since the defaulting lives in `record_query`, not at the wire edge. The
+    /// WS dispatch defaults through the same constant, so the two cannot
+    /// drift again.
+    #[tokio::test]
+    async fn an_omitted_query_name_spans_every_record() {
+        static SEEN: Mutex<Option<String>> = Mutex::new(None);
+
+        let handler: QueryHandlerFn = Box::new(|params| {
+            *SEEN.lock().expect("uncontended") = Some(params.name.clone());
+            Box::pin(async { Ok(json!({ "records": [], "total": 0 })) })
+        });
+
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        builder.extensions_mut().insert(handler);
+        let (db, _runner) = builder.build().await.expect("build db");
+
+        let dispatch = AimxDispatch::new(Arc::new(db), AimxConfig::uds_default());
+        let mut session = dispatch.open(&SessionCtx::default());
+        session
+            .call("record.query", to_payload(&json!({})))
+            .await
+            .expect("the query resolves");
+
+        assert_eq!(
+            SEEN.lock().expect("uncontended").as_deref(),
+            Some(QUERY_ALL_PATTERN),
+            "an omitted name must span every record, at every depth"
+        );
     }
 }

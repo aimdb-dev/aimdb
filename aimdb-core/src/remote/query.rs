@@ -36,10 +36,15 @@ pub struct QueryRecord {
     pub ts: u64,
 }
 
+/// The pattern a `record.query` with no `name` resolves to: every record, at
+/// every depth.
+pub const QUERY_ALL_PATTERN: &str = "#";
+
 /// Parameters for the type-erased query handler.
 #[derive(Debug, Clone)]
 pub struct QueryHandlerParams {
-    /// Record pattern (supports `*` wildcard).
+    /// Record pattern, MQTT-style: `*` matches one dot-separated segment, `#`
+    /// zero or more (see [`QUERY_ALL_PATTERN`]).
     pub name: String,
     /// Maximum results per matching record.
     pub limit: Option<usize>,

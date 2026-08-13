@@ -57,7 +57,7 @@ pub use protocol::{
     version_compatible, ws_url_with_version, ErrorObject, Event, HelloMessage, Request, Response,
     WelcomeMessage, PROTOCOL_VERSION, VERSION_PARAM,
 };
-pub use query::{QueryHandlerFn, QueryHandlerParams, QueryRecord};
+pub use query::{QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN};
 
 // Internal exports for implementation
 #[cfg(feature = "connector-session")]

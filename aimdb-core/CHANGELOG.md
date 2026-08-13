@@ -76,6 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ts }` is the canonical `record.query` result row (result shape
   `{records, total}`); `RecordMetadata` gains optional `schema_type` /
   `entity` fields (`entity` derived from the record key's final `.` segment).
+  New `remote::QUERY_ALL_PATTERN` (`"#"`) is the pattern a `record.query` with
+  no `name` resolves to, shared by every transport's dispatch so one request
+  cannot mean different record sets on different links. The generic
+  `AimxDispatch` previously defaulted to `"*"`, which under the MQTT grammar
+  spans exactly one dot-separated segment — so the same name-less query
+  returned every record over WebSocket but silently omitted nested ones over
+  UDS/serial/TCP.
 - **`ClientConfig::max_offline_queue` is now the command channel's capacity.**
   The channel is `async_channel::bounded` and `enqueue` uses `force_send`, so a
   full channel evicts its oldest and the bound holds across cloned

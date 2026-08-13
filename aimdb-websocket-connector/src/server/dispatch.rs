@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams};
+use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams, QUERY_ALL_PATTERN};
 use aimdb_core::session::Session;
 use aimdb_core::{
     AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, SessionCtx, SubUpdate,
@@ -194,12 +194,10 @@ impl WsSession {
     /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`. The pattern
     /// passes [`AuthHandler::authorize_query`] before either is consulted.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
-        // `#`, not `*`: names are MQTT patterns, so an omitted name means
-        // "everything", which only `#` spans.
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
-            .unwrap_or("#")
+            .unwrap_or(QUERY_ALL_PATTERN)
             .to_string();
         let limit = params
             .get("limit")
