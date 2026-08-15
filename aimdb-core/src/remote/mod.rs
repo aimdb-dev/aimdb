@@ -6,12 +6,12 @@
 //!
 //! # Protocol
 //!
-//! AimX v2 uses NDJSON (newline-delimited JSON) tagged frames over a session
+//! AimX uses NDJSON (newline-delimited JSON) tagged frames over a session
 //! transport (Unix domain sockets via `aimdb-uds-connector`, serial via
 //! `aimdb-serial-connector`). The envelope codec lives in
 //! [`crate::session::aimx`]; see `docs/design/remote-access-via-connectors.md`
-//! for the architecture. The v2 wire is not backward-compatible with the
-//! legacy AimX v1 framing.
+//! for the architecture. Compatibility is by major version — see
+//! [`PROTOCOL_VERSION`] and [`version_compatible`].
 //!
 //! # Security
 //!
@@ -54,10 +54,38 @@ pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
 pub use metadata::RecordMetadata;
 pub use protocol::{
-    ErrorObject, Event, HelloMessage, Request, Response, WelcomeMessage, PROTOCOL_VERSION,
+    version_compatible, ws_url_with_version, ErrorObject, Event, HelloMessage, Request, Response,
+    WelcomeMessage, PROTOCOL_VERSION, VERSION_PARAM,
 };
-pub use query::{QueryHandlerFn, QueryHandlerParams};
+pub use query::{QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN};
 
 // Internal exports for implementation
 #[cfg(feature = "connector-session")]
 pub(crate) mod stream;
+
+/// The leaf (entity) segment of a record key — the trailing component after the
+/// last separator. Both `.` and `/` are treated as delimiters, since keys use
+/// either convention (`temp.vienna` or `sensors/temp/vienna`), and both yield
+/// `vienna`. Servers report this as a record's `entity` so clients trust the
+/// field instead of parsing keys themselves.
+pub fn topic_leaf(key: &str) -> &str {
+    key.rsplit(['.', '/']).next().unwrap_or(key)
+}
+
+#[cfg(test)]
+mod topic_leaf_tests {
+    use super::topic_leaf;
+
+    #[test]
+    fn leaf_handles_both_separators() {
+        // Dot convention.
+        assert_eq!(topic_leaf("temp.vienna"), "vienna");
+        // Slash convention (the bug: `rsplit('.')` returned the whole key).
+        assert_eq!(topic_leaf("sensors/temp/vienna"), "vienna");
+        // Mixed — the last separator of either kind wins.
+        assert_eq!(topic_leaf("sensors/temp.vienna"), "vienna");
+        assert_eq!(topic_leaf("a.b/c"), "c");
+        // No separator: the whole key is its own leaf.
+        assert_eq!(topic_leaf("vienna"), "vienna");
+    }
+}

@@ -85,8 +85,7 @@ async fn pump_client_mirrors_record_both_directions() {
             max_reconnect_delay: 50,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
-            max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
+            max_offline_queue: 1024,
             sends_hello: false,
         }));
     cb.configure::<Msg>("cfg", |reg| {

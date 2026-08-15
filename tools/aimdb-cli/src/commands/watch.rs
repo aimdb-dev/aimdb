@@ -50,7 +50,8 @@ async fn watch_record(
     let conn = connect_endpoint(endpoint).await?;
 
     // Subscribe to the record (the engine routes updates back by request id; no
-    // server-allocated subscription id to track).
+    // server-allocated subscription id to track). The stream is loss-aware, so
+    // the watcher reports gaps instead of skipping over them silently.
     let mut stream = conn.subscribe(record_name)?;
 
     live::print_watch_start(record_name);
@@ -64,22 +65,44 @@ async fn watch_record(
     });
 
     // Receive updates. The reshaped wire carries no server sequence, so the
-    // watcher counts locally.
+    // watcher counts locally; `skipped` is what the engine observed as lost
+    // between deliveries, tallied for the closing summary.
     let mut count: u64 = 0;
+    let mut skipped_total: u64 = 0;
     let unlimited = max_count == 0;
 
     loop {
         tokio::select! {
             next = stream.next() => {
                 match next {
-                    Some(data) => {
+                    Some(Ok(update)) => {
                         count += 1;
-                        live::print_event(count, &data, show_full);
+                        if update.skipped > 0 {
+                            skipped_total += update.skipped;
+                            live::print_gap(update.skipped);
+                        }
+                        match &update.value {
+                            Some(value) => live::print_event(count, value, show_full),
+                            // The frame counted toward the tally above but
+                            // carried no usable value — say so rather than
+                            // printing nothing.
+                            None => live::print_undecodable(count),
+                        }
+                        // The late-join burst is complete; everything after this
+                        // is a live event. It is the only marker that tells a
+                        // truncated initial state from a complete one, so it is
+                        // always reported.
+                        if update.snapshot_end {
+                            live::print_snapshot_complete(count, skipped_total);
+                        }
                         if !unlimited && count >= max_count as u64 {
                             break;
                         }
                     }
-                    None => break, // stream ended (record closed or subscribe rejected)
+                    // A refusal is terminal: report it and exit non-zero rather
+                    // than closing out as if the session had run.
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break, // stream ended (record closed, or disconnect)
                 }
             }
             _ = &mut cancel_rx => break, // Ctrl+C
@@ -87,6 +110,6 @@ async fn watch_record(
     }
 
     // Dropping the stream stops local delivery (no explicit unsubscribe needed).
-    live::print_watch_stop();
+    live::print_watch_stop(skipped_total);
     Ok(())
 }

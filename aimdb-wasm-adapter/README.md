@@ -72,7 +72,7 @@ Connect the browser-local AimDB to a remote server:
 import { WsBridge } from '@aimdb/wasm';
 
 const bridge = WsBridge.connect(db, 'wss://api.example.com/ws', {
-  subscribeTopics: ['sensors/#'],
+  subscribeTopics: ['sensors.#'],
   autoReconnect: true,
   lateJoin: true,
 });
@@ -80,6 +80,14 @@ const bridge = WsBridge.connect(db, 'wss://api.example.com/ws', {
 bridge.onStatusChange((status) => {
   console.log('Connection:', status); // 'Connected' | 'Reconnecting' | ...
 });
+
+// Delivery gaps: the server sent updates the mirror never received (a slow
+// consumer overran the server-side buffer). Without this, a gap looks exactly
+// like an idle producer.
+bridge.onGap((topic, skipped) => {
+  console.warn(`${topic}: lost ${skipped} update(s)`);
+});
+bridge.droppedUpdates(); // cumulative count since connect
 
 bridge.write('commands.setpoint', { target: 21.0 });
 bridge.disconnect();
@@ -96,7 +104,7 @@ function App() {
       records: [
         { key: 'sensors.temperature.vienna', schemaType: 'temperature', buffer: 'SingleLatest' },
       ],
-      bridge: { url: 'wss://api.example.com/ws', subscribeTopics: ['sensors/#'] },
+      bridge: { url: 'wss://api.example.com/ws', subscribeTopics: ['sensors.#'] },
     }}>
       <Dashboard />
     </AimDbProvider>
@@ -149,10 +157,16 @@ wasm-pack test --headless --chrome
 From the workspace root (`make` targets):
 
 ```bash
-make wasm        # Build WASM adapter
-make wasm-test   # Run WASM tests
-make check       # Full workspace check (includes WASM)
+make wasm            # Build WASM adapter
+make wasm-test-deps  # Chrome + version-matched chromedriver (one-off)
+make wasm-test       # Run the browser suite (CI: `wasm-browser-tests`)
+make check           # Full workspace check — wasm32 `cargo check` only, no browser
 ```
+
+`webdriver.json` passes `--no-sandbox` / `--disable-dev-shm-usage` to headless
+Chrome. `wasm-bindgen-test-runner` does not set them itself and without them
+the sandbox fails to start on CI images that restrict unprivileged user
+namespaces.
 
 ## Feature Flags
 

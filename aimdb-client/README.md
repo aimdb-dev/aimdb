@@ -20,7 +20,7 @@ or a bare path), serial (`serial://DEVICE?baud=N`), and TCP
 ## Features
 
 - **Async Connection Management**: `AimxConnection` over the shared session engine
-- **Protocol Implementation**: AimX-v2 handshake plus RPC and streaming subscriptions
+- **Protocol Implementation**: AimX handshake plus RPC and streaming subscriptions
 - **Instance Discovery**: Automatic detection of running AimDB instances (UDS)
 - **Record Operations**: List, get, set, subscribe, drain, graph introspection, query
 - **Type-Safe**: Strongly typed API with serde integration
@@ -39,7 +39,8 @@ or a bare path), serial (`serial://DEVICE?baud=N`), and TCP
 - **Discovery**: `discover_instances()`, `find_instance()`
 - **Connection**: `AimxConnection::connect(endpoint)`, `connect_over(dialer)`
 - **Records**: `list_records()`, `get_record()`, `set_record()`, `drain_record()`
-- **Subscriptions**: `subscribe()` (returns a `Stream` of values)
+- **Subscriptions**: `subscribe()` (returns a `Stream` of `Result<RecordUpdate, ClientError>` —
+  value, topic, gap count, snapshot-burst marker; a refused subscription is one `Err` item)
 - **Introspection**: `graph_nodes()`, `graph_edges()`, `graph_topo_order()`, `query()`
 
 ### Discovery
@@ -50,9 +51,10 @@ Automatically scans for running AimDB instances:
 
 ## Protocol
 
-The client speaks the **AimX v2** wire: NDJSON (newline-delimited JSON) tagged
-frames mapping onto the session engine's role-neutral message set. It is not
-backward-compatible with the legacy AimX v1 framing.
+The client speaks the **AimX** wire: NDJSON (newline-delimited JSON) tagged
+frames mapping onto the session engine's role-neutral message set. It declares
+`PROTOCOL_VERSION` (currently `3.0`) at `hello`; compatibility is by major
+version, so a pre-3.x peer is refused at the handshake.
 
 See `docs/design/remote-access-via-connectors.md` for the architecture and
 `aimdb-core/src/session/aimx/` for the codec.

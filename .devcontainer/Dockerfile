@@ -38,6 +38,34 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------------------------
+# Chrome + chromedriver for headless WASM tests (make wasm-test)
+#
+# chromedriver is pinned to the installed Chrome's major version.  wasm-pack
+# would otherwise download the newest driver on its own, which refuses to drive
+# an older browser, and the bare driver binary also needs Chrome's shared libs
+# (libnspr4 & friends) that only the browser package pulls in.
+# --------------------------------------------------------------------
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/* \
+    && CHROME_MAJOR="$(google-chrome --version | sed -E 's/[^0-9]*([0-9]+).*/\1/')" \
+    && DRIVER_URL="$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json \
+        | jq -r --arg m "${CHROME_MAJOR}." '[.versions[] | select(.version | startswith($m))] | last | .downloads.chromedriver[] | select(.platform == "linux64") | .url')" \
+    && [ -n "$DRIVER_URL" ] && [ "$DRIVER_URL" != "null" ] \
+    && curl -fsSL -o /tmp/chromedriver.zip "$DRIVER_URL" \
+    && unzip -oq /tmp/chromedriver.zip -d /tmp \
+    && install -m 0755 /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
+    && rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64 \
+    && chromedriver --version
+
+# Points wasm-pack/wasm-bindgen-test at the pinned driver instead of letting them
+# download the newest one into ~/.cache/.wasm-pack.
+ENV CHROMEDRIVER=/usr/local/bin/chromedriver
+
+# --------------------------------------------------------------------
 # Create non-root user (with sudo) as root
 # --------------------------------------------------------------------
 RUN groupadd --gid $USER_GID $USERNAME \

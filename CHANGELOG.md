@@ -19,7 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [aimdb-uds-connector/CHANGELOG.md](aimdb-uds-connector/CHANGELOG.md)
 > - [aimdb-serial-connector/CHANGELOG.md](aimdb-serial-connector/CHANGELOG.md)
 > - [aimdb-tcp-connector/CHANGELOG.md](aimdb-tcp-connector/CHANGELOG.md)
-> - [aimdb-ws-protocol/CHANGELOG.md](aimdb-ws-protocol/CHANGELOG.md)
 > - [aimdb-wasm-adapter/CHANGELOG.md](aimdb-wasm-adapter/CHANGELOG.md)
 > - [aimdb-sync/CHANGELOG.md](aimdb-sync/CHANGELOG.md)
 > - [aimdb-client/CHANGELOG.md](aimdb-client/CHANGELOG.md)
@@ -30,10 +29,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Issue #200**: the implementation of the synchronous interface (`aimdb-sync`)
-  has been simplified by removing the channels used internally to communicate
-  with the `tokio` thread, with a number of API changes.
-  ([aimdb-sync](aimdb-sync/CHANGELOG.md))
+### Changed — Design 047: AimX protocol version handshake gate (breaking)
+
+`PROTOCOL_VERSION` is bumped **`"2.0"` → `"3.0"`** to mark the design-047
+convergence as a breaking wire change (`record.query` results moved from
+`{values, count}` to `{records, total}`; wildcard subscribe / auto-subscribe
+added). The `hello` handshake now **negotiates** the version instead of ignoring
+it: the server refuses a client whose declared major version is incompatible —
+or absent — with a new `RpcError::VersionMismatch` (wire code
+`version_mismatch`), and the client rejects a pre-3.x server's `welcome`
+symmetrically. Compatibility is by **major** version (`version_compatible()`,
+exported from `aimdb_core::remote`); a missing/malformed version fails closed.
+
+- **Breaking:** a pre-3.x client (including any hand-parsing the old
+  `ServerMessage` shape) is refused at `hello` and can no longer connect — it
+  fails fast at the handshake rather than tripping over the new reply shapes on
+  its first call. First-party clients (`aimdb-client`, and the `aimdb-cli` /
+  `aimdb-mcp` tools riding it) declare `"3.0"` and are unaffected.
+- **Caveat carried from design 047 §3.6:** server-seeded auto-subscriptions are
+  invisible to `run_client`-based consumers. Client authors upgrading to 3.0
+  must drive their own `subscribe` for records they want streamed.
+- **WebSocket / browser upgrade gate.** The socket transports negotiate the
+  version inside `hello`, but the WS server runs `reads_hello:false` and a
+  browser cannot set WebSocket handshake headers — so a WS client declares its
+  version in the upgrade URL (`…/ws?v=3.0`) and the server refuses an
+  incompatible/absent one with **HTTP 426 Upgrade Required** before the socket
+  opens. New `aimdb_core::remote::{VERSION_PARAM, ws_url_with_version}` hold the
+  contract; the browser `WsBridge`/`WasmDb.discover` and the Rust
+  `WsClientConnector` append it automatically. A stale browser client now fails
+  at the upgrade rather than on its first frame.
+- Schema-level record migration over AimX (the `Migratable` trait) is
+  **out of scope** here and tracked as a follow-up (`with_migration`).
+
+### Changed — Design 047: dot is the one topic separator (breaking)
+
+`topic_matches` (wildcard subscribe / WS fan-out) now splits topic patterns on
+**`.` only** — RabbitMQ topic-exchange semantics (dot segments, `*`
+single-level, `#` multi-level). Previously it split on `/`, so a dot-separated
+key like `temp.vienna` (the codebase's dominant key style) silently failed to
+match `temp.*` — a correctness bug. `/` is no longer a segment separator; it
+stays only in external broker addresses (`mqtt://sensors/temp/x`), which are
+unaffected.
+
+- **Breaking:** WebSocket / browser clients must subscribe with dot patterns
+  (`sensors.#`, not `sensors/#`). The WS connector, its e2e suite, ACL topics,
+  and the wasm-adapter README were migrated accordingly.
+- `topic_leaf` (entity extraction) remains tolerant of both `.` and `/`.
+
+### Changed — Design 047: one wire protocol (AimX) for every transport (breaking)
+
+Implementation of [design 047](docs/design/047-retire-ws-protocol-converge-on-aimx.md)
+(the 038 §3.9 / 036 A2 protocol unification). The `aimdb-ws-protocol` crate is
+**deleted**; the WebSocket connector and the browser `WsBridge` now speak the
+same AimX tagged frames as UDS/serial/TCP, over the same session engines.
+AimX gained the two features that justified the ws fork: wildcard /
+multi-record subscribe (one subscription fans in every matching record, events
+tagged with the record that fired, one late-join snapshot per match) and the
+shared `record.query`/`record.list` result shapes (`{records, total}` with
+`QueryRecord{topic, payload, ts}` rows; `record.list` replies with core's full
+`RecordMetadata` rows, keyed by `record_key`, now carrying `schema_type` /
+`entity`). **Breaking for browser clients** (the JS `WsBridge` API is unchanged,
+but the wire is new); breaking Rust API changes are listed per crate
+(`aimdb-core`, `aimdb-websocket-connector`, `aimdb-wasm-adapter`,
+`aimdb-client`, `aimdb-persistence`).
 
 ### Changed — knx-pico submodule
 

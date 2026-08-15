@@ -20,7 +20,7 @@ use futures::StreamExt;
 use aimdb_core::session::{
     run_client, serve, AuthError, BoxFut, BoxStream, ClientConfig, CodecError, Connection, Dialer,
     Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, Session,
-    SessionConfig, SessionCtx, SessionLimits, TransportError, TransportResult,
+    SessionConfig, SessionCtx, SessionLimits, SubUpdate, TransportError, TransportResult,
 };
 
 /// Engine-test clock (aimdb-core can't depend on a runtime adapter — that
@@ -180,10 +180,38 @@ impl EnvelopeCodec for LineCodec {
                 Ok(data) => format!("REPLY\n{}\nOK\n{}", id, utf8(&data)?),
                 Err(e) => format!("REPLY\n{}\nERR\n{}", id, rpc_code(&e)),
             },
-            Outbound::Event { sub, seq, data } => {
-                format!("EVENT\n{}\n{}\n{}", sub, seq, utf8(&data)?)
+            Outbound::Event {
+                sub,
+                seq,
+                topic,
+                data,
+            } => {
+                // `-` marks an untagged event (no per-record topic).
+                format!(
+                    "EVENT\n{}\n{}\n{}\n{}",
+                    sub,
+                    seq,
+                    topic.unwrap_or("-"),
+                    utf8(&data)?
+                )
             }
-            Outbound::Snapshot { topic, data } => format!("SNAP\n{}\n{}", topic, utf8(&data)?),
+            Outbound::Snapshot {
+                sub,
+                seq,
+                last,
+                topic,
+                data,
+            } => {
+                // `L` marks the burst's final snapshot, `-` a mid-burst one.
+                format!(
+                    "SNAP\n{}\n{}\n{}\n{}\n{}",
+                    sub,
+                    seq,
+                    if last { "L" } else { "-" },
+                    topic,
+                    utf8(&data)?
+                )
+            }
             Outbound::Pong => "PONG".to_string(),
             Outbound::Subscribed { sub } => format!("SUBSCRIBED\n{}", sub),
         };
@@ -225,16 +253,24 @@ impl EnvelopeCodec for LineCodec {
             }
             "EVENT" => {
                 let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
-                let (seq, data) = r.split_once('\n').unwrap_or((r, ""));
+                let (seq, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Event {
                     sub,
                     seq: seq.parse().map_err(|_| CodecError::Malformed)?,
+                    topic: (topic != "-").then_some(topic),
                     data: payload_from(data),
                 })
             }
             "SNAP" => {
-                let (topic, data) = rest.split_once('\n').unwrap_or((rest, ""));
+                let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (seq, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (last, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Snapshot {
+                    sub,
+                    seq: seq.parse().map_err(|_| CodecError::Malformed)?,
+                    last: last == "L",
                     topic,
                     data: payload_from(data),
                 })
@@ -291,7 +327,7 @@ impl Session for EchoSession {
     fn subscribe<'a>(
         &'a mut self,
         topic: &'a str,
-    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
         let topic = topic.to_string();
         Box::pin(async move {
             // Sentinel: let a known topic fail so the subscribe-ack path is testable.
@@ -299,10 +335,10 @@ impl Session for EchoSession {
                 return Err(RpcError::NotFound);
             }
             // Three synthetic updates derived from the topic, then end.
-            let items: Vec<Payload> = (1..=3)
-                .map(|i| payload_from(&format!("{topic}#{i}")))
+            let items: Vec<SubUpdate> = (1..=3)
+                .map(|i| SubUpdate::new(payload_from(&format!("{topic}#{i}"))))
                 .collect();
-            Ok(Box::pin(futures::stream::iter(items)) as BoxStream<'static, Payload>)
+            Ok(Box::pin(futures::stream::iter(items)) as BoxStream<'static, SubUpdate>)
         })
     }
 
@@ -317,6 +353,85 @@ impl Session for EchoSession {
             writes.lock().unwrap().push((topic, payload.to_vec()));
             Ok(())
         })
+    }
+}
+
+// ===========================================================================
+// Late-join snapshot dispatch (Layer 3) — a wildcard subscription whose
+// snapshot burst is larger than the client's per-subscription sink.
+// ===========================================================================
+
+/// Records covered by the wildcard subscription below. Deliberately larger than
+/// the client's private `SUBSCRIBE_CHANNEL_CAP` (256) so the late-join burst
+/// *must* overrun a consumer that hasn't started draining yet.
+const SNAPSHOT_RECORDS: usize = 300;
+
+/// The subscription's live event source, handed over once at `subscribe` so the
+/// test can push events *after* draining the snapshot burst.
+type EventFeed = Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<SubUpdate>>>>;
+
+struct SnapshotDispatch {
+    feed: EventFeed,
+}
+
+impl Dispatch for SnapshotDispatch {
+    fn authenticate<'a>(
+        &'a self,
+        _peer: &'a PeerInfo,
+        _first: Option<&'a [u8]>,
+    ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
+        Box::pin(async { Ok(SessionCtx::default()) })
+    }
+
+    fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
+        Box::new(SnapshotSession {
+            feed: self.feed.clone(),
+        })
+    }
+}
+
+struct SnapshotSession {
+    feed: EventFeed,
+}
+
+impl Session for SnapshotSession {
+    fn call<'a>(
+        &'a mut self,
+        _method: &'a str,
+        params: Payload,
+    ) -> BoxFut<'a, Result<Payload, RpcError>> {
+        Box::pin(async move { Ok(params) })
+    }
+
+    fn snapshots(&mut self, _topic: &str) -> Vec<(String, Payload)> {
+        (1..=SNAPSHOT_RECORDS)
+            .map(|i| (format!("rec.{i}"), payload_from(&format!("snap#{i}"))))
+            .collect()
+    }
+
+    fn subscribe<'a>(
+        &'a mut self,
+        _topic: &'a str,
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
+        let feed = self.feed.clone();
+        Box::pin(async move {
+            // One subscription per test run; a second would find the feed taken.
+            let rx = feed.lock().unwrap().take().ok_or(RpcError::Internal)?;
+            let stream =
+                futures::stream::unfold(
+                    rx,
+                    |mut rx| async move { rx.recv().await.map(|u| (u, rx)) },
+                );
+            Ok(Box::pin(stream) as BoxStream<'static, SubUpdate>)
+        })
+    }
+
+    fn write<'a>(
+        &'a mut self,
+        _topic: &'a str,
+        _payload: Payload,
+    ) -> BoxFut<'a, Result<(), RpcError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -351,8 +466,7 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
             max_reconnect_delay: 10,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
-            max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
+            max_offline_queue: 1024,
             sends_hello: true,
         },
         Arc::new(TestClock),
@@ -365,12 +479,12 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
 
     // 2) Streaming: subscribe → three events routed back by sub id.
     let mut stream = handle.subscribe("temp").unwrap();
-    let e1 = stream.next().await.expect("event 1");
-    let e2 = stream.next().await.expect("event 2");
-    let e3 = stream.next().await.expect("event 3");
-    assert_eq!(&*e1, b"temp#1");
-    assert_eq!(&*e2, b"temp#2");
-    assert_eq!(&*e3, b"temp#3");
+    let e1 = stream.next().await.expect("event 1").expect("ok event 1");
+    let e2 = stream.next().await.expect("event 2").expect("ok event 2");
+    let e3 = stream.next().await.expect("event 3").expect("ok event 3");
+    assert_eq!(&*e1.data, b"temp#1");
+    assert_eq!(&*e2.data, b"temp#2");
+    assert_eq!(&*e3.data, b"temp#3");
 
     // 3) Fire-and-forget write, then a follow-up RPC. FIFO on the single
     //    connection guarantees the write frame is processed before the reply
@@ -394,8 +508,10 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
     server.abort();
 }
 
-/// Subscribe-ack: a subscribe the server rejects must surface as a stream that
-/// *ends* (`None`) rather than one that hangs forever (the pre-fix behavior).
+/// Subscribe-ack: a subscribe the server rejects must surface as a terminal
+/// `Err` item followed by end-of-stream — distinguishable from a disconnect (a
+/// plain `None`) so a caller can stop instead of re-subscribing forever, and
+/// never hanging (the original pre-fix behavior).
 #[tokio::test]
 async fn failed_subscribe_ends_stream_via_ack() {
     let (listener, dialer) = transport_pair();
@@ -417,21 +533,185 @@ async fn failed_subscribe_ends_stream_via_ack() {
             max_reconnect_delay: 10,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
-            max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
+            max_offline_queue: 1024,
             sends_hello: false,
         },
         Arc::new(TestClock),
     );
     let client = tokio::spawn(client_fut);
 
-    // The "bad" topic is rejected server-side; the failure Reply must close the
-    // stream. A generous timeout guards against the old hang-forever behavior.
+    // The "bad" topic is rejected server-side; the failure Reply must surface as
+    // a terminal `Err` item, then the stream ends. A generous timeout guards
+    // against the old hang-forever behavior.
     let mut stream = handle.subscribe("bad").unwrap();
+    let rejected = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("failed subscribe must yield an item, not hang")
+        .expect("rejected subscribe should yield a terminal item");
+    assert_eq!(
+        rejected.unwrap_err(),
+        RpcError::NotFound,
+        "rejection should carry the server's error code"
+    );
     let ended = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
-        .expect("failed subscribe must end the stream, not hang");
-    assert!(ended.is_none(), "rejected subscribe should yield no events");
+        .expect("stream must end after the rejection, not hang");
+    assert!(
+        ended.is_none(),
+        "stream should end after the terminal error"
+    );
+
+    drop(handle);
+    drop(stream);
+    let _ = client.await;
+    server.abort();
+}
+
+/// A late-join snapshot burst larger than the client's per-subscription sink
+/// must not vanish silently. Regression for the bug where the client demux
+/// discarded the snapshot `try_send` result *and* snapshots carried no `seq`: a
+/// wildcard subscription over 300 records delivered exactly
+/// `SUBSCRIBE_CHANNEL_CAP` (256) updates with no error and no gap, and because
+/// event `seq` then restarted at 1, no later event could reveal which initial
+/// states were lost — quietly breaking "one snapshot per matched record".
+///
+/// Sharing the `seq` space fixed that only once *some* later update arrived, so
+/// this test deliberately checks the whole accounting **before any event is
+/// injected**: a static subscription may never produce one, and a consumer must
+/// still be able to tell a complete initial state from a truncated one. The
+/// engine therefore reserves a sink slot for the burst's final snapshot, which
+/// arrives flagged `snapshot_end` and carrying the burst's whole loss count.
+#[tokio::test]
+async fn oversized_snapshot_burst_completes_without_a_live_event() {
+    let (listener, dialer) = transport_pair();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubUpdate>();
+    let dispatch = Arc::new(SnapshotDispatch {
+        feed: Arc::new(Mutex::new(Some(event_rx))),
+    });
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        dispatch,
+        SessionConfig::default(),
+    ));
+    let (handle, client_fut) = run_client(
+        dialer,
+        LineCodec,
+        ClientConfig {
+            reconnect: false,
+            reconnect_delay: 10,
+            max_reconnect_delay: 10,
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: 1024,
+            sends_hello: false,
+        },
+        Arc::new(TestClock),
+    );
+    let client = tokio::spawn(client_fut);
+
+    let mut stream = handle.subscribe("rec.#").unwrap();
+
+    // RPC barrier. The server serves frames in order and emits the whole burst
+    // inline while handling the Subscribe, so this reply is the *last* frame
+    // behind all 300 snapshots: once it resolves, the client demux has already
+    // pushed every snapshot at a sink nothing has drained yet — a deterministic
+    // overflow rather than a timing race.
+    let reply = handle.call("echo", payload_from("barrier")).await.unwrap();
+    assert_eq!(&*reply, b"barrier");
+
+    // Drain whatever actually landed in the sink.
+    let mut delivered = Vec::new();
+    while let Ok(next) = tokio::time::timeout(Duration::from_millis(50), stream.next()).await {
+        let item = next.expect("stream must stay open while the subscription lives");
+        delivered.push(item.expect("a snapshot burst must not be a terminal error"));
+    }
+
+    // Guard against a vacuous pass: raising SUBSCRIBE_CHANNEL_CAP past
+    // SNAPSHOT_RECORDS would make the burst fit and test nothing.
+    assert!(
+        delivered.len() < SNAPSHOT_RECORDS,
+        "burst must overrun the sink for this regression to mean anything; \
+         all {} snapshots fit — raise SNAPSHOT_RECORDS above SUBSCRIBE_CHANNEL_CAP",
+        delivered.len()
+    );
+
+    // --- everything below holds with NO event ever produced ----------------
+
+    // The burst terminates on an update the subscriber is guaranteed to see,
+    // and it is the *last* thing delivered — not buried mid-stream.
+    let (end_idx, end) = delivered
+        .iter()
+        .enumerate()
+        .find(|(_, u)| u.snapshot_end)
+        .expect(
+            "the burst must deliver its final snapshot even when it overran the sink — \
+             otherwise a static subscription can never tell truncated from complete",
+        );
+    assert_eq!(
+        end_idx,
+        delivered.len() - 1,
+        "the snapshot_end update must be the last one delivered"
+    );
+    assert_eq!(
+        delivered.iter().filter(|u| u.snapshot_end).count(),
+        1,
+        "exactly one update may close the burst"
+    );
+
+    // It is genuinely the burst's last record, so "initial state complete"
+    // means what it says.
+    assert_eq!(
+        end.topic.as_deref(),
+        Some(format!("rec.{SNAPSHOT_RECORDS}").as_str())
+    );
+    assert_eq!(&*end.data, format!("snap#{SNAPSHOT_RECORDS}").as_bytes());
+
+    // What landed before it is the contiguous head of the burst; all the loss
+    // is folded into the closing update.
+    for (i, update) in delivered[..end_idx].iter().enumerate() {
+        assert_eq!(
+            update.topic.as_deref(),
+            Some(format!("rec.{}", i + 1).as_str()),
+            "snapshot {i} should carry its concrete record topic, in burst order"
+        );
+        assert_eq!(&*update.data, format!("snap#{}", i + 1).as_bytes());
+        assert_eq!(
+            update.skipped, 0,
+            "the delivered head of the burst is contiguous"
+        );
+    }
+    assert!(
+        end.skipped > 0,
+        "this burst overran the sink, so the closing update must report the loss"
+    );
+
+    // The whole point, stated as a balance the consumer can compute itself,
+    // without waiting for anything further: every matched record is either
+    // delivered or accounted for as skipped.
+    let reported: u64 = delivered.iter().map(|u| u.skipped).sum();
+    assert_eq!(
+        delivered.len() as u64 + reported,
+        SNAPSHOT_RECORDS as u64,
+        "every matched record must be either delivered or reported lost"
+    );
+
+    // --- and the sequence is closed, so live events resume clean ------------
+    event_tx
+        .send(SubUpdate::new(payload_from("live")))
+        .expect("subscription stream should still be feeding");
+    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("the live event must arrive")
+        .expect("stream must still be open")
+        .expect("a live event must not be a terminal error");
+
+    assert_eq!(&*event.data, b"live");
+    assert!(!event.snapshot_end, "a live event does not close a burst");
+    assert_eq!(
+        event.skipped, 0,
+        "the closing snapshot already accounted for the burst; the event adds no phantom gap"
+    );
 
     drop(handle);
     drop(stream);
@@ -476,8 +756,7 @@ async fn ended_subscription_frees_its_cap_slot() {
             max_reconnect_delay: 10,
             max_reconnect_attempts: 0,
             keepalive_interval: None,
-            max_offline_queue: usize::MAX,
-            topic_routed_subs: false,
+            max_offline_queue: 1024,
             sends_hello: false,
         },
         Arc::new(TestClock),
@@ -486,13 +765,17 @@ async fn ended_subscription_frees_its_cap_slot() {
 
     // Drain a subscription's three echo updates; the server-side stream then
     // ends, so its pump finishes and is reaped.
-    async fn drain_three(stream: &mut BoxStream<'static, Payload>, topic: &str) {
+    async fn drain_three(
+        stream: &mut BoxStream<'static, Result<SubUpdate, RpcError>>,
+        topic: &str,
+    ) {
         for i in 1..=3 {
             let ev = tokio::time::timeout(Duration::from_secs(2), stream.next())
                 .await
                 .expect("event should arrive")
-                .expect("an accepted subscription must yield its events");
-            assert_eq!(&*ev, format!("{topic}#{i}").as_bytes());
+                .expect("an accepted subscription must yield its events")
+                .expect("an accepted subscription must not be rejected");
+            assert_eq!(&*ev.data, format!("{topic}#{i}").as_bytes());
         }
     }
 
@@ -513,8 +796,8 @@ async fn ended_subscription_frees_its_cap_slot() {
         .await
         .expect("third subscribe must not hang");
     assert_eq!(
-        first.as_deref(),
-        Some(&b"c#1"[..]),
+        first.map(|u| u.expect("third subscribe must be accepted").data.to_vec()),
+        Some(b"c#1".to_vec()),
         "an ended subscription must free its cap slot; the third subscribe was refused"
     );
 
@@ -524,4 +807,201 @@ async fn ended_subscription_frees_its_cap_slot() {
     drop(c);
     let _ = client.await;
     server.abort();
+}
+
+// ===========================================================================
+// Abandoned calls (Layer 4) — a peer that keeps the link open but never replies
+// ===========================================================================
+
+/// Engine config for the silent-peer tests: one connection, no redial, no
+/// keepalive, so the only thing under test is the pending-call bookkeeping.
+fn silent_peer_config() -> ClientConfig {
+    ClientConfig {
+        reconnect: false,
+        keepalive_interval: None,
+        ..Default::default()
+    }
+}
+
+/// Read the next `REQ` frame the client engine put on the wire, as
+/// `(id, method, params)`.
+async fn read_request(peer: &mut Box<dyn Connection>) -> (u64, String, String) {
+    let frame = tokio::time::timeout(Duration::from_secs(2), peer.recv())
+        .await
+        .expect("the client must send its request")
+        .expect("the pipe must stay open")
+        .expect("the pipe must stay open");
+    let text = String::from_utf8(frame).expect("test frames are utf-8");
+    let mut parts = text.splitn(4, '\n');
+    assert_eq!(
+        parts.next(),
+        Some("REQ"),
+        "expected a request frame: {text}"
+    );
+    let id = parts
+        .next()
+        .and_then(|id| id.parse().ok())
+        .expect("request id");
+    let method = parts.next().expect("request method").to_string();
+    (id, method, parts.next().unwrap_or("").to_string())
+}
+
+/// Callers that time out and drop their `call` future must not accumulate in
+/// the engine's pending-call map.
+///
+/// A `Reply` or a disconnect used to be the only things that removed an entry,
+/// so a peer holding the connection open while never answering (the shape the
+/// WASM bridge's `query_timeout_ms` produces) cost one live `oneshot::Sender`
+/// per timed-out request for the life of the connection. Each abandoned call now
+/// cancels itself by id; the emptying of the table is asserted in the engine's
+/// own unit tests (`session::client::tests`), which can see it. This drives the
+/// same path end-to-end and pins the property the reclaim must not break —
+/// reply correlation still works afterwards.
+#[tokio::test]
+async fn repeated_call_timeouts_leave_the_connection_usable() {
+    let (mut listener, dialer) = transport_pair();
+    let (handle, client_fut) =
+        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let client = tokio::spawn(client_fut);
+    // The test *is* the peer: it reads every request and answers only the last.
+    let mut peer = listener.accept().await.expect("the client must dial");
+
+    for i in 0..64 {
+        let call = handle.call("hang", payload_from(&format!("{i}")));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), call)
+                .await
+                .is_err(),
+            "an unanswered call must not resolve"
+        );
+        let (_, method, _) = read_request(&mut peer).await;
+        assert_eq!(method, "hang", "each request must still reach the peer");
+    }
+
+    // The demux survived the reclaim sweeps: a call the peer *does* answer
+    // resolves with its own reply, so no live entry was pruned by mistake.
+    let answered = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.call("ping", payload_from("hi")).await }
+    });
+    let (id, method, params) = read_request(&mut peer).await;
+    assert_eq!((method.as_str(), params.as_str()), ("ping", "hi"));
+    peer.send(format!("REPLY\n{id}\nOK\npong").as_bytes())
+        .await
+        .expect("the pipe must stay open");
+    let reply = tokio::time::timeout(Duration::from_secs(2), answered)
+        .await
+        .expect("the answered call must resolve")
+        .expect("the call task must not panic")
+        .expect("the peer replied with OK");
+    assert_eq!(&*reply, b"pong");
+
+    drop(handle);
+    drop(peer);
+    let _ = client.await;
+}
+
+/// A call abandoned while its command still sits in the engine's queue is
+/// dropped instead of dialed out: nobody is left to receive the reply, so the
+/// request would only make the peer do work whose answer is discarded.
+#[tokio::test]
+async fn a_call_abandoned_before_dispatch_is_never_sent() {
+    let (mut listener, dialer) = transport_pair();
+    let (handle, client_fut) =
+        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+
+    // Zero deadline: `timeout` polls the call once — enough to enqueue the
+    // command — then gives up and drops it, all before the engine is driven.
+    assert!(
+        tokio::time::timeout(Duration::ZERO, handle.call("ghost", payload_from("x")))
+            .await
+            .is_err(),
+        "the call must be abandoned before the engine dequeues it"
+    );
+
+    let client = tokio::spawn(client_fut);
+    let mut peer = listener.accept().await.expect("the client must dial");
+
+    let answered = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.call("real", payload_from("hi")).await }
+    });
+    let (id, method, _) = read_request(&mut peer).await;
+    assert_eq!(
+        method, "real",
+        "an abandoned call must not be sent to the peer"
+    );
+    peer.send(format!("REPLY\n{id}\nOK\npong").as_bytes())
+        .await
+        .expect("the pipe must stay open");
+    let reply = tokio::time::timeout(Duration::from_secs(2), answered)
+        .await
+        .expect("the answered call must resolve")
+        .expect("the call task must not panic")
+        .expect("the peer replied with OK");
+    assert_eq!(&*reply, b"pong");
+
+    drop(handle);
+    drop(peer);
+    let _ = client.await;
+}
+
+/// The concurrent shape of the same regression: every call is in flight (so
+/// none is reclaimable) and the whole batch then times out at once, with no
+/// later call and no keepalive to drive a sweep. Each abandoned call carries its
+/// own cancellation, so the engine frees all of them and stays usable.
+#[tokio::test]
+async fn a_concurrent_batch_of_timeouts_leaves_the_connection_usable() {
+    const BATCH: usize = 256;
+    let (mut listener, dialer) = transport_pair();
+    let (handle, client_fut) =
+        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let client = tokio::spawn(client_fut);
+    let mut peer = listener.accept().await.expect("the client must dial");
+
+    let batch: Vec<_> = (0..BATCH)
+        .map(|i| {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::timeout(
+                    Duration::from_millis(50),
+                    handle.call("hang", payload_from(&format!("{i}"))),
+                )
+                .await
+            })
+        })
+        .collect();
+
+    // Every request reaches the peer while its caller is still waiting.
+    for _ in 0..BATCH {
+        let (_, method, _) = read_request(&mut peer).await;
+        assert_eq!(method, "hang", "each request must reach the peer");
+    }
+    for task in batch {
+        assert!(
+            task.await.expect("the call task must not panic").is_err(),
+            "an unanswered call must not resolve"
+        );
+    }
+
+    // Correlation is intact after the batch was reclaimed.
+    let answered = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.call("ping", payload_from("hi")).await }
+    });
+    let (id, method, params) = read_request(&mut peer).await;
+    assert_eq!((method.as_str(), params.as_str()), ("ping", "hi"));
+    peer.send(format!("REPLY\n{id}\nOK\npong").as_bytes())
+        .await
+        .expect("the pipe must stay open");
+    let reply = tokio::time::timeout(Duration::from_secs(2), answered)
+        .await
+        .expect("the answered call must resolve")
+        .expect("the call task must not panic")
+        .expect("the peer replied with OK");
+    assert_eq!(&*reply, b"pong");
+
+    drop(handle);
+    drop(peer);
+    let _ = client.await;
 }

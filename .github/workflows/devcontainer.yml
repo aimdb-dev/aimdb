@@ -125,6 +125,23 @@ jobs:
             pkg-config --version
           "
 
+      - name: Test headless browser toolchain
+        run: |
+          docker run --rm aimdb-devcontainer:test bash -c '
+            set -e
+            google-chrome --version
+            chromedriver --version
+            # wasm-bindgen-test drives Chrome through chromedriver, which refuses a
+            # browser from a different major version.
+            chrome_major="$(google-chrome --version | sed -E "s/[^0-9]*([0-9]+).*/\1/")"
+            driver_major="$(chromedriver --version | sed -E "s/[^0-9]*([0-9]+).*/\1/")"
+            [ "$chrome_major" = "$driver_major" ] || {
+              echo "Chrome $chrome_major and chromedriver $driver_major disagree"; exit 1;
+            }
+            [ "$CHROMEDRIVER" = /usr/local/bin/chromedriver ]
+            google-chrome --headless --no-sandbox --disable-gpu --dump-dom about:blank >/dev/null
+          '
+
       - name: Test user permissions
         run: |
           docker run --rm aimdb-devcontainer:test bash -c "

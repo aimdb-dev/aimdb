@@ -1,10 +1,10 @@
 //! Schema-name registry for [`Streamable`] types.
 //!
 //! Built incrementally via [`StreamableRegistry::register::<T>()`] at connector
-//! construction time. It exists only to answer `list_topics` (resolve an
-//! outbound topic's `TypeId` → schema name) and to reject schema-name
-//! collisions. The actual record (de)serialization lives in the link routes'
-//! serializer/deserializer, not here.
+//! construction time. It resolves a record's `TypeId` → schema name so the
+//! dispatch can stamp schema names onto `record.list` rows, and rejects
+//! schema-name collisions. The actual record (de)serialization lives in the link
+//! routes' serializer/deserializer, not here.
 
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use aimdb_data_contracts::Streamable;
 pub(crate) struct StreamableRegistry {
     /// Schema name → `TypeId` (collision detection on `register`).
     name_to_type_id: HashMap<&'static str, TypeId>,
-    /// `TypeId` → schema name (outbound topic → schema for `list_topics`).
+    /// `TypeId` → schema name (resolved onto `record.list` rows).
     type_id_to_name: HashMap<TypeId, &'static str>,
 }
 
@@ -47,9 +47,14 @@ impl StreamableRegistry {
         Ok(())
     }
 
-    /// Resolve a `TypeId` to its registered schema name.
-    pub fn resolve_name(&self, type_id: &TypeId) -> Option<&'static str> {
-        self.type_id_to_name.get(type_id).copied()
+    /// Every registered schema keyed by the record's `type_id` string (matching
+    /// `RecordMetadata::type_id`), so the dispatch can stamp schema names onto
+    /// the `record.list` rows it gets back from core.
+    pub fn schema_by_type_id(&self) -> HashMap<String, String> {
+        self.type_id_to_name
+            .iter()
+            .map(|(type_id, name)| (format!("{type_id:?}"), name.to_string()))
+            .collect()
     }
 }
 
@@ -58,6 +63,14 @@ mod tests {
     use super::*;
     use aimdb_data_contracts::SchemaType;
     use serde::{Deserialize, Serialize};
+
+    /// Look up a type's resolved schema name via the public map, keyed the same
+    /// way `RecordMetadata::type_id` is rendered.
+    fn resolved<T: 'static>(reg: &StreamableRegistry) -> Option<String> {
+        reg.schema_by_type_id()
+            .get(&format!("{:?}", TypeId::of::<T>()))
+            .cloned()
+    }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct TestSensor {
@@ -86,16 +99,13 @@ mod tests {
     fn register_and_resolve_name() {
         let mut reg = StreamableRegistry::new();
         reg.register::<TestSensor>().unwrap();
-        assert_eq!(
-            reg.resolve_name(&TypeId::of::<TestSensor>()),
-            Some("test_sensor")
-        );
+        assert_eq!(resolved::<TestSensor>(&reg).as_deref(), Some("test_sensor"));
     }
 
     #[test]
     fn unknown_type_resolves_to_none() {
         let reg = StreamableRegistry::new();
-        assert_eq!(reg.resolve_name(&TypeId::of::<u32>()), None);
+        assert_eq!(resolved::<u32>(&reg), None);
     }
 
     #[test]
@@ -103,10 +113,7 @@ mod tests {
         let mut reg = StreamableRegistry::new();
         reg.register::<TestSensor>().unwrap();
         reg.register::<TestSensor>().unwrap();
-        assert_eq!(
-            reg.resolve_name(&TypeId::of::<TestSensor>()),
-            Some("test_sensor")
-        );
+        assert_eq!(resolved::<TestSensor>(&reg).as_deref(), Some("test_sensor"));
     }
 
     #[test]
@@ -135,12 +142,9 @@ mod tests {
         let mut reg = StreamableRegistry::new();
         reg.register::<TestSensor>().unwrap();
         reg.register::<TestActuator>().unwrap();
+        assert_eq!(resolved::<TestSensor>(&reg).as_deref(), Some("test_sensor"));
         assert_eq!(
-            reg.resolve_name(&TypeId::of::<TestSensor>()),
-            Some("test_sensor")
-        );
-        assert_eq!(
-            reg.resolve_name(&TypeId::of::<TestActuator>()),
+            resolved::<TestActuator>(&reg).as_deref(),
             Some("test_actuator")
         );
     }

@@ -1,4 +1,4 @@
-//! Layer 1.3 (doc 039-validation) — full **AimDB ↔ AimDB over a real WebSocket**.
+//! Full **AimDB ↔ AimDB over a real WebSocket**.
 //!
 //! A server `AimDb` (served by `WebSocketConnector`) and a client `AimDb` (whose
 //! records carry `ws-client://` links via `WsClientConnector`). This exercises the

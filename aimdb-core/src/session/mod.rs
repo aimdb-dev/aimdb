@@ -35,6 +35,9 @@ mod server;
 #[cfg(all(feature = "connector-session", feature = "remote"))]
 pub mod aimx;
 
+mod topic_match;
+pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
+
 #[cfg(feature = "connector-session")]
 pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
@@ -60,6 +63,63 @@ pub type BoxStream<'a, T> = Pin<Box<dyn Stream<Item = T> + Send + 'a>>;
 /// path, with structured (`serde_json::Value`) conversion only where a handler
 /// inspects them.
 pub type Payload = Arc<[u8]>;
+
+/// One update delivered on a subscription stream (server [`Session::subscribe`]
+/// and client [`ClientHandle::subscribe`] alike).
+///
+/// `topic` names the concrete record that fired — `Some` on wildcard
+/// subscriptions, which fan in many records under one subscription id (and on
+/// any transport that tags every event, like the WS bus); `None` where the
+/// subscription is exact-topic and the wire stays minimal. `Arc<str>` so
+/// per-event tagging is a refcount bump, not a string allocation.
+#[derive(Clone, Debug)]
+pub struct SubUpdate {
+    /// Concrete record topic that fired, when the producer side tags it.
+    pub topic: Option<Arc<str>>,
+    /// The serialized record value.
+    pub data: Payload,
+    /// Count of skipped records
+    pub skipped: u64,
+    /// Set on the last update of the late-join snapshot burst, carrying its total `skipped`
+    pub snapshot_end: bool,
+}
+
+impl SubUpdate {
+    /// An untagged update (exact-topic subscription).
+    pub fn new(data: Payload) -> Self {
+        Self {
+            topic: None,
+            data,
+            skipped: 0,
+            snapshot_end: false,
+        }
+    }
+
+    /// A topic-tagged update (wildcard / bus subscription).
+    pub fn tagged(topic: Arc<str>, data: Payload) -> Self {
+        Self {
+            topic: Some(topic),
+            data,
+            skipped: 0,
+            snapshot_end: false,
+        }
+    }
+
+    /// Mark that `n` updates were lost on this subscription immediately before
+    /// this one (`0` leaves the update lossless). Builder form so the server's
+    /// subscribe-stream fold can attach a buffer's `BufferLagged` count.
+    pub fn with_skipped(mut self, n: u64) -> Self {
+        self.skipped = n;
+        self
+    }
+
+    /// Mark this update as the last of the late-join snapshot burst (see
+    /// [`snapshot_end`](Self::snapshot_end)).
+    pub fn with_snapshot_end(mut self) -> Self {
+        self.snapshot_end = true;
+        self
+    }
+}
 
 /// Result of a transport-layer operation.
 pub type TransportResult<T> = Result<T, TransportError>;
@@ -185,6 +245,12 @@ pub enum RpcError {
     Denied,
     /// The handler failed.
     Internal,
+    /// The peer's declared protocol version is incompatible with this server's
+    /// [`PROTOCOL_VERSION`](crate::remote::PROTOCOL_VERSION). Raised at the
+    /// handshake so an old-version client is refused fast, rather than
+    /// completing `hello` and tripping over the new reply/event shapes on its
+    /// first call.
+    VersionMismatch,
 }
 
 /// Authentication failure raised by [`Dispatch::authenticate`].
@@ -249,11 +315,30 @@ pub enum Outbound<'a> {
         sub: &'a str,
         /// Monotonic sequence number.
         seq: u64,
+        /// Concrete record topic that fired, when the subscription tags it
+        /// (wildcard subscriptions fan in many records — see [`SubUpdate`]).
+        topic: Option<&'a str>,
         /// Unparsed record value.
         data: Payload,
     },
     /// An initial snapshot emitted when a subscription opens (late-join).
     Snapshot {
+        /// Subscription id the snapshot belongs to, so the client demux routes
+        /// it like an [`Event`](Outbound::Event) (a wildcard subscription's
+        /// snapshots carry topics that don't string-match the pattern key).
+        sub: &'a str,
+        /// Monotonic sequence number, in the **same space** as this
+        /// subscription's [`Event`](Outbound::Event)s: the burst is numbered
+        /// `1..=N` and the first event continues at `N + 1`. So a snapshot lost
+        /// anywhere between here and the subscriber surfaces as a gap in the
+        /// next delivered update's [`SubUpdate::skipped`].
+        seq: u64,
+        /// Set on the last snapshot of the burst, so the loss total lands on an
+        /// update the subscriber is *guaranteed* to see. Without it a burst
+        /// truncated at its tail would stay silent until some later event
+        /// happened to close the sequence — which on a static subscription may
+        /// be never. The client engine reserves a sink slot for this frame.
+        last: bool,
         /// Topic the snapshot is for.
         topic: &'a str,
         /// Unparsed record value.
@@ -350,25 +435,48 @@ pub trait Session: Send {
         params: Payload,
     ) -> BoxFut<'a, Result<Payload, RpcError>>;
 
-    /// Open a subscription yielding many payloads. The stream is `'static` (it
-    /// captures cloned handles) so it outlives the `&mut` borrow and lives in the
-    /// engine. Async so a connector can await per-operation authorization.
+    /// Open a subscription yielding many [`SubUpdate`]s. The stream is `'static`
+    /// (it captures cloned handles) so it outlives the `&mut` borrow and lives in
+    /// the engine. Async so a connector can await per-operation authorization.
     /// Defaulted to [`RpcError::NotFound`] for dispatches with no streaming.
     fn subscribe<'a>(
         &'a mut self,
         topic: &'a str,
-    ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
         let _ = topic;
         Box::pin(async { Err(RpcError::NotFound) })
     }
 
-    /// Late-join snapshot: the current value for `topic`, emitted as an
+    /// Late-join snapshots: one `(topic, value)` per record covered by `topic`
+    /// (several for a wildcard subscription), each emitted as an
     /// [`Outbound::Snapshot`] right after a successful
-    /// [`subscribe`](Session::subscribe) and before the first event. Defaulted to
-    /// `None` (no snapshot).
-    fn snapshot(&mut self, topic: &str) -> Option<Payload> {
+    /// [`subscribe`](Session::subscribe) and before the first event. Defaulted
+    /// to empty (no snapshots).
+    ///
+    /// The engine numbers the returned burst `1..=N` and starts the event
+    /// stream at `N + 1`, so "one snapshot per matched record" is *auditable*
+    /// downstream rather than merely intended: any snapshot dropped in transit
+    /// shows up as [`SubUpdate::skipped`] on the next delivered update.
+    ///
+    /// The burst's last snapshot is flagged, reaching the subscriber as the one
+    /// update with [`SubUpdate::snapshot_end`] set — the client engine reserves
+    /// a sink slot so it lands even when the rest of the burst overran a slow
+    /// consumer. Its `skipped` then carries the burst's whole loss, letting a
+    /// subscriber distinguish a complete initial state from a truncated one
+    /// *without* waiting for a live event, which a static subscription may
+    /// never produce.
+    ///
+    /// That covers the slow consumer, which is the case worth engineering for,
+    /// but it is not an unconditional promise and a subscriber must not *block*
+    /// on it: no such update arrives when `topic` matches no records (there is
+    /// no burst), nor when the final snapshot fails to encode or its frame is
+    /// rejected as malformed — the flag rides that frame and is lost with it.
+    /// Loss accounting itself survives all of these (the shortfall still folds
+    /// into the next delivered update's `skipped`); only the end-of-burst
+    /// signal is missing. Treat end-of-stream as terminal too.
+    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
         let _ = topic;
-        None
+        Vec::new()
     }
 
     /// Fire-and-forget write: no reply. Routes through the producer/arbiter path,
@@ -494,7 +602,7 @@ mod tests {
         fn subscribe<'a>(
             &'a mut self,
             _topic: &'a str,
-        ) -> BoxFut<'a, Result<BoxStream<'static, Payload>, RpcError>> {
+        ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
             unimplemented!()
         }
         fn write<'a>(

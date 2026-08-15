@@ -47,8 +47,7 @@ remote = ["alloc", "serde_json"]
 # `run_session`), the proactive client (`run_client`/`pump_client`), the
 # `pump_sink`/`pump_source` data plane, and the generic session connectors. Engine
 # logic included; all compiles on `no_std + alloc`. The AimX protocol port
-# (`session::aimx`) additionally needs `remote-access`. See the design doc:
-# docs/design/remote-access-via-connectors.md.
+# (`session::aimx`) additionally needs `remote-access`.
 connector-session = ["alloc"]
 
 # Observability features (available on both std/no_std)
@@ -73,7 +72,7 @@ aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
 # `async-await-macro` enables the `select_biased!` macro the runtime-neutral
-# session engines use (Phase 5; it pulls in `futures-macro` + `async-await`);
+# session engines use (it pulls in `futures-macro` + `async-await`);
 # `alloc` covers the combinators (`fuse`, `select_next_some`). All no_std-
 # compatible — no `std`/`tokio` enters the engine compile path.
 futures-util = { version = "0.3", default-features = false, features = [
@@ -97,8 +96,8 @@ serde = { workspace = true, optional = true }
 thiserror = { version = "2.0.16", default-features = false }
 anyhow = { workspace = true, optional = true }
 # `raw_value` lets the connector-session `EnvelopeCodec` splice an already-
-# serialized record-value `Payload` into a JSON envelope without re-escaping
-# (037 Decision 1). Only compiled when `serde_json` is pulled in (std /
+# serialized record-value `Payload` into a JSON envelope without re-escaping.
+# Only compiled when `serde_json` is pulled in (std /
 # remote); the no_std `connector-session` contracts build never sees it.
 serde_json = { workspace = true, optional = true, features = ["raw_value"] }
 

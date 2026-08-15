@@ -7,6 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 047: one protocol (AimX) for every transport
+
+- **Wildcard / multi-record subscribe.** `Inbound::Subscribe` topics may carry
+  MQTT-style wildcards (`#`, `*`): `AimxDispatch` matches the pattern against
+  the registry once at subscribe time (the record set is builder-frozen),
+  merges the matched records' update streams under the one subscription id,
+  and emits one late-join `Snapshot` per matched record. The matcher moved in
+  from the retired `aimdb-ws-protocol` crate as
+  `session::topic_match::{topic_matches, is_wildcard}` (re-exported at the
+  crate root), alongside a new `pattern_contains(grant, requested)` — pattern
+  *containment* (grant's match set ⊇ requested's), the check an ACL needs when
+  the requested subscription is itself a wildcard (see the WS connector's
+  subscribe-ACL fix).
+- **AimX version handshake.** New `remote::{VERSION_PARAM, ws_url_with_version}`
+  carry the WS upgrade-URL version contract (`?v=3.0`) that the WS server gates
+  on; `version_compatible` is now also re-exported from `remote` for reuse by
+  transports that check the version out-of-band.
+- **Subscription streams carry the firing record.** `Session::subscribe` and
+  `ClientHandle::subscribe` now yield `SubUpdate { topic: Option<Arc<str>>,
+  data: Payload }` instead of bare `Payload`; `Outbound::Event` gains an
+  optional `topic` and `Outbound::Snapshot` gains the routing `sub` (frames
+  without them are unchanged on the wire). `Session::snapshot` became
+  `Session::snapshots(topic) -> Vec<(String, Payload)>` (one per covered
+  record).
+- **Late-join snapshots are sequence-numbered, terminated, and no longer lost
+  silently.** `Outbound::Snapshot` gains a required `seq` in the *same* space as
+  the subscription's events (`run_session` numbers the burst `1..=N`,
+  `pump_subscription` continues at `N + 1`) plus a `last` flag on the burst's
+  final frame. The client demux routes snapshots through the identical gap
+  accounting as events, so one that overruns the consumer's
+  `SUBSCRIBE_CHANNEL_CAP`-bounded sink is reported as `SubUpdate::skipped`.
+  Previously the client discarded the snapshot `try_send` result and snapshots
+  carried no `seq`, so a wildcard subscription over more than 256 matched
+  records silently delivered only 256, with no error and no gap — quietly
+  breaking "one snapshot per matched record".
+
+  Because a gap only reaches a subscriber on an update that is *actually
+  delivered*, mid-burst snapshots now stop one slot short of filling the sink,
+  reserving it for the flagged final snapshot — which therefore survives an
+  overrun, arriving as the single update with the new `SubUpdate::snapshot_end`
+  set and carrying the burst's whole loss count. A subscriber can tell a
+  complete initial state from a truncated one the moment the burst ends, without
+  waiting for a live event that a *static* subscription may never produce.
+
+  The flag is not an unconditional promise, so do not *block* on it: it rides
+  the final snapshot's frame and is lost with it if that frame fails to encode
+  or is rejected as malformed, and a `topic` matching no records emits no burst
+  at all. Loss accounting survives all of these — only the end-of-burst signal
+  goes missing.
+
+  Also fixes two smaller leaks on that path: a snapshot dropped by an encode
+  failure is now counted as loss (and logged, rather than skipped in silence),
+  and a snapshot for a subscription whose receiver is gone now prunes the sub
+  instead of lingering.
+
+  Wire: `snap` frames carry `"seq"` (one without it is `Malformed`) and the
+  burst's last frame adds `"last":true`; mid-burst frames are byte-identical to
+  before. API: `SubUpdate` gains the `snapshot_end` field and a
+  `with_snapshot_end()` builder.
+- **`AimxCodec` learned the `subscribed` ack frame** (`{"t":"subscribed",
+  "sub":S}`) for servers running `acks_subscribe:true` (the WebSocket
+  connector); UDS/serial/TCP keep the implicit ack. A dedicated `AimxCodec`
+  roundtrip suite now locks the frame set.
+- **`ClientConfig::topic_routed_subs` removed** — it existed solely for the
+  retired ws wire; all subscriptions are id-routed.
+- **Shared query/list vocabulary.** New `remote::QueryRecord { topic, payload,
+  ts }` is the canonical `record.query` result row (result shape
+  `{records, total}`); `RecordMetadata` gains optional `schema_type` /
+  `entity` fields (`entity` derived from the record key's final `.` segment).
+  New `remote::QUERY_ALL_PATTERN` (`"#"`) is the pattern a `record.query` with
+  no `name` resolves to, shared by every transport's dispatch so one request
+  cannot mean different record sets on different links. The generic
+  `AimxDispatch` previously defaulted to `"*"`, which under the MQTT grammar
+  spans exactly one dot-separated segment — so the same name-less query
+  returned every record over WebSocket but silently omitted nested ones over
+  UDS/serial/TCP.
+- **`ClientConfig::max_offline_queue` is now the command channel's capacity.**
+  The channel is `async_channel::bounded` and `enqueue` uses `force_send`, so a
+  full channel evicts its oldest and the bound holds across cloned
+  `ClientHandle`s without an admission lock. Default `usize::MAX` → **256**,
+  clamped to `1..=8192`: the ring is preallocated, so zero could never deliver
+  and `usize::MAX` would abort rather than mean "unbounded". An evicted `call`
+  resolves `RpcError::Internal`; an evicted `subscribe` ends its stream.
+  A cancellation is never the command evicted to make room: `CancelOnDrop` uses
+  a plain `try_send`, so abandoning a call cannot displace a caller's queued
+  `Write`.
+- **An evicted `CancelCall` no longer re-opens the pending-call leak.** Making
+  the channel evict-oldest put cancellation on the same lossy footing as data,
+  and `enqueue` discarded the evictee unexamined — so a `Write` behind a queued
+  cancellation could displace it, stranding that call's entry until the
+  connection ended (the leak cancel-safety exists to close, below in *Fixed*).
+  A lost cancellation now degrades to a *prune* signal and the engine reclaims
+  by inspection (`oneshot::Sender::is_canceled` identifies the abandoned set
+  exactly). The sweep is idempotent, so one signal covers any number of losses;
+  it is `O(N)` but reached only from the eviction path, leaving `O(1)` by-id
+  removal as the common case.
+
+### Performance
+
+- **Subscribe path carries JSON bytes, not a `serde_json::Value` tree.**
+  `stream_record_updates` now reads owned JSON bytes (`recv_json_bytes`) and
+  yields `(Payload, u64)`, so a record update flows buffer → wire without the
+  parse-into-`Value`-then-re-serialize round-trip the dispatch layer used to
+  pay per update (removing the intermediate `serde_json::Value`).
+  The `remote_json` subscription-event benchmark measures the direct-bytes path
+  at ~2× the throughput of the former tree path. No wire or API change — the
+  `skipped` loss signal still rides each `SubUpdate`.
+
 ### Added
 
 - **Issue #196 — direct JSON bytes for type-erased remote reads.** The public
@@ -40,7 +148,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A peer's `seq` can no longer crash the client demux or invent a gap (`run_client`).** Subscription loss accounting computed `seq - (last_seq + 1)`, and `seq` arrives off the wire unvalidated. Two consequences: after an update with `seq == u64::MAX`, the *next* frame overflowed `last_seq + 1` — a debug-build panic, a wrapped nonsense gap in release — so one crafted frame was enough to take down a debug client. And a repeated or reordered `seq` rewound the cursor to the lower value, making the following valid frame report a gap that never happened (seq `1, 3, 2, 4` reported a phantom loss on the `4`). The arithmetic now saturates and the cursor only ever advances; an out-of-order frame is still delivered — dropping it would discard data over a number — but cannot rewind. Everything downstream of `SubUpdate::skipped` is affected: the CLI's `watch` warnings, `WsBridge`'s `onGap`/`droppedUpdates()`, and any `aimdb-client` subscriber.
+- **A non-terminal `#` no longer matches everything after it (`topic_matches`, `pattern_contains`).** Both walks returned `true` the moment they saw a `#`, so every segment following it was dead text: `topic_matches("a.#.secret", "a.public")` and `pattern_contains("a.#.secret", "a.public")` were both `true`, despite the module documenting `#` as usable at any position. On the ACL path this widened coverage — a `Permissions::can_subscribe` grant of that shape behaved like a blanket `a.#` grant over the whole subtree. `#` now absorbs **zero or more** segments with the pattern continuing afterwards (RabbitMQ topic-exchange semantics, as documented), so `a.#.secret` matches `a.secret` and `a.b.secret` but not `a.public`. Both functions share one greedy walk that retains a single `#` backtrack point, bounding it at `O(|pattern| · |subject|)` — relevant because `pattern_contains`'s subject is the client-supplied subscription pattern. Grants and subscriptions using a trailing `#` (`a.#`, `#`) or `*` are unaffected; the change only ever tightens what an interior `#` admits.
 - **AimX protocol doc rot cleaned up; `remote::PROTOCOL_VERSION` corrected to `"2.0"` and exported.** The `remote` module docs claimed "AimX v1" and linked a spec file that no longer exists; they now describe the v2 NDJSON tagged-frame wire and point at `crate::session::aimx` / `docs/design/remote-access-via-connectors.md`. The AimX dispatch's Welcome uses the constant instead of a hardcoded `"2.0"` (same bytes on the wire). The dead, never-exported v1 `Message` untagged envelope and its helpers were removed from `remote::protocol`. Also de-advertised Kafka/HTTP connector semantics from `ConnectorUrl` docs (the parser is scheme-agnostic; those connectors never existed) and updated the `connector` module docs from the removed `.link()` API to `.link_to()`/`.link_from()`.
+- **An abandoned RPC call no longer leaks its pending-call entry (`run_client`).** Dropping a `ClientHandle::call` future — a timeout losing the race, an aborted task — dropped only the caller's `oneshot::Receiver`, which the engine could not observe: a peer that holds the connection open while never answering produces neither a `Reply` nor a disconnect, the only two things that removed an entry. The demux map therefore grew by one live `oneshot::Sender` per timed-out request for the life of the connection — the shape `aimdb-wasm-adapter`'s `query_timeout_ms` produces, and unbounded for a long-lived link against an unresponsive peer. `ClientHandle::call` is now **cancel-safe**: the dropped future emits an internal `CancelCall` naming its own request, and the engine frees the entry by id in `O(1)`. Reclamation is exact and immediate — it needs no later call, no keepalive tick (the fix holds with `keepalive_interval: None`), and no scan of the table, so a concurrent batch of timeouts costs `O(N)`, not `O(N²)`. A call abandoned while its command is still queued is additionally never dialed out: no wire request is spent on a reply nobody awaits.
+
+  To make that race-free, correlation ids move from the engine to `ClientHandle`: the id exists before the command is queued, so the cancellation that follows it on the same FIFO channel always names an entry the engine has already created (with engine-assigned ids there is a window in which the caller gives up before learning its id and has nothing to name). Calls and subscriptions draw from one shared `AtomicUsize` — `usize` rather than `u64` because 64-bit atomics are not native on every supported MCU (thumbv7em), which only bounds how many ids one process can issue, all of them JSON-safe. Wire-visible consequence: ids are **monotonic across reconnects** instead of restarting at `1` per connection, so a redial never reuses an id (`0` stays free as a "no correlation" sentinel). No protocol change — cancellation is engine-internal and the server is never asked to abandon in-flight work.
 - **`build()` reports a missing runtime alongside every other configuration error (issue #133 contract).** The missing-runtime check no longer short-circuits: it is collected as a `ConfigError` and returned in the one `DbError::InvalidConfiguration` with all other findings (previously the collected errors were silently dropped and only a `RuntimeError` surfaced). The error type for a runtime-less build changes accordingly from `DbError::RuntimeError` to `DbError::InvalidConfiguration`.
 
 ### Changed (breaking)

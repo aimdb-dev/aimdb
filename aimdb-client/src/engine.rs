@@ -27,7 +27,7 @@ use aimdb_core::session::{
 use aimdb_tokio_adapter::TokioAdapter;
 
 use crate::error::{ClientError, ClientResult};
-use crate::protocol::{RecordMetadata, WelcomeMessage};
+use crate::protocol::{version_compatible, RecordMetadata, WelcomeMessage, PROTOCOL_VERSION};
 
 /// Default deadline for the connect handshake (dial + `hello`/Welcome). Bounds
 /// the case where a peer accepts the socket but never replies — the engine has
@@ -44,6 +44,49 @@ pub struct DrainResponse {
     pub values: Vec<serde_json::Value>,
     /// Number of values returned.
     pub count: usize,
+}
+
+/// One update from a subscription: the record value, plus the delivery metadata
+/// the engine tracks alongside it.
+///
+/// One inbound frame yields exactly one of these, so [`skipped`](Self::skipped)
+/// and [`snapshot_end`](Self::snapshot_end) always describe the frame they
+/// arrive on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordUpdate {
+    /// Concrete record that fired. `Some` on wildcard subscriptions, which fan
+    /// in many records under one subscription; `None` when the server left the
+    /// event untagged (exact-topic subscribe).
+    pub topic: Option<String>,
+    /// The decoded record value, or `None` if the payload did not decode — a
+    /// malformed peer, since the server serializes record values as JSON.
+    ///
+    /// An undecodable frame is still delivered, so that
+    /// [`skipped`](Self::skipped) and [`snapshot_end`](Self::snapshot_end) stay
+    /// attached to the frame they describe, and so one bad record cannot end a
+    /// wildcard stream that fans in many.
+    pub value: Option<serde_json::Value>,
+    /// Updates lost between the previous delivered update and this one — `0`
+    /// when delivery was lossless. Non-zero means the server-side buffer
+    /// overran a slow consumer, so the value stream has a hole immediately
+    /// before this item.
+    pub skipped: u64,
+    /// Final update of a late-join snapshot burst: every update after it is a
+    /// live event. A burst that overran the sink carries its whole loss in
+    /// [`skipped`](Self::skipped) here.
+    ///
+    /// The engine reserves a sink slot for this update, so it arrives even from
+    /// a burst that overran — a subscription over static records may never fire
+    /// an event, and a consumer still has to tell a complete initial state from
+    /// a truncated one.
+    pub snapshot_end: bool,
+}
+
+impl RecordUpdate {
+    /// Whether updates were lost immediately before this one.
+    pub fn has_gap(&self) -> bool {
+        self.skipped > 0
+    }
 }
 
 /// A live connection to an AimDB instance over the shared session engine.
@@ -114,17 +157,38 @@ impl AimxConnection {
         let engine = tokio::spawn(engine_fut);
 
         let server_info = async {
-            let hello = json!({ "client": "aimdb-client" });
+            let hello = json!({ "client": "aimdb-client", "version": PROTOCOL_VERSION });
             let reply = timeout(connect_timeout, handle.call("hello", to_payload(&hello)?))
                 .await
                 .map_err(|_| ClientError::connection_failed(label, "handshake timed out"))?
-                .map_err(|_| {
-                    ClientError::connection_failed(
+                .map_err(|e| match e {
+                    // The server refused our declared version — report it as
+                    // such, not as an unreachable-engine failure.
+                    RpcError::VersionMismatch => ClientError::connection_failed(
+                        label,
+                        format!(
+                            "protocol version mismatch: server rejected client version {PROTOCOL_VERSION}"
+                        ),
+                    ),
+                    _ => ClientError::connection_failed(
                         label,
                         "handshake failed (engine could not reach server)",
-                    )
+                    ),
                 })?;
-            from_payload::<WelcomeMessage>(&reply)
+            let welcome = from_payload::<WelcomeMessage>(&reply)?;
+            // Reverse gate: a pre-3.x server ignores our `version` and completes
+            // the handshake with an old-shaped `welcome`. Detect that here so a
+            // new client fails fast instead of tripping over the old reply shapes.
+            if !version_compatible(&welcome.version) {
+                return Err(ClientError::connection_failed(
+                    label,
+                    format!(
+                        "protocol version mismatch: server speaks {}, client speaks {PROTOCOL_VERSION}",
+                        welcome.version
+                    ),
+                ));
+            }
+            Ok(welcome)
         }
         .await;
 
@@ -189,14 +253,34 @@ impl AimxConnection {
         Ok(serde_json::from_slice(&reply)?)
     }
 
-    /// Subscribe to a record's updates. Returns a stream of decoded JSON values;
-    /// the engine routes events back by the request id it owns, so there is no
-    /// `subscription_id` to track. Dropping the stream stops local delivery.
-    pub fn subscribe(&self, name: &str) -> ClientResult<BoxStream<'static, serde_json::Value>> {
-        let raw = self.handle.subscribe(name).map_err(rpc_err)?;
-        // Decode each Payload into a JSON value; drop any that fail to parse.
-        let decoded = raw.filter_map(|p| async move { serde_json::from_slice(&p).ok() });
-        Ok(Box::pin(decoded))
+    /// Subscribe to a record or topic pattern.
+    ///
+    /// Yields the full [`RecordUpdate`] — value, per-record topic,
+    /// [`skipped`](RecordUpdate::skipped) gap count and
+    /// [`snapshot_end`](RecordUpdate::snapshot_end) burst marker — so a consumer
+    /// that cares about completeness (a watcher, a mirror, an archiver) can see
+    /// what the engine dropped. One that only wants values drops the rest:
+    ///
+    /// ```ignore
+    /// let values = conn.subscribe("temp.vienna")?
+    ///     .filter_map(|r| futures::future::ready(r.ok().and_then(|u| u.value)));
+    /// ```
+    ///
+    /// Wildcards (`#`, `*`) are supported: one subscription fans in every
+    /// matching record, each update tagged with the record that fired. The
+    /// engine routes events back by the request id it owns, so there is no
+    /// `subscription_id` to track.
+    ///
+    /// A refused subscription — denied, or past the server's per-connection
+    /// limit — yields one `Err` item and then ends, so it stays distinguishable
+    /// from a clean end (disconnect, closed record), which is simply `None`.
+    /// Dropping the stream stops local delivery.
+    pub fn subscribe(
+        &self,
+        pattern: &str,
+    ) -> ClientResult<BoxStream<'static, Result<RecordUpdate, ClientError>>> {
+        let raw = self.handle.subscribe(pattern).map_err(rpc_err)?;
+        Ok(decode_updates(raw))
     }
 
     /// Fire-and-forget write to a record (no reply; routes through the server's
@@ -282,6 +366,44 @@ impl Drop for AimxConnection {
     }
 }
 
+/// Decode a raw engine subscription stream into [`RecordUpdate`]s.
+///
+/// One inbound frame in, one stream item out: an undecodable payload rides
+/// through as `value: None`, keeping `skipped` and `snapshot_end` attached to
+/// the frame they describe. A snapshot burst can close without any event
+/// following it, so metadata held back for a later update may never be
+/// delivered at all.
+///
+/// A terminal rejection yields one `Err` item and then ends the stream. The
+/// engine drops the sink after sending one, so the raw stream ends there
+/// anyway; the latch holds the contract regardless.
+fn decode_updates(
+    raw: BoxStream<'static, Result<aimdb_core::session::SubUpdate, RpcError>>,
+) -> BoxStream<'static, Result<RecordUpdate, ClientError>> {
+    let decoded = raw.scan(false, |terminated, item| {
+        if *terminated {
+            return futures::future::ready(None);
+        }
+        let out = match item {
+            Ok(u) => Ok(RecordUpdate {
+                topic: u.topic.as_deref().map(String::from),
+                // A decode failure means a malformed peer, since the server
+                // serializes record values as JSON — reported per item rather
+                // than fatal, so one bad record cannot end a wildcard stream.
+                value: serde_json::from_slice(&u.data).ok(),
+                skipped: u.skipped,
+                snapshot_end: u.snapshot_end,
+            }),
+            Err(e) => {
+                *terminated = true;
+                Err(rpc_err(e))
+            }
+        };
+        futures::future::ready(Some(out))
+    });
+    Box::pin(decoded)
+}
+
 /// Serialize a value into a record-value [`Payload`].
 fn to_payload<T: Serialize>(value: &T) -> ClientResult<Payload> {
     Ok(Payload::from(serde_json::to_vec(value)?.as_slice()))
@@ -306,5 +428,115 @@ fn rpc_err(e: RpcError) -> ClientError {
         RpcError::Denied => ClientError::server_error("denied", "permission denied", None),
         // `Internal` today, plus any future non-exhaustive variant.
         _ => ClientError::server_error("internal", "engine/transport failure", None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aimdb_core::session::SubUpdate;
+    use serde_json::json;
+
+    /// Build a raw engine stream from a fixed list of subscription items.
+    fn raw_stream(
+        items: Vec<Result<SubUpdate, RpcError>>,
+    ) -> BoxStream<'static, Result<SubUpdate, RpcError>> {
+        Box::pin(futures::stream::iter(items))
+    }
+
+    fn ok_update(payload: &str, skipped: u64) -> Result<SubUpdate, RpcError> {
+        Ok(SubUpdate::new(Payload::from(payload.as_bytes())).with_skipped(skipped))
+    }
+
+    /// Collect a decoded stream, unwrapping every item as a delivered update.
+    async fn decoded(items: Vec<Result<SubUpdate, RpcError>>) -> Vec<RecordUpdate> {
+        decode_updates(raw_stream(items))
+            .map(|r| r.expect("no terminal error in this stream"))
+            .collect()
+            .await
+    }
+
+    #[tokio::test]
+    async fn gap_counts_reach_the_caller() {
+        let out = decoded(vec![ok_update(r#"{"n":1}"#, 0), ok_update(r#"{"n":2}"#, 7)]).await;
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].value, Some(json!({ "n": 1 })));
+        assert_eq!(out[0].skipped, 0);
+        assert!(!out[0].has_gap());
+        assert_eq!(out[1].value, Some(json!({ "n": 2 })));
+        assert_eq!(out[1].skipped, 7, "the engine's gap count is preserved");
+        assert!(out[1].has_gap());
+    }
+
+    /// The burst's final update surfaces `snapshot_end` together with the loss
+    /// the burst accumulated.
+    #[tokio::test]
+    async fn snapshot_end_and_its_loss_reach_the_caller() {
+        let out = decoded(vec![
+            ok_update(r#"{"n":1}"#, 0),
+            Ok(SubUpdate::new(Payload::from(&b"{\"n\":2}"[..]))
+                .with_skipped(41)
+                .with_snapshot_end()),
+            ok_update(r#"{"n":3}"#, 0), // a live event, past the burst
+        ])
+        .await;
+
+        assert_eq!(out.len(), 3);
+        assert!(!out[0].snapshot_end);
+        assert!(out[1].snapshot_end, "the burst's final update is flagged");
+        assert_eq!(out[1].skipped, 41, "carrying the burst's whole loss");
+        assert!(!out[2].snapshot_end, "a live event does not close a burst");
+    }
+
+    /// A burst-final frame that fails to decode still closes the burst: it
+    /// arrives as `value: None` carrying its own `snapshot_end`. Nothing
+    /// follows it here, which is why the marker cannot ride a later update.
+    #[tokio::test]
+    async fn an_undecodable_burst_final_frame_still_closes_the_burst() {
+        let out = decoded(vec![
+            ok_update(r#"{"n":1}"#, 0),
+            Ok(SubUpdate::new(Payload::from(&b"not json"[..]))
+                .with_skipped(3)
+                .with_snapshot_end()),
+        ])
+        .await;
+
+        assert_eq!(out.len(), 2, "an undecodable frame is still delivered");
+        assert_eq!(out[1].value, None, "its payload did not decode");
+        assert!(
+            out[1].snapshot_end,
+            "burst completion must not depend on a later update that may never arrive"
+        );
+        assert_eq!(out[1].skipped, 3, "and its gap count stays exact");
+    }
+
+    #[tokio::test]
+    async fn topics_ride_along_and_rejection_ends_the_stream() {
+        let raw = raw_stream(vec![
+            Ok(
+                SubUpdate::tagged(Arc::from("temp.vienna"), Payload::from(&b"1"[..]))
+                    .with_skipped(2),
+            ),
+            Err(RpcError::Denied),
+            ok_update("99", 0), // past the terminal item — never delivered
+        ]);
+        let out: Vec<_> = decode_updates(raw).collect().await;
+
+        assert_eq!(out.len(), 2, "the rejection is the stream's last item");
+        let first = out[0].as_ref().expect("delivered update");
+        assert_eq!(first.topic.as_deref(), Some("temp.vienna"));
+        assert_eq!(first.value, Some(json!(1)));
+        assert_eq!(first.skipped, 2);
+
+        // The refusal is an `Err` item rather than a silent EOF, so a caller can
+        // tell it from a disconnect and fail instead of reporting a clean stop.
+        let err = out[1]
+            .as_ref()
+            .expect_err("the rejection reaches the caller");
+        assert!(
+            matches!(err, ClientError::ServerError { code, .. } if code == "denied"),
+            "unexpected terminal error: {err}"
+        );
     }
 }

@@ -28,7 +28,7 @@ use hashbrown::HashMap;
 
 use super::{
     BoxFut, BoxStream, Connection, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload,
-    RpcError, SessionLimits,
+    RpcError, SessionLimits, SubUpdate,
 };
 
 /// Per-session engine knobs.
@@ -55,6 +55,9 @@ const EVENT_BUFFER: usize = 256;
 struct SubEvent {
     sub: String,
     seq: u64,
+    /// Concrete record topic, when the subscription tags its updates
+    /// (see [`SubUpdate::topic`]).
+    topic: Option<Arc<str>>,
     data: Payload,
 }
 
@@ -165,6 +168,7 @@ pub async fn run_session<C, D>(
                         Outbound::Event {
                             sub: &ev.sub,
                             seq: ev.seq,
+                            topic: ev.topic.as_deref(),
                             data: ev.data,
                         },
                         &mut out,
@@ -215,22 +219,60 @@ pub async fn run_session<C, D>(
                                         break;
                                     }
                                 }
-                                // Optional late-join snapshot, before the first event.
-                                if let Some(data) = session.snapshot(&topic) {
+                                // Optional late-join snapshots (one per covered
+                                // record), before the first event. They share
+                                // the subscription's `seq` space — numbered
+                                // `1..=N` here, events continue at `N + 1` — so
+                                // every snapshot is accounted for end-to-end:
+                                // one dropped by a slow client sink (or skipped
+                                // by the encode failure below) leaves a hole the
+                                // client reports as `skipped`, and a loss at the
+                                // tail of the burst surfaces on the first event.
+                                let snaps = session.snapshots(&topic);
+                                let total = snaps.len();
+                                let mut seq: u64 = 0;
+                                let mut send_failed = false;
+                                for (i, (snap_topic, data)) in snaps.into_iter().enumerate() {
+                                    seq += 1;
                                     out.clear();
-                                    if codec
-                                        .encode(
-                                            Outbound::Snapshot {
-                                                topic: &topic,
-                                                data,
-                                            },
-                                            &mut out,
-                                        )
-                                        .is_ok()
-                                        && conn.send(&out).await.is_err()
-                                    {
+                                    let encoded = codec.encode(
+                                        Outbound::Snapshot {
+                                            sub: &sub_id,
+                                            seq,
+                                            // The client reserves a sink slot
+                                            // for this one, so the burst's
+                                            // loss total always lands.
+                                            last: i + 1 == total,
+                                            topic: &snap_topic,
+                                            data,
+                                        },
+                                        &mut out,
+                                    );
+                                    if let Err(_e) = encoded {
+                                        // A record whose serialized bytes aren't
+                                        // valid for this envelope — broken for
+                                        // every read of it, not just here, so say
+                                        // so rather than dropping it in silence.
+                                        // `seq` already advanced, so the client
+                                        // still counts it as loss; if this was the
+                                        // burst's last snapshot the `last` flag
+                                        // goes with it and no `snapshot_end`
+                                        // reaches the subscriber.
+                                        log_warn!(
+                                            "snapshot encode failed, skipping: sub={} topic={} err={:?}",
+                                            sub_id,
+                                            snap_topic,
+                                            _e
+                                        );
+                                        continue;
+                                    }
+                                    if conn.send(&out).await.is_err() {
+                                        send_failed = true;
                                         break;
                                     }
+                                }
+                                if send_failed {
+                                    break;
                                 }
                                 let (cancel_tx, cancel_rx) = oneshot::channel();
                                 cancels.insert(sub_id.clone(), cancel_tx);
@@ -239,6 +281,7 @@ pub async fn run_session<C, D>(
                                     stream,
                                     event_tx.clone(),
                                     cancel_rx,
+                                    seq,
                                 )));
                             }
                             Err(e) => {
@@ -300,39 +343,46 @@ async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
 /// tagging each update with a monotonic `seq`. Ends when the stream finishes or
 /// the cancel handle is dropped/fired (Unsubscribe or connection teardown).
 ///
+/// `start_seq` is the last sequence number the late-join snapshot burst used
+/// (`0` when there were none), so events continue the *same* counter and a
+/// snapshot lost at the tail of the burst still shows up as a gap on the first
+/// event.
+///
 /// Returns its `sub_id` so [`run_session`] can prune the `cancels` entry for a
 /// pump that ended on its own; the Unsubscribe path already removed it, so that
 /// later prune is a no-op.
 async fn pump_subscription(
     sub_id: String,
-    mut stream: BoxStream<'static, Payload>,
+    mut stream: BoxStream<'static, SubUpdate>,
     tx: Sender<SubEvent>,
     cancel: oneshot::Receiver<()>,
+    start_seq: u64,
 ) -> String {
     // Fuse the cancel receiver: a bare `oneshot::Receiver` reports
     // `is_terminated()` once its sender drops, and `select_biased!` skips
     // terminated arms — so the cancel would never fire. `Fuse` keeps the arm
     // polled until it actually resolves.
     let mut cancel = cancel.fuse();
-    let mut seq: u64 = 0;
+    let mut seq: u64 = start_seq;
     loop {
         // Independent arms, so a direct `select_biased!` is fine here.
-        let data = select_biased! {
+        let update = select_biased! {
             // Resolves on explicit Unsubscribe (send) or on sender drop.
             _ = cancel => break,
             // `BoxStream` is not `FusedStream`, so fuse the per-iteration `next`.
             next = stream.next().fuse() => match next {
-                Some(data) => data,
+                Some(update) => update,
                 None => break, // stream exhausted
             },
         };
-        seq += 1;
+        seq += update.skipped + 1;
         // Non-blocking: drop on a full funnel (slow-client protection); only a
         // disconnected funnel ends the pump.
         match tx.try_send(SubEvent {
             sub: sub_id.clone(),
             seq,
-            data,
+            topic: update.topic,
+            data: update.data,
         }) {
             Ok(()) => {}
             Err(e) if e.is_full() => {} // drop on overflow

@@ -7,8 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 047: `WsBridge` is an AimX engine client
+
+- **`WsBridge` rewritten on `run_client` + `ClientHandle`** over a
+  `web_sys::WebSocket`-backed `Connection`/`Dialer`: reply/subscription
+  correlation, reconnect backoff, keepalive, and the offline queue now live in
+  `aimdb-core`'s client engine — the hand-rolled 835-line demux is gone. The
+  `#[wasm_bindgen]` *method* surface is preserved (`write`, `query`,
+  `listTopics`, `onStatusChange`, `status`, `disconnect`, `connectBridge`
+  options) — with the one `connectBridge` behavior change noted below — but the
+  wire is AimX, so the bridge only talks to design-047 servers.
+  `BridgeOptions.lateJoin` is retained for option-shape compatibility
+  (snapshots are server-driven under AimX).
+- **`connectBridge` no longer throws on a URL the browser rejects.** The socket
+  is the dialer's to build now, so construction succeeds and the failure arrives
+  as a terminal `"disconnected"` status (logged to the console, engine stopped —
+  it does not retry a URL no redial can fix). A caller that wrapped
+  `connectBridge` in `try`/`catch` to detect a bad URL must observe
+  `onStatusChange` instead, where a rejected URL is no longer distinguishable
+  from an unreachable server.
+- **`BridgeOptions.maxOfflineQueue` keeps its name but not its contract.** It is
+  now the capacity of the shared client engine's *command channel*, so RPC calls
+  share the bound with writes and subscribes: an evicted `query`/`listTopics`
+  rejects its promise, an evicted `subscribe` ends its stream. It still only
+  fills while the engine isn't draining it (a pending dial, the reconnect
+  backoff), and eviction is still oldest-first. The value is now clamped to
+  `1..=8192` — the ring is preallocated, so `0` could never deliver anything and
+  is raised to `1`, and larger values are capped rather than honored.
+- **`WasmDb.discover` / the raw discovery path speak `record.list`** and
+  resolve with core's full `RecordMetadata` rows (was the topic-scoped
+  `{name, schema_type, entity}` shape). The topic is `record_key` — `name` is
+  the Rust type name — so `discover(…)` results feed `configureRecord` as
+  `configureRecord(row.record_key, { schemaType: row.schema_type, … })`.
+- **The bridge and discovery declare their AimX version** on the WebSocket
+  upgrade URL (`?v=3.0`, via `aimdb_core::remote::ws_url_with_version`), which a
+  design-047 server gates on (HTTP 426 on mismatch) — a browser cannot set
+  handshake headers, so the version rides the URL.
+- Depends on `aimdb-core`'s `connector-session` + `remote` features (the
+  engines cross-compile to wasm32); the `aimdb-ws-protocol` dependency is
+  gone.
+
 ### Fixed
 
+- **`WsBridge` no longer reports a zombie `"connected"` after a silent
+  teardown (Design 049 D1).** Dropping a connection without an `onclose` — a
+  frame-funnel overflow ending the stream, an engine stop — left
+  `onStatusChange` / `status()` reporting `"connected"` forever with
+  `autoReconnect: false`, because `Drop` detaches `onclose` before closing the
+  socket. The teardown now reports the transition itself (`"disconnected"`, or
+  `"reconnecting"` when auto-reconnect will redial), deduplicated so the paths
+  that already reported stay idempotent.
+- **`disconnect()` interrupts a pending handshake (Design 049 D2).** The dialer
+  publishes its socket before awaiting `onopen`, so `disconnect()` during a
+  dial closes the in-flight socket instead of leaving it to the browser's
+  connect timeout (tens of seconds) — and the interrupted dial reports a
+  *terminal* failure, stopping the engine on that attempt rather than after a
+  further reconnect backoff.
 - **SingleLatest fresh-subscriber parity (Design 040).** A subscriber created
   *after* a value has been published now receives that current value on its
   first `recv()` / `try_recv()`, instead of waiting for the next push. This
@@ -26,6 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (behavioral)
 
+- **`WsBridge`'s inbound frame funnel is bounded and overflow ends the
+  connection.** The queue between the browser `onmessage` callback and the
+  engine's `recv` was unbounded; it is now capped at 1024 frames, 1 MiB per
+  frame, and 8 MiB total. Past any limit the stream ends without draining the
+  backlog — dropping frames instead would lose data of unknown shape — so the
+  engine reads a disconnect, pending `query`/`listTopics` promises reject
+  rather than hang, and the redial + re-subscribe re-syncs from scratch.
+  Visible from JS as a `reconnecting` status flap plus a console warning.
 - **JS/WASM `SingleLatest` subscribers may observe one extra initial delivery.**
   As a consequence of the fresh-subscriber fix above, `subscribe` /
   `subscribe_typed` (bindings and `WsBridge`) now fire an immediate callback with
@@ -34,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delivery as a *transition* is affected.
 
 ### Added
+
+- **`WsBridge` surfaces subscription delivery gaps: `onGap(topic, skipped)` +
+  `droppedUpdates()`.** The pump reads the engine's per-update `skipped` count
+  and reports it (console warning always; the registered handler in addition),
+  instead of routing the payload and discarding the gap. A mirror that jumped
+  ahead because the server-side buffer overran a slow consumer is no longer
+  indistinguishable from an idle producer.
 
 - **Host-run buffer unit tests + shared contract suite (Design 040).** `buffer.rs`
   now has native (`cargo test`) unit tests for the fresh-subscriber and `peek()`

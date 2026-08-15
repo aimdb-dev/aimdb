@@ -4,7 +4,7 @@ Command-line interface for introspecting and managing running AimDB instances.
 
 ## Overview
 
-The AimDB CLI is a thin client over the AimX v2 remote access protocol, providing intuitive commands for:
+The AimDB CLI is a thin client over the AimX remote access protocol, providing intuitive commands for:
 - Discovering running AimDB instances
 - Listing and inspecting records
 - Getting current record values
@@ -431,7 +431,7 @@ aimdb graph nodes --format json | jq '.[] | select(.origin == "transform")'
 
 ## Protocol
 
-The CLI uses the AimX v2 remote access protocol with NDJSON message format, over
+The CLI uses the AimX remote access protocol with NDJSON message format, over
 whichever transport the `--connect` endpoint selects (Unix domain socket by
 default; serial/UART with the `transport-serial` feature).
 

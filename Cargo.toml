@@ -16,7 +16,6 @@ members = [
     "aimdb-uds-connector",
     "aimdb-serial-connector",
     "aimdb-tcp-connector",
-    "aimdb-ws-protocol",
     "aimdb-wasm-adapter",
     "tools/aimdb-cli",
     "tools/aimdb-mcp",

@@ -51,8 +51,10 @@
 //!
 //! let (db, runner) = builder.build().await?;
 //!
-//! // Query historical data (any `DeserializeOwned` shape; `Value` shown here)
-//! let latest: Vec<serde_json::Value> = db.query_latest("my_record::*", 1).await?;
+//! // Query historical data (any `DeserializeOwned` shape; `Value` shown here).
+//! // The name is an MQTT-style pattern over the record key: `my.#` would span
+//! // every record under `my.`, `#` the whole store.
+//! let latest: Vec<serde_json::Value> = db.query_latest("my.record", 1).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -61,11 +63,15 @@ pub mod backend;
 pub mod builder_ext;
 pub mod error;
 pub mod ext;
+pub mod pattern;
 pub mod query_ext;
 
 // Re-exports for convenience
+/// The matcher record patterns are defined by, re-exported for backends.
+pub use aimdb_core::topic_matches;
 pub use backend::{BoxFuture, PersistenceBackend, QueryParams, StoredValue};
 pub use builder_ext::{AimDbBuilderPersistExt, PersistenceState};
 pub use error::PersistenceError;
 pub use ext::RecordRegistrarPersistExt;
+pub use pattern::{literal_prefix, prefix_upper_bound};
 pub use query_ext::AimDbQueryExt;

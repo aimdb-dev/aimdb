@@ -1,7 +1,7 @@
 //! Remote Access Demo - Client
 //!
 //! Connects to the demo server over the engine-based [`AimxConnection`] (the
-//! shared session engine + reshaped AimX-v2 wire) and walks through the AimX
+//! shared session engine + reshaped AimX wire) and walks through the AimX
 //! surface: list / get / set, the producer-override safety check, `record.drain`
 //! history, and a live subscription.
 //!
@@ -171,10 +171,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     println!("📤 Subscribing to Temperature (will receive 5 events)...");
+    // Every item reports the updates the server-side buffer dropped before it
+    // (`skipped`), whether it closes the late-join snapshot burst
+    // (`snapshot_end`), and — as `value: None` — a frame whose payload did not
+    // decode. A refused subscription arrives as one `Err` item, distinct from a
+    // clean end of stream.
     let mut stream = conn.subscribe("server::Temperature")?;
     for i in 1..=5 {
         match stream.next().await {
-            Some(v) => println!("📨 Event #{i}: {}", serde_json::to_string(&v)?),
+            Some(Ok(update)) => {
+                if update.has_gap() {
+                    println!("⚠️  gap: {} update(s) dropped", update.skipped);
+                }
+                match update.value {
+                    Some(v) => println!("📨 Event #{i}: {}", serde_json::to_string(&v)?),
+                    None => println!("⚠️  Event #{i}: payload did not decode"),
+                }
+                if update.snapshot_end {
+                    println!("📸 initial state complete — live events follow");
+                }
+            }
+            Some(Err(e)) => {
+                println!("⚠️  Subscription refused: {e}");
+                break;
+            }
             None => {
                 println!("⚠️  Stream ended early");
                 break;

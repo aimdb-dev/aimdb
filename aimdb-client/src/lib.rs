@@ -8,7 +8,7 @@
 //!
 //! The client library offers:
 //! - **Connection Management**: [`AimxConnection`] over the shared session engine
-//! - **Protocol Implementation**: the reshaped AimX-v2 handshake + RPC/streaming
+//! - **Protocol Implementation**: the reshaped AimX handshake + RPC/streaming
 //! - **Instance Discovery**: Automatic detection of running AimDB instances
 //! - **Record Operations**: list, get, set, subscribe, drain, graph, query
 //!
@@ -49,9 +49,6 @@ pub mod protocol;
 #[cfg(feature = "transport-uds")]
 pub use discovery::{discover_instances, find_instance, InstanceInfo};
 pub use endpoint::{dial, parse_endpoint, ParsedEndpoint, Scheme};
-pub use engine::{AimxConnection, DrainResponse};
+pub use engine::{AimxConnection, DrainResponse, RecordUpdate};
 pub use error::{ClientError, ClientResult};
-pub use protocol::{
-    cli_hello, parse_message, serialize_message, Event, EventMessage, RecordMetadata, Request,
-    RequestExt, Response, ResponseExt, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION,
-};
+pub use protocol::{RecordMetadata, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION};

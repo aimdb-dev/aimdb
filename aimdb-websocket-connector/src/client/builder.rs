@@ -19,10 +19,9 @@
 
 use std::pin::Pin;
 
-use aimdb_core::session::{pump_client, run_client, ClientConfig};
+use aimdb_core::session::{aimx::AimxCodec, pump_client, run_client, ClientConfig};
 use aimdb_core::ConnectorBuilder;
 
-use crate::codec::WsCodec;
 use crate::transport::WsDialer;
 
 // ════════════════════════════════════════════════════════════════════
@@ -52,10 +51,11 @@ pub struct WsClientConnectorBuilder {
     max_reconnect_attempts: usize,
     /// Keepalive ping interval in milliseconds (default: 30_000).
     keepalive_ms: u64,
-    /// Maximum queued writes while disconnected (default: 256).
+    /// Command-channel capacity, covering every command and not just writes
+    /// (default: 256, clamped to `1..=8192`).
     max_offline_queue: usize,
     /// Topics to subscribe to on the remote server immediately after connect.
-    /// Wildcards supported (e.g., `["sensors/#"]`).
+    /// Wildcards supported (e.g., `["sensors.#"]`).
     subscribe_topics: Vec<String>,
 }
 
@@ -92,9 +92,13 @@ impl WsClientConnectorBuilder {
         self
     }
 
-    /// Set the maximum number of queued writes while disconnected (default: 256).
+    /// Set the capacity of the client engine's command channel (default: 256).
+    /// Past the cap the *oldest* queued command is dropped.
     ///
-    /// When the queue is full, new writes are silently dropped.
+    /// Every command shares this channel — writes, subscribes and RPC calls
+    /// alike — and it only fills while the engine isn't draining it (a pending
+    /// dial, the backoff between reconnects). Clamped to `1..=8192`: the ring is
+    /// preallocated, so `0` could never deliver and is raised to `1`.
     pub fn with_max_offline_queue(mut self, max: usize) -> Self {
         self.max_offline_queue = max;
         self
@@ -111,7 +115,7 @@ impl WsClientConnectorBuilder {
     /// ```no_run
     /// # use aimdb_websocket_connector::WsClientConnector;
     /// WsClientConnector::new("wss://cloud/ws")
-    ///     .with_subscribe_topics(["sensors/#", "config/#"]);
+    ///     .with_subscribe_topics(["sensors.#", "config.#"]);
     /// ```
     pub fn with_subscribe_topics(
         mut self,
@@ -139,10 +143,9 @@ impl ConnectorBuilder for WsClientConnectorBuilder {
     ) -> Pin<Box<dyn core::future::Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>>
     {
         Box::pin(async move {
-            // ── Engine config from the WS-specific knobs (doc 039 § 5) ──
-            // Reconnect/keepalive/offline-queue are now `ClientConfig`/engine
-            // concerns; `topic_routed_subs` keys the demux by topic (the WS wire
-            // pushes `Data{topic}` with no id).
+            // ── Engine config from the WS-specific knobs ──
+            // Reconnect/keepalive/offline-queue are `ClientConfig`/engine
+            // concerns; subscriptions are id-routed like every AimX transport.
             let config = ClientConfig {
                 reconnect: self.auto_reconnect,
                 reconnect_delay: 200,
@@ -154,18 +157,17 @@ impl ConnectorBuilder for WsClientConnectorBuilder {
                     None
                 },
                 max_offline_queue: self.max_offline_queue,
-                topic_routed_subs: true,
                 sends_hello: false,
             };
 
             // ── Drive the shared client engine + record-mirroring pumps ──
             // Like `UdsClient`: `run_client` owns demux/reconnect/keepalive over
-            // the WS `Dialer` + per-connection `WsCodec`; `pump_client` wires
+            // the WS `Dialer` + the shared `AimxCodec`; `pump_client` wires
             // `link_to`/`link_from` routes to the handle.
             // The runtime's clock drives reconnect backoff/keepalive.
             let (handle, engine_fut) = run_client(
                 WsDialer::new(self.url.clone()),
-                WsCodec::new(),
+                AimxCodec,
                 config,
                 db.runtime_ops(),
             );

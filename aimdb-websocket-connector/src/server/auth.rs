@@ -7,6 +7,11 @@
 //! 2. **Topic subscriptions** — `authorize_subscribe()`: gate which topics a client can
 //!    receive data from.
 //! 3. **Inbound writes** — `authorize_write()`: gate which topics a client may write to.
+//! 4. **Historical reads** — `authorize_query()`: gate the `record.query` pattern.
+//! 5. **Introspection** — `authorize_list()`: gate which `record.list` rows a client sees.
+//!
+//! (4) and (5) default to (2), so overriding `authorize_subscribe` governs all
+//! three read paths.
 //!
 //! The default implementation ([`NoAuth`]) allows all operations.
 
@@ -44,7 +49,7 @@ pub struct ClientInfo {
 /// Per-client permission set assigned during authentication.
 ///
 /// Each field is a list of topic *patterns* (supporting `*` and `#` wildcards
-/// as defined in [`crate::protocol`]).
+/// as defined by [`aimdb_core::topic_matches`]).
 ///
 /// An empty `Vec` means *"no access"*. Use `["#"]` for unrestricted access.
 #[derive(Debug, Clone, Default)]
@@ -65,17 +70,31 @@ impl Permissions {
     }
 
     /// Returns `true` if the client is allowed to subscribe to `topic`.
+    ///
+    /// `topic` is the client's requested subscription, which may itself be a
+    /// wildcard — so this asks **pattern containment**
+    /// ([`pattern_contains`](aimdb_core::pattern_contains)):
+    /// does a granted pattern cover the *whole* requested pattern? Plain
+    /// [`topic_matches`](aimdb_core::topic_matches) would let a one-level grant
+    /// (`sensors.*`) admit an all-levels request (`sensors.#`) by having the
+    /// `*` swallow the `#`, silently widening the grant. For a concrete request
+    /// `pattern_contains` collapses to `topic_matches`, so exact subscribes are
+    /// unaffected.
     pub fn can_subscribe(&self, topic: &str) -> bool {
         self.subscribe_patterns
             .iter()
-            .any(|p| crate::protocol::topic_matches(p, topic))
+            .any(|p| aimdb_core::pattern_contains(p, topic))
     }
 
     /// Returns `true` if the client is allowed to write to `topic`.
+    ///
+    /// Writes target a single concrete record, so `topic` is never a wildcard
+    /// here and plain [`topic_matches`](aimdb_core::topic_matches) is the right
+    /// check (a wildcard write topic would resolve to no record downstream).
     pub fn can_write(&self, topic: &str) -> bool {
         self.write_patterns
             .iter()
-            .any(|p| crate::protocol::topic_matches(p, topic))
+            .any(|p| aimdb_core::topic_matches(p, topic))
     }
 }
 
@@ -170,6 +189,37 @@ pub trait AuthHandler: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(async move { client.permissions.can_write(topic) })
     }
+
+    /// Called before serving a `record.query` (historical read).
+    ///
+    /// `pattern` is the query's `name`, possibly wildcarded — so this is the
+    /// containment check [`authorize_subscribe`](Self::authorize_subscribe)
+    /// performs, which it delegates to by default. A query omitting `name` asks
+    /// for `"*"`, which a narrower grant does not contain: it fails closed.
+    fn authorize_query<'a>(
+        &'a self,
+        client: &'a ClientInfo,
+        pattern: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        self.authorize_subscribe(client, pattern)
+    }
+
+    /// Called for each `record.list` row; `false` drops the row and the call
+    /// still succeeds. Defaults to
+    /// [`authorize_subscribe`](Self::authorize_subscribe).
+    ///
+    /// `record_key` is the row's database key, *not* its WebSocket topic. The
+    /// two coincide under `link_to("ws://<key>")`, but a `TopicProvider` that
+    /// computes the topic per value has no single topic to check against —
+    /// grant the record key itself (`["sensors.#", "inject"]`) to keep such a
+    /// record introspectable.
+    fn authorize_list<'a>(
+        &'a self,
+        client: &'a ClientInfo,
+        record_key: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        self.authorize_subscribe(client, record_key)
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -190,3 +240,49 @@ impl AuthHandler for NoAuth {
 
 /// Type-erased auth handler stored inside the connector.
 pub(crate) type DynAuthHandler = Arc<dyn AuthHandler>;
+
+#[cfg(test)]
+mod tests {
+    use super::Permissions;
+
+    fn perms(subscribe: &[&str]) -> Permissions {
+        Permissions {
+            subscribe_patterns: subscribe.iter().map(|s| s.to_string()).collect(),
+            write_patterns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn subscribe_grant_is_not_widened_by_a_wildcard_request() {
+        // A one-level grant must not admit an all-levels request (the `*`-eats-`#`
+        // escalation): `sensors.*` covers one level, `sensors.#` covers all.
+        let p = perms(&["sensors.*"]);
+        assert!(p.can_subscribe("sensors.temp")); // in scope
+        assert!(!p.can_subscribe("sensors.#")); // escalation — denied
+        assert!(!p.can_subscribe("sensors.temp.vienna")); // deeper — denied
+    }
+
+    #[test]
+    fn subscribe_grant_with_an_interior_hash_keeps_its_suffix() {
+        // A grant scoped to `secret` leaves at any depth must not admit the rest
+        // of the subtree: the `#` used to short-circuit the whole match, so every
+        // segment after it was ignored and this grant behaved like `tenant.#`.
+        let p = perms(&["tenant.#.secret"]);
+        assert!(p.can_subscribe("tenant.secret"));
+        assert!(p.can_subscribe("tenant.a.b.secret"));
+        assert!(!p.can_subscribe("tenant.public"));
+        assert!(!p.can_subscribe("tenant.a.b.public"));
+        assert!(!p.can_subscribe("tenant.#")); // no escalation to the subtree
+    }
+
+    #[test]
+    fn subscribe_allows_requests_the_grant_actually_covers() {
+        assert!(perms(&["#"]).can_subscribe("sensors.#"));
+        let p = perms(&["sensors.#"]);
+        assert!(p.can_subscribe("sensors.#"));
+        assert!(p.can_subscribe("sensors.temp.#"));
+        assert!(p.can_subscribe("sensors.temp"));
+        // Out of the granted subtree stays denied.
+        assert!(!p.can_subscribe("commands.#"));
+    }
+}

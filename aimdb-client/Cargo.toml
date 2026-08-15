@@ -29,8 +29,8 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
     "connector-session",
 ] }
 
-# Transports the resolver dials over (relocated out of core in Phase 6), each
-# behind its `transport-*` feature so a binary links only what it needs.
+# Transports the resolver dials over, each behind its `transport-*` feature so a
+# binary links only what it needs.
 aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector", optional = true }
 aimdb-serial-connector = { version = "0.1.0", path = "../aimdb-serial-connector", default-features = false, features = [
     "tokio-runtime",

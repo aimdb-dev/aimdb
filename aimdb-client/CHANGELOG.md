@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — Design 047
+
+- **One subscription API: `AimxConnection::subscribe`.** It now yields
+  `Result<RecordUpdate, ClientError>` — the full-fidelity stream — and the
+  value-only projections (`subscribe`'s old `Stream<Value>` shape and
+  `subscribe_with_topics`) are gone. Three shapes of one stream meant every
+  caller but one silently discarded the loss metadata the engine had already
+  computed. A caller that only wants values maps:
+  `stream.filter_map(|r| ready(r.ok().and_then(|u| u.value)))`.
+  `RecordUpdate` carries:
+  - `topic` — the concrete record that fired (wildcard subscriptions `#`/`*`
+    fan in many records under one subscription);
+  - `value: Option<Value>` — `None` when the frame arrived but its payload did
+    not decode. Such a frame is delivered rather than dropped, so `skipped`
+    and `snapshot_end` stay exact on the update they describe, and one bad
+    record cannot kill a wildcard stream fanning in many;
+  - `skipped` — updates lost immediately before this one;
+  - `snapshot_end` — this update closes the late-join snapshot burst; every
+    update after it is a live event.
+  `ClientHandle`-level streams carry `SubUpdate` (see `aimdb-core`).
+- **Dead protocol helpers removed** (retired with the hand-rolled client in
+  PR #124, deleted now): `RequestExt`, `ResponseExt`, `serialize_message`,
+  `parse_message`, `EventMessage`, `cli_hello`. `RecordMetadata`,
+  `WelcomeMessage`, `Request`, `Response`, `Event` re-exports remain.
+
 ### Added
+
+- **Loss visibility on the subscription stream.** `RecordUpdate` exposes the delivery gap the engine already tracks (`SubUpdate::skipped`) — previously reachable only from raw `ClientHandle` streams, so ordinary client/CLI/bridge consumers could not tell a buffer overrun from an idle producer — plus `snapshot_end`, which marks the last update of a late-join snapshot burst. The engine reserves a sink slot for that final update, so a burst closes even when it overran the sink and even when no live event ever follows; the client boundary preserves that guarantee by delivering every frame as exactly one stream item (an undecodable payload arrives as `value: None` rather than being dropped and folded into a *next* update that may never come).
+
+- **A refused subscription is observable.** A terminal rejection (denied, subscription limit reached) now arrives as one `Err` item that ends the stream, instead of a silent end of stream indistinguishable from a disconnect or a closed record. `aimdb watch` exits non-zero on one (see `aimdb-cli`).
 
 - **Transport-agnostic endpoint resolver — pick the transport at runtime via a `scheme://` URL (Issue #123, follow-up to #39 / #122).** New `endpoint` module: `parse_endpoint` (pure, feature-independent grammar) and `dial(url) -> Box<dyn Dialer>` map an endpoint string to a transport `Dialer`, the way records already pick one for links. Schemes: `unix://PATH` / `uds://PATH`, a bare path (the `unix://` shorthand), and `serial://DEVICE?baud=N`. An unknown scheme — or one whose transport isn't compiled in — is rejected with a clear error. New `AimxConnection::connect_over(dialer)` / `connect_over_with_timeout` dial over an explicit `Dialer`, bypassing resolution. (Rides a new `impl Dialer for Box<dyn Dialer>` in `aimdb-core`.)
 

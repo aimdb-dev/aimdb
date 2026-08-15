@@ -2,7 +2,7 @@
 //!
 //! Defines the method-level payloads for the remote access protocol: the
 //! hello/welcome handshake bodies and the request/response/event shapes.
-//! These ride the **AimX-v2** NDJSON envelope; the wire framing itself lives
+//! These ride the **AimX** NDJSON envelope; the wire framing itself lives
 //! in [`crate::session::aimx`] (feature `connector-session`). See
 //! `docs/design/remote-access-via-connectors.md` for the architecture.
 
@@ -11,9 +11,55 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-/// Version of the AimX wire protocol spoken by this crate (v2 NDJSON tagged
-/// frames; not backward-compatible with the legacy v1 framing).
-pub const PROTOCOL_VERSION: &str = "2.0";
+/// Version of the AimX wire protocol spoken by this crate.
+pub const PROTOCOL_VERSION: &str = "3.0";
+
+/// Query-parameter name a WebSocket client uses to declare its
+/// [`PROTOCOL_VERSION`] at the HTTP upgrade. The socket transports gate the
+/// version inside the `hello` handshake, but a browser cannot set custom
+/// headers on the WebSocket handshake **and** the WS server runs
+/// `reads_hello:false`, so the WS upgrade carries the version in the URL
+/// instead (`…/ws?v=3.0`) and the server refuses an incompatible/absent one
+/// before the socket opens. See [`ws_url_with_version`].
+pub const VERSION_PARAM: &str = "v";
+
+/// Append this crate's [`PROTOCOL_VERSION`] as the [`VERSION_PARAM`] query
+/// parameter to a WebSocket upgrade `url`, joining with `&` if `url` already
+/// carries a query string and `?` otherwise. Every first-party WS client
+/// dialer routes its URL through this so the server's upgrade-time gate sees a
+/// version; keeping the `NAME=VALUE` contract here means the reader
+/// (the server) and the writers (the dialers) never drift.
+pub fn ws_url_with_version(url: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    alloc::format!("{url}{sep}{VERSION_PARAM}={PROTOCOL_VERSION}")
+}
+
+/// Major-version component of a `"MAJOR.MINOR"` protocol string, or `None` if it
+/// is empty or not in that shape.
+fn protocol_major(version: &str) -> Option<&str> {
+    match version.split('.').next() {
+        Some(major) if !major.is_empty() => Some(major),
+        _ => None,
+    }
+}
+
+/// Whether a peer advertising `their_version` is wire-compatible with this
+/// crate's [`PROTOCOL_VERSION`].
+///
+/// Compatibility is by **major** version — a breaking wire change bumps the
+/// major (2.x → 3.0), a compatible additive change bumps only the minor. A
+/// missing or malformed version string is treated as **incompatible** (fail
+/// closed): a peer that cannot state a version it speaks is exactly the legacy
+/// client this gate exists to turn away.
+pub fn version_compatible(their_version: &str) -> bool {
+    match (
+        protocol_major(their_version),
+        protocol_major(PROTOCOL_VERSION),
+    ) {
+        (Some(theirs), Some(ours)) => theirs == ours,
+        _ => false,
+    }
+}
 
 /// Client hello message
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,8 +223,26 @@ mod tests {
         };
 
         let json = serde_json::to_string(&hello).unwrap();
-        assert!(json.contains("\"version\":\"2.0\""));
+        assert!(json.contains("\"version\":\"3.0\""));
         assert!(json.contains("\"client\":\"test-client\""));
+    }
+
+    #[test]
+    fn version_compatible_matches_on_major() {
+        // Same major (current + a hypothetical future minor) → compatible.
+        assert!(version_compatible(PROTOCOL_VERSION));
+        assert!(version_compatible("3.0"));
+        assert!(version_compatible("3.7"));
+        assert!(version_compatible("3")); // bare major
+
+        // Older major (the legacy WS-era wire) → refused.
+        assert!(!version_compatible("2.0"));
+        assert!(!version_compatible("1.0"));
+
+        // Missing / malformed → fail closed.
+        assert!(!version_compatible(""));
+        assert!(!version_compatible(".0"));
+        assert!(!version_compatible("garbage"));
     }
 
     #[test]

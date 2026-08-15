@@ -173,6 +173,7 @@ impl RemoteJsonHarness {
                 Outbound::Event {
                     sub: "1",
                     seq: self.sequence,
+                    topic: None,
                     data: payload,
                 },
                 &mut self.frame,
