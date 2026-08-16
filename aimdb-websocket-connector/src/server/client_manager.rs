@@ -36,6 +36,18 @@ struct SubEntry {
     dropped: AtomicU64,
 }
 
+/// Drop guard for SubEntry
+struct SubEntryGuard {
+    id: u64,
+    subs: Arc<DashMap<u64, SubEntry>>,
+}
+
+impl Drop for SubEntryGuard {
+    fn drop(&mut self) {
+        self.subs.remove(&self.id);
+    }
+}
+
 /// Shared per-topic broadcast bus. Cloning is cheap (all clones share state).
 #[derive(Clone)]
 pub struct ClientManager {
@@ -96,8 +108,13 @@ impl ClientManager {
                 dropped: AtomicU64::new(0),
             },
         );
-        let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
+        // A drop guard for RAII, thankfully self.subs is already Arc<_>
+        let guard = SubEntryGuard {
+            id,
+            subs: self.subs.clone(),
+        };
+        let stream = futures_util::stream::unfold((rx, guard), |(mut rx, guard)| async move {
+            rx.recv().await.map(|item| (item, (rx, guard)))
         });
         (id, Box::pin(stream))
     }
@@ -259,5 +276,20 @@ mod tests {
             updates.iter().all(|u| u.data.as_ptr() == first),
             "every subscriber shares the one payload Arc"
         );
+    }
+
+    // When a stream is dropped, its subscription in ClientManager
+    // together with its Sender must also be removed
+    #[tokio::test]
+    async fn subscription_dropped_when_stream_dropped() {
+        let mgr = ClientManager::new(256);
+        let (_id, stream) = mgr.subscribe("quiet.topic");
+
+        // Count before stream dropping
+        assert_eq!(mgr.subscription_count(), 1);
+        drop(stream);
+
+        // Associated entry must be unsubscribed
+        assert_eq!(mgr.subscription_count(), 0);
     }
 }
