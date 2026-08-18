@@ -41,7 +41,7 @@ aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", 
 # aimdb-dev fork: upstream 0.3.0 panics on an npdu_length=1 telegram. A patch
 # won't do — patches aren't published, so dependants resolve back to upstream.
 # Keyed `knx-pico` to keep imports and feature references unchanged.
-knx-pico = { package = "aimdb-knx-pico", version = "0.3.1", path = "../_external/knx-pico", default-features = false }
+knx-pico = { package = "aimdb-knx-pico", version = "0.3.1", default-features = false }
 
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }

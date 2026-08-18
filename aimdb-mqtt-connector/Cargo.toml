@@ -74,8 +74,8 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 ] }
 futures-core = { version = "0.3", default-features = false }
 
-# Embassy runtime dependencies (no_std)
-# Note: These use the workspace's local embassy checkout to avoid conflicts
+# Embassy runtime dependencies (no_std). Only embassy-sync still comes from the
+# local checkout — see the workspace `[patch.crates-io]` for why.
 embassy-executor = { version = "0.10.0", optional = true }
 embassy-time = { version = "0.5.1", optional = true }
 embassy-sync = { version = "0.8.0", path = "../_external/embassy/embassy-sync", optional = true }
@@ -89,12 +89,12 @@ embassy-net = { version = "0.9.0", optional = true, features = [
 # MQTT for Embassy — aimdb-dev fork: adds `ConnectionSettings::authenticated`
 # and embassy 0.9/0.8/0.5.1, so upstream 0.2.0 doesn't build. A patch won't fix
 # that downstream. Keyed as before to keep imports and feature references.
-mountain-mqtt = { package = "aimdb-mountain-mqtt", version = "0.2.1", path = "../_external/mountain-mqtt/mountain-mqtt", default-features = false, optional = true, features = [
+mountain-mqtt = { package = "aimdb-mountain-mqtt", version = "0.2.1", default-features = false, optional = true, features = [
     "embedded-io-async",
     "embedded-hal-async",
     "defmt",
 ] }
-mountain-mqtt-embassy = { package = "aimdb-mountain-mqtt-embassy", version = "0.2.1", path = "../_external/mountain-mqtt/mountain-mqtt-embassy", optional = true }
+mountain-mqtt-embassy = { package = "aimdb-mountain-mqtt-embassy", version = "0.2.1", optional = true }
 
 # TLS for the Embassy client (no_std TLS 1.3; design 044)
 embedded-tls = { version = "0.19", default-features = false, optional = true, features = [

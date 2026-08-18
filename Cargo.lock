@@ -227,6 +227,8 @@ dependencies = [
 [[package]]
 name = "aimdb-knx-pico"
 version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7879d031796bd86006fa0861de981e13a560f2f9ceb0e987f96cfd29d25a496"
 dependencies = [
  "defmt 1.1.1",
  "heapless 0.9.3",
@@ -256,6 +258,8 @@ dependencies = [
 [[package]]
 name = "aimdb-mountain-mqtt"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5035a7a126cd374a5e1e83dcbb04d5d5361d28084f32f59710c6f144b5b26349"
 dependencies = [
  "defmt 0.3.100",
  "embedded-hal-async",
@@ -267,6 +271,8 @@ dependencies = [
 [[package]]
 name = "aimdb-mountain-mqtt-embassy"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69ab4d7bdbef7a5e8a95edda95652887c2de8898a4fe1771345d8791ec127d3c"
 dependencies = [
  "aimdb-mountain-mqtt",
  "defmt 1.1.1",
