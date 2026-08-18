@@ -70,7 +70,7 @@ embedded-io-async = { workspace = true, optional = true }
 aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
 
 # test-only (see `_test-embassy-loopback`)
-embassy-net-driver-channel = { version = "0.4.0", path = "../_external/embassy/embassy-net-driver-channel", optional = true }
+embassy-net-driver-channel = { version = "0.4.0", optional = true }
 critical-section = { version = "1.1", features = ["std"], optional = true }
 
 [dev-dependencies]
@@ -82,7 +82,7 @@ serde_json = { workspace = true }
 # macro references `defmt`/`embassy-time-driver` at the call site.
 futures = { workspace = true }
 defmt = { workspace = true }
-embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+embassy-time-driver = "0.2.2"
 # `StaticConfigV4.dns_servers` is a heapless 0.9 `Vec` (embassy-net's version).
 heapless = "0.9"
 
