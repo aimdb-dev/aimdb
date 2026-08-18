@@ -42,11 +42,12 @@ struct SubEntryGuard {
     subs: Arc<DashMap<u64, SubEntry>>,
 }
 
-/// The Drop takes the write lock inside the sub DashMap.
+/// The Drop takes the write lock inside the subs DashMap.
 /// So must not drop this guard while the same thread is holding
 /// any ref into `subs` - `iter()`/`Ref` guard.
 /// This would lead to self-deadlock in the same thread
-/// Correct implementation: `ClientManager::broadcast` defers the `Drop` till the `iter` finished.
+/// Correct implementation: `ClientManager::broadcast` defers its removals
+/// until after the iteration.
 impl Drop for SubEntryGuard {
     fn drop(&mut self) {
         self.subs.remove(&self.id);
@@ -98,12 +99,12 @@ impl ClientManager {
         }
     }
 
-    /// Register a subscription for `pattern`; returns its id and a pair of stream,
-    /// topic-tagged record-value updates, and its guard object. Dropping the stream 1) ends the
-    /// subscription; 2) drops associated subscription entry in the DashMap carried in the
-    /// guard.
-    /// The next matching [`broadcast`](Self::broadcast) keeps trying to lazily prunes the entry.
-    /// This could server as a safety net to make sure nothing leak.
+    /// Register a subscription for `pattern`; returns its id and a Stream-bound object
+    /// of topic-tagged record-value updates.
+    /// The stream, when dropped, having its associated entry dropped
+    /// through a guard that the stream owns.
+    /// The next matching [`broadcast`](Self::broadcast) keeps trying to lazily prune the entry.
+    /// This could serve as a safety net to make sure nothing leaks.
     pub fn subscribe(&self, pattern: &str) -> (u64, BoxStream<'static, SubUpdate>) {
         let id = self.next_sub.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel::<SubUpdate>(self.sub_capacity);
@@ -163,7 +164,7 @@ impl ClientManager {
         }
 
         // Removals are deferred till here, avoiding holding read-lock
-        // why trying to acquire write-lock.
+        // while trying to acquire write-lock.
         for id in dead {
             self.subs.remove(&id);
         }
