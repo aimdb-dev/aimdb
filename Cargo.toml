@@ -167,6 +167,11 @@ stm32-fmc = "0.3.0"
 # `aimdb-embassy-adapter` (008 §6); drop it once a release carries those APIs.
 [patch.crates-io]
 embassy-sync = { path = "./_external/embassy/embassy-sync" }
+# Published embassy-net-driver-channel 0.4.0 calls the pre-guard
+# `zerocopy_channel` API the patch above no longer has, and its driver trait
+# must be the same instance embassy-net sees — so both follow embassy-sync.
+embassy-net-driver-channel = { path = "./_external/embassy/embassy-net-driver-channel" }
+embassy-net-driver = { path = "./_external/embassy/embassy-net-driver" }
 
 [workspace.metadata.docs.rs]
 all-features = true
