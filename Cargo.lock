@@ -204,6 +204,7 @@ version = "0.5.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
+ "aimdb-knx-pico",
  "aimdb-tokio-adapter",
  "async-stream",
  "defmt 1.1.1",
@@ -215,13 +216,20 @@ dependencies = [
  "futures-core",
  "futures-util",
  "heapless 0.8.0",
- "knx-pico",
  "static_cell",
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aimdb-knx-pico"
+version = "0.3.1"
+dependencies = [
+ "defmt 1.1.1",
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -246,12 +254,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "aimdb-mountain-mqtt"
+version = "0.2.1"
+dependencies = [
+ "defmt 0.3.100",
+ "embedded-hal-async",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
+ "heapless 0.8.0",
+]
+
+[[package]]
+name = "aimdb-mountain-mqtt-embassy"
+version = "0.2.1"
+dependencies = [
+ "aimdb-mountain-mqtt",
+ "defmt 1.1.1",
+ "embassy-net",
+ "embassy-sync",
+ "embassy-time",
+]
+
+[[package]]
 name = "aimdb-mqtt-connector"
 version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
+ "aimdb-mountain-mqtt",
+ "aimdb-mountain-mqtt-embassy",
  "aimdb-tokio-adapter",
  "async-stream",
  "defmt 1.1.1",
@@ -264,8 +296,6 @@ dependencies = [
  "futures-core",
  "futures-util",
  "heapless 0.8.0",
- "mountain-mqtt",
- "mountain-mqtt-embassy",
  "rand_core 0.6.4",
  "rumqttc",
  "serde",
@@ -1260,9 +1290,9 @@ dependencies = [
 
 [[package]]
 name = "dsp-fixedpoint"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "731ba87a0802a07eec1ae26620c90990126bc6b72b4abfae51c2b1d84fafcaf8"
+checksum = "563da37e89f398877d6f709440327a6ff4743cf2f7911e1c96ee14870e11bc74"
 dependencies = [
  "num-traits",
 ]
@@ -1805,7 +1835,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2597,7 +2627,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2640,14 +2670,6 @@ dependencies = [
  "aimdb-knx-connector",
  "defmt 1.1.1",
  "serde",
-]
-
-[[package]]
-name = "knx-pico"
-version = "0.3.0"
-dependencies = [
- "defmt 1.1.1",
- "heapless 0.9.3",
 ]
 
 [[package]]
@@ -2821,28 +2843,6 @@ dependencies = [
  "nix 0.29.0",
  "serialport",
  "winapi",
-]
-
-[[package]]
-name = "mountain-mqtt"
-version = "0.2.0"
-dependencies = [
- "defmt 0.3.100",
- "embedded-hal-async",
- "embedded-io 0.7.1",
- "embedded-io-async 0.7.0",
- "heapless 0.8.0",
-]
-
-[[package]]
-name = "mountain-mqtt-embassy"
-version = "0.2.0"
-dependencies = [
- "defmt 1.1.1",
- "embassy-net",
- "embassy-sync",
- "embassy-time",
- "mountain-mqtt",
 ]
 
 [[package]]
@@ -3568,7 +3568,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3648,9 +3648,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdio"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "442d4946fee518534b4fe4f3b1f37ca440af1d08300dd7bda89a6bfc99bd05b3"
+checksum = "6f7328e9dbad1337ef2d94a8404428a42d77a9916cda7c2e51287a1998da9afb"
 dependencies = [
  "aligned",
  "block-device-driver",
@@ -4160,7 +4160,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5133,7 +5133,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

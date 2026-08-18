@@ -38,10 +38,10 @@ defmt = [
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
-# Use official crates.io version
-# External users should patch this to aimdb-dev/knx-pico fork until the NPDU
-# length off-by-one fix is upstreamed (DPT9 fix landed upstream in 0.3.0)
-knx-pico = { version = "0.3.0", default-features = false }
+# aimdb-dev fork: upstream 0.3.0 panics on an npdu_length=1 telegram. A patch
+# won't do — patches aren't published, so dependants resolve back to upstream.
+# Keyed `knx-pico` to keep imports and feature references unchanged.
+knx-pico = { package = "aimdb-knx-pico", version = "0.3.1", path = "../_external/knx-pico", default-features = false }
 
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }

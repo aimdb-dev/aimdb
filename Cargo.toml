@@ -162,23 +162,16 @@ heapless = { version = "0.8", default-features = false }
 micromath = "2.0.0"
 stm32-fmc = "0.3.0"
 
-# Patch mountain-mqtt-embassy's Embassy dependencies to use our local checkout
-# This prevents version conflicts between crates.io Embassy and our git submodule
+# One embassy-time per graph (`links`), and the adapter needs
+# `poll_next_message` / `poll_changed` — merged upstream, not in embassy-sync
+# 0.8.0. Patches aren't published, so this blocks publishing
+# `aimdb-embassy-adapter` (008 §6); drop it once a release carries those APIs.
 [patch.crates-io]
 embassy-executor = { path = "./_external/embassy/embassy-executor" }
 embassy-time = { path = "./_external/embassy/embassy-time" }
 embassy-sync = { path = "./_external/embassy/embassy-sync" }
 embassy-net = { path = "./_external/embassy/embassy-net" }
 embassy-futures = { path = "./_external/embassy/embassy-futures" }
-
-# Patch mountain-mqtt to use our fork for Embassy version compatibility
-# Required until upstream updates Embassy dependencies to match our workspace
-mountain-mqtt = { path = "./_external/mountain-mqtt/mountain-mqtt" }
-mountain-mqtt-embassy = { path = "./_external/mountain-mqtt/mountain-mqtt-embassy" }
-
-# Patch knx-pico to use our fork (upstream 0.3.0 + carried patches)
-# Carried: npdu_length=1 panic prevention, embassy deps from local checkout
-knx-pico = { path = "./_external/knx-pico" }
 
 [workspace.metadata.docs.rs]
 all-features = true
