@@ -42,6 +42,11 @@ struct SubEntryGuard {
     subs: Arc<DashMap<u64, SubEntry>>,
 }
 
+/// The Drop takes the write lock inside the sub DashMap.
+/// So must not drop this guard while the same thread is holding
+/// any ref into `subs` - `iter()`/`Ref` guard.
+/// This would lead to self-deadlock in the same thread
+/// Correct implementation: `ClientManager::broadcast` defers the `Drop` till the `iter` finished.
 impl Drop for SubEntryGuard {
     fn drop(&mut self) {
         self.subs.remove(&self.id);
@@ -93,10 +98,12 @@ impl ClientManager {
         }
     }
 
-    /// Register a subscription for `pattern`; returns its id and the stream of
-    /// topic-tagged record-value updates. Dropping the stream ends the
-    /// subscription; the next matching [`broadcast`](Self::broadcast) lazily
-    /// prunes the entry.
+    /// Register a subscription for `pattern`; returns its id and a pair of stream,
+    /// topic-tagged record-value updates, and its guard object. Dropping the stream 1) ends the
+    /// subscription; 2) drops associated subscription entry in the DashMap carried in the
+    /// guard.
+    /// The next matching [`broadcast`](Self::broadcast) keeps trying to lazily prunes the entry.
+    /// This could server as a safety net to make sure nothing leak.
     pub fn subscribe(&self, pattern: &str) -> (u64, BoxStream<'static, SubUpdate>) {
         let id = self.next_sub.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel::<SubUpdate>(self.sub_capacity);
@@ -154,6 +161,9 @@ impl ClientManager {
                 Err(mpsc::error::TrySendError::Closed(_)) => dead.push(*entry.key()),
             }
         }
+
+        // Removals are deferred till here, avoiding holding read-lock
+        // why trying to acquire write-lock.
         for id in dead {
             self.subs.remove(&id);
         }
@@ -250,13 +260,29 @@ mod tests {
         }
     }
 
+    // A drop of Receiver (not Stream), does not lead to SubEntry dropped.
+    // Broadcast must handle the drop of matched pattern.
     #[tokio::test]
-    async fn dropped_stream_is_pruned() {
+    async fn broadcast_prunes_closed_channel_matched_pattern() {
         let mgr = ClientManager::new(256);
-        let (_id, stream) = mgr.subscribe("#");
+        let (tx, rx) = mpsc::channel::<SubUpdate>(256);
+        mgr.subs.insert(
+            1,
+            SubEntry {
+                pattern: "dropped_channel".to_string(),
+                tx,
+                dropped: AtomicU64::new(0),
+            },
+        );
+        drop(rx);
         assert_eq!(mgr.subscription_count(), 1);
-        drop(stream);
-        mgr.broadcast("t", b"v").await;
+
+        // Non-matching patterns survive the prune
+        mgr.broadcast("false_pattern", b"v").await;
+        assert_eq!(mgr.subscription_count(), 1);
+
+        // Matched pattern get pruned
+        mgr.broadcast("dropped_channel", b"v").await;
         assert_eq!(mgr.subscription_count(), 0);
     }
 
