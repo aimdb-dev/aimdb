@@ -88,7 +88,7 @@ defmt = { workspace = true, optional = true }
 # `embassy-runtime` optional dep — keeping it out of dev-deps avoids a
 # std/no_std unification clash with the tokio tests, where it would otherwise
 # compile against a std `aimdb-core`.)
-embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+embassy-time-driver = "0.2.2"
 defmt = { workspace = true }
 tokio = { version = "1", features = [
     "rt-multi-thread",

@@ -84,7 +84,7 @@ critical-section = { version = "1.1", features = ["std"] }
 # pulled in by embassy-time's `defmt-timestamp-uptime`. No tick feature here so
 # it unifies with the workspace's `tick-hz-32_768` (mock-driver/std would force
 # a conflicting tick rate).
-embassy-time-driver = { path = "../_external/embassy/embassy-time-driver" }
+embassy-time-driver = "0.2.2"
 
 # For tracing tests
 tracing-test = "0.2"

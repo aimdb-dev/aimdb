@@ -103,7 +103,7 @@ tokio-test = "0.4"
 aimdb-tokio-adapter = { path = "./aimdb-tokio-adapter" }
 
 # Embassy ecosystem for embedded async
-embassy-stm32 = { version = "0.6.0", path = "./_external/embassy/embassy-stm32", features = [
+embassy-stm32 = { version = "0.6.0", features = [
     "defmt",
     "stm32h563zi",
     "memory-x",
@@ -115,25 +115,25 @@ embassy-stm32 = { version = "0.6.0", path = "./_external/embassy/embassy-stm32",
 embassy-sync = { version = "0.8.0", path = "./_external/embassy/embassy-sync", features = [
     "defmt",
 ] }
-embassy-executor = { version = "0.10.0", path = "./_external/embassy/embassy-executor", features = [
+embassy-executor = { version = "0.10.0", features = [
     "platform-cortex-m",
     "executor-thread",
     "defmt",
 ] }
-embassy-time = { version = "0.5.1", path = "./_external/embassy/embassy-time", features = [
+embassy-time = { version = "0.5.1", features = [
     "defmt",
     "defmt-timestamp-uptime",
     "tick-hz-32_768",
 ] }
-embassy-net = { version = "0.9.0", path = "./_external/embassy/embassy-net", features = [
+embassy-net = { version = "0.9.0", features = [
     "defmt",
     "tcp",
     "dhcpv4",
     "medium-ethernet",
     "proto-ipv6",
 ] }
-embassy-usb = { version = "0.6.0", path = "./_external/embassy/embassy-usb", features = ["defmt"] }
-embassy-futures = { version = "0.1.2", path = "./_external/embassy/embassy-futures" }
+embassy-usb = { version = "0.6.0", features = ["defmt"] }
+embassy-futures = { version = "0.1.2" }
 
 # Embedded HAL for peripheral abstractions
 embedded-hal = "0.2.6"
@@ -162,23 +162,16 @@ heapless = { version = "0.8", default-features = false }
 micromath = "2.0.0"
 stm32-fmc = "0.3.0"
 
-# Patch mountain-mqtt-embassy's Embassy dependencies to use our local checkout
-# This prevents version conflicts between crates.io Embassy and our git submodule
+# The adapter needs `poll_next_message` / `poll_changed` — merged upstream, not
+# in embassy-sync 0.8.0. Patches aren't published, so this blocks publishing
+# `aimdb-embassy-adapter` (008 §6); drop it once a release carries those APIs.
 [patch.crates-io]
-embassy-executor = { path = "./_external/embassy/embassy-executor" }
-embassy-time = { path = "./_external/embassy/embassy-time" }
 embassy-sync = { path = "./_external/embassy/embassy-sync" }
-embassy-net = { path = "./_external/embassy/embassy-net" }
-embassy-futures = { path = "./_external/embassy/embassy-futures" }
-
-# Patch mountain-mqtt to use our fork for Embassy version compatibility
-# Required until upstream updates Embassy dependencies to match our workspace
-mountain-mqtt = { path = "./_external/mountain-mqtt/mountain-mqtt" }
-mountain-mqtt-embassy = { path = "./_external/mountain-mqtt/mountain-mqtt-embassy" }
-
-# Patch knx-pico to use our fork (upstream 0.3.0 + carried patches)
-# Carried: npdu_length=1 panic prevention, embassy deps from local checkout
-knx-pico = { path = "./_external/knx-pico" }
+# Published embassy-net-driver-channel 0.4.0 calls the pre-guard
+# `zerocopy_channel` API the patch above no longer has, and its driver trait
+# must be the same instance embassy-net sees — so both follow embassy-sync.
+embassy-net-driver-channel = { path = "./_external/embassy/embassy-net-driver-channel" }
+embassy-net-driver = { path = "./_external/embassy/embassy-net-driver" }
 
 [workspace.metadata.docs.rs]
 all-features = true
