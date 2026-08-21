@@ -10,6 +10,21 @@
 //! ```json
 //! { "status": "ok", "clients": 3, "uptime_secs": 120 }
 //! ```
+//!
+//! # Version endpoint
+//!
+//! `GET /version` returns `200 OK` with the AimX major.minor this server
+//! speaks:
+//! ```json
+//! { "aimx": "3.0" }
+//! ```
+//!
+//! It exists because the upgrade-time version gate below answers an
+//! incompatible client with HTTP 426, and a browser cannot read that: the
+//! WebSocket API surfaces a failed upgrade as an opaque `error` event with no
+//! status and no body, so a refusing hub and an unreachable one are
+//! indistinguishable from JavaScript. A browser client fetches this route
+//! before dialing and can then name both versions in its error.
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
@@ -65,7 +80,7 @@ pub(crate) struct ServerState {
 
 type BoxFuture = std::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send + 'static>>;
 
-/// Assemble the axum `Router`: the WS endpoint + `/health`, with the shared
+/// Assemble the axum `Router`: the WS endpoint + `/health` + `/version`, with the shared
 /// [`ServerState`] and any user-supplied extra routes merged in.
 fn build_app(ws_path: &str, state: ServerState, additional_routes: Option<Router>) -> Router {
     // Apply state first so the router becomes `Router<()>`, which can then be
@@ -74,6 +89,7 @@ fn build_app(ws_path: &str, state: ServerState, additional_routes: Option<Router
     let ws_app = Router::new()
         .route(ws_path, get(ws_upgrade_handler))
         .route("/health", get(health_handler))
+        .route("/version", get(version_handler))
         .with_state(state)
         .layer(CorsLayer::permissive());
 
@@ -212,6 +228,18 @@ async fn ws_upgrade_handler(
         run_session(conn, &AimxCodec, dispatch.as_ref(), &config).await;
     })
     .into_response()
+}
+
+/// Protocol-version endpoint — the readable half of the upgrade gate.
+///
+/// Returns [`PROTOCOL_VERSION`] as `{"aimx": "3.0"}`. Unlike the 426 the gate
+/// returns, this is reachable from a browser (the router's permissive CORS
+/// layer covers it), so a WASM/JS client can learn what the hub speaks before
+/// it dials and report a version mismatch instead of a bare connection
+/// failure. The body is exactly one field so the shape stays cheap to depend
+/// on; the same major-version rule as [`version_compatible`] applies to it.
+async fn version_handler() -> impl IntoResponse {
+    Json(serde_json::json!({ "aimx": PROTOCOL_VERSION }))
 }
 
 /// Health check endpoint.

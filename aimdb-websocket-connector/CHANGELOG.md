@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /version` returns the AimX version this server speaks** as
+  `{"aimx": "3.0"}`, beside `/health` and under the same permissive CORS layer.
+  The upgrade gate refuses an incompatible client with HTTP 426, which a browser
+  cannot read — the WebSocket API surfaces a failed upgrade as an opaque `error`
+  event with no status or body, making a version refusal indistinguishable from
+  an unreachable host. A browser can now fetch this before dialing and name both
+  versions in its error. The gate itself is unchanged. `/version` is now a
+  reserved path: an application already serving its own `GET /version` through
+  `with_additional_routes` panics on startup, since axum refuses overlapping
+  method routes on a merge — drop or rename that route.
+
 ### Changed (breaking, wire)
 
 - **`snap` frames now carry `seq`, and the burst's last one carries `last`.**

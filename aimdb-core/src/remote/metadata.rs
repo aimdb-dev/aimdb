@@ -23,6 +23,16 @@ use crate::record_id::{RecordId, RecordKey};
 ///
 /// When the `observability` feature is enabled, additional fields are included
 /// for buffer-level statistics (produced_count, consumed_count, etc.).
+///
+/// # Liveness is an observability extra
+///
+/// A `record.list` reply enumerates records the server **registered**, not
+/// records that have carried a value — a server registering a fixed pool up
+/// front lists the whole pool. Only [`produced_count`](Self::produced_count)
+/// distinguishes them, and it is `observability`-gated by design (liveness
+/// derives from buffer counters, which constrained targets compile away). So a
+/// server whose clients need that distinction must be built with
+/// `observability` on; without it the honest client answer is "unknown".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordMetadata {
     /// Unique record identifier (index in the storage)
@@ -66,15 +76,20 @@ pub struct RecordMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_type: Option<String>,
 
-    /// Entity / node identifier (e.g. `"vienna"` for `"temp.vienna"` or
-    /// `"sensors/temp/vienna"`), the record key's leaf segment after the last
-    /// `.` or `/` separator. The server is the authority on naming conventions —
-    /// clients use this field instead of parsing keys.
+    /// The record key's **leaf segment** — everything after the last `.` or `/`
+    /// (`"vienna"` for `"temp.vienna"` or `"sensors/temp/vienna"`).
+    ///
+    /// Only an entity identifier where the leaf *is* the node. Under a deeper
+    /// scheme it is not: `"station.17.temperature"` yields `"temperature"`, not
+    /// the `"17"` a caller wants — such clients must parse the key themselves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity: Option<String>,
 
     // ===== Buffer metrics (feature-gated) =====
-    /// Total items pushed to the buffer (metrics feature only)
+    /// Total items pushed to the buffer (metrics feature only).
+    ///
+    /// Doubles as the liveness signal: `> 0` has carried a value, `0` is an
+    /// untouched registration, absent is unknowable (see the type-level note).
     #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub produced_count: Option<u64>,

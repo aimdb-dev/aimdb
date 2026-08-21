@@ -514,6 +514,14 @@ the `DynRecord` concept tracked separately.
 
 ### 6.5 React Integration
 
+> **Retired.** `src/react/useAimDb.tsx` was removed: `wasm-pack` packs only
+> `pkg/`, so it never shipped in the npm artifact, and it imported
+> `../pkg/aimdb_wasm_adapter` — a relative path into the adapter's own build
+> output, unresolvable from an installed package. A React layer, if one is ever
+> wanted again, belongs in its own `@aimdb/react` package so the wasm artifact
+> stays a pure `wasm-pack` output. The section below is kept as design history.
+
+
 For `aimdb-ui`, provide a thin React hook wrapping the WASM API.
 The hook takes a **record key** (the AimDB `RecordKey` string):
 

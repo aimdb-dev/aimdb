@@ -233,6 +233,29 @@ async fn ws_connect_with(addr: SocketAddr, extra: &str) -> WsClient {
         .0
 }
 
+/// One-shot HTTP/1.1 `GET path` on the connector's port, returning
+/// `(status_line, body)`. The plain-HTTP routes (`/health`, `/version`) have no
+/// WebSocket to speak through, and the crate carries no HTTP client — a raw
+/// socket keeps the test black-box without a dev-dependency.
+async fn http_get(addr: SocketAddr, path: &str) -> (String, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut sock = TcpStream::connect(addr).await.expect("connect");
+    sock.write_all(
+        format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
+    )
+    .await
+    .expect("write request");
+    let mut raw = String::new();
+    timeout(Duration::from_secs(3), sock.read_to_string(&mut raw))
+        .await
+        .expect("response timed out")
+        .expect("read response");
+    let (head, body) = raw.split_once("\r\n\r\n").expect("no header/body split");
+    let status = head.lines().next().unwrap_or_default().to_string();
+    (status, body.to_string())
+}
+
 /// Send one raw AimX frame (a JSON value) as a WS text message.
 async fn ws_send(c: &mut WsClient, frame: Value) {
     c.send(Message::Text(frame.to_string().into()))
@@ -598,6 +621,27 @@ async fn server_rejects_incompatible_protocol_version() {
     )))
     .await;
     assert!(ok.is_ok(), "current version must upgrade");
+}
+
+#[tokio::test]
+async fn server_serves_protocol_version_over_http() {
+    let (addr, _db) = spawn_default().await;
+
+    // The 426 the upgrade gate returns is unreadable from a browser, so the
+    // same version is served as plain JSON on a route `fetch` can reach.
+    let (status, body) = http_get(addr, "/version").await;
+    assert!(status.contains("200"), "unexpected status: {status}");
+    let parsed: Value = serde_json::from_str(&body).expect("version body is JSON");
+    assert_eq!(parsed["aimx"], aimdb_core::remote::PROTOCOL_VERSION);
+
+    // A client that reads it and dials with it is accepted by the gate, which
+    // is the whole point of publishing it.
+    let dialed = tokio_tungstenite::connect_async(format!(
+        "ws://{addr}/ws?v={}",
+        parsed["aimx"].as_str().unwrap()
+    ))
+    .await;
+    assert!(dialed.is_ok(), "the advertised version must upgrade");
 }
 
 #[tokio::test]

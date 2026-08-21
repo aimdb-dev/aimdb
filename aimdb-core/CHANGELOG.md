@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **`RecordMetadata` states that liveness is an observability extra.** A
+  `record.list` reply enumerates *registered* records, so a server registering a
+  fixed pool lists the whole pool. `produced_count` is what distinguishes live
+  from idle, and it is `observability`-gated by design — so a server whose
+  clients need that distinction must be built with `observability` on.
+- **`RecordMetadata.entity` no longer over-promises.** It claimed clients should
+  use it "instead of parsing keys", but it is the key's *leaf* segment:
+  `"station.17.temperature"` yields `"temperature"`, not `"17"`. No behavior
+  change.
+
 ### Changed (breaking) — Design 047: one protocol (AimX) for every transport
 
 - **Wildcard / multi-record subscribe.** `Inbound::Subscribe` topics may carry

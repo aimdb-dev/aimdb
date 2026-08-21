@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A schema-name collision trips a `debug_assert!`.** `SchemaRegistry` keys on
+  `T::NAME` with no version component, so a v1 and v2 of one contract silently
+  kept whichever came last — visible only as a browser rendering nothing.
+  Re-registering the same type stays idempotent.
+
+### Removed
+
+- **`src/react/useAimDb.tsx` deleted** (~313 lines). It was never in the
+  published artifact — `wasm-pack` packs only `pkg/` — and could not have been
+  imported if it were: it resolved `../pkg/aimdb_wasm_adapter`, a relative path
+  into the adapter's own build output. The README advertised it as
+  `@aimdb/wasm/react`, a package that does not exist. The patterns worth keeping
+  (StrictMode `cancelled` guard, refs for the cleanup closure,
+  `bridge.disconnect()` before `db.free()`, not-ready fallback) are documented
+  in the README and implemented in `weather-mesh-client`.
+
+### Changed
+
+- **A host build with `wasm-runtime` on fails with one `compile_error!`** naming
+  the constraint, instead of 14 `E0277`s from inside the bridge. `bindings`,
+  `schema_registry`, and `ws_bridge` are now also gated on
+  `target_arch = "wasm32"`. `--no-default-features` host builds and all `wasm32`
+  builds are unaffected.
+
+### Documentation
+
+- **`SchemaRegistry` documents the migration boundary.** Inbound payloads decode
+  straight into `T`, not through `Linkable::from_bytes`, so `Migratable` chains
+  do not run in the browser — intended, since AimX is a normalized plane and
+  migration belongs at a server's ingest boundary. A browser's version tolerance
+  therefore comes from the server it mirrors.
+- **README corrected**: package name in every example (`@aimdb/wasm` →
+  `@aimdb/aimdb-wasm-adapter`), the module table (listed a nonexistent
+  `logger.rs`, credited `time.rs` to `gloo-timers` which is not a dependency),
+  and the contract-enforcement section (described a `dispatch_streamable!` macro
+  that no longer exists). Adds target-support and published-package notes.
+
 ### Changed (breaking) — Design 047: `WsBridge` is an AimX engine client
 
 - **`WsBridge` rewritten on `run_client` + `ClientHandle`** over a

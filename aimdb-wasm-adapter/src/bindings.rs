@@ -255,9 +255,13 @@ impl WasmDb {
     ///
     /// The topic is `record_key`; `name` is the Rust type name, not the topic.
     ///
+    /// A row means *registered*, not *live*: a server registering a fixed pool
+    /// lists the whole pool. `produced_count` tells them apart, and is present
+    /// only if the server was built with `observability`.
+    ///
     /// # Example (TypeScript)
     /// ```ts
-    /// const wasm = await import("aimdb-wasm-adapter");
+    /// const wasm = await import("@aimdb/aimdb-wasm-adapter");
     /// await wasm.default();
     /// const rows = await wasm.WasmDb.discover("wss://api.example.com/ws");
     /// rows.forEach(r => db.configureRecord(r.record_key, { schemaType: r.schema_type, buffer: "SingleLatest" }));

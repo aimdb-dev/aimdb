@@ -66,8 +66,9 @@ pub(crate) mod stream;
 /// The leaf (entity) segment of a record key — the trailing component after the
 /// last separator. Both `.` and `/` are treated as delimiters, since keys use
 /// either convention (`temp.vienna` or `sensors/temp/vienna`), and both yield
-/// `vienna`. Servers report this as a record's `entity` so clients trust the
-/// field instead of parsing keys themselves.
+/// `vienna`. Servers report this as a record's `entity`, which identifies the
+/// node only where the leaf *is* the node: `station.17.temperature` yields
+/// `temperature`, not `17`.
 pub fn topic_leaf(key: &str) -> &str {
     key.rsplit(['.', '/']).next().unwrap_or(key)
 }
