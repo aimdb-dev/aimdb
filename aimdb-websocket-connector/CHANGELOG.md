@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot read — the WebSocket API surfaces a failed upgrade as an opaque `error`
   event with no status or body, making a version refusal indistinguishable from
   an unreachable host. A browser can now fetch this before dialing and name both
-  versions in its error. The gate itself is unchanged.
+  versions in its error. The gate itself is unchanged. `/version` is now a
+  reserved path: an application already serving its own `GET /version` through
+  `with_additional_routes` panics on startup, since axum refuses overlapping
+  method routes on a merge — drop or rename that route.
 
 ### Changed (breaking, wire)
 
