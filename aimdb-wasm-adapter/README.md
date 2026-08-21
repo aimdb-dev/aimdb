@@ -25,20 +25,22 @@ The adapter is split into several focused modules:
 
 | Module | Purpose |
 |--------|---------|
-| `runtime.rs` | `WasmAdapter` — `RuntimeAdapter` + `Spawn` impl using `wasm_bindgen_futures::spawn_local` |
-| `time.rs` | `TimeOps` — `performance.now()` + `setTimeout`-based sleep via `gloo-timers` |
-| `logger.rs` | `Logger` — maps log levels to `console.log / debug / warn / error` |
+| `runtime.rs` | `WasmAdapter` — the zero-sized adapter type |
+| `time.rs` | `RuntimeOps` — `performance.now()`, `Date.now()`, `setTimeout` sleep, and `console.*` logging via `globalThis` (Window + Worker) |
 | `buffer.rs` | `WasmBuffer<T>` — SPMC Ring, SingleLatest, Mailbox on `Rc<RefCell<…>>` |
-| `bindings.rs` | `WasmDb` — `#[wasm_bindgen]` facade: `configureRecord`, `get`, `set`, `subscribe` |
+| `schema_registry.rs` | `SchemaRegistry` — type-erased dispatch from a schema name to a `Streamable` type |
+| `bindings.rs` | `WasmDb` — `#[wasm_bindgen]` facade: `configureRecord`, `get`, `set`, `subscribe`, `discover` |
 | `ws_bridge.rs` | `WsBridge` — WebSocket bridge to remote AimDB server (AimX wire protocol) |
-| `react/` | React hooks — `useRecord<T>`, `useSetRecord<T>`, `useBridge` |
+
+`bindings.rs`, `schema_registry.rs`, and `ws_bridge.rs` are `wasm32`-only — see
+[Target support](#target-support).
 
 ## JavaScript / TypeScript API
 
 ### WasmDb
 
 ```typescript
-import init, { WasmDb } from '@aimdb/wasm';
+import init, { WasmDb } from '@aimdb/aimdb-wasm-adapter';
 
 await init();
 const db = new WasmDb();
@@ -69,7 +71,7 @@ const unsub = db.subscribe('sensors.temperature.vienna', (value) => {
 Connect the browser-local AimDB to a remote server:
 
 ```typescript
-import { WsBridge } from '@aimdb/wasm';
+import { WsBridge } from '@aimdb/aimdb-wasm-adapter';
 
 const bridge = WsBridge.connect(db, 'wss://api.example.com/ws', {
   subscribeTopics: ['sensors.#'],
@@ -93,52 +95,49 @@ bridge.write('commands.setpoint', { target: 21.0 });
 bridge.disconnect();
 ```
 
-### React Hooks
+### React
 
-```tsx
-import { AimDbProvider, useRecord, useSetRecord, useBridge } from '@aimdb/wasm/react';
-
-function App() {
-  return (
-    <AimDbProvider config={{
-      records: [
-        { key: 'sensors.temperature.vienna', schemaType: 'temperature', buffer: 'SingleLatest' },
-      ],
-      bridge: { url: 'wss://api.example.com/ws', subscribeTopics: ['sensors.#'] },
-    }}>
-      <Dashboard />
-    </AimDbProvider>
-  );
-}
-
-function Dashboard() {
-  const temp = useRecord<Temperature>('sensors.temperature.vienna');
-  if (!temp) return <p>Loading…</p>;
-  return <span>{temp.celsius.toFixed(1)}°C</span>;
-}
-```
-
-**Available hooks:**
-
-| Hook | Returns | Purpose |
-|------|---------|---------|
-| `useRecord<T>(key)` | `T \| null` | Subscribe to record, re-render on updates |
-| `useSetRecord<T>(key)` | `(value: T) => void` | Write to record with contract validation |
-| `useAimDb()` | `WasmDb \| null` | Raw database access for advanced usage |
-| `useBridge()` | `WsBridge \| null` | Connection status and bridge control |
+There is no React entry point in this package and never was: `wasm-pack` packs
+only `pkg/`, so no `.tsx` reaches the artifact. Build hooks over `WasmDb` /
+`WsBridge` in your own app — four details are worth getting right, and each is
+there because its absence produced a real bug: a `cancelled` guard against
+StrictMode double mounts, refs rather than state for the cleanup closure,
+`bridge.disconnect()` before `db.free()`, and a not-ready fallback. See
+`weather-mesh-client` for a worked implementation.
 
 ## Data Contract Enforcement
 
-All `get` / `set` / `subscribe` calls go through the `Streamable` trait
-defined in `aimdb-data-contracts`. The `dispatch_streamable!` macro maps
-schema type names to Rust types and performs serde validation:
+All `get` / `set` / `subscribe` calls go through the `Streamable` trait defined
+in `aimdb-data-contracts`. `SchemaRegistry::register::<T>()` stores type-erased
+closures per schema name, so a name arriving from JS or off the wire dispatches
+to the right Rust type and gets serde validation:
 
 ```
 TypeScript value  →  serde_wasm_bindgen  →  Rust T: Streamable  →  buffer push
 ```
 
-Adding a new contract requires only one change: implement `Streamable` for
-the new type in `aimdb-data-contracts` and add it to `dispatch_streamable!`.
+Two rules follow from how the registry is keyed:
+
+- **Register the newest type per schema name.** Entries key on `T::NAME` with no
+  version component, so a v1 and a v2 of one contract collide and the last one
+  wins — visible only as a browser rendering nothing. A colliding name trips a
+  `debug_assert!`.
+- **`Migratable` chains do not run in the browser.** Inbound payloads decode
+  straight into `T`, not through `Linkable::from_bytes`. AimX is a normalized
+  plane; migration belongs at a server's ingest boundary. So a browser's version
+  tolerance comes from the server it mirrors, not the contracts crate beside it.
+
+## Target support
+
+With `wasm-runtime` (the default) enabled this crate builds for `wasm32-*` only:
+the bridge holds `web_sys` closures across await points, so its futures are
+`!Send` and rely on an `unsafe impl` sound only on single-threaded wasm. A host
+build stops on one `compile_error!` saying so. For the portable buffer/runtime
+unit tests, drop the feature:
+
+```bash
+cargo test -p aimdb-wasm-adapter --no-default-features --lib
+```
 
 ## Build
 
@@ -172,8 +171,18 @@ namespaces.
 
 | Feature | Default | Purpose |
 |---------|---------|---------|
-| `wasm-runtime` | ✅ | Full browser runtime (bindings, WsBridge, web-sys) |
+| `wasm-runtime` | ✅ | Full browser runtime (bindings, WsBridge, web-sys) — `wasm32` targets only |
 | `alloc` | ✅ | Core buffer + record support (no_std compatible) |
+
+## A note on the published npm package
+
+`@aimdb/aimdb-wasm-adapter` exists on npm (0.1.1, 2026-03-10) and the name
+overstates what it is. A `wasm-pack` artifact of this crate is never a generic
+adapter — the `SchemaRegistry` is populated at build time, so the blob only
+understands the schemas one application compiled in. A second browser app should
+publish under its own scoped name rather than add versions here, and this
+package should be deprecated before someone installs it expecting something
+reusable. The examples above use the name because it is what resolves today.
 
 ## License
 

@@ -934,6 +934,10 @@ fn route_update(
 /// Deserialize `serde_json::Value` → `T` and push to the record buffer.
 ///
 /// This is the fast path for incoming server data — no `JsValue` hop.
+///
+/// Decodes straight into `T`, not through `Linkable::from_bytes`, so a
+/// `Migratable` chain does not run: an off-version payload warns and is
+/// dropped. Deliberate — see [`crate::schema_registry`].
 pub(crate) fn produce_from_json<T>(db: &AimDb, key: &str, json: serde_json::Value)
 where
     T: Send + Sync + 'static + core::fmt::Debug + Clone + serde::de::DeserializeOwned,
