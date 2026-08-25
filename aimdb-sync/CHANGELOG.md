@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A timed-out `detach_timeout` no longer strands a thread.** The wait used a
+  helper thread parked in `join()`, and a `join()` cannot be cancelled — so an
+  expired timeout left that thread blocked for the life of the process, one per
+  timed-out detach. The runtime thread now holds a liveness channel open for
+  exactly as long as it runs; the caller waits on that instead, so there is no
+  second thread to reclaim. Disconnection is the completion event, which covers
+  a normal return, an early return and a panic alike.
+- **`Drop` no longer blocks.** It attempted a 5-second emergency shutdown, so a
+  handle dropped without `detach()` could stall a destructor for five seconds
+  and log from inside it — including during unwinding, or inside a C++
+  destructor across an FFI boundary. It now signals shutdown and releases the
+  thread, which is what actually causes cleanup; a destructor cannot report
+  failure anyway, so blocking bought nothing the caller could act on. Call
+  `detach()` when you need to know the thread is down.
+- **`detach_timeout` documents what a timeout leaves behind** — the signal was
+  delivered, the thread stops on its own, the handle is consumed, and surviving
+  producers and consumers keep working until it stops and then fail with
+  `RuntimeShutdown`.
 - **`AimDbSyncExt::attach` no longer spins, and can no longer hang.** The
   constructor polled a `Mutex<Option<Handle>>` on a 1 ms sleep while the runtime
   thread filled it — and that thread returns early if `Runtime::new()` fails, so
