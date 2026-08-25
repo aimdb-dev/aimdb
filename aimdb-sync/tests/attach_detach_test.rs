@@ -72,13 +72,16 @@ fn a_failed_build_reports_why() {
     })
     .expect("attach should fail");
 
-    let SyncError::AttachFailed { message } = &err else {
+    let SyncError::AttachFailed { source } = &err else {
         panic!("expected AttachFailed, got {:?}", err);
     };
     assert!(
-        message.contains("runtime not set"),
-        "the cause should survive the trip, got: {message}"
+        source.to_string().contains("runtime not set"),
+        "the cause should survive the trip, got: {source}"
     );
+    // And its classification survives with it: this is a bad record graph, not
+    // an internal fault, and a caller switching on `kind()` must see that.
+    assert_eq!(err.kind(), aimdb_core::DbErrorKind::Configuration);
 }
 
 /// A runtime thread that stops before reporting must end the wait, not extend

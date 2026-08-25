@@ -2,7 +2,7 @@
 
 use crate::waiter::Waiter;
 use crate::{SyncError, SyncResult};
-use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder};
+use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError};
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::time::Duration;
@@ -146,7 +146,10 @@ struct ShutdownSignal;
 
 /// What the runtime thread reports back while starting up: the thing itself,
 /// or why it could not be produced.
-type Startup<T> = Result<T, String>;
+///
+/// A `DbError` rather than a message, so the cause's classification survives
+/// the trip into [`SyncError::AttachFailed`] instead of being flattened.
+type Startup<T> = Result<T, DbError>;
 
 /// Wait for one startup report, turning every outcome into a `SyncResult`.
 ///
@@ -159,9 +162,12 @@ type Startup<T> = Result<T, String>;
 fn recv_startup<T>(rx: &mut mpsc::Receiver<Startup<T>>, what: &str) -> SyncResult<T> {
     match rx.blocking_recv() {
         Some(Ok(value)) => Ok(value),
-        Some(Err(cause)) => Err(SyncError::AttachFailed { message: cause }),
+        Some(Err(cause)) => Err(SyncError::AttachFailed { source: cause }),
         None => Err(SyncError::AttachFailed {
-            message: format!("runtime thread stopped before sending the {}", what),
+            source: DbError::runtime_error(format!(
+                "runtime thread stopped before sending the {}",
+                what
+            )),
         }),
     }
 }
@@ -187,7 +193,7 @@ impl AimDbHandle {
             .name("aimdb-sync-runtime".to_string())
             .spawn(|| Self::setup_background(builder, shutdown_rx, db_tx, handle_tx, alive_tx))
             .map_err(|e| SyncError::AttachFailed {
-                message: format!("Failed to spawn runtime thread: {}", e),
+                source: DbError::runtime_error(format!("Failed to spawn runtime thread: {}", e)),
             })?;
 
         // Both report the thread's own reason for failing rather than only the
@@ -236,9 +242,11 @@ impl AimDbHandle {
                         // Report the reason before dying. Dropping the sender
                         // would already unblock the caller; this is what gives
                         // it something to print.
-                        let cause = format!("Failed to create Tokio runtime: {}", e);
-                        log_error!("{}", cause);
-                        let _ = handle_tx.blocking_send(Err(cause));
+                        log_error!("Failed to create Tokio runtime: {}", e);
+                        let _ = handle_tx.blocking_send(Err(DbError::runtime_error(format!(
+                            "Failed to create Tokio runtime: {}",
+                            e
+                        ))));
                         return;
                     }
                 };
@@ -259,7 +267,7 @@ impl AimDbHandle {
                 });
             })
             .map_err(|e| SyncError::AttachFailed {
-                message: format!("Failed to spawn runtime thread: {}", e),
+                source: DbError::runtime_error(format!("Failed to spawn runtime thread: {}", e)),
             })?;
 
         let runtime_handle = recv_startup(&mut handle_rx, "runtime handle")?;
@@ -512,9 +520,11 @@ impl AimDbHandle {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                let cause = format!("Failed to create Tokio runtime: {}", e);
-                log_error!("{}", cause);
-                let _ = handle_tx.blocking_send(Err(cause));
+                log_error!("Failed to create Tokio runtime: {}", e);
+                let _ = handle_tx.blocking_send(Err(DbError::runtime_error(format!(
+                    "Failed to create Tokio runtime: {}",
+                    e
+                ))));
                 return;
             }
         };
@@ -530,9 +540,9 @@ impl AimDbHandle {
             let (db, runner) = match builder.build().await {
                 Ok(d) => (Arc::new(d.0), d.1),
                 Err(e) => {
-                    let cause = format!("Failed to build database: {}", e);
-                    log_error!("{}", cause);
-                    let _ = db_tx.send(Err(cause)).await;
+                    // Sent as-is: this is the error whose kind is worth keeping.
+                    log_error!("Failed to build database: {}", e);
+                    let _ = db_tx.send(Err(e)).await;
                     return;
                 }
             };

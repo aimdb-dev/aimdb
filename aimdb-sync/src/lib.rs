@@ -143,7 +143,9 @@
 //!   returned `Ok` into a buffer nobody drains is refused instead (std, Unix)
 //! - `SetTimeout`: Producer timeout expired
 //! - `GetTimeout`: Consumer timeout expired or no data (try_get)
-//! - `AttachFailed`: Failed to start runtime thread
+//! - `AttachFailed`: Failed to start runtime thread, carrying the `DbError`
+//!   that caused it — so `kind()` reports a bad record graph as
+//!   `Configuration` rather than as an internal fault
 //! - `DetachFailed`: Failed to stop runtime thread
 //! - `Db(DbError)`: Any error from the underlying database (e.g. record not
 //!   registered), wrapped unchanged

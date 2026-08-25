@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **`SyncError::AttachFailed` carries a `DbError` instead of a `String`.** The
+  field is now `source: DbError` rather than `message: String`. Flattening the
+  cause to a string threw away its classification one layer below where it is
+  useful: a startup that failed because the record graph was misconfigured still
+  reported `DbErrorKind::Internal`, even though the message said otherwise.
+  `SyncError::kind()` now delegates to the cause, so that case classifies as
+  `Configuration`. The `Display` output is unchanged in substance, and the cause
+  is exposed through `std::error::Error::source`.
 - **`SyncError` is `#[non_exhaustive]`.** Downstream exhaustive matches now need
   a wildcard arm; match on `kind()` instead where you only need to know what to
   do. This is what makes every future `SyncError` variant additive rather than
