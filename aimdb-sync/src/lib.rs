@@ -171,8 +171,10 @@
 //! ## Safety
 //!
 //! `SyncProducer` is `Clone`, `Send + Sync` — share it freely across threads.
-//! `SyncConsumer` is `Send` only, not `Clone` — move it to a thread, don't share it;
-//! get independent readers via separate `handle.consumer()` calls instead.
+//! `SyncConsumer` is `Send` only, not `Clone` — it is a subscription with its own
+//! cursor, so move it to a thread and give each thread its own via a separate
+//! `handle.consumer()` call. Every consumer then sees every value. To *split* one
+//! stream across workers instead, share one as `Arc<Mutex<SyncConsumer<T>>>`.
 //! The API ensures proper resource cleanup through RAII and explicit `detach()`.
 
 #![warn(missing_docs)]
