@@ -177,10 +177,19 @@ impl MqttConnectorImpl {
             mqtt_opts.set_credentials(username, password);
         }
 
-        // mqtts:// selects the TLS transport (system trust roots via
-        // native-tls); rumqttc otherwise speaks plain TCP regardless of port.
+        // mqtts:// selects the TLS transport; rumqttc otherwise speaks plain TCP
+        // regardless of port. Which stack answers is a build-time choice.
+        //
+        // The whole branch is gated, not just the configuration: rumqttc gates
+        // `TlsConfiguration` *and* `Transport::Tls` on having a backend, so a
+        // build with neither cannot even name the types.
+        #[cfg(any(feature = "tokio-native-tls", feature = "tokio-rustls"))]
         if connector_url.scheme == "mqtts" {
-            mqtt_opts.set_transport(rumqttc::Transport::Tls(rumqttc::TlsConfiguration::Native));
+            mqtt_opts.set_transport(rumqttc::Transport::Tls(tls_configuration()?));
+        }
+        #[cfg(not(any(feature = "tokio-native-tls", feature = "tokio-rustls")))]
+        if connector_url.scheme == "mqtts" {
+            return Err(no_tls_backend());
         }
 
         // Wrap router early so we can count topics for capacity calculation
@@ -341,6 +350,47 @@ impl Source for MqttEventLoopSource {
             }
         })
     }
+}
+
+/// The TLS configuration for `mqtts://`, from whichever backend this build
+/// selected.
+#[cfg(feature = "tokio-native-tls")]
+fn tls_configuration() -> Result<rumqttc::TlsConfiguration, String> {
+    Ok(rumqttc::TlsConfiguration::Native)
+}
+
+/// Built by hand rather than via `TlsConfiguration::default()`, which does the
+/// same work and then `expect`s on failure. A panic on the connect path is
+/// undefined behaviour across an FFI boundary; a returned error is a status.
+#[cfg(all(feature = "tokio-rustls", not(feature = "tokio-native-tls")))]
+fn tls_configuration() -> Result<rumqttc::TlsConfiguration, String> {
+    use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
+
+    let mut roots = RootCertStore::empty();
+    for cert in rustls_native_certs::load_native_certs().certs {
+        // A trust store with one unparseable certificate is still a trust
+        // store; refusing the lot would be worse than skipping the entry.
+        let _ = roots.add(cert);
+    }
+    if roots.is_empty() {
+        return Err("no usable platform trust roots were found, so no broker \
+                    certificate could be verified"
+            .to_string());
+    }
+
+    Ok(rumqttc::TlsConfiguration::Rustls(Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )))
+}
+
+/// Why an `mqtts://` url cannot be honoured by a build with no TLS backend.
+#[cfg(not(any(feature = "tokio-native-tls", feature = "tokio-rustls")))]
+fn no_tls_backend() -> String {
+    "this build has no TLS backend — rebuild aimdb-mqtt-connector with the \
+     `tokio-rustls` or `tokio-native-tls` feature, or use an mqtt:// url"
+        .to_string()
 }
 
 #[cfg(test)]

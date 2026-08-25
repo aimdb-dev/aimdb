@@ -23,6 +23,16 @@ tokio-runtime = [
     "async-stream",
     "futures-util",
 ]
+# TLS backend for the tokio client (`mqtts://`). Pick one, or neither.
+#
+# Neither is a real choice rather than an oversight: a deployment that speaks
+# `mqtt://` on a trusted network links no TLS stack at all, which for a shared
+# library is the difference between inheriting a system OpenSSL ABI and
+# inheriting nothing. `mqtts://` then fails at connect time with a message
+# naming the missing feature, rather than at the linker.
+tokio-native-tls = ["tokio-runtime", "rumqttc/use-native-tls"]
+tokio-rustls = ["tokio-runtime", "rumqttc/use-rustls", "dep:rustls-native-certs"]
+
 embassy-runtime = [
     "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
     "aimdb-core/connector-session",              # `pump_sink`/`pump_source`/`Source`/`Payload`
@@ -65,9 +75,15 @@ uuid = { version = "1.0", features = ["v4"], optional = true }
 
 # Tokio runtime dependencies (std)
 tokio = { workspace = true, optional = true, features = ["sync", "time"] }
-rumqttc = { version = "0.25", optional = true, default-features = false, features = [
-    "use-native-tls",
-] }
+# No TLS feature here: the backend is the consumer's choice, made through
+# `tokio-native-tls` or `tokio-rustls`. rumqttc's own default is `use-rustls`;
+# `default-features = false` keeps that from arriving behind the choice.
+rumqttc = { version = "0.25", optional = true, default-features = false }
+
+# Platform trust roots for the rustls backend. rumqttc's
+# `TlsConfiguration::default()` loads these too, but `expect`s on failure — and
+# a panic on the connect path is what an FFI consumer cannot afford.
+rustls-native-certs = { version = "0.8", optional = true }
 async-stream = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true, default-features = false, features = [
     "alloc",
