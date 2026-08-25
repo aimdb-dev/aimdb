@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`DbError::kind()` and `DbErrorKind`.** Eight action-shaped kinds — `Retry`,
+  `Lagged`, `Closed`, `Transport`, `Data`, `Configuration`, `Usage`, `Internal` —
+  so a caller can decide what to do without matching ~20 variants. The match in
+  `kind()` is exhaustive inside this crate, so a variant added later is a compile
+  error here rather than a silent reclassification at every downstream wildcard.
+
+### Changed (breaking)
+
+- **`DbError` is `#[non_exhaustive]`.** Downstream exhaustive matches now need a
+  wildcard arm; match on `kind()` instead where you only need to know what to do
+  about the failure. No in-tree match required a change. This is what makes every
+  future `DbError` variant additive.
+
 ### Documentation
 
 - **`RecordMetadata` states that liveness is an observability extra.** A

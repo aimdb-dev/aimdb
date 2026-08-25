@@ -47,7 +47,7 @@ pub mod typed_record;
 
 // Public API exports
 pub use context::RuntimeContext;
-pub use error::{ConfigError, DbError, DbResult};
+pub use error::{ConfigError, DbError, DbErrorKind, DbResult};
 pub use extensions::Extensions;
 
 // Runtime capability surface: the runtime travels as `Arc<dyn RuntimeOps>`,
