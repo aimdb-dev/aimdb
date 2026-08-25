@@ -9,10 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`SyncError::kind()`.** Returns `aimdb_core::DbErrorKind` rather than a kind
+  of its own, so a caller — an FFI layer above all — has one set of actions for
+  the whole stack instead of one per crate. The `Db` arm delegates, so a buffer
+  that is merely empty classifies identically whether it is reached through this
+  facade or through `aimdb-core` directly.
 - **`SyncProducer<T: Settable>::set_value`/`try_set_value`/`set_value_at`** (design 041 §3.4, feature `data-contracts`). `set()` took a fully constructed `T`, so every outside-the-thread caller hand-assembled the struct; `set_value(value)` constructs via `T::set(value, timestamp)` and sends in one call — blocking (`set_value`), non-blocking (`try_set_value`), or with an explicit timestamp for replay/testing (`set_value_at`). `set_value`/`try_set_value` stamp the caller's `SystemTime` (crate is std-only). New optional dependency: `aimdb-data-contracts` (feature `settable`), behind the new `data-contracts` feature — the contracts crate gains no `sync` feature (dependency direction unchanged).
 
 ### Changed (breaking)
 
+- **`SyncError` is `#[non_exhaustive]`.** Downstream exhaustive matches now need
+  a wildcard arm; match on `kind()` instead where you only need to know what to
+  do. This is what makes every future `SyncError` variant additive rather than
+  breaking.
 - **Issue #131:** `AimDbSyncExt` extends the non-generic `aimdb_core::AimDb`; internal handles drop the `TokioAdapter` type parameter.
 - **Issue #200:** the internal channel bridge to the `tokio` thread is gone — blocking calls now call the runtime directly using the `block_on` seam. API implications:
   - `SyncProducer::set_with_timeout` removed
