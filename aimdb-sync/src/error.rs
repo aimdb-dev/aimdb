@@ -40,6 +40,11 @@ pub enum SyncError {
     #[error("Runtime thread has shut down")]
     RuntimeShutdown,
 
+    /// This handle, producer or consumer was created before a `fork()`, and
+    /// this is the child. The runtime thread it needs did not survive.
+    #[error("created before a fork(); this process has no runtime thread for it")]
+    ForkedChild,
+
     /// Error from the underlying database.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -62,7 +67,9 @@ impl SyncError {
 
             Self::SetTimeout | Self::GetTimeout => DbErrorKind::Retry,
 
-            Self::RuntimeShutdown => DbErrorKind::Closed,
+            // Terminal for the same reason RuntimeShutdown is: the runtime
+            // thread is gone and will not come back in this process.
+            Self::RuntimeShutdown | Self::ForkedChild => DbErrorKind::Closed,
 
             Self::Db(err) => err.kind(),
         }

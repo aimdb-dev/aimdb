@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`fork()` safety.** A child of `fork` inherits every handle, producer and
+  consumer the parent held, and none of the runtime thread that makes them work
+  — so its `set()` used to return `Ok` into a buffer nobody drains. Handles,
+  producers and consumers now record a fork generation and refuse with the new
+  `SyncError::ForkedChild` once the process has forked since they were made.
+  `detach` and `Drop` release the runtime thread's `JoinHandle` rather than
+  joining a thread this process does not have, which panicked inside `std`.
+  Detection is a lazily registered `pthread_atfork` handler, so the check on the
+  publish path is one relaxed atomic load, and a program that never attaches
+  never installs a handler. `fork::generation` and `fork::forked_since` are
+  public because a layer built on this crate needs the same answer without
+  taking a lock the runtime thread may hold. A database the child attaches
+  *itself* after forking is unaffected — the guard is a generation counter, not
+  a poison flag.
 - **A panic-freedom contract on the blocking surface.** The crate is compiled
   under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
   its own tests, so "a panic here is a bug, not an error channel" is checked

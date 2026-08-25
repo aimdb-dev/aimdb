@@ -121,6 +121,10 @@ pub struct AimDbHandle {
 
     /// Shared reference to the database (protected by Arc for thread safety)
     db: Arc<AimDb>,
+
+    /// The fork generation this handle was created in. A `fork` copies this
+    /// struct but not `thread_handle`'s thread. See [`crate::fork`].
+    made_in: crate::fork::Generation,
 }
 
 /// Signal to shut down the runtime thread.
@@ -152,6 +156,9 @@ fn recv_startup<T>(rx: &mut mpsc::Receiver<Startup<T>>, what: &str) -> SyncResul
 impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
     pub(crate) fn new_from_builder(builder: AimDbBuilder) -> SyncResult<Self> {
+        // Lazily, so a program that never attaches never installs a handler.
+        crate::fork::arm();
+
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
@@ -177,10 +184,13 @@ impl AimDbHandle {
             shutdown_tx: Some(shutdown_tx),
             runtime_handle,
             db,
+            made_in: crate::fork::generation(),
         })
     }
 
     pub(crate) fn new(db: AimDb) -> SyncResult<Self> {
+        crate::fork::arm();
+
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
@@ -235,7 +245,17 @@ impl AimDbHandle {
             shutdown_tx: Some(shutdown_tx),
             runtime_handle,
             db,
+            made_in: crate::fork::generation(),
         })
+    }
+
+    /// Refuse if this process has forked since the handle was created.
+    #[inline]
+    fn check_fork(&self) -> SyncResult<()> {
+        if crate::fork::forked_since(self.made_in) {
+            return Err(SyncError::ForkedChild);
+        }
+        Ok(())
     }
 
     /// Create a synchronous producer for type `T`.
@@ -265,6 +285,7 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
+        self.check_fork()?;
         Ok(crate::SyncProducer::new(Arc::downgrade(&self.db), key))
     }
 
@@ -301,6 +322,7 @@ impl AimDbHandle {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
+        self.check_fork()?;
         let record_key = key.as_ref().to_string();
         let reader = self.db.subscribe::<T>(&record_key).map_err(SyncError::Db)?;
         let waiter = Waiter::new(self.runtime_handle.clone());
@@ -359,6 +381,17 @@ impl AimDbHandle {
 
     /// Internal detach implementation.
     fn detach_internal(&mut self, timeout: Option<Duration>) -> SyncResult<()> {
+        // A forked child holds a `JoinHandle` for a thread that does not exist
+        // here, and joining it is not merely useless: it panics inside `std`
+        // with "threads should not terminate unexpectedly", which for an FFI
+        // caller means a Rust backtrace on stderr from a destructor. Release
+        // the handle instead — the thread is the parent's to reap.
+        if crate::fork::forked_since(self.made_in) {
+            let _ = self.shutdown_tx.take();
+            let _ = self.thread_handle.take();
+            return Err(SyncError::ForkedChild);
+        }
+
         // Send shutdown signal
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             // Try to send shutdown signal (non-blocking)
@@ -476,6 +509,14 @@ impl Drop for AimDbHandle {
     /// Logs a warning and attempts shutdown with a 5-second timeout.
     /// If shutdown fails, the runtime thread may be left running.
     fn drop(&mut self) {
+        // A child's handle owns nothing that runs. Releasing it quietly is
+        // correct; the warning below is for a *parent* that forgot to detach.
+        if crate::fork::forked_since(self.made_in) {
+            let _ = self.shutdown_tx.take();
+            let _ = self.thread_handle.take();
+            return;
+        }
+
         if self.thread_handle.is_some() {
             log_warn!("Warning: AimDbHandle dropped without calling detach()");
             log_warn!("Attempting emergency shutdown with 5 second timeout");

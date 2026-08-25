@@ -209,6 +209,8 @@ extern crate alloc;
 mod consumer;
 mod error;
 #[cfg(feature = "std")]
+pub mod fork;
+#[cfg(feature = "std")]
 mod handle;
 #[cfg(feature = "std")]
 mod producer;
