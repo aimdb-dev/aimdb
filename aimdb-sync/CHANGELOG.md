@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A panic-freedom contract on the blocking surface.** The crate is compiled
+  under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
+  its own tests, so "a panic here is a bug, not an error channel" is checked
+  rather than remembered. There were no violations left to fix — the last two
+  went with the mutex removed in #226 — so this is a ratchet, not a cleanup.
+  It matters most across an FFI boundary, where unwinding is undefined
+  behaviour and a consumer's `panic = "abort"` turns any panic into the whole
+  process dying. Documented with its two limits: `block_on` still panics if
+  called from inside a Tokio runtime, and the guarantee stops at this crate's
+  edge.
 - **`SyncError::kind()`.** Returns `aimdb_core::DbErrorKind` rather than a kind
   of its own, so a caller — an FFI layer above all — has one set of actions for
   the whole stack instead of one per crate. The `Db` arm delegates, so a buffer

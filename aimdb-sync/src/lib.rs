@@ -176,9 +176,30 @@
 //! `handle.consumer()` call. Every consumer then sees every value. To *split* one
 //! stream across workers instead, share one as `Arc<Mutex<SyncConsumer<T>>>`.
 //! The API ensures proper resource cleanup through RAII and explicit `detach()`.
+//!
+//! **A panic from this crate is a bug, not an error channel.** Every failure is
+//! a [`SyncError`]. The blocking surface is compiled under
+//! `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` so the
+//! property is checked rather than remembered. This matters most to callers
+//! reaching the crate from another language: a panic unwinding past an FFI
+//! boundary is undefined behaviour, and a consumer whose profile sets
+//! `panic = "abort"` turns any panic into the whole process dying.
+//!
+//! Two things this does not promise. `block_on` panics if called from inside a
+//! Tokio runtime — the blocking surface must be entered from a thread that is
+//! not already running one. And the guarantee stops at this crate's edge: a
+//! dependency reached through it can still panic on its own.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+// A panic on this surface is not an error channel, it is a bug. Callers reach
+// this crate from other languages, where unwinding past the boundary is
+// undefined behaviour and `panic = "abort"` in a consumer's profile turns any
+// panic into the whole process dying. Checked rather than remembered.
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
