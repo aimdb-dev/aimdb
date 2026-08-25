@@ -127,6 +127,28 @@ pub struct AimDbHandle {
 #[derive(Debug, Clone, Copy)]
 struct ShutdownSignal;
 
+/// What the runtime thread reports back while starting up: the thing itself,
+/// or why it could not be produced.
+type Startup<T> = Result<T, String>;
+
+/// Wait for one startup report, turning every outcome into a `SyncResult`.
+///
+/// The `None` arm is what makes this a wait rather than a hang: a runtime
+/// thread that dies without reporting drops its sender, and a dropped sender
+/// closes the channel.
+///
+/// Blocks the calling thread, so it must not be called from inside a Tokio
+/// runtime.
+fn recv_startup<T>(rx: &mut mpsc::Receiver<Startup<T>>, what: &str) -> SyncResult<T> {
+    match rx.blocking_recv() {
+        Some(Ok(value)) => Ok(value),
+        Some(Err(cause)) => Err(SyncError::AttachFailed { message: cause }),
+        None => Err(SyncError::AttachFailed {
+            message: format!("runtime thread stopped before sending the {}", what),
+        }),
+    }
+}
+
 impl AimDbHandle {
     /// Create a new handle by spawning the runtime thread and building the database inside it.
     pub(crate) fn new_from_builder(builder: AimDbBuilder) -> SyncResult<Self> {
@@ -134,8 +156,8 @@ impl AimDbHandle {
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
         // Create channels for passing the built database and runtime handle back
-        let (db_tx, mut db_rx) = mpsc::channel::<Arc<AimDb>>(1);
-        let (handle_tx, mut handle_rx) = mpsc::channel::<tokio::runtime::Handle>(1);
+        let (db_tx, mut db_rx) = mpsc::channel::<Startup<Arc<AimDb>>>(1);
+        let (handle_tx, mut handle_rx) = mpsc::channel::<Startup<tokio::runtime::Handle>>(1);
 
         // Spawn the runtime thread
         let thread_handle = thread::Builder::new()
@@ -145,19 +167,10 @@ impl AimDbHandle {
                 message: format!("Failed to spawn runtime thread: {}", e),
             })?;
 
-        // Wait for runtime handle to be available
-        let runtime_handle = handle_rx
-            .blocking_recv()
-            .ok_or_else(|| SyncError::AttachFailed {
-                message: "Runtime thread failed to send handle".to_string(),
-            })?;
-
-        // Wait for database to be built
-        let db = db_rx
-            .blocking_recv()
-            .ok_or_else(|| SyncError::AttachFailed {
-                message: "Runtime thread failed to build database".to_string(),
-            })?;
+        // Both report the thread's own reason for failing rather than only the
+        // fact that it failed.
+        let runtime_handle = recv_startup(&mut handle_rx, "runtime handle")?;
+        let db = recv_startup(&mut db_rx, "database")?;
 
         Ok(Self {
             thread_handle: Some(thread_handle),
@@ -171,13 +184,14 @@ impl AimDbHandle {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
 
+        // A channel rather than a mutex the caller polls — the same shape
+        // `new_from_builder` has always used. See `recv_startup`.
+        let (handle_tx, mut handle_rx) = mpsc::channel::<Startup<tokio::runtime::Handle>>(1);
+
         // Wrap database in Arc for sharing
         let db = Arc::new(db);
 
         // Spawn the runtime thread
-        let runtime_handle_result = Arc::new(std::sync::Mutex::new(None));
-        let runtime_handle_clone = runtime_handle_result.clone();
-
         let thread_handle = thread::Builder::new()
             .name("aimdb-sync-runtime".to_string())
             .spawn(move || {
@@ -185,15 +199,23 @@ impl AimDbHandle {
                 let runtime = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log_error!("Failed to create Tokio runtime: {}", e);
+                        // Report the reason before dying. Dropping the sender
+                        // would already unblock the caller; this is what gives
+                        // it something to print.
+                        let cause = format!("Failed to create Tokio runtime: {}", e);
+                        log_error!("{}", cause);
+                        let _ = handle_tx.blocking_send(Err(cause));
                         return;
                     }
                 };
 
-                // Store the runtime handle so the main thread can access it
+                // Hand the runtime handle to the caller.
+                if handle_tx
+                    .blocking_send(Ok(runtime.handle().clone()))
+                    .is_err()
                 {
-                    let mut handle = runtime_handle_clone.lock().unwrap();
-                    *handle = Some(runtime.handle().clone());
+                    log_error!("Failed to send runtime handle to main thread");
+                    return;
                 }
 
                 // Wait for shutdown signal
@@ -206,14 +228,7 @@ impl AimDbHandle {
                 message: format!("Failed to spawn runtime thread: {}", e),
             })?;
 
-        // Wait for runtime handle to be available
-        let runtime_handle = loop {
-            let handle_opt = runtime_handle_result.lock().unwrap().clone();
-            if let Some(handle) = handle_opt {
-                break handle;
-            }
-            thread::sleep(Duration::from_millis(1));
-        };
+        let runtime_handle = recv_startup(&mut handle_rx, "runtime handle")?;
 
         Ok(Self {
             thread_handle: Some(thread_handle),
@@ -355,36 +370,40 @@ impl AimDbHandle {
         if let Some(thread_handle) = self.thread_handle.take() {
             match timeout {
                 Some(duration) => {
-                    // Join with timeout using a different approach since JoinHandle
-                    // doesn't directly support timeouts
-                    let handle_thread = thread::spawn(move || thread_handle.join());
+                    // `JoinHandle` has no timed join, so a helper thread does the
+                    // blocking join and reports through a channel. `recv_timeout`
+                    // parks until the thread is actually down, so a shutdown that
+                    // takes 1 ms costs 1 ms instead of being rounded up to the
+                    // next tick of a sleep loop.
+                    let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
+                    thread::spawn(move || {
+                        // Fails only if the caller already timed out and dropped
+                        // the receiver — that is how this thread learns nobody
+                        // is listening, not an error worth reporting.
+                        let _ = done_tx.send(thread_handle.join().is_ok());
+                    });
 
-                    // Wait for the thread to complete with timeout
-                    let start = std::time::Instant::now();
-                    loop {
-                        if handle_thread.is_finished() {
-                            break;
+                    match done_rx.recv_timeout(duration) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return Err(SyncError::DetachFailed {
+                                message: "Runtime thread panicked".to_string(),
+                            })
                         }
-                        if start.elapsed() > duration {
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             return Err(SyncError::DetachFailed {
                                 message: format!(
                                     "Runtime thread did not shut down within {:?}",
                                     duration
                                 ),
-                            });
+                            })
                         }
-                        thread::sleep(Duration::from_millis(10));
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            return Err(SyncError::DetachFailed {
+                                message: "Failed to join helper thread".to_string(),
+                            })
+                        }
                     }
-
-                    // Retrieve the result
-                    handle_thread
-                        .join()
-                        .map_err(|_| SyncError::DetachFailed {
-                            message: "Failed to join helper thread".to_string(),
-                        })?
-                        .map_err(|_| SyncError::DetachFailed {
-                            message: "Runtime thread panicked".to_string(),
-                        })?;
                 }
                 None => {
                     // Join without timeout
@@ -401,21 +420,23 @@ impl AimDbHandle {
     fn setup_background(
         builder: AimDbBuilder,
         mut shutdown_rx: mpsc::Receiver<ShutdownSignal>,
-        db_tx: mpsc::Sender<Arc<AimDb>>,
-        handle_tx: mpsc::Sender<tokio::runtime::Handle>,
+        db_tx: mpsc::Sender<Startup<Arc<AimDb>>>,
+        handle_tx: mpsc::Sender<Startup<tokio::runtime::Handle>>,
     ) {
         // Create a new Tokio runtime for this thread
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                log_error!("Failed to create Tokio runtime: {}", e);
+                let cause = format!("Failed to create Tokio runtime: {}", e);
+                log_error!("{}", cause);
+                let _ = handle_tx.blocking_send(Err(cause));
                 return;
             }
         };
         // Get the runtime handle before moving into block_on
         let rt_handle = runtime.handle().clone();
         // Send the runtime handle to the main thread
-        if handle_tx.blocking_send(rt_handle).is_err() {
+        if handle_tx.blocking_send(Ok(rt_handle)).is_err() {
             log_error!("Failed to send runtime handle to main thread");
             return;
         }
@@ -424,13 +445,15 @@ impl AimDbHandle {
             let (db, runner) = match builder.build().await {
                 Ok(d) => (Arc::new(d.0), d.1),
                 Err(e) => {
-                    log_error!("Failed to build database: {}", e);
+                    let cause = format!("Failed to build database: {}", e);
+                    log_error!("{}", cause);
+                    let _ = db_tx.send(Err(cause)).await;
                     return;
                 }
             };
 
             // Send the database to the main thread
-            if db_tx.send(db.clone()).await.is_err() {
+            if db_tx.send(Ok(db.clone())).await.is_err() {
                 log_error!("Failed to send database to main thread");
                 return;
             }
