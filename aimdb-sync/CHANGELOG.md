@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`AimDbSyncExt::attach` no longer spins, and can no longer hang.** The
+  constructor polled a `Mutex<Option<Handle>>` on a 1 ms sleep while the runtime
+  thread filled it — and that thread returns early if `Runtime::new()` fails, so
+  the wait never ended. It now takes the same channel-and-`blocking_recv` shape
+  `AimDbBuilderSyncExt::attach` has always used: a runtime thread that dies drops
+  its sender, which closes the channel, which ends the wait with
+  `SyncError::AttachFailed`.
+- **A startup failure now carries its cause.** Both constructors' channels carry
+  a `Result`, so a failed `Runtime::new()` or a failed `build()` reports *why*
+  instead of only that it happened — previously the reason reached the log sink
+  and nothing else, which for an FFI consumer meant a status code and an empty
+  explanation.
+- **`detach_timeout` parks instead of polling.** The wait used a 10 ms sleep
+  loop, so every shutdown paid up to 10 ms it did not need and the timeout was
+  rounded up to the next tick. It now blocks on `recv_timeout`.
+- **Both `Mutex::lock().unwrap()` sites are gone**, with the mutex they guarded.
+  A poisoned lock could panic out of the blocking surface, which across an FFI
+  boundary is undefined behaviour rather than an error.
+
 ### Added
 
 - **`SyncError::kind()`.** Returns `aimdb_core::DbErrorKind` rather than a kind
