@@ -99,7 +99,11 @@ fn join_config_errors(errors: &[ConfigError]) -> String {
 ///
 /// Only includes errors that are actually used in the codebase,
 /// removing theoretical/unused error variants for simplicity.
+///
+/// `#[non_exhaustive]`: match on [`DbError::kind`] where you only need to know
+/// what to do about the failure.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DbError {
     // ===== Network Errors =====
     /// Connection or timeout failures
@@ -248,6 +252,78 @@ impl DbError {
     }
 }
 
+/// What a caller does about a [`DbError`]: retry, resubscribe, stop, or fix
+/// something — and which something.
+///
+/// Match on this rather than on [`DbError`]'s variants when you only need to
+/// know what to do. A new variant is a compile error in [`DbError::kind`]
+/// rather than a silent reclassification at every downstream wildcard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DbErrorKind {
+    /// Nothing available, or no room, *right now*. Retry.
+    Retry,
+
+    /// Values dropped because this reader fell behind. Note the gap, continue.
+    Lagged,
+
+    /// The database or buffer is shutting down. Stop; retrying cannot help.
+    Closed,
+
+    /// An I/O or connection failure. Retry, or fix the deployment.
+    Transport,
+
+    /// A payload could not be encoded or decoded. Fix the schema or the sender.
+    Data,
+
+    /// The record graph is misconfigured. Fix it before starting.
+    Configuration,
+
+    /// This call was wrong for this record. Fix the call site.
+    Usage,
+
+    /// The database's own machinery or its host. Report a bug.
+    Internal,
+}
+
+impl DbError {
+    /// Classify the failure by what the caller can do about it.
+    ///
+    /// Exhaustive inside the crate that owns the enum: a variant added later
+    /// fails to compile here instead of falling into a downstream wildcard.
+    pub fn kind(&self) -> DbErrorKind {
+        match self {
+            Self::BufferEmpty | Self::BufferFull { .. } => DbErrorKind::Retry,
+
+            Self::BufferLagged { .. } => DbErrorKind::Lagged,
+
+            Self::BufferClosed { .. } => DbErrorKind::Closed,
+
+            Self::ConnectionFailed { .. } => DbErrorKind::Transport,
+
+            Self::MissingConfiguration { .. }
+            | Self::InvalidConfiguration { .. }
+            | Self::CyclicDependency { .. }
+            | Self::TransformInputNotFound { .. } => DbErrorKind::Configuration,
+
+            Self::RecordNotFound { .. }
+            | Self::RecordKeyNotFound { .. }
+            | Self::InvalidRecordId { .. }
+            | Self::TypeMismatch { .. }
+            | Self::InvalidOperation { .. }
+            | Self::PermissionDenied { .. } => DbErrorKind::Usage,
+
+            Self::RuntimeError { .. } | Self::Internal { .. } => DbErrorKind::Internal,
+
+            #[cfg(feature = "std")]
+            Self::Io { .. } | Self::IoWithContext { .. } => DbErrorKind::Transport,
+
+            #[cfg(feature = "std")]
+            Self::Json { .. } | Self::JsonWithContext { .. } => DbErrorKind::Data,
+        }
+    }
+}
+
 /// Type alias for Results using DbError
 pub type DbResult<T> = Result<T, DbError>;
 
@@ -337,5 +413,125 @@ mod tests {
         let json_error = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let db_error: DbError = json_error.into();
         assert!(matches!(db_error, DbError::Json { .. }));
+    }
+
+    #[test]
+    fn kind_maps_each_variant_to_its_action() {
+        use DbErrorKind::*;
+
+        assert_eq!(DbError::BufferEmpty.kind(), Retry);
+        assert_eq!(
+            DbError::BufferFull {
+                size: 8,
+                buffer_name: "b".to_string()
+            }
+            .kind(),
+            Retry
+        );
+
+        assert_eq!(
+            DbError::BufferLagged {
+                lag_count: 3,
+                buffer_name: "b".to_string()
+            }
+            .kind(),
+            Lagged
+        );
+
+        assert_eq!(
+            DbError::BufferClosed {
+                buffer_name: "b".to_string()
+            }
+            .kind(),
+            Closed
+        );
+
+        assert_eq!(
+            DbError::ConnectionFailed {
+                endpoint: "e".to_string(),
+                reason: "r".to_string()
+            }
+            .kind(),
+            Transport
+        );
+
+        assert_eq!(DbError::missing_configuration("p").kind(), Configuration);
+        assert_eq!(
+            DbError::InvalidConfiguration { errors: vec![] }.kind(),
+            Configuration
+        );
+        assert_eq!(
+            DbError::CyclicDependency { records: vec![] }.kind(),
+            Configuration
+        );
+        assert_eq!(
+            DbError::TransformInputNotFound {
+                output_key: "o".to_string(),
+                input_key: "i".to_string()
+            }
+            .kind(),
+            Configuration
+        );
+
+        assert_eq!(
+            DbError::RecordNotFound {
+                record_name: "r".to_string()
+            }
+            .kind(),
+            Usage
+        );
+        assert_eq!(DbError::record_key_not_found("k").kind(), Usage);
+        assert_eq!(DbError::InvalidRecordId { id: 9 }.kind(), Usage);
+        assert_eq!(
+            DbError::TypeMismatch {
+                expected_type: "T".to_string(),
+                record_id: 1
+            }
+            .kind(),
+            Usage
+        );
+        assert_eq!(
+            DbError::InvalidOperation {
+                operation: "o".to_string(),
+                reason: "r".to_string()
+            }
+            .kind(),
+            Usage
+        );
+        assert_eq!(DbError::permission_denied("op").kind(), Usage);
+
+        assert_eq!(DbError::runtime_error("m").kind(), Internal);
+        assert_eq!(
+            DbError::Internal {
+                code: 1,
+                message: "m".to_string()
+            }
+            .kind(),
+            Internal
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn kind_maps_the_std_only_variants() {
+        let io: DbError = std::io::Error::other("x").into();
+        assert_eq!(io.kind(), DbErrorKind::Transport);
+
+        let json: DbError = serde_json::from_str::<serde_json::Value>("nope")
+            .unwrap_err()
+            .into();
+        assert_eq!(json.kind(), DbErrorKind::Data);
+    }
+
+    /// A caller that cannot tell these apart retries forever on a dead buffer.
+    #[test]
+    fn retry_and_closed_stay_distinguishable() {
+        assert_ne!(
+            DbError::BufferEmpty.kind(),
+            DbError::BufferClosed {
+                buffer_name: "b".to_string()
+            }
+            .kind()
+        );
     }
 }
