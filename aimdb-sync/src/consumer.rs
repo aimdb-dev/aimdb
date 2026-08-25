@@ -10,9 +10,20 @@ use std::time::Instant;
 
 /// Synchronous consumer for records of type `T`.
 ///
-/// Not thread-safe - can be moved to another thread, but not cloned.
-/// Each instance of SyncConsumer<T> reading from the same producer
-/// receives data independently according to buffer semantics (SPMC, etc.).
+/// A consumer is a **subscription with its own cursor**. Reading advances that
+/// cursor, which is why the methods take `&mut self`. `Send` but not `Sync`,
+/// and not `Clone`.
+///
+/// [`AimDbHandle::consumer`](crate::AimDbHandle::consumer) takes `&self` and
+/// hands out as many as you like, each with an independent cursor — so the
+/// default shape is **one per thread, and every consumer sees every value**.
+///
+/// To *split* a stream instead, so each value goes to exactly one of several
+/// workers, share one consumer as `Arc<Mutex<SyncConsumer<T>>>`.
+///
+/// Blocking reads drive the future on the *calling* thread, so they cost no
+/// runtime worker — but for the same reason they must not be called from
+/// inside a Tokio runtime.
 ///
 /// # Example
 ///
