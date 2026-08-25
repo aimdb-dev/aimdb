@@ -9,9 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tokio client: the TLS backend for `mqtts://` is now a build-time choice.**
+  Two new features — `tokio-native-tls` (system OpenSSL, what this crate linked
+  before) and `tokio-rustls` (pure Rust, no `libssl`/`libcrypto`) — plus the
+  option of neither. Neither is a supported build rather than an oversight: a
+  deployment speaking `mqtt://` on a trusted network links no TLS stack at all,
+  which for a shared library is the difference between inheriting a system
+  OpenSSL ABI and inheriting nothing. `mqtts://` then fails at connect time with
+  a message naming the missing feature, instead of at the linker. `make test`
+  and `make clippy` gain a leg for each of the three states.
 - **Embassy client: TLS (`mqtts://`) and broker authentication ([design 044](../docs/design/044-embassy-mqtt-tls.md), WP7).** New `embassy-tls` feature (`embassy-runtime` + `embedded-tls`/`embedded-io-async`/`rand_core`, `embassy-net/dns`, `embassy-net/udp`) adds an `embedded-tls` 1.3 session over the Embassy TCP socket, with pure-Rust (`rustpki`) certificate verification (`rsa` + `p384`, so public CA chains verify out of the box) and SNI/hostname verification taken from the broker URL. `MqttConnectorBuilder::new` now accepts `mqtts://host[:port]` (default port 8883) alongside plain `mqtt://` (1883); the scheme selects the transport at `build()`. New `MqttConnectorBuilder::with_tls(TlsOptions)` supplies the TLS materials — entropy (`&'static mut dyn CryptoRngCore`, app-owned TRNG), app-provided static record buffers, and the SNTP server address; `build()` errors if `mqtts://` is used without `.with_tls(...)`, if `.with_tls(...)` is used with a plain `mqtt://` URL, or if the `embassy-tls` feature is off. IPv6 broker literals are rejected at `build()` (can never pass certificate verification); IPv4 literals are allowed with a `defmt` warning (only a private CA that pins the dotted quad in its CN will verify). A connector-internal SNTP (UDP) task backs the TLS clock and gates the first handshake on a successful time sync, so certificate validity is always checked. The plain `mqtt://` path is unchanged.
 - **`MqttConnectorBuilder::with_credentials(username, password)` (Embassy, design 044 D8).** Feeds the MQTT CONNECT username/password on both the plain and TLS transports. The `aimdb-dev/mountain-mqtt` fork submodule is bumped to pick up upstream 0.4's `ConnectionSettings::with_auth`/`authenticated` (`aimdb-dev/mountain-mqtt@89a7129`).
 - `make check` gains an `embassy-runtime,embassy-tls,defmt` clippy leg on `thumbv7em-none-eabihf`.
+
+### Fixed
+
+- **The rustls path no longer builds its configuration through
+  `TlsConfiguration::default()`**, which `expect`s on `load_native_certs()` and
+  `unwrap`s each `add()`. Two panics on the connect path, in a crate reachable
+  through an FFI boundary where a panic is undefined behaviour rather than an
+  error. The configuration is now built explicitly, and a machine with no usable
+  trust roots gets a message saying so.
 
 ### Changed
 

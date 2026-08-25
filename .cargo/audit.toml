@@ -9,4 +9,23 @@ ignore = [
     "RUSTSEC-2023-0071", # rsa timing sidechannel via embedded-tls; no fixed upgrade available
     "RUSTSEC-2026-0110", # bare-metal deprecated via cortex-m (embedded-only transitive)
     "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (transitive via defmt/tabled_derive)
+
+    # rustls-webpki 0.102.8, pulled by rumqttc 0.25.1 (latest) when the
+    # `tokio-rustls` backend is selected. rumqttc pins `rustls-webpki =
+    # "0.102.8"`, so there is no in-range upgrade and no feature-level escape
+    # (`use-rustls-no-provider` is what activates the dependency).
+    #
+    # Not reachable through aimdb-mqtt-connector. rumqttc names webpki in
+    # exactly one place — `WebPki(#[from] webpki::Error)` on its error enum —
+    # and reaches the vulnerable parsing only from `TlsConfiguration::Simple`,
+    # which parses CA PEM files. This connector only ever constructs
+    # `TlsConfiguration::Rustls(Arc<ClientConfig>)`, which rumqttc clones
+    # without touching webpki. Handshake verification runs inside rustls
+    # 0.23.x against rustls-webpki 0.103.x — a separate, patched instance.
+    #
+    # Revisit when rumqttc bumps its pin; these can be dropped then.
+    "RUSTSEC-2026-0049", # rustls-webpki: CRL distribution-point matching
+    "RUSTSEC-2026-0098", # rustls-webpki: URI name constraints
+    "RUSTSEC-2026-0099", # rustls-webpki: name constraints vs wildcard names
+    "RUSTSEC-2026-0104", # rustls-webpki: panic in CRL parsing
 ]

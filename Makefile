@@ -182,8 +182,12 @@ test:
 	cargo test --package aimdb-persistence
 	@printf "$(YELLOW)  → Testing persistence SQLite backend$(NC)\n"
 	cargo test --package aimdb-persistence-sqlite
-	@printf "$(YELLOW)  → Testing MQTT connector$(NC)\n"
+	@printf "$(YELLOW)  → Testing MQTT connector (tokio, no TLS backend)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime"
+	@printf "$(YELLOW)  → Testing MQTT connector (tokio + native-tls)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-native-tls"
+	@printf "$(YELLOW)  → Testing MQTT connector (tokio + rustls)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-rustls"
 	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
 	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
 	@printf "$(YELLOW)  → Testing WebSocket connector (server + client: unit, real-socket e2e, AimDB round-trip)$(NC)\n"
@@ -283,6 +287,12 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --features "std,tokio-runtime" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (embassy)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio, no TLS backend)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-runtime" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio + native-tls)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-native-tls" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio + rustls)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-rustls" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + defmt)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + TLS + defmt)$(NC)\n"
