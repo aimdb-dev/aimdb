@@ -432,6 +432,32 @@ mod tests {
             router,
         )
         .await;
+
+        #[cfg(any(feature = "tokio-native-tls", feature = "tokio-rustls"))]
+        assert!(connector.is_ok());
+
+        // With no backend selected there is no TLS stack to hand the transport,
+        // so mqtts:// is refused here rather than at the linker.
+        #[cfg(not(any(feature = "tokio-native-tls", feature = "tokio-rustls")))]
+        {
+            // `Err(_)` rather than `expect_err`: the Ok half holds an
+            // `EventLoop`, which is not `Debug`.
+            let Err(err) = connector else {
+                panic!("mqtts:// must be refused when no TLS backend is selected");
+            };
+            assert!(
+                err.contains("no TLS backend"),
+                "the error should name the missing feature, got: {err}"
+            );
+        }
+    }
+
+    /// The plain scheme is unaffected by which backend, if any, is selected.
+    #[tokio::test]
+    async fn test_connector_mqtt_url_needs_no_tls_backend() {
+        let router = RouterBuilder::new().build();
+        let connector =
+            MqttConnectorImpl::build_internal("mqtt://broker.example.com:1883", None, router).await;
         assert!(connector.is_ok());
     }
 }
