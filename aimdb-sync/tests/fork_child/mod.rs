@@ -5,21 +5,41 @@
 //! `fork` in a multi-threaded process gives the child an address space in which
 //! every lock held by a thread that did not come across is held forever — the
 //! allocator's above all. Strictly, only async-signal-safe work is sound in the
-//! child. The tests here stay close to that where they can, but proving a
-//! post-fork `attach` works means allocating and spawning a thread, and there
-//! is no version of that assertion which avoids it.
+//! child, and `malloc`/`free` are not.
 //!
-//! This is not theoretical. The first CI run of this suite deadlocked exactly
-//! there and sat until GitHub's six-hour job ceiling killed it, taking the
-//! dependent jobs with it. A test that can hang must not be able to hang
-//! *quietly*: [`in_forked_child`] kills the child and fails once
-//! [`CHILD_TIMEOUT`] passes, so the worst case is a fast, legible failure
-//! rather than a burnt runner.
+//! This is not theoretical. The first CI run of this suite deadlocked and sat
+//! until GitHub's six-hour job ceiling killed it, taking the dependent jobs
+//! with it.
 //!
-//! Isolation does the rest. Each fork test binary keeps the parent as quiet as
-//! it can be at the moment of the fork — the more live threads the parent has,
-//! the likelier the child inherits a held lock — which is why the post-fork
-//! `attach` case has a binary to itself.
+//! # What actually causes it, measured
+//!
+//! Running one binary 60 times per variant, counting hangs:
+//!
+//! | variant | hangs |
+//! |---|---|
+//! | as written, tests in parallel | 11/60 |
+//! | as written, `--test-threads=1` | 17/60 |
+//! | children leak instead of freeing | 1/60 |
+//! | children leak where they can | 11/120 |
+//! | children leak where they can, plus [`settle`] | **0/120** |
+//!
+//! Two things follow. Harness parallelism is *not* the driver — serialising the
+//! tests made it no better, so do not reach for `--test-threads=1`. What does
+//! matter is the allocator lock: the child takes it on every `free`, and the
+//! parent's own freshly-spawned runtime threads are the ones holding it.
+//!
+//! So both ends are addressed. The children below `mem::forget` their inherited
+//! state wherever the destructor is not what is under test — they `_exit`
+//! immediately, so nothing is lost — and [`settle`] gives the parent time to go
+//! quiet before the fork. Alone, the first halves the rate; together they take
+//! it to zero over 120 runs.
+//!
+//! The watchdog is still not optional. `dropping_an_inherited_handle_does_not_
+//! panic` exists to run the destructor and so must free, and [`settle`] is a
+//! duration rather than a handshake, so neither guarantee is absolute. A test
+//! that can hang must not be able to hang *quietly*: [`in_forked_child`] kills
+//! the child and fails once [`CHILD_TIMEOUT`] passes, so the worst case is a
+//! fast, legible failure rather than a burnt runner.
 #![allow(dead_code)]
 
 use std::time::{Duration, Instant};
@@ -34,6 +54,33 @@ pub const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
 
 const POLL: Duration = Duration::from_millis(5);
 
+/// How long to let the parent go quiet before forking. See [`settle`].
+const SETTLE: Duration = Duration::from_millis(100);
+
+/// Wait for the parent's runtime threads to finish starting and park.
+///
+/// `fork` is only safe from a quiescent parent, and a test that has just called
+/// `attach` is the opposite of one: the runtime thread and its Tokio workers are
+/// mid-startup and allocating hard, so a fork caught in that window hands the
+/// child an allocator lock held by a thread that does not exist on its side.
+///
+/// A sleep in a test is usually a smell. Here it is the precondition itself,
+/// and it is the difference between a suite that hangs and one that does not:
+///
+/// | variant | hangs |
+/// |---|---|
+/// | children free, no settle | 11/60 |
+/// | children leak where they can, no settle | 11/120 |
+/// | children leak where they can, **with settle** | **0/120** |
+///
+/// There is no way to observe "the runtime has parked" from out here, so this
+/// is a duration rather than a handshake — which is why the watchdog stays: if
+/// the wait is ever too short on a slower machine, the result is a bounded
+/// failure and not a six-hour job.
+fn settle() {
+    std::thread::sleep(SETTLE);
+}
+
 /// Run `child` in a forked child and return its exit code.
 ///
 /// The child ends with `_exit`, which skips both the test harness's cleanup and
@@ -43,6 +90,8 @@ const POLL: Duration = Duration::from_millis(5);
 /// Panics if the child does not finish within [`CHILD_TIMEOUT`], after killing
 /// it. See the module note for why that matters.
 pub fn in_forked_child(child: impl FnOnce() -> bool) -> i32 {
+    settle();
+
     // SAFETY: `fork` itself is safe to call here; what the child may then do is
     // the real constraint, and the module note covers it.
     match unsafe { libc::fork() } {

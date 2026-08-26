@@ -6,16 +6,19 @@
 //!
 //! # Why this has a binary to itself
 //!
-//! It is the one fork test whose child cannot stay async-signal-safe — proving
-//! `attach` works means allocating and spawning a thread, in a child that
-//! inherited the parent's locks. Sharing a binary with the rest of the suite
-//! put it next to several live Tokio runtimes, and it deadlocked on the first
-//! CI run, hanging until the six-hour job ceiling killed it.
+//! Its child allocates and spawns a thread — proving `attach` works cannot
+//! avoid that — so it is the most exposed of the fork tests to a lock inherited
+//! from a thread that did not survive. It deadlocked on the first CI run and
+//! hung until the six-hour job ceiling killed it.
 //!
-//! Alone, the parent holds only the harness's main thread (parked, waiting on
-//! this one) and this test thread, and it attaches nothing before forking — the
-//! quietest parent this assertion can be made from. The watchdog in
-//! `fork_child` bounds what is left.
+//! What makes it safe here is not the separate binary as such: measurement
+//! showed harness parallelism has no bearing on the hang rate (see the table in
+//! `fork_child`). It is that this test attaches **nothing before forking**, so
+//! the parent has no runtime thread that could be mid-allocation when the fork
+//! happens — every other fork test must attach first in order to have something
+//! to inherit. Its own binary is what keeps it that way: one `attach` anywhere
+//! else in the process would undo it. The watchdog in `fork_child` bounds what
+//! is left.
 #![cfg(all(unix, feature = "std"))]
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_sync::AimDbBuilderSyncExt;
