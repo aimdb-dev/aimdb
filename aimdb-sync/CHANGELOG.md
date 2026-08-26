@@ -39,13 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   joining a thread this process does not have, which panicked inside `std`.
   Detection is a lazily registered `pthread_atfork` handler, so the check on the
   publish path is one relaxed atomic load, and a program that never attaches
-  never installs a handler. `fork::generation` and `fork::forked_since` are
-  public because a layer built on this crate needs the same answer without
-  taking a lock the runtime thread may hold; `generation` arms the handler
-  itself, so a caller that stamps its own state before any database exists —
-  an FFI door opens before it is used — is not handed a number that can never
-  change. A database the child attaches *itself* after forking is unaffected —
-  the guard is a generation counter, not a poison flag.
+  never installs a handler. A database the child attaches *itself* after
+  forking is unaffected — the guard is a generation counter, not a poison flag.
+  The detection is entirely internal: a facade built on this crate will have the
+  same problem for the same reason, but none exists yet, so exposing the
+  stamp-and-compare pair would commit the crate in semver to a model chosen
+  against no real caller.
 - **A panic-freedom contract on the blocking surface.** The crate is compiled
   under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
   its own tests, so "a panic here is a bug, not an error channel" is checked

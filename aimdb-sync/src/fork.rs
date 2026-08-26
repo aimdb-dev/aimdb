@@ -39,7 +39,7 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 ///
 /// Compared, never interpreted: only equality with [`generation`] means
 /// anything.
-pub type Generation = u64;
+pub(crate) type Generation = u64;
 
 #[cfg(unix)]
 extern "C" fn on_fork_in_child() {
@@ -76,10 +76,11 @@ fn load() -> Generation {
 
 /// The generation to stamp on something being created now.
 ///
-/// Public because a layer built *on* this crate has the same problem: an FFI
-/// door holds state of its own that a `fork` invalidates, and needs to answer
-/// "is this still usable" without locking anything the runtime thread might
-/// hold. Record this at construction, compare with [`forked_since`].
+/// Crate-private for now. A layer built *on* this crate has the same problem —
+/// an FFI door holds state of its own that a `fork` invalidates — but no such
+/// layer exists yet, and exposing this would commit us in semver to the
+/// stamp-and-compare model. Widen it when something real needs it, so the
+/// shape can be chosen against that caller rather than guessed at.
 ///
 /// **Arms the handler**, because otherwise it hands out a number that cannot
 /// change. A caller above this crate stamps its own state before any database
@@ -91,7 +92,7 @@ fn load() -> Generation {
 ///
 /// This is the *construction-time* call and is cold. The hot path is
 /// [`forked_since`], which only loads.
-pub fn generation() -> Generation {
+pub(crate) fn generation() -> Generation {
     arm();
     load()
 }
@@ -102,6 +103,86 @@ pub fn generation() -> Generation {
 /// One relaxed load and a comparison — no syscall, no lock, and no arming: if
 /// `made_in` exists then [`generation`] already armed the handler. Safe to call
 /// from anywhere, including while the runtime thread is mid-shutdown.
-pub fn forked_since(made_in: Generation) -> bool {
+pub(crate) fn forked_since(made_in: Generation) -> bool {
     load() != made_in
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A stamp taken before any `attach` must still be invalidated by a fork.
+    ///
+    /// The handler is armed lazily, so something has to trigger it. If arming
+    /// were left to the first `attach`, a stamp taken earlier would compare
+    /// equal forever and a `fork` in that window would go uncounted — the
+    /// silent-success failure this module exists to prevent, one layer up.
+    ///
+    /// This is a unit test rather than an integration test for two reasons.
+    /// [`generation`] is crate-private. And the precondition is that *nothing*
+    /// in the process has armed the handler yet: the lib test binary holds only
+    /// the compile-time `assert_send`/`assert_sync` checks and the
+    /// `SyncError::kind` tests, none of which attach a database, whereas any
+    /// binary sharing space with the fork suite would be armed by its first
+    /// `attach` and this test would then assert nothing.
+    #[test]
+    fn a_stamp_taken_before_any_attach_still_sees_a_fork() {
+        let before_any_attach = generation();
+        assert!(!forked_since(before_any_attach), "nothing has forked yet");
+
+        // SAFETY: the child reads one atomic and `_exit`s. It never allocates,
+        // so the usual "child deadlocks on an allocator lock inherited from a
+        // thread that did not survive the fork" hazard does not arise.
+        let pid = unsafe { libc::fork() };
+        assert_ne!(pid, -1, "fork failed");
+
+        if pid == 0 {
+            let saw_it = forked_since(before_any_attach);
+            // SAFETY: ends the child without running destructors, by design.
+            unsafe { libc::_exit(if saw_it { 0 } else { 1 }) }
+        }
+
+        let status = wait_briefly(pid);
+        assert!(libc::WIFEXITED(status), "child did not exit normally");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "a stamp taken before the first attach must still see the fork"
+        );
+
+        // Only the child's counter moved; the parent is never poisoned.
+        assert!(
+            !forked_since(before_any_attach),
+            "the parent must not be poisoned by forking a child"
+        );
+    }
+
+    /// Reap `pid`, but fail rather than block forever.
+    ///
+    /// The child above cannot deadlock, but "cannot" is what was said about the
+    /// fork suite before it hung a CI job for six hours. A bounded wait costs
+    /// nothing and keeps that failure mode impossible here by construction.
+    fn wait_briefly(pid: libc::pid_t) -> libc::c_int {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut status: libc::c_int = 0;
+            // SAFETY: `pid` is our child and `status` is a valid out-pointer.
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if waited == pid {
+                return status;
+            }
+            assert_eq!(waited, 0, "waitpid failed");
+            if Instant::now() >= deadline {
+                // SAFETY: `pid` is our child; SIGKILL cannot be blocked.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    let mut discard: libc::c_int = 0;
+                    libc::waitpid(pid, &mut discard, 0);
+                }
+                panic!("forked child did not finish within 30s");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }

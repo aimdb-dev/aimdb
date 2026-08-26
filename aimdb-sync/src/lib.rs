@@ -139,8 +139,8 @@
 //!
 //! - `RuntimeShutdown`: The runtime thread stopped
 //! - `ForkedChild`: Created before a `fork()`, and this is the child — the
-//!   runtime thread it needs did not survive (std only; see the `fork`
-//!   module)
+//!   runtime thread it needs did not survive, so a `set()` that would have
+//!   returned `Ok` into a buffer nobody drains is refused instead (std, Unix)
 //! - `SetTimeout`: Producer timeout expired
 //! - `GetTimeout`: Consumer timeout expired or no data (try_get)
 //! - `AttachFailed`: Failed to start runtime thread
@@ -212,7 +212,7 @@ extern crate alloc;
 mod consumer;
 mod error;
 #[cfg(feature = "std")]
-pub mod fork;
+mod fork;
 #[cfg(feature = "std")]
 mod handle;
 #[cfg(feature = "std")]
