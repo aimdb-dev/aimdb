@@ -274,6 +274,22 @@ impl AimDbHandle {
         })
     }
 
+    /// Drop everything tied to a runtime thread that does not exist here.
+    ///
+    /// A forked child inherited all of it: a `JoinHandle` for a thread this
+    /// process never had, the sender that would signal it to stop, and the
+    /// liveness channel that reports when it did. None of it means anything on
+    /// this side of the `fork`, and joining that handle panics inside `std`.
+    ///
+    /// One place rather than two, so a field added to this struct later is
+    /// released by both the `detach` and `Drop` guards or by neither — not by
+    /// whichever one its author happened to read.
+    fn release_inherited(&mut self) {
+        let _ = self.shutdown_tx.take();
+        let _ = self.thread_handle.take();
+        let _ = self.thread_alive.take();
+    }
+
     /// Refuse if this process has forked since the handle was created.
     #[inline]
     fn check_fork(&self) -> SyncResult<()> {
@@ -430,8 +446,7 @@ impl AimDbHandle {
         // caller means a Rust backtrace on stderr from a destructor. Release
         // the handle instead — the thread is the parent's to reap.
         if crate::fork::forked_since(self.made_in) {
-            let _ = self.shutdown_tx.take();
-            let _ = self.thread_handle.take();
+            self.release_inherited();
             return Err(SyncError::ForkedChild);
         }
 
@@ -555,8 +570,7 @@ impl Drop for AimDbHandle {
         // A child's handle owns nothing that runs. Releasing it quietly is
         // correct; the warning below is for a *parent* that forgot to detach.
         if crate::fork::forked_since(self.made_in) {
-            let _ = self.shutdown_tx.take();
-            let _ = self.thread_handle.take();
+            self.release_inherited();
             return;
         }
 
