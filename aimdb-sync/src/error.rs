@@ -15,10 +15,15 @@ use aimdb_core::{DbError, DbErrorKind};
 #[non_exhaustive]
 pub enum SyncError {
     /// Failed to attach the database to the runtime thread.
-    #[error("Failed to attach database: {message}")]
+    ///
+    /// Carries the underlying [`DbError`] rather than a flattened string, so
+    /// [`kind`](Self::kind) can report what actually went wrong — a bad record
+    /// graph classifies as `Configuration`, not as an internal fault.
+    #[error("Failed to attach database: {source}")]
     AttachFailed {
-        /// Human-readable description of the failure.
-        message: String,
+        /// What went wrong underneath.
+        #[source]
+        source: DbError,
     },
 
     /// Failed to detach the database from the runtime thread.
@@ -60,10 +65,13 @@ impl SyncError {
     /// facade or through `aimdb-core` directly.
     pub fn kind(&self) -> DbErrorKind {
         match self {
-            // The cause may well have been a configuration mistake — the
-            // message says so — but these carry a `String`, so its kind does
-            // not survive the trip.
-            Self::AttachFailed { .. } | Self::DetachFailed { .. } => DbErrorKind::Internal,
+            // The cause survives the trip, so a build that failed on a bad
+            // record graph classifies as `Configuration` here too.
+            Self::AttachFailed { source } => source.kind(),
+
+            // Detach failures are the facade's own machinery: a timeout, or a
+            // runtime thread that panicked. Neither has a `DbError` behind it.
+            Self::DetachFailed { .. } => DbErrorKind::Internal,
 
             Self::SetTimeout | Self::GetTimeout => DbErrorKind::Retry,
 
@@ -86,8 +94,24 @@ mod tests {
 
     #[test]
     fn facade_failures_classify_by_action() {
+        // AttachFailed delegates, so the cause's kind is what comes out.
         assert_eq!(
             SyncError::AttachFailed {
+                source: DbError::runtime_error("m")
+            }
+            .kind(),
+            DbErrorKind::Internal
+        );
+        assert_eq!(
+            SyncError::AttachFailed {
+                source: DbError::missing_configuration("broker.url")
+            }
+            .kind(),
+            DbErrorKind::Configuration,
+            "a startup that failed on configuration must not look internal"
+        );
+        assert_eq!(
+            SyncError::DetachFailed {
                 message: "m".to_string()
             }
             .kind(),
