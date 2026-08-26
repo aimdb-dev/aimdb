@@ -302,7 +302,20 @@ Still open, unchanged by this work:
   memory. Adding a `pub(crate)` accessor that returns one would silently undo
   that, which is worth stating because it is the only way back to the old
   shape.
-- Nothing. `SyncConsumer::try_get` was briefly the last opt-in check, on the
+- Three explicit `check()` calls remain, all in `handle.rs`, and none is a
+  guard on a resource:
+
+  | site | what it is |
+  |---|---|
+  | `producer()` | diagnostics. A producer made in a forked child refuses on first use regardless — it holds a `Weak<Runtime>` to the runtime the *parent* stamped. Under the old per-object stamp it would have got the child's generation and never refused, which is why that call had to be blocked then. Failing here still beats failing at the first `set()`. |
+  | `detach_internal` | a branch, not a refusal: release the thread rather than join one this process never had. |
+  | `Drop` | the same branch. |
+
+  `consumer()` no longer checks explicitly — it subscribes through `db()`, which
+  checks — and `db_unchecked`, added as a deliberate hole for it, is deleted.
+  There are now no unchecked accessors in the crate.
+
+- `SyncConsumer::try_get` was briefly the last opt-in check, on the
   argument that it touches no runtime resource so there was nothing to gate.
   That was wrong: it touches the `Reader`, which is precisely the thing to gate.
   The reader now lives in a `Guarded<Reader<T>>` whose value is private to

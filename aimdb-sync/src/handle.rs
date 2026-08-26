@@ -336,6 +336,14 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
+        // Diagnostics, not the guarantee. A producer made in a forked child
+        // would refuse on first use anyway: it holds a `Weak<Runtime>` to the
+        // runtime the *parent* stamped, so there is no fresh stamp to make it
+        // look current. That was not true when each producer copied a stamp at
+        // construction — then a producer built in the child got the child's
+        // generation and never refused, which is why the old code had to block
+        // this call. Kept because failing here beats failing at the first
+        // `set()`, especially across an FFI boundary.
         self.rt.check()?;
         Ok(crate::SyncProducer::new(Arc::downgrade(&self.rt), key))
     }
@@ -373,11 +381,11 @@ impl AimDbHandle {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        self.rt.check()?;
         let record_key = key.as_ref().to_string();
+        // `db()` checks, so subscribing is gated the same way publishing is.
         let reader = self
             .rt
-            .db_unchecked()
+            .db()?
             .subscribe::<T>(&record_key)
             .map_err(SyncError::Db)?;
         Ok(crate::SyncConsumer::new(

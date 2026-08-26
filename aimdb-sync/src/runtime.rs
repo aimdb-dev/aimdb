@@ -114,18 +114,6 @@ impl Runtime {
         self.check()?;
         Ok(&self.db)
     }
-
-    /// The database without the fork check, for the one caller that has already
-    /// made it: [`AimDbHandle::consumer`](crate::AimDbHandle::consumer) checks,
-    /// then subscribes.
-    ///
-    /// Not a hole in the guarantee — it is `pub(crate)` and its one use sits
-    /// directly after a [`Self::check`] — but it is the reason [`Self::db`]
-    /// exists as the ordinary path.
-    #[inline]
-    pub(crate) fn db_unchecked(&self) -> &Arc<AimDb> {
-        &self.db
-    }
 }
 
 /// A borrowed view of a [`Runtime`] that outlives it on purpose.
