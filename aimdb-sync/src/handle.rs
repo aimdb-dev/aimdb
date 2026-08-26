@@ -122,6 +122,19 @@ pub struct AimDbHandle {
     /// Shared reference to the database (protected by Arc for thread safety)
     db: Arc<AimDb>,
 
+    /// Held open by the runtime thread for exactly as long as it runs.
+    ///
+    /// Nothing is ever sent on it. The thread moves the sender in and drops it
+    /// on the way out — normal return, early return or panic alike — so a
+    /// `Disconnected` here means "the thread is done" and a timeout means "it
+    /// is still going". That is a timed join without a second thread to do the
+    /// blocking, which is what `JoinHandle` does not provide.
+    ///
+    /// Behind a `Mutex` only to keep `AimDbHandle: Sync`, which `consumer()`
+    /// relies on — a bare `Receiver` is `Send` but not `Sync`. It is never
+    /// locked: every access goes through `&mut self` and takes it by value.
+    thread_alive: Option<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+
     /// The fork generation this handle was created in. A `fork` copies this
     /// struct but not `thread_handle`'s thread. See [`crate::fork`].
     made_in: crate::fork::Generation,
@@ -166,10 +179,13 @@ impl AimDbHandle {
         let (db_tx, mut db_rx) = mpsc::channel::<Startup<Arc<AimDb>>>(1);
         let (handle_tx, mut handle_rx) = mpsc::channel::<Startup<tokio::runtime::Handle>>(1);
 
+        // See `thread_alive`: never sent on, only dropped when the thread ends.
+        let (alive_tx, thread_alive) = std::sync::mpsc::channel::<()>();
+
         // Spawn the runtime thread
         let thread_handle = thread::Builder::new()
             .name("aimdb-sync-runtime".to_string())
-            .spawn(|| Self::setup_background(builder, shutdown_rx, db_tx, handle_tx))
+            .spawn(|| Self::setup_background(builder, shutdown_rx, db_tx, handle_tx, alive_tx))
             .map_err(|e| SyncError::AttachFailed {
                 message: format!("Failed to spawn runtime thread: {}", e),
             })?;
@@ -182,6 +198,7 @@ impl AimDbHandle {
         Ok(Self {
             thread_handle: Some(thread_handle),
             shutdown_tx: Some(shutdown_tx),
+            thread_alive: Some(std::sync::Mutex::new(thread_alive)),
             runtime_handle,
             db,
             made_in: crate::fork::generation(),
@@ -198,6 +215,9 @@ impl AimDbHandle {
         // `new_from_builder` has always used. See `recv_startup`.
         let (handle_tx, mut handle_rx) = mpsc::channel::<Startup<tokio::runtime::Handle>>(1);
 
+        // See `thread_alive`: never sent on, only dropped when the thread ends.
+        let (alive_tx, thread_alive) = std::sync::mpsc::channel::<()>();
+
         // Wrap database in Arc for sharing
         let db = Arc::new(db);
 
@@ -205,6 +225,10 @@ impl AimDbHandle {
         let thread_handle = thread::Builder::new()
             .name("aimdb-sync-runtime".to_string())
             .spawn(move || {
+                // Moved in so it lives exactly as long as this thread does,
+                // including if an early return below cuts things short.
+                let _alive_tx = alive_tx;
+
                 // Create a new Tokio runtime for this thread
                 let runtime = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
@@ -243,10 +267,27 @@ impl AimDbHandle {
         Ok(Self {
             thread_handle: Some(thread_handle),
             shutdown_tx: Some(shutdown_tx),
+            thread_alive: Some(std::sync::Mutex::new(thread_alive)),
             runtime_handle,
             db,
             made_in: crate::fork::generation(),
         })
+    }
+
+    /// Drop everything tied to a runtime thread that does not exist here.
+    ///
+    /// A forked child inherited all of it: a `JoinHandle` for a thread this
+    /// process never had, the sender that would signal it to stop, and the
+    /// liveness channel that reports when it did. None of it means anything on
+    /// this side of the `fork`, and joining that handle panics inside `std`.
+    ///
+    /// One place rather than two, so a field added to this struct later is
+    /// released by both the `detach` and `Drop` guards or by neither — not by
+    /// whichever one its author happened to read.
+    fn release_inherited(&mut self) {
+        let _ = self.shutdown_tx.take();
+        let _ = self.thread_handle.take();
+        let _ = self.thread_alive.take();
     }
 
     /// Refuse if this process has forked since the handle was created.
@@ -365,6 +406,24 @@ impl AimDbHandle {
     ///
     /// - `SyncError::DetachFailed` if shutdown fails or times out
     ///
+    /// # What a timeout leaves behind
+    ///
+    /// `DetachFailed` from an expired timeout means the runtime thread had not
+    /// finished in time — not that shutdown failed. Concretely:
+    ///
+    /// - The shutdown signal **was** delivered, so the thread stops on its own
+    ///   and drops the database when it does. Nothing is stranded: no thread is
+    ///   left parked waiting to reap it.
+    /// - The handle is consumed either way, so there is nothing left to retry
+    ///   with and no way to wait longer on this handle.
+    /// - Any [`SyncProducer`](crate::SyncProducer) or
+    ///   [`SyncConsumer`](crate::SyncConsumer) you still hold keeps working
+    ///   until the thread stops, then fails with
+    ///   [`SyncError::RuntimeShutdown`].
+    /// - Resources are therefore released *eventually*, not by the time this
+    ///   returns. Use [`detach`](Self::detach), which has no timeout, when you
+    ///   need to know the thread is down.
+    ///
     /// # Example
     ///
     /// ```rust,no_run
@@ -387,8 +446,7 @@ impl AimDbHandle {
         // caller means a Rust backtrace on stderr from a destructor. Release
         // the handle instead — the thread is the parent's to reap.
         if crate::fork::forked_since(self.made_in) {
-            let _ = self.shutdown_tx.take();
-            let _ = self.thread_handle.take();
+            self.release_inherited();
             return Err(SyncError::ForkedChild);
         }
 
@@ -399,53 +457,45 @@ impl AimDbHandle {
             let _ = shutdown_tx.try_send(ShutdownSignal);
         }
 
-        // Join the runtime thread
-        if let Some(thread_handle) = self.thread_handle.take() {
-            match timeout {
-                Some(duration) => {
-                    // `JoinHandle` has no timed join, so a helper thread does the
-                    // blocking join and reports through a channel. `recv_timeout`
-                    // parks until the thread is actually down, so a shutdown that
-                    // takes 1 ms costs 1 ms instead of being rounded up to the
-                    // next tick of a sleep loop.
-                    let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
-                    thread::spawn(move || {
-                        // Fails only if the caller already timed out and dropped
-                        // the receiver — that is how this thread learns nobody
-                        // is listening, not an error worth reporting.
-                        let _ = done_tx.send(thread_handle.join().is_ok());
-                    });
+        let Some(thread_handle) = self.thread_handle.take() else {
+            return Ok(());
+        };
 
-                    match done_rx.recv_timeout(duration) {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            return Err(SyncError::DetachFailed {
-                                message: "Runtime thread panicked".to_string(),
-                            })
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            return Err(SyncError::DetachFailed {
-                                message: format!(
-                                    "Runtime thread did not shut down within {:?}",
-                                    duration
-                                ),
-                            })
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                            return Err(SyncError::DetachFailed {
-                                message: "Failed to join helper thread".to_string(),
-                            })
-                        }
+        if let Some(duration) = timeout {
+            // `JoinHandle` has no timed join. Rather than park a helper thread
+            // in `join()` — which could not be reclaimed when the wait expired,
+            // stranding it for the life of the process — wait on the liveness
+            // channel the runtime thread holds open. See `thread_alive`.
+            if let Some(alive) = self.thread_alive.take() {
+                // Taken by value, so this cannot block and cannot fail; the
+                // poisoned arm is unreachable because nothing ever locks it.
+                let alive = alive.into_inner().unwrap_or_else(|e| e.into_inner());
+                match alive.recv_timeout(duration) {
+                    // The thread dropped its sender, so it is on its way out
+                    // and the join below returns promptly.
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+
+                    // Still running. Release the `JoinHandle` instead of
+                    // blocking on it: the shutdown signal was delivered, so the
+                    // thread stops on its own and drops the database with it.
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::DetachFailed {
+                            message: format!(
+                                "Runtime thread did not shut down within {:?}",
+                                duration
+                            ),
+                        });
                     }
-                }
-                None => {
-                    // Join without timeout
-                    thread_handle.join().map_err(|_| SyncError::DetachFailed {
-                        message: "Runtime thread panicked during shutdown".to_string(),
-                    })?;
+
+                    // Nothing is ever sent on this channel.
+                    Ok(()) => {}
                 }
             }
         }
+
+        thread_handle.join().map_err(|_| SyncError::DetachFailed {
+            message: "Runtime thread panicked during shutdown".to_string(),
+        })?;
 
         Ok(())
     }
@@ -455,6 +505,8 @@ impl AimDbHandle {
         mut shutdown_rx: mpsc::Receiver<ShutdownSignal>,
         db_tx: mpsc::Sender<Startup<Arc<AimDb>>>,
         handle_tx: mpsc::Sender<Startup<tokio::runtime::Handle>>,
+        // Never sent on: dropped when this function returns, by any path.
+        _alive_tx: std::sync::mpsc::Sender<()>,
     ) {
         // Create a new Tokio runtime for this thread
         let runtime = match tokio::runtime::Runtime::new() {
@@ -504,27 +556,33 @@ impl AimDbHandle {
 }
 
 impl Drop for AimDbHandle {
-    /// Attempts graceful shutdown if `detach()` was not called.
+    /// Signals shutdown and releases the thread. Never blocks.
     ///
-    /// Logs a warning and attempts shutdown with a 5-second timeout.
-    /// If shutdown fails, the runtime thread may be left running.
+    /// A destructor is the one place a failure cannot be reported — it can only
+    /// log — so blocking here buys nothing the caller can act on. It also runs
+    /// in places that must not stall: during unwinding, and inside a C++
+    /// destructor when the handle is owned across an FFI boundary. The shutdown
+    /// signal is what actually causes cleanup, and it is delivered either way;
+    /// joining would only change when the caller learns it finished.
+    ///
+    /// Call [`detach`](Self::detach) if you need to know that it did.
     fn drop(&mut self) {
         // A child's handle owns nothing that runs. Releasing it quietly is
         // correct; the warning below is for a *parent* that forgot to detach.
         if crate::fork::forked_since(self.made_in) {
-            let _ = self.shutdown_tx.take();
-            let _ = self.thread_handle.take();
+            self.release_inherited();
             return;
         }
 
         if self.thread_handle.is_some() {
-            log_warn!("Warning: AimDbHandle dropped without calling detach()");
-            log_warn!("Attempting emergency shutdown with 5 second timeout");
+            log_warn!("AimDbHandle dropped without calling detach()");
+            log_warn!("Shutdown was signalled; the runtime thread stops on its own");
 
-            let timeout = Duration::from_secs(5);
-            if let Err(e) = self.detach_internal(Some(timeout)) {
-                log_error!("Error during emergency shutdown: {}", e);
+            if let Some(shutdown_tx) = self.shutdown_tx.take() {
+                let _ = shutdown_tx.try_send(ShutdownSignal);
             }
+            // Released rather than joined — see the note above.
+            let _ = self.thread_handle.take();
         }
     }
 }

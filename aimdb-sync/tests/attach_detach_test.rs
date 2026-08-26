@@ -125,3 +125,42 @@ fn producer_and_consumer_work_through_the_attached_runtime() {
 
     handle.detach().expect("detach");
 }
+
+/// A timed-out detach must not leave a thread parked in `join()` waiting to
+/// reap the runtime thread. Counting threads is unreliable, so this asserts the
+/// property that matters instead: many timed-out detaches in a row do not
+/// accumulate anything, and the process stays healthy afterwards.
+#[test]
+fn a_timed_out_detach_strands_nothing() {
+    for _ in 0..8 {
+        let handle = configured_builder().attach().expect("attach");
+        // A timeout short enough that it may or may not expire — either outcome
+        // is fine, since the point is what is left behind, not which arm ran.
+        let _ = handle.detach_timeout(Duration::from_nanos(1));
+    }
+
+    // If the previous rounds had stranded threads or poisoned anything, this
+    // would be where it showed up.
+    let handle = configured_builder()
+        .attach()
+        .expect("attach after timeouts");
+    let producer = handle
+        .producer::<Reading>("sensor.reading")
+        .expect("producer");
+    producer.set(Reading { value: 1 }).expect("set");
+    handle.detach().expect("detach");
+}
+
+/// Dropping a handle without detaching must return immediately. It used to
+/// attempt a 5-second emergency shutdown, which for a caller across an FFI
+/// boundary is a destructor that can stall for five seconds.
+#[test]
+fn dropping_without_detach_does_not_block() {
+    let started = Instant::now();
+    drop(configured_builder().attach().expect("attach"));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "drop should signal and release, not join; took {:?}",
+        started.elapsed()
+    );
+}
