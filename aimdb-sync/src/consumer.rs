@@ -2,7 +2,7 @@
 
 use aimdb_core::{DbError, Reader};
 
-use crate::runtime::RuntimeRef;
+use crate::runtime::{Guarded, RuntimeRef};
 use crate::{SyncError, SyncResult};
 use core::fmt::Debug;
 use core::time::Duration;
@@ -56,14 +56,13 @@ pub struct SyncConsumer<T>
 where
     T: Send + Debug + Clone,
 {
-    /// The runtime this consumer reads from, reachable only through a check.
+    /// The subscription, and with it the runtime.
     ///
-    /// See [`RuntimeRef`](crate::runtime::RuntimeRef): the Tokio handle inside
-    /// it is private to that module, so no read here can reach one without
-    /// passing the fork check first.
-    rt: RuntimeRef,
-
-    reader: Reader<T>,
+    /// Wrapped so that neither the reader nor a Tokio handle can be reached
+    /// without passing the fork check — see
+    /// [`Guarded`](crate::runtime::Guarded). Every read below therefore checks
+    /// because it must, not because someone remembered to.
+    reader: Guarded<Reader<T>>,
 }
 
 impl<T> SyncConsumer<T>
@@ -72,7 +71,9 @@ where
 {
     /// Create a new sync consumer (internal use only)
     pub(crate) fn new(rt: RuntimeRef, reader: Reader<T>) -> Self {
-        Self { rt, reader }
+        Self {
+            reader: Guarded::new(rt, reader),
+        }
     }
 
     async fn get_impl(reader: &mut Reader<T>) -> SyncResult<T> {
@@ -120,7 +121,8 @@ where
     /// # }
     /// ```
     pub fn get(&mut self) -> SyncResult<T> {
-        self.rt.enter()?.block_on(Self::get_impl(&mut self.reader))
+        let (handle, reader) = self.reader.enter()?;
+        handle.block_on(Self::get_impl(reader))
     }
 
     /// Get a value with a timeout.
@@ -163,8 +165,8 @@ where
     /// # }
     /// ```
     pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
-        let handle = self.rt.enter()?;
-        let fut = async { tokio::time::timeout(timeout, Self::get_impl(&mut self.reader)).await };
+        let (handle, reader) = self.reader.enter()?;
+        let fut = async { tokio::time::timeout(timeout, Self::get_impl(reader)).await };
         let res = handle.block_on(fut);
         res.unwrap_or_else(|_| Err(SyncError::GetTimeout))
     }
@@ -205,8 +207,7 @@ where
     /// # }
     /// ```
     pub fn try_get(&mut self) -> SyncResult<T> {
-        self.rt.check()?;
-        let res = self.reader.try_recv();
+        let res = self.reader.get()?.try_recv();
         res.map_err(|e| match e {
             DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
             DbError::BufferEmpty => SyncError::GetTimeout,
@@ -256,7 +257,6 @@ where
     /// # }
     /// ```
     pub fn get_latest(&mut self) -> SyncResult<T> {
-        self.rt.check()?;
         // 1) can simply sequence get_catch_up and try_get -
         //    no one else does it simultaneously thanks to &mut self
         // 2) if draining ends up with an error, we follow the previous impl
@@ -308,7 +308,6 @@ where
     /// # }
     /// ```
     pub fn get_latest_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
-        self.rt.check()?;
         // see internal comments for get_latest
         let deadline = Instant::now() + timeout;
         let oldest = self.get_catch_up(Some(deadline))?;

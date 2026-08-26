@@ -174,6 +174,44 @@ impl RuntimeRef {
     }
 }
 
+/// A resource that cannot be touched without passing the fork check.
+///
+/// The point is the field privacy, not the wrapper: `inner` is private to this
+/// module, so a caller in `consumer.rs` has no way to reach the value except
+/// through [`Self::get`] or [`Self::enter`], both of which check first. A plain
+/// field beside a hand-written guard offers nothing — the guard is a call
+/// someone can forget to make, and forgetting it is the defect this whole
+/// design removes.
+///
+/// Used for a `Reader`, which is the one thing a consumer touches that needs no
+/// runtime: `try_get` reads straight out of the buffer. That is exactly why it
+/// needs wrapping. Something with no resource to gate is something whose check
+/// is easy to leave out.
+pub(crate) struct Guarded<T> {
+    rt: RuntimeRef,
+    inner: T,
+}
+
+impl<T> Guarded<T> {
+    pub(crate) fn new(rt: RuntimeRef, inner: T) -> Self {
+        Self { rt, inner }
+    }
+
+    /// The value, checked. For work that needs no runtime.
+    #[inline]
+    pub(crate) fn get(&mut self) -> SyncResult<&mut T> {
+        self.rt.check()?;
+        Ok(&mut self.inner)
+    }
+
+    /// The value and a way to block, both checked. For work that waits.
+    #[inline]
+    pub(crate) fn enter(&mut self) -> SyncResult<(tokio::runtime::Handle, &mut T)> {
+        let handle = self.rt.enter()?;
+        Ok((handle, &mut self.inner))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

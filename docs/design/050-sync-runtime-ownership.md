@@ -302,8 +302,9 @@ Still open, unchanged by this work:
   memory. Adding a `pub(crate)` accessor that returns one would silently undo
   that, which is worth stating because it is the only way back to the old
   shape.
-- `SyncConsumer::try_get` reads without any runtime resource, so its fork check
-  is a call it makes rather than one it cannot avoid — the reader is plain data
-  and there is nothing to gate. `get_latest` and `get_latest_with_timeout` look
-  like the same case but are not: both route through `get`/`get_with_timeout`,
-  which are gated. One explicit check remains, not five.
+- Nothing. `SyncConsumer::try_get` was briefly the last opt-in check, on the
+  argument that it touches no runtime resource so there was nothing to gate.
+  That was wrong: it touches the `Reader`, which is precisely the thing to gate.
+  The reader now lives in a `Guarded<Reader<T>>` whose value is private to
+  `runtime.rs`, so every read reaches it through a checked accessor. The
+  consumer has one field and no way to skip the check.
