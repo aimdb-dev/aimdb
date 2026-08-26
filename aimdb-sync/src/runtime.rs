@@ -2,50 +2,38 @@
 //!
 //! `aimdb-sync` spawns an OS thread to own a Tokio runtime on the caller's
 //! behalf. Everything that thread *is* — the way in, the database it built, and
-//! the `fork` generation it belongs to — lives here, in one type, reached by
-//! every object that needs it.
-//!
-//! # Why this is one type
-//!
-//! It used to be four fields on [`AimDbHandle`](crate::AimDbHandle) and a fork
-//! stamp copied into three others. That shape cost four bugs in one review
-//! pass, all of the same kind: someone had to remember something and the
-//! compiler could not help. A guard was added to a new method — or wasn't. A
-//! field was added to the handle — and the release path forgot it.
+//! the `fork` generation it belongs to — lives here, in one type.
 //!
 //! # Why the check lives on the way in
 //!
-//! [`Runtime::enter`] is the only route to the Tokio handle and
-//! [`Runtime::db`] the only route to the database, and both refuse a runtime
-//! this process did not inherit a thread for. A publish or a read cannot be
-//! written that skips the check, because it cannot be written without going
-//! through one of them — checked by construction rather than by convention,
-//! which is the treatment #231 gave panic-freedom.
+//! [`Runtime::enter`] and [`Runtime::db`] are the only routes to the handle and
+//! the database, and both refuse a runtime this process did not inherit a
+//! thread for, so a publish or a read cannot be written that skips the check —
+//! by construction rather than by convention, the treatment #231 gave
+//! panic-freedom. It replaces a stamp copied into three types and guarded at
+//! nine opt-in call sites, a shape that cost four bugs in one review pass,
+//! every one of them someone forgetting to opt in.
 //!
-//! The check is deliberately *before* the database is handed out. A forked
+//! The check comes *before* the database is handed out, because a forked
 //! child's `Arc<AimDb>` is perfectly valid — it came across with the address
-//! space — so a child that reached the database would publish into a buffer
-//! nobody drains and be told `Ok`. That silence is the bug this whole mechanism
-//! exists to prevent.
+//! space — so a child that reached it would publish into a buffer nobody drains
+//! and be told `Ok`. That silence is the bug this mechanism exists to prevent.
 //!
 //! # Who owns it
 //!
-//! The handle owns the `Arc<Runtime>`; producers and consumers hold a
-//! [`Weak`](alloc::sync::Weak). So the database dies with the handle, exactly
-//! as it did when producers held `Weak<AimDb>` directly, and two things stay
-//! free that shared ownership would have made expensive:
+//! The handle owns the `Arc<Runtime>` and producers hold a
+//! [`Weak`](alloc::sync::Weak), so the database dies with the handle and two
+//! things stay free that shared ownership would have made expensive: a failed
+//! upgrade *is* the liveness check, and dropping the database closes its
+//! buffers, which is what wakes a consumer parked in `get()` — `aimdb-core` has
+//! no explicit close. Consumers hold a [`RuntimeRef`] rather than a `Weak`, for
+//! the reason given there.
 //!
-//! - **Liveness.** A failed upgrade *is* the check — no flag to keep in sync.
-//! - **Waking a blocked reader.** Dropping the database closes its buffers,
-//!   which is what wakes a consumer parked in `get()`. `aimdb-core` has no
-//!   explicit close, so nothing else would.
-//!
-//! An `Arc` here was tried and reverted. It bought one thing — a producer
-//! outliving its handle keeps working — and cost both of the above, each of
-//! which had to be rebuilt by hand (a liveness flag, a level-triggered stop
-//! channel, and a select around every blocking read). It also made a forgotten
-//! producer keep an OS thread and a Tokio runtime alive with nobody owning
-//! them, which is the stranded thread #232 had just removed.
+//! An `Arc` here was tried and reverted: it bought a producer outliving its
+//! handle, cost both of the above (a liveness flag, a stop channel and a select
+//! around every blocking read to rebuild), and left a forgotten producer
+//! keeping an OS thread alive with nobody owning it — the stranded thread #232
+//! had just removed.
 
 use alloc::sync::Arc;
 
@@ -67,9 +55,8 @@ pub(crate) struct Runtime {
 
     /// The fork generation this runtime's thread was spawned in.
     ///
-    /// Plain data, which is the point: every refusal path can be tested by
-    /// building a `Runtime` with a stale value, without a thread and without a
-    /// real `fork`. See the unit tests below.
+    /// Plain data, which is the point: every refusal path is a unit test over a
+    /// stale value — no thread, no `fork`.
     made_in: crate::fork::Generation,
 }
 
@@ -84,8 +71,8 @@ impl Runtime {
 
     /// Whether this process still owns the thread this runtime names.
     ///
-    /// One relaxed atomic load and a comparison — no syscall, no lock. It sits
-    /// on the publish path, which is why it is not a `getpid` call.
+    /// One relaxed atomic load — no syscall, no lock. It sits on the publish
+    /// path, which is why it is not a `getpid` call.
     #[inline]
     pub(crate) fn check(&self) -> SyncResult<()> {
         if crate::fork::forked_since(self.made_in) {
@@ -94,21 +81,18 @@ impl Runtime {
         Ok(())
     }
 
-    /// The Tokio handle, or [`SyncError::ForkedChild`].
-    ///
-    /// The only way to reach it. Blocking on a runtime whose thread did not
-    /// survive a `fork` would park forever.
+    /// The Tokio handle, or [`SyncError::ForkedChild`]. The only way to reach
+    /// it: blocking on a runtime whose thread did not survive a `fork` would
+    /// park forever.
     #[inline]
     pub(crate) fn enter(&self) -> SyncResult<&tokio::runtime::Handle> {
         self.check()?;
         Ok(&self.handle)
     }
 
-    /// The database, or [`SyncError::ForkedChild`].
-    ///
-    /// The only way to reach it. See the module note on why the check must come
-    /// first: a forked child's handle to the database is valid, and that is
-    /// exactly the problem.
+    /// The database, or [`SyncError::ForkedChild`]. The only way to reach it —
+    /// a forked child's handle to the database is valid, which is exactly the
+    /// problem.
     #[inline]
     pub(crate) fn db(&self) -> SyncResult<&Arc<AimDb>> {
         self.check()?;
@@ -130,22 +114,14 @@ impl Runtime {
 /// A borrowed view of a [`Runtime`] that outlives it on purpose.
 ///
 /// Held by [`SyncConsumer`](crate::SyncConsumer), which has a requirement the
-/// handle and the producers do not: a `Reader` can still drain what is already
-/// buffered after the runtime is gone, and delivering that data is behaviour
-/// the characterization tests pin. So a dead runtime must not refuse a read —
-/// but a `fork` still must.
+/// handle and producers do not: a `Reader` can still drain what is already
+/// buffered after the runtime is gone, and the characterization tests pin that.
+/// So a dead runtime must not refuse a read — but a `fork` still must.
 ///
-/// The Tokio handle is kept for that case and is **private to this module**,
-/// which is the whole point of the type. `consumer.rs` cannot reach it except
-/// through [`Self::enter`], so a read that skips the check cannot be written
-/// there any more than it can anywhere else. A bare handle field beside a
-/// hand-written guard — the shape this replaces — offered no such thing.
-///
-/// The generation is copied rather than read through a
-/// [`Weak`](alloc::sync::Weak): a failed upgrade is the expected case for a
-/// view built to outlive its runtime, and it cannot tell a detach here — where
-/// the buffer must still be drained — from a child that released its inherited
-/// handle, where a blocking read would park forever.
+/// Hence the generation is copied rather than reached through a
+/// [`Weak`](alloc::sync::Weak), which cannot tell a detach here from a child
+/// that released its inherited handle. The handle stays private to this module,
+/// so `consumer.rs` reaches it only through [`Self::enter`].
 pub(crate) struct RuntimeRef {
     handle: tokio::runtime::Handle,
 
@@ -157,9 +133,9 @@ pub(crate) struct RuntimeRef {
 impl RuntimeRef {
     /// Refuse a forked child; let a detached one through.
     ///
-    /// A detach is not a fork — the buffer answers for itself — but a fork is
-    /// refused whether or not the child still holds the handle, which is what a
-    /// `Weak` upgrade got wrong.
+    /// A fork is refused whether or not the child still holds the handle —
+    /// what a `Weak` upgrade got wrong. A detach is not a fork; there the
+    /// buffer answers for itself.
     #[inline]
     pub(crate) fn check(&self) -> SyncResult<()> {
         if crate::fork::forked_since(self.made_in) {
@@ -178,17 +154,11 @@ impl RuntimeRef {
 
 /// A resource that cannot be touched without passing the fork check.
 ///
-/// The point is the field privacy, not the wrapper: `inner` is private to this
-/// module, so a caller in `consumer.rs` has no way to reach the value except
-/// through [`Self::get`] or [`Self::enter`], both of which check first. A plain
-/// field beside a hand-written guard offers nothing — the guard is a call
-/// someone can forget to make, and forgetting it is the defect this whole
-/// design removes.
-///
-/// Used for a `Reader`, which is the one thing a consumer touches that needs no
-/// runtime: `try_get` reads straight out of the buffer. That is exactly why it
-/// needs wrapping. Something with no resource to gate is something whose check
-/// is easy to leave out.
+/// The privacy is the point, not the wrapper: `inner` is unreachable from
+/// `consumer.rs` except through [`Self::get`] or [`Self::enter`], which check
+/// first, so the check stops being a call someone can forget. Used for a
+/// `Reader` — the one thing a consumer touches that needs no runtime, and so
+/// the one whose check is easiest to leave out.
 pub(crate) struct Guarded<T> {
     rt: RuntimeRef,
     inner: T,
@@ -221,14 +191,11 @@ mod tests {
     use aimdb_tokio_adapter::TokioAdapter;
 
     /// A `Runtime` over a real database, stamped `generations_behind` behind
-    /// the process. One behind is what a forked child's inherited runtime
-    /// looks like.
+    /// the process — one behind being what a forked child inherits.
     ///
-    /// No thread is spawned and no `fork` happens — which is the point of
-    /// moving the stamp onto a value. Before this, proving a refusal path meant
-    /// forking a real process from a parent holding a live Tokio runtime, the
-    /// least safe moment there is; that suite failed 11 runs in 60 until it was
-    /// mitigated.
+    /// No thread, no `fork`: the point of moving the stamp onto a value. Proving
+    /// a refusal used to mean forking from a parent holding a live Tokio
+    /// runtime, the least safe moment there is, and failed 11 runs in 60.
     fn runtime_stamped(generations_behind: u64) -> (tokio::runtime::Runtime, Runtime) {
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
