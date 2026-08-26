@@ -1,7 +1,8 @@
 //! Synchronous producer for typed records.
 
+use crate::runtime::Runtime;
 use crate::{SyncError, SyncResult};
-use aimdb_core::{AimDb, TryProduceError};
+use aimdb_core::TryProduceError;
 use alloc::sync::Weak;
 use core::fmt::Debug;
 use core::marker::PhantomData;
@@ -40,10 +41,14 @@ pub struct SyncProducer<T>
 where
     T: Send + 'static + Debug + Clone,
 {
-    db: Weak<AimDb>,
+    /// The runtime this producer publishes into.
+    ///
+    /// `Weak`, so the handle's lifetime still governs: when it goes, the
+    /// database goes with it and this upgrade fails. That failure *is* the
+    /// liveness check — see [`crate::runtime`] on why sharing ownership here
+    /// would cost more than it bought.
+    rt: Weak<Runtime>,
     key: String,
-    /// The fork generation this producer was made in. See [`crate::fork`].
-    made_in: crate::fork::Generation,
     // same reasons as for Producer in aimdb-core/src/typed_api.rs
     _phantom: PhantomData<fn() -> T>,
 }
@@ -53,26 +58,22 @@ where
     T: Send + 'static + Debug + Clone,
 {
     /// Create a new sync producer (internal use only)
-    pub(crate) fn new(db: Weak<AimDb>, key: impl AsRef<str>) -> Self {
+    pub(crate) fn new(rt: Weak<Runtime>, key: impl AsRef<str>) -> Self {
         Self {
-            db,
+            rt,
             key: key.as_ref().into(),
-            made_in: crate::fork::generation(),
             _phantom: PhantomData,
         }
     }
 
-    /// Refuse if this process has forked since the producer was made.
+    /// The runtime, or [`SyncError::RuntimeShutdown`] if it is gone.
     ///
-    /// Checked before the `Weak` upgrade, because a forked child's upgrade
-    /// *succeeds* — the `Arc` was copied with the address space — which is
-    /// exactly why the buffer would accept a value nobody will ever read.
+    /// Every publish goes through here and then through
+    /// [`Runtime::db`](crate::runtime::Runtime::db), so the fork check cannot
+    /// be skipped by adding a method and forgetting to guard it.
     #[inline]
-    fn check_fork(&self) -> SyncResult<()> {
-        if crate::fork::forked_since(self.made_in) {
-            return Err(SyncError::ForkedChild);
-        }
-        Ok(())
+    fn runtime(&self) -> SyncResult<alloc::sync::Arc<Runtime>> {
+        self.rt.upgrade().ok_or(SyncError::RuntimeShutdown)
     }
 
     /// Set the value, blocking until it can be sent.
@@ -106,12 +107,8 @@ where
     /// # }
     /// ```
     pub fn set(&self, value: T) -> SyncResult<()> {
-        self.check_fork()?;
-        if let Some(db) = self.db.upgrade() {
-            db.produce(&self.key, value).map_err(SyncError::Db)
-        } else {
-            Err(SyncError::RuntimeShutdown)
-        }
+        let rt = self.runtime()?;
+        rt.db()?.produce(&self.key, value).map_err(SyncError::Db)
     }
 
     /// Try to set the value without blocking.
@@ -148,16 +145,13 @@ where
     /// # }
     /// ```
     pub fn try_set(&self, value: T) -> SyncResult<()> {
-        self.check_fork()?;
-        if let Some(db) = self.db.upgrade() {
-            let producer = db.producer(&self.key)?;
-            producer.try_produce(value).map_err(|e| match e {
-                TryProduceError::Full(_) => SyncError::SetTimeout,
-                TryProduceError::Closed(_) => SyncError::RuntimeShutdown,
-            })
-        } else {
-            Err(SyncError::RuntimeShutdown)
-        }
+        let rt = self.runtime()?;
+        let db = rt.db()?;
+        let producer = db.producer(&self.key)?;
+        producer.try_produce(value).map_err(|e| match e {
+            TryProduceError::Full(_) => SyncError::SetTimeout,
+            TryProduceError::Closed(_) => SyncError::RuntimeShutdown,
+        })
     }
 }
 

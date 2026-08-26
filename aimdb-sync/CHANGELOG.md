@@ -46,6 +46,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A poisoned lock could panic out of the blocking surface, which across an FFI
   boundary is undefined behaviour rather than an error.
 
+### Changed
+
+- **The runtime thread is one value, and the `fork()` check is unavoidable.**
+  `Runtime` (internal) now holds the Tokio handle, the database and the fork
+  generation, and `enter()`/`db()` are the only routes to them — so a publish or
+  a read cannot be written that skips the check. Previously the same fact was
+  copied into three types and checked at nine call sites that each had to opt
+  in; four defects in one review pass were all instances of someone forgetting
+  to. `AimDbHandle` drops from six loose fields to two, so releasing state
+  inherited across a `fork` can no longer be half-done. No API signature and no
+  behaviour changed: producers and consumers still hold a weak reference, so a
+  handle's lifetime still governs. `waiter.rs` is retired — `enter()` returns
+  the handle it existed to wrap. See design 050.
+
 ### Added
 
 - **`fork()` safety.** A child of `fork` inherits every handle, producer and
