@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod fork_child;
+use fork_child::in_forked_child;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Reading {
     value: u32,
@@ -24,47 +27,6 @@ fn attach() -> aimdb_sync::AimDbHandle {
             .tap(|_ctx, _consumer| async move {});
     });
     builder.attach().expect("attach")
-}
-
-/// Run `child` in a forked child and return its exit code.
-///
-/// The child ends with `_exit`, which skips both the test harness's cleanup and
-/// every destructor — the child is not a test runner, and letting it unwind
-/// would report a second set of results into the parent's stdout.
-fn in_forked_child(child: impl FnOnce() -> bool) -> i32 {
-    // SAFETY: `fork` itself is safe to call here. What the *child* may then do
-    // is the real constraint, and it is not "anything": this parent is
-    // multi-threaded — the runtime thread, plus whatever else the harness is
-    // running — so the child starts out owning locks (the allocator's above
-    // all) that were held by threads that no longer exist. Only
-    // async-signal-safe work is strictly sound.
-    //
-    // The tests below stay as close to that as what they assert allows. The
-    // refused accessors return a unit variant without allocating, which is the
-    // bulk of it; the two that then drop inherited state do free memory, and
-    // `a_child_can_attach_its_own_database_after_forking` allocates and spawns
-    // a thread outright — proving a post-fork `attach` works is the whole point
-    // of that one. So the residual risk of a rare hang is real rather than
-    // argued away. Run this binary with `--test-threads=1` to keep the parent
-    // as quiet as it can be at the moment of the fork.
-    match unsafe { libc::fork() } {
-        -1 => panic!("fork failed"),
-        0 => {
-            let ok = child();
-            unsafe { libc::_exit(if ok { 0 } else { 1 }) }
-        }
-        pid => {
-            let mut status: libc::c_int = 0;
-            // SAFETY: `pid` is our child and `status` is a valid out-pointer.
-            let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
-            assert_eq!(waited, pid, "waitpid");
-            assert!(
-                libc::WIFEXITED(status),
-                "child did not exit normally — a panic or signal, status {status}"
-            );
-            libc::WEXITSTATUS(status)
-        }
-    }
 }
 
 /// The whole point: the child is refused, not quietly accepted.
@@ -182,24 +144,4 @@ fn dropping_an_inherited_handle_does_not_panic() {
         refused
     });
     assert_eq!(code, 0, "detach in a child should be refused, not fatal");
-}
-
-/// A database attached *after* the fork is the child's own and must work.
-/// This is why the guard is a generation counter rather than a poison flag.
-#[test]
-fn a_child_can_attach_its_own_database_after_forking() {
-    let code = in_forked_child(|| {
-        let handle = attach();
-        let producer = match handle.producer::<Reading>("sensor.reading") {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-        let published = producer.set(Reading { value: 7 }).is_ok();
-        let detached = handle.detach().is_ok();
-        published && detached
-    });
-    assert_eq!(
-        code, 0,
-        "a post-fork attach belongs to the child and must work"
-    );
 }

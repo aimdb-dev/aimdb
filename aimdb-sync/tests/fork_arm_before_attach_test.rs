@@ -14,6 +14,9 @@
 //! nothing.
 #![cfg(all(unix, feature = "std"))]
 
+mod fork_child;
+use fork_child::in_forked_child;
+
 /// Taken before anything else in this process. No database is ever attached
 /// here, so `generation()` is the only thing that can arm the handler.
 #[test]
@@ -24,31 +27,15 @@ fn a_stamp_taken_before_any_attach_still_sees_a_fork() {
         "nothing has forked yet"
     );
 
-    // SAFETY: the child only reads an atomic and `_exit`s — no allocation, so
-    // the usual fork-in-a-multi-threaded-parent hazard does not apply.
-    match unsafe { libc::fork() } {
-        -1 => panic!("fork failed"),
-        0 => {
-            let saw_it = aimdb_sync::fork::forked_since(before_any_attach);
-            unsafe { libc::_exit(if saw_it { 0 } else { 1 }) }
-        }
-        pid => {
-            let mut status: libc::c_int = 0;
-            // SAFETY: `pid` is our child and `status` is a valid out-pointer.
-            let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
-            assert_eq!(waited, pid, "waitpid");
-            assert!(libc::WIFEXITED(status), "child did not exit normally");
-            assert_eq!(
-                libc::WEXITSTATUS(status),
-                0,
-                "a stamp taken before the first attach must still see the fork"
-            );
+    let code = in_forked_child(move || aimdb_sync::fork::forked_since(before_any_attach));
+    assert_eq!(
+        code, 0,
+        "a stamp taken before the first attach must still see the fork"
+    );
 
-            // The parent's own stamp is untouched: only the child's counter moved.
-            assert!(
-                !aimdb_sync::fork::forked_since(before_any_attach),
-                "the parent must not be poisoned by forking a child"
-            );
-        }
-    }
+    // The parent's own stamp is untouched: only the child's counter moved.
+    assert!(
+        !aimdb_sync::fork::forked_since(before_any_attach),
+        "the parent must not be poisoned by forking a child"
+    );
 }
