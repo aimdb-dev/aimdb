@@ -1,6 +1,6 @@
 //! AimDB handle for managing the sync API runtime thread.
 
-use crate::runtime::{Runtime, RuntimeRef, ShutdownSignal};
+use crate::runtime::{Runtime, ShutdownSignal};
 use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError};
 use alloc::sync::Arc;
@@ -113,9 +113,12 @@ pub struct AimDbHandle {
     /// The runtime thread and everything reached through it, shared with every
     /// producer and consumer made from this handle. See [`crate::runtime`].
     ///
-    /// Holding this keeps the thread running, so a producer that outlives its
-    /// handle keeps working. [`detach`](Self::detach) is what stops the thread
-    /// deliberately.
+    /// This is the only strong reference: producers and consumers hold a
+    /// [`Weak`](alloc::sync::Weak), so the runtime dies with this handle and a
+    /// producer that outlives it fails with
+    /// [`SyncError::RuntimeShutdown`](crate::SyncError::RuntimeShutdown).
+    /// [`detach`](Self::detach) is what stops the thread deliberately, without
+    /// waiting for the survivors to finish.
     rt: Arc<Runtime>,
 
     /// What only the handle that started the thread may do: signal it, wait for
@@ -133,9 +136,9 @@ struct OwnedThread {
     /// Joined by `detach`; released, never joined, by `Drop`.
     join: JoinHandle<()>,
 
-    /// Commands the thread to stop. Distinct from the keepalive clone every
-    /// [`Runtime`] holds: dropping a sender only decrements, sending *ends* the
-    /// thread even while other holders are alive.
+    /// Commands the thread to stop. Distinct from dropping it: the thread also
+    /// ends when every sender is gone, but *sending* ends it now, while
+    /// producers and consumers still hold views of the runtime.
     shutdown: mpsc::Sender<ShutdownSignal>,
 
     /// Held open by the runtime thread for exactly as long as it runs.
@@ -230,7 +233,7 @@ impl AimDbHandle {
         // `new_from_builder` has always used. See `recv_startup`.
         let (handle_tx, mut handle_rx) = mpsc::channel::<Startup<tokio::runtime::Handle>>(1);
 
-        // See `OwnedThread::alive` and `RunningFlag`.
+        // See `OwnedThread::alive`.
         let (alive_tx, thread_alive) = std::sync::mpsc::channel::<()>();
 
         // Wrap database in Arc for sharing
@@ -389,10 +392,7 @@ impl AimDbHandle {
             .db()?
             .subscribe::<T>(&record_key)
             .map_err(SyncError::Db)?;
-        Ok(crate::SyncConsumer::new(
-            RuntimeRef::new(Arc::downgrade(&self.rt), self.rt.enter()?.clone()),
-            reader,
-        ))
+        Ok(crate::SyncConsumer::new(self.rt.view()?, reader))
     }
 
     /// Gracefully shut down the runtime thread.
@@ -466,10 +466,12 @@ impl AimDbHandle {
     /// Internal detach implementation.
     ///
     /// Deliberate shutdown: *sends* the signal rather than merely dropping a
-    /// sender, so the thread stops even though producers and consumers may
-    /// still hold [`Runtime`] clones keeping it alive. Those survivors then
-    /// fail with [`SyncError::RuntimeShutdown`], which is the point — `detach`
-    /// means "stop now", not "stop when everyone has finished".
+    /// sender, so the thread stops at once rather than when the last sender
+    /// goes. Producers and consumers hold only a
+    /// [`Weak`](alloc::sync::Weak), so they cannot keep it alive; what they can
+    /// do is still be mid-call when it stops, and they then fail with
+    /// [`SyncError::RuntimeShutdown`]. That is the point — `detach` means "stop
+    /// now", not "stop when everyone has finished".
     fn detach_internal(&mut self, timeout: Option<Duration>) -> SyncResult<()> {
         // A forked child holds a `JoinHandle` for a thread that does not exist
         // here, and joining it is not merely useless: it panics inside `std`

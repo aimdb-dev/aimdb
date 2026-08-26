@@ -55,21 +55,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copied into three types and checked at nine call sites that each had to opt
   in; four defects in one review pass were all instances of someone forgetting
   to. `AimDbHandle` drops from six loose fields to two, so releasing state
-  inherited across a `fork` can no longer be half-done. No API signature and no
-  behaviour changed: producers and consumers still hold a weak reference, so a
-  handle's lifetime still governs. A consumer needs a Tokio handle that outlives
+  inherited across a `fork` can no longer be half-done. No API signature
+  changed, and producers and consumers still hold a weak reference, so a
+  handle's lifetime still governs. One behaviour did: `handle.producer()` in a
+  forked child now returns a producer instead of `Err(ForkedChild)`, and the
+  refusal lands on the first `set()`/`try_set()` instead. Creating a producer
+  touches neither the database nor the runtime thread, so this matches what an
+  unregistered key has always done there; nothing can be published either way.
+  A consumer needs a Tokio handle that outlives
   the runtime — buffered data stays readable after `detach` — so it holds a
   `RuntimeRef` whose handle is private to the runtime module and reachable only
-  through a checked accessor, rather than a bare field beside a guard. `waiter.rs` is retired — `enter()` returns
+  through a checked accessor, rather than a bare field beside a guard. That view
+  carries its runtime's fork generation rather than inferring it from a weak
+  reference: once the runtime is gone, a failed upgrade cannot tell a `detach`
+  in this process from a child that released its inherited handle, and the two
+  need opposite answers. `waiter.rs` is retired — `enter()` returns
   the handle it existed to wrap.
 
 ### Added
 
 - **`fork()` safety.** A child of `fork` inherits every handle, producer and
   consumer the parent held, and none of the runtime thread that makes them work
-  — so its `set()` used to return `Ok` into a buffer nobody drains. Handles,
-  producers and consumers now record a fork generation and refuse with the new
-  `SyncError::ForkedChild` once the process has forked since they were made.
+  — so its `set()` used to return `Ok` into a buffer nobody drains. The runtime
+  now records the fork generation it was built in, and every route to it — a
+  publish, a read, a subscribe — refuses with the new `SyncError::ForkedChild`
+  once the process has forked since then.
   `detach` and `Drop` release the runtime thread's `JoinHandle` rather than
   joining a thread this process does not have, which panicked inside `std`.
   Detection is a lazily registered `pthread_atfork` handler, so the check on the

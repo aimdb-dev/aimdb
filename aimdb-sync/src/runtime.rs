@@ -47,7 +47,7 @@
 //! producer keep an OS thread and a Tokio runtime alive with nobody owning
 //! them, which is the stranded thread #232 had just removed.
 
-use alloc::sync::{Arc, Weak};
+use alloc::sync::Arc;
 
 use aimdb_core::AimDb;
 
@@ -114,6 +114,19 @@ impl Runtime {
         self.check()?;
         Ok(&self.db)
     }
+
+    /// A view of this runtime that may outlive it. The only way to build one.
+    ///
+    /// Checked, because handing out the Tokio handle is what [`Self::enter`]
+    /// exists to gate — a view is not a way around it. The generation is copied
+    /// out here rather than read from the process, so it is *this* runtime's
+    /// stamp the view carries and not whatever the caller happened to be at.
+    pub(crate) fn view(&self) -> SyncResult<RuntimeRef> {
+        Ok(RuntimeRef {
+            handle: self.enter()?.clone(),
+            made_in: self.made_in,
+        })
+    }
 }
 
 /// A borrowed view of a [`Runtime`] that outlives it on purpose.
@@ -129,29 +142,44 @@ impl Runtime {
 /// through [`Self::enter`], so a read that skips the check cannot be written
 /// there any more than it can anywhere else. A bare handle field beside a
 /// hand-written guard — the shape this replaces — offered no such thing.
+///
+/// # Why the generation is copied rather than read through a `Weak`
+///
+/// Everything else holds a [`Weak`](alloc::sync::Weak) and lets a failed upgrade answer the
+/// question. That works only while the upgrade *means* something, and here it
+/// does not: this view is built to outlive its runtime, so a failed upgrade is
+/// the expected case rather than the interesting one. It also cannot
+/// distinguish the two ways of getting there — a handle detached in this
+/// process, where the buffer must still be drained, from one released in a
+/// forked child, where the thread that fills that buffer does not exist and a
+/// blocking read would park forever. Copying the stamp answers both without
+/// consulting the `Arc` at all.
 pub(crate) struct RuntimeRef {
-    rt: Weak<Runtime>,
     handle: tokio::runtime::Handle,
+
+    /// The generation of the runtime this views, copied at construction.
+    ///
+    /// The same value [`Runtime::made_in`] holds, so the two agree by
+    /// construction and this view keeps answering after that `Runtime` is
+    /// gone.
+    made_in: crate::fork::Generation,
 }
 
 impl RuntimeRef {
-    pub(crate) fn new(rt: Weak<Runtime>, handle: tokio::runtime::Handle) -> Self {
-        Self { rt, handle }
-    }
-
     /// Refuse a forked child; let a detached one through.
     ///
-    /// A failed upgrade means the handle was dropped in *this* process, which
-    /// is not a fork — the buffer is the right thing to answer for itself.
-    /// After a real `fork` the upgrade **succeeds**, because the `Arc` came
-    /// across with the address space, which is exactly why the check is worth
-    /// making at all.
+    /// A detach is not a fork: the runtime is gone but this process is the one
+    /// that dropped it, so the buffer is the right thing to answer for itself
+    /// and the read carries on. A `fork` is refused whether or not the child
+    /// still holds the handle — which is the case a `Weak` upgrade got wrong,
+    /// because releasing an inherited handle is exactly what a child is
+    /// supposed to do.
     #[inline]
     pub(crate) fn check(&self) -> SyncResult<()> {
-        match self.rt.upgrade() {
-            Some(rt) => rt.check(),
-            None => Ok(()),
+        if crate::fork::forked_since(self.made_in) {
+            return Err(SyncError::ForkedChild);
         }
+        Ok(())
     }
 
     /// The Tokio handle, checked. The only way to obtain one.
@@ -271,5 +299,63 @@ mod tests {
         let (_guard, rt) = runtime_stamped(1);
         let err = rt.enter().expect_err("must refuse");
         assert_eq!(err.kind(), DbErrorKind::Closed);
+    }
+
+    /// A view is not a way around [`Runtime::enter`].
+    #[test]
+    fn a_view_of_a_forked_runtime_cannot_be_taken() {
+        let (_guard, rt) = runtime_stamped(1);
+        assert!(matches!(rt.view(), Err(SyncError::ForkedChild)));
+    }
+
+    /// The detach case: the runtime is gone, but this process is what dropped
+    /// it. A consumer must still drain what its buffer already holds — the
+    /// behaviour the characterization tests pin.
+    #[test]
+    fn a_view_outliving_its_runtime_still_reads() {
+        let (_guard, rt) = runtime_stamped(0);
+        let view = rt.view().expect("view");
+        drop(rt);
+
+        assert!(view.check().is_ok());
+        assert!(view.enter().is_ok());
+    }
+
+    /// The fork case, and the one a `Weak` upgrade got wrong.
+    ///
+    /// Releasing an inherited handle is what a forked child is *supposed* to
+    /// do, so the runtime being gone says nothing about whether this process
+    /// owns the thread. Before the stamp was carried, this view answered `Ok`
+    /// and a `get()` on it parked forever on a thread that does not exist here.
+    #[test]
+    fn a_view_outliving_its_runtime_in_a_forked_child_refuses() {
+        let (_guard, mut rt) = runtime_stamped(0);
+        let mut view = rt.view().expect("view");
+
+        // The fork happens after the view is taken, which is the order that
+        // matters: the view was legitimate when it was made.
+        view.made_in = crate::fork::generation().wrapping_sub(1);
+        rt.made_in = view.made_in;
+        drop(rt);
+
+        assert!(matches!(view.check(), Err(SyncError::ForkedChild)));
+        assert!(matches!(view.enter(), Err(SyncError::ForkedChild)));
+    }
+
+    /// Both routes through the wrapper check, including the one that needs no
+    /// runtime. `try_get` reads straight out of the buffer, which is exactly
+    /// why `get` has to check rather than lean on `enter`.
+    #[test]
+    fn a_guarded_value_is_unreachable_after_a_fork() {
+        let (_guard, rt) = runtime_stamped(0);
+        let mut guarded = Guarded::new(rt.view().expect("view"), 7u32);
+
+        assert_eq!(*guarded.get().expect("current generation reads"), 7);
+        assert!(guarded.enter().is_ok());
+
+        guarded.rt.made_in = crate::fork::generation().wrapping_sub(1);
+
+        assert!(matches!(guarded.get(), Err(SyncError::ForkedChild)));
+        assert!(matches!(guarded.enter(), Err(SyncError::ForkedChild)));
     }
 }

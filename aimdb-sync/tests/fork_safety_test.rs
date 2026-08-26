@@ -84,6 +84,13 @@ fn dropping_an_inherited_handle_does_not_panic() {
     let to_detach = attach();
     let to_drop = attach();
 
+    // Made before the fork, so the child inherits a consumer that was
+    // legitimate when it was created. Allocated here, in the parent, where
+    // allocating is safe.
+    let mut inherited = to_drop
+        .consumer::<Reading>("sensor.reading")
+        .expect("consumer");
+
     let code = in_forked_child(move || {
         // `detach` reports the situation rather than joining.
         let refused = matches!(to_detach.detach(), Err(SyncError::ForkedChild));
@@ -108,7 +115,18 @@ fn dropping_an_inherited_handle_does_not_panic() {
         // normally, and the parent's `WIFEXITED` assertion would catch it.
         drop(to_drop);
 
-        refused && producer_defers && no_consumer
+        // Releasing the handle must not release the *refusal*. Nothing about
+        // this process changed: the runtime thread was never here. A consumer
+        // that answered on its runtime's liveness would now say the buffer is
+        // merely empty — and a blocking read would park forever on a thread
+        // that does not exist — because dropping the handle above is the very
+        // thing a child is supposed to do. Only the generation the consumer
+        // carries can tell a detach from a fork once the runtime is gone.
+        let still_refused = matches!(inherited.try_get(), Err(SyncError::ForkedChild));
+        // Leak rather than free, per the module note in `fork_child`.
+        std::mem::forget(inherited);
+
+        refused && producer_defers && no_consumer && still_refused
     });
     assert_eq!(code, 0, "detach in a child should be refused, not fatal");
 }
