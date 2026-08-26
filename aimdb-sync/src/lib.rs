@@ -220,7 +220,7 @@ mod handle;
 #[cfg(feature = "std")]
 mod producer;
 #[cfg(feature = "std")]
-mod waiter;
+mod runtime;
 
 #[cfg(feature = "std")]
 pub use consumer::SyncConsumer;

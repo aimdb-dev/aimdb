@@ -1,6 +1,6 @@
 //! AimDB handle for managing the sync API runtime thread.
 
-use crate::waiter::Waiter;
+use crate::runtime::{Runtime, ShutdownSignal};
 use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError};
 use alloc::sync::Arc;
@@ -110,17 +110,33 @@ impl AimDbSyncExt for AimDb {
 /// is dropped without calling `detach()`, a warning will be logged
 /// and an emergency shutdown will be attempted.
 pub struct AimDbHandle {
-    /// Thread handle for the runtime thread
-    thread_handle: Option<JoinHandle<()>>,
+    /// The runtime thread and everything reached through it, shared with every
+    /// producer and consumer made from this handle. See [`crate::runtime`].
+    ///
+    /// The only strong reference: producers and consumers hold a
+    /// [`Weak`](alloc::sync::Weak), so the runtime dies with this handle and a
+    /// producer outliving it fails with `RuntimeShutdown`.
+    /// [`detach`](Self::detach) is what stops the thread deliberately.
+    rt: Arc<Runtime>,
 
-    /// Shutdown signal sender
-    shutdown_tx: Option<mpsc::Sender<ShutdownSignal>>,
+    /// What only the handle that started the thread may do: signal it, wait for
+    /// it, join it.
+    ///
+    /// `None` once detached, or once a `fork` proved the thread is not this
+    /// process's to reap. One field, so releasing it cannot be half-done — the
+    /// previous shape was four loose fields and a release path that forgot one
+    /// of them the moment a fifth was added.
+    owned: Option<OwnedThread>,
+}
 
-    /// Tokio runtime handle for submitting async work
-    runtime_handle: tokio::runtime::Handle,
+/// The parts of a runtime thread that only its owner may touch.
+struct OwnedThread {
+    /// Joined by `detach`; released, never joined, by `Drop`.
+    join: JoinHandle<()>,
 
-    /// Shared reference to the database (protected by Arc for thread safety)
-    db: Arc<AimDb>,
+    /// Commands the thread to stop. Distinct from dropping it: the thread also
+    /// ends when every sender is gone, but *sending* ends it now.
+    shutdown: mpsc::Sender<ShutdownSignal>,
 
     /// Held open by the runtime thread for exactly as long as it runs.
     ///
@@ -132,17 +148,9 @@ pub struct AimDbHandle {
     ///
     /// Behind a `Mutex` only to keep `AimDbHandle: Sync`, which `consumer()`
     /// relies on — a bare `Receiver` is `Send` but not `Sync`. It is never
-    /// locked: every access goes through `&mut self` and takes it by value.
-    thread_alive: Option<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
-
-    /// The fork generation this handle was created in. A `fork` copies this
-    /// struct but not `thread_handle`'s thread. See [`crate::fork`].
-    made_in: crate::fork::Generation,
+    /// locked: every access takes it by value.
+    alive: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
-
-/// Signal to shut down the runtime thread.
-#[derive(Debug, Clone, Copy)]
-struct ShutdownSignal;
 
 /// What the runtime thread reports back while starting up: the thing itself,
 /// or why it could not be produced.
@@ -185,7 +193,9 @@ impl AimDbHandle {
         let (db_tx, mut db_rx) = mpsc::channel::<Startup<Arc<AimDb>>>(1);
         let (handle_tx, mut handle_rx) = mpsc::channel::<Startup<tokio::runtime::Handle>>(1);
 
-        // See `thread_alive`: never sent on, only dropped when the thread ends.
+        // See `OwnedThread::alive`: never sent on, only dropped when the
+        // thread ends. The flag beside it answers the same question without
+        // blocking, which is what a producer on the publish path needs.
         let (alive_tx, thread_alive) = std::sync::mpsc::channel::<()>();
 
         // Spawn the runtime thread
@@ -201,14 +211,13 @@ impl AimDbHandle {
         let runtime_handle = recv_startup(&mut handle_rx, "runtime handle")?;
         let db = recv_startup(&mut db_rx, "database")?;
 
-        Ok(Self {
-            thread_handle: Some(thread_handle),
-            shutdown_tx: Some(shutdown_tx),
-            thread_alive: Some(std::sync::Mutex::new(thread_alive)),
+        Ok(Self::assemble(
             runtime_handle,
             db,
-            made_in: crate::fork::generation(),
-        })
+            shutdown_tx,
+            thread_handle,
+            thread_alive,
+        ))
     }
 
     pub(crate) fn new(db: AimDb) -> SyncResult<Self> {
@@ -221,7 +230,7 @@ impl AimDbHandle {
         // `new_from_builder` has always used. See `recv_startup`.
         let (handle_tx, mut handle_rx) = mpsc::channel::<Startup<tokio::runtime::Handle>>(1);
 
-        // See `thread_alive`: never sent on, only dropped when the thread ends.
+        // See `OwnedThread::alive`.
         let (alive_tx, thread_alive) = std::sync::mpsc::channel::<()>();
 
         // Wrap database in Arc for sharing
@@ -272,39 +281,32 @@ impl AimDbHandle {
 
         let runtime_handle = recv_startup(&mut handle_rx, "runtime handle")?;
 
-        Ok(Self {
-            thread_handle: Some(thread_handle),
-            shutdown_tx: Some(shutdown_tx),
-            thread_alive: Some(std::sync::Mutex::new(thread_alive)),
+        Ok(Self::assemble(
             runtime_handle,
             db,
-            made_in: crate::fork::generation(),
-        })
+            shutdown_tx,
+            thread_handle,
+            thread_alive,
+        ))
     }
 
-    /// Drop everything tied to a runtime thread that does not exist here.
-    ///
-    /// A forked child inherited all of it: a `JoinHandle` for a thread this
-    /// process never had, the sender that would signal it to stop, and the
-    /// liveness channel that reports when it did. None of it means anything on
-    /// this side of the `fork`, and joining that handle panics inside `std`.
-    ///
-    /// One place rather than two, so a field added to this struct later is
-    /// released by both the `detach` and `Drop` guards or by neither — not by
-    /// whichever one its author happened to read.
-    fn release_inherited(&mut self) {
-        let _ = self.shutdown_tx.take();
-        let _ = self.thread_handle.take();
-        let _ = self.thread_alive.take();
-    }
-
-    /// Refuse if this process has forked since the handle was created.
-    #[inline]
-    fn check_fork(&self) -> SyncResult<()> {
-        if crate::fork::forked_since(self.made_in) {
-            return Err(SyncError::ForkedChild);
+    /// Both constructors end the same way: one shared [`Runtime`], one owned
+    /// thread. Written once so they cannot drift.
+    fn assemble(
+        runtime_handle: tokio::runtime::Handle,
+        db: Arc<AimDb>,
+        shutdown: mpsc::Sender<ShutdownSignal>,
+        join: JoinHandle<()>,
+        alive: std::sync::mpsc::Receiver<()>,
+    ) -> Self {
+        Self {
+            rt: Arc::new(Runtime::new(runtime_handle, db)),
+            owned: Some(OwnedThread {
+                join,
+                shutdown,
+                alive: std::sync::Mutex::new(alive),
+            }),
         }
-        Ok(())
     }
 
     /// Create a synchronous producer for type `T`.
@@ -334,8 +336,17 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        self.check_fork()?;
-        Ok(crate::SyncProducer::new(Arc::downgrade(&self.db), key))
+        // No check here, and deliberately none. Creating a producer touches
+        // nothing: not the database, not the runtime thread. `test_error_propagation`
+        // pins that — an unregistered key yields a producer, and `set()` reports
+        // the problem. A forked child is one more problem `set()` reports, via
+        // the `db()` it must pass through; making `fork` the single exception to
+        // this crate's own lazy-producer contract would be the odd thing.
+        //
+        // `consumer()` below does refuse in a child, because subscribing needs
+        // the database and `db()` checks. That asymmetry is not new: an
+        // unregistered key already fails there and not here.
+        Ok(crate::SyncProducer::new(Arc::downgrade(&self.rt), key))
     }
 
     /// Create a synchronous consumer for type `T`.
@@ -371,11 +382,14 @@ impl AimDbHandle {
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        self.check_fork()?;
         let record_key = key.as_ref().to_string();
-        let reader = self.db.subscribe::<T>(&record_key).map_err(SyncError::Db)?;
-        let waiter = Waiter::new(self.runtime_handle.clone());
-        Ok(crate::SyncConsumer::new(waiter, reader))
+        // `db()` checks, so subscribing is gated the same way publishing is.
+        let reader = self
+            .rt
+            .db()?
+            .subscribe::<T>(&record_key)
+            .map_err(SyncError::Db)?;
+        Ok(crate::SyncConsumer::new(self.rt.view()?, reader))
     }
 
     /// Gracefully shut down the runtime thread.
@@ -447,61 +461,65 @@ impl AimDbHandle {
     }
 
     /// Internal detach implementation.
+    ///
+    /// Deliberate shutdown: *sends* the signal rather than merely dropping a
+    /// sender, so the thread stops at once rather than when the last sender
+    /// goes. Producers and consumers hold only a [`Weak`](alloc::sync::Weak)
+    /// and cannot keep it alive, but one mid-call when it stops fails with
+    /// [`SyncError::RuntimeShutdown`] — `detach` means "stop now", not "stop
+    /// when everyone has finished".
     fn detach_internal(&mut self, timeout: Option<Duration>) -> SyncResult<()> {
         // A forked child holds a `JoinHandle` for a thread that does not exist
         // here, and joining it is not merely useless: it panics inside `std`
         // with "threads should not terminate unexpectedly", which for an FFI
         // caller means a Rust backtrace on stderr from a destructor. Release
-        // the handle instead — the thread is the parent's to reap.
-        if crate::fork::forked_since(self.made_in) {
-            self.release_inherited();
+        // it instead — the thread is the parent's to reap.
+        if self.rt.check().is_err() {
+            self.owned = None;
             return Err(SyncError::ForkedChild);
         }
 
-        // Send shutdown signal
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            // Try to send shutdown signal (non-blocking)
-            // If it fails, the runtime may have already stopped
-            let _ = shutdown_tx.try_send(ShutdownSignal);
-        }
-
-        let Some(thread_handle) = self.thread_handle.take() else {
+        let Some(OwnedThread {
+            join,
+            shutdown,
+            alive,
+        }) = self.owned.take()
+        else {
             return Ok(());
         };
+
+        // Non-blocking. Failure means the thread has already stopped.
+        let _ = shutdown.try_send(ShutdownSignal);
 
         if let Some(duration) = timeout {
             // `JoinHandle` has no timed join. Rather than park a helper thread
             // in `join()` — which could not be reclaimed when the wait expired,
             // stranding it for the life of the process — wait on the liveness
-            // channel the runtime thread holds open. See `thread_alive`.
-            if let Some(alive) = self.thread_alive.take() {
-                // Taken by value, so this cannot block and cannot fail; the
-                // poisoned arm is unreachable because nothing ever locks it.
-                let alive = alive.into_inner().unwrap_or_else(|e| e.into_inner());
-                match alive.recv_timeout(duration) {
-                    // The thread dropped its sender, so it is on its way out
-                    // and the join below returns promptly.
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+            // channel the runtime thread holds open. See `OwnedThread::alive`.
+            //
+            // Taken by value, so this cannot block and cannot fail; the
+            // poisoned arm is unreachable because nothing ever locks it.
+            let alive = alive.into_inner().unwrap_or_else(|e| e.into_inner());
+            match alive.recv_timeout(duration) {
+                // The thread dropped its sender, so it is on its way out and
+                // the join below returns promptly.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
 
-                    // Still running. Release the `JoinHandle` instead of
-                    // blocking on it: the shutdown signal was delivered, so the
-                    // thread stops on its own and drops the database with it.
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        return Err(SyncError::DetachFailed {
-                            message: format!(
-                                "Runtime thread did not shut down within {:?}",
-                                duration
-                            ),
-                        });
-                    }
-
-                    // Nothing is ever sent on this channel.
-                    Ok(()) => {}
+                // Still running. Release the `JoinHandle` instead of blocking
+                // on it: the shutdown signal was delivered, so the thread stops
+                // on its own and drops the database with it.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(SyncError::DetachFailed {
+                        message: format!("Runtime thread did not shut down within {:?}", duration),
+                    });
                 }
+
+                // Nothing is ever sent on this channel.
+                Ok(()) => {}
             }
         }
 
-        thread_handle.join().map_err(|_| SyncError::DetachFailed {
+        join.join().map_err(|_| SyncError::DetachFailed {
             message: "Runtime thread panicked during shutdown".to_string(),
         })?;
 
@@ -577,22 +595,18 @@ impl Drop for AimDbHandle {
     ///
     /// Call [`detach`](Self::detach) if you need to know that it did.
     fn drop(&mut self) {
-        // A child's handle owns nothing that runs. Releasing it quietly is
-        // correct; the warning below is for a *parent* that forgot to detach.
-        if crate::fork::forked_since(self.made_in) {
-            self.release_inherited();
+        // A forked child's handle owns nothing that runs here: signalling would
+        // reach a thread this process never had. Release and say nothing.
+        if self.rt.check().is_err() {
+            self.owned = None;
             return;
         }
 
-        if self.thread_handle.is_some() {
+        if let Some(owned) = self.owned.take() {
             log_warn!("AimDbHandle dropped without calling detach()");
             log_warn!("Shutdown was signalled; the runtime thread stops on its own");
-
-            if let Some(shutdown_tx) = self.shutdown_tx.take() {
-                let _ = shutdown_tx.try_send(ShutdownSignal);
-            }
-            // Released rather than joined — see the note above.
-            let _ = self.thread_handle.take();
+            // Non-blocking. Released rather than joined — see the note above.
+            let _ = owned.shutdown.try_send(ShutdownSignal);
         }
     }
 }

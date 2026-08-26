@@ -2,7 +2,7 @@
 
 use aimdb_core::{DbError, Reader};
 
-use crate::waiter::Waiter;
+use crate::runtime::{Guarded, RuntimeRef};
 use crate::{SyncError, SyncResult};
 use core::fmt::Debug;
 use core::time::Duration;
@@ -56,10 +56,13 @@ pub struct SyncConsumer<T>
 where
     T: Send + Debug + Clone,
 {
-    waiter: Waiter,
-    reader: Reader<T>,
-    /// The fork generation this consumer was made in. See [`crate::fork`].
-    made_in: crate::fork::Generation,
+    /// The subscription, and with it the runtime.
+    ///
+    /// Wrapped so that neither the reader nor a Tokio handle can be reached
+    /// without passing the fork check — see
+    /// [`Guarded`](crate::runtime::Guarded). Every read below therefore checks
+    /// because it must, not because someone remembered to.
+    reader: Guarded<Reader<T>>,
 }
 
 impl<T> SyncConsumer<T>
@@ -67,24 +70,10 @@ where
     T: Send + Debug + Clone,
 {
     /// Create a new sync consumer (internal use only)
-    pub(crate) fn new(waiter: Waiter, reader: Reader<T>) -> Self {
+    pub(crate) fn new(rt: RuntimeRef, reader: Reader<T>) -> Self {
         Self {
-            waiter,
-            reader,
-            made_in: crate::fork::generation(),
+            reader: Guarded::new(rt, reader),
         }
-    }
-
-    /// Refuse if this process has forked since the consumer was made.
-    ///
-    /// A forked child's reader would block forever: the buffer is there, but
-    /// the runtime thread that fills it is not.
-    #[inline]
-    fn check_fork(&self) -> SyncResult<()> {
-        if crate::fork::forked_since(self.made_in) {
-            return Err(SyncError::ForkedChild);
-        }
-        Ok(())
     }
 
     async fn get_impl(reader: &mut Reader<T>) -> SyncResult<T> {
@@ -132,8 +121,8 @@ where
     /// # }
     /// ```
     pub fn get(&mut self) -> SyncResult<T> {
-        self.check_fork()?;
-        self.waiter.block_on(Self::get_impl(&mut self.reader))
+        let (handle, reader) = self.reader.enter()?;
+        handle.block_on(Self::get_impl(reader))
     }
 
     /// Get a value with a timeout.
@@ -176,9 +165,9 @@ where
     /// # }
     /// ```
     pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
-        self.check_fork()?;
-        let fut = async { tokio::time::timeout(timeout, Self::get_impl(&mut self.reader)).await };
-        let res = self.waiter.block_on(fut);
+        let (handle, reader) = self.reader.enter()?;
+        let fut = async { tokio::time::timeout(timeout, Self::get_impl(reader)).await };
+        let res = handle.block_on(fut);
         res.unwrap_or_else(|_| Err(SyncError::GetTimeout))
     }
 
@@ -218,8 +207,7 @@ where
     /// # }
     /// ```
     pub fn try_get(&mut self) -> SyncResult<T> {
-        self.check_fork()?;
-        let res = self.reader.try_recv();
+        let res = self.reader.get()?.try_recv();
         res.map_err(|e| match e {
             DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
             DbError::BufferEmpty => SyncError::GetTimeout,
@@ -269,7 +257,6 @@ where
     /// # }
     /// ```
     pub fn get_latest(&mut self) -> SyncResult<T> {
-        self.check_fork()?;
         // 1) can simply sequence get_catch_up and try_get -
         //    no one else does it simultaneously thanks to &mut self
         // 2) if draining ends up with an error, we follow the previous impl
@@ -321,7 +308,6 @@ where
     /// # }
     /// ```
     pub fn get_latest_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
-        self.check_fork()?;
         // see internal comments for get_latest
         let deadline = Instant::now() + timeout;
         let oldest = self.get_catch_up(Some(deadline))?;
