@@ -19,8 +19,8 @@
 //! [`Runtime::db`] the only route to the database, and both refuse a runtime
 //! this process did not inherit a thread for. A publish or a read cannot be
 //! written that skips the check, because it cannot be written without going
-//! through one of them. Design 050 calls this "checked by construction rather
-//! than by convention"; #231 gave panic-freedom the same treatment.
+//! through one of them — checked by construction rather than by convention,
+//! which is the treatment #231 gave panic-freedom.
 //!
 //! The check is deliberately *before* the database is handed out. A forked
 //! child's `Arc<AimDb>` is perfectly valid — it came across with the address
@@ -214,7 +214,7 @@ mod tests {
     /// moving the stamp onto a value. Before this, proving a refusal path meant
     /// forking a real process from a parent holding a live Tokio runtime, the
     /// least safe moment there is; that suite failed 11 runs in 60 until it was
-    /// mitigated (design 050 §8).
+    /// mitigated.
     fn runtime_stamped(generations_behind: u64) -> (tokio::runtime::Runtime, Runtime) {
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

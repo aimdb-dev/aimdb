@@ -3,7 +3,7 @@
 //! Only what a unit test cannot prove. Every *refusal* path is now checked in
 //! `runtime.rs` against a `Runtime` stamped with a stale generation — no
 //! thread, no fork, no sleep — because the stamp became ordinary data when the
-//! runtime became a value (design 050 §8). What survives here needs a real
+//! runtime became a value. What survives here needs a real
 //! child process: that the `pthread_atfork` handler is genuinely installed and
 //! fires, and that a destructor in that child does not join a thread this
 //! process never had.
