@@ -10,6 +10,7 @@ use aimdb_sync::{AimDbBuilderSyncExt, SyncError};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Reading {
@@ -31,8 +32,21 @@ fn attach() -> aimdb_sync::AimDbHandle {
 /// every destructor — the child is not a test runner, and letting it unwind
 /// would report a second set of results into the parent's stdout.
 fn in_forked_child(child: impl FnOnce() -> bool) -> i32 {
-    // SAFETY: single-threaded from the child's perspective by construction —
-    // it only touches the aimdb handles under test and then `_exit`s.
+    // SAFETY: `fork` itself is safe to call here. What the *child* may then do
+    // is the real constraint, and it is not "anything": this parent is
+    // multi-threaded — the runtime thread, plus whatever else the harness is
+    // running — so the child starts out owning locks (the allocator's above
+    // all) that were held by threads that no longer exist. Only
+    // async-signal-safe work is strictly sound.
+    //
+    // The tests below stay as close to that as what they assert allows. The
+    // refused accessors return a unit variant without allocating, which is the
+    // bulk of it; the two that then drop inherited state do free memory, and
+    // `a_child_can_attach_its_own_database_after_forking` allocates and spawns
+    // a thread outright — proving a post-fork `attach` works is the whole point
+    // of that one. So the residual risk of a rare hang is real rather than
+    // argued away. Run this binary with `--test-threads=1` to keep the parent
+    // as quiet as it can be at the moment of the fork.
     match unsafe { libc::fork() } {
         -1 => panic!("fork failed"),
         0 => {
@@ -81,6 +95,45 @@ fn a_forked_child_is_refused_rather_than_silently_dropped() {
     producer
         .set(Reading { value: 3 })
         .expect("parent still publishes");
+    handle.detach().expect("detach");
+}
+
+/// An inherited *consumer* must refuse too, and must drop quietly.
+///
+/// Its reader would otherwise block forever: the buffer came across with the
+/// address space, but the runtime thread that fills it did not.
+#[test]
+fn a_forked_child_is_refused_by_an_inherited_consumer() {
+    let handle = attach();
+    let mut inherited = handle
+        .consumer::<Reading>("sensor.reading")
+        .expect("consumer");
+
+    let code = in_forked_child(move || {
+        let refused_try = matches!(inherited.try_get(), Err(SyncError::ForkedChild));
+        // `get` blocks in the parent; in the child it must return, not park.
+        let refused_get = matches!(inherited.get(), Err(SyncError::ForkedChild));
+        let refused_latest = matches!(inherited.get_latest(), Err(SyncError::ForkedChild));
+        let refused_timeout = matches!(
+            inherited.get_with_timeout(Duration::from_millis(50)),
+            Err(SyncError::ForkedChild)
+        );
+        let refused_latest_timeout = matches!(
+            inherited.get_latest_with_timeout(Duration::from_millis(50)),
+            Err(SyncError::ForkedChild)
+        );
+
+        // The destructor path, as for the handle above: must not block or
+        // panic. The parent's `WIFEXITED` assertion catches a panic.
+        drop(inherited);
+
+        refused_try && refused_get && refused_latest && refused_timeout && refused_latest_timeout
+    });
+    assert_eq!(
+        code, 0,
+        "every read on an inherited consumer should be refused"
+    );
+
     handle.detach().expect("detach");
 }
 

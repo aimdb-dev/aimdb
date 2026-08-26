@@ -26,8 +26,8 @@
 //! library making one on an application's behalf is normally a trespass. This
 //! is the exception: only the crate that owns the runtime thread knows the
 //! thread is gone, so nobody above can make this check — and the handler is
-//! registered lazily, on the first `attach`, so a program that never uses the
-//! sync facade never gets one.
+//! registered lazily, on the first [`generation`] (which every `attach` takes),
+//! so a program that never uses the sync facade never gets one.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -48,8 +48,11 @@ extern "C" fn on_fork_in_child() {
 
 /// Register the fork handler, once per process.
 ///
-/// Called from the constructors rather than a static initialiser, so a program
-/// that never attaches a database never installs a handler.
+/// Called from the constructors and from [`generation`] rather than a static
+/// initialiser, so a program that never uses the sync facade never installs a
+/// handler. Idempotent and cheap after the first call — a completed
+/// [`Once`](std::sync::Once) is one acquire load — which is why [`generation`]
+/// can afford to call it and [`forked_since`] does not have to.
 pub(crate) fn arm() {
     #[cfg(unix)]
     {
@@ -64,21 +67,41 @@ pub(crate) fn arm() {
     }
 }
 
+/// Read the counter. Never arms — see [`generation`] for why that split
+/// exists.
+#[inline]
+fn load() -> Generation {
+    GENERATION.load(Ordering::Relaxed)
+}
+
 /// The generation to stamp on something being created now.
 ///
 /// Public because a layer built *on* this crate has the same problem: an FFI
 /// door holds state of its own that a `fork` invalidates, and needs to answer
 /// "is this still usable" without locking anything the runtime thread might
 /// hold. Record this at construction, compare with [`forked_since`].
+///
+/// **Arms the handler**, because otherwise it hands out a number that cannot
+/// change. A caller above this crate stamps its own state before any database
+/// is attached — that is the normal order, an FFI door opens before it is used
+/// — and until the first `attach` there is no handler, so a `fork` in that
+/// window would go uncounted and the stamp would compare equal forever. That is
+/// the very bug this module exists to prevent, one layer up. Arming here closes
+/// it: taking a stamp is what makes the stamp meaningful.
+///
+/// This is the *construction-time* call and is cold. The hot path is
+/// [`forked_since`], which only loads.
 pub fn generation() -> Generation {
-    GENERATION.load(Ordering::Relaxed)
+    arm();
+    load()
 }
 
 /// Whether this process has forked since `made_in` was taken from
 /// [`generation`].
 ///
-/// One relaxed load and a comparison — no syscall, no lock. Safe to call from
-/// anywhere, including while the runtime thread is mid-shutdown.
+/// One relaxed load and a comparison — no syscall, no lock, and no arming: if
+/// `made_in` exists then [`generation`] already armed the handler. Safe to call
+/// from anywhere, including while the runtime thread is mid-shutdown.
 pub fn forked_since(made_in: Generation) -> bool {
-    generation() != made_in
+    load() != made_in
 }

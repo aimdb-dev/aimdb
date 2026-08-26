@@ -41,9 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publish path is one relaxed atomic load, and a program that never attaches
   never installs a handler. `fork::generation` and `fork::forked_since` are
   public because a layer built on this crate needs the same answer without
-  taking a lock the runtime thread may hold. A database the child attaches
-  *itself* after forking is unaffected — the guard is a generation counter, not
-  a poison flag.
+  taking a lock the runtime thread may hold; `generation` arms the handler
+  itself, so a caller that stamps its own state before any database exists —
+  an FFI door opens before it is used — is not handed a number that can never
+  change. A database the child attaches *itself* after forking is unaffected —
+  the guard is a generation counter, not a poison flag.
 - **A panic-freedom contract on the blocking surface.** The crate is compiled
   under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
   its own tests, so "a panic here is a bug, not an error channel" is checked

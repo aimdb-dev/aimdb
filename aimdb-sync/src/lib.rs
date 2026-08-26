@@ -138,6 +138,9 @@
 //! variants:
 //!
 //! - `RuntimeShutdown`: The runtime thread stopped
+//! - `ForkedChild`: Created before a `fork()`, and this is the child — the
+//!   runtime thread it needs did not survive (std only; see the `fork`
+//!   module)
 //! - `SetTimeout`: Producer timeout expired
 //! - `GetTimeout`: Consumer timeout expired or no data (try_get)
 //! - `AttachFailed`: Failed to start runtime thread

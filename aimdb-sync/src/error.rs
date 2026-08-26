@@ -96,6 +96,9 @@ mod tests {
         assert_eq!(SyncError::GetTimeout.kind(), DbErrorKind::Retry);
         assert_eq!(SyncError::SetTimeout.kind(), DbErrorKind::Retry);
         assert_eq!(SyncError::RuntimeShutdown.kind(), DbErrorKind::Closed);
+        // Terminal for the same reason: the runtime thread is gone and will
+        // not come back in this process, so a caller must not retry.
+        assert_eq!(SyncError::ForkedChild.kind(), DbErrorKind::Closed);
     }
 
     /// The point of returning `DbErrorKind` rather than a kind of this crate's
