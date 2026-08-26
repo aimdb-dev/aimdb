@@ -20,6 +20,13 @@ GREEN := \033[0;32m
 YELLOW := \033[0;33m
 BLUE := \033[0;34m
 RED := \033[0;31m
+
+# Crates that must never appear in aimdb-sync's --no-default-features graph.
+# `tokio` is the obvious one; `libc` is here because it defaults to a `std`
+# feature, so a target-specific dependency added for a std-only path (the
+# pthread_atfork fork detector) silently un-no_std's the crate if it is not
+# marked optional and gated behind `std`.
+SYNC_NO_STD_FORBIDDEN := tokio|libc
 NC := \033[0m # No Color
 
 ## Show available commands
@@ -89,16 +96,16 @@ build:
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
 	cargo build --package aimdb-sync --no-default-features
-	@printf "$(YELLOW)  → Asserting no tokio in sync wrapper (no_std)$(NC)\n"
+	@printf "$(YELLOW)  → Asserting no std-only crates in sync wrapper (no_std)$(NC)\n"
 	@out=$$(cargo tree -p aimdb-sync --no-default-features -e features,no-dev 2>&1) || { \
 		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
 		printf '%s\n' "$$out"; exit 1; \
 	}; \
-	if printf '%s\n' "$$out" | grep -qi tokio; then \
-		printf "$(RED)✗ tokio leaked into the no_std build$(NC)\n"; \
-		printf '%s\n' "$$out" | grep -i tokio; exit 1; \
+	if printf '%s\n' "$$out" | grep -qiE '$(SYNC_NO_STD_FORBIDDEN)'; then \
+		printf "$(RED)✗ a std-only crate leaked into the no_std build$(NC)\n"; \
+		printf '%s\n' "$$out" | grep -iE '$(SYNC_NO_STD_FORBIDDEN)'; exit 1; \
 	fi
-	@printf "$(BLUE)✓ no_std graph is tokio-free$(NC)\n"
+	@printf "$(BLUE)✓ no_std graph is free of $(SYNC_NO_STD_FORBIDDEN)$(NC)\n"
 	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
 	cargo build --package aimdb-codegen
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"

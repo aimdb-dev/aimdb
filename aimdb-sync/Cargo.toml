@@ -44,13 +44,19 @@ serde_json = "1.0"
 [features]
 default = ["std"]
 
-std = ["aimdb-core/std", "dep:tokio", "dep:aimdb-tokio-adapter"]
+std = ["aimdb-core/std", "dep:tokio", "dep:aimdb-tokio-adapter", "dep:libc"]
 
 # Enable tracing for debugging
 tracing = ["dep:tracing", "aimdb-core/tracing"]
 
 # SyncProducer::set_value / try_set_value / set_value_at for Settable types
 data-contracts = ["dep:aimdb-data-contracts"]
+
+# Fork detection only, and only where `pthread_atfork` exists. Optional and
+# activated by `std`, so the no_std build pulls neither libc nor its `std`
+# feature — see `src/fork.rs`.
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", default-features = false, optional = true }
 
 [package.metadata.docs.rs]
 all-features = true

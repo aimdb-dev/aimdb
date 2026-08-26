@@ -365,6 +365,7 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-tokio-adapter",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.17",

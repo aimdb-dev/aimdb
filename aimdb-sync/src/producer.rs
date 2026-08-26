@@ -42,6 +42,8 @@ where
 {
     db: Weak<AimDb>,
     key: String,
+    /// The fork generation this producer was made in. See [`crate::fork`].
+    made_in: crate::fork::Generation,
     // same reasons as for Producer in aimdb-core/src/typed_api.rs
     _phantom: PhantomData<fn() -> T>,
 }
@@ -55,8 +57,22 @@ where
         Self {
             db,
             key: key.as_ref().into(),
+            made_in: crate::fork::generation(),
             _phantom: PhantomData,
         }
+    }
+
+    /// Refuse if this process has forked since the producer was made.
+    ///
+    /// Checked before the `Weak` upgrade, because a forked child's upgrade
+    /// *succeeds* — the `Arc` was copied with the address space — which is
+    /// exactly why the buffer would accept a value nobody will ever read.
+    #[inline]
+    fn check_fork(&self) -> SyncResult<()> {
+        if crate::fork::forked_since(self.made_in) {
+            return Err(SyncError::ForkedChild);
+        }
+        Ok(())
     }
 
     /// Set the value, blocking until it can be sent.
@@ -90,6 +106,7 @@ where
     /// # }
     /// ```
     pub fn set(&self, value: T) -> SyncResult<()> {
+        self.check_fork()?;
         if let Some(db) = self.db.upgrade() {
             db.produce(&self.key, value).map_err(SyncError::Db)
         } else {
@@ -131,6 +148,7 @@ where
     /// # }
     /// ```
     pub fn try_set(&self, value: T) -> SyncResult<()> {
+        self.check_fork()?;
         if let Some(db) = self.db.upgrade() {
             let producer = db.producer(&self.key)?;
             producer.try_produce(value).map_err(|e| match e {

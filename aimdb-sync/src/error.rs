@@ -40,6 +40,11 @@ pub enum SyncError {
     #[error("Runtime thread has shut down")]
     RuntimeShutdown,
 
+    /// This handle, producer or consumer was created before a `fork()`, and
+    /// this is the child. The runtime thread it needs did not survive.
+    #[error("created before a fork(); this process has no runtime thread for it")]
+    ForkedChild,
+
     /// Error from the underlying database.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -62,7 +67,9 @@ impl SyncError {
 
             Self::SetTimeout | Self::GetTimeout => DbErrorKind::Retry,
 
-            Self::RuntimeShutdown => DbErrorKind::Closed,
+            // Terminal for the same reason RuntimeShutdown is: the runtime
+            // thread is gone and will not come back in this process.
+            Self::RuntimeShutdown | Self::ForkedChild => DbErrorKind::Closed,
 
             Self::Db(err) => err.kind(),
         }
@@ -89,6 +96,9 @@ mod tests {
         assert_eq!(SyncError::GetTimeout.kind(), DbErrorKind::Retry);
         assert_eq!(SyncError::SetTimeout.kind(), DbErrorKind::Retry);
         assert_eq!(SyncError::RuntimeShutdown.kind(), DbErrorKind::Closed);
+        // Terminal for the same reason: the runtime thread is gone and will
+        // not come back in this process, so a caller must not retry.
+        assert_eq!(SyncError::ForkedChild.kind(), DbErrorKind::Closed);
     }
 
     /// The point of returning `DbErrorKind` rather than a kind of this crate's
