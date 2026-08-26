@@ -113,12 +113,10 @@ pub struct AimDbHandle {
     /// The runtime thread and everything reached through it, shared with every
     /// producer and consumer made from this handle. See [`crate::runtime`].
     ///
-    /// This is the only strong reference: producers and consumers hold a
+    /// The only strong reference: producers and consumers hold a
     /// [`Weak`](alloc::sync::Weak), so the runtime dies with this handle and a
-    /// producer that outlives it fails with
-    /// [`SyncError::RuntimeShutdown`](crate::SyncError::RuntimeShutdown).
-    /// [`detach`](Self::detach) is what stops the thread deliberately, without
-    /// waiting for the survivors to finish.
+    /// producer outliving it fails with `RuntimeShutdown`.
+    /// [`detach`](Self::detach) is what stops the thread deliberately.
     rt: Arc<Runtime>,
 
     /// What only the handle that started the thread may do: signal it, wait for
@@ -137,8 +135,7 @@ struct OwnedThread {
     join: JoinHandle<()>,
 
     /// Commands the thread to stop. Distinct from dropping it: the thread also
-    /// ends when every sender is gone, but *sending* ends it now, while
-    /// producers and consumers still hold views of the runtime.
+    /// ends when every sender is gone, but *sending* ends it now.
     shutdown: mpsc::Sender<ShutdownSignal>,
 
     /// Held open by the runtime thread for exactly as long as it runs.
@@ -467,11 +464,10 @@ impl AimDbHandle {
     ///
     /// Deliberate shutdown: *sends* the signal rather than merely dropping a
     /// sender, so the thread stops at once rather than when the last sender
-    /// goes. Producers and consumers hold only a
-    /// [`Weak`](alloc::sync::Weak), so they cannot keep it alive; what they can
-    /// do is still be mid-call when it stops, and they then fail with
-    /// [`SyncError::RuntimeShutdown`]. That is the point — `detach` means "stop
-    /// now", not "stop when everyone has finished".
+    /// goes. Producers and consumers hold only a [`Weak`](alloc::sync::Weak)
+    /// and cannot keep it alive, but one mid-call when it stops fails with
+    /// [`SyncError::RuntimeShutdown`] — `detach` means "stop now", not "stop
+    /// when everyone has finished".
     fn detach_internal(&mut self, timeout: Option<Duration>) -> SyncResult<()> {
         // A forked child holds a `JoinHandle` for a thread that does not exist
         // here, and joining it is not merely useless: it panics inside `std`
