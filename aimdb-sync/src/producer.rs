@@ -47,6 +47,24 @@ where
     /// database goes with it and this upgrade fails. That failure *is* the
     /// liveness check — see [`crate::runtime`] on why sharing ownership here
     /// would cost more than it bought.
+    ///
+    /// # Why this is not a `Guarded`, as the consumer's reader is
+    ///
+    /// [`Guarded`](crate::runtime::Guarded) exists to put a check in front of a
+    /// resource nothing else gates. A consumer owns one: its `Reader` is its
+    /// own, and `try_get` reads straight out of it without touching the
+    /// runtime. A producer owns no such thing — a key and a `PhantomData`. The
+    /// only resource it reaches is the database, and that already lives behind
+    /// [`Runtime::db`](crate::runtime::Runtime::db), private to that module and
+    /// checked on the way through. Wrapping the key would mean checking to
+    /// reach a `String` and then checking again to reach the database: an extra
+    /// hop, no extra guarantee.
+    ///
+    /// The two also want opposite answers when the upgrade fails. A consumer
+    /// must carry on — its buffer may still hold data, which is why
+    /// `RuntimeRef::check` returns `Ok` there. A producer must refuse: there is
+    /// nothing left to publish into. Sharing one wrapper would mean
+    /// parameterising that policy, which costs more than the hop it saves.
     rt: Weak<Runtime>,
     key: String,
     // same reasons as for Producer in aimdb-core/src/typed_api.rs
