@@ -88,13 +88,15 @@ fn dropping_an_inherited_handle_does_not_panic() {
         // `detach` reports the situation rather than joining.
         let refused = matches!(to_detach.detach(), Err(SyncError::ForkedChild));
 
-        // A handle in a child hands out nothing usable either. `consumer` gets
-        // this from `db()`, which checks; `producer` touches no gated resource,
-        // so its check is an explicit one — this is what pins it.
-        let no_producer = matches!(
-            to_drop.producer::<Reading>("sensor.reading"),
-            Err(SyncError::ForkedChild)
-        );
+        // A handle in a child hands out nothing *usable*. `consumer` refuses
+        // outright, because subscribing goes through the fork-checked `db()`.
+        // `producer` succeeds — it touches nothing, exactly as it does for an
+        // unregistered key — and the refusal lands on first use instead. Both
+        // are safe; what matters is that neither silently accepts a value.
+        let producer_defers = match to_drop.producer::<Reading>("sensor.reading") {
+            Ok(p) => matches!(p.set(Reading { value: 9 }), Err(SyncError::ForkedChild)),
+            Err(_) => false,
+        };
         let no_consumer = matches!(
             to_drop.consumer::<Reading>("sensor.reading"),
             Err(SyncError::ForkedChild)
@@ -106,7 +108,7 @@ fn dropping_an_inherited_handle_does_not_panic() {
         // normally, and the parent's `WIFEXITED` assertion would catch it.
         drop(to_drop);
 
-        refused && no_producer && no_consumer
+        refused && producer_defers && no_consumer
     });
     assert_eq!(code, 0, "detach in a child should be refused, not fatal");
 }

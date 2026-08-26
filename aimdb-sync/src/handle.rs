@@ -336,25 +336,16 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        // The one check in this crate that guards no resource, and it earns
-        // its place: constructing a producer touches nothing gated — it only
-        // downgrades an `Arc` — so without this line the call would succeed in
-        // a forked child.
+        // No check here, and deliberately none. Creating a producer touches
+        // nothing: not the database, not the runtime thread. `test_error_propagation`
+        // pins that — an unregistered key yields a producer, and `set()` reports
+        // the problem. A forked child is one more problem `set()` reports, via
+        // the `db()` it must pass through; making `fork` the single exception to
+        // this crate's own lazy-producer contract would be the odd thing.
         //
-        // That asymmetry is the reason to keep it. `consumer()` below subscribes
-        // through `db()`, so it refuses in a child for free. A handle that
-        // hands out producers but not consumers would be a worse contract than
-        // one that hands out neither, and the difference would be invisible
-        // until first publish.
-        //
-        // It is no longer what makes a child *safe*, though. A producer built
-        // in a child holds a `Weak<Runtime>` to the runtime the parent stamped,
-        // so it refuses on first use regardless. Under the old per-object stamp
-        // it took the child's generation and never refused — that was a real
-        // bypass, and blocking this call was the only fix. Pinned by
-        // `dropping_an_inherited_handle_does_not_panic`, which fails if this
-        // line is removed.
-        self.rt.check()?;
+        // `consumer()` below does refuse in a child, because subscribing needs
+        // the database and `db()` checks. That asymmetry is not new: an
+        // unregistered key already fails there and not here.
         Ok(crate::SyncProducer::new(Arc::downgrade(&self.rt), key))
     }
 

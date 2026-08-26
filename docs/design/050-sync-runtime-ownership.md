@@ -302,18 +302,24 @@ Still open, unchanged by this work:
   memory. Adding a `pub(crate)` accessor that returns one would silently undo
   that, which is worth stating because it is the only way back to the old
   shape.
-- Three explicit `check()` calls remain, all in `handle.rs`, and none is a
-  guard on a resource:
+- Two explicit `check()` calls remain, both in `handle.rs`, and both guard a
+  real resource — the `JoinHandle`. `detach_internal` and `Drop` use one to
+  decide whether to release the thread rather than join one this process never
+  had. Joining *is* the action there, so the check is a branch on state, not a
+  gate someone could forget.
 
-  | site | what it is |
-  |---|---|
-  | `producer()` | load-bearing, and the only check guarding no resource. Constructing a producer touches nothing gated — it just downgrades an `Arc` — so without it the call *succeeds* in a forked child, while `consumer()` refuses (it subscribes through `db()`). A handle that hands out producers but not consumers is a worse contract than one that hands out neither. It is not what makes a child safe — a producer built there refuses on first use regardless — but it is what makes the two factories agree. Removing it fails `dropping_an_inherited_handle_does_not_panic`. |
-  | `detach_internal` | a branch, not a refusal: release the thread rather than join one this process never had. |
-  | `Drop` | the same branch. |
+  `producer()` briefly had a third. It was removed once the question "what does
+  it guard?" got a straight answer: nothing. Creating a producer touches neither
+  the database nor the runtime — `test_error_propagation` pins that an
+  unregistered key still yields a producer, with `set()` reporting the problem.
+  A forked child is one more thing `set()` reports, through the `db()` it must
+  pass. Keeping the check would have made `fork` the sole exception to this
+  crate's own lazy-producer contract, and would have left a category —
+  "checks that guard nothing" — for the next one to join.
 
-  `consumer()` no longer checks explicitly — it subscribes through `db()`, which
-  checks — and `db_unchecked`, added as a deliberate hole for it, is deleted.
-  There are now no unchecked accessors in the crate.
+  `consumer()` does refuse in a child, because subscribing goes through `db()`.
+  That asymmetry predates all of this: an unregistered key already fails at
+  `consumer()` and not at `producer()`.
 
 - `SyncConsumer::try_get` was briefly the last opt-in check, on the
   argument that it touches no runtime resource so there was nothing to gate.
