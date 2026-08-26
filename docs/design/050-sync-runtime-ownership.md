@@ -307,7 +307,7 @@ Still open, unchanged by this work:
 
   | site | what it is |
   |---|---|
-  | `producer()` | diagnostics. A producer made in a forked child refuses on first use regardless — it holds a `Weak<Runtime>` to the runtime the *parent* stamped. Under the old per-object stamp it would have got the child's generation and never refused, which is why that call had to be blocked then. Failing here still beats failing at the first `set()`. |
+  | `producer()` | load-bearing, and the only check guarding no resource. Constructing a producer touches nothing gated — it just downgrades an `Arc` — so without it the call *succeeds* in a forked child, while `consumer()` refuses (it subscribes through `db()`). A handle that hands out producers but not consumers is a worse contract than one that hands out neither. It is not what makes a child safe — a producer built there refuses on first use regardless — but it is what makes the two factories agree. Removing it fails `dropping_an_inherited_handle_does_not_panic`. |
   | `detach_internal` | a branch, not a refusal: release the thread rather than join one this process never had. |
   | `Drop` | the same branch. |
 

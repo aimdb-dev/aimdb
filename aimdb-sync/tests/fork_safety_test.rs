@@ -88,13 +88,25 @@ fn dropping_an_inherited_handle_does_not_panic() {
         // `detach` reports the situation rather than joining.
         let refused = matches!(to_detach.detach(), Err(SyncError::ForkedChild));
 
+        // A handle in a child hands out nothing usable either. `consumer` gets
+        // this from `db()`, which checks; `producer` touches no gated resource,
+        // so its check is an explicit one — this is what pins it.
+        let no_producer = matches!(
+            to_drop.producer::<Reading>("sensor.reading"),
+            Err(SyncError::ForkedChild)
+        );
+        let no_consumer = matches!(
+            to_drop.consumer::<Reading>("sensor.reading"),
+            Err(SyncError::ForkedChild)
+        );
+
         // This one is never detached: it is dropped when the closure returns,
         // which is the destructor path. It must return quietly rather than
         // join. A panic here would unwind out of the child instead of exiting
         // normally, and the parent's `WIFEXITED` assertion would catch it.
         drop(to_drop);
 
-        refused
+        refused && no_producer && no_consumer
     });
     assert_eq!(code, 0, "detach in a child should be refused, not fatal");
 }

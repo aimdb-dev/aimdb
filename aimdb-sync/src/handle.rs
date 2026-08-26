@@ -336,14 +336,24 @@ impl AimDbHandle {
     where
         T: Send + 'static + Debug + Clone,
     {
-        // Diagnostics, not the guarantee. A producer made in a forked child
-        // would refuse on first use anyway: it holds a `Weak<Runtime>` to the
-        // runtime the *parent* stamped, so there is no fresh stamp to make it
-        // look current. That was not true when each producer copied a stamp at
-        // construction — then a producer built in the child got the child's
-        // generation and never refused, which is why the old code had to block
-        // this call. Kept because failing here beats failing at the first
-        // `set()`, especially across an FFI boundary.
+        // The one check in this crate that guards no resource, and it earns
+        // its place: constructing a producer touches nothing gated — it only
+        // downgrades an `Arc` — so without this line the call would succeed in
+        // a forked child.
+        //
+        // That asymmetry is the reason to keep it. `consumer()` below subscribes
+        // through `db()`, so it refuses in a child for free. A handle that
+        // hands out producers but not consumers would be a worse contract than
+        // one that hands out neither, and the difference would be invisible
+        // until first publish.
+        //
+        // It is no longer what makes a child *safe*, though. A producer built
+        // in a child holds a `Weak<Runtime>` to the runtime the parent stamped,
+        // so it refuses on first use regardless. Under the old per-object stamp
+        // it took the child's generation and never refused — that was a real
+        // bypass, and blocking this call was the only fix. Pinned by
+        // `dropping_an_inherited_handle_does_not_panic`, which fails if this
+        // line is removed.
         self.rt.check()?;
         Ok(crate::SyncProducer::new(Arc::downgrade(&self.rt), key))
     }
