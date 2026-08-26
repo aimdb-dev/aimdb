@@ -47,7 +47,7 @@
 //! producer keep an OS thread and a Tokio runtime alive with nobody owning
 //! them, which is the stranded thread #232 had just removed.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 
 use aimdb_core::AimDb;
 
@@ -125,6 +125,52 @@ impl Runtime {
     #[inline]
     pub(crate) fn db_unchecked(&self) -> &Arc<AimDb> {
         &self.db
+    }
+}
+
+/// A borrowed view of a [`Runtime`] that outlives it on purpose.
+///
+/// Held by [`SyncConsumer`](crate::SyncConsumer), which has a requirement the
+/// handle and the producers do not: a `Reader` can still drain what is already
+/// buffered after the runtime is gone, and delivering that data is behaviour
+/// the characterization tests pin. So a dead runtime must not refuse a read —
+/// but a `fork` still must.
+///
+/// The Tokio handle is kept for that case and is **private to this module**,
+/// which is the whole point of the type. `consumer.rs` cannot reach it except
+/// through [`Self::enter`], so a read that skips the check cannot be written
+/// there any more than it can anywhere else. A bare handle field beside a
+/// hand-written guard — the shape this replaces — offered no such thing.
+pub(crate) struct RuntimeRef {
+    rt: Weak<Runtime>,
+    handle: tokio::runtime::Handle,
+}
+
+impl RuntimeRef {
+    pub(crate) fn new(rt: Weak<Runtime>, handle: tokio::runtime::Handle) -> Self {
+        Self { rt, handle }
+    }
+
+    /// Refuse a forked child; let a detached one through.
+    ///
+    /// A failed upgrade means the handle was dropped in *this* process, which
+    /// is not a fork — the buffer is the right thing to answer for itself.
+    /// After a real `fork` the upgrade **succeeds**, because the `Arc` came
+    /// across with the address space, which is exactly why the check is worth
+    /// making at all.
+    #[inline]
+    pub(crate) fn check(&self) -> SyncResult<()> {
+        match self.rt.upgrade() {
+            Some(rt) => rt.check(),
+            None => Ok(()),
+        }
+    }
+
+    /// The Tokio handle, checked. The only way to obtain one.
+    #[inline]
+    pub(crate) fn enter(&self) -> SyncResult<tokio::runtime::Handle> {
+        self.check()?;
+        Ok(self.handle.clone())
     }
 }
 

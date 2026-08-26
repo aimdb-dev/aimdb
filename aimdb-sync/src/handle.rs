@@ -1,6 +1,6 @@
 //! AimDB handle for managing the sync API runtime thread.
 
-use crate::runtime::{Runtime, ShutdownSignal};
+use crate::runtime::{Runtime, RuntimeRef, ShutdownSignal};
 use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError};
 use alloc::sync::Arc;
@@ -381,8 +381,7 @@ impl AimDbHandle {
             .subscribe::<T>(&record_key)
             .map_err(SyncError::Db)?;
         Ok(crate::SyncConsumer::new(
-            Arc::downgrade(&self.rt),
-            self.rt.enter()?.clone(),
+            RuntimeRef::new(Arc::downgrade(&self.rt), self.rt.enter()?.clone()),
             reader,
         ))
     }

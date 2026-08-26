@@ -57,7 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to. `AimDbHandle` drops from six loose fields to two, so releasing state
   inherited across a `fork` can no longer be half-done. No API signature and no
   behaviour changed: producers and consumers still hold a weak reference, so a
-  handle's lifetime still governs. `waiter.rs` is retired — `enter()` returns
+  handle's lifetime still governs. A consumer needs a Tokio handle that outlives
+  the runtime — buffered data stays readable after `detach` — so it holds a
+  `RuntimeRef` whose handle is private to the runtime module and reachable only
+  through a checked accessor, rather than a bare field beside a guard. `waiter.rs` is retired — `enter()` returns
   the handle it existed to wrap. See design 050.
 
 ### Added

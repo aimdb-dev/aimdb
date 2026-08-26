@@ -183,12 +183,20 @@ thread #232 had just removed, reintroduced as a feature.
 `Weak` also keeps the whole change reviewable as "no behaviour changed", which
 is worth more than the aside was.
 
-**One consequence to note.** `SyncConsumer` holds the Tokio handle directly
-rather than reaching it through `Runtime`, and its fork check treats a failed
-upgrade as "detached" rather than "refuse". Both are deliberate: a `Reader` can
-still drain what is already buffered after the runtime is gone, and returning
-that data is behaviour the characterization tests pin. Gating reads on a live
-`Runtime` broke it.
+**One consequence, and how it is contained.** `SyncConsumer` needs a Tokio
+handle that outlives the runtime: a `Reader` can still drain what is already
+buffered after a `detach`, and delivering that data is behaviour the
+characterization tests pin — gating reads on a live `Runtime` broke it.
+
+The first attempt stored a bare `handle` field beside a hand-written `guard()`
+that returned `Ok` when the upgrade failed. That is the convention shape this
+design exists to remove, rebuilt on one type: five opt-in call sites and a
+field any of them could use without checking anything.
+
+It is now a `RuntimeRef` in `runtime.rs`, holding the `Weak` and the handle with
+**both fields private to that module**. `consumer.rs` cannot obtain a handle
+except through `RuntimeRef::enter`, which checks first. So the blocking reads
+are checked by construction, exactly as the publish path is.
 
 ## 7. Secondary: the `Drop` / `detach` duality
 
@@ -289,6 +297,13 @@ one. The other proves the `pthread_atfork` handler is really installed.
 Still open, unchanged by this work:
 
 - `enter()` is a chokepoint only while nothing else hands out the Tokio handle.
-  `SyncConsumer` now holds one directly (§6) for a documented reason, which
-  makes that constraint a live one rather than theoretical. It is the one thing
-  here still enforced by convention.
+  Nothing does: `Runtime` and `RuntimeRef` keep theirs private to
+  `runtime.rs`, so the constraint is enforced by module privacy rather than by
+  memory. Adding a `pub(crate)` accessor that returns one would silently undo
+  that, which is worth stating because it is the only way back to the old
+  shape.
+- `SyncConsumer::try_get` reads without any runtime resource, so its fork check
+  is a call it makes rather than one it cannot avoid — the reader is plain data
+  and there is nothing to gate. `get_latest` and `get_latest_with_timeout` look
+  like the same case but are not: both route through `get`/`get_with_timeout`,
+  which are gated. One explicit check remains, not five.
