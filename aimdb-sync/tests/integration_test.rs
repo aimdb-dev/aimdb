@@ -246,6 +246,28 @@ fn test_runtime_shutdown_error() {
     assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 }
 
+/// `check()` answers the same question `set()` does, without publishing.
+///
+/// A facade above this crate needs it to report its own "closed" state, and
+/// cannot get there through the handle: that lives behind its lock, and taking
+/// that lock is what its shutdown already holds. The producer is reachable
+/// without it.
+#[test]
+fn check_reports_what_a_publish_would_find() {
+    let (handle, producer, _consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
+
+    producer.check().expect("usable while attached");
+
+    handle.detach().expect("Failed to detach");
+
+    // The same verdict `set()` reaches, arrived at without sending anything.
+    assert!(matches!(producer.check(), Err(SyncError::RuntimeShutdown)));
+    assert!(matches!(
+        producer.set(test_value()),
+        Err(SyncError::RuntimeShutdown)
+    ));
+}
+
 /// Test error handling - runtime shutdown, non-blocking operations
 #[test]
 fn test_runtime_shutdown_error_non_blocking() {

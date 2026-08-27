@@ -94,6 +94,35 @@ where
         self.rt.upgrade().ok_or(SyncError::RuntimeShutdown)
     }
 
+    /// Whether a publish through this producer can still reach the database.
+    ///
+    /// `Ok(())` means [`set`](Self::set) reaches the record graph — not that it
+    /// succeeds. An unregistered key still fails there, as it always has; this
+    /// answers the question before that one.
+    ///
+    /// Two ways it cannot: the runtime thread is gone
+    /// ([`SyncError::RuntimeShutdown`]), or this process `fork`ed since the
+    /// producer was made and the thread did not come across
+    /// ([`SyncError::ForkedChild`]).
+    ///
+    /// # Why this is on the producer and not the handle
+    ///
+    /// A facade built on this crate has to answer "can I still publish?" for
+    /// its own callers, and asking its [`AimDbHandle`](crate::AimDbHandle) is
+    /// usually not open to it: an FFI door keeps the handle behind a lock, and
+    /// answering while a shutdown holds that lock is how a caller's interpreter
+    /// lock deadlocks against its own teardown. A producer is reachable without
+    /// that lock — which is why a publish never queues behind a shutdown either
+    /// — so it is the one place the question can be asked from.
+    ///
+    /// This is the check [`set`](Self::set) performs, not a second one beside
+    /// it, so the answer cannot drift from what a publish would actually do.
+    /// Lock-free and cheap: a [`Weak`] upgrade and one relaxed atomic load.
+    #[inline]
+    pub fn check(&self) -> SyncResult<()> {
+        self.runtime()?.check()
+    }
+
     /// Set the value, blocking until it can be sent.
     ///
     /// This call will block the current thread until the value can be sent to the runtime thread.

@@ -56,6 +56,11 @@ fn a_forked_child_is_refused_rather_than_silently_dropped() {
             inherited.try_set(Reading { value: 2 }),
             Err(SyncError::ForkedChild)
         );
+        // The same refusal, asked rather than provoked. This is what a facade
+        // above this crate calls to answer "am I still open?" in a child, so it
+        // has to agree with the two publishes above — and it does by
+        // construction, being the check they both go through.
+        let check_agrees = matches!(inherited.check(), Err(SyncError::ForkedChild));
         // Leak rather than free. The child is about to `_exit`, which reclaims
         // everything anyway, and `free` is the unsafe act here: it takes the
         // allocator lock, which a thread that did not survive the fork may have
@@ -64,7 +69,7 @@ fn a_forked_child_is_refused_rather_than_silently_dropped() {
         // the destructor, so there is nothing to lose by not running it.
         std::mem::forget(inherited);
 
-        refused && refused_try
+        refused && refused_try && check_agrees
     });
     assert_eq!(code, 0, "the child's publishes should have been refused");
 
