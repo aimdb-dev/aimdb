@@ -76,11 +76,11 @@ fn load() -> Generation {
 
 /// The generation to stamp on something being created now.
 ///
-/// Crate-private for now. A layer built *on* this crate has the same problem —
-/// an FFI door holds state of its own that a `fork` invalidates — but no such
-/// layer exists yet, and exposing this would commit us in semver to the
-/// stamp-and-compare model. Widen it when something real needs it, so the
-/// shape can be chosen against that caller rather than guessed at.
+/// Crate-private, and staying that way. A layer built *on* this crate has the
+/// same problem, and is served by
+/// [`SyncProducer::check`](crate::SyncProducer::check) — the question it
+/// actually has ("can I still publish?"), rather than the stamp-and-compare
+/// mechanism, which publishing this pair would pin us to in semver.
 ///
 /// **Arms the handler**, because otherwise it hands out a number that cannot
 /// change. A caller above this crate stamps its own state before any database

@@ -86,10 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publish path is one relaxed atomic load, and a program that never attaches
   never installs a handler. A database the child attaches *itself* after
   forking is unaffected — the guard is a generation counter, not a poison flag.
-  The detection is entirely internal: a facade built on this crate will have the
-  same problem for the same reason, but none exists yet, so exposing the
-  stamp-and-compare pair would commit the crate in semver to a model chosen
-  against no real caller.
+  The detection itself stays internal: a facade asks `SyncProducer::check()`
+  rather than the generation counter, so the semver commitment is to the
+  question and not to the mechanism.
 - **A panic-freedom contract on the blocking surface.** The crate is compiled
   under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
   its own tests, so "a panic here is a bug, not an error channel" is checked
@@ -100,6 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process dying. Documented with its two limits: `block_on` still panics if
   called from inside a Tokio runtime, and the guarantee stops at this crate's
   edge.
+- **`SyncProducer::check()`.** Answers "can a publish through this producer
+  still reach the database?" without publishing — `Ok(())`, or
+  `RuntimeShutdown` / `ForkedChild`. It is the check `set()` already performs,
+  exposed rather than duplicated, so the answer cannot drift from what a publish
+  would find. It takes no lock, which is what makes it usable from a facade
+  whose own teardown holds the lock its `AimDbHandle` sits behind.
 - **`SyncError::kind()`.** Returns `aimdb_core::DbErrorKind` rather than a kind
   of its own, so a caller — an FFI layer above all — has one set of actions for
   the whole stack instead of one per crate. The `Db` arm delegates, so a buffer

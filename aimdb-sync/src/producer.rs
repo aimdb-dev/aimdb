@@ -94,6 +94,21 @@ where
         self.rt.upgrade().ok_or(SyncError::RuntimeShutdown)
     }
 
+    /// Whether a publish through this producer can still reach the database.
+    ///
+    /// `Ok(())` means [`set`](Self::set) reaches the record graph — not that it
+    /// succeeds; an unregistered key still fails there. Otherwise
+    /// [`SyncError::RuntimeShutdown`] or [`SyncError::ForkedChild`].
+    ///
+    /// This is the check [`set`](Self::set) performs, not a second one beside
+    /// it, so the answer cannot drift from what a publish would find. It takes
+    /// no lock — a [`Weak`] upgrade and one relaxed atomic load — so a facade
+    /// can ask it while its own teardown holds the handle's lock.
+    #[inline]
+    pub fn check(&self) -> SyncResult<()> {
+        self.runtime()?.check()
+    }
+
     /// Set the value, blocking until it can be sent.
     ///
     /// This call will block the current thread until the value can be sent to the runtime thread.
