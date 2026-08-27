@@ -1,9 +1,8 @@
-//! Design 050, acceptance criterion 2: below the installed level, an event
-//! costs the two level loads and formats nothing.
+//! Design 050, criterion 2: below the installed level, an event costs the two
+//! level loads and formats nothing.
 //!
-//! Restricted to the `log`-only build. With `tracing` also on, its arm runs too
-//! and the formatting count would be measuring both arms at once — a
-//! `tracing`-shaped question, and not the one this criterion asks.
+//! `log`-only: with `tracing` also on, the formatting count would be measuring
+//! both arms at once.
 #![cfg(all(feature = "log", not(feature = "tracing")))]
 
 mod log_support;
@@ -17,8 +16,8 @@ static PROBE: FormatProbe = FormatProbe::new();
 fn a_filtered_event_never_reaches_its_arguments() {
     log::set_logger(&CAPTURE).expect("no other logger may be installed in this binary");
 
-    // Below the gate: `log`'s macro checks STATIC_MAX_LEVEL and max_level()
-    // before it builds the `Record`, so `Display` is never called.
+    // `log` checks STATIC_MAX_LEVEL and max_level() before building the
+    // `Record`, so `Display` is never called.
     log::set_max_level(log::LevelFilter::Warn);
     aimdb_core::log_info!("gate probe: {}", PROBE);
 
@@ -29,8 +28,8 @@ fn a_filtered_event_never_reaches_its_arguments() {
     );
     assert_eq!(CAPTURE.count(), 0, "a filtered-out event was delivered");
 
-    // Above the gate: the same call site now formats exactly once. Without this
-    // half, a facade that had quietly stopped emitting altogether would pass.
+    // Above the gate — without this half, a facade that had stopped emitting
+    // altogether would pass.
     log::set_max_level(log::LevelFilter::Trace);
     aimdb_core::log_info!("gate probe: {}", PROBE);
 

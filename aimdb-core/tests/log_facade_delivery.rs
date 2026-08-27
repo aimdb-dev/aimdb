@@ -1,8 +1,6 @@
-//! Design 050, acceptance criteria 3 and 4: an event reaches an installed `log`
+//! Design 050, criteria 3 and 4: an event reaches an installed `log`
 //! destination exactly once, carrying the emitting module as its target — and
-//! when `tracing` is enabled alongside, each destination sees it once.
-//!
-//! `log::set_logger` is once per process, so this criterion owns its binary.
+//! with `tracing` alongside, each destination sees it once.
 #![cfg(feature = "log")]
 
 mod log_support;
@@ -14,9 +12,8 @@ use log_support::Capture;
 
 static CAPTURE: Capture = Capture::new();
 
-/// The builder refuses to `build()` without a runtime, and the facade's most
-/// convenient call sites live past that check. Nothing here is exercised beyond
-/// being present.
+/// `build()` refuses without a runtime, and the call sites are past that check.
+/// Nothing here is exercised beyond being present.
 struct StubRuntime;
 
 impl RuntimeOps for StubRuntime {
@@ -39,10 +36,8 @@ impl RuntimeOps for StubRuntime {
     fn log(&self, _level: LogLevel, _msg: &str) {}
 }
 
-/// A `tracing` destination that counts what it is handed, so criterion 4 can
-/// check "once each" rather than "at least once somewhere". Deliberately not
-/// `tracing-subscriber`: the whole point of design 050 is that a consumer of
-/// the facade needs neither it nor its dependency tree.
+/// Counts what it is handed, so criterion 4 can check "once each". Hand-written
+/// rather than `tracing-subscriber`, since not needing that is the point.
 #[cfg(feature = "tracing")]
 mod trace_sink {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -86,9 +81,8 @@ async fn a_builder_event_arrives_once_with_its_module_as_target() {
         .await
         .expect("an empty builder with a runtime builds");
 
-    // Criterion 3: `Record::target()` is the *expansion site's* module path, so
-    // it stays the string a `tracing` subscriber has always seen — not the name
-    // of whatever crate happens to hold the destination.
+    // Criterion 3: the target is the *expansion site's* module path, so it stays
+    // the string a `tracing` subscriber has always seen.
     let builder_events: Vec<_> = CAPTURE
         .taken()
         .into_iter()
@@ -100,8 +94,7 @@ async fn a_builder_event_arrives_once_with_its_module_as_target() {
         CAPTURE.taken()
     );
 
-    // ...and exactly once: two arms are compiled into the macro, and only one
-    // of them may reach the `log` destination.
+    // ...and exactly once: two arms compile in, only one may reach `log`.
     let collecting = CAPTURE.with_message("Collecting futures for 0 records");
     assert_eq!(
         collecting.len(),
@@ -111,8 +104,7 @@ async fn a_builder_event_arrives_once_with_its_module_as_target() {
     assert_eq!(collecting[0].level, log::Level::Info);
     assert_eq!(collecting[0].target, "aimdb_core::builder");
 
-    // Criterion 4: with both features on, both arms run — once each, not twice
-    // into either.
+    // Criterion 4: both arms run, once each — not twice into either.
     #[cfg(feature = "tracing")]
     {
         use std::sync::atomic::Ordering;

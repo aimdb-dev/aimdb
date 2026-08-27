@@ -90,9 +90,8 @@ tokio-serial = "5.4.5"
 
 # Basic observability
 tracing = { version = "0.1", default-features = false }
-# Second facade destination (design 050): lets an FFI layer install a `Log`
-# impl of its own instead of a process-global `tracing` subscriber. no_std by
-# default; `std` only adds `set_boxed_logger`.
+# Second facade destination (design 050), for FFI hosts that cannot be handed a
+# global `tracing` subscriber. no_std by default.
 log = { version = "0.4", default-features = false }
 
 # Async utilities

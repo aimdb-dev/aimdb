@@ -15,35 +15,19 @@
 //!   `Vec<String>`). The few sites that mirror events to defmt (router.rs)
 //!   keep explicit `#[cfg(feature = "defmt")]` gates next to these macros.
 //!
-//! # Two destinations, and the feature that selects each
+//! # Mirroring the feature
 //!
-//! These macros are `#[macro_export]`ed, so their bodies expand in the *calling*
-//! crate and every `#[cfg(feature = ...)]` inside them is resolved against that
-//! crate's feature set — not against `aimdb-core`'s. A crate that expands the
-//! facade therefore has to declare a feature of the same name and forward it:
+//! These macros are `#[macro_export]`ed, so `#[cfg(feature = ...)]` inside them
+//! resolves against the *calling* crate. A crate expanding the facade must
+//! declare a feature of the same name and forward it, or its events silently go
+//! nowhere:
 //!
 //! ```toml
 //! tracing = ["dep:tracing", "aimdb-core/tracing"]
-//! log     = ["aimdb-core/log"]   # no `dep:log` — see below
+//! log     = ["aimdb-core/log"]   # no `dep:log`: the arm goes through `__private`
 //! ```
 //!
-//! Forgetting the mirror is silent: the arm simply never expands and that
-//! crate's events go nowhere. `aimdb-sync` is the only crate outside
-//! `aimdb-core` that expands the facade today, and `tests/log_facade_target.rs`
-//! asserts its events arrive.
-//!
-//! The `log` arm names `$crate::__private::log`, a re-export, so a facade user
-//! needs the *feature* but not the *dependency*. The `tracing` arm still names
-//! `::tracing` and so still requires `dep:tracing` downstream; routing it
-//! through `__private` the same way is a separate, non-breaking cleanup.
-//!
-//! # Emitting to both
-//!
-//! `tracing` and `log` may both be on, and then both arms run. That is the
-//! point when a process installed two destinations, and a duplicate when it
-//! installed one — see the `log` feature section of the crate docs for the ways
-//! a single-destination process ends up seeing an event twice, and how to
-//! switch them off.
+//! `aimdb-sync` is the only such crate today; its `tests/log_facade.rs` guards it.
 
 #[macro_export]
 macro_rules! log_debug {

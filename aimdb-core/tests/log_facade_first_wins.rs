@@ -1,10 +1,8 @@
-//! Design 050, acceptance criterion 6: a second `set_logger` returns `Err` and
-//! the first destination keeps receiving.
+//! Design 050, criterion 6: a second `set_logger` returns `Err` and the first
+//! destination keeps receiving.
 //!
-//! This is the half the C++ door got wrong before design 050 — its header was
-//! last-wins while the C layer beneath it was first-wins, so a second install
-//! replaced the first caller's sink and returned `false` to say it had not.
-//! Deciding it once, in `log`, is what makes that unreproducible.
+//! This is the half the C++ door got wrong — a last-wins header over a
+//! first-wins C layer. Deciding it once, in `log`, makes that unreproducible.
 #![cfg(feature = "log")]
 
 mod log_support;
@@ -22,7 +20,6 @@ fn the_first_destination_wins_and_the_second_is_told() {
     aimdb_core::log_warn!("before the second install");
     assert_eq!(FIRST.count(), 1);
 
-    // Reported honestly, rather than silently replacing what is already there.
     assert!(
         log::set_logger(&SECOND).is_err(),
         "a second set_logger must fail"

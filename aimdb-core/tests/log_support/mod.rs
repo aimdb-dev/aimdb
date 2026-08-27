@@ -1,8 +1,8 @@
 //! Shared scaffolding for the design-050 `log` destination tests.
 //!
-//! In a subdirectory so Cargo does not build it as a test binary of its own:
-//! `log::set_logger` is once per process, so each acceptance criterion that
-//! installs a logger needs its own test *binary*, and each needs this.
+//! `log::set_logger` is once per process, so each criterion that installs a
+//! logger owns a test binary — hence a subdirectory, which Cargo does not build
+//! as a binary of its own.
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -53,9 +53,6 @@ impl log::Log for Capture {
         self.records.lock().unwrap().push(Captured {
             target: record.target().to_string(),
             level: record.level(),
-            // `args()` is a `fmt::Arguments`: formatting it here is exactly the
-            // work the level gate is supposed to avoid when the event is
-            // filtered out. `FormatProbe` below counts that.
             message: record.args().to_string(),
         });
     }
@@ -63,11 +60,8 @@ impl log::Log for Capture {
     fn flush(&self) {}
 }
 
-/// A format argument that reports whether it was ever actually formatted.
-///
-/// The point of the gate is that a filtered-out event never reaches
-/// `Display::fmt`. Counting the calls is the only way to observe that from
-/// outside.
+/// A format argument that counts its own formatting — the only way to observe
+/// from outside that a filtered-out event never reached `Display::fmt`.
 pub struct FormatProbe {
     formatted: AtomicUsize,
 }
