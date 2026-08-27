@@ -247,11 +247,6 @@ fn test_runtime_shutdown_error() {
 }
 
 /// `check()` answers the same question `set()` does, without publishing.
-///
-/// A facade above this crate needs it to report its own "closed" state, and
-/// cannot get there through the handle: that lives behind its lock, and taking
-/// that lock is what its shutdown already holds. The producer is reachable
-/// without it.
 #[test]
 fn check_reports_what_a_publish_would_find() {
     let (handle, producer, _consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
