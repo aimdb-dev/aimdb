@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Design 050: an optional `log` feature, a second destination for the `log_*`
+  facade.** With it on, every facade call site also emits a `log` record; with it
+  off (the default, and every MCU build) the expansion is what it was. It exists
+  for a host that cannot be handed a process-global `tracing` subscriber —
+  chiefly an FFI layer loaded into a non-Rust process, which needs its
+  callback's context pointer to travel *with* the callback. A `log::Log` impl is
+  an ordinary value, so the context lives inside the destination instead of in a
+  static of the binding's own; `set_logger` also decides first-wins once, in
+  Rust, for every binding. `tracing` stays the default and the recommendation for
+  Rust consumers, and both may be enabled at once. Events arrive with
+  `Record::target()` set to the emitting module (`aimdb_core::builder`), the same
+  string a subscriber has always seen. See the crate docs for what a destination
+  must guarantee — the reentrancy rule is stricter than it was under `tracing`,
+  which has a guard `log` does not — and for the three bridges that can deliver
+  an event twice to a process that installed only one destination.
+- **`aimdb_core::__private`, hidden and unstable.** Re-exports the `log` crate so
+  a crate expanding the facade needs the `log` *feature* but not the
+  *dependency*. Not public API.
+
 - **`DbError::kind()` and `DbErrorKind`.** Eight action-shaped kinds — `Retry`,
   `Lagged`, `Closed`, `Transport`, `Data`, `Configuration`, `Usage`, `Internal` —
   so a caller can decide what to do without matching ~20 variants. The match in

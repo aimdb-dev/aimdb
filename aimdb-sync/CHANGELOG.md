@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `log` feature, mirroring `aimdb-core`'s (design 050).** The `log_*` macros
+  are `#[macro_export]`ed, so their `#[cfg(feature = "log")]` arm is resolved
+  against *this* crate — `aimdb-core/log` on its own would leave this crate's
+  call sites unrouted. It forwards and adds nothing else; no `log` dependency is
+  needed here, because the macro reaches the crate through
+  `aimdb_core::__private`.
+
 ### Fixed
 
 - **A timed-out `detach_timeout` no longer strands a thread.** The wait used a

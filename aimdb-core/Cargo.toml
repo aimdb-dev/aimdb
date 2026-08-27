@@ -53,6 +53,14 @@ connector-session = ["alloc"]
 # Observability features (available on both std/no_std)
 tracing = ["dep:tracing"] # Works in both std and no_std environments
 defmt = ["dep:defmt"]     # Embedded logging via probe (no_std)
+# A second destination for the `log_*` facade, for hosts that cannot install a
+# `tracing` subscriber — chiefly FFI layers loaded into a non-Rust process,
+# which need the callback's context pointer to travel with the callback (a
+# `tracing::Layer` has nowhere to put it). Deliberately *not* in `default`: 66
+# call sites on an MCU should not each grow a level check because a host FFI
+# layer wanted one. May be combined with `tracing`; see the crate docs for what
+# that costs. See docs/design/050-log-destination-for-ffi.md.
+log = ["dep:log"]
 # Observability: buffer introspection counters (produced/consumed/dropped/
 # occupancy) plus automatic stage profiling (.source()/.tap()/.link() timing).
 # Works in no_std (heap + atomics + a runtime clock).
@@ -107,6 +115,9 @@ portable-atomic = { version = "1.9", default-features = false }
 # Observability (optional)
 tracing = { workspace = true, optional = true }
 defmt = { workspace = true, optional = true }
+# Re-exported as `aimdb_core::__private::log` so facade users do not have to
+# declare the dependency themselves (`::tracing` still carries that tax).
+log = { workspace = true, optional = true }
 
 # Synchronization primitives for no_std
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }

@@ -215,6 +215,8 @@ derive = ["aimdb-derive"]           # RecordKey derive macro
 std = ["alloc", "serde", ...]       # Standard library support
 alloc = ["serde"]                   # Heap allocation for no_std
 tracing = ["dep:tracing"]           # Structured logging (std + no_std)
+log = ["dep:log"]                   # Second destination, for FFI hosts that
+                                    # cannot install a global subscriber
 defmt = ["dep:defmt"]               # Embedded logging via probe
 metrics = ["dep:metrics", "std"]    # Performance metrics (requires std)
 test-utils = ["std"]                # Test helpers
