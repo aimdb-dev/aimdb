@@ -451,9 +451,8 @@ impl AimDbBuilder {
         // Find existing record with this key, or create new one
         let record_index = self.record_index.get(&record_key).copied();
 
-        // Both downcasts are unreachable: the `TypeId` is compared first and
-        // the mismatch path returns. Reporting them instead would need a second
-        // mutable borrow of `self` while the first is live.
+        // Reporting these instead would need a second mutable borrow of `self`
+        // while the first is live.
         #[allow(
             clippy::expect_used,
             clippy::unwrap_used,

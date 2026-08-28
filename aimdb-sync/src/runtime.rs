@@ -52,11 +52,9 @@ pub(crate) struct Runtime {
 
     /// The database the thread built. Reached only through [`Self::db`].
     ///
-    /// Weak, because the strong reference lives in the handle's `OwnedThread`
-    /// where a `shutdown(&self)` can release it — and releasing it closes the
-    /// buffers, which is what wakes a parked consumer. A failed upgrade is
-    /// therefore the same liveness check it always was, now firing for a
-    /// shutdown as well as for a dropped handle.
+    /// Weak: the strong reference lives in the handle's `OwnedThread`, where a
+    /// `shutdown(&self)` can release it. A failed upgrade is the same liveness
+    /// check it always was, now firing for a shutdown too.
     db: Weak<AimDb>,
 
     /// The fork generation this runtime's thread was spawned in.
@@ -67,8 +65,8 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    /// Borrowed, not taken: the caller keeps the strong reference so it has
-    /// something to release. See [`Self::db`].
+    /// Borrowed, not taken: the caller keeps the strong reference. See
+    /// [`Self::db`].
     pub(crate) fn new(handle: tokio::runtime::Handle, db: &Arc<AimDb>) -> Self {
         Self {
             handle,
@@ -98,12 +96,10 @@ impl Runtime {
         Ok(&self.handle)
     }
 
-    /// The database, or why there is none to reach — the only way in, so
-    /// neither reason can be skipped. [`SyncError::ForkedChild`]: a child's
-    /// handle to the database is valid, which is the problem.
-    /// [`SyncError::RuntimeShutdown`]: the strong reference is gone.
-    ///
-    /// Owned, so one atomic increment per publish. A lock was the alternative.
+    /// The database, or why there is none — the only way in, so neither reason
+    /// can be skipped: [`SyncError::ForkedChild`] (a child's handle is valid,
+    /// which is the problem) and [`SyncError::RuntimeShutdown`]. Owned, so one
+    /// atomic increment per publish; a lock was the alternative.
     #[inline]
     pub(crate) fn db(&self) -> SyncResult<Arc<AimDb>> {
         self.check()?;
@@ -225,13 +221,12 @@ mod tests {
             })
             .expect("build database");
 
-        // Kept alive by the returned guard: `Runtime` holds it weakly.
+        // Kept alive by the guard below: `Runtime` holds it weakly.
         let db = Arc::new(db);
         let mut runtime = Runtime::new(tokio_rt.handle().clone(), &db);
         runtime.made_in = crate::fork::generation().wrapping_sub(generations_behind);
 
-        // Returned so the caller keeps both alive: the cloned handle must not
-        // outlive its runtime, nor the database the `Runtime` pointing at it.
+        // Returned so the caller keeps both alive.
         ((tokio_rt, db), runtime)
     }
 

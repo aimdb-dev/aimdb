@@ -187,16 +187,11 @@
 //!
 //! ## Shutting down from another language
 //!
-//! Four properties make a binding possible, none of them visible in a
-//! signature, all pinned by `tests/shutdown_contract_test.rs`:
-//! [`AimDbHandle::shutdown`] takes `&self` (a C ABI's free function and a
-//! `#[pymethods]` method never receive `self` by value); it is idempotent; it
-//! is safe to call while producers publish; and [`AimDbHandle::is_closed`]
-//! reads an atomic rather than the lock it holds, so a caller may ask it from
-//! aimdb's runtime thread mid-shutdown.
-//!
-//! A shutdown also releases the database, closing the buffers and waking a
-//! consumer parked in `get()`. Shut down first, then join your readers.
+//! [`AimDbHandle::shutdown`] takes `&self` (an FFI door never receives `self`
+//! by value), is idempotent, is safe during a publish, and
+//! [`AimDbHandle::is_closed`] reads an atomic rather than the lock it holds.
+//! Pinned by `tests/shutdown_contract_test.rs`. A shutdown releases the
+//! database too, so shut down before joining your readers.
 //!
 //! **A panic from this crate is a bug, not an error channel.** Every failure is
 //! a [`SyncError`]. The blocking surface is compiled under

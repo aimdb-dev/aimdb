@@ -142,7 +142,7 @@ impl SecurityPolicy {
     /// Only has effect for ReadWrite policies. Panics if policy is ReadOnly.
     #[allow(
         clippy::panic,
-        reason = "documented API contract; a Result instead is a breaking change worth making before the registry release"
+        reason = "documented API contract; a Result instead is a breaking change"
     )]
     pub fn allow_write_key(&mut self, key: impl Into<String>) {
         match self {
@@ -161,7 +161,7 @@ impl SecurityPolicy {
     /// Panics if called on a ReadOnly policy
     #[allow(
         clippy::panic,
-        reason = "documented API contract; a Result instead is a breaking change worth making before the registry release"
+        reason = "documented API contract; a Result instead is a breaking change"
     )]
     pub fn with_writable_key(mut self, key: impl Into<String>) -> Self {
         match self {

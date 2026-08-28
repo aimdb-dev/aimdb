@@ -94,8 +94,7 @@ fn dropping_an_inherited_handle_does_not_panic() {
         .expect("consumer");
 
     let code = in_forked_child(move || {
-        // Asked before it is asked to act: a binding calls this from a signal
-        // handler and must not be told the database is open.
+        // A binding asks this from a signal handler, before acting.
         let reports_closed = to_detach.is_closed() && to_drop.is_closed();
 
         // `detach` reports the situation rather than joining.

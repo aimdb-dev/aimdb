@@ -15,15 +15,10 @@
 //!
 //! # A panic is a bug, not an error channel
 //!
-//! Every failure is a [`DbError`], classified by [`DbError::kind`]. The crate
-//! is compiled under `deny(clippy::unwrap_used, clippy::expect_used,
-//! clippy::panic)` outside its own tests; the few remaining sites carry an
-//! `allow` with a reason. It matters below an FFI door: unwinding past a C ABI
-//! is undefined behaviour, and a consumer's `panic = "abort"` compiles that
-//! layer's own `catch_unwind` out.
-//!
-//! Not promised: a dependency can still panic on its own, and a poisoned lock
-//! is recovered from rather than re-panicked on.
+//! Every failure is a [`DbError`]. The crate is compiled under
+//! `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside its
+//! tests; the sites that remain carry an `allow` with a reason. A dependency
+//! can still panic on its own, and a poisoned lock is recovered from.
 //!
 //! # Where aimdb's own reporting goes
 //!
@@ -52,9 +47,8 @@
 //! 5. **Cannot be uninstalled.** `set_logger` is once per process; a second
 //!    call returns `Err` and the first destination keeps receiving.
 
-// A panic here is a bug, not an error channel: two FFI doors sit above this
-// crate, and a consumer's `panic = "abort"` compiles their guard out. Checked
-// rather than remembered, as in `aimdb-sync`.
+// A panic here is a bug: two FFI doors sit above this crate, and a consumer's
+// `panic = "abort"` compiles their guard out.
 #![cfg_attr(
     not(test),
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)

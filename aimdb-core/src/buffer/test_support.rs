@@ -1,6 +1,6 @@
 //! Shared behavioral contract for [`Buffer`] implementations.
 //!
-//! A test harness, so panicking *is* its report.
+//! Panicking is how a harness reports.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,

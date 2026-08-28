@@ -1,8 +1,6 @@
-//! The four properties a foreign-language binding needs from shutdown:
-//! `&self`, idempotent, safe during a publish, and an `is_closed` that never
-//! waits on the shutdown's lock. None is visible in a signature, and the pyo3
-//! door measured what their absence costs — 200/200 closes refused while one
-//! thread published in a loop — so each is pinned here.
+//! What a foreign-language binding needs from shutdown, none of it visible in
+//! a signature: `&self`, idempotent, safe during a publish, and an `is_closed`
+//! that never waits on the shutdown's lock.
 #![cfg(feature = "std")]
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncError};
@@ -27,8 +25,7 @@ fn attach() -> AimDbHandle {
     builder.attach().expect("attach")
 }
 
-/// Shutdown through a shared reference, from a thread that does not own the
-/// handle — the shape a signal handler and every FFI door has.
+/// Shutdown from a thread that does not own the handle — a signal handler.
 #[test]
 fn shutdown_takes_a_shared_reference() {
     let handle = Arc::new(attach());
@@ -46,8 +43,7 @@ fn shutdown_takes_a_shared_reference() {
     );
 }
 
-/// Idempotent, including under a race: a second caller finding the thread gone
-/// is a `with` block ending inside a signal handler, not an error.
+/// Idempotent, including under a race.
 #[test]
 fn shutdown_is_idempotent() {
     let handle = attach();
@@ -71,9 +67,8 @@ fn shutdown_is_idempotent() {
     assert!(racing.is_closed());
 }
 
-/// Shutdown while four threads publish: it must not queue behind one, and no
-/// publish may fail for anything but the shutdown. If a producer ever starts
-/// taking the shutdown's lock, this times out instead of the next FFI door.
+/// Shutdown must not queue behind a publish, and no publish may fail for
+/// anything but the shutdown.
 #[test]
 fn shutdown_completes_while_producers_publish() {
     let handle = Arc::new(attach());
@@ -95,7 +90,7 @@ fn shutdown_completes_while_producers_publish() {
                         Ok(()) => {
                             published.fetch_add(1, Ordering::Relaxed);
                         }
-                        // The one failure a shutdown is allowed to cause.
+                        // The one failure a shutdown may cause.
                         Err(SyncError::RuntimeShutdown) => break,
                         Err(_) => {
                             unexpected.fetch_add(1, Ordering::Relaxed);
@@ -107,8 +102,7 @@ fn shutdown_completes_while_producers_publish() {
         })
         .collect();
 
-    // Let the publishers get into their loop, so the shutdown lands mid-flight
-    // rather than before the first `set`.
+    // So the shutdown lands mid-flight, not before the first `set`.
     while published.load(Ordering::Relaxed) < 16 {
         thread::yield_now();
     }
@@ -135,9 +129,8 @@ fn shutdown_completes_while_producers_publish() {
     assert!(handle.is_closed());
 }
 
-/// `is_closed` must keep answering across a shutdown: an atomic and a relaxed
-/// fork check, never the shutdown's lock. A getter that waited on it deadlocks
-/// a Python door under the GIL, and that is not a compile error.
+/// `is_closed` keeps answering across a shutdown — a getter that waited on the
+/// shutdown's lock deadlocks a Python door under the GIL.
 #[test]
 fn is_closed_never_waits_for_a_shutdown_in_flight() {
     let handle = Arc::new(attach());
@@ -167,7 +160,7 @@ fn is_closed_never_waits_for_a_shutdown_in_flight() {
 
     handle.shutdown().expect("shutdown");
 
-    // The reader ticked *across* the shutdown rather than parking in it.
+    // Ticked across the shutdown rather than parking in it.
     assert!(
         ticks.load(Ordering::Relaxed) > before,
         "is_closed stopped answering while a shutdown was in flight"
@@ -183,8 +176,7 @@ fn is_closed_never_waits_for_a_shutdown_in_flight() {
     assert!(handle.is_closed());
 }
 
-/// A bounded shutdown releases the thread rather than keeping it, so a later
-/// one does not wait again.
+/// A bounded shutdown releases the thread, so a later one does not wait.
 #[test]
 fn shutdown_timeout_releases_the_thread() {
     let handle = attach();
@@ -212,7 +204,7 @@ fn detach_is_shutdown_by_value() {
         .expect("detach_timeout");
 }
 
-/// A producer outliving the shutdown fails, rather than publishing into
+/// A producer outliving the shutdown fails rather than publishing into
 /// silence.
 #[test]
 fn a_publish_after_shutdown_is_refused() {
@@ -232,10 +224,8 @@ fn a_publish_after_shutdown_is_refused() {
     ));
 }
 
-/// A consumer parked in `get()` is woken by a shutdown on another thread.
-/// `aimdb-core` has no explicit close, so the wake comes from dropping the last
-/// `Arc<AimDb>` — which is why the handle owns it and releases it here. Without
-/// that, "shut down, then join the readers" hangs.
+/// A consumer parked in `get()` is woken by a shutdown on another thread —
+/// the wake is the last `Arc<AimDb>` dropping, so the handle must own it.
 #[test]
 fn a_parked_consumer_wakes_when_another_thread_shuts_down() {
     let handle = Arc::new(attach());
@@ -245,7 +235,7 @@ fn a_parked_consumer_wakes_when_another_thread_shuts_down() {
 
     let parked = thread::spawn(move || consumer.get());
 
-    // Nothing is ever published, so the reader is parked rather than racing.
+    // Nothing is published, so the reader parks rather than races.
     thread::sleep(Duration::from_millis(50));
 
     let began = Instant::now();

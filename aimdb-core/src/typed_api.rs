@@ -972,7 +972,7 @@ where
         // failures here are aimdb bugs, not user mistakes.
         #[allow(
             clippy::panic,
-            reason = "the factory signature returns no Result and these lookups were validated at build() time; a fallible signature is the real fix"
+            reason = "the factory returns no Result and these lookups were validated at build() time"
         )]
         let source_factory: crate::connector::SourceFactoryFn = {
             let record_key = self.registrar.record_key.clone();
@@ -1173,7 +1173,7 @@ where
         // user mistakes.
         #[allow(
             clippy::panic,
-            reason = "the factory signature returns no Result and these lookups were validated at build() time; a fallible signature is the real fix"
+            reason = "the factory returns no Result and these lookups were validated at build() time"
         )]
         let ingest_factory: crate::connector::IngestFactoryFn = {
             let record_key = self.registrar.record_key.clone();

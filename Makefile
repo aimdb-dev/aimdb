@@ -665,14 +665,10 @@ check-no-sim:
 	printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"; \
 	printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
 
-# CR-9: no aimdb library may install a process-global on its host's behalf —
-# a subscriber, a panic hook, a signal handler, `pthread_atfork`, `set_var`.
-# Scanned are the crates linked into somebody else's process; `tools/`,
-# `examples/` and `aimdb-codegen`'s generated `main` are applications, and are
-# not. The one exception states the rule: `pthread_atfork` may be registered by
-# the crate that owns the runtime thread it protects, never by an FFI shim.
-# The guard must not fail open, so a positive control proves the scanner still
-# scans.
+# CR-9: no library crate may install a process-global on its host's behalf.
+# Applications may, so `tools/`, `examples/` and codegen's generated `main` are
+# not scanned. The one exception: the fork detector owns the runtime thread it
+# protects. A positive control keeps the guard from failing open.
 GLOBALS_SCANNED := aimdb-core aimdb-data-contracts aimdb-derive aimdb-client \
 	aimdb-tokio-adapter aimdb-embassy-adapter aimdb-wasm-adapter aimdb-sync \
 	aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector \
