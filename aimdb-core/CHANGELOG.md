@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A panic is a bug, not an error channel — checked.** The crate is compiled
+  under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
+  its own tests. Four sites fixed: poisoned-mutex recovery in the
+  `record_id` and `typed_record` lock helpers, an `unwrap` under a `len()` check
+  in `record_origin`, and an `expect` on the AimX drain path. The rest carry an
+  `allow` with a reason.
 - **`log_trace!`.** The fifth facade macro, completing the set both destinations
   support. Added for a KNX call site that was `tracing::trace!` before design
   050 §10.5 moved it onto the facade.

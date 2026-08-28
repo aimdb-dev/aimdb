@@ -45,7 +45,7 @@ type Mutex<T> = spin::Mutex<T>;
 /// both sides, so call sites are identical.
 #[cfg(feature = "std")]
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap()
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 #[cfg(not(feature = "std"))]
 fn lock<T>(m: &Mutex<T>) -> spin::MutexGuard<'_, T> {
@@ -701,13 +701,15 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         let transform_keys = lock(&self.transform).as_ref().map(|t| t.input_keys.clone());
 
         if let Some(input_keys) = transform_keys {
-            if input_keys.len() == 1 {
-                return crate::graph::RecordOrigin::Transform {
-                    input: input_keys.into_iter().next().unwrap(),
-                };
-            } else {
-                return crate::graph::RecordOrigin::TransformJoin { inputs: input_keys };
-            }
+            // Asked of the iterator, not of `len()`: a pattern, not a trusted
+            // invariant.
+            let mut inputs = input_keys.into_iter();
+            return match (inputs.next(), inputs.next()) {
+                (Some(input), None) => crate::graph::RecordOrigin::Transform { input },
+                (first, second) => crate::graph::RecordOrigin::TransformJoin {
+                    inputs: first.into_iter().chain(second).chain(inputs).collect(),
+                },
+            };
         }
 
         // Check for inbound connector (link)

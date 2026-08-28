@@ -94,6 +94,9 @@ fn dropping_an_inherited_handle_does_not_panic() {
         .expect("consumer");
 
     let code = in_forked_child(move || {
+        // A binding asks this from a signal handler, before acting.
+        let reports_closed = to_detach.is_closed() && to_drop.is_closed();
+
         // `detach` reports the situation rather than joining.
         let refused = matches!(to_detach.detach(), Err(SyncError::ForkedChild));
 
@@ -125,7 +128,7 @@ fn dropping_an_inherited_handle_does_not_panic() {
         // Leak rather than free, per the module note in `fork_child`.
         std::mem::forget(inherited);
 
-        refused && producer_defers && no_consumer && still_refused
+        reports_closed && refused && producer_defers && no_consumer && still_refused
     });
     assert_eq!(code, 0, "detach in a child should be refused, not fatal");
 }

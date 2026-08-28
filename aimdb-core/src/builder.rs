@@ -451,6 +451,13 @@ impl AimDbBuilder {
         // Find existing record with this key, or create new one
         let record_index = self.record_index.get(&record_key).copied();
 
+        // Reporting these instead would need a second mutable borrow of `self`
+        // while the first is live.
+        #[allow(
+            clippy::expect_used,
+            clippy::unwrap_used,
+            reason = "unreachable given the TypeId check above"
+        )]
         let (rec, is_new_record) = match record_index {
             Some(idx) => {
                 // Use existing record. A key re-registered with a different

@@ -35,7 +35,7 @@
 //! keeping an OS thread alive with nobody owning it — the stranded thread #232
 //! had just removed.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 
 use aimdb_core::AimDb;
 
@@ -51,7 +51,11 @@ pub(crate) struct Runtime {
     handle: tokio::runtime::Handle,
 
     /// The database the thread built. Reached only through [`Self::db`].
-    db: Arc<AimDb>,
+    ///
+    /// Weak: the strong reference lives in the handle's `OwnedThread`, where a
+    /// `shutdown(&self)` can release it. A failed upgrade is the same liveness
+    /// check it always was, now firing for a shutdown too.
+    db: Weak<AimDb>,
 
     /// The fork generation this runtime's thread was spawned in.
     ///
@@ -61,10 +65,12 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    pub(crate) fn new(handle: tokio::runtime::Handle, db: Arc<AimDb>) -> Self {
+    /// Borrowed, not taken: the caller keeps the strong reference. See
+    /// [`Self::db`].
+    pub(crate) fn new(handle: tokio::runtime::Handle, db: &Arc<AimDb>) -> Self {
         Self {
             handle,
-            db,
+            db: Arc::downgrade(db),
             made_in: crate::fork::generation(),
         }
     }
@@ -90,13 +96,14 @@ impl Runtime {
         Ok(&self.handle)
     }
 
-    /// The database, or [`SyncError::ForkedChild`]. The only way to reach it —
-    /// a forked child's handle to the database is valid, which is exactly the
-    /// problem.
+    /// The database, or why there is none — the only way in, so neither reason
+    /// can be skipped: [`SyncError::ForkedChild`] (a child's handle is valid,
+    /// which is the problem) and [`SyncError::RuntimeShutdown`]. Owned, so one
+    /// atomic increment per publish; a lock was the alternative.
     #[inline]
-    pub(crate) fn db(&self) -> SyncResult<&Arc<AimDb>> {
+    pub(crate) fn db(&self) -> SyncResult<Arc<AimDb>> {
         self.check()?;
-        Ok(&self.db)
+        self.db.upgrade().ok_or(SyncError::RuntimeShutdown)
     }
 
     /// A view of this runtime that may outlive it. The only way to build one.
@@ -196,7 +203,10 @@ mod tests {
     /// No thread, no `fork`: the point of moving the stamp onto a value. Proving
     /// a refusal used to mean forking from a parent holding a live Tokio
     /// runtime, the least safe moment there is, and failed 11 runs in 60.
-    fn runtime_stamped(generations_behind: u64) -> (tokio::runtime::Runtime, Runtime) {
+    #[allow(clippy::type_complexity)]
+    fn runtime_stamped(
+        generations_behind: u64,
+    ) -> ((tokio::runtime::Runtime, Arc<AimDb>), Runtime) {
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -211,12 +221,13 @@ mod tests {
             })
             .expect("build database");
 
-        let mut runtime = Runtime::new(tokio_rt.handle().clone(), Arc::new(db));
+        // Kept alive by the guard below: `Runtime` holds it weakly.
+        let db = Arc::new(db);
+        let mut runtime = Runtime::new(tokio_rt.handle().clone(), &db);
         runtime.made_in = crate::fork::generation().wrapping_sub(generations_behind);
 
-        // Returned so the caller keeps it alive: the handle we cloned out of it
-        // must not outlive the runtime it came from.
-        (tokio_rt, runtime)
+        // Returned so the caller keeps both alive.
+        ((tokio_rt, db), runtime)
     }
 
     #[test]

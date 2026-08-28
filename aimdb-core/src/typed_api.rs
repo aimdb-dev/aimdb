@@ -970,6 +970,10 @@ where
         // The factory runs during build() after every record is registered and
         // validated (including the linked-records-need-a-buffer check), so
         // failures here are aimdb bugs, not user mistakes.
+        #[allow(
+            clippy::panic,
+            reason = "the factory returns no Result and these lookups were validated at build() time"
+        )]
         let source_factory: crate::connector::SourceFactoryFn = {
             let record_key = self.registrar.record_key.clone();
             let topic_provider = self.topic_provider;
@@ -1167,6 +1171,10 @@ where
         // crossing. The factory runs during build() after every record is
         // registered and validated, so failures here are aimdb bugs, not
         // user mistakes.
+        #[allow(
+            clippy::panic,
+            reason = "the factory returns no Result and these lookups were validated at build() time"
+        )]
         let ingest_factory: crate::connector::IngestFactoryFn = {
             let record_key = self.registrar.record_key.clone();
             Arc::new(move |db: &AimDb| {

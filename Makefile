@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -665,8 +665,46 @@ check-no-sim:
 	printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"; \
 	printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
 
+# No library crate may install a process-global on its host's behalf.
+# Applications may, so `tools/`, `examples/` and codegen's generated `main` are
+# not scanned. The one exception: the fork detector owns the runtime thread it
+# protects. A positive control keeps the guard from failing open.
+GLOBALS_SCANNED := aimdb-core aimdb-data-contracts aimdb-derive aimdb-client \
+	aimdb-tokio-adapter aimdb-embassy-adapter aimdb-wasm-adapter aimdb-sync \
+	aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector \
+	aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector \
+	aimdb-serial-connector aimdb-tcp-connector
+GLOBALS_PATTERN := tracing_subscriber::|set_global_default|set_boxed_logger|set_logger\(|set_max_level|panic::set_hook|panic::take_hook|pthread_atfork|sigaction|signal_hook|set_var\(
+GLOBALS_ALLOWED := aimdb-sync/src/fork\.rs
+check-no-globals:
+	@printf "$(GREEN)Checking that no library crate installs a process-global...$(NC)\n"
+	@scan() { \
+		grep -rnE '$(GLOBALS_PATTERN)' --include='*.rs' "$$@" 2>/dev/null \
+			| grep -vE ':[0-9]+:[[:space:]]*(//|\*)' || true; \
+	}; \
+	control=$$(mktemp -d) || exit 1; \
+	printf 'fn main() { tracing_subscriber::fmt().init(); }\n' > "$$control/probe.rs"; \
+	control_hit=$$(scan "$$control"); \
+	rm -rf "$$control"; \
+	if [ -z "$$control_hit" ]; then \
+		printf "$(RED)✗ positive control failed: the scanner no longer flags a subscriber install, so a clean result proves nothing$(NC)\n"; \
+		exit 1; \
+	fi; \
+	found=$$(scan $(addsuffix /src,$(GLOBALS_SCANNED)) | grep -vE '^($(GLOBALS_ALLOWED)):' || true); \
+	if [ -n "$$found" ]; then \
+		printf "$(RED)✗ a library crate installs a process-global:$(NC)\n"; \
+		printf '%s\n' "$$found"; \
+		printf "$(YELLOW)  A library does not get to make this decision for its host. Hand the$(NC)\n"; \
+		printf "$(YELLOW)  application a way to make it instead — see design 050 for how the log$(NC)\n"; \
+		printf "$(YELLOW)  destination does it. If the global genuinely belongs to the crate that$(NC)\n"; \
+		printf "$(YELLOW)  owns the runtime thread, add it to GLOBALS_ALLOWED with the reason.$(NC)\n"; \
+		exit 1; \
+	fi; \
+	printf "$(BLUE)✓ scanner verified against a positive control$(NC)\n"; \
+	printf "$(GREEN)✓ No library crate installs a process-global$(NC)\n"
+
 ## Convenience commands
-check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim
+check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim check-no-globals
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
@@ -676,6 +714,7 @@ check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-d
 	@printf "$(BLUE)✓ Dependencies verified (deny)$(NC)\n"
 	@printf "$(BLUE)✓ README quickstart in sync and compiling$(NC)\n"
 	@printf "$(BLUE)✓ Codegen output compiles against the workspace$(NC)\n"
+	@printf "$(BLUE)✓ No library crate installs a process-global$(NC)\n"
 
 ## WASM commands
 wasm:

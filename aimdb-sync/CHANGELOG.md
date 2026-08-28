@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`AimDbHandle::shutdown(&self)`, `shutdown_timeout(&self, _)` and
+  `is_closed()`.** The shutdown contract a foreign-language binding needs —
+  `&self`, idempotent, safe during a publish, and an `is_closed` that never
+  takes the shutdown's lock — pinned by `tests/shutdown_contract_test.rs`.
+  `detach(self)` and `detach_timeout(self, _)` are unchanged and delegate.
 - **`tracing` no longer pulls `dep:tracing`** (design 050 §10.4): that arm now
   reaches the crate through `aimdb_core::__private`, as the `log` arm already
   did. Both features stay — they select the arms.
@@ -18,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call sites unrouted. It forwards and adds nothing else; no `log` dependency is
   needed here, because the macro reaches the crate through
   `aimdb_core::__private`.
+
+### Changed
+
+- **A shutdown releases the database, where dropping the handle used to.** The
+  runtime holds it weakly; the handle owns the strong reference and drops it
+  after the join. That closes the buffers, so a consumer parked in `get()` is
+  woken and the publish after is refused. Unchanged for `detach(self)`. Costs
+  one atomic increment per publish.
 
 ### Fixed
 

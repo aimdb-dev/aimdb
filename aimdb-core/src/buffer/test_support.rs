@@ -1,5 +1,12 @@
 //! Shared behavioral contract for [`Buffer`] implementations.
 //!
+//! Panicking is how a harness reports.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test harness reports by panicking"
+)]
+//!
 //! Each adapter crate calls these from a test running under its own executor
 //! (`#[tokio::test]`, `block_on`, or a host `#[test]` + `block_on`), so the one
 //! contract is exercised against every runtime buffer implementation — the

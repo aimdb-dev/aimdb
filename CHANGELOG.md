@@ -29,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`AimDbHandle::shutdown(&self)` / `is_closed()`.** The shutdown contract a
+  foreign-language binding needs, moved into the crate whose thread it is
+  about; pinned by `aimdb-sync/tests/shutdown_contract_test.rs`. `detach(self)`
+  is unchanged. A shutdown now also releases the database, waking a consumer
+  parked in `get()`. ([aimdb-sync](aimdb-sync/CHANGELOG.md))
+- **A panic is a bug, not an error channel.** `aimdb-core` joins `aimdb-sync`
+  under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)`.
+  ([aimdb-core](aimdb-core/CHANGELOG.md))
+- **No library crate installs a process-global.** `make check-no-globals`, in
+  CI, with a positive control and one allowed exception: `aimdb-sync`'s fork
+  detector.
+
 ### Changed — Design 050 §10.4/§10.5: one facade, both destinations, no dependency tax
 
 `::tracing` now goes through `$crate::__private` exactly as `log` already did, so

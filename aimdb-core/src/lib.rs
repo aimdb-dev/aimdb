@@ -13,6 +13,13 @@
 //!
 //! See examples in the repository for usage patterns.
 //!
+//! # A panic is a bug, not an error channel
+//!
+//! Every failure is a [`DbError`]. The crate is compiled under
+//! `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside its
+//! tests; the sites that remain carry an `allow` with a reason. A dependency
+//! can still panic on its own, and a poisoned lock is recovered from.
+//!
 //! # Where aimdb's own reporting goes
 //!
 //! Two optional destinations, neither on by default: **`tracing`**, the ordinary
@@ -40,6 +47,12 @@
 //! 5. **Cannot be uninstalled.** `set_logger` is once per process; a second
 //!    call returns `Err` and the first destination keeps receiving.
 
+// A panic here is a bug: two FFI doors sit above this crate, and a consumer's
+// `panic = "abort"` compiles their guard out.
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;

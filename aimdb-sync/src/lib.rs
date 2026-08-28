@@ -39,7 +39,9 @@
 //! ```
 //!
 //! The runtime thread is created automatically when you call `attach()` on the builder.
-//! It stays alive until `detach()` is called or the handle is dropped.
+//! It stays alive until [`AimDbHandle::shutdown`] — or [`AimDbHandle::detach`],
+//! which is the same call for an owner that has the handle by value — or until
+//! the handle is dropped.
 //!
 //! ## Quick Start
 //!
@@ -180,7 +182,16 @@
 //! cursor, so move it to a thread and give each thread its own via a separate
 //! `handle.consumer()` call. Every consumer then sees every value. To *split* one
 //! stream across workers instead, share one as `Arc<Mutex<SyncConsumer<T>>>`.
-//! The API ensures proper resource cleanup through RAII and explicit `detach()`.
+//! The API ensures proper resource cleanup through RAII and an explicit
+//! [`AimDbHandle::shutdown`].
+//!
+//! ## Shutting down from another language
+//!
+//! [`AimDbHandle::shutdown`] takes `&self` (an FFI door never receives `self`
+//! by value), is idempotent, is safe during a publish, and
+//! [`AimDbHandle::is_closed`] reads an atomic rather than the lock it holds.
+//! Pinned by `tests/shutdown_contract_test.rs`. A shutdown releases the
+//! database too, so shut down before joining your readers.
 //!
 //! **A panic from this crate is a bug, not an error channel.** Every failure is
 //! a [`SyncError`]. The blocking surface is compiled under

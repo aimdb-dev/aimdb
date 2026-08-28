@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Now we create the consumer — it will only see the last value in the Mailbox
         println!("2. Consumer created AFTER the burst — reads once:");
-        let consumer = handle.consumer::<Led>("actuator.led")?;
+        let mut consumer = handle.consumer::<Led>("actuator.led")?;
         thread::sleep(Duration::from_millis(100));
 
         match consumer.try_get() {
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::sleep(Duration::from_millis(100));
 
     println!("2. Consumer created AFTER the burst — reads once:");
-    let consumer2 = handle.consumer::<Led>("actuator.led")?;
+    let mut consumer2 = handle.consumer::<Led>("actuator.led")?;
     thread::sleep(Duration::from_millis(100));
 
     match consumer2.try_get() {
