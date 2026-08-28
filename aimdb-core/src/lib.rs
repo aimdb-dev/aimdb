@@ -12,6 +12,31 @@
 //! - **Producer-Consumer**: Built-in typed message passing
 //!
 //! See examples in the repository for usage patterns.
+//!
+//! # Where aimdb's own reporting goes
+//!
+//! Two optional destinations, neither on by default: **`tracing`**, the ordinary
+//! choice for a Rust binary, and **`log`**, for a host that cannot be handed a
+//! process-global subscriber — chiefly an FFI layer, which needs its callback's
+//! context pointer to live somewhere a `tracing::Layer` has no room for. Both
+//! may be on at once; both off emits nothing. Events carry the emitting module
+//! as their target (`aimdb_core::builder`) either way.
+//! See [docs/design/050](https://github.com/aimdb-dev/aimdb/blob/main/docs/design/050-log-destination-for-ffi.md)
+//! for filtering, duplicate delivery, and what the destination does not see.
+//!
+//! ## What a `log` destination must guarantee
+//!
+//! Getting one wrong costs a deadlock or memory unsafety, not a bad log line:
+//!
+//! 1. **Called from any thread**, aimdb's runtime thread included.
+//! 2. **Must not unwind** — across a C or C++ boundary that is UB.
+//! 3. **Must not re-enter aimdb on a path that itself logs.** `log` has no
+//!    reentrancy guard (`tracing` does), so this recurses without bound.
+//!    Getters are fine.
+//! 4. **Must not block on anything a thread might hold while calling into
+//!    aimdb** — that is the lock ordering.
+//! 5. **Cannot be uninstalled.** `set_logger` is once per process; a second
+//!    call returns `Err` and the first destination keeps receiving.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -20,6 +45,18 @@ extern crate alloc;
 // Must precede the other modules: `macro_rules!` visibility is textual.
 #[macro_use]
 mod log;
+
+/// Implementation detail of the `log_*` macros; no stability guarantee.
+///
+/// The macros expand in the *calling* crate, so they can only name paths
+/// reachable from there — this re-export is what saves a facade user from
+/// declaring `log` itself.
+#[doc(hidden)]
+pub mod __private {
+    // `::log`, not `log`: this crate has a private `log` module at its root.
+    #[cfg(feature = "log")]
+    pub use ::log;
+}
 
 pub mod buffer;
 pub mod builder;

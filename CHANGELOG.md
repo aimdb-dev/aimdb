@@ -29,6 +29,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Design 050: a log destination an FFI layer can install
+
+`aimdb-core` gains an optional, non-default `log` feature: a second destination
+for the crate-private `log_*` facade, alongside `tracing`. It is for hosts that
+cannot be handed a process-global `tracing` subscriber — the `weather-station-py`
+and `weather-station-cpp` doors both had to add `tracing-subscriber`, write a
+`Layer`, and install the host's global subscriber on the application's behalf,
+and the C++ one then needed a static of its own to hold the caller's
+`user_data`, because a `tracing::Layer` has nowhere to put it. A `log::Log` impl
+*is* that context, so the pointer travels with the callback and the static (with
+its data race and its first-wins/last-wins mismatch) goes away.
+
+With the feature off — the default, and every MCU build — nothing changes.
+`tracing` remains the default and the recommendation for Rust consumers; both
+may be on at once. `aimdb-sync` mirrors the feature, which is required rather
+than cosmetic: the facade macros expand in the calling crate, so the arm is
+selected by *that* crate's features. See
+[docs/design/050-log-destination-for-ffi.md](docs/design/050-log-destination-for-ffi.md);
+the FFI doors themselves are steps 2 and 3 there and live outside this
+repository.
+
 ### Changed — Design 047: AimX protocol version handshake gate (breaking)
 
 `PROTOCOL_VERSION` is bumped **`"2.0"` → `"3.0"`** to mark the design-047

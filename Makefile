@@ -149,6 +149,10 @@ test:
 	cargo test --package aimdb-core --features "std,tracing,observability"
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + observability)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features "alloc,observability"
+	@printf "$(YELLOW)  → Testing aimdb-core (log destination: gate, first-wins, target)$(NC)\n"
+	cargo test --package aimdb-core --features "std,log"
+	@printf "$(YELLOW)  → Testing aimdb-core (both destinations: once each)$(NC)\n"
+	cargo test --package aimdb-core --features "std,log,tracing" --test log_facade_delivery
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + remote)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features "alloc,remote"
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
@@ -177,6 +181,8 @@ test:
 	cargo test --package aimdb-sync
 	@printf "$(YELLOW)  → Testing sync wrapper (no_std)$(NC)\n"
 	cargo test --package aimdb-sync --no-default-features
+	@printf "$(YELLOW)  → Testing sync wrapper (log destination; guards the mirrored feature)$(NC)\n"
+	cargo test --package aimdb-sync --features log --test log_facade
 	@printf "$(YELLOW)  → Testing sync wrapper (data-contracts: set_value family)$(NC)\n"
 	cargo test --package aimdb-sync --features data-contracts
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
@@ -256,6 +262,9 @@ clippy:
 	cargo clippy --package aimdb-core --no-default-features --features "alloc,remote" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
 	cargo clippy --package aimdb-core --features "std,tracing,observability" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (log destination, alone and beside tracing)$(NC)\n"
+	cargo clippy --package aimdb-core --features "std,log" --all-targets -- -D warnings
+	cargo clippy --package aimdb-core --features "std,log,tracing" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
 	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
@@ -268,6 +277,8 @@ clippy:
 	cargo clippy --package aimdb-sync --no-default-features --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper (data-contracts)$(NC)\n"
 	cargo clippy --package aimdb-sync --features data-contracts --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on sync wrapper (log destination)$(NC)\n"
+	cargo clippy --package aimdb-sync --features log --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library$(NC)\n"
 	cargo clippy --package aimdb-client --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library (serial transport arm)$(NC)\n"
@@ -399,6 +410,8 @@ test-embedded:
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,remote"
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std/embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
+	@printf "$(YELLOW)  → Checking aimdb-core (no_std + log destination) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,log"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with network support on thumbv7em-none-eabihf target$(NC)\n"

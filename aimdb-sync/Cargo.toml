@@ -49,6 +49,11 @@ std = ["aimdb-core/std", "dep:tokio", "dep:aimdb-tokio-adapter", "dep:libc"]
 # Enable tracing for debugging
 tracing = ["dep:tracing", "aimdb-core/tracing"]
 
+# The facade's second destination (design 050). Required, not cosmetic: the
+# `log_*` macros expand here, so the arm is selected by *this* crate's features
+# and `aimdb-core/log` alone would leave these call sites unrouted.
+log = ["aimdb-core/log"]
+
 # SyncProducer::set_value / try_set_value / set_value_at for Settable types
 data-contracts = ["dep:aimdb-data-contracts"]
 
