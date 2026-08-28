@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A panic is a bug, not an error channel — checked (CR-4).** The crate is
+  compiled under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)`
+  outside its own tests, mirroring `aimdb-sync`, and the module docs say so. The
+  rule is not new; what is new is that it is checked. It matters most below an
+  FFI door: unwinding past a C ABI is undefined behaviour, an FFI layer's
+  `catch_unwind` is compiled out by a consumer whose profile sets
+  `panic = "abort"`, and a panic's message goes to fd 2 past whatever log
+  destination the host installed, because no aimdb library may install a panic
+  hook.
+
+  Four sites were fixed rather than annotated: the `record_id` and
+  `typed_record` mutex helpers now recover from poisoning instead of
+  re-panicking on it (the first panic is the bug; a second only spreads it),
+  `TypedRecord::record_origin` asks the iterator for "exactly one input" instead
+  of trusting an `unwrap` two lines under a `len()` check, and the AimX drain
+  path reports a missing reader instead of asserting it — that one runs on the
+  session pump, where a panic takes the connection down. The rest carry an
+  `allow` with a `reason`: the buffer contract suite, which is a test harness
+  and reports by panicking; two unreachable downcasts in `configure`, guarded by
+  a `TypeId` comparison two lines above; the two connector factories, whose
+  signatures return no `Result`; and `SecurityPolicy`'s documented `# Panics`,
+  which should become a `Result` before the crates reach a registry.
+
+### Added
+
 - **`log_trace!`.** The fifth facade macro, completing the set both destinations
   support. Added for a KNX call site that was `tracing::trace!` before design
   050 §10.5 moved it onto the facade.

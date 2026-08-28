@@ -140,6 +140,10 @@ impl SecurityPolicy {
     /// Adds a record key to the writable set
     ///
     /// Only has effect for ReadWrite policies. Panics if policy is ReadOnly.
+    #[allow(
+        clippy::panic,
+        reason = "documented API contract (see # Panics). Returning a Result instead is a breaking change worth making before the crates reach a registry, not a lint fix."
+    )]
     pub fn allow_write_key(&mut self, key: impl Into<String>) {
         match self {
             Self::ReadWrite { writable_records } => {
@@ -155,6 +159,10 @@ impl SecurityPolicy {
     ///
     /// # Panics
     /// Panics if called on a ReadOnly policy
+    #[allow(
+        clippy::panic,
+        reason = "documented API contract (see # Panics). Returning a Result instead is a breaking change worth making before the crates reach a registry, not a lint fix."
+    )]
     pub fn with_writable_key(mut self, key: impl Into<String>) -> Self {
         match self {
             Self::ReadWrite {

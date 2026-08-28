@@ -66,7 +66,7 @@ type Mutex<T> = spin::Mutex<T>;
 /// the correct response. Same pattern as the `TypedRecord` field mutexes.
 #[cfg(feature = "std")]
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap()
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 #[cfg(not(feature = "std"))]
 fn lock<T>(m: &Mutex<T>) -> spin::MutexGuard<'_, T> {
