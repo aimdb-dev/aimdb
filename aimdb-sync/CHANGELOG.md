@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tracing` no longer pulls `dep:tracing`** (design 050 §10.4): that arm now
+  reaches the crate through `aimdb_core::__private`, as the `log` arm already
+  did. Both features stay — they select the arms.
 - **A `log` feature, mirroring `aimdb-core`'s (design 050).** The `log_*` macros
   are `#[macro_export]`ed, so their `#[cfg(feature = "log")]` arm is resolved
   against *this* crate — `aimdb-core/log` on its own would leave this crate's

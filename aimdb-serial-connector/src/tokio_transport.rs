@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 use aimdb_core::connector::ConnectorBuilder;
+use aimdb_core::log_info;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
@@ -295,8 +296,7 @@ impl ConnectorBuilder for SerialServer {
 
 /// Open the serial port synchronously so an open error surfaces from `build`.
 fn open_serial_listener(path: &str, baud: u32) -> DbResult<SerialListener> {
-    #[cfg(feature = "tracing")]
-    tracing::info!(
+    log_info!(
         "Initializing AimX serial server on {} @ {} baud",
         path,
         baud

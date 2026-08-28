@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`log_trace!`.** The fifth facade macro, completing the set both destinations
+  support. Added for a KNX call site that was `tracing::trace!` before design
+  050 §10.5 moved it onto the facade.
+
+### Changed
+
+- **`::tracing` is reached through `$crate::__private`,** as `log` already was.
+  A crate using the `log_*` macros now declares neither `tracing` nor `log` as a
+  dependency of its own — only the matching feature, which cannot be delegated:
+  a `#[cfg]` inside a `#[macro_export]`ed macro is resolved where it expands.
+  Non-breaking; a crate that still declares `dep:tracing` is unaffected.
+
+### Added
+
 - **Design 050: an optional `log` feature, a second destination for the `log_*`
   facade.** With it on, every facade call site also emits a `log` record; with it
   off (the default, and every MCU build) the expansion is what it was. It exists

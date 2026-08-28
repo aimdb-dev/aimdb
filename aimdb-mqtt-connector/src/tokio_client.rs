@@ -9,6 +9,7 @@
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::router::{Router, RouterBuilder};
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
+use aimdb_core::{log_debug, log_error, log_info};
 use aimdb_core::{pump_sink, pump_source, BoxFut, ConnectorBuilder, Payload, Source};
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet};
 use std::future::Future;
@@ -76,8 +77,7 @@ impl ConnectorBuilder for MqttConnectorBuilder {
             let inbound_routes = db.collect_inbound_routes("mqtt");
             let router = RouterBuilder::from_routes(inbound_routes).build();
 
-            #[cfg(feature = "tracing")]
-            tracing::info!("MQTT subscribing to {} topics", router.resource_ids().len());
+            log_info!("MQTT subscribing to {} topics", router.resource_ids().len());
 
             // Connect, subscribe, and hand back the raw event loop.
             let (client, event_loop) =
@@ -98,7 +98,6 @@ impl ConnectorBuilder for MqttConnectorBuilder {
                 "mqtt",
                 MqttEventLoopSource {
                     event_loop,
-                    #[cfg(feature = "tracing")]
                     broker_key: self.broker_url.clone(),
                 },
             ));
@@ -160,8 +159,7 @@ impl MqttConnectorImpl {
             }
         });
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Creating MQTT client for {}:{}", host, port);
+        log_info!("Creating MQTT client for {}:{}", host, port);
 
         // Use provided client_id or generate a UUID-based one
         let client_id = client_id.unwrap_or_else(|| format!("aimdb-{}", uuid::Uuid::new_v4()));
@@ -208,8 +206,7 @@ impl MqttConnectorImpl {
         const CHANNEL_HEADROOM: usize = 10;
         let channel_capacity = topic_count + CHANNEL_HEADROOM;
 
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
+        log_debug!(
             "MQTT channel capacity set to {} (for {} topics)",
             channel_capacity,
             topic_count
@@ -221,12 +218,10 @@ impl MqttConnectorImpl {
 
         let topics = router_arc.resource_ids();
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Subscribing to {} MQTT topics...", topics.len());
+        log_info!("Subscribing to {} MQTT topics...", topics.len());
 
         for topic in &topics {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Subscribing to MQTT topic: {}", topic);
+            log_debug!("Subscribing to MQTT topic: {}", topic);
 
             client_arc
                 .subscribe(topic.as_ref(), rumqttc::QoS::AtLeastOnce)
@@ -234,8 +229,7 @@ impl MqttConnectorImpl {
                 .map_err(|e| format!("Failed to subscribe to topic '{}': {}", topic, e))?;
         }
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("MQTT subscriptions complete");
+        log_info!("MQTT subscriptions complete");
 
         Ok((client_arc, event_loop))
     }
@@ -286,21 +280,21 @@ impl Connector for MqttSink {
                 _ => return Err(PublishError::UnsupportedQoS),
             };
 
-            #[cfg(feature = "tracing")]
-            let topic_for_log = topic.clone();
+            // Borrowed before `topic` is moved into `publish`, which is why this
+            // reads "Publishing" and sits above the call: the alternative was a
+            // `String` clone on every publish just to name the topic afterwards.
+            // A failed publish is reported by the `map_err` below.
+            log_debug!("Publishing to topic: {}", topic);
 
             client
                 .publish(topic, qos_level, retain, payload_owned)
                 .await
                 .map_err(|_e| {
-                    #[cfg(feature = "tracing")]
-                    tracing::error!("MQTT publish failed: {}", _e);
+                    log_error!("MQTT publish failed: {}", _e);
 
                     PublishError::ConnectionFailed
                 })?;
 
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Published to topic: {}", topic_for_log);
             Ok(())
         })
     }
@@ -315,7 +309,9 @@ impl Connector for MqttSink {
 /// for the lifetime of the connector.
 struct MqttEventLoopSource {
     event_loop: EventLoop,
-    #[cfg(feature = "tracing")]
+    /// Only ever used to name the broker in an error line. One `String` per
+    /// connection, held for its lifetime — no longer feature-gated, because the
+    /// facade decides its own gating and a `#[cfg]` here could not follow it.
     broker_key: String,
 }
 
@@ -328,8 +324,7 @@ impl Source for MqttEventLoopSource {
                         let topic = publish.topic.clone();
                         let payload: Payload = Arc::from(publish.payload.as_ref());
 
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!(
+                        log_debug!(
                             "Received MQTT message on topic '{}' ({} bytes)",
                             topic,
                             payload.len()
@@ -340,8 +335,7 @@ impl Source for MqttEventLoopSource {
                     // Non-publish packets (PUBACK/PINGRESP/…) keep driving the protocol.
                     Ok(_) => continue,
                     Err(_e) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::error!("MQTT event loop error for {}: {:?}", self.broker_key, _e);
+                        log_error!("MQTT event loop error for {}: {:?}", self.broker_key, _e);
 
                         // Wait before reconnecting.
                         tokio::time::sleep(Duration::from_secs(5)).await;

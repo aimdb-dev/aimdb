@@ -56,6 +56,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use aimdb_core::connector::ConnectorBuilder;
+use aimdb_core::log_info;
 use aimdb_core::remote::AimxConfig;
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
@@ -207,8 +208,7 @@ impl ConnectorBuilder for UdsServer {
 fn bind_uds_listener(config: &AimxConfig) -> DbResult<UdsListener> {
     let socket_path = &config.socket_path;
 
-    #[cfg(feature = "tracing")]
-    tracing::info!("Initializing AimX UDS server on socket: {}", socket_path);
+    log_info!("Initializing AimX UDS server on socket: {}", socket_path);
 
     if std::path::Path::new(socket_path).exists() {
         std::fs::remove_file(socket_path).map_err(|e| DbError::IoWithContext {
@@ -236,8 +236,7 @@ fn bind_uds_listener(config: &AimxConfig) -> DbResult<UdsListener> {
         source: e,
     })?;
 
-    #[cfg(feature = "tracing")]
-    tracing::info!(
+    log_info!(
         "AimX socket bound at {} (mode {:o})",
         socket_path,
         permissions
