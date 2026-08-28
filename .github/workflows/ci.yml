@@ -78,6 +78,9 @@ jobs:
     - name: Prove production is simulation-free
       run: make check-no-sim
 
+    - name: Prove no library crate installs a process-global
+      run: make check-no-globals
+
   # Embedded target testing
   embedded-targets:
     name: Embedded Cross-compilation
