@@ -1,11 +1,10 @@
 //! Shared behavioral contract for [`Buffer`] implementations.
 //!
-//! A test harness, so panicking *is* its report: the crate-wide
-//! `deny(clippy::unwrap_used, …)` is lifted for this module and nowhere else.
+//! A test harness, so panicking *is* its report.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
-    reason = "a test harness reports by panicking; this module is never on a production path"
+    reason = "a test harness reports by panicking"
 )]
 //!
 //! Each adapter crate calls these from a test running under its own executor

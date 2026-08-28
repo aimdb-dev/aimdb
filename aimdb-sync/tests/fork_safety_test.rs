@@ -94,10 +94,8 @@ fn dropping_an_inherited_handle_does_not_panic() {
         .expect("consumer");
 
     let code = in_forked_child(move || {
-        // An inherited handle answers the question before it is asked to act:
-        // the thread is not this process's, so it cannot reach the database.
-        // A binding in another language calls this from a signal handler and
-        // must not be told the database is open.
+        // Asked before it is asked to act: a binding calls this from a signal
+        // handler and must not be told the database is open.
         let reports_closed = to_detach.is_closed() && to_drop.is_closed();
 
         // `detach` reports the situation rather than joining.

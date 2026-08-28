@@ -29,41 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — CR-4 and CR-9: two rules that were true, now checked
+### Added — CR-4, CR-9, CR-10
 
-**A panic is a bug, not an error channel (CR-4).** `aimdb-core` joins
-`aimdb-sync` under `deny(clippy::unwrap_used, clippy::expect_used,
-clippy::panic)` outside its own tests, with the rule stated in its module docs.
-Four sites were fixed rather than annotated — poisoned-mutex recovery in the
-`record_id` and `typed_record` lock helpers, an `unwrap` under a `len()` check
-in `record_origin`, and an `expect` on the AimX session pump — and the rest
-carry an `allow` with a `reason`. It matters below an FFI door, where a
-consumer's `panic = "abort"` compiles the layer's own `catch_unwind` out.
-([aimdb-core](aimdb-core/CHANGELOG.md))
-
-**No library crate installs a process-global (CR-9).** `make check-no-globals`,
-also run in CI, scans the crates that get linked into somebody else's process
-for subscriber installs, panic hooks, signal handlers, `pthread_atfork` and
-`set_var`. It has a positive control, so a pattern that stops matching cannot
-pass silently, and exactly one allowed exception: `aimdb-sync`'s fork detector,
-which may register `pthread_atfork` because it owns the runtime thread it
-protects — never an FFI shim on the application's behalf. `tools/`, `examples/`
-and `aimdb-codegen`'s generated `main` are applications and are not scanned.
-
-### Added — CR-10: the shutdown contract moves into `aimdb-sync`
-
-`AimDbHandle` gains `shutdown(&self)`, `shutdown_timeout(&self, _)` and
-`is_closed()`. The four properties an FFI layer needs — a shutdown through a
-shared reference, idempotent, safe during a publish, and a `is_closed` that
-never takes the lock the shutdown holds — lived only in
-`weather-station::StationHandle`, one crate above the thread they are about, so
-every binding that reached for `aimdb-sync` directly had to rediscover them.
-The pyo3 door measured what that costs: 200/200 closes refused by pyo3's borrow
-flag while one thread published in a loop. Pinned by
-`aimdb-sync/tests/shutdown_contract_test.rs`; `detach(self)` is unchanged and
-now delegates. A shutdown also releases the database — the runtime holds it
-weakly now — which closes the buffers and so wakes a consumer parked in `get()`.
-([aimdb-sync](aimdb-sync/CHANGELOG.md))
+- **`AimDbHandle::shutdown(&self)` / `is_closed()` (CR-10).** The shutdown
+  contract a foreign-language binding needs, moved into the crate whose thread
+  it is about; pinned by `aimdb-sync/tests/shutdown_contract_test.rs`.
+  `detach(self)` is unchanged. A shutdown now also releases the database, waking
+  a consumer parked in `get()`. ([aimdb-sync](aimdb-sync/CHANGELOG.md))
+- **A panic is a bug, not an error channel (CR-4).** `aimdb-core` joins
+  `aimdb-sync` under `deny(clippy::unwrap_used, clippy::expect_used,
+  clippy::panic)`. ([aimdb-core](aimdb-core/CHANGELOG.md))
+- **No library crate installs a process-global (CR-9).**
+  `make check-no-globals`, in CI, with a positive control and one allowed
+  exception: `aimdb-sync`'s fork detector.
 
 ### Changed — Design 050 §10.4/§10.5: one facade, both destinations, no dependency tax
 

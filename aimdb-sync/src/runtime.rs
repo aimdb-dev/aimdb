@@ -50,22 +50,13 @@ pub(crate) struct Runtime {
     /// The way into the Tokio runtime. Reached only through [`Self::enter`].
     handle: tokio::runtime::Handle,
 
-    /// The database the thread built, held weakly. Reached only through
-    /// [`Self::db`].
+    /// The database the thread built. Reached only through [`Self::db`].
     ///
-    /// The strong reference lives in the handle's `OwnedThread`, so
-    /// [`AimDbHandle::shutdown`](crate::AimDbHandle::shutdown) can release it
-    /// through a shared reference. That release is not bookkeeping: dropping
-    /// the last `Arc<AimDb>` closes the buffers, and closing them is what wakes
-    /// a consumer parked in `get()` — `aimdb-core` has no explicit close. A
-    /// strong reference here would keep the database, and every parked reader,
-    /// alive until the last producer was dropped.
-    ///
-    /// So a failed upgrade is the same liveness check it always was, moved one
-    /// level down. It used to fire when the handle was dropped, because that is
-    /// what released the database; it now also fires for a shutdown through a
-    /// handle the caller still holds, where the `Weak<Runtime>` a producer
-    /// carries upgrades perfectly well.
+    /// Weak, because the strong reference lives in the handle's `OwnedThread`
+    /// where a `shutdown(&self)` can release it — and releasing it closes the
+    /// buffers, which is what wakes a parked consumer. A failed upgrade is
+    /// therefore the same liveness check it always was, now firing for a
+    /// shutdown as well as for a dropped handle.
     db: Weak<AimDb>,
 
     /// The fork generation this runtime's thread was spawned in.
@@ -76,8 +67,8 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    /// Borrowed rather than taken: the caller keeps the strong reference, and
-    /// keeping it is what gives it something to release. See [`Self::db`].
+    /// Borrowed, not taken: the caller keeps the strong reference so it has
+    /// something to release. See [`Self::db`].
     pub(crate) fn new(handle: tokio::runtime::Handle, db: &Arc<AimDb>) -> Self {
         Self {
             handle,
@@ -107,18 +98,12 @@ impl Runtime {
         Ok(&self.handle)
     }
 
-    /// The database, or a reason there is none to reach.
+    /// The database, or why there is none to reach — the only way in, so
+    /// neither reason can be skipped. [`SyncError::ForkedChild`]: a child's
+    /// handle to the database is valid, which is the problem.
+    /// [`SyncError::RuntimeShutdown`]: the strong reference is gone.
     ///
-    /// The only way to reach it, so neither reason can be skipped:
-    /// [`SyncError::ForkedChild`] because a forked child's handle to the
-    /// database is valid, which is exactly the problem, and
-    /// [`SyncError::RuntimeShutdown`] because the handle that owns the strong
-    /// reference has shut down or been dropped.
-    ///
-    /// Returns an owned `Arc` — one atomic increment on the publish path,
-    /// against a `Weak` that cannot otherwise be handed out safely. The
-    /// alternative was a lock, which is the thing this crate keeps off that
-    /// path.
+    /// Owned, so one atomic increment per publish. A lock was the alternative.
     #[inline]
     pub(crate) fn db(&self) -> SyncResult<Arc<AimDb>> {
         self.check()?;
@@ -240,15 +225,13 @@ mod tests {
             })
             .expect("build database");
 
-        // Kept alive by the returned guard: the `Runtime` holds the database
-        // weakly, so nothing here may be the last strong reference.
+        // Kept alive by the returned guard: `Runtime` holds it weakly.
         let db = Arc::new(db);
         let mut runtime = Runtime::new(tokio_rt.handle().clone(), &db);
         runtime.made_in = crate::fork::generation().wrapping_sub(generations_behind);
 
-        // Returned so the caller keeps them alive: the handle we cloned out of
-        // the tokio runtime must not outlive it, and the database must outlive
-        // the `Runtime` that points at it weakly.
+        // Returned so the caller keeps both alive: the cloned handle must not
+        // outlive its runtime, nor the database the `Runtime` pointing at it.
         ((tokio_rt, db), runtime)
     }
 

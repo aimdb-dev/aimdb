@@ -15,25 +15,15 @@
 //!
 //! # A panic is a bug, not an error channel
 //!
-//! Every failure this crate reports is a [`DbError`], classified by
-//! [`DbError::kind`] into something a caller can act on. A panic is neither:
-//! it is a defect in aimdb. The crate is compiled under
-//! `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside its
-//! own tests, so the property is checked rather than remembered, and the few
-//! sites that remain each carry an `allow` with a reason naming why.
+//! Every failure is a [`DbError`], classified by [`DbError::kind`]. The crate
+//! is compiled under `deny(clippy::unwrap_used, clippy::expect_used,
+//! clippy::panic)` outside its own tests; the few remaining sites carry an
+//! `allow` with a reason. It matters below an FFI door: unwinding past a C ABI
+//! is undefined behaviour, and a consumer's `panic = "abort"` compiles that
+//! layer's own `catch_unwind` out.
 //!
-//! This matters most to callers arriving from another language. A panic
-//! unwinding past a C ABI is undefined behaviour; an FFI layer's `catch_unwind`
-//! is compiled out by a consumer whose profile sets `panic = "abort"`, which
-//! turns the same panic into the whole process dying; and a panic's message
-//! goes to fd 2 past whatever log destination the host installed, because
-//! Rust's panic hook is process-global and no aimdb library may install one.
-//! So the guard has to be here, not above.
-//!
-//! Two things this does not promise: a dependency reached through this crate
-//! can still panic on its own, and a lock left poisoned by a panic elsewhere is
-//! recovered from rather than re-panicked on — the first panic is the bug to
-//! fix, and a second one only spreads it.
+//! Not promised: a dependency can still panic on its own, and a poisoned lock
+//! is recovered from rather than re-panicked on.
 //!
 //! # Where aimdb's own reporting goes
 //!
@@ -62,12 +52,9 @@
 //! 5. **Cannot be uninstalled.** `set_logger` is once per process; a second
 //!    call returns `Err` and the first destination keeps receiving.
 
-// A panic on this crate's surface is not an error channel, it is a bug. Two
-// FFI doors now sit above it, where unwinding past the boundary is undefined
-// behaviour and a consumer's `panic = "abort"` turns any panic into the whole
-// process dying — and their `catch_unwind` is compiled out by exactly that
-// profile, so the property has to hold here rather than be caught above.
-// Checked rather than remembered, as in `aimdb-sync`.
+// A panic here is a bug, not an error channel: two FFI doors sit above this
+// crate, and a consumer's `panic = "abort"` compiles their guard out. Checked
+// rather than remembered, as in `aimdb-sync`.
 #![cfg_attr(
     not(test),
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)

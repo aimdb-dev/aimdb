@@ -335,9 +335,8 @@ impl AimxSession {
             self.drain_readers.insert(name.to_string(), reader);
         }
 
-        // Inserted immediately above when absent, so this is unreachable — but
-        // reported rather than asserted: this runs on the session pump, where a
-        // panic takes the connection down with it.
+        // Unreachable — inserted above when absent — but reported rather than
+        // asserted: this runs on the session pump.
         let reader = self.drain_readers.get_mut(name).ok_or_else(|| {
             map_db_err(DbError::runtime_error(alloc::format!(
                 "Record '{name}' drain reader vanished between insert and use"

@@ -665,28 +665,14 @@ check-no-sim:
 	printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"; \
 	printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
 
-# CR-9: no aimdb library may install a process-global on its host's behalf.
-#
-# A library linked into somebody else's process does not get to decide where
-# that process's diagnostics go, what happens on a panic, which signals are
-# handled, or what is in its environment. The rule held by discipline until two
-# FFI doors made it load-bearing: an extension module that installs a logging
-# subscriber writes behind the interpreter's back, and one that installs a panic
-# hook decides where an application's crashes are reported.
-#
-# Scanned: the crates that are linked into a host process. Not scanned, and
-# deliberately: `tools/` and `examples/` *are* applications, and `aimdb-codegen`
-# emits an application's `main` — the `tracing_subscriber::fmt::init()` in
-# `rust.rs` is inside a `quote!`, i.e. generated code, not this crate's.
-#
-# The one exception is the fork detector, and it is the exception that states
-# the rule: `pthread_atfork` is process-global, so it may only be registered by
-# the crate that owns the runtime thread it protects — never by an FFI shim on
-# the application's behalf.
-#
-# The guard must not fail open, so a positive control runs the same scanner over
-# a file that does violate the rule: a pattern that has stopped matching cannot
-# pass this silently.
+# CR-9: no aimdb library may install a process-global on its host's behalf —
+# a subscriber, a panic hook, a signal handler, `pthread_atfork`, `set_var`.
+# Scanned are the crates linked into somebody else's process; `tools/`,
+# `examples/` and `aimdb-codegen`'s generated `main` are applications, and are
+# not. The one exception states the rule: `pthread_atfork` may be registered by
+# the crate that owns the runtime thread it protects, never by an FFI shim.
+# The guard must not fail open, so a positive control proves the scanner still
+# scans.
 GLOBALS_SCANNED := aimdb-core aimdb-data-contracts aimdb-derive aimdb-client \
 	aimdb-tokio-adapter aimdb-embassy-adapter aimdb-wasm-adapter aimdb-sync \
 	aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector \

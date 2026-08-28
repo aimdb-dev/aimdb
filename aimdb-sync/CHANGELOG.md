@@ -9,27 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`AimDbHandle::shutdown(&self)` and `is_closed()` (CR-10).** The shutdown
-  contract an FFI layer needs now lives in the crate whose thread it is about,
-  rather than only in a station crate above it. Four properties, each pinned by
-  `tests/shutdown_contract_test.rs`: `shutdown` takes `&self`, because a C ABI's
-  free function and a `#[pymethods]` method never receive `self` by value; it is
-  idempotent, including when two threads race for it; it is safe to call while
-  producers publish, since they reach the database through their own `Weak` and
-  never take the lock it holds; and `is_closed` reads an atomic and never that
-  lock, so a caller holding an interpreter lock can ask it while a shutdown is
-  joining — including from aimdb's own runtime thread, where a logging bridge
-  runs. `is_closed` also reports closed in a `fork`ed child, whose inherited
-  handle names a thread that did not come across. `shutdown_timeout(&self, _)`
-  is the bounded form.
-
-  Without these, each new binding rediscovered them: the pyo3 door measured
-  200/200 closes refused by pyo3's borrow flag while one thread published in a
-  loop, and the C ABI door inherited the fix rather than re-solving it only
-  because a station crate had already made it. Nothing is deprecated —
-  `detach(self)` and `detach_timeout(self, _)` are the same calls for an owner
-  that has the handle by value, and both now delegate.
-
+- **`AimDbHandle::shutdown(&self)`, `shutdown_timeout(&self, _)` and
+  `is_closed()` (CR-10).** The shutdown contract a foreign-language binding
+  needs — `&self`, idempotent, safe during a publish, and an `is_closed` that
+  never takes the shutdown's lock — pinned by `tests/shutdown_contract_test.rs`.
+  `detach(self)` and `detach_timeout(self, _)` are unchanged and delegate.
 - **`tracing` no longer pulls `dep:tracing`** (design 050 §10.4): that arm now
   reaches the crate through `aimdb_core::__private`, as the `log` arm already
   did. Both features stay — they select the arms.
@@ -43,16 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **A shutdown releases the database, where dropping the handle used to.** The
-  runtime holds the built `AimDb` weakly and the handle owns the one strong
-  reference, so `shutdown` can release it through `&self`. Dropping the last
-  `Arc<AimDb>` is what closes the buffers, and closing them is what wakes a
-  consumer parked in `get()` — `aimdb-core` has no explicit close. For
-  `detach(self)` the timing is unchanged, since the handle was dropped on the
-  way out anyway; for a `shutdown` through a handle the caller keeps, this is
-  what makes "shut down, then join the reader threads" terminate instead of
-  hanging, and what refuses the publish after rather than accepting it into a
-  graph nobody pumps. It costs one atomic increment on the publish path, where a
-  lock would have been the alternative.
+  runtime holds it weakly; the handle owns the strong reference and drops it
+  after the join. That closes the buffers, so a consumer parked in `get()` is
+  woken and the publish after is refused. Unchanged for `detach(self)`. Costs
+  one atomic increment per publish.
 
 ### Fixed
 

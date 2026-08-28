@@ -451,16 +451,13 @@ impl AimDbBuilder {
         // Find existing record with this key, or create new one
         let record_index = self.record_index.get(&record_key).copied();
 
-        // The two downcasts below are unreachable: the `TypeId` is compared
-        // first, and the mismatch path returns before reaching them. Reporting
-        // them as configuration errors instead would need a second mutable
-        // borrow of `self` while the first is still live, which is a borrow-check
-        // fight for no behavioural gain — the message already says it is a bug in
-        // aimdb-core rather than something a caller did.
+        // Both downcasts are unreachable: the `TypeId` is compared first and
+        // the mismatch path returns. Reporting them instead would need a second
+        // mutable borrow of `self` while the first is live.
         #[allow(
             clippy::expect_used,
             clippy::unwrap_used,
-            reason = "unreachable given the TypeId check above; see the note"
+            reason = "unreachable given the TypeId check above"
         )]
         let (rec, is_new_record) = match record_index {
             Some(idx) => {

@@ -701,9 +701,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         let transform_keys = lock(&self.transform).as_ref().map(|t| t.input_keys.clone());
 
         if let Some(input_keys) = transform_keys {
-            // Asked of the iterator rather than of `len()`, so "exactly one
-            // input" is a pattern the compiler checks instead of an invariant
-            // an `unwrap` two lines down has to trust.
+            // Asked of the iterator, not of `len()`: "exactly one input" is
+            // then a pattern the compiler checks.
             let mut inputs = input_keys.into_iter();
             return match (inputs.next(), inputs.next()) {
                 (Some(input), None) => crate::graph::RecordOrigin::Transform { input },

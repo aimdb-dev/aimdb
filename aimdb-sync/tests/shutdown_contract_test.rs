@@ -1,16 +1,8 @@
-//! The four properties a foreign-language binding needs from shutdown.
-//!
-//! `shutdown` takes `&self`, is idempotent, is safe to call while producers
-//! publish, and `is_closed` never waits on the lock it holds. None of that is
-//! visible in a signature — Rust has no interpreter lock and no `free`
-//! function — so each one is pinned here rather than remembered.
-//!
-//! They are not academic. A `#[pymethods]` method and a C ABI's free function
-//! both fail to receive `self` by value, so a binding that could only shut down
-//! by value had to reach for `&mut self`, and that collided at run time with a
-//! publish already in flight: 200/200 closes refused while one thread published
-//! in a loop. The station crate above this one solved it once; these tests are
-//! what stop the next binding from having to.
+//! The four properties a foreign-language binding needs from shutdown:
+//! `&self`, idempotent, safe during a publish, and an `is_closed` that never
+//! waits on the shutdown's lock. None is visible in a signature, and the pyo3
+//! door measured what their absence costs — 200/200 closes refused while one
+//! thread published in a loop — so each is pinned here.
 #![cfg(feature = "std")]
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncError};
@@ -35,10 +27,8 @@ fn attach() -> AimDbHandle {
     builder.attach().expect("attach")
 }
 
-/// The signature property: shutdown through a shared reference, from a thread
-/// that does not own the handle.
-///
-/// This is the shape a signal handler has, and the shape every FFI door has.
+/// Shutdown through a shared reference, from a thread that does not own the
+/// handle — the shape a signal handler and every FFI door has.
 #[test]
 fn shutdown_takes_a_shared_reference() {
     let handle = Arc::new(attach());
@@ -56,11 +46,8 @@ fn shutdown_takes_a_shared_reference() {
     );
 }
 
-/// Idempotent, including when two threads race for it.
-///
-/// Both must succeed: a second caller finding the thread already taken is the
-/// ordinary outcome of a `with` block ending inside a signal handler, not an
-/// error to report.
+/// Idempotent, including under a race: a second caller finding the thread gone
+/// is a `with` block ending inside a signal handler, not an error.
 #[test]
 fn shutdown_is_idempotent() {
     let handle = attach();
@@ -84,12 +71,9 @@ fn shutdown_is_idempotent() {
     assert!(racing.is_closed());
 }
 
-/// Shutdown while four threads publish: it must not queue behind a publish, and
-/// no publish may fail for any reason but the shutdown itself.
-///
-/// A producer reaches the database through its own `Weak`, so it never takes
-/// the lock shutdown holds. If that ever changes, this test times out instead
-/// of the next FFI door discovering it against a live broker.
+/// Shutdown while four threads publish: it must not queue behind one, and no
+/// publish may fail for anything but the shutdown. If a producer ever starts
+/// taking the shutdown's lock, this times out instead of the next FFI door.
 #[test]
 fn shutdown_completes_while_producers_publish() {
     let handle = Arc::new(attach());
@@ -151,12 +135,9 @@ fn shutdown_completes_while_producers_publish() {
     assert!(handle.is_closed());
 }
 
-/// `is_closed` from another thread while a shutdown is in flight.
-///
-/// The reader must keep answering throughout — it reads an atomic and a relaxed
-/// fork check, never the lock shutdown holds. A getter that waited on that lock
-/// deadlocks a Python door under the GIL and a C++ door under whatever its log
-/// callback holds, and neither is a compile error.
+/// `is_closed` must keep answering across a shutdown: an atomic and a relaxed
+/// fork check, never the shutdown's lock. A getter that waited on it deadlocks
+/// a Python door under the GIL, and that is not a compile error.
 #[test]
 fn is_closed_never_waits_for_a_shutdown_in_flight() {
     let handle = Arc::new(attach());
@@ -202,8 +183,8 @@ fn is_closed_never_waits_for_a_shutdown_in_flight() {
     assert!(handle.is_closed());
 }
 
-/// A bounded shutdown reports what it left behind — and a later one does not
-/// wait again, because the thread was released rather than kept.
+/// A bounded shutdown releases the thread rather than keeping it, so a later
+/// one does not wait again.
 #[test]
 fn shutdown_timeout_releases_the_thread() {
     let handle = attach();
@@ -222,8 +203,7 @@ fn shutdown_timeout_releases_the_thread() {
     );
 }
 
-/// The by-value doors are the same call, so a caller who has the handle by
-/// value is not on a different contract.
+/// The by-value doors are the same call, not a second contract.
 #[test]
 fn detach_is_shutdown_by_value() {
     attach().detach().expect("detach");
@@ -232,8 +212,8 @@ fn detach_is_shutdown_by_value() {
         .expect("detach_timeout");
 }
 
-/// A producer outliving the shutdown fails with `RuntimeShutdown`, not with
-/// silence — the property `is_closed` is a cheap proxy for.
+/// A producer outliving the shutdown fails, rather than publishing into
+/// silence.
 #[test]
 fn a_publish_after_shutdown_is_refused() {
     let handle = attach();
@@ -252,15 +232,10 @@ fn a_publish_after_shutdown_is_refused() {
     ));
 }
 
-/// A consumer parked in `get()` must be woken by a shutdown on another thread.
-///
-/// This is what makes `shutdown(&self)` a shutdown rather than a stop button.
+/// A consumer parked in `get()` is woken by a shutdown on another thread.
 /// `aimdb-core` has no explicit close, so the wake comes from dropping the last
-/// `Arc<AimDb>` and closing the buffers with it — which is why the handle owns
-/// that reference and releases it here, rather than holding it until the
-/// caller drops the handle. Before, the wake arrived only when the whole handle
-/// went; an FFI door that shuts down and then joins its reader threads would
-/// have hung.
+/// `Arc<AimDb>` — which is why the handle owns it and releases it here. Without
+/// that, "shut down, then join the readers" hangs.
 #[test]
 fn a_parked_consumer_wakes_when_another_thread_shuts_down() {
     let handle = Arc::new(attach());
