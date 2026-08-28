@@ -39,7 +39,9 @@
 //! ```
 //!
 //! The runtime thread is created automatically when you call `attach()` on the builder.
-//! It stays alive until `detach()` is called or the handle is dropped.
+//! It stays alive until [`AimDbHandle::shutdown`] — or [`AimDbHandle::detach`],
+//! which is the same call for an owner that has the handle by value — or until
+//! the handle is dropped.
 //!
 //! ## Quick Start
 //!
@@ -180,7 +182,30 @@
 //! cursor, so move it to a thread and give each thread its own via a separate
 //! `handle.consumer()` call. Every consumer then sees every value. To *split* one
 //! stream across workers instead, share one as `Arc<Mutex<SyncConsumer<T>>>`.
-//! The API ensures proper resource cleanup through RAII and explicit `detach()`.
+//! The API ensures proper resource cleanup through RAII and an explicit
+//! [`AimDbHandle::shutdown`].
+//!
+//! ## Shutting down from another language
+//!
+//! Four properties make a binding possible, and none of them is visible in a
+//! signature — so each is pinned by `tests/shutdown_contract_test.rs` rather
+//! than remembered:
+//!
+//! 1. [`AimDbHandle::shutdown`] takes `&self`. A C ABI's free function and a
+//!    `#[pymethods]` method never receive `self` by value, and a `&mut self`
+//!    shutdown collides at run time with a publish already in flight.
+//! 2. It is idempotent, so a `with` block ending inside a signal handler is not
+//!    an error.
+//! 3. It is safe to call while producers publish: they reach the database
+//!    through their own [`Weak`](alloc::sync::Weak) and never take the lock it
+//!    holds.
+//! 4. [`AimDbHandle::is_closed`] reads an atomic and never that lock, so a
+//!    caller holding an interpreter lock may ask it while a shutdown is joining
+//!    — including from aimdb's own runtime thread, where a logging bridge runs.
+//!
+//! A shutdown also releases the database, which closes the buffers and so wakes
+//! a consumer parked in `get()`. Shut down first, then join your reader
+//! threads.
 //!
 //! **A panic from this crate is a bug, not an error channel.** Every failure is
 //! a [`SyncError`]. The blocking surface is compiled under

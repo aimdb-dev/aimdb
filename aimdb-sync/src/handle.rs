@@ -5,6 +5,7 @@ use crate::{SyncError, SyncResult};
 use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError};
 use alloc::sync::Arc;
 use core::fmt::Debug;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::thread::{self, JoinHandle};
 use tokio::sync::mpsc;
@@ -106,9 +107,21 @@ impl AimDbSyncExt for AimDb {
 ///
 /// # Resource Management
 ///
-/// Call `detach()` explicitly to ensure clean shutdown. If the handle
-/// is dropped without calling `detach()`, a warning will be logged
-/// and an emergency shutdown will be attempted.
+/// Call [`shutdown`](Self::shutdown) — or [`detach`](Self::detach), the same
+/// thing for a caller that owns the handle by value — to stop the runtime
+/// thread deliberately. A handle dropped without either logs a warning and
+/// signals shutdown without waiting for it.
+///
+/// # Shutting down through a shared reference
+///
+/// [`shutdown`](Self::shutdown) takes `&self`, is idempotent, and is safe to
+/// call while producers publish; [`is_closed`](Self::is_closed) never takes the
+/// lock it holds. Those four properties are what a binding in another language
+/// needs, and none of them is expressible in a signature: a C ABI's free
+/// function and a `#[pymethods]` method never receive `self` by value, and a
+/// `&mut self` shutdown collides at run time with a publish already in flight
+/// — measured, in the two FFI doors this crate was hardened for. Pinned by
+/// `tests/shutdown_contract_test.rs`.
 pub struct AimDbHandle {
     /// The runtime thread and everything reached through it, shared with every
     /// producer and consumer made from this handle. See [`crate::runtime`].
@@ -122,17 +135,45 @@ pub struct AimDbHandle {
     /// What only the handle that started the thread may do: signal it, wait for
     /// it, join it.
     ///
-    /// `None` once detached, or once a `fork` proved the thread is not this
+    /// `None` once shut down, or once a `fork` proved the thread is not this
     /// process's to reap. One field, so releasing it cannot be half-done — the
     /// previous shape was four loose fields and a release path that forgot one
     /// of them the moment a fifth was added.
-    owned: Option<OwnedThread>,
+    ///
+    /// Behind a `Mutex` so [`shutdown`](Self::shutdown) can take `&self`.
+    /// Nothing on the publish path ever waits for it: a
+    /// [`SyncProducer`](crate::SyncProducer) reaches the database through its
+    /// own [`Weak`](alloc::sync::Weak), so a shutdown cannot queue behind an
+    /// in-flight publish and a publish cannot queue behind a shutdown.
+    owned: std::sync::Mutex<Option<OwnedThread>>,
+
+    /// Whether [`shutdown`](Self::shutdown) has taken the thread out of
+    /// `owned`.
+    ///
+    /// An atomic rather than a peek at the mutex beside it, because
+    /// [`is_closed`](Self::is_closed) is what an FFI layer calls while holding
+    /// its own interpreter lock. Waiting there on the lock a shutdown holds —
+    /// while that shutdown waits for the very interpreter lock its logging
+    /// bridge needs — is the deadlock this field exists to keep impossible.
+    closed: AtomicBool,
 }
 
 /// The parts of a runtime thread that only its owner may touch.
 struct OwnedThread {
-    /// Joined by `detach`; released, never joined, by `Drop`.
+    /// Joined by `shutdown`; released, never joined, by `Drop`.
     join: JoinHandle<()>,
+
+    /// The one strong reference to the database.
+    ///
+    /// Here rather than in [`Runtime`], which holds a `Weak`, so that a
+    /// shutdown through `&self` releases it: dropping the last `Arc<AimDb>`
+    /// closes the buffers, and that is what wakes a consumer parked in `get()`.
+    /// It also refuses the publish after, since a producer reaches the database
+    /// only through `Runtime::db`.
+    ///
+    /// Released *after* the join, so the graph is not pulled out from under a
+    /// runtime thread that is still draining it.
+    db: Arc<AimDb>,
 
     /// Commands the thread to stop. Distinct from dropping it: the thread also
     /// ends when every sender is gone, but *sending* ends it now.
@@ -300,12 +341,14 @@ impl AimDbHandle {
         alive: std::sync::mpsc::Receiver<()>,
     ) -> Self {
         Self {
-            rt: Arc::new(Runtime::new(runtime_handle, db)),
-            owned: Some(OwnedThread {
+            rt: Arc::new(Runtime::new(runtime_handle, &db)),
+            owned: std::sync::Mutex::new(Some(OwnedThread {
                 join,
                 shutdown,
+                db,
                 alive: std::sync::Mutex::new(alive),
-            }),
+            })),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -392,15 +435,115 @@ impl AimDbHandle {
         Ok(crate::SyncConsumer::new(self.rt.view()?, reader))
     }
 
-    /// Gracefully shut down the runtime thread.
+    /// Stop the runtime thread, through a shared reference.
     ///
-    /// Signals the runtime to stop, waits for all pending operations
-    /// to complete, then joins the thread. This is the preferred way
-    /// to shut down.
+    /// Signals the thread, waits for it, and joins it. Prefer this — or
+    /// [`detach`](Self::detach), which is this call for an owner that has the
+    /// handle by value — over dropping the handle, which signals without
+    /// waiting.
+    ///
+    /// **Idempotent.** The call that finds the thread already taken returns
+    /// `Ok(())`, so two threads racing to shut down do not manufacture an
+    /// error between them, and a shutdown after a `Drop`-less close is a no-op
+    /// rather than a fault.
+    ///
+    /// **Safe during a publish.** A [`SyncProducer`](crate::SyncProducer)
+    /// reaches the database through its own [`Weak`](alloc::sync::Weak) and
+    /// never takes the lock this does, so a shutdown cannot queue behind an
+    /// in-flight publish. A publish that arrives after the thread stops fails
+    /// with [`SyncError::RuntimeShutdown`].
+    ///
+    /// Blocks the calling thread, so it must not be called from inside a Tokio
+    /// runtime. It *may* be called from aimdb's own runtime thread only in the
+    /// sense every other method may — see [`is_closed`](Self::is_closed) for
+    /// the one that is meant to be.
     ///
     /// # Errors
     ///
-    /// - `SyncError::DetachFailed` if shutdown fails or times out
+    /// - [`SyncError::ForkedChild`] if this process `fork`ed since the handle
+    ///   was created: the thread did not come across, so there is nothing here
+    ///   to stop. The handle releases it rather than joining a thread that
+    ///   does not exist, which would panic inside `std`.
+    /// - [`SyncError::DetachFailed`] if the runtime thread panicked.
+    ///
+    /// # Lock ordering
+    ///
+    /// The lock guarding the thread is released *before* the join, so a caller
+    /// that blocks on it while holding something the runtime thread needs — an
+    /// FFI layer's interpreter lock, when that thread logs through a bridge
+    /// into it — cannot deadlock against its own shutdown.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use aimdb_sync::*;
+    /// # use std::sync::Arc;
+    /// # fn example(handle: Arc<AimDbHandle>) -> SyncResult<()> {
+    /// let signal_handler = Arc::clone(&handle);
+    /// // … from another thread, while this one publishes:
+    /// signal_handler.shutdown()?;
+    /// assert!(handle.is_closed());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn shutdown(&self) -> SyncResult<()> {
+        self.shutdown_internal(None)
+    }
+
+    /// [`shutdown`](Self::shutdown) with a bound on the wait.
+    ///
+    /// # Errors
+    ///
+    /// - [`SyncError::DetachFailed`] if the thread had not finished in time
+    /// - the errors [`shutdown`](Self::shutdown) documents
+    ///
+    /// # What a timeout leaves behind
+    ///
+    /// `DetachFailed` from an expired timeout means the runtime thread had not
+    /// finished in time — not that shutdown failed. Concretely:
+    ///
+    /// - The shutdown signal **was** delivered, so the thread stops on its own
+    ///   and drops the database when it does. Nothing is stranded: no thread is
+    ///   left parked waiting to reap it.
+    /// - The handle has already released the thread, so a later
+    ///   [`shutdown`](Self::shutdown) returns `Ok(())` immediately rather than
+    ///   waiting longer. [`is_closed`](Self::is_closed) reports `true` from the
+    ///   moment the shutdown began.
+    /// - Any [`SyncProducer`](crate::SyncProducer) or
+    ///   [`SyncConsumer`](crate::SyncConsumer) you still hold keeps working
+    ///   until the thread stops, then fails with
+    ///   [`SyncError::RuntimeShutdown`].
+    /// - Resources are therefore released *eventually*, not by the time this
+    ///   returns. Use [`shutdown`](Self::shutdown), which has no timeout, when
+    ///   you need to know the thread is down.
+    pub fn shutdown_timeout(&self, timeout: Duration) -> SyncResult<()> {
+        self.shutdown_internal(Some(timeout))
+    }
+
+    /// Whether this handle can still reach the runtime thread.
+    ///
+    /// `true` from the moment a [`shutdown`](Self::shutdown) begins — not when
+    /// it finishes — and `true` in a child of `fork()`, whose inherited handle
+    /// names a thread that did not come across.
+    ///
+    /// Never takes the lock [`shutdown`](Self::shutdown) holds: one atomic load
+    /// and the same relaxed fork check a publish makes. So a caller holding an
+    /// interpreter lock may ask this while another thread's shutdown is joining,
+    /// which is exactly what an FFI layer's logging bridge does from aimdb's own
+    /// runtime thread. Pinned by `tests/shutdown_contract_test.rs`.
+    ///
+    /// A `false` is a statement about this handle, not a promise about the next
+    /// call: the thread may stop between the two. Producers and consumers report
+    /// that for themselves, on the call that would have used it.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire) || self.rt.check().is_err()
+    }
+
+    /// [`shutdown`](Self::shutdown) for a caller that owns the handle by value.
+    ///
+    /// # Errors
+    ///
+    /// The errors [`shutdown`](Self::shutdown) documents.
     ///
     /// # Example
     ///
@@ -411,40 +554,17 @@ impl AimDbHandle {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn detach(mut self) -> SyncResult<()> {
-        self.detach_internal(None)
+    pub fn detach(self) -> SyncResult<()> {
+        self.shutdown()
     }
 
-    /// Gracefully shut down with a timeout.
-    ///
-    /// Like `detach()`, but fails if shutdown takes longer than
-    /// the specified duration.
-    ///
-    /// # Arguments
-    ///
-    /// - `timeout`: Maximum time to wait for shutdown
+    /// [`shutdown_timeout`](Self::shutdown_timeout) for a caller that owns the
+    /// handle by value.
     ///
     /// # Errors
     ///
-    /// - `SyncError::DetachFailed` if shutdown fails or times out
-    ///
-    /// # What a timeout leaves behind
-    ///
-    /// `DetachFailed` from an expired timeout means the runtime thread had not
-    /// finished in time — not that shutdown failed. Concretely:
-    ///
-    /// - The shutdown signal **was** delivered, so the thread stops on its own
-    ///   and drops the database when it does. Nothing is stranded: no thread is
-    ///   left parked waiting to reap it.
-    /// - The handle is consumed either way, so there is nothing left to retry
-    ///   with and no way to wait longer on this handle.
-    /// - Any [`SyncProducer`](crate::SyncProducer) or
-    ///   [`SyncConsumer`](crate::SyncConsumer) you still hold keeps working
-    ///   until the thread stops, then fails with
-    ///   [`SyncError::RuntimeShutdown`].
-    /// - Resources are therefore released *eventually*, not by the time this
-    ///   returns. Use [`detach`](Self::detach), which has no timeout, when you
-    ///   need to know the thread is down.
+    /// The errors [`shutdown_timeout`](Self::shutdown_timeout) documents,
+    /// including what an expired timeout leaves behind.
     ///
     /// # Example
     ///
@@ -456,35 +576,55 @@ impl AimDbHandle {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn detach_timeout(mut self, timeout: Duration) -> SyncResult<()> {
-        self.detach_internal(Some(timeout))
+    pub fn detach_timeout(self, timeout: Duration) -> SyncResult<()> {
+        self.shutdown_timeout(timeout)
     }
 
-    /// Internal detach implementation.
+    /// Take the runtime thread out of the handle.
     ///
-    /// Deliberate shutdown: *sends* the signal rather than merely dropping a
-    /// sender, so the thread stops at once rather than when the last sender
-    /// goes. Producers and consumers hold only a [`Weak`](alloc::sync::Weak)
-    /// and cannot keep it alive, but one mid-call when it stops fails with
-    /// [`SyncError::RuntimeShutdown`] — `detach` means "stop now", not "stop
-    /// when everyone has finished".
-    fn detach_internal(&mut self, timeout: Option<Duration>) -> SyncResult<()> {
+    /// Written as one statement on purpose: the guard is a temporary, so it is
+    /// dropped when the statement ends and cannot be held across the join the
+    /// callers do next. See the lock-ordering note on
+    /// [`shutdown`](Self::shutdown).
+    ///
+    /// Poisoning is recovered from rather than reported: the only thing under
+    /// this lock is an `Option`, and a panic cannot leave one half-taken.
+    fn take_owned(&self) -> Option<OwnedThread> {
+        self.owned
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    fn shutdown_internal(&self, timeout: Option<Duration>) -> SyncResult<()> {
         // A forked child holds a `JoinHandle` for a thread that does not exist
         // here, and joining it is not merely useless: it panics inside `std`
         // with "threads should not terminate unexpectedly", which for an FFI
         // caller means a Rust backtrace on stderr from a destructor. Release
         // it instead — the thread is the parent's to reap.
         if self.rt.check().is_err() {
-            self.owned = None;
+            drop(self.take_owned());
+            self.closed.store(true, Ordering::Release);
             return Err(SyncError::ForkedChild);
         }
+
+        let taken = self.take_owned();
+
+        // Before the wait rather than after it: a thread that asks `is_closed`
+        // while this one is still joining must be told the database is going
+        // down, not that it is open. That is the window an FFI layer's signal
+        // handler and its sensor threads actually share.
+        self.closed.store(true, Ordering::Release);
 
         let Some(OwnedThread {
             join,
             shutdown,
+            db,
             alive,
-        }) = self.owned.take()
+        }) = taken
         else {
+            // Someone else already took it. Nothing to join, nothing to report:
+            // shutdown is idempotent by construction, not by bookkeeping.
             return Ok(());
         };
 
@@ -522,6 +662,13 @@ impl AimDbHandle {
         join.join().map_err(|_| SyncError::DetachFailed {
             message: "Runtime thread panicked during shutdown".to_string(),
         })?;
+
+        // Last, and only now: the thread is down, so nothing is still draining
+        // the graph. This is what closes the buffers — and closing them is what
+        // wakes a consumer parked in `get()` and refuses the next publish,
+        // rather than accepting it into a graph nobody pumps. See
+        // `OwnedThread::db`.
+        drop(db);
 
         Ok(())
     }
@@ -593,17 +740,25 @@ impl Drop for AimDbHandle {
     /// signal is what actually causes cleanup, and it is delivered either way;
     /// joining would only change when the caller learns it finished.
     ///
-    /// Call [`detach`](Self::detach) if you need to know that it did.
+    /// Call [`shutdown`](Self::shutdown) if you need to know that it did.
     fn drop(&mut self) {
+        // `get_mut` rather than `lock`: a destructor has exclusive access, so it
+        // need neither block nor care whether a panic poisoned the lock.
+        let owned = self
+            .owned
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.closed.store(true, Ordering::Release);
+
         // A forked child's handle owns nothing that runs here: signalling would
         // reach a thread this process never had. Release and say nothing.
         if self.rt.check().is_err() {
-            self.owned = None;
             return;
         }
 
-        if let Some(owned) = self.owned.take() {
-            log_warn!("AimDbHandle dropped without calling detach()");
+        if let Some(owned) = owned {
+            log_warn!("AimDbHandle dropped without calling shutdown()");
             log_warn!("Shutdown was signalled; the runtime thread stops on its own");
             // Non-blocking. Released rather than joined — see the note above.
             let _ = owned.shutdown.try_send(ShutdownSignal);

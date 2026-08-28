@@ -35,7 +35,7 @@
 //! keeping an OS thread alive with nobody owning it — the stranded thread #232
 //! had just removed.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 
 use aimdb_core::AimDb;
 
@@ -50,8 +50,23 @@ pub(crate) struct Runtime {
     /// The way into the Tokio runtime. Reached only through [`Self::enter`].
     handle: tokio::runtime::Handle,
 
-    /// The database the thread built. Reached only through [`Self::db`].
-    db: Arc<AimDb>,
+    /// The database the thread built, held weakly. Reached only through
+    /// [`Self::db`].
+    ///
+    /// The strong reference lives in the handle's `OwnedThread`, so
+    /// [`AimDbHandle::shutdown`](crate::AimDbHandle::shutdown) can release it
+    /// through a shared reference. That release is not bookkeeping: dropping
+    /// the last `Arc<AimDb>` closes the buffers, and closing them is what wakes
+    /// a consumer parked in `get()` — `aimdb-core` has no explicit close. A
+    /// strong reference here would keep the database, and every parked reader,
+    /// alive until the last producer was dropped.
+    ///
+    /// So a failed upgrade is the same liveness check it always was, moved one
+    /// level down. It used to fire when the handle was dropped, because that is
+    /// what released the database; it now also fires for a shutdown through a
+    /// handle the caller still holds, where the `Weak<Runtime>` a producer
+    /// carries upgrades perfectly well.
+    db: Weak<AimDb>,
 
     /// The fork generation this runtime's thread was spawned in.
     ///
@@ -61,10 +76,12 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    pub(crate) fn new(handle: tokio::runtime::Handle, db: Arc<AimDb>) -> Self {
+    /// Borrowed rather than taken: the caller keeps the strong reference, and
+    /// keeping it is what gives it something to release. See [`Self::db`].
+    pub(crate) fn new(handle: tokio::runtime::Handle, db: &Arc<AimDb>) -> Self {
         Self {
             handle,
-            db,
+            db: Arc::downgrade(db),
             made_in: crate::fork::generation(),
         }
     }
@@ -90,13 +107,22 @@ impl Runtime {
         Ok(&self.handle)
     }
 
-    /// The database, or [`SyncError::ForkedChild`]. The only way to reach it —
-    /// a forked child's handle to the database is valid, which is exactly the
-    /// problem.
+    /// The database, or a reason there is none to reach.
+    ///
+    /// The only way to reach it, so neither reason can be skipped:
+    /// [`SyncError::ForkedChild`] because a forked child's handle to the
+    /// database is valid, which is exactly the problem, and
+    /// [`SyncError::RuntimeShutdown`] because the handle that owns the strong
+    /// reference has shut down or been dropped.
+    ///
+    /// Returns an owned `Arc` — one atomic increment on the publish path,
+    /// against a `Weak` that cannot otherwise be handed out safely. The
+    /// alternative was a lock, which is the thing this crate keeps off that
+    /// path.
     #[inline]
-    pub(crate) fn db(&self) -> SyncResult<&Arc<AimDb>> {
+    pub(crate) fn db(&self) -> SyncResult<Arc<AimDb>> {
         self.check()?;
-        Ok(&self.db)
+        self.db.upgrade().ok_or(SyncError::RuntimeShutdown)
     }
 
     /// A view of this runtime that may outlive it. The only way to build one.
@@ -196,7 +222,10 @@ mod tests {
     /// No thread, no `fork`: the point of moving the stamp onto a value. Proving
     /// a refusal used to mean forking from a parent holding a live Tokio
     /// runtime, the least safe moment there is, and failed 11 runs in 60.
-    fn runtime_stamped(generations_behind: u64) -> (tokio::runtime::Runtime, Runtime) {
+    #[allow(clippy::type_complexity)]
+    fn runtime_stamped(
+        generations_behind: u64,
+    ) -> ((tokio::runtime::Runtime, Arc<AimDb>), Runtime) {
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -211,12 +240,16 @@ mod tests {
             })
             .expect("build database");
 
-        let mut runtime = Runtime::new(tokio_rt.handle().clone(), Arc::new(db));
+        // Kept alive by the returned guard: the `Runtime` holds the database
+        // weakly, so nothing here may be the last strong reference.
+        let db = Arc::new(db);
+        let mut runtime = Runtime::new(tokio_rt.handle().clone(), &db);
         runtime.made_in = crate::fork::generation().wrapping_sub(generations_behind);
 
-        // Returned so the caller keeps it alive: the handle we cloned out of it
-        // must not outlive the runtime it came from.
-        (tokio_rt, runtime)
+        // Returned so the caller keeps them alive: the handle we cloned out of
+        // the tokio runtime must not outlive it, and the database must outlive
+        // the `Runtime` that points at it weakly.
+        ((tokio_rt, db), runtime)
     }
 
     #[test]
