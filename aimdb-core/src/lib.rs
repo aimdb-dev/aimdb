@@ -21,8 +21,10 @@
 //! context pointer to live somewhere a `tracing::Layer` has no room for. Both
 //! may be on at once; both off emits nothing. Events carry the emitting module
 //! as their target (`aimdb_core::builder`) either way.
-//! See [docs/design/050](https://github.com/aimdb-dev/aimdb/blob/main/docs/design/050-log-destination-for-ffi.md)
-//! for filtering, duplicate delivery, and what the destination does not see.
+//! Every crate in this workspace that reports at all now does so through the
+//! facade, so a destination sees the connectors too. See
+//! [docs/design/050](https://github.com/aimdb-dev/aimdb/blob/main/docs/design/050-log-destination-for-ffi.md)
+//! for filtering and duplicate delivery.
 //!
 //! ## What a `log` destination must guarantee
 //!
@@ -56,6 +58,8 @@ pub mod __private {
     // `::log`, not `log`: this crate has a private `log` module at its root.
     #[cfg(feature = "log")]
     pub use ::log;
+    #[cfg(feature = "tracing")]
+    pub use ::tracing;
 }
 
 pub mod buffer;

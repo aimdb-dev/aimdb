@@ -17,6 +17,7 @@ use crate::tunnel::{
 use crate::GroupAddress;
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
+use aimdb_core::{log_debug, log_error, log_info, log_trace, log_warn};
 use aimdb_core::{pump_sink, pump_source, BoxFut, ConnectorBuilder, Payload, Source};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -146,8 +147,7 @@ impl KnxConnectorImpl {
                 )
             })?;
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("Creating KNX connector for gateway {}", gateway_addr);
+        log_info!("Creating KNX connector for gateway {}", gateway_addr);
 
         // Outbound commands (publishers → connection task) and inbound telegrams
         // (connection task → `KnxSource`/`pump_source`).
@@ -216,8 +216,7 @@ async fn connection_task(
     telegram_tx: mpsc::Sender<(String, Payload)>,
     mut command_rx: mpsc::Receiver<GroupWrite>,
 ) {
-    #[cfg(feature = "tracing")]
-    tracing::info!("KNX connection task started for {}", gateway_addr);
+    log_info!("KNX connection task started for {}", gateway_addr);
 
     let epoch = tokio::time::Instant::now();
     let now_ms = || epoch.elapsed().as_millis() as u64;
@@ -242,14 +241,12 @@ async fn connection_task(
                             port: local.port(),
                         });
                     }
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("KNX: Connecting from {} to {}", local, gateway_addr);
+                    log_debug!("KNX: Connecting from {} to {}", local, gateway_addr);
                 }
                 s
             }
             Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("Failed to bind UDP socket: {}, retrying in 5s", _e);
+                log_error!("Failed to bind UDP socket: {}, retrying in 5s", _e);
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
             }
@@ -273,13 +270,11 @@ async fn connection_task(
             tokio::select! {
                 result = socket.recv_from(&mut buf) => match result {
                     Ok((len, _)) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::trace!("Received {} bytes from gateway", len);
+                        log_trace!("Received {} bytes from gateway", len);
                         engine.handle_datagram(&buf[..len], now_ms());
                     }
                     Err(_e) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::error!("Socket error: {}", _e);
+                        log_error!("Socket error: {}", _e);
                         engine.handle_socket_error(now_ms());
                     }
                 },
@@ -305,8 +300,7 @@ async fn connection_task(
             }
         }
 
-        #[cfg(feature = "tracing")]
-        tracing::error!("KNX connection lost, reconnecting after backoff...");
+        log_error!("KNX connection lost, reconnecting after backoff...");
         // The engine is backing off: nothing can be sent until its deadline,
         // so wait it out before binding the fresh socket. This also paces the
         // rebind cycle when a socket errors persistently (the old client
@@ -332,24 +326,21 @@ impl TunnelIo for TokioIo<'_> {
         match self.socket.send_to(frame, self.gateway).await {
             Ok(_) => true,
             Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("KNX send failed: {}", _e);
+                log_error!("KNX send failed: {}", _e);
                 false
             }
         }
     }
 
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>) {
-        #[cfg(feature = "tracing")]
-        tracing::debug!("KNX telegram: {} ({} bytes)", addr, payload.len());
+        log_debug!("KNX telegram: {} ({} bytes)", addr, payload.len());
 
         if self
             .telegram_tx
             .try_send((addr.to_string(), Payload::from(payload)))
             .is_err()
         {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
+            log_warn!(
                 "KNX inbound: dropping telegram for {} (channel full/closed)",
                 addr
             );
@@ -357,8 +348,7 @@ impl TunnelIo for TokioIo<'_> {
     }
 
     fn warn_ack_timeout(&mut self, _seq: u8) {
-        #[cfg(feature = "tracing")]
-        tracing::warn!("⚠️  ACK timeout for seq={}", _seq);
+        log_warn!("⚠️  ACK timeout for seq={}", _seq);
     }
 }
 

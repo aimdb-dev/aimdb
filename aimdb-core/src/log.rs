@@ -1,6 +1,6 @@
 //! Crate-private logging macros.
 //!
-//! `log_debug!`/`log_info!`/`log_warn!`/`log_error!` forward to every enabled
+//! `log_trace!`/`log_debug!`/`log_info!`/`log_warn!`/`log_error!` forward to every enabled
 //! *destination* — the `tracing` event macro under the `tracing` feature, the
 //! `log` crate under the `log` feature — and otherwise expand to a no-op that
 //! still borrows the arguments, so call sites compile identically (no
@@ -23,17 +23,37 @@
 //! nowhere:
 //!
 //! ```toml
-//! tracing = ["dep:tracing", "aimdb-core/tracing"]
-//! log     = ["aimdb-core/log"]   # no `dep:log`: the arm goes through `__private`
+//! tracing = ["aimdb-core/tracing"]   # no `dep:tracing`
+//! log     = ["aimdb-core/log"]       # no `dep:log`
 //! ```
 //!
-//! `aimdb-sync` is the only such crate today; its `tests/log_facade.rs` guards it.
+//! Neither arm needs the dependency declared: both go through `$crate::__private`.
+//! The *feature* is what cannot be dropped — a `#[cfg]` in a `#[macro_export]`ed
+//! macro is resolved where it expands, so a crate without it would emit nothing.
+//!
+//! That is not a silent failure any more: an undeclared feature name makes
+//! `unexpected_cfgs` fire at every call site, which is a warning in an ordinary
+//! build and an error under `-D warnings`, as `make clippy` runs it. A dropped
+//! mirror therefore breaks CI rather than quietly muting a crate.
+//! `aimdb-sync/tests/log_facade.rs` additionally proves delivery end to end.
+
+#[macro_export]
+macro_rules! log_trace {
+    ($s:literal $(, $x:expr)* $(,)?) => {{
+        #[cfg(feature = "tracing")]
+        $crate::__private::tracing::trace!($s $(, $x)*);
+        #[cfg(feature = "log")]
+        $crate::__private::log::trace!($s $(, $x)*);
+        #[cfg(not(any(feature = "tracing", feature = "log")))]
+        { let _ = ($( & $x ),*); }
+    }};
+}
 
 #[macro_export]
 macro_rules! log_debug {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]
-        ::tracing::debug!($s $(, $x)*);
+        $crate::__private::tracing::debug!($s $(, $x)*);
         #[cfg(feature = "log")]
         $crate::__private::log::debug!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log")))]
@@ -45,7 +65,7 @@ macro_rules! log_debug {
 macro_rules! log_info {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]
-        ::tracing::info!($s $(, $x)*);
+        $crate::__private::tracing::info!($s $(, $x)*);
         #[cfg(feature = "log")]
         $crate::__private::log::info!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log")))]
@@ -57,7 +77,7 @@ macro_rules! log_info {
 macro_rules! log_warn {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]
-        ::tracing::warn!($s $(, $x)*);
+        $crate::__private::tracing::warn!($s $(, $x)*);
         #[cfg(feature = "log")]
         $crate::__private::log::warn!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log")))]
@@ -69,7 +89,7 @@ macro_rules! log_warn {
 macro_rules! log_error {
     ($s:literal $(, $x:expr)* $(,)?) => {{
         #[cfg(feature = "tracing")]
-        ::tracing::error!($s $(, $x)*);
+        $crate::__private::tracing::error!($s $(, $x)*);
         #[cfg(feature = "log")]
         $crate::__private::log::error!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log")))]

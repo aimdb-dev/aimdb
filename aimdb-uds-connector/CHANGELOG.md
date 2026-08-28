@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Reports through the `log_*` facade instead of `tracing::` directly** (design
+  050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
+  events too. Each call site also shed the hand-written
+  `#[cfg(feature = "tracing")]` the facade carries itself. The `tracing` feature
+  no longer pulls `dep:tracing`; a mirrored `log` feature is added alongside it.
+  No change to what is emitted, or to a consumer that enables `tracing`.
+
 ### Added
 
 - **New crate — the Unix-domain-socket transport for AimDB remote access (Issue #39, [design doc](../docs/design/remote-access-via-connectors.md)).** A thin, swappable transport that rides the shared session engine in `aimdb-core::session`: it contributes only the `Dialer`/`Listener`/`Connection` triple (`UdsDialer` / `UdsListener` / `UdsConnection`, NDJSON framing in the transport — one line per logical frame); the AimX codec + dispatch and the engine wiring are reused verbatim from core. Two ergonomic constructors:

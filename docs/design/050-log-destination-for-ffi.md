@@ -1,7 +1,7 @@
 # 050 — A log destination an FFI layer can install
 
-**Status:** step 1 of §10 implemented (`aimdb-core` + the `aimdb-sync` mirror).
-Steps 2 and 3 are the FFI doors, which live outside this repository.
+**Status:** implemented. §10.1, §10.4 and §10.5 are in this repository; §10.2
+and §10.3 are the FFI doors, which live in `aimdb-weather-mesh`.
 
 **Scope:** additive to `aimdb-core` (1.2.0 → 1.3.0). No breaking change, and no
 behaviour change at all for a build that does not enable the new feature. The
@@ -55,7 +55,7 @@ convenience of the layout rather than a property of the design.
 `log_info!`, `log_warn!`, `log_error!` take `$s:literal $(, $x:expr)*` and expand
 to the matching `tracing` event macro when the `tracing` feature is on, otherwise
 to a borrow-and-drop that keeps call sites warning-free. There is no
-`log_trace!`.
+`log_trace!` (§10.5 later added one, for a KNX site that needed it).
 
 Two consequences worth stating, because they decide how cheap this change is:
 
@@ -201,9 +201,9 @@ log = ["aimdb-core/log"]   # no `dep:log` — see below
   them is resolved against the *expanding* crate. `aimdb-core/log` alone leaves
   `aimdb-sync`'s ten call sites unrouted, which is why `aimdb-sync` carries a
   `log` feature of its own. What the `$crate::__private::log` re-export removes
-  is the `dep:log` half of the tax that `::tracing` still charges — routing
-  `::tracing` through `__private` the same way is worth doing and strictly
-  separable from this change.
+  is the `dep:log` half of the tax; §10.4 has since given `::tracing` the same
+  treatment, so a facade user declares neither dependency. Forgetting the
+  feature is loud rather than silent — see §10.4.
 - **`tracing` and `log` may both be on**, and then both arms run. See §5.1:
   "both on" is not the same as "the process wanted both".
 - **`defmt` is untouched.** The explicit `#[cfg(feature = "defmt")]` gates in
@@ -330,10 +330,6 @@ destination.
 
 ## 8. Non-goals
 
-- **The four crates that call `tracing::` directly.** `aimdb-mqtt-connector`,
-  `aimdb-knx-connector`, `aimdb-uds-connector` and `aimdb-serial-connector`
-  report outside the facade, so a `log` destination will not see those 24 call
-  sites. Migrating them is ordinary follow-up work and is not this change.
 - **Per-`AimDbHandle` routing.** Two stations in one C++ process cannot separate
   their events, which is a genuine limitation. Fixing it means threading a
   context through 76 context-free macro call sites; it is a different design.
@@ -382,7 +378,37 @@ owns its own integration-test binary.
    loses `SinkHolder` and the trampoline; the prefix filter replaces `EnvFilter`.
    The two defects in the header are deleted rather than fixed.
 3. `weather-station-py`: the same, for the `logging` bridge.
-4. Optional, separable: route `::tracing` through `$crate::__private` too, and
-   drop the mirrored `tracing` feature from the eight crates that carry it.
-5. Optional, separable: move the four direct-`tracing::` connectors onto the
-   facade, so a `log` destination sees them too.
+4. **Done.** Route `::tracing` through `$crate::__private` too, so a facade user
+   declares neither dependency.
+
+   The original wording — "and drop the mirrored `tracing` feature from the
+   eight crates that carry it" — was wrong, and contradicted §3.2. The
+   re-export removes the *dependency*; it cannot remove the *feature*, because
+   a `#[cfg]` inside a `#[macro_export]`ed macro is resolved where the macro
+   expands. Mirroring is inherent to this design; only §7's rejected `__emit`
+   shim would end it.
+
+   What the mirror costs is now much less, because forgetting it is no longer
+   silent: an undeclared feature name makes `unexpected_cfgs` fire at every
+   call site — a warning ordinarily, an error under `-D warnings`, which is how
+   `make clippy` runs. A dropped mirror breaks CI.
+
+   Three crates (`aimdb-tokio-adapter`, `aimdb-tcp-connector`,
+   `aimdb-embassy-adapter`) still carry a `tracing` feature that forwards to
+   `aimdb-core/tracing` while emitting nothing themselves. That is a live
+   pass-through for their consumers, not dead weight, so it stays.
+5. **Done.** The four direct-`tracing::` connectors are on the facade, so a
+   `log` destination sees them too: `aimdb-mqtt-connector` (10 sites),
+   `aimdb-knx-connector` (11), `aimdb-uds-connector` (2),
+   `aimdb-serial-connector` (1). Each site shed the hand-written
+   `#[cfg(feature = "tracing")]` the facade now carries itself, and each crate
+   gained the mirrored `log` feature.
+
+   Two things the conversion had to fix rather than translate. `log_trace!` did
+   not exist — §2 recorded its absence — and one KNX site needed it, so the
+   facade grew a fifth macro. And two bindings in `aimdb-mqtt-connector` were
+   themselves `#[cfg(feature = "tracing")]`, which an unconditional call site
+   cannot see: `broker_key` became unconditional (one `String` per connection),
+   and a per-publish `topic.clone()` was removed outright by logging before the
+   move rather than after it — an allocation that had been paid on every
+   publish under `tracing`.

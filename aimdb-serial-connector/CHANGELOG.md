@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Reports through the `log_*` facade instead of `tracing::` directly** (design
+  050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
+  events too. Each call site also shed the hand-written
+  `#[cfg(feature = "tracing")]` the facade carries itself. The `tracing` feature
+  no longer pulls `dep:tracing`; a mirrored `log` feature is added alongside it.
+  No change to what is emitted, or to a consumer that enables `tracing`.
+
 ### Added
 
 - **New crate — the COBS-framed serial/UART transport for AimDB remote access (Issue #122, follow-up to #39).** The serial sibling of `aimdb-uds-connector`: it contributes only the `Dialer`/`Listener`/`Connection` triple plus thin sugar; the AimX codec + dispatch and the runtime-neutral session engines (`run_client`/`serve`) are reused from `aimdb-core`. The wire is the same compact AimX JSON, framed with **COBS** (Consistent Overhead Byte Stuffing) and a `0x00` sentinel instead of a newline — self-synchronizing on a lossy/unframed serial medium, so a receiver that joins mid-stream resynchronizes on the next sentinel. Default scheme `"serial"`. Two runtime halves:

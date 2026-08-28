@@ -29,6 +29,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Design 050 §10.4/§10.5: one facade, both destinations, no dependency tax
+
+`::tracing` now goes through `$crate::__private` exactly as `log` already did, so
+a crate using the `log_*` macros declares **neither** dependency — only the
+matching feature, which cannot be delegated because a `#[cfg]` inside a
+`#[macro_export]`ed macro is resolved where it expands. Forgetting one is no
+longer silent: `unexpected_cfgs` fires at every call site, which `make clippy`
+turns into an error.
+
+The four connectors that still reported through `tracing::` directly —
+`aimdb-mqtt-connector`, `aimdb-knx-connector`, `aimdb-uds-connector`,
+`aimdb-serial-connector` — are on the facade, so a `log` destination sees their
+24 events too. Every crate in the workspace that reports at all now reports
+through the facade. Each converted site also shed the hand-written
+`#[cfg(feature = "tracing")]` the facade carries itself.
+
+`aimdb-core` gains `log_trace!`, the fifth macro, for a KNX site that needed it.
+
+The design doc's §10.4 said the re-export would let the mirrored `tracing`
+feature be dropped. It would not, and that contradicted its own §3.2; the
+sequencing section now says so and explains what mirroring actually costs.
+
 ### Added — Design 050: a log destination an FFI layer can install
 
 `aimdb-core` gains an optional, non-default `log` feature: a second destination
