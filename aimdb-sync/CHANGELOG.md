@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`AimDbHandle::shutdown(&self)`, `shutdown_timeout(&self, _)` and
-  `is_closed()` (CR-10).** The shutdown contract a foreign-language binding
-  needs — `&self`, idempotent, safe during a publish, and an `is_closed` that
-  never takes the shutdown's lock — pinned by `tests/shutdown_contract_test.rs`.
+  `is_closed()`.** The shutdown contract a foreign-language binding needs —
+  `&self`, idempotent, safe during a publish, and an `is_closed` that never
+  takes the shutdown's lock — pinned by `tests/shutdown_contract_test.rs`.
   `detach(self)` and `detach_timeout(self, _)` are unchanged and delegate.
 - **`tracing` no longer pulls `dep:tracing`** (design 050 §10.4): that arm now
   reaches the crate through `aimdb_core::__private`, as the `log` arm already

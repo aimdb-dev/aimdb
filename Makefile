@@ -665,7 +665,7 @@ check-no-sim:
 	printf "$(BLUE)✓ 'simulatable' is not a default feature of aimdb-data-contracts$(NC)\n"; \
 	printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
 
-# CR-9: no library crate may install a process-global on its host's behalf.
+# No library crate may install a process-global on its host's behalf.
 # Applications may, so `tools/`, `examples/` and codegen's generated `main` are
 # not scanned. The one exception: the fork detector owns the runtime thread it
 # protects. A positive control keeps the guard from failing open.
