@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use aimdb_core::AimDbBuilder;
 use aimdb_persistence::{
-    AimDbBuilderPersistExt, AimDbQueryExt, BoxFuture, PersistenceBackend, PersistenceError,
-    QueryParams, StoredValue,
+    topic_matches, AimDbBuilderPersistExt, AimDbQueryExt, BoxFuture, PersistenceBackend,
+    PersistenceError, QueryParams, StoredValue,
 };
 use aimdb_tokio_adapter::TokioAdapter;
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ struct SensorReading {
 }
 
 // ---------------------------------------------------------------------------
-// Mock backend — returns a fixed list of StoredValues regardless of params
+// Mock backend — a fixed list of StoredValues, narrowed by the record pattern
 // ---------------------------------------------------------------------------
 
 struct MockBackend {
@@ -46,15 +46,25 @@ impl PersistenceBackend for MockBackend {
         Box::pin(async { Ok(()) })
     }
 
-    /// Returns all pre-configured rows unconditionally (params ignored).
-    /// This keeps the mock trivial — the filtering under test lives in
-    /// `AimDbQueryExt`, not in the backend.
+    /// Returns the pre-configured rows the pattern matches, decided by
+    /// [`topic_matches`] — the matcher [`PersistenceBackend::query`] requires,
+    /// so this mock is bound by the same grammar a real backend is.
+    ///
+    /// `QueryParams` stays ignored: the row-level filtering under test lives in
+    /// `AimDbQueryExt`, not here. The pattern does not, because a mock that
+    /// ignored it would leave the whole crate unable to tell the current
+    /// grammar from the prefix-glob one it replaced.
     fn query<'a>(
         &'a self,
-        _record_pattern: &'a str,
+        record_pattern: &'a str,
         _params: QueryParams,
     ) -> BoxFuture<'a, Result<Vec<StoredValue>, PersistenceError>> {
-        let rows = self.rows.clone();
+        let rows: Vec<StoredValue> = self
+            .rows
+            .iter()
+            .filter(|row| topic_matches(record_pattern, &row.record_name))
+            .cloned()
+            .collect();
         Box::pin(async move { Ok(rows) })
     }
 
@@ -88,31 +98,34 @@ async fn build_db(mock: Arc<MockBackend>) -> aimdb_core::AimDb {
 /// Shared fixture: four rows where rows at indices 1 and 3 cannot be
 /// deserialized as `SensorReading`.
 ///
-/// | idx | record_name  | value                             | valid? |
-/// |-----|--------------|-----------------------------------|--------|
-/// | 0   | sensor::a    | `{"celsius": 21.5}`               | ✅     |
-/// | 1   | sensor::b    | `"not_an_object"`                 | ❌ wrong JSON type |
-/// | 2   | sensor::c    | `{"celsius": 99.0}`               | ✅     |
-/// | 3   | sensor::d    | `{"celsius": "not_a_number"}`     | ❌ wrong value type |
+/// All four sit one segment below `sensor`, so `sensor.*` matches every one of
+/// them and the pattern never narrows what these tests see.
+///
+/// | idx | record_name | value                         | valid? |
+/// |-----|-------------|-------------------------------|--------|
+/// | 0   | sensor.a    | `{"celsius": 21.5}`           | ✅     |
+/// | 1   | sensor.b    | `"not_an_object"`             | ❌ wrong JSON type |
+/// | 2   | sensor.c    | `{"celsius": 99.0}`           | ✅     |
+/// | 3   | sensor.d    | `{"celsius": "not_a_number"}` | ❌ wrong value type |
 fn mixed_rows() -> Vec<StoredValue> {
     vec![
         StoredValue {
-            record_name: "sensor::a".into(),
+            record_name: "sensor.a".into(),
             value: json!({"celsius": 21.5}),
             stored_at: 1_000,
         },
         StoredValue {
-            record_name: "sensor::b".into(),
+            record_name: "sensor.b".into(),
             value: json!("not_an_object"),
             stored_at: 2_000,
         },
         StoredValue {
-            record_name: "sensor::c".into(),
+            record_name: "sensor.c".into(),
             value: json!({"celsius": 99.0}),
             stored_at: 3_000,
         },
         StoredValue {
-            record_name: "sensor::d".into(),
+            record_name: "sensor.d".into(),
             value: json!({"celsius": "not_a_number"}),
             stored_at: 4_000,
         },
@@ -130,7 +143,7 @@ async fn query_latest_skips_invalid_rows_and_returns_valid_ones() {
     let db = build_db(Arc::new(MockBackend { rows: mixed_rows() })).await;
 
     let results: Vec<SensorReading> = db
-        .query_latest("sensor::*", 10)
+        .query_latest("sensor.*", 10)
         .await
         .expect("query_latest returned Err");
 
@@ -146,11 +159,11 @@ async fn query_latest_skips_invalid_rows_and_returns_valid_ones() {
     let celsius_values: Vec<f64> = results.iter().map(|r| r.celsius).collect();
     assert!(
         celsius_values.contains(&21.5),
-        "missing sensor::a (celsius=21.5)"
+        "missing sensor.a (celsius=21.5)"
     );
     assert!(
         celsius_values.contains(&99.0),
-        "missing sensor::c (celsius=99.0)"
+        "missing sensor.c (celsius=99.0)"
     );
 }
 
@@ -160,17 +173,17 @@ async fn query_latest_skips_invalid_rows_and_returns_valid_ones() {
 async fn query_latest_all_invalid_returns_empty_vec() {
     let all_bad = vec![
         StoredValue {
-            record_name: "sensor::x".into(),
+            record_name: "sensor.x".into(),
             value: json!(null),
             stored_at: 1_000,
         },
         StoredValue {
-            record_name: "sensor::y".into(),
+            record_name: "sensor.y".into(),
             value: json!([1, 2, 3]),
             stored_at: 2_000,
         },
         StoredValue {
-            record_name: "sensor::z".into(),
+            record_name: "sensor.z".into(),
             value: json!({"celsius": "oops"}),
             stored_at: 3_000,
         },
@@ -179,7 +192,7 @@ async fn query_latest_all_invalid_returns_empty_vec() {
     let db = build_db(Arc::new(MockBackend { rows: all_bad })).await;
 
     let results: Vec<SensorReading> = db
-        .query_latest("sensor::*", 10)
+        .query_latest("sensor.*", 10)
         .await
         .expect("query_latest returned Err");
 
@@ -196,12 +209,12 @@ async fn query_latest_all_invalid_returns_empty_vec() {
 async fn query_latest_all_valid_returns_all_rows() {
     let all_good = vec![
         StoredValue {
-            record_name: "sensor::a".into(),
+            record_name: "sensor.a".into(),
             value: json!({"celsius": 10.0}),
             stored_at: 1_000,
         },
         StoredValue {
-            record_name: "sensor::b".into(),
+            record_name: "sensor.b".into(),
             value: json!({"celsius": 20.0}),
             stored_at: 2_000,
         },
@@ -210,7 +223,7 @@ async fn query_latest_all_valid_returns_all_rows() {
     let db = build_db(Arc::new(MockBackend { rows: all_good })).await;
 
     let results: Vec<SensorReading> = db
-        .query_latest("sensor::*", 10)
+        .query_latest("sensor.*", 10)
         .await
         .expect("query_latest returned Err");
 
@@ -234,7 +247,7 @@ async fn query_range_skips_invalid_rows_and_returns_valid_ones() {
 
     // The mock ignores start/end — it always returns all rows.
     let results: Vec<SensorReading> = db
-        .query_range("sensor::*", 0, u64::MAX, None)
+        .query_range("sensor.*", 0, u64::MAX, None)
         .await
         .expect("query_range returned Err");
 
@@ -247,15 +260,15 @@ async fn query_range_skips_invalid_rows_and_returns_valid_ones() {
     );
 
     let celsius_values: Vec<f64> = results.iter().map(|r| r.celsius).collect();
-    assert!(celsius_values.contains(&21.5), "missing sensor::a");
-    assert!(celsius_values.contains(&99.0), "missing sensor::c");
+    assert!(celsius_values.contains(&21.5), "missing sensor.a");
+    assert!(celsius_values.contains(&99.0), "missing sensor.c");
 }
 
 /// `query_range` with all-invalid rows must return an empty `Vec`, not an error.
 #[tokio::test]
 async fn query_range_all_invalid_returns_empty_vec() {
     let all_bad = vec![StoredValue {
-        record_name: "sensor::x".into(),
+        record_name: "sensor.x".into(),
         value: json!("wrong"),
         stored_at: 5_000,
     }];
@@ -263,7 +276,7 @@ async fn query_range_all_invalid_returns_empty_vec() {
     let db = build_db(Arc::new(MockBackend { rows: all_bad })).await;
 
     let results: Vec<SensorReading> = db
-        .query_range("sensor::*", 0, u64::MAX, None)
+        .query_range("sensor.*", 0, u64::MAX, None)
         .await
         .expect("query_range returned Err");
 
@@ -276,17 +289,17 @@ async fn query_range_all_invalid_returns_empty_vec() {
 async fn query_range_all_valid_returns_all_rows() {
     let all_good = vec![
         StoredValue {
-            record_name: "sensor::a".into(),
+            record_name: "sensor.a".into(),
             value: json!({"celsius": 5.5}),
             stored_at: 1_000,
         },
         StoredValue {
-            record_name: "sensor::b".into(),
+            record_name: "sensor.b".into(),
             value: json!({"celsius": 6.6}),
             stored_at: 2_000,
         },
         StoredValue {
-            record_name: "sensor::c".into(),
+            record_name: "sensor.c".into(),
             value: json!({"celsius": 7.7}),
             stored_at: 3_000,
         },
@@ -295,7 +308,7 @@ async fn query_range_all_valid_returns_all_rows() {
     let db = build_db(Arc::new(MockBackend { rows: all_good })).await;
 
     let results: Vec<SensorReading> = db
-        .query_range("sensor::*", 0, u64::MAX, None)
+        .query_range("sensor.*", 0, u64::MAX, None)
         .await
         .expect("query_range returned Err");
 
@@ -304,5 +317,96 @@ async fn query_range_all_valid_returns_all_rows() {
         3,
         "expected 3 valid rows, got: {:?}",
         results
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests: the record-pattern grammar reaches the backend
+// ---------------------------------------------------------------------------
+
+/// Rows at two depths under `sensor.`, all valid for `SensorReading`, so that
+/// what a query returns is decided by the pattern alone.
+fn rows_at_two_depths() -> Vec<StoredValue> {
+    vec![
+        StoredValue {
+            record_name: "sensor.a".into(),
+            value: json!({"celsius": 1.0}),
+            stored_at: 1_000,
+        },
+        StoredValue {
+            record_name: "sensor.deep.nested".into(),
+            value: json!({"celsius": 2.0}),
+            stored_at: 2_000,
+        },
+    ]
+}
+
+/// The regression #201 was made for: `*` covers *exactly one* segment, so a
+/// `sensor.*` query must not reach `sensor.deep.nested`. Under the prefix-glob
+/// contract it did, which is what made one pattern mean two different things
+/// live and historically.
+#[tokio::test]
+async fn a_single_segment_wildcard_does_not_descend() {
+    let db = build_db(Arc::new(MockBackend {
+        rows: rows_at_two_depths(),
+    }))
+    .await;
+
+    let results: Vec<SensorReading> = db
+        .query_latest("sensor.*", 10)
+        .await
+        .expect("query_latest returned Err");
+
+    assert_eq!(
+        results,
+        vec![SensorReading { celsius: 1.0 }],
+        "`sensor.*` must match `sensor.a` only, never `sensor.deep.nested`"
+    );
+}
+
+/// The counterpart that keeps the test above honest: `#` covers zero or more
+/// segments, so the row `sensor.*` excluded is reachable — the row is in the
+/// backend, and it is the pattern that decides.
+#[tokio::test]
+async fn a_multi_segment_wildcard_spans_every_depth() {
+    let db = build_db(Arc::new(MockBackend {
+        rows: rows_at_two_depths(),
+    }))
+    .await;
+
+    let results: Vec<SensorReading> = db
+        .query_latest("sensor.#", 10)
+        .await
+        .expect("query_latest returned Err");
+
+    assert_eq!(
+        results.len(),
+        2,
+        "`sensor.#` must span both depths, got: {:?}",
+        results
+    );
+}
+
+/// A key that is not dot-separated is one whole segment, so no wildcard can
+/// address it — the trap the persistence docs used to lead readers into.
+#[tokio::test]
+async fn a_wildcard_cannot_partition_an_undotted_key() {
+    let db = build_db(Arc::new(MockBackend {
+        rows: vec![StoredValue {
+            record_name: "sensor::legacy".into(),
+            value: json!({"celsius": 3.0}),
+            stored_at: 1_000,
+        }],
+    }))
+    .await;
+
+    let results: Vec<SensorReading> = db
+        .query_latest("sensor.*", 10)
+        .await
+        .expect("query_latest returned Err");
+
+    assert!(
+        results.is_empty(),
+        "`sensor::legacy` is a single segment; no pattern over `sensor.` reaches it"
     );
 }
