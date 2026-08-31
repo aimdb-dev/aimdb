@@ -51,13 +51,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime(runtime)
         .with_persistence(backend, Duration::from_secs(7 * 24 * 3600));
 
-    builder.configure::<Accuracy>("accuracy::vienna", |reg| {
-        reg.persist("accuracy::vienna");
+    builder.configure::<Accuracy>("accuracy.vienna", |reg| {
+        reg.persist("accuracy.vienna");
     });
 
     let db = builder.build().await?;
 
-    let latest: Vec<Accuracy> = db.query_latest("accuracy::*", 5).await?;
+    // Patterns are MQTT-style over dot-separated keys: `*` is exactly one
+    // segment, `#` is zero or more. See the aimdb-persistence README.
+    let latest: Vec<Accuracy> = db.query_latest("accuracy.*", 5).await?;
     println!("{} rows returned", latest.len());
 
     Ok(())
