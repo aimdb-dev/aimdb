@@ -73,8 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = builder.build().await?;
 
-    // 3. Query historical data. `*` is exactly one segment, so `accuracy.*`
-    //    covers both cities — see "Query methods" for `*` vs `#`.
+    // 3. Query historical data. `*` is one segment, so `accuracy.*` covers
+    //    both cities.
     let latest: Vec<Accuracy> = db.query_latest("accuracy.*", 10).await?;
     println!("Latest 10 per city: {} rows total", latest.len());
 
@@ -147,16 +147,12 @@ required — the persistence subscriber taps the typed buffer directly.
 
 ### Query methods
 
-A record pattern is MQTT-style over dot-separated keys — the grammar
-subscriptions already use. `*` covers exactly one segment, `#` covers zero or
-more, and a wildcard is always a whole segment of its own. So `my_record.*`
-matches `my_record.vienna` but not `my_record.vienna.raw`, while `my_record.#`
-matches both.
-
-Reach for `*` when the keys you want sit at a known depth and `#` when that
-depth varies. The choice matters for the key layout too: a key with no dots —
-`my_record::vienna`, say — is one whole segment, so no pattern can partition a
-key space built that way.
+A record pattern is MQTT-style over dot-separated keys, the grammar
+subscriptions use: `*` covers exactly one segment, `#` zero or more, and a
+wildcard is always a whole segment. So `my_record.*` matches `my_record.vienna`
+but not `my_record.vienna.raw`; `my_record.#` matches both. Reach for `*` at a
+known depth, `#` where it varies. A key with no dots is a single segment, so no
+pattern can partition it.
 
 ```rust
 use aimdb_persistence::AimDbQueryExt;
@@ -175,8 +171,7 @@ let capped: Vec<MyRecord> = db
     .await?;
 
 // Untyped query (returns raw JSON — used by the AimX protocol handler).
-// `#` rather than `*`: this path serves remote callers whose keys sit at
-// whatever depth they were registered at.
+// `#`, not `*`: remote callers key at whatever depth they registered.
 use aimdb_persistence::QueryParams;
 let raw = db.query_raw("my_record.#", QueryParams {
     limit_per_record: Some(1),

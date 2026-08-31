@@ -76,23 +76,11 @@ pub struct RecordUpdate {
     /// [`skipped`](Self::skipped) here — the engine reserves a slot for this
     /// update, so an overrun cannot cost you the marker.
     ///
-    /// **Its absence is not a signal.** The marker rides the last snapshot's
-    /// frame rather than a terminator of its own, so a burst with no such frame
-    /// simply ends without one:
-    ///
-    /// - the pattern matched no records, or matched only records that have not
-    ///   produced a value yet — ordinary against a fresh database, not an edge
-    ///   case;
-    /// - the subscription was exact-topic, which takes no snapshots at all;
-    /// - the burst's last snapshot failed to encode and was dropped, taking the
-    ///   `last` flag with it.
-    ///
-    /// The first two are benign and the third is a genuine snapshot loss, but
-    /// none of them will ever set `snapshot_end`. So a consumer must not wait on
-    /// it to decide whether the burst is still arriving — that wait does not
-    /// end. Treat the marker as "the initial state was non-empty and is now
-    /// complete", and read [`skipped`](Self::skipped) — here, or on the first
-    /// live event after the burst — for whether anything was lost.
+    /// **Its absence is not a signal**, and must never be waited on. The marker
+    /// rides the last snapshot's frame, so a burst that produced none never
+    /// sets it: nothing matched, nothing has a value yet, an exact-topic
+    /// subscribe, or a tail that failed to encode. Only the last of those is a
+    /// real loss, and [`skipped`](Self::skipped) reports it.
     pub snapshot_end: bool,
 }
 

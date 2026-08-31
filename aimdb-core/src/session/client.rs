@@ -391,13 +391,10 @@ enum Delivery {
     /// [`SubUpdate::snapshot_end`], delivered into the slot
     /// [`Delivery::BurstBody`] stopped short of.
     ///
-    /// That slot is only reserved if a `BurstBody` ran, so a single-snapshot
-    /// burst lands on ordering instead: the sink is created when the
-    /// subscription is issued and the server sends every snapshot before it
-    /// registers the event pump, so nothing has competed for the capacity yet.
-    /// A burst with no snapshots sends no `BurstEnd` at all — see
-    /// [`SubUpdate::snapshot_end`] for what a subscriber may conclude from
-    /// that (nothing).
+    /// Only a `BurstBody` reserves that slot, so a single-snapshot burst rests
+    /// on ordering instead: the sink predates the subscribe reply, and the
+    /// server sends every snapshot before registering the event pump. A burst
+    /// with no snapshots sends no `BurstEnd` at all.
     BurstEnd,
 }
 

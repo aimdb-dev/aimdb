@@ -57,8 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = builder.build().await?;
 
-    // Patterns are MQTT-style over dot-separated keys: `*` is exactly one
-    // segment, `#` is zero or more. See the aimdb-persistence README.
+    // `*` is exactly one segment, `#` zero or more (see aimdb-persistence).
     let latest: Vec<Accuracy> = db.query_latest("accuracy.*", 5).await?;
     println!("{} rows returned", latest.len());
 

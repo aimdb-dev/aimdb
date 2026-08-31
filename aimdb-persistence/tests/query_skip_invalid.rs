@@ -47,13 +47,11 @@ impl PersistenceBackend for MockBackend {
     }
 
     /// Returns the pre-configured rows the pattern matches, decided by
-    /// [`topic_matches`] — the matcher [`PersistenceBackend::query`] requires,
-    /// so this mock is bound by the same grammar a real backend is.
+    /// [`topic_matches`] — the matcher a real backend must use, so the mock is
+    /// bound by the same grammar.
     ///
-    /// `QueryParams` stays ignored: the row-level filtering under test lives in
-    /// `AimDbQueryExt`, not here. The pattern does not, because a mock that
-    /// ignored it would leave the whole crate unable to tell the current
-    /// grammar from the prefix-glob one it replaced.
+    /// `QueryParams` stays ignored: row-level filtering is `AimDbQueryExt`'s
+    /// job. The pattern is not, or nothing here would notice the grammar.
     fn query<'a>(
         &'a self,
         record_pattern: &'a str,
@@ -98,8 +96,7 @@ async fn build_db(mock: Arc<MockBackend>) -> aimdb_core::AimDb {
 /// Shared fixture: four rows where rows at indices 1 and 3 cannot be
 /// deserialized as `SensorReading`.
 ///
-/// All four sit one segment below `sensor`, so `sensor.*` matches every one of
-/// them and the pattern never narrows what these tests see.
+/// All four sit one segment below `sensor`, so `sensor.*` matches every one.
 ///
 /// | idx | record_name | value                         | valid? |
 /// |-----|-------------|-------------------------------|--------|
@@ -341,10 +338,8 @@ fn rows_at_two_depths() -> Vec<StoredValue> {
     ]
 }
 
-/// The regression #201 was made for: `*` covers *exactly one* segment, so a
-/// `sensor.*` query must not reach `sensor.deep.nested`. Under the prefix-glob
-/// contract it did, which is what made one pattern mean two different things
-/// live and historically.
+/// The regression #201 was made for: `*` covers *exactly one* segment, so
+/// `sensor.*` must not reach `sensor.deep.nested`. The old prefix glob did.
 #[tokio::test]
 async fn a_single_segment_wildcard_does_not_descend() {
     let db = build_db(Arc::new(MockBackend {
@@ -364,9 +359,8 @@ async fn a_single_segment_wildcard_does_not_descend() {
     );
 }
 
-/// The counterpart that keeps the test above honest: `#` covers zero or more
-/// segments, so the row `sensor.*` excluded is reachable — the row is in the
-/// backend, and it is the pattern that decides.
+/// Keeps the test above honest: `#` reaches the row `sensor.*` excluded, so the
+/// exclusion is the pattern's doing and not a missing fixture.
 #[tokio::test]
 async fn a_multi_segment_wildcard_spans_every_depth() {
     let db = build_db(Arc::new(MockBackend {
@@ -387,8 +381,8 @@ async fn a_multi_segment_wildcard_spans_every_depth() {
     );
 }
 
-/// A key that is not dot-separated is one whole segment, so no wildcard can
-/// address it — the trap the persistence docs used to lead readers into.
+/// A key that is not dot-separated is one segment no wildcard can address —
+/// the trap the persistence docs used to lead readers into.
 #[tokio::test]
 async fn a_wildcard_cannot_partition_an_undotted_key() {
     let db = build_db(Arc::new(MockBackend {
