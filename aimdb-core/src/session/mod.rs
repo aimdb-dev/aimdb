@@ -80,7 +80,11 @@ pub struct SubUpdate {
     pub data: Payload,
     /// Count of skipped records
     pub skipped: u64,
-    /// Set on the last update of the late-join snapshot burst, carrying its total `skipped`
+    /// Set on the last update of the late-join snapshot burst, carrying its total `skipped`.
+    ///
+    /// Present only when the burst produced a final update to set it on: an
+    /// empty burst, an exact-topic subscription, or a tail that failed to
+    /// encode all end without it, so its absence tells a subscriber nothing.
     pub snapshot_end: bool,
 }
 
