@@ -13,12 +13,17 @@ use crate::error::PersistenceError;
 ///
 /// Import `use aimdb_persistence::AimDbQueryExt;` to call `.query_latest()` /
 /// `.query_range()` on a live `AimDb` handle.
+///
+/// `record_pattern` is the grammar
+/// [`PersistenceBackend::query`] defines for
+/// every method here: MQTT-style over dot-separated record keys, `*` covering
+/// exactly one segment and `#` zero or more.
 pub trait AimDbQueryExt {
     /// Query the latest N values per matching record.
     ///
-    /// Pattern support: `"accuracy::*"` returns latest N from each matching
-    /// record. Single record: `"accuracy::vienna"` returns latest N from that
-    /// record only.
+    /// `"accuracy.*"` returns the latest N from each record exactly one segment
+    /// below `accuracy`, `"accuracy.#"` from every record at any depth under
+    /// it, and a wildcard-free pattern from that one record.
     ///
     /// Rows that fail to deserialize as `T` are **skipped** with a tracing
     /// warning rather than failing the entire query.
@@ -28,7 +33,8 @@ pub trait AimDbQueryExt {
         limit_per_record: usize,
     ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>>;
 
-    /// Query values within a time range for a single record or pattern.
+    /// Query values within a time range for every record `record_pattern`
+    /// matches.
     ///
     /// Pass `None` for `limit_per_record` to return all matching rows, or
     /// `Some(n)` to cap results per matching record name.
@@ -43,10 +49,14 @@ pub trait AimDbQueryExt {
         limit_per_record: Option<usize>,
     ) -> BoxFuture<'_, Result<Vec<T>, PersistenceError>>;
 
-    /// Query raw stored values (untyped, returns JSON).
+    /// Query raw stored values (untyped, returns JSON) for every record
+    /// `record_pattern` matches.
     ///
     /// This is the non-generic variant used by the AimX `record.query` handler
-    /// which doesn't know the concrete Rust type.
+    /// which doesn't know the concrete Rust type — and which defaults to
+    /// [`QUERY_ALL_PATTERN`](aimdb_core::remote::QUERY_ALL_PATTERN), `#`,
+    /// since a remote caller's keys sit at whatever depth they were
+    /// registered at.
     fn query_raw(
         &self,
         record_pattern: &str,

@@ -16,7 +16,8 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// A stored value returned by [`PersistenceBackend::query`].
 #[derive(Debug, Clone)]
 pub struct StoredValue {
-    /// The record name this value belongs to (e.g. `"accuracy::vienna"`).
+    /// The record name this value belongs to (e.g. `"accuracy.vienna"`) — a
+    /// concrete key, never a pattern.
     pub record_name: String,
     /// The JSON-serialized value.
     pub value: Value,
