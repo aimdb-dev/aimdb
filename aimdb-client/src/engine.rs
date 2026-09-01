@@ -73,12 +73,14 @@ pub struct RecordUpdate {
     pub skipped: u64,
     /// Final update of a late-join snapshot burst: every update after it is a
     /// live event. A burst that overran the sink carries its whole loss in
-    /// [`skipped`](Self::skipped) here.
+    /// [`skipped`](Self::skipped) here — the engine reserves a slot for this
+    /// update, so an overrun cannot cost you the marker.
     ///
-    /// The engine reserves a sink slot for this update, so it arrives even from
-    /// a burst that overran — a subscription over static records may never fire
-    /// an event, and a consumer still has to tell a complete initial state from
-    /// a truncated one.
+    /// **Its absence is not a signal**, and must never be waited on. The marker
+    /// rides the last snapshot's frame, so a burst that produced none never
+    /// sets it: nothing matched, nothing has a value yet, an exact-topic
+    /// subscribe, or a tail that failed to encode. Only the last of those is a
+    /// real loss, and [`skipped`](Self::skipped) reports it.
     pub snapshot_end: bool,
 }
 

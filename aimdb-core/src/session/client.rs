@@ -387,9 +387,14 @@ enum Delivery {
     /// full, and additionally stops one slot short so [`Delivery::BurstEnd`]
     /// always fits.
     BurstBody,
-    /// The burst's final snapshot: guaranteed delivery into the slot
-    /// [`Delivery::BurstBody`] kept free, carrying the burst's whole loss count
-    /// and [`SubUpdate::snapshot_end`].
+    /// The burst's final snapshot: carries the burst's whole loss count and
+    /// [`SubUpdate::snapshot_end`], delivered into the slot
+    /// [`Delivery::BurstBody`] stopped short of.
+    ///
+    /// Only a `BurstBody` reserves that slot, so a single-snapshot burst rests
+    /// on ordering instead: the sink predates the subscribe reply, and the
+    /// server sends every snapshot before registering the event pump. A burst
+    /// with no snapshots sends no `BurstEnd` at all.
     BurstEnd,
 }
 

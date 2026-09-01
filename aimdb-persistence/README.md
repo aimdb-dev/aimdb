@@ -14,7 +14,7 @@ pluggable storage backend into the AimDB builder and query API:
 |---|---|
 | [`PersistenceBackend`] trait | Interface for concrete backends (SQLite, Postgres, …) |
 | `AimDbBuilderPersistExt` | `.with_persistence(backend, retention)` on the builder |
-| `RecordRegistrarPersistExt` | `.persist("my_record::key")` on record configuration |
+| `RecordRegistrarPersistExt` | `.persist("my_record.key")` on record configuration |
 | `AimDbQueryExt` | `.query_latest()` / `.query_range()` on a live `AimDb<R>` |
 
 For a concrete backend, add [`aimdb-persistence-sqlite`](../aimdb-persistence-sqlite/README.md).
@@ -64,22 +64,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_persistence(backend, Duration::from_secs(7 * 24 * 3600));
 
     // 2. Opt individual records into persistence.
-    builder.configure::<Accuracy>("accuracy::vienna", |reg| {
-        reg.persist("accuracy::vienna");
+    builder.configure::<Accuracy>("accuracy.vienna", |reg| {
+        reg.persist("accuracy.vienna");
     });
-    builder.configure::<Accuracy>("accuracy::berlin", |reg| {
-        reg.persist("accuracy::berlin");
+    builder.configure::<Accuracy>("accuracy.berlin", |reg| {
+        reg.persist("accuracy.berlin");
     });
 
     let db = builder.build().await?;
 
-    // 3. Query historical data.
-    let latest: Vec<Accuracy> = db.query_latest("accuracy::*", 10).await?;
+    // 3. Query historical data. `*` is one segment, so `accuracy.*` covers
+    //    both cities.
+    let latest: Vec<Accuracy> = db.query_latest("accuracy.*", 10).await?;
     println!("Latest 10 per city: {} rows total", latest.len());
 
     let since = 1_700_000_000_000_u64; // Unix ms
     let until = 1_800_000_000_000_u64;
-    let range: Vec<Accuracy> = db.query_range("accuracy::vienna", since, until, None).await?;
+    let range: Vec<Accuracy> = db.query_range("accuracy.vienna", since, until, None).await?;
     println!("Vienna in range: {} rows", range.len());
 
     Ok(())
@@ -134,10 +135,10 @@ builder.with_persistence(
 ### Record registration
 
 ```rust
-builder.configure::<MyRecord>("my_record::key", |reg| {
-    reg.persist("my_record::key");
+builder.configure::<MyRecord>("my_record.key", |reg| {
+    reg.persist("my_record.key");
     // .persist() accepts anything that converts to String:
-    // reg.persist(format!("my_record::{}", city));
+    // reg.persist(format!("my_record.{}", city));
 });
 ```
 
@@ -146,25 +147,33 @@ required — the persistence subscriber taps the typed buffer directly.
 
 ### Query methods
 
+A record pattern is MQTT-style over dot-separated keys, the grammar
+subscriptions use: `*` covers exactly one segment, `#` zero or more, and a
+wildcard is always a whole segment. So `my_record.*` matches `my_record.vienna`
+but not `my_record.vienna.raw`; `my_record.#` matches both. Reach for `*` at a
+known depth, `#` where it varies. A key with no dots is a single segment, so no
+pattern can partition it.
+
 ```rust
 use aimdb_persistence::AimDbQueryExt;
 
-// Latest N values per matching record (pattern supports `*` wildcard).
-let latest: Vec<MyRecord> = db.query_latest("my_record::*", 5).await?;
+// Latest N values per matching record.
+let latest: Vec<MyRecord> = db.query_latest("my_record.*", 5).await?;
 
 // All values in a time range (Unix milliseconds), no row limit.
 let range: Vec<MyRecord> = db
-    .query_range("my_record::vienna", start_ms, end_ms, None)
+    .query_range("my_record.vienna", start_ms, end_ms, None)
     .await?;
 
 // Time range with at most 100 rows per matching record.
 let capped: Vec<MyRecord> = db
-    .query_range("my_record::*", start_ms, end_ms, Some(100))
+    .query_range("my_record.*", start_ms, end_ms, Some(100))
     .await?;
 
 // Untyped query (returns raw JSON — used by the AimX protocol handler).
+// `#`, not `*`: remote callers key at whatever depth they registered.
 use aimdb_persistence::QueryParams;
-let raw = db.query_raw("my_record::*", QueryParams {
+let raw = db.query_raw("my_record.#", QueryParams {
     limit_per_record: Some(1),
     ..Default::default()
 }).await?;
@@ -179,7 +188,7 @@ matching rows, or `Some(n)` to cap results per record name.
 ```rust
 use aimdb_persistence::PersistenceError;
 
-match db.query_latest::<MyRecord>("my_record::*", 10).await {
+match db.query_latest::<MyRecord>("my_record.*", 10).await {
     Ok(rows) => { /* … */ }
     Err(PersistenceError::NotConfigured) => {
         // .with_persistence() was not called on the builder

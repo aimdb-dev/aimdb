@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     record cannot kill a wildcard stream fanning in many;
   - `skipped` — updates lost immediately before this one;
   - `snapshot_end` — this update closes the late-join snapshot burst; every
-    update after it is a live event.
+    update after it is a live event. Only set when the burst produced a final
+    snapshot to carry it (see below).
   `ClientHandle`-level streams carry `SubUpdate` (see `aimdb-core`).
 - **Dead protocol helpers removed** (retired with the hand-rolled client in
   PR #124, deleted now): `RequestExt`, `ResponseExt`, `serialize_message`,
@@ -34,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Loss visibility on the subscription stream.** `RecordUpdate` exposes the delivery gap the engine already tracks (`SubUpdate::skipped`) — previously reachable only from raw `ClientHandle` streams, so ordinary client/CLI/bridge consumers could not tell a buffer overrun from an idle producer — plus `snapshot_end`, which marks the last update of a late-join snapshot burst. The engine reserves a sink slot for that final update, so a burst closes even when it overran the sink and even when no live event ever follows; the client boundary preserves that guarantee by delivering every frame as exactly one stream item (an undecodable payload arrives as `value: None` rather than being dropped and folded into a *next* update that may never come).
+- **Loss visibility on the subscription stream.** `RecordUpdate` exposes the delivery gap the engine already tracks (`SubUpdate::skipped`) — previously reachable only from raw `ClientHandle` streams, so ordinary client/CLI/bridge consumers could not tell a buffer overrun from an idle producer — plus `snapshot_end`, which marks the last update of a late-join snapshot burst. The engine reserves a sink slot for that final update, so an overrun cannot cost you the marker and a burst closes even when no live event ever follows; the client boundary preserves that by delivering every frame as exactly one stream item (an undecodable payload arrives as `value: None` rather than being dropped and folded into a *next* update that may never come). The marker rides the last snapshot's frame, so a burst that produced none — nothing matched, nothing has a value yet, an exact-topic subscribe, a tail that failed to encode — ends without one; its absence is not a signal and must not be waited on.
 
 - **A refused subscription is observable.** A terminal rejection (denied, subscription limit reached) now arrives as one `Err` item that ends the stream, instead of a silent end of stream indistinguishable from a disconnect or a closed record. `aimdb watch` exits non-zero on one (see `aimdb-cli`).
 
