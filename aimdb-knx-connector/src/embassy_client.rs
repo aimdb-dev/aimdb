@@ -361,16 +361,23 @@ struct EmbassyIo<'a, 'b> {
 }
 
 impl TunnelIo for EmbassyIo<'_, '_> {
-    async fn send(&mut self, frame: &[u8]) -> bool {
-        // Log-and-continue: a transient send error must not tear down the
-        // tunnel; a persistently dead send path surfaces through the engine's
-        // heartbeat-response timeout.
-        if self.socket.send_to(frame, self.gateway).await.is_err() {
-            #[cfg(feature = "defmt")]
-            defmt::error!("KNX send failed");
-            return false;
-        }
-        true
+    /// `TunnelIo::send` declares `+ Send` on its return type (design 052 §3.3)
+    /// so a *generic* connection task can be boxed as the runner's
+    /// `Send + 'static` future. `embassy_net::udp::UdpSocket`'s send future is
+    /// `!Send`, so this half returns the adapter's transparent force-`Send`
+    /// newtype — the §5.1 pattern, with the `unsafe` staying in the adapter.
+    fn send<'a>(&'a mut self, frame: &'a [u8]) -> impl core::future::Future<Output = bool> + Send + 'a {
+        aimdb_embassy_adapter::SendFutureWrapper(async move {
+            // Log-and-continue: a transient send error must not tear down the
+            // tunnel; a persistently dead send path surfaces through the
+            // engine's heartbeat-response timeout.
+            if self.socket.send_to(frame, self.gateway).await.is_err() {
+                #[cfg(feature = "defmt")]
+                defmt::error!("KNX send failed");
+                return false;
+            }
+            true
+        })
     }
 
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>) {

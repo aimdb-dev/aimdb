@@ -25,7 +25,6 @@ embassy-runtime = [
     "embassy-time",
     "embassy-sync",
     "embassy-net",
-    "embassy-futures",
     "static_cell",
 ]
 # Design 050 §10.4/§10.5: the facade reaches both destinations through
@@ -72,7 +71,11 @@ futures-core = { version = "0.3", default-features = false }
 embassy-executor = { version = "0.10.0", optional = true }
 embassy-time = { version = "0.5.1", optional = true }
 embassy-sync = { version = "0.8.0", path = "../_external/embassy/embassy-sync", optional = true }
-embassy-futures = { version = "0.1.2", optional = true }
+# Design 052 §5.4: `embassy-futures` has no dependencies of its own (verified:
+# its `[dependencies]` section is empty bar optional defmt/log), and its
+# `select3` is what the neutral connection task uses on *both* runtimes. So it
+# is unconditional rather than an Embassy-only optional.
+embassy-futures = { version = "0.1.2" }
 embassy-net = { version = "0.9.0", optional = true, features = [
     "tcp",
     "udp",
@@ -94,6 +97,9 @@ tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
+    # Design 052 §3.2 `Datagram`/`Delay` impls, used by `neutral`'s tests to
+    # drive the unified connection task against a real fake gateway.
+    "net",
 ] }
 
 [package.metadata.docs.rs]

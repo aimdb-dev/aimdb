@@ -24,10 +24,12 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use aimdb_core::session::{
-    ByteStream, PeerInfo, StreamDialer, StreamListener, TransportError, TransportResult,
+    ByteStream, Datagram, DatagramBinder, PeerInfo, StreamDialer, StreamListener, TransportError,
+    TransportResult,
 };
 
 use embassy_net::tcp::TcpSocket;
+use embassy_net::udp::UdpSocket;
 use embassy_net::{IpEndpoint, IpListenEndpoint, Stack};
 use embedded_io_async::Write as _;
 
@@ -315,6 +317,133 @@ impl<const N: usize> StreamListener for EmbassyTcpListener<N> {
     }
 }
 
+
+// ===========================================================================
+// Datagram — KNX/IP tunnelling and SNTP.
+// ===========================================================================
+
+/// Holds the one reusable `embassy-net` UDP socket between binds.
+///
+/// `UdpSocket` owns its buffers for its whole lifetime, so a rebind cannot
+/// recreate the socket without leaking them. It does not have to: `close()`
+/// followed by `bind()` returns the same socket to a fresh unbound state,
+/// which is exactly what the KNX engine's `Action::ResetSocket` needs.
+struct UdpSlot {
+    socket: RefCell<Option<UdpSocket<'static>>>,
+}
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant.
+unsafe impl Send for UdpSlot {}
+// SAFETY: same invariant.
+unsafe impl Sync for UdpSlot {}
+
+/// One bound `embassy-net` UDP socket as a runtime-neutral [`Datagram`].
+pub struct EmbassyUdpSocket {
+    socket: Option<UdpSocket<'static>>,
+    slot: Arc<UdpSlot>,
+    local: Option<core::net::SocketAddr>,
+}
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant.
+unsafe impl Send for EmbassyUdpSocket {}
+
+impl Drop for EmbassyUdpSocket {
+    fn drop(&mut self) {
+        if let Some(mut socket) = self.socket.take() {
+            socket.close();
+            *self.slot.socket.borrow_mut() = Some(socket);
+        }
+    }
+}
+
+fn to_endpoint(addr: core::net::SocketAddr) -> IpEndpoint {
+    IpEndpoint::new(addr.ip().into(), addr.port())
+}
+
+impl Datagram for EmbassyUdpSocket {
+    fn send_to<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+        to: core::net::SocketAddr,
+    ) -> impl Future<Output = TransportResult<()>> + Send + 'a {
+        SendFutureWrapper(async move {
+            let socket = self.socket.as_mut().ok_or(TransportError::Closed)?;
+            socket
+                .send_to(buf, to_endpoint(to))
+                .await
+                .map_err(|_| TransportError::Io)
+        })
+    }
+
+    fn recv_from<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+    ) -> impl Future<Output = TransportResult<(usize, core::net::SocketAddr)>> + Send + 'a {
+        SendFutureWrapper(async move {
+            let socket = self.socket.as_mut().ok_or(TransportError::Closed)?;
+            let (n, meta) = socket.recv_from(buf).await.map_err(|_| TransportError::Io)?;
+            let addr = core::net::SocketAddr::new(meta.endpoint.addr.into(), meta.endpoint.port);
+            Ok((n, addr))
+        })
+    }
+
+    /// The real bound address, assembled from the socket's port and the
+    /// stack's configured IPv4 address.
+    ///
+    /// This is what lets the KNX tunnelling handshake advertise
+    /// `LocalEndpoint::Explicit` on Embassy, which the hand-written Embassy
+    /// client never did — gateways that reject the NAT-style `0.0.0.0:0` HPAI
+    /// work through this path.
+    fn local_addr(&self) -> Option<core::net::SocketAddr> {
+        self.local
+    }
+}
+
+/// Binds [`EmbassyUdpSocket`]s over one caller-owned socket.
+pub struct EmbassyUdpBinder {
+    stack: Stack<'static>,
+    slot: Arc<UdpSlot>,
+}
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant.
+unsafe impl Send for EmbassyUdpBinder {}
+// SAFETY: same invariant.
+unsafe impl Sync for EmbassyUdpBinder {}
+
+impl DatagramBinder for EmbassyUdpBinder {
+    type Socket = EmbassyUdpSocket;
+
+    fn bind(&self, port: u16) -> impl Future<Output = TransportResult<Self::Socket>> + Send + '_ {
+        SendFutureWrapper(async move {
+            let mut socket = self
+                .slot
+                .socket
+                .borrow_mut()
+                .take()
+                .ok_or(TransportError::Io)?;
+            // Idempotent: a socket returned by a dropped `EmbassyUdpSocket` is
+            // already closed, and closing an unbound socket is a no-op.
+            socket.close();
+            if socket.bind(port).is_err() {
+                *self.slot.socket.borrow_mut() = Some(socket);
+                return Err(TransportError::Io);
+            }
+            let bound_port = socket.endpoint().port;
+            let local = self.stack.config_v4().map(|cfg| {
+                core::net::SocketAddr::new(
+                    core::net::IpAddr::V4(cfg.address.address().into()),
+                    bound_port,
+                )
+            });
+            Ok(EmbassyUdpSocket {
+                socket: Some(socket),
+                slot: self.slot.clone(),
+                local,
+            })
+        })
+    }
+}
+
 // ===========================================================================
 // Constructors + clock.
 // ===========================================================================
@@ -332,6 +461,24 @@ impl EmbassyNet {
     ) -> EmbassyTcpDialer {
         EmbassyTcpDialer {
             slot: Arc::new(TcpSocketSlot::new(TcpSocket::new(stack, rx_buffer, tx_buffer))),
+        }
+    }
+
+    /// A UDP binder over one caller-owned socket, for KNX/IP and SNTP.
+    pub fn udp(
+        stack: Stack<'static>,
+        rx_meta: &'static mut [embassy_net::udp::PacketMetadata],
+        rx_buffer: &'static mut [u8],
+        tx_meta: &'static mut [embassy_net::udp::PacketMetadata],
+        tx_buffer: &'static mut [u8],
+    ) -> EmbassyUdpBinder {
+        EmbassyUdpBinder {
+            stack,
+            slot: Arc::new(UdpSlot {
+                socket: RefCell::new(Some(UdpSocket::new(
+                    stack, rx_meta, rx_buffer, tx_meta, tx_buffer,
+                ))),
+            }),
         }
     }
 

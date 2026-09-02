@@ -542,7 +542,14 @@ pub(crate) trait TunnelIo {
     /// path surfaces through the heartbeat-response timeout
     /// ([`TunnelConfig::heartbeat_response_timeout_ms`]), which drops the
     /// connection even when the recv path never errors.
-    async fn send(&mut self, frame: &[u8]) -> bool;
+    ///
+    /// The `+ Send` on the return type is load-bearing (design 052 §3.3): a
+    /// unified `connection_task<U: Datagram, T: Delay>` is handed to the
+    /// runner as a `Send + 'static` boxed future, and generic code over
+    /// `impl TunnelIo` can only prove that if the bound is declared here.
+    /// Return-type notation would express it at the use site instead, but it
+    /// is still experimental on the pinned toolchain.
+    fn send<'a>(&'a mut self, frame: &'a [u8]) -> impl core::future::Future<Output = bool> + Send + 'a;
     /// Forward a parsed telegram toward `pump_source`. Non-blocking:
     /// drop + log on a full channel rather than stalling the protocol loop.
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>);
@@ -1396,5 +1403,37 @@ mod tests {
         // Control HPAI starts at offset 6: [len, proto, ip(4), port(2)].
         assert_eq!(&req[8..12], &[192, 168, 1, 50]);
         assert_eq!(u16::from_be_bytes([req[12], req[13]]), 54321);
+    }
+
+    // -----------------------------------------------------------------------
+    // Design 052 §3.3: the unified `connection_task<U: Datagram, T: Delay>`
+    // must be boxable as the runner's `Send + 'static` future, which means the
+    // `drain_actions` future has to be provably `Send` in *generic* code.
+    // -----------------------------------------------------------------------
+
+    fn assert_send<T: Send>(_: T) {}
+
+    /// A `TunnelIo` whose every field is `Send`, standing in for the real
+    /// socket-backed one.
+    struct SendIo;
+
+    impl TunnelIo for SendIo {
+        async fn send(&mut self, _frame: &[u8]) -> bool {
+            true
+        }
+        fn forward(&mut self, _addr: GroupAddress, _payload: Vec<u8>) {}
+        fn warn_ack_timeout(&mut self, _seq: u8) {}
+    }
+
+    /// The shape the unified connection task needs: generic over the io, and
+    /// its future handed to something that requires `Send`.
+    #[test]
+    fn drain_actions_future_is_send_in_generic_code() {
+        fn generic<Io: TunnelIo + Send>(engine: &mut TunnelEngine, io: &mut Io) {
+            assert_send(drain_actions(engine, io));
+        }
+        let mut engine = TunnelEngine::new(CFG.clone(), 0);
+        let mut io = SendIo;
+        generic(&mut engine, &mut io);
     }
 }

@@ -30,7 +30,7 @@ connector-io = ["connectors", "dep:embedded-io-async"]
 # collides with the `defmt::timestamp!` every host test binary must provide.
 # `EmbassyDelay` is gated on `embassy-time` separately, so a consumer that only
 # needs sockets does not drag the clock (or that symbol) in.
-net = ["connectors", "embassy-net-support", "dep:embedded-io-async"]
+net = ["connectors", "embassy-net-support", "embassy-net/udp", "dep:embedded-io-async"]
 
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]

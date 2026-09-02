@@ -149,6 +149,11 @@ pub use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
 // Runtime-neutral KNX/IP tunneling state machine shared by both transports.
 pub mod tunnel;
 
+// Design 052 §3.3: the single, runtime-neutral connection task. Compiled
+// whenever a runtime half is on, so both cross-check it.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub(crate) mod neutral;
+
 // Platform-specific implementations
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_client;

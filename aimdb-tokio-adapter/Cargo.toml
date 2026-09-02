@@ -21,6 +21,10 @@ std = ["aimdb-core/std"]
 # Runtime features
 tokio-runtime = ["tokio", "tokio-util", "std"]
 
+# Design 052 §3.2: Tokio `ByteStream`/`StreamDialer`/`StreamListener`/
+# `Datagram`/`Delay`, so connector crates need no `tokio` dependency.
+net = ["tokio-runtime", "aimdb-core/connector-session", "tokio/net", "tokio/io-util"]
+
 # Observability features
 tracing = ["aimdb-core/tracing", "dep:tracing"]
 observability = ["aimdb-core/observability", "tokio-runtime"]
