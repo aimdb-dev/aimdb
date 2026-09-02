@@ -4,23 +4,27 @@
 [052 — Runtime-neutral connectors](052-runtime-neutral-connectors.md) against
 the tree at `58c1951`, on the pinned toolchain (rustc 1.98.0, `88d9e12ae`).
 **Verdict:** the architecture is sound and the core mechanism is real — it
-compile-checks exactly as claimed. Four factual errors need fixing, and four
-design gaps were open; **all four are now closed with working code on this
-branch** (§3), not with argument. Effort, recalibrated against that
-prototype: **4–6 weeks** for one engineer already fluent in the crates.
+compile-checks exactly as claimed. Four factual errors and four open design
+gaps were found; **all four gaps are now closed with working code** (§3), not
+with argument, and every correction has been folded back into design 052
+itself. Effort, recalibrated against the prototype: **4–6 weeks** for one
+engineer already fluent in the crates.
 
 Every claim below that says "verified" or "answered" was executed. The
-prototype is ~2 300 lines across seven crates: core's neutral I/O layer, both
-adapters, a unified KNX connection task, the serial connector reduced to
-framing, and the tests that settle each question. §7 lists what landed where.
+prototype lives on `claude/design-doc-52-verify-1lsexa` and is **not** on
+`main`: this document and the revised design are merged ahead of it, so the
+findings are not stranded behind an unmerged change. It is ~2 300 lines across
+seven crates — core's neutral I/O layer, both adapters, a unified KNX
+connection task, the serial connector reduced to framing, and the tests that
+settle each question. §7 lists what landed where.
 
 ---
 
 ## 1. What checks out
 
 Every load-bearing claim in §2, §5 and §6 was checked against the source.
-Line references are to the current branch; where §3 later changes a cited
-item, the change is called out there.
+Line references are to `main` at `58c1951`; where the prototype later
+changes a cited item, the change is called out in §3.
 
 | Claim | Verified |
 |---|---|
@@ -77,7 +81,7 @@ directions dissolves that blocker, and it costs nothing, because
 ## 3. The four gaps, closed
 
 Each was flagged as needing design work before step 1. Each is now answered by
-code on this branch, with a test that fails if the answer is wrong.
+code on the prototype branch, with a test that fails if the answer is wrong.
 
 ### 3.1 `StreamListener` **can** back the Embassy N-socket accept pool
 
@@ -245,7 +249,7 @@ Runtime-specific connector code the design deletes or restructures:
 Untouched and load-bearing: `tunnel.rs` (1 400), the two `framing.rs`
 (93 + 139), `sntp*.rs` (281), `link_ext.rs` (68).
 
-The prototype on this branch is 2 324 lines added across 22 files, which is
+The prototype is 2 324 lines added across 22 files, which is
 the first hard data point on the "new code" estimate. It covers step 1 in
 full, both halves of step 2, the load-bearing parts of steps 4a and 4b, and
 none of steps 3, 5 or 6.
@@ -254,7 +258,7 @@ none of steps 3, 5 or 6.
 
 | Step | Work | Days | Status |
 |---|---|---|---|
-| 1 | Core traits, `FramedConnection`, framing adapters, `OneShot` | 2–3 | **done on this branch** |
+| 1 | Core traits, `FramedConnection`, framing adapters, `OneShot` | 2–3 | **done on the prototype branch** |
 | 2a | `aimdb-tokio-adapter` `net` feature | 1–2 | **done** |
 | 2b | `EmbassyNet`/`EmbassyUart`/`Delay` + slot-pool move | 3–5 | **done**; §3.1 resolved, so the risk that inflated this is gone |
 | 3 | TCP pilot: port the connector onto the traits, migrate `embassy_loopback` | 3–4 | not started; the adapter side it depends on is done |
@@ -286,7 +290,7 @@ entirely in step 5.
   `thumbv7em-none-eabihf` (`make test-embedded`, 8 connector configurations),
   and the TCP and serial halves have real host smokes.
 
-## 7. What is on this branch
+## 7. What is on the prototype branch
 
 New:
 
