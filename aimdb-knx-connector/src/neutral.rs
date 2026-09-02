@@ -306,4 +306,142 @@ mod tests {
 
         task.abort();
     }
+
+    /// **§5.2, exercised end to end.** The unified task, on Tokio, moving real
+    /// telegrams through the *same* `embassy_sync` channel type the Embassy
+    /// half uses — against a real UDP gateway, through a full handshake.
+    ///
+    /// This is the claim "the Tokio half simply adopts it", executed rather
+    /// than asserted. It also links `critical-section/std`: without the
+    /// `tokio-runtime` feature pulling that in, this binary would fail with
+    /// `undefined symbol: _critical_section_1_0_acquire`.
+    #[tokio::test]
+    async fn shared_embassy_channels_carry_telegrams_on_tokio() {
+        use super::shared_channel::{ChannelCommands, ChannelSink};
+        use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+        use embassy_sync::channel::Channel;
+
+        const N: usize = 8;
+        // Leaked so the borrows are `'static`, as a `StaticCell` would give on
+        // the MCU (design 052 §5.2's "one-line allocation choice").
+        let inbound: &'static Channel<CriticalSectionRawMutex, (String, Payload), N> =
+            Box::leak(Box::new(Channel::new()));
+        let commands: &'static Channel<CriticalSectionRawMutex, GroupWrite, N> =
+            Box::leak(Box::new(Channel::new()));
+
+        let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let gateway_addr = gateway.local_addr().unwrap();
+
+        let task = tokio::spawn(connection_task(
+            TokioNet::udp("127.0.0.1:0"),
+            gateway_addr,
+            runtime(),
+            TokioDelay,
+            ChannelSink::<N>(inbound.sender()),
+            ChannelCommands::<N>(commands.receiver()),
+        ));
+
+        let recv_timeout = std::time::Duration::from_secs(5);
+        let mut buf = [0u8; 1024];
+
+        // Handshake.
+        let (len, client_addr) = tokio::time::timeout(recv_timeout, gateway.recv_from(&mut buf))
+            .await
+            .expect("no CONNECT_REQUEST")
+            .unwrap();
+        assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0205);
+        let _ = len;
+        let mut connect_response = vec![0x06, 0x10, 0x02, 0x06, 0x00, 0x14];
+        connect_response.extend_from_slice(&[7, 0]);
+        connect_response.extend_from_slice(&[0x08, 0x01, 0, 0, 0, 0, 0, 0]);
+        connect_response.extend_from_slice(&[0x04, 0x04, 0x02, 0x00]);
+        gateway
+            .send_to(&connect_response, client_addr)
+            .await
+            .unwrap();
+
+        // Inbound telegram -> ACK on the wire, payload on the shared channel.
+        let cemi = [
+            0x29, 0x00, 0xBC, 0xE0, 0x00, 0x00, 0x08, 0x07, 0x01, 0x00, 0x81,
+        ];
+        let total = 6 + 4 + cemi.len() as u16;
+        let mut telegram = vec![0x06, 0x10, 0x04, 0x20];
+        telegram.extend_from_slice(&total.to_be_bytes());
+        telegram.extend_from_slice(&[0x04, 7, 42, 0x00]);
+        telegram.extend_from_slice(&cemi);
+        gateway.send_to(&telegram, client_addr).await.unwrap();
+
+        let (len, _) = tokio::time::timeout(recv_timeout, gateway.recv_from(&mut buf))
+            .await
+            .expect("no TUNNELING_ACK")
+            .unwrap();
+        assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0421);
+        assert_eq!(buf[8], 42, "sequence echoed");
+        let _ = len;
+
+        let (topic, payload) = tokio::time::timeout(recv_timeout, inbound.receive())
+            .await
+            .expect("no telegram reached the embassy-sync channel");
+        assert_eq!(topic, "1/0/7");
+        assert_eq!(&payload[..], &[0x01]);
+
+        // Outbound: a command through the shared channel reaches the wire.
+        let mut data = heapless::Vec::new();
+        data.push(0x01).unwrap();
+        commands
+            .send(GroupWrite {
+                group_addr: "1/0/8".parse().unwrap(),
+                data,
+            })
+            .await;
+        let (len, _) = tokio::time::timeout(recv_timeout, gateway.recv_from(&mut buf))
+            .await
+            .expect("no TUNNELING_REQUEST")
+            .unwrap();
+        assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0420);
+        assert_eq!(&buf[16..18], &[0x08, 0x08], "cEMI destination = 1/0/8");
+        assert_eq!(buf[len - 1], 0x81, "APCI GroupValueWrite | value 1");
+
+        task.abort();
+    }
+
+}
+
+/// Design 052 §5.2, exercised: the same `embassy_sync` channel type the
+/// Embassy half uses today, wired into the neutral task on **Tokio**.
+///
+/// `CriticalSectionRawMutex` is the only `Sync` raw mutex `embassy-sync`
+/// offers (`NoopRawMutex` is `!Sync`, so it cannot back a shared channel), and
+/// it resolves to `_critical_section_1_0_acquire`/`_release` — extern symbols
+/// the final binary must supply. The `tokio-runtime` feature enables
+/// `critical-section/std` so downstream std users never see that link error.
+#[cfg(feature = "tokio-runtime")]
+pub(crate) mod shared_channel {
+    use super::{CommandSource, GroupWrite, Payload, TelegramSink};
+    use alloc::string::String;
+    use core::future::Future;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::channel::{Receiver, Sender};
+
+    /// Outbound half of the inbound-telegram channel.
+    pub(crate) struct ChannelSink<'a, const N: usize>(
+        pub Sender<'a, CriticalSectionRawMutex, (String, Payload), N>,
+    );
+
+    impl<const N: usize> TelegramSink for ChannelSink<'_, N> {
+        fn try_send(&self, topic: String, payload: Payload) -> bool {
+            self.0.try_send((topic, payload)).is_ok()
+        }
+    }
+
+    /// Inbound half of the outbound-command channel.
+    pub(crate) struct ChannelCommands<'a, const N: usize>(
+        pub Receiver<'a, CriticalSectionRawMutex, GroupWrite, N>,
+    );
+
+    impl<const N: usize> CommandSource for ChannelCommands<'_, N> {
+        fn recv(&mut self) -> impl Future<Output = GroupWrite> + Send + '_ {
+            self.0.receive()
+        }
+    }
 }
