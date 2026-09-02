@@ -1,18 +1,26 @@
 # 052 — Verification against the codebase, and effort assessment
 
-**Status:** review, 2026-09-02. Verifies
+**Status:** review + prototype, 2026-09-02. Verifies
 [052 — Runtime-neutral connectors](052-runtime-neutral-connectors.md) against
 the tree at `58c1951`, on the pinned toolchain (rustc 1.98.0, `88d9e12ae`).
 **Verdict:** the architecture is sound and the core mechanism is real — it
-compile-checks exactly as claimed. Four factual errors and four unresolved
-design gaps need fixing before step 1 starts; none of them invalidate the
-approach. Effort: **4–6 weeks** for one engineer already fluent in the crates.
+compile-checks exactly as claimed. Four factual errors need fixing, and four
+design gaps were open; **all four are now closed with working code on this
+branch** (§3), not with argument. Effort, recalibrated against that
+prototype: **4–6 weeks** for one engineer already fluent in the crates.
+
+Every claim below that says "verified" or "answered" was executed. The
+prototype is ~2 300 lines across seven crates: core's neutral I/O layer, both
+adapters, a unified KNX connection task, the serial connector reduced to
+framing, and the tests that settle each question. §7 lists what landed where.
 
 ---
 
 ## 1. What checks out
 
 Every load-bearing claim in §2, §5 and §6 was checked against the source.
+Line references are to the current branch; where §3 later changes a cited
+item, the change is called out there.
 
 | Claim | Verified |
 |---|---|
@@ -23,10 +31,11 @@ Every load-bearing claim in §2, §5 and §6 was checked against the source.
 | §5.2 Tokio's `with_command_queue_size` becomes a const generic | Yes — it exists at [`tokio_client.rs:64`](../../aimdb-knx-connector/src/tokio_client.rs); the Embassy side already notes the size must be a constant |
 | §5.5 `spin::Mutex` needs no new dependency | Yes — `aimdb-core/Cargo.toml:120` already declares `spin` with `mutex`/`spin_mutex` |
 | §4 `RuntimeOps::sleep` boxes | Yes — `fn sleep(&self, d) -> BoxFuture` at [`executor.rs:50`](../../aimdb-core/src/executor.rs); `now_nanos` is a plain call |
-| §2 KNX is ~90 % shared behind a three-method `TunnelIo` | Yes — `send`/`forward`/`warn_ack_timeout` at [`tunnel.rs:536-552`](../../aimdb-knx-connector/src/tunnel.rs); `drain_actions` is the shared driver |
+| §2 KNX is ~90 % shared behind a three-method `TunnelIo` | Yes — `send`/`forward`/`warn_ack_timeout` at [`tunnel.rs:536`](../../aimdb-knx-connector/src/tunnel.rs); `drain_actions` is the shared driver |
 | §2 both KNX halves bypass `RuntimeOps` for the clock | Yes — `embassy_time::Instant::now()` at `embassy_client.rs:281`, `tokio::time::Instant` at `tokio_client.rs:221` |
 | §2 the serial Embassy half is already the target shape | Yes — it contributes only `CobsFramer` and rides `EmbassyConnection<Rd, Wr, F, RC, WC>`; the file carries **zero** `unsafe` |
-| §6 `embassy_tls.rs` already bypasses `run_with_subscriptions` | Yes — `handle_messages` at [`embassy_tls.rs:367`](../../aimdb-mqtt-connector/src/embassy_tls.rs); the plain path still uses `run_with_subscriptions` at `embassy_client.rs:577` |
+| §5.4 `embassy-futures` is dependency-free | Yes — its `[dependencies]` is empty bar optional `defmt`/`log`, and `select_array` exists for the pooled case |
+| §6 `embassy_tls.rs` already bypasses `run_with_subscriptions` | Yes — `handle_messages` at [`embassy_tls.rs:372`](../../aimdb-mqtt-connector/src/embassy_tls.rs); the plain path still uses `run_with_subscriptions` at `embassy_client.rs:575` |
 | §6 `set_unix_time` has no neutral home | Yes — it is an inherent `EmbassyAdapter` method ([`runtime.rs:48`](../../aimdb-embassy-adapter/src/runtime.rs)), not on `RuntimeOps` |
 | §7.2 hostname resolution is a genuine gain | Yes — the plain Embassy path rejects non-IPv4-literal hosts today ("plain mqtt:// needs an IPv4 literal") |
 | §8 design 012 exists and needs a rewrite | Yes — `012-M5-connector-development-guide.md`, marked "✅ Implemented (Reference Documentation)" |
@@ -65,106 +74,161 @@ directions dissolves that blocker, and it costs nothing, because
    `time.rs` 3) and `aimdb-bench/src/alloc.rs` one. The criterion needs
    scoping to the connector crates, which is what it evidently means.
 
-## 3. Gaps that need resolving before step 1
+## 3. The four gaps, closed
 
-### 3.1 `StreamListener` cannot express the Embassy N-socket accept pool
+Each was flagged as needing design work before step 1. Each is now answered by
+code on this branch, with a test that fails if the answer is wrong.
 
-§3.2 and §6 both say the slot pool "moves into the adapter **unchanged**". It
-cannot, as written. The pool's purpose is keeping *N sockets in `accept()`
-simultaneously* — `embassy-net` has no central listener, so each socket must
-enter `accept()` itself. Today the connector owns that fan-out directly:
-`TcpListener::<N>::into_server_futures` spawns one `serve_socket_slot` worker
-per slot, each calling `run_session` itself
-([`embassy_transport.rs:362-445`](../../aimdb-tcp-connector/src/embassy_transport.rs)).
-The `Listener` impl exists only for the `N = 1` compatibility path.
+### 3.1 `StreamListener` **can** back the Embassy N-socket accept pool
 
-`StreamListener::accept(&mut self)` is single-shot, and core's `serve`
-([`server.rs:398`](../../aimdb-core/src/session/server.rs)) is a serial accept
-loop. Routing the pool through it gives one pending listener at a time, not N.
-Two ways out, both real work:
+The concern was that `accept(&mut self)` is single-shot while the pool exists
+to keep `N` sockets in `accept()` at once, so routing it through core's serial
+`serve` loop would drop concurrency to one — and that §6's "moves into the
+adapter unchanged" therefore could not hold.
 
-- **`select` over N slots inside the adapter's `accept`.** Honours the
-  signature and keeps N sockets listening — but every successful accept drops
-  the other N−1 pending `accept()` futures, and re-entering restarts them. The
-  existing `SlotReturn` guard exists precisely because a dropped mid-`accept`
-  future must recycle its socket; whether embassy-net can lose an in-flight SYN
-  across that cancel needs verifying on hardware, not asserting.
-- **Keep a multi-worker API on the adapter** alongside `StreamListener`. Then
-  `TcpServer<N>` still reaches an Embassy-shaped API, which is the fork the
-  design set out to remove.
+Reading `embassy-net` settles the mechanism. `TcpSocket::accept` is a
+*synchronous* `s.listen(endpoint)` followed by a bare `poll_fn` that waits for
+the state to leave `Listen`/`SynSent`/`SynReceived`. So **dropping the future
+does not un-listen the socket** — but *re-entering* `accept()` on a listening
+socket is `InvalidState`, and the `abort()` that makes it re-enterable is what
+drops the `LISTEN`.
 
-`tests/embassy_loopback.rs::two_concurrent_sessions` drives
-`accept_on(0)`/`accept_on(1)` concurrently and is explicitly written so that
-"a broken pool (only one socket accepting…) would hang the second session";
-it is the test that will catch this, and acceptance 4 requires it to pass.
+`EmbassyNet::listen::<N>` therefore stores one accept future per slot and
+consumes only the one that completes; the other `N-1` stay pending, untouched,
+still listening. Nothing is ever cancelled and no socket leaves `LISTEN`
+between calls.
 
-### 3.2 `Datagram` is too thin for the KNX connection task
+`aimdb-tcp-connector/tests/neutral_pool.rs` proves it over the same two
+crossover-wired `embassy-net` stacks the existing loopback smoke uses, driven
+in exactly the shape `serve` accepts in:
 
-Two things the unified `connection_task<U: Datagram, T: Delay>` needs that the
-trait does not offer:
+- `pool_keeps_every_slot_listening_between_accepts` — client A connects and
+  round-trips bytes; **then**, while the server sits between accepts, client B
+  dials and also connects and round-trips. A pool holding only one socket in
+  `LISTEN` would have had B's SYN refused.
+- `naive_pool_loses_the_syn_that_arrives_between_accepts` — the same scenario
+  against a pool that re-creates its accepts each call. B's dial fails with
+  `TransportError::Io`, asserted. This is what makes the first test a finding
+  rather than a coincidence, and it is a regression guard: if embassy-net's
+  cancellation semantics ever change, it tells you the stored-accept design
+  can be simplified.
 
-- **Local address.** The Tokio half binds `0.0.0.0:0`, reads
-  `socket.local_addr()`, and feeds it to `engine.set_local_endpoint(
-  LocalEndpoint::Explicit { ip, port })` — required by gateways that reject the
-  NAT-style HPAI ([`tunnel.rs:107-121`](../../aimdb-knx-connector/src/tunnel.rs)).
-  `Datagram` has `send_to`/`recv_from` only, so unifying the task either adds
-  `local_addr()` to the trait or silently downgrades every Tokio deployment to
-  `LocalEndpoint::Nat` — a behaviour regression against real gateways.
-- **Rebind.** Both halves drop and re-create the socket on each reconnect
-  cycle. A moved-in `Datagram` value cannot be rebound; the design needs a
-  binder/factory trait, or the engine's socket-reset action loses its effect.
+So §6's wording needs one correction — the pool moves *reshaped*, not
+unchanged — but the trait set is sufficient, and the result is strictly better
+than today's: no `abort()`/`LISTEN` window at all.
 
-### 3.3 `TunnelIo` needs the same `+ Send` treatment as `ByteStream`
+### 3.2 `Datagram` needed `local_addr` and a binder — both added, both work
 
-`TunnelIo::send` is a bare `async fn` in a trait, and `drain_actions` is
-generic over `impl TunnelIo`. Inside `drain_actions` the returned future is
-opaque and not provably `Send`, so `drain_actions`' own future is not `Send`
-— exactly the §5.1 problem, one layer up. The unified connection task cannot
-be boxed as the runner's `Send + 'static` future until `TunnelIo::send`
-declares `-> impl Future<Output = bool> + Send`. Cheap to fix, but it is not
-in §11's step list and it is a semver-visible change to a `pub(crate)` trait
-whose two impls both live in files the design deletes.
+Confirmed as a real gap and closed by widening the trait, not by dropping
+behaviour. `Datagram::local_addr` is now part of the contract and
+`DatagramBinder` supplies sockets, so the engine's `Action::ResetSocket` can
+rebind.
 
-### 3.4 Acceptance 2 collides with §6 on `TlsOptions`
+Both are implementable on both runtimes. Tokio reads `UdpSocket::local_addr`;
+Embassy assembles the address from the socket's bound port and the stack's
+IPv4 config, and rebinds by `close()` + `bind()` on the same socket rather
+than recreating it (which would strand its buffers).
 
-§6 says "`TlsOptions` keeps its signature". Its `rng` field is
-`&'static mut dyn CryptoRngCore` — a trait object with no `Send` bound, so
-`TlsOptions` is **not** `Send`, so §5.5's `spin::Mutex<Option<L>>` (which
-requires `L: Send`) cannot replace `TlsSlot`'s `unsafe impl Send + Sync`
-([`embassy_client.rs:287-294`](../../aimdb-mqtt-connector/src/embassy_client.rs)).
-Either `TlsOptions::new` gains `dyn CryptoRngCore + Send` (a signature change,
-a break for every caller, though `embassy_stm32::rng::Rng` should satisfy it)
-or the slot moves into the adapter. Pick one; as written the two sections
-contradict each other.
+`neutral::tests::unified_task_advertises_the_real_local_endpoint` drives the
+unified task against a real UDP gateway socket and asserts the bytes: the
+CONNECT_REQUEST's control HPAI carries `127.0.0.1` and the socket's actual
+bound port, not `0.0.0.0:0`. Worth noting the Embassy half never set the
+explicit endpoint *at all* today, so unification fixes it rather than
+regressing it.
 
-## 4. Two consequences the design understates
+### 3.3 `TunnelIo::send` did block generic code — fixed, and it cost one line
 
-- **`CriticalSectionRawMutex` on the host is not free.** §5.2 notes the
-  adapter's host *tests* use `critical-section/std`. The same applies to
-  production: adopting `embassy_sync::channel::Channel<CriticalSectionRawMutex, …>`
-  in the Tokio KNX path means every std binary linking the connector must now
-  supply a `critical-section` implementation, or fail at link time. That is a
-  new obligation on downstream std users and belongs in §7, not only in a test
-  aside.
-- **The workspace patches `embassy-sync` to a local checkout**
-  (`[patch.crates-io]`, `Cargo.toml:172-175`), and the comment there records
-  that this "blocks publishing `aimdb-embassy-adapter`". Putting `embassy-sync`
-  on the std side of the KNX connector widens that publishing constraint's
-  blast radius. Not a blocker — the KNX channel needs no patched API — but it
-  should be a stated assumption.
+Reproduced exactly. A probe asserting `Send` on `drain_actions`' future in
+generic code gave `E0277: future cannot be sent between threads safely`, with
+rustc prescribing the fix verbatim:
 
-## 5. Acceptance criteria, reviewed
+```
+help: `Send` can be made part of the associated future's guarantees for all
+      implementations of `tunnel::TunnelIo::send`
+-     async fn send(&mut self, frame: &[u8]) -> bool;
++     fn send(&mut self, frame: &[u8]) -> impl Future<Output = bool> + Send;
+```
+
+Applied, with `tunnel::tests::drain_actions_future_is_send_in_generic_code` as
+the guard. The two existing impls then split exactly along §5.1's predicted
+line: the Tokio one stays a plain `async fn`, and the Embassy one — whose
+`embassy_net::udp::UdpSocket` future is `!Send` — returns the adapter's
+transparent `SendFutureWrapper`. That is §5.1's mechanism exercised on a real
+trait in a real connector rather than on a standalone sketch.
+
+### 3.4 §6 and acceptance 2 really did conflict — the signature is what gives
+
+A type assertion on the real struct confirmed it: `TlsOptions` is `!Send`
+because its RNG is a bare `&'static mut dyn CryptoRngCore`, so §5.5's
+`spin::Mutex<Option<T>>` cannot hold it and the `unsafe impl`s cannot go.
+
+The resolution is one `+ Send` on the trait object — a signature change §6
+says will not happen, and the cheapest of the available options, since every
+concrete CSPRNG a caller passes already satisfies it. With that:
+
+- core gains `session::OneShot<T>`, §5.5's cell: `Send + Sync` for any
+  `T: Send`, no `unsafe`, with a compile-time assertion of that property so a
+  regression surfaces in core rather than in a connector;
+- `TlsSlot` becomes an alias for it, and **`aimdb-mqtt-connector` now carries
+  zero `unsafe impl`s** (was two);
+- the whole `embassy-tls` path still cross-compiles to thumbv7em, so
+  `embedded-tls` accepts the bound.
+
+§6 should be amended to say `TlsOptions` keeps its *shape* but gains a `Send`
+bound on its RNG.
+
+## 4. The two understated consequences, measured
+
+### 4.1 `CriticalSectionRawMutex` on std is a link-time obligation
+
+§5.2 mentions `critical-section/std` only as a host-test detail. A standalone
+std binary using `Channel<CriticalSectionRawMutex, _, N>` fails to link:
+
+```
+rust-lld: error: undefined symbol: _critical_section_1_0_acquire
+rust-lld: error: undefined symbol: _critical_section_1_0_release
+```
+
+`NoopRawMutex` cannot substitute — it is `!Sync`, so it cannot back a shared
+channel at all (`*mut () cannot be shared between threads safely`).
+`CriticalSectionRawMutex` is therefore forced on std, and the obligation with
+it.
+
+It is also fully mitigable in one line, which the branch does: the KNX
+connector's `tokio-runtime` feature now enables `critical-section/std` itself,
+so no downstream std user ever sees the error.
+`neutral::tests::shared_embassy_channels_carry_telegrams_on_tokio` then runs
+§5.2's claim rather than asserting it — the unified task on Tokio, against a
+real UDP gateway, carrying a full handshake, an inbound telegram with its ACK,
+and an outbound command, all through the same `embassy_sync` channel types the
+MCU uses.
+
+### 4.2 The `embassy-sync` patch, and one feature-unification trap
+
+§5.4's "dependency-free" claim is exact: `embassy-futures` 0.1.2 has an empty
+`[dependencies]` bar optional `defmt`/`log`, and its `select3` drives the
+unified KNX loop on both runtimes. It is now an unconditional dependency of
+the KNX connector, and the std build is unaffected.
+
+One trap found by building rather than reading: making the adapter's `net`
+feature imply `embassy-time` turns on the workspace's
+`defmt-timestamp-uptime`, which defines `_defmt_timestamp` and collides with
+the `defmt::timestamp!` every host test binary must supply. Sockets and clock
+have to stay separable features — `net` does not imply `embassy-time`, and
+`EmbassyDelay` is gated separately.
+
+## 5. Acceptance criteria, re-reviewed against the prototype
 
 | # | Assessment |
 |---|---|
-| 1 | Good. Baseline verified passing; core's zero-`unsafe` property is real. |
-| 2 | Needs rewording (see §2.4 above) and is unreachable while §3.4 stands. |
-| 3 | Reachable, with one caveat: the serial connector's `ByteStream` impl over `tokio_serial::SerialStream` needs `tokio` (io-util) or an `aimdb-tokio-adapter` dependency the manifest deliberately avoids. §8 flags this for the *sugar* but not for the stream impl itself. |
-| 4 | The right criterion, and the sharpest one — `two_concurrent_sessions` is what §3.1 must satisfy. Note that MQTT's `build_internal` tests are Tokio-only unit tests inside `tokio_client.rs`; there is **no** host test for either Embassy MQTT path. |
-| 5 | Near-vacuous. `examples/embassy-bench-stm32h5` depends only on `aimdb-core`, `aimdb-embassy-adapter` and `aimdb-bench` — no connector crate — so it will show no change whatever the refactor does. If per-message allocation in the connector path is the property worth guarding, it needs a test that exercises a connector. |
-| 6 | Good, and the most valuable one: it is the first host-side coverage the embedded MQTT backend would ever get. |
+| 1 | **Met.** Core carries the new traits, `FramedConnection`, `FramingDialer`/`FramingListener` and `OneShot`, and still cross-compiles to `thumbv7em-none-eabihf` with zero `unsafe`. |
+| 2 | Needs rewording (it overlooks `aimdb-wasm-adapter`'s 16 `unsafe impl`s and `aimdb-bench`'s one), but now reachable: MQTT is at zero, serial was already at zero, and the TCP connector's remaining three live in the module this design deletes — the adapter's `net` module already replaces them. |
+| 3 | **Met for serial**, and the doubt was unfounded: `tokio` for `io-util` alone suffices, with no `aimdb-tokio-adapter` dependency. See §3 of `neutral_framed.rs`. |
+| 4 | Still the sharpest criterion. `two_concurrent_sessions` and the three other loopback tests pass unchanged, and `neutral_pool.rs` adds the pooled-`StreamListener` equivalent. Note MQTT's `build_internal` tests are Tokio-only unit tests; there is still **no** host test for either Embassy MQTT path. |
+| 5 | **Near-vacuous, unchanged.** `examples/embassy-bench-stm32h5` depends only on `aimdb-core`, `aimdb-embassy-adapter` and `aimdb-bench` — no connector — so it will show no change whatever the refactor does. Replace it with an allocation-counting test on a connector path. |
+| 6 | Still the most valuable, and still unbuilt. Build it first, not last (§6.3). |
 
-## 6. Effort assessment
+## 6. Effort assessment, recalibrated
 
 ### 6.1 Code in scope
 
@@ -181,55 +245,77 @@ Runtime-specific connector code the design deletes or restructures:
 Untouched and load-bearing: `tunnel.rs` (1 400), the two `framing.rs`
 (93 + 139), `sntp*.rs` (281), `link_ext.rs` (68).
 
-New code, estimated: core traits + `FramedConnection` + framing adapters
-~450 (of which ~110 is the `framed` module lifted from
-`aimdb-embassy-adapter/src/connectors.rs`); `TokioNet` ~300; `EmbassyNet` /
-`EmbassyUart` ~450 (including ~250 of moved slot pool); rewritten connector
-modules ~1 000. Net: roughly **2 200 lines written, 4 130 replaced**, across
-6 crates, 7 example binaries, `aimdb-codegen`, and 12 test files (2 607 lines).
+The prototype on this branch is 2 324 lines added across 22 files, which is
+the first hard data point on the "new code" estimate. It covers step 1 in
+full, both halves of step 2, the load-bearing parts of steps 4a and 4b, and
+none of steps 3, 5 or 6.
 
 ### 6.2 Stage estimates
 
-Following §11's own sequencing, for one engineer fluent in these crates:
+| Step | Work | Days | Status |
+|---|---|---|---|
+| 1 | Core traits, `FramedConnection`, framing adapters, `OneShot` | 2–3 | **done on this branch** |
+| 2a | `aimdb-tokio-adapter` `net` feature | 1–2 | **done** |
+| 2b | `EmbassyNet`/`EmbassyUart`/`Delay` + slot-pool move | 3–5 | **done**; §3.1 resolved, so the risk that inflated this is gone |
+| 3 | TCP pilot: port the connector onto the traits, migrate `embassy_loopback` | 3–4 | not started; the adapter side it depends on is done |
+| 4a | Serial | 1–2 | framing + streams **done**; connector sugar and test migration remain |
+| 4b | KNX | 3–5 | unified task **done**; builder/channel wiring and deleting the two clients remain |
+| 5 | MQTT `Native`/`Embedded` split | 5–8 | not started |
+| 6 | Examples, codegen + drift re-baseline, design 012, CHANGELOGs, major bumps | 2–3 | not started |
+| | **Total** | **20–32 days ≈ 4–6 weeks** | |
 
-| Step | Work | Days |
-|---|---|---|
-| 1 | Core traits, `FramedConnection`, `FramingDialer`/`FramingListener`; lift `Framer` out of the adapter | 2–3 |
-| 2a | `aimdb-tokio-adapter` `net` feature | 1–2 |
-| 2b | `EmbassyNet`/`EmbassyUart`/`Delay` + slot-pool move — **includes resolving §3.1** | 3–5 |
-| 3 | TCP pilot + `embassy_loopback` (368 lines, two real `embassy-net` stacks) | 3–4 |
-| 4a | Serial (already the target shape) | 1–2 |
-| 4b | KNX: unify two clients, `TunnelIo` `Send` bound, §3.2 `Datagram` gaps | 3–5 |
-| 5 | MQTT `Native`/`Embedded` split; plain path from `run_with_subscriptions` to `handle_messages` | 5–8 |
-| 6 | Examples, `aimdb-codegen` + drift re-baseline, design 012 rewrite, CHANGELOGs, major bumps | 2–3 |
-| | **Total** | **20–32 days ≈ 4–6 weeks** |
-
-Add roughly a week if §3.1 forces a rethink of `StreamListener`, and a week of
-on-hardware validation (STM32H5) for the Embassy MQTT/KNX paths.
+The estimate holds. What changed is its shape: the week of contingency I
+attached to §3.1 is no longer needed, and the four gaps that could each have
+forced a rethink are closed. The remaining risk is concentrated almost
+entirely in step 5.
 
 ### 6.3 Where the risk actually sits
 
 - **MQTT is the long pole and the thinnest-covered.** 1 584 lines restructured
-  with no host integration test for either Embassy path — only Tokio-side
-  `build_internal` unit tests and topic/link unit tests. Moving the plain path
+  with no host integration test for either Embassy path. Moving the plain path
   from `run_with_subscriptions` to `handle_messages` means re-implementing the
-  reconnect-and-resubscribe loop that mountain-mqtt-embassy currently owns
-  ([`embassy_client.rs:562-577`](../../aimdb-mqtt-connector/src/embassy_client.rs)
-  — "the manager re-subscribes these topics on every connection, so inbound
-  routing survives reconnects"). That is behaviour, not plumbing. Acceptance 6
-  is the mitigation and should be built *first*, not last.
-- **The Embassy TCP pool** (§3.1) is the one place where the design's trait
-  set does not yet cover the existing behaviour.
+  reconnect-and-resubscribe loop mountain-mqtt-embassy currently owns
+  (`embassy_client.rs:562-577` — "the manager re-subscribes these topics on
+  every connection, so inbound routing survives reconnects"). That is
+  behaviour, not plumbing. Acceptance 6 is the mitigation and should be built
+  **first**.
+- **Everything else is now de-risked by running code.** The traits, both
+  adapters, the accept pool, the unified KNX task and the neutral framed
+  connection all exist and are tested.
 - **What is well covered:** CI cross-compiles every Embassy connector to
   `thumbv7em-none-eabihf` (`make test-embedded`, 8 connector configurations),
-  so compile-level regressions surface immediately, and the TCP and serial
-  halves have real host smokes.
+  and the TCP and serial halves have real host smokes.
 
-### 6.4 A cheaper first slice
+## 7. What is on this branch
 
-If the goal is de-risking rather than completeness, steps 1–3 (core traits,
-both adapters, TCP pilot) are ~10–14 days and answer every open question in
-§3.1 and §5.1 against real code. Serial follows almost for free. KNX and MQTT
-— 2 684 of the 4 130 lines — can then be scheduled on evidence instead of on
-estimate, and the FreeRTOS adapter that motivates the whole design (051 §8)
-only needs steps 1–2 to be startable.
+New:
+
+- `aimdb-core/src/session/io.rs` — `ByteStream`, `StreamDialer`,
+  `StreamListener`, `Datagram`, `DatagramBinder`, `Delay`, `Framer`,
+  `FramerFactory`, `FramedConnection`, `FramingDialer`, `FramingListener`,
+  `OneShot`. Additive; core still has zero `unsafe`.
+- `aimdb-embassy-adapter/src/net.rs` (feature `net`) — `EmbassyNet::tcp` /
+  `listen::<N>` / `udp`, `EmbassyTcpStream`, the stored-accept pool,
+  `EmbassyUdpSocket`/`EmbassyUdpBinder`, `EmbassyDelay`. All the force-`Send`
+  for the TCP and UDP paths lives here.
+- `aimdb-tokio-adapter/src/net.rs` (feature `net`) — the std duals, every
+  future a plain `async fn`, no `unsafe`.
+- `aimdb-knx-connector/src/neutral.rs` — one `connection_task` generic over
+  `DatagramBinder + Delay`, plus the `embassy_sync` channel bridges.
+- `aimdb-serial-connector/src/neutral.rs` — the COBS framer against core's
+  trait, and one `ByteStream` per byte source.
+- Tests: `aimdb-tcp-connector/tests/neutral_pool.rs`,
+  `aimdb-serial-connector/tests/neutral_framed.rs`, and unit tests in
+  `neutral.rs` and `tunnel.rs`.
+
+Changed: `TunnelIo::send` gains `+ Send`; `TlsOptions`'s RNG gains `+ Send`
+and `TlsSlot` becomes `OneShot`; the KNX `tokio-runtime` feature adopts
+`embassy-sync` + `critical-section/std`; `embassy-futures` becomes
+unconditional.
+
+Verification run: `make test-embedded` passes (all 8 Embassy connector
+configurations), every connector test suite passes, and clippy is clean on
+the changed crates. Two pre-existing failures are unrelated to this work and
+reproduce on `main`: `aimdb-data-contracts`' `compile_fail` trybuild suite,
+and `cargo clippy --target thumbv7em-none-eabihf`, which fails in this
+environment for untouched crates too.
