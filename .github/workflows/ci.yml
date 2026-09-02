@@ -18,21 +18,17 @@ jobs:
     - uses: actions/checkout@v7
       with:
         submodules: recursive
-    
+
+    # A text comparison, so it needs no toolchain and can fail before we spend
+    # one. `make check` runs it again in comprehensive-check, which gates on
+    # three other jobs and would report drift far later.
+    - name: Check the devcontainer pin matches rust-toolchain.toml
+      run: make check-toolchain-pin
+
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
-        components: rustfmt, clippy
-    
-    - name: Cache dependencies
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-format-${{ hashFiles('**/Cargo.lock') }}
+        rustflags: ""
     
     - name: Check formatting (workspace members only)
       run: make fmt-check
@@ -50,18 +46,9 @@ jobs:
         submodules: recursive
     
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
-    
-    - name: Cache dependencies
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+        rustflags: ""
     
     - name: Build all valid feature combinations
       run: make build
@@ -91,18 +78,9 @@ jobs:
         submodules: recursive
     
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: thumbv7em-none-eabihf
-    
-    - name: Cache dependencies
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-embedded-${{ hashFiles('**/Cargo.lock') }}
+        rustflags: ""
     
     - name: Test embedded cross-compilation
       run: make test-embedded
@@ -117,24 +95,16 @@ jobs:
         submodules: recursive
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: wasm32-unknown-unknown
+        rustflags: ""
+        # wasm-pack downloads wasm-bindgen/wasm-opt binaries into here.
+        cache-directories: ~/.cache/.wasm-pack
 
     # Prebuilt: the Makefile's fallback is `cargo install wasm-pack --locked`,
     # a multi-minute source build on a cold runner.
     - name: Install wasm-pack
       uses: taiki-e/install-action@wasm-pack
-
-    - name: Cache dependencies
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ~/.cache/.wasm-pack
-          target
-        key: ${{ runner.os }}-cargo-wasm-browser-${{ hashFiles('**/Cargo.lock') }}
 
     # Chrome is preinstalled on the runner image, so this pins chromedriver to
     # its major version; chromedriver refuses a browser it does not match.
@@ -186,19 +156,9 @@ jobs:
         submodules: recursive
     
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
-        components: rustfmt, clippy
-    
-    - name: Cache dependencies  
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-comprehensive-${{ hashFiles('**/Cargo.lock') }}
+        rustflags: ""
     
     - name: Run comprehensive development check
       run: make check

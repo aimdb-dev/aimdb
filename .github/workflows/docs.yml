@@ -22,18 +22,9 @@ jobs:
         submodules: recursive
     
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: wasm32-unknown-unknown
-    
-    - name: Cache dependencies
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-docs-cargo-${{ hashFiles('**/Cargo.lock') }}
+        rustflags: ""
     
     - name: Build documentation
       run: make doc

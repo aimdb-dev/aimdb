@@ -1,0 +1,15 @@
+# Pins the compiler for developers and CI alike. Before this file the
+# devcontainer froze on whatever was stable when its image was built while
+# every workflow tracked current stable -- a ~6-version gap that hid a
+# wasm-bindgen symbol-mangling bug until it reached CI (#207).
+#
+# Targets and components belong here rather than in the workflows: rustup
+# materializes them for whoever picks up the file, so no install site can
+# declare a different set. .devcontainer/Dockerfile duplicates the channel in
+# ARG RUST_VERSION because its build context is .devcontainer/ and cannot read
+# this file; `make check-toolchain-pin` fails if the two disagree.
+[toolchain]
+channel = "1.98.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["thumbv7em-none-eabihf", "wasm32-unknown-unknown"]

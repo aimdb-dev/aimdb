@@ -101,6 +101,20 @@ jobs:
             rustup --version
           "
 
+      # `make check-toolchain-pin` compares two files; this compares the file to
+      # the compiler that actually landed in the image. The image is built from
+      # the .devcontainer/ context and never sees rust-toolchain.toml, so this is
+      # the only place the pin is checked against a real rustc.
+      - name: Test Rust version matches rust-toolchain.toml
+        run: |
+          pin="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)"
+          [ -n "$pin" ] || { echo "no [toolchain] channel in rust-toolchain.toml"; exit 1; }
+          got="$(docker run --rm aimdb-devcontainer:test rustc --version | awk '{print $2}')"
+          echo "pinned=$pin image=$got"
+          [ "$pin" = "$got" ] || {
+            echo "devcontainer image built rustc $got but the repo pins $pin"; exit 1;
+          }
+
       - name: Test embedded targets
         run: |
           docker run --rm aimdb-devcontainer:test bash -c "

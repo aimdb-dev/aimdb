@@ -2,6 +2,7 @@
 name = "aimdb-wasm-adapter"
 version = "0.3.0"
 edition = "2021"
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true

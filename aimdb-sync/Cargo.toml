@@ -2,6 +2,7 @@
 name = "aimdb-sync"
 version = "0.6.0"
 edition = "2021"
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Synchronous blocking wrapper for AimDB - bridge async database to sync code"
