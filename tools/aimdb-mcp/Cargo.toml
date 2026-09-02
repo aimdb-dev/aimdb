@@ -2,6 +2,7 @@
 name = "aimdb-mcp"
 version = "0.8.0"
 edition = "2021"
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspection"

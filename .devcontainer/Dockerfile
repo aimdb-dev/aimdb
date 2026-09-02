@@ -85,15 +85,24 @@ WORKDIR /home/$USERNAME
 
 # --------------------------------------------------------------------
 # Install Rust + AimDB-specific targets and tools
+#
+# RUST_VERSION must match rust-toolchain.toml's channel. It is repeated here
+# because this image builds from the .devcontainer/ context and so cannot read
+# the repo root; `make check-toolchain-pin` fails when the two drift apart.
 # --------------------------------------------------------------------
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ARG RUST_VERSION=1.98.0
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal \
+      -c rustfmt -c clippy
 ENV PATH="/home/$USERNAME/.cargo/bin:${PATH}"
 
-# Add embedded targets for AimDB MCU support
+# The first two mirror rust-toolchain.toml's `targets` so the image needs no
+# download on first use; the thumbv6m/thumbv7m pair is a devcontainer-only
+# convenience for MCU work outside what the workspace builds.
 RUN rustup target add thumbv7em-none-eabihf \
+    && rustup target add wasm32-unknown-unknown \
     && rustup target add thumbv6m-none-eabi \
-    && rustup target add thumbv7m-none-eabi \
-    && rustup target add wasm32-unknown-unknown
+    && rustup target add thumbv7m-none-eabi
 
 # Install core AimDB development tools
 RUN cargo install cargo-audit cargo-watch cargo-expand

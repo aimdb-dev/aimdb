@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -703,8 +703,52 @@ check-no-globals:
 	printf "$(BLUE)✓ scanner verified against a positive control$(NC)\n"; \
 	printf "$(GREEN)✓ No library crate installs a process-global$(NC)\n"
 
+# The devcontainer image builds from the .devcontainer/ context, so it cannot
+# read rust-toolchain.toml and has to repeat the channel in ARG RUST_VERSION.
+# Nothing else keeps the two honest. Every lookup is checked for emptiness so a
+# parse that quietly returns nothing cannot make this pass vacuously.
+check-toolchain-pin:
+	@printf "$(GREEN)Checking the devcontainer agrees with rust-toolchain.toml...$(NC)\n"
+	@pin=$$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml); \
+	arg=$$(sed -n 's/^ARG RUST_VERSION=\(.*\)$$/\1/p' .devcontainer/Dockerfile); \
+	if [ -z "$$pin" ]; then \
+		printf "$(RED)✗ no [toolchain] channel found in rust-toolchain.toml$(NC)\n"; exit 1; \
+	fi; \
+	if [ -z "$$arg" ]; then \
+		printf "$(RED)✗ no ARG RUST_VERSION found in .devcontainer/Dockerfile$(NC)\n"; exit 1; \
+	fi; \
+	if [ "$$pin" != "$$arg" ]; then \
+		printf "$(RED)✗ compiler drift: rust-toolchain.toml pins $$pin, .devcontainer/Dockerfile builds $$arg$(NC)\n"; \
+		printf "$(YELLOW)  Update ARG RUST_VERSION in .devcontainer/Dockerfile to $$pin.$(NC)\n"; \
+		exit 1; \
+	fi; \
+	printf "$(BLUE)✓ compiler pinned to $$pin on both sides$(NC)\n"; \
+	targets=$$(sed -n 's/^targets[[:space:]]*=[[:space:]]*\[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d '"' | tr ',' ' '); \
+	if [ -z "$$targets" ]; then \
+		printf "$(RED)✗ no targets found in rust-toolchain.toml$(NC)\n"; exit 1; \
+	fi; \
+	for t in $$targets; do \
+		if ! grep -q "rustup target add $$t" .devcontainer/Dockerfile; then \
+			printf "$(RED)✗ '$$t' is pinned in rust-toolchain.toml but the devcontainer never installs it$(NC)\n"; \
+			exit 1; \
+		fi; \
+		printf "$(BLUE)✓ $$t present in both$(NC)\n"; \
+	done; \
+	components=$$(sed -n 's/^components[[:space:]]*=[[:space:]]*\[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d '"' | tr ',' ' '); \
+	if [ -z "$$components" ]; then \
+		printf "$(RED)✗ no components found in rust-toolchain.toml$(NC)\n"; exit 1; \
+	fi; \
+	for c in $$components; do \
+		if ! grep -q -- "-c $$c" .devcontainer/Dockerfile; then \
+			printf "$(RED)✗ '$$c' is pinned in rust-toolchain.toml but the devcontainer never installs it$(NC)\n"; \
+			exit 1; \
+		fi; \
+		printf "$(BLUE)✓ $$c present in both$(NC)\n"; \
+	done; \
+	printf "$(GREEN)✓ Devcontainer and rust-toolchain.toml agree$(NC)\n"
+
 ## Convenience commands
-check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim check-no-globals
+check: check-toolchain-pin fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim check-no-globals
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
@@ -715,6 +759,7 @@ check: fmt-check clippy test test-embedded test-wasm deny readme-check codegen-d
 	@printf "$(BLUE)✓ README quickstart in sync and compiling$(NC)\n"
 	@printf "$(BLUE)✓ Codegen output compiles against the workspace$(NC)\n"
 	@printf "$(BLUE)✓ No library crate installs a process-global$(NC)\n"
+	@printf "$(BLUE)✓ Devcontainer and CI pinned to the same compiler$(NC)\n"
 
 ## WASM commands
 wasm:

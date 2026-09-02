@@ -21,19 +21,9 @@ jobs:
         submodules: recursive
     
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
-        components: rustfmt, clippy
-    
-    - name: Cache dependencies
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+        rustflags: ""
     
     - name: Run comprehensive checks
       run: make check

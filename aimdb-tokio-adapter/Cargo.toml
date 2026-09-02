@@ -2,6 +2,7 @@
 name = "aimdb-tokio-adapter"
 version = "0.6.0"
 edition = "2021"
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
