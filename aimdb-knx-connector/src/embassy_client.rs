@@ -366,7 +366,10 @@ impl TunnelIo for EmbassyIo<'_, '_> {
     /// `Send + 'static` future. `embassy_net::udp::UdpSocket`'s send future is
     /// `!Send`, so this half returns the adapter's transparent force-`Send`
     /// newtype — the §5.1 pattern, with the `unsafe` staying in the adapter.
-    fn send<'a>(&'a mut self, frame: &'a [u8]) -> impl core::future::Future<Output = bool> + Send + 'a {
+    fn send<'a>(
+        &'a mut self,
+        frame: &'a [u8],
+    ) -> impl core::future::Future<Output = bool> + Send + 'a {
         aimdb_embassy_adapter::SendFutureWrapper(async move {
             // Log-and-continue: a transient send error must not tear down the
             // tunnel; a persistently dead send path surfaces through the

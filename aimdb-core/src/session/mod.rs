@@ -23,9 +23,9 @@ use futures_core::Stream;
 #[cfg(feature = "connector-session")]
 mod client;
 #[cfg(feature = "connector-session")]
-mod io;
-#[cfg(feature = "connector-session")]
 mod connector;
+#[cfg(feature = "connector-session")]
+mod io;
 #[cfg(feature = "connector-session")]
 mod pump;
 #[cfg(feature = "connector-session")]
@@ -43,12 +43,12 @@ pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
 #[cfg(feature = "connector-session")]
 pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
+pub use connector::{SessionClientConnector, SessionServerConnector};
+#[cfg(feature = "connector-session")]
 pub use io::{
     ByteStream, Datagram, DatagramBinder, Delay, FramedConnection, Framer, FramerFactory,
     FramingDialer, FramingListener, IoError, OneShot, StreamDialer, StreamListener,
 };
-#[cfg(feature = "connector-session")]
-pub use connector::{SessionClientConnector, SessionServerConnector};
 #[cfg(feature = "connector-session")]
 pub use pump::{pump_sink, pump_source};
 #[cfg(feature = "connector-session")]

@@ -39,13 +39,13 @@ use crate::GroupAddress;
 /// Where parsed telegrams go: an `embassy_sync` channel on the MCU, a
 /// `tokio::sync::mpsc` on the host. Non-blocking by contract — a full channel
 /// drops rather than stalling the protocol loop.
-pub(crate) trait TelegramSink {
+pub trait TelegramSink {
     /// Enqueue one `(group-address, payload)`. `false` if it was dropped.
     fn try_send(&self, topic: String, payload: Payload) -> bool;
 }
 
 /// Where outbound commands come from, as the dual of [`TelegramSink`].
-pub(crate) trait CommandSource {
+pub trait CommandSource {
     /// Yield the next command. Parks forever once no producer remains, so the
     /// select arm simply goes quiet instead of ending the task.
     fn recv(&mut self) -> impl Future<Output = GroupWrite> + Send + '_;
@@ -64,13 +64,14 @@ where
     U: Datagram + Send,
     S: TelegramSink + Sync,
 {
-    fn send<'a>(&'a mut self, frame: &'a [u8]) -> impl Future<Output = bool> + Send + 'a {
-        async move {
-            // Log-and-continue: a transient send error must not tear down the
-            // tunnel; a persistently dead send path surfaces through the
-            // engine's heartbeat-response timeout.
-            self.socket.send_to(frame, self.gateway).await.is_ok()
-        }
+    // A plain `async fn` satisfies the trait's `+ Send` return bound: the
+    // compiler proves it, exactly as on the Tokio adapter's `ByteStream`.
+    // Only the Embassy side needs the force-`Send` newtype.
+    async fn send(&mut self, frame: &[u8]) -> bool {
+        // Log-and-continue: a transient send error must not tear down the
+        // tunnel; a persistently dead send path surfaces through the engine's
+        // heartbeat-response timeout.
+        self.socket.send_to(frame, self.gateway).await.is_ok()
     }
 
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>) {
@@ -149,7 +150,7 @@ async fn drive_connection<U, D, S, C>(
 /// one, drives the shared [`TunnelEngine`] over that socket's lifetime, then
 /// rebinds after the engine's backoff — the same lifecycle both hand-written
 /// clients implement today, written once.
-pub(crate) async fn connection_task<B, D, S, C>(
+pub async fn connection_task<B, D, S, C>(
     binder: B,
     gateway: SocketAddr,
     runtime: Arc<dyn RuntimeOps>,
@@ -206,7 +207,7 @@ pub(crate) async fn connection_task<B, D, S, C>(
 #[cfg(all(test, feature = "tokio-runtime"))]
 mod tests {
     use super::*;
-    use aimdb_tokio_adapter::net::{TokioNet, TokioDelay};
+    use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
     use aimdb_tokio_adapter::TokioAdapter;
     use core::pin::Pin;
     use std::sync::Mutex;
@@ -404,7 +405,6 @@ mod tests {
 
         task.abort();
     }
-
 }
 
 /// Design 052 §5.2, exercised: the same `embassy_sync` channel type the
@@ -416,7 +416,7 @@ mod tests {
 /// the final binary must supply. The `tokio-runtime` feature enables
 /// `critical-section/std` so downstream std users never see that link error.
 #[cfg(feature = "tokio-runtime")]
-pub(crate) mod shared_channel {
+pub mod shared_channel {
     use super::{CommandSource, GroupWrite, Payload, TelegramSink};
     use alloc::string::String;
     use core::future::Future;
@@ -424,7 +424,7 @@ pub(crate) mod shared_channel {
     use embassy_sync::channel::{Receiver, Sender};
 
     /// Outbound half of the inbound-telegram channel.
-    pub(crate) struct ChannelSink<'a, const N: usize>(
+    pub struct ChannelSink<'a, const N: usize>(
         pub Sender<'a, CriticalSectionRawMutex, (String, Payload), N>,
     );
 
@@ -435,7 +435,7 @@ pub(crate) mod shared_channel {
     }
 
     /// Inbound half of the outbound-command channel.
-    pub(crate) struct ChannelCommands<'a, const N: usize>(
+    pub struct ChannelCommands<'a, const N: usize>(
         pub Receiver<'a, CriticalSectionRawMutex, GroupWrite, N>,
     );
 

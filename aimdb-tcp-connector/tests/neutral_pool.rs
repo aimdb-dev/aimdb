@@ -33,9 +33,7 @@ use aimdb_core::session::{
 use aimdb_embassy_adapter::net::{EmbassyNet, EmbassyTcpStream, TcpSocketSlot};
 use alloc::sync::Arc;
 use embassy_net::tcp::TcpSocket;
-use embassy_net::{
-    Config, IpListenEndpoint, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4,
-};
+use embassy_net::{Config, IpListenEndpoint, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4};
 use embassy_net_driver_channel as ch;
 use embassy_net_driver_channel::driver::{HardwareAddress, LinkState};
 
@@ -354,5 +352,9 @@ fn naive_pool_loses_the_syn_that_arrives_between_accepts() {
              accept design in `EmbassyNet::listen` can be simplified"
         );
     });
-    assert_eq!(outcome, Ok(()), "the naive-pool scenario should run to completion");
+    assert_eq!(
+        outcome,
+        Ok(()),
+        "the naive-pool scenario should run to completion"
+    );
 }

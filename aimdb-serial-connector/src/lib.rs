@@ -32,6 +32,13 @@ extern crate alloc;
 
 pub mod framing;
 
+/// Design 052 §3.3: the runtime-neutral half of this crate — one COBS
+/// [`Framer`](aimdb_core::session::Framer) and one
+/// [`ByteStream`](aimdb_core::session::ByteStream) impl per byte-source, with
+/// no runtime module in the connector's path.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub mod neutral;
+
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_transport;
 

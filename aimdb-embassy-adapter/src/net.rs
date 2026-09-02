@@ -317,7 +317,6 @@ impl<const N: usize> StreamListener for EmbassyTcpListener<N> {
     }
 }
 
-
 // ===========================================================================
 // Datagram — KNX/IP tunnelling and SNTP.
 // ===========================================================================
@@ -381,7 +380,10 @@ impl Datagram for EmbassyUdpSocket {
     ) -> impl Future<Output = TransportResult<(usize, core::net::SocketAddr)>> + Send + 'a {
         SendFutureWrapper(async move {
             let socket = self.socket.as_mut().ok_or(TransportError::Closed)?;
-            let (n, meta) = socket.recv_from(buf).await.map_err(|_| TransportError::Io)?;
+            let (n, meta) = socket
+                .recv_from(buf)
+                .await
+                .map_err(|_| TransportError::Io)?;
             let addr = core::net::SocketAddr::new(meta.endpoint.addr.into(), meta.endpoint.port);
             Ok((n, addr))
         })
@@ -460,7 +462,9 @@ impl EmbassyNet {
         tx_buffer: &'static mut [u8],
     ) -> EmbassyTcpDialer {
         EmbassyTcpDialer {
-            slot: Arc::new(TcpSocketSlot::new(TcpSocket::new(stack, rx_buffer, tx_buffer))),
+            slot: Arc::new(TcpSocketSlot::new(TcpSocket::new(
+                stack, rx_buffer, tx_buffer,
+            ))),
         }
     }
 

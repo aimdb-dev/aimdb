@@ -549,7 +549,10 @@ pub(crate) trait TunnelIo {
     /// `impl TunnelIo` can only prove that if the bound is declared here.
     /// Return-type notation would express it at the use site instead, but it
     /// is still experimental on the pinned toolchain.
-    fn send<'a>(&'a mut self, frame: &'a [u8]) -> impl core::future::Future<Output = bool> + Send + 'a;
+    fn send<'a>(
+        &'a mut self,
+        frame: &'a [u8],
+    ) -> impl core::future::Future<Output = bool> + Send + 'a;
     /// Forward a parsed telegram toward `pump_source`. Non-blocking:
     /// drop + log on a full channel rather than stalling the protocol loop.
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>);

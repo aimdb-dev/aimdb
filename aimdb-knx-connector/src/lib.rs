@@ -152,7 +152,7 @@ pub mod tunnel;
 // Design 052 §3.3: the single, runtime-neutral connection task. Compiled
 // whenever a runtime half is on, so both cross-check it.
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub(crate) mod neutral;
+pub mod neutral;
 
 // Platform-specific implementations
 #[cfg(feature = "tokio-runtime")]
