@@ -52,6 +52,9 @@ _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
 # the `_test-tokio` build too). Run with `--features _test-embassy-loopback`.
 _test-embassy-loopback = [
     "embassy-runtime",
+    # Design 052 §3.2 prototype: the adapter's `StreamListener`/`ByteStream`
+    # pool, exercised by `tests/neutral_pool.rs` over the same two real stacks.
+    "aimdb-embassy-adapter/net",
     "embassy-net/medium-ip",
     "embassy-net/proto-ipv4",
     "dep:embassy-net-driver-channel",

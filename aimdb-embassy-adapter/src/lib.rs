@@ -37,6 +37,11 @@ pub mod send_wrapper;
 #[cfg(all(not(feature = "std"), feature = "connectors"))]
 pub mod connectors;
 
+// Embassy implementations of core's runtime-neutral I/O traits (design 052):
+// sockets, dialers, listeners and clocks live here so connectors stay neutral.
+#[cfg(all(not(feature = "std"), feature = "net"))]
+pub mod net;
+
 /// Link stubs for **host** test binaries that touch the Embassy adapter:
 /// a no-op `#[defmt::global_logger]` + `#[defmt::panic_handler]`
 /// and a pinned-at-0 embassy-time driver.
