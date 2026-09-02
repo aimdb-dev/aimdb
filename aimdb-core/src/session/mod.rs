@@ -45,7 +45,7 @@ pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
 pub use io::{
     ByteStream, Datagram, DatagramBinder, Delay, FramedConnection, Framer, FramerFactory,
-    FramingDialer, FramingListener, IoError, StreamDialer, StreamListener,
+    FramingDialer, FramingListener, IoError, OneShot, StreamDialer, StreamListener,
 };
 #[cfg(feature = "connector-session")]
 pub use connector::{SessionClientConnector, SessionServerConnector};

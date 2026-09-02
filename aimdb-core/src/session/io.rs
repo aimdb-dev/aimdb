@@ -323,3 +323,58 @@ where
 /// sketch called it `IoError`. Reusing it avoids a parallel error enum and a
 /// conversion at every `Connection` boundary.
 pub type IoError = TransportError;
+
+/// A `Send + Sync` one-shot cell for a moved-in resource (design 052 §5.5).
+///
+/// [`ConnectorBuilder`](crate::connector::ConnectorBuilder) is `Send + Sync`
+/// and its `build` takes `&self`, so a connector holding a moved-in listener,
+/// peripheral or credential set must take it through interior mutability. A
+/// `spin::Mutex<Option<T>>` is `Send + Sync` whenever `T: Send` — with **no
+/// `unsafe`** — which is what lets a connector crate drop the force-`Send`
+/// cells it hand-rolls today.
+///
+/// The `T: Send` bound is the whole contract: a type that is not `Send` (a
+/// `&'static mut dyn Trait` whose trait object forgot to say `+ Send`, say)
+/// cannot be held here, and that is the signal to fix the type rather than to
+/// reach for `unsafe impl`.
+pub struct OneShot<T> {
+    inner: spin::Mutex<Option<T>>,
+}
+
+impl<T> OneShot<T> {
+    /// Hold `value` for a single [`take`](Self::take).
+    pub fn new(value: T) -> Self {
+        Self {
+            inner: spin::Mutex::new(Some(value)),
+        }
+    }
+
+    /// Take the value, or `None` if it was already taken (`build` ran twice).
+    pub fn take(&self) -> Option<T> {
+        self.inner.lock().take()
+    }
+}
+
+impl<T> Default for OneShot<T> {
+    /// An already-empty cell, for a resource that may never be supplied.
+    fn default() -> Self {
+        Self {
+            inner: spin::Mutex::new(None),
+        }
+    }
+}
+
+impl<T> From<T> for OneShot<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
+/// `OneShot<T>` is `Send + Sync` for any `T: Send`, with no `unsafe` — the
+/// property design 052 §5.5 relies on. Checked here so a regression in the
+/// bound surfaces in core rather than in a connector crate.
+#[allow(dead_code)]
+fn _one_shot_is_send_sync_without_unsafe() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<OneShot<alloc::vec::Vec<u8>>>();
+}

@@ -68,7 +68,12 @@ pub(crate) const READ_BUF_MIN: usize = 16_640;
 /// and the RNG live in `StaticCell`s (or equivalents) owned by the
 /// application — the one party that knows the board's memory budget.
 pub struct TlsOptions {
-    pub(crate) rng: &'static mut dyn CryptoRngCore,
+    // `+ Send` (design 052 §5.5): without it `TlsOptions` is not `Send`, so
+    // `spin::Mutex<Option<TlsOptions>>` cannot replace the force-`Send`
+    // `TlsSlot` and this crate cannot shed its `unsafe impl`s. Every concrete
+    // CSPRNG a caller passes (an STM32 TRNG peripheral, a seeded software
+    // generator) is already `Send`; the bare trait object simply never said so.
+    pub(crate) rng: &'static mut (dyn CryptoRngCore + Send),
     pub(crate) ca_der: &'static [u8],
     pub(crate) read_buf: &'static mut [u8],
     pub(crate) write_buf: &'static mut [u8],
@@ -86,7 +91,7 @@ impl TlsOptions {
     /// * `write_buf` — TLS record write buffer; 4 096 bytes is plenty for
     ///   MQTT-sized writes.
     pub fn new(
-        rng: &'static mut dyn CryptoRngCore,
+        rng: &'static mut (dyn CryptoRngCore + Send),
         ca_der: &'static [u8],
         read_buf: &'static mut [u8],
         write_buf: &'static mut [u8],
@@ -412,4 +417,15 @@ pub(crate) fn host_ip_literal(host: &str) -> Option<IpAddr> {
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
     host.parse::<IpAddr>().ok()
+}
+
+/// Design 052 §5.5 proposes replacing the Embassy adapter's force-`Send`
+/// `OneShotCell` with `spin::Mutex<Option<L>>`, which is `Send + Sync` **only
+/// when `L: Send`** — that is how the connector sheds its `unsafe impl`s and
+/// meets acceptance criterion 2. §6 separately promises `TlsOptions` keeps its
+/// signature. This type-checks whether those two can both hold.
+#[allow(dead_code)]
+fn _design_052_tls_options_must_be_send() {
+    fn assert_send<T: Send>() {}
+    assert_send::<TlsOptions>();
 }
