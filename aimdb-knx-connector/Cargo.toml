@@ -14,7 +14,15 @@ categories = ["network-programming", "embedded", "asynchronous"]
 [features]
 default = ["aimdb-core/alloc"]
 std = ["aimdb-core/std", "knx-pico/std", "thiserror"]
-tokio-runtime = ["std", "tokio", "uuid", "async-stream", "futures-util"]
+tokio-runtime = [
+    "std",
+    "tokio",
+    "uuid",
+    "async-stream",
+    "futures-util",
+    "embassy-sync",
+    "critical-section/std",
+]
 embassy-runtime = [
     "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
     "aimdb-core/connector-session",              # `pump_sink`/`pump_source`/`Source`/`Payload`
@@ -25,7 +33,6 @@ embassy-runtime = [
     "embassy-time",
     "embassy-sync",
     "embassy-net",
-    "embassy-futures",
     "static_cell",
 ]
 # Design 050 §10.4/§10.5: the facade reaches both destinations through
@@ -72,7 +79,9 @@ futures-core = { version = "0.3", default-features = false }
 embassy-executor = { version = "0.10.0", optional = true }
 embassy-time = { version = "0.5.1", optional = true }
 embassy-sync = { version = "0.8.0", path = "../_external/embassy/embassy-sync", optional = true }
-embassy-futures = { version = "0.1.2", optional = true }
+# Unconditional: its `[dependencies]` is empty bar optional defmt/log, so the
+# std graph is unaffected and one select loop serves both runtimes.
+embassy-futures = { version = "0.1.2" }
 embassy-net = { version = "0.9.0", optional = true, features = [
     "tcp",
     "udp",
@@ -80,6 +89,10 @@ embassy-net = { version = "0.9.0", optional = true, features = [
     "medium-ethernet",
     "proto-ipv4",
 ] }
+
+# A `critical-section` impl must be linked wherever `CriticalSectionRawMutex`
+# is used; `tokio-runtime` turns on the std one so no std user has to.
+critical-section = { version = "1.1", optional = true }
 
 # Embedded utilities (heapless is unconditional: the shared sans-io tunnel
 # engine uses stack-allocated frames on both runtimes)

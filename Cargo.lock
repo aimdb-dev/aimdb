@@ -209,6 +209,7 @@ dependencies = [
  "aimdb-knx-pico",
  "aimdb-tokio-adapter",
  "async-stream",
+ "critical-section",
  "defmt 1.1.1",
  "embassy-executor",
  "embassy-futures 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
