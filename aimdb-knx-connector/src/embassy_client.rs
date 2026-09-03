@@ -51,6 +51,7 @@ use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::session::{pump_sink, pump_source, Payload};
 use aimdb_core::ConnectorBuilder;
 use aimdb_embassy_adapter::connectors::into_box_future;
+use aimdb_embassy_adapter::SendFutureWrapper;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -361,16 +362,20 @@ struct EmbassyIo<'a, 'b> {
 }
 
 impl TunnelIo for EmbassyIo<'_, '_> {
-    async fn send(&mut self, frame: &[u8]) -> bool {
-        // Log-and-continue: a transient send error must not tear down the
-        // tunnel; a persistently dead send path surfaces through the engine's
-        // heartbeat-response timeout.
-        if self.socket.send_to(frame, self.gateway).await.is_err() {
-            #[cfg(feature = "defmt")]
-            defmt::error!("KNX send failed");
-            return false;
-        }
-        true
+    fn send(&mut self, frame: &[u8]) -> impl Future<Output = bool> + Send {
+        // `embassy_net`'s send future is `!Send`; the wrapper is the adapter's
+        // audited force-`Send`, same single-core invariant as everywhere else.
+        SendFutureWrapper(async move {
+            // Log-and-continue: a transient send error must not tear down the
+            // tunnel; a persistently dead send path surfaces through the
+            // engine's heartbeat-response timeout.
+            if self.socket.send_to(frame, self.gateway).await.is_err() {
+                #[cfg(feature = "defmt")]
+                defmt::error!("KNX send failed");
+                return false;
+            }
+            true
+        })
     }
 
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>) {
