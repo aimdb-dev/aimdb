@@ -77,7 +77,7 @@ impl GroupWrite {
 pub enum Action {
     /// Send this datagram to the gateway. `await_ack` carries the sequence
     /// number of a tracked TUNNELING_REQUEST so a failed send can stop its
-    /// ACK tracking (see [`TunnelIo::send`]); `None` for everything else.
+    /// ACK tracking (see `TunnelIo::send`); `None` for everything else.
     Send { frame: Frame, await_ack: Option<u8> },
     /// Deliver a parsed inbound telegram toward `pump_source`
     /// (`try_send`, drop-on-full — never stall the protocol loop).

@@ -47,10 +47,10 @@ impl ConnectionPool {
 
     /// Get or create a connection to an AimDB instance
     ///
-    /// Note: Since AimxConnection doesn't implement Clone, we create a fresh
-    /// connection each time. The pool tracks connection metadata for
-    /// monitoring and future optimization (e.g., persistent connections
-    /// via Arc<Mutex<AimxConnection>> if AimxConnection becomes Sync).
+    /// Note: since `AimxConnection` does not implement `Clone`, a fresh
+    /// connection is created each time. The pool tracks connection metadata for
+    /// monitoring and future optimization (e.g. persistent connections via
+    /// `Arc<Mutex<AimxConnection>>` if `AimxConnection` becomes `Sync`).
     pub async fn get_connection(&self, endpoint: &str) -> Result<AimxConnection, ClientError> {
         let mut pool = self.connections.lock().await;
 

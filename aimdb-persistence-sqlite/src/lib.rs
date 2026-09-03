@@ -3,7 +3,7 @@
 //! SQLite persistence backend for AimDB.
 //!
 //! Owns a dedicated OS thread that holds the `rusqlite::Connection`. All async
-//! callers send [`DbCommand`] messages via `std::sync::mpsc::sync_channel` and
+//! callers send `DbCommand` messages via `std::sync::mpsc::sync_channel` and
 //! await a `tokio::sync::oneshot` reply. The async executor is never blocked;
 //! the writer thread is never awaited.
 //!

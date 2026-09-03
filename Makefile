@@ -349,6 +349,9 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
 	cargo clippy --package aimdb-bench --all-targets -- -D warnings
 
+# Doc links are public API: one pointing at a private or feature-gated item
+# breaks the published page, and nothing else in `check` looks at rustdoc.
+doc: export RUSTDOCFLAGS := -D warnings
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
 	@# Create directory structure

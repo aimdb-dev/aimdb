@@ -6,12 +6,11 @@
 //! # Architecture
 //!
 //! The data-flow (outbound publish, inbound routing) rides core's
-//! [`pump_sink`](aimdb_core::session::pump_sink) /
-//! [`pump_source`](aimdb_core::session::pump_source) via the force-`Send`
+//! [`pump_sink`] / [`pump_source`] via the force-`Send`
 //! [`EmbassySink`]/[`EmbassySource`] bridges in `aimdb-embassy-adapter`, exactly
 //! like the Tokio half rides them. This crate contributes only the
 //! transport-specific bits: the broker **manager task** (mountain-mqtt's `run`),
-//! the [`MqttSink`]/[`MqttSource`] over its action/event channels, and the
+//! the `MqttSink`/`MqttSource` over its action/event channels, and the
 //! `MqttOperations`/`FromApplicationMessage` glue. The single `unsafe` block
 //! is the [`NetStack`](aimdb_embassy_adapter::connectors::NetStack)
 //! construction in [`MqttConnectorBuilder::new`], acknowledging the adapter's
@@ -298,8 +297,8 @@ unsafe impl Sync for TlsSlot {}
 /// Collects routes from the database during `build()` and wires the broker
 /// manager + the outbound/inbound pumps. The broker URL scheme selects the
 /// transport: `mqtt://` is plain TCP (default port 1883), `mqtts://` is TLS
-/// (default port 8883) and requires both the `embassy-tls` feature and
-/// [`with_tls`](Self::with_tls).
+/// (default port 8883) and requires both the `embassy-tls` feature and the
+/// `with_tls` method it gates.
 pub struct MqttConnectorBuilder {
     broker_url: String,
     client_id: String,
@@ -314,7 +313,7 @@ impl MqttConnectorBuilder {
     ///
     /// # Arguments
     /// * `broker_url` - Broker URL in format `mqtt://host:port` (plain TCP)
-    ///   or `mqtts://host:port` (TLS, see [`with_tls`](Self::with_tls))
+    ///   or `mqtts://host:port` (TLS, see `with_tls`, feature `embassy-tls`)
     /// * `stack` - The device's network stack (the runtime travels as
     ///   `Arc<dyn RuntimeOps>` and cannot surface it)
     pub fn new(broker_url: impl Into<String>, stack: &'static embassy_net::Stack<'static>) -> Self {

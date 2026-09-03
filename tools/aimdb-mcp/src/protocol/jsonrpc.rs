@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0 types
 //!
-//! See: https://www.jsonrpc.org/specification
+//! See <https://www.jsonrpc.org/specification>.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

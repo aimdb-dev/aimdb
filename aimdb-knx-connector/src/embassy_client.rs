@@ -3,7 +3,7 @@
 //! This module contributes only socket glue for embedded systems: an
 //! `embassy-net` UDP socket, the static channels between the pumps and the
 //! connection task, and a select loop driving the shared sans-io
-//! [`TunnelEngine`](crate::tunnel::TunnelEngine). The entire tunneling
+//! [`TunnelEngine`]. The entire tunneling
 //! lifecycle (handshake, ACK bookkeeping, keepalive, reconnect backoff) lives
 //! in [`crate::tunnel`].
 //!
@@ -14,9 +14,9 @@
 //!   `CriticalSectionRawMutex` channel the connection task drains).
 //! - **Inbound** (telegrams → records) rides core's `pump_source`: the
 //!   connection task pushes `(group-address, payload)` onto an inbound channel
-//!   that [`KnxSource`] drains.
+//!   that `KnxSource` drains.
 //! - The connection task is force-`Send`ed once via
-//!   [`into_box_future`](aimdb_embassy_adapter::connectors::into_box_future); the
+//!   [`into_box_future`]; the
 //!   only `unsafe` in this crate is the audited
 //!   [`NetStack::new`](aimdb_embassy_adapter::connectors::NetStack) call in the
 //!   builder (single-core cooperative executor invariant).

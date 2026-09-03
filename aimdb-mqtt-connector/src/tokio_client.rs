@@ -118,8 +118,8 @@ impl ConnectorBuilder for MqttConnectorBuilder {
 ///
 /// A namespace for the broker-connection setup invoked from
 /// [`MqttConnectorBuilder::build`]; the data-plane loops themselves live in the
-/// reusable `pump_sink` / `pump_source` helpers + the [`MqttSink`] /
-/// [`MqttEventLoopSource`] adapters below.
+/// reusable `pump_sink` / `pump_source` helpers + the `MqttSink` /
+/// `MqttEventLoopSource` adapters below.
 pub struct MqttConnectorImpl;
 
 impl MqttConnectorImpl {
