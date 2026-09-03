@@ -252,8 +252,7 @@ pub enum RpcError {
     /// The handler failed.
     Internal,
     /// The peer's declared protocol version is incompatible with this server's
-    /// [`PROTOCOL_VERSION`](crate::remote::PROTOCOL_VERSION). Raised at the
-    /// handshake, before `hello` completes.
+    /// `PROTOCOL_VERSION`. Raised at the handshake, before `hello` completes.
     VersionMismatch,
 }
 

@@ -847,7 +847,8 @@ where
 ///   produce each update into the local record through the producer/arbiter path
 ///   — single-writer-per-key stays intact (a mirrored-in record is produced
 ///   through its inbound producer, never a direct co-writer). Mirroring is
-///   latest-state and best-effort: see [`inbound_pump`] for the loss contract.
+///   latest-state and best-effort — a gap the server reports
+///   ([`SubUpdate::skipped`]) is logged and stepped over, never backfilled.
 ///
 /// Returns one spawn-free pump future per route for the runner to drive
 /// (mirroring the `ConnectorBuilder::build -> Vec<BoxFuture>` spine); it drives

@@ -129,8 +129,8 @@ type JoinInputFactory = Box<
 /// Configures a multi-input join transform.
 ///
 /// Available on every runtime. The fan-in queue (bounded channel between input
-/// forwarders and the trigger loop) lives in core; its capacity is
-/// [`JOIN_QUEUE_CAPACITY`].
+/// forwarders and the trigger loop) lives in core, with capacity 64 on std and
+/// wasm32 and 16 on embedded `no_std`.
 ///
 /// Obtain via [`RecordRegistrar::transform_join`](crate::RecordRegistrar::transform_join).
 pub struct JoinBuilder<O> {

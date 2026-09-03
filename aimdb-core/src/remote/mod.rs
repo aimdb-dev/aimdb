@@ -8,9 +8,8 @@
 //!
 //! AimX uses NDJSON (newline-delimited JSON) tagged frames over a session
 //! transport (Unix domain sockets via `aimdb-uds-connector`, serial via
-//! `aimdb-serial-connector`). The envelope codec lives in
-//! [`crate::session::aimx`]; see `docs/design/remote-access-via-connectors.md`
-//! for the architecture. Compatibility is by major version — see
+//! `aimdb-serial-connector`). The envelope codec lives in `session::aimx`
+//! (feature `connector-session`). Compatibility is by major version — see
 //! [`PROTOCOL_VERSION`] and [`version_compatible`].
 //!
 //! # Security

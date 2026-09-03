@@ -207,8 +207,9 @@ type ProducerServiceFn<T> =
 ///
 /// This trait carries the storage/lifecycle
 /// surface, plus graph/metadata introspection and observability counter
-/// resets. JSON remote access is the one genuinely optional capability and
-/// lives in [`JsonRecordAccess`], reachable via [`AnyRecord::json_access`].
+/// resets. JSON remote access is the one genuinely optional capability: it
+/// lives in `JsonRecordAccess`, reachable via `json_access`, both behind the
+/// `remote` feature.
 ///
 /// Consumers: `AimDbBuilder::build()` (config-error draining, the dependency
 /// graph fed to [`crate::graph`], typed downcasts via [`AnyRecordExt`]),
