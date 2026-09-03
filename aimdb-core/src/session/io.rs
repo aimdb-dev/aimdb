@@ -17,10 +17,11 @@
 //! over them; the `dyn` boundary stays at `Box<dyn Connection>` per frame.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 
-use super::{BoxFut, PeerInfo, TransportError, TransportResult};
+use super::{BoxFut, Connection, Dialer, Listener, PeerInfo, TransportError, TransportResult};
 
 /// Failure of a byte-level I/O operation.
 ///
@@ -188,6 +189,153 @@ where
 }
 
 // ===========================================================================
+// Framed connections — a [`ByteStream`] plus a [`Framer`] is a [`Connection`].
+// ===========================================================================
+
+/// A framed [`Connection`] over any [`ByteStream`] and [`Framer`].
+///
+/// `RC` caps the per-`read` chunk and `WC` caps a single `write_all`; both are
+/// stack buffers, and some HAL `BufferedUart::write` rejects a write larger
+/// than its TX ring, which is what `WC` exists for.
+pub struct FramedConnection<S, F, const RC: usize = 256, const WC: usize = 256> {
+    stream: S,
+    framer: F,
+    peer: PeerInfo,
+}
+
+impl<S, F, const RC: usize, const WC: usize> FramedConnection<S, F, RC, WC> {
+    /// Frame `stream` with `framer`.
+    pub fn new(stream: S, framer: F) -> Self {
+        Self {
+            stream,
+            framer,
+            peer: PeerInfo::default(),
+        }
+    }
+
+    /// Frame `stream` with `framer`, carrying `peer` metadata from the accept.
+    pub fn with_peer(stream: S, framer: F, peer: PeerInfo) -> Self {
+        Self {
+            stream,
+            framer,
+            peer,
+        }
+    }
+}
+
+impl<S, F, const RC: usize, const WC: usize> Connection for FramedConnection<S, F, RC, WC>
+where
+    S: ByteStream + Send,
+    F: Framer + Send,
+{
+    fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
+        Box::pin(async move {
+            loop {
+                // A run that fails to decode is line noise or a mid-stream
+                // join, not fatal: skip it and resync on the next frame.
+                match self.framer.next_frame() {
+                    Some(Ok(frame)) => return Ok(Some(frame)),
+                    Some(Err(())) => continue,
+                    None => {}
+                }
+                let mut chunk = [0u8; RC];
+                match self.stream.read(&mut chunk).await {
+                    Ok(0) => return Ok(None), // EOF — peer closed
+                    Ok(n) => self.framer.push_bytes(&chunk[..n]),
+                    Err(e) => return Err(e),
+                }
+            }
+        })
+    }
+
+    fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFut<'a, TransportResult<()>> {
+        Box::pin(async move {
+            let mut out = Vec::new();
+            self.framer.encode(frame, &mut out);
+            for chunk in out.chunks(WC) {
+                self.stream.write_all(chunk).await?;
+            }
+            self.stream.flush().await
+        })
+    }
+
+    fn peer(&self) -> &PeerInfo {
+        &self.peer
+    }
+}
+
+/// Lifts a [`StreamDialer`] and a [`FramerFactory`] into a [`Dialer`], so
+/// `run_client` drives an adapter transport unchanged.
+pub struct FramingDialer<D, FF, const RC: usize = 256, const WC: usize = 256> {
+    dialer: D,
+    framers: FF,
+    host: String,
+    port: u16,
+}
+
+impl<D, FF, const RC: usize, const WC: usize> FramingDialer<D, FF, RC, WC> {
+    /// Dial `host:port` through `dialer`, framing each stream with a framer
+    /// from `framers`.
+    pub fn new(dialer: D, framers: FF, host: impl Into<String>, port: u16) -> Self {
+        Self {
+            dialer,
+            framers,
+            host: host.into(),
+            port,
+        }
+    }
+}
+
+impl<D, FF, const RC: usize, const WC: usize> Dialer for FramingDialer<D, FF, RC, WC>
+where
+    D: StreamDialer + Send + Sync,
+    FF: FramerFactory + Send + Sync,
+    D::Stream: 'static,
+    FF::Framer: 'static,
+{
+    fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        Box::pin(async move {
+            let stream = self.dialer.connect(&self.host, self.port).await?;
+            let conn: FramedConnection<D::Stream, FF::Framer, RC, WC> =
+                FramedConnection::new(stream, self.framers.framer());
+            Ok(Box::new(conn) as Box<dyn Connection>)
+        })
+    }
+}
+
+/// Lifts a [`StreamListener`] and a [`FramerFactory`] into a [`Listener`], so
+/// `serve` drives an adapter transport unchanged.
+pub struct FramingListener<L, FF, const RC: usize = 256, const WC: usize = 256> {
+    listener: L,
+    framers: FF,
+}
+
+impl<L, FF, const RC: usize, const WC: usize> FramingListener<L, FF, RC, WC> {
+    /// Accept through `listener`, framing each stream with a framer from
+    /// `framers`.
+    pub fn new(listener: L, framers: FF) -> Self {
+        Self { listener, framers }
+    }
+}
+
+impl<L, FF, const RC: usize, const WC: usize> Listener for FramingListener<L, FF, RC, WC>
+where
+    L: StreamListener + Send,
+    FF: FramerFactory + Send,
+    L::Stream: 'static,
+    FF::Framer: 'static,
+{
+    fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        Box::pin(async move {
+            let (stream, peer) = self.listener.accept().await?;
+            let conn: FramedConnection<L::Stream, FF::Framer, RC, WC> =
+                FramedConnection::with_peer(stream, self.framers.framer(), peer);
+            Ok(Box::new(conn) as Box<dyn Connection>)
+        })
+    }
+}
+
+// ===========================================================================
 // Moved-in resources.
 // ===========================================================================
 
@@ -283,6 +431,234 @@ fn _one_shot_is_send_sync_without_unsafe() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::sync::Arc;
+    use alloc::vec;
+
+    // --- Test doubles -----------------------------------------------------
+
+    /// Length-prefixed framer: one length byte, then that many payload bytes.
+    /// A `0xFF` length marks a corrupt run, so resync has something to skip.
+    #[derive(Default)]
+    struct LenFramer {
+        buf: Vec<u8>,
+    }
+
+    impl Framer for LenFramer {
+        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+            out.push(frame.len() as u8);
+            out.extend_from_slice(frame);
+        }
+        fn push_bytes(&mut self, bytes: &[u8]) {
+            self.buf.extend_from_slice(bytes);
+        }
+        fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+            let len = *self.buf.first()? as usize;
+            if len == 0xFF {
+                self.buf.remove(0);
+                return Some(Err(()));
+            }
+            if self.buf.len() < len + 1 {
+                return None;
+            }
+            let frame = self.buf[1..len + 1].to_vec();
+            self.buf.drain(..len + 1);
+            Some(Ok(frame))
+        }
+    }
+
+    /// Shared so a test can inspect what the connection wrote after moving the
+    /// stream into it.
+    #[derive(Default)]
+    struct StreamState {
+        /// Chunks `read` hands out, in order; empty means EOF.
+        reads: Vec<Vec<u8>>,
+        /// Bytes written, concatenated.
+        written: Vec<u8>,
+        /// Size of each individual `write_all` call.
+        write_sizes: Vec<usize>,
+        flushes: usize,
+    }
+
+    #[derive(Clone, Default)]
+    struct MockStream(Arc<spin::Mutex<StreamState>>);
+
+    impl MockStream {
+        fn with_reads(reads: Vec<Vec<u8>>) -> Self {
+            Self(Arc::new(spin::Mutex::new(StreamState {
+                reads,
+                ..Default::default()
+            })))
+        }
+    }
+
+    // Written as plain `async fn`s: an impl on a runtime whose futures are
+    // already `Send` needs nothing more, and the compiler checks the bound the
+    // trait declares.
+    impl ByteStream for MockStream {
+        async fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> TransportResult<usize> {
+            let mut st = self.0.lock();
+            if st.reads.is_empty() {
+                return Ok(0);
+            }
+            let chunk = st.reads.remove(0);
+            let n = chunk.len().min(buf.len());
+            buf[..n].copy_from_slice(&chunk[..n]);
+            Ok(n)
+        }
+
+        async fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> TransportResult<()> {
+            let mut st = self.0.lock();
+            st.written.extend_from_slice(buf);
+            st.write_sizes.push(buf.len());
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> TransportResult<()> {
+            self.0.lock().flushes += 1;
+            Ok(())
+        }
+    }
+
+    /// A stream whose first read fails, to check the error is propagated as-is
+    /// rather than flattened.
+    struct FailingStream;
+
+    impl ByteStream for FailingStream {
+        async fn read<'a>(&'a mut self, _buf: &'a mut [u8]) -> TransportResult<usize> {
+            Err(TransportError::Closed)
+        }
+        async fn write_all<'a>(&'a mut self, _buf: &'a [u8]) -> TransportResult<()> {
+            Err(TransportError::Closed)
+        }
+        async fn flush(&mut self) -> TransportResult<()> {
+            Ok(())
+        }
+    }
+
+    struct MockDialer(MockStream);
+
+    impl StreamDialer for MockDialer {
+        type Stream = MockStream;
+        async fn connect<'a>(&'a self, _host: &'a str, _port: u16) -> TransportResult<MockStream> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct MockListener(Option<MockStream>);
+
+    impl StreamListener for MockListener {
+        type Stream = MockStream;
+        async fn accept(&mut self) -> TransportResult<(MockStream, PeerInfo)> {
+            let s = self.0.take().ok_or(TransportError::Closed)?;
+            let peer = PeerInfo {
+                peer_addr: Some("10.0.0.1:5555".into()),
+                ..Default::default()
+            };
+            Ok((s, peer))
+        }
+    }
+
+    fn framed(stream: MockStream) -> FramedConnection<MockStream, LenFramer, 256, 256> {
+        FramedConnection::new(stream, LenFramer::default())
+    }
+
+    // --- FramedConnection -------------------------------------------------
+
+    #[tokio::test]
+    async fn recv_yields_each_frame_then_eof() {
+        let mut conn = framed(MockStream::with_reads(vec![vec![
+            2, b'h', b'i', 3, b'y', b'e', b's',
+        ]]));
+        assert_eq!(conn.recv().await.unwrap(), Some(b"hi".to_vec()));
+        assert_eq!(conn.recv().await.unwrap(), Some(b"yes".to_vec()));
+        assert_eq!(conn.recv().await.unwrap(), None, "closed peer is Ok(None)");
+    }
+
+    #[tokio::test]
+    async fn recv_reassembles_a_frame_split_across_reads() {
+        let mut conn = framed(MockStream::with_reads(vec![
+            vec![3, b'a'],
+            vec![b'b'],
+            vec![b'c'],
+        ]));
+        assert_eq!(conn.recv().await.unwrap(), Some(b"abc".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn recv_skips_a_corrupt_run_and_resyncs() {
+        let mut conn = framed(MockStream::with_reads(vec![vec![
+            0xFF, 0xFF, 2, b'o', b'k',
+        ]]));
+        assert_eq!(
+            conn.recv().await.unwrap(),
+            Some(b"ok".to_vec()),
+            "a run that fails to decode is skipped, not fatal"
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_propagates_the_streams_own_error() {
+        let mut conn = FramedConnection::<_, _, 256, 256>::new(FailingStream, LenFramer::default());
+        assert_eq!(
+            conn.recv().await,
+            Err(TransportError::Closed),
+            "the stream classifies the failure; framing must not flatten it"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_encodes_then_flushes() {
+        let stream = MockStream::default();
+        let mut conn = framed(stream.clone());
+        conn.send(b"hi").await.unwrap();
+
+        let st = stream.0.lock();
+        assert_eq!(st.written, vec![2, b'h', b'i']);
+        assert_eq!(st.flushes, 1);
+    }
+
+    #[tokio::test]
+    async fn send_splits_a_frame_larger_than_the_write_chunk() {
+        let stream = MockStream::default();
+        let mut conn: FramedConnection<MockStream, LenFramer, 256, 4> =
+            FramedConnection::new(stream.clone(), LenFramer::default());
+        conn.send(b"0123456789").await.unwrap();
+
+        let st = stream.0.lock();
+        assert_eq!(st.write_sizes, vec![4, 4, 3], "11 encoded bytes at WC = 4");
+        assert_eq!(st.written.len(), 11);
+    }
+
+    // --- FramingDialer / FramingListener ----------------------------------
+
+    #[tokio::test]
+    async fn framing_dialer_produces_a_working_connection() {
+        let stream = MockStream::with_reads(vec![vec![2, b'h', b'i']]);
+        let dialer: FramingDialer<_, _, 256, 256> =
+            FramingDialer::new(MockDialer(stream), LenFramer::default, "host.test", 1883);
+
+        let mut conn = dialer.connect().await.unwrap();
+        assert_eq!(conn.recv().await.unwrap(), Some(b"hi".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn framing_listener_carries_peer_metadata_through() {
+        let stream = MockStream::with_reads(vec![vec![2, b'h', b'i']]);
+        let mut listener: FramingListener<_, _, 256, 256> =
+            FramingListener::new(MockListener(Some(stream)), LenFramer::default);
+
+        let mut conn = listener.accept().await.unwrap();
+        assert_eq!(conn.peer().peer_addr.as_deref(), Some("10.0.0.1:5555"));
+        assert_eq!(conn.recv().await.unwrap(), Some(b"hi".to_vec()));
+    }
+
+    #[test]
+    fn a_framed_connection_is_boxable_as_dyn_connection() {
+        let conn = framed(MockStream::default());
+        let _boxed: Box<dyn Connection> = Box::new(conn);
+    }
+
+    // --- OneShot / FramerFactory ------------------------------------------
 
     #[test]
     fn one_shot_yields_its_value_once() {
