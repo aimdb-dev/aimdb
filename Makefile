@@ -498,7 +498,7 @@ examples:
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-beta (edge, synthetic)$(NC)\n"
 	cargo build --package weather-station-beta
 	@printf "$(YELLOW)  → Building weather-station-gamma (embedded, embassy runtime)$(NC)\n"
-	cargo build --package weather-station-gamma --target thumbv7em-none-eabihf
+	cargo build --package weather-station-gamma --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building remote-access-demo (AimX server + client)$(NC)\n"
 	cargo build --package remote-access-demo
 	@printf "$(YELLOW)  → Building hello-mailbox (sync)$(NC)\n"
