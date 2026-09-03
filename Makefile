@@ -177,6 +177,8 @@ test:
 	cargo test --package aimdb-tokio-adapter --features "net"
 	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, connector spine, doctests)$(NC)\n"
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
+	@printf "$(YELLOW)  → Testing embassy adapter (host: runtime-neutral UART stream and clock)$(NC)\n"
+	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time"
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib: buffer semantics + shared contract suite; browser layer runs via wasm-test)$(NC)\n"
 	cargo test --package aimdb-wasm-adapter --no-default-features --lib
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib with observability)$(NC)\n"
@@ -280,6 +282,9 @@ clippy:
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter with network support$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime,embassy-net-support" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on embassy adapter (runtime-neutral transports, target and host tests)$(NC)\n"
+	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "alloc,net,embassy-runtime" -- -D warnings
+	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
@@ -432,6 +437,9 @@ test-embedded:
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,observability"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter connector spine (connector-io) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,connector-io"
+	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter runtime-neutral transports, with and without the clock, on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,net,embassy-runtime"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,net"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"

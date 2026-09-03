@@ -24,6 +24,12 @@ embassy-net-support = ["embassy-net"]                                  # Network
 connectors = ["aimdb-core/connector-session"]
 connector-io = ["connectors", "dep:embedded-io-async"]
 
+# Embassy sockets, dialers and UART halves behind core's runtime-neutral I/O
+# traits, so connector crates need no `embassy-net` dependency. Deliberately
+# does not imply `embassy-time`: that turns on `defmt-timestamp-uptime`, whose
+# `_defmt_timestamp` collides with every host test binary's `defmt::timestamp!`.
+net = ["connectors", "embassy-net-support", "dep:embedded-io-async"]
+
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]
 
