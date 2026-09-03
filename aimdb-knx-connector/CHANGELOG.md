@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tokio-runtime` gains `embassy-sync` and `critical-section/std`;
+  `embassy-futures` is unconditional.** Both are executor-independent, so one
+  channel and select type serves either runtime. The connector carries the
+  `critical-section` link obligation itself, so no std user meets
+  `undefined symbol: _critical_section_1_0_acquire`.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written
@@ -18,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`neutral::connection_task` — one connection task for both runtimes.** Generic
+  over core's `DatagramBinder` and `Delay`, it binds, advertises the socket's real
+  local endpoint (HPAI) instead of the NAT-style `0.0.0.0:0`, drives the shared
+  `TunnelEngine`, and rebinds on socket reset. `shared_channel` bridges it to the
+  `embassy_sync` channels, which now back the task on std too.
 - **Spec-conformant TUNNELING_REQUEST retransmission — `TunnelConfig::ack_retransmits` (036 W4, default `1`).** When a tracked outbound telegram's ACK does not arrive within `ack_timeout_ms`, the engine now retransmits the byte-identical frame (same sequence counter, buffered in the pending-ACK slot per KNXnet/IP 3.8.4) and, when the repeat also goes unanswered, reports `Action::AckTimeout` **and tears the connection down** — so subsequent commands queue for the re-handshake instead of being sent into a dead tunnel. Hardware-bench evidence motivating this: ten button-press writes issued during a link outage's heartbeat-detection window (up to ~65 s) were silently lost with only warnings; with retransmission the loss window shrinks to ~2× `ack_timeout_ms`. `ack_retransmits: 0` restores the previous expire-and-warn behavior (no retransmit, no disconnect, no frame buffering — though the 16-slot frame capacity, ~4.5 KiB, is statically reserved either way on `heapless`). The retransmit delay is `ack_timeout_ms` (default 3 s, the constant both pre-engine implementations used); set it to `1_000` for strict spec timing. Covered by engine unit tests and a fake-gateway test that drops the first ACK and asserts the identical repeat.
 
 ### Fixed

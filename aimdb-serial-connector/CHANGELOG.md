@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tokio-runtime` now depends on `aimdb-tokio-adapter`** (feature `net`), so the
+  byte source is the adapter's on both runtimes rather than duplicated here. This
+  reverses the earlier decision to keep a concrete adapter off the public feature;
+  `_test-tokio` remains as an alias.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written
@@ -18,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`neutral` module — the connector reduced to framing.** `CobsFramer` against
+  core's `Framer` plus core's `FramedConnection` serve both runtimes; the byte
+  sources come from the adapters (`TokioByteStream`, `EmbassyUart`), so this crate
+  names no socket or UART type of its own.
 - **New crate — the COBS-framed serial/UART transport for AimDB remote access (Issue #122, follow-up to #39).** The serial sibling of `aimdb-uds-connector`: it contributes only the `Dialer`/`Listener`/`Connection` triple plus thin sugar; the AimX codec + dispatch and the runtime-neutral session engines (`run_client`/`serve`) are reused from `aimdb-core`. The wire is the same compact AimX JSON, framed with **COBS** (Consistent Overhead Byte Stuffing) and a `0x00` sentinel instead of a newline — self-synchronizing on a lossy/unframed serial medium, so a receiver that joins mid-stream resynchronizes on the next sentinel. Default scheme `"serial"`. Two runtime halves:
   - **`tokio-runtime`** (std, host/gateway) — `TokioSerialConnection<S>` over any `AsyncRead + AsyncWrite` (a real `tokio_serial::SerialStream` in production, a `tokio::io::duplex()` in tests), with `SerialClient::new(path, baud)` (sugar over `SessionClientConnector<SerialDialer, AimxCodec>`) and `SerialServer` (sugar over `SessionServerConnector` + `AimxDispatch`). The listener is one-shot (serial is point-to-point).
   - **`embassy-runtime`** (`no_std + alloc`, MCU) — thin sugar over the centralized Embassy session spine in `aimdb-embassy-adapter::connectors` (M17, [Design 033](../docs/design/033-M17-unify-connectors-drop-send.md)): this half contributes only the COBS `CobsFramer` (implementing the spine's `Framer`); the framed `EmbassyConnection` over `embedded-io-async` `Read`/`Write` halves (the common `BufferedUart::split()` shape), the one-shot dialer/listener/cell, and **all** the force-`Send` plumbing live in the adapter — this crate carries **no `unsafe`**. `SerialClient::new(rx, tx)` returns the spine's `EmbassySessionClient` (chain `.scheme(...)`/`.with_config(...)` on it); `SerialServer` stores the moved-in framed connection in the spine's `OneShotCell` and drives `serve`. The Embassy *server* half rides the `no_std` `AimxDispatch` landed in #120, so an MCU can answer `record.list`/`get`/`set`/`subscribe`/`drain` over a UART; the *client* half mirrors records to a gateway. Reconnect is disabled by default on Embassy (the spine's default — the UART peripheral is moved in and can't be re-acquired).
