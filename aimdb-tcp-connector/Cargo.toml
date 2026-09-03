@@ -52,6 +52,9 @@ _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
 # the `_test-tokio` build too). Run with `--features _test-embassy-loopback`.
 _test-embassy-loopback = [
     "embassy-runtime",
+    # The adapter's neutral transports, exercised by `tests/neutral_pool.rs`
+    # over the same two real stacks as `embassy_loopback.rs`.
+    "aimdb-embassy-adapter/net",
     "embassy-net/medium-ip",
     "embassy-net/proto-ipv4",
     "dep:embassy-net-driver-channel",

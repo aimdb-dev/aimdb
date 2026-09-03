@@ -13,14 +13,19 @@
 
 use core::cell::RefCell;
 use core::future::{poll_fn, Future};
+use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
+use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 
-use aimdb_core::session::{ByteStream, StreamDialer, TransportError, TransportResult};
+use aimdb_core::session::{
+    ByteStream, PeerInfo, StreamDialer, StreamListener, TransportError, TransportResult,
+};
 
 use embassy_net::tcp::TcpSocket;
-use embassy_net::{IpEndpoint, Stack};
+use embassy_net::{IpEndpoint, IpListenEndpoint, Stack};
 use embedded_io_async::Write as _;
 
 use crate::SendFutureWrapper;
@@ -194,6 +199,93 @@ impl StreamDialer for EmbassyTcpDialer {
 }
 
 // ===========================================================================
+// Pooled listener.
+// ===========================================================================
+
+/// One slot's accept, owning its socket so the listener can store it between
+/// calls.
+type PendingAccept = Pin<Box<dyn Future<Output = TransportResult<TcpSocket<'static>>>>>;
+
+/// An Embassy TCP listener over `N` caller-owned sockets, behind the
+/// single-accept [`StreamListener`] contract.
+///
+/// Each slot's accept future is created once and **kept**, so returning slot
+/// *i*'s connection leaves the other `N-1` pending and still in `LISTEN` — a
+/// SYN arriving between accepts lands. Rebuilding them instead would need an
+/// `abort()` to make `accept()` re-enterable, and that abort is what drops the
+/// `LISTEN`. `aimdb-tcp-connector`'s `tests/neutral_pool.rs` holds both halves
+/// of this to real sockets.
+pub struct EmbassyTcpListener<const N: usize> {
+    local_endpoint: IpListenEndpoint,
+    slots: [Arc<TcpSocketSlot>; N],
+    pending: [Option<PendingAccept>; N],
+}
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant.
+unsafe impl<const N: usize> Send for EmbassyTcpListener<N> {}
+
+impl<const N: usize> EmbassyTcpListener<N> {
+    /// Arm slot `i` unless its accept is already in flight.
+    fn arm(&mut self, i: usize) {
+        if self.pending[i].is_some() {
+            return;
+        }
+        let slot = self.slots[i].clone();
+        let endpoint = self.local_endpoint;
+        self.pending[i] = Some(Box::pin(async move {
+            // A live connection may still hold the socket.
+            let mut socket = slot.acquire().await;
+            socket.abort();
+            match socket.accept(endpoint).await {
+                Ok(()) => Ok(socket),
+                Err(_) => {
+                    socket.abort();
+                    slot.put(socket);
+                    Err(TransportError::Io)
+                }
+            }
+        }));
+    }
+}
+
+impl<const N: usize> StreamListener for EmbassyTcpListener<N> {
+    type Stream = EmbassyTcpStream;
+
+    fn accept(
+        &mut self,
+    ) -> impl Future<Output = TransportResult<(Self::Stream, PeerInfo)>> + Send + '_ {
+        SendFutureWrapper(async move {
+            for i in 0..N {
+                self.arm(i);
+            }
+            poll_fn(|cx| {
+                for i in 0..N {
+                    let Some(fut) = self.pending[i].as_mut() else {
+                        continue;
+                    };
+                    let Poll::Ready(result) = fut.as_mut().poll(cx) else {
+                        continue;
+                    };
+                    // Only this slot is consumed; the rest stay in LISTEN.
+                    self.pending[i] = None;
+                    let socket = match result {
+                        Ok(socket) => socket,
+                        Err(e) => return Poll::Ready(Err(e)),
+                    };
+                    // `PeerInfo` is `#[non_exhaustive]`: build it by mutation.
+                    let mut peer = PeerInfo::default();
+                    peer.peer_addr = socket.remote_endpoint().map(|e| e.to_string());
+                    let stream = EmbassyTcpStream::recyclable(socket, self.slots[i].clone());
+                    return Poll::Ready(Ok((stream, peer)));
+                }
+                Poll::Pending
+            })
+            .await
+        })
+    }
+}
+
+// ===========================================================================
 // UART.
 // ===========================================================================
 
@@ -264,6 +356,21 @@ impl EmbassyNet {
             ))),
         }
     }
+
+    /// An `N`-socket listener on `local_endpoint`, one caller-owned
+    /// `(rx, tx)` pair per socket.
+    pub fn listen<const N: usize>(
+        stack: Stack<'static>,
+        local_endpoint: impl Into<IpListenEndpoint>,
+        buffers: [(&'static mut [u8], &'static mut [u8]); N],
+    ) -> EmbassyTcpListener<N> {
+        EmbassyTcpListener {
+            local_endpoint: local_endpoint.into(),
+            slots: buffers
+                .map(|(rx, tx)| Arc::new(TcpSocketSlot::new(TcpSocket::new(stack, rx, tx)))),
+            pending: core::array::from_fn(|_| None),
+        }
+    }
 }
 
 /// [`Delay`](aimdb_core::session::Delay) over `embassy_time::Timer`, which is
@@ -292,6 +399,7 @@ fn _transports_are_send() {
     fn assert_send<T: Send>() {}
     assert_send::<EmbassyTcpStream>();
     assert_send::<TcpSocketSlot>();
+    assert_send::<EmbassyTcpListener<2>>();
     #[cfg(feature = "embassy-time")]
     assert_send::<EmbassyDelay>();
 }
