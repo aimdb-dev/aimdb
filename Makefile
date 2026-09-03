@@ -465,6 +465,8 @@ test-embedded:
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-sync (no_std) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-sync --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features
+	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + TLS) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,embassy-tls"
 
 ## Example projects
 examples:

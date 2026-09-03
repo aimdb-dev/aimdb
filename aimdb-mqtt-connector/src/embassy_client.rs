@@ -278,19 +278,10 @@ impl EmbassySourceRaw for MqttSource {
 /// neither `Sync` nor takeable through the `&self` that
 /// [`ConnectorBuilder::build`] receives without interior mutability.
 ///
-/// SAFETY invariant: same single-core cooperative-executor invariant as
-/// [`NetStack`](aimdb_embassy_adapter::connectors::NetStack); the slot is
-/// written by `with_tls` and taken exactly once inside `build()`, both on
-/// that executor.
+/// Core's cell supplies both without `unsafe`: it is `Send + Sync` for any
+/// `T: Send`, which is what the `+ Send` on [`TlsOptions`]'s RNG buys.
 #[cfg(feature = "embassy-tls")]
-struct TlsSlot(core::cell::RefCell<Option<TlsOptions>>);
-
-// SAFETY: see the struct-level invariant.
-#[cfg(feature = "embassy-tls")]
-unsafe impl Send for TlsSlot {}
-// SAFETY: see the struct-level invariant.
-#[cfg(feature = "embassy-tls")]
-unsafe impl Sync for TlsSlot {}
+type TlsSlot = aimdb_core::session::OneShot<TlsOptions>;
 
 /// MQTT connector builder for Embassy with router-based dispatch.
 ///
@@ -322,7 +313,7 @@ impl MqttConnectorBuilder {
             client_id: "aimdb-client".to_string(),
             credentials: None,
             #[cfg(feature = "embassy-tls")]
-            tls: TlsSlot(core::cell::RefCell::new(None)),
+            tls: TlsSlot::default(),
             // SAFETY: AimDB's Embassy integration requires a single-core
             // cooperative executor (the adapter's module-level invariant);
             // every future touching this stack — including the broker task
@@ -354,8 +345,8 @@ impl MqttConnectorBuilder {
     ///
     /// Required for `mqtts://` URLs; rejected at `build()` for `mqtt://`.
     #[cfg(feature = "embassy-tls")]
-    pub fn with_tls(self, options: TlsOptions) -> Self {
-        *self.tls.0.borrow_mut() = Some(options);
+    pub fn with_tls(mut self, options: TlsOptions) -> Self {
+        self.tls = TlsSlot::new(options);
         self
     }
 }
@@ -395,7 +386,7 @@ impl ConnectorBuilder for MqttConnectorBuilder {
             // The URL scheme selects the transport.
             #[cfg(feature = "embassy-tls")]
             let (action_sender, event_receiver, manager_tasks) = {
-                let tls_options = self.tls.0.borrow_mut().take();
+                let tls_options = self.tls.take();
                 match (broker.tls, tls_options) {
                     (true, Some(options)) => setup_tls_manager(
                         &broker,
