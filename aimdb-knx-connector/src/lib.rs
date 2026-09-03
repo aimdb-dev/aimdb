@@ -150,6 +150,11 @@ pub use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
 pub mod tunnel;
 
 // Platform-specific implementations
+// One connection task generic over core's neutral datagram traits — the
+// runtime-independent replacement for the two client modules.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub mod neutral;
+
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_client;
 

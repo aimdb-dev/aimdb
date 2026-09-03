@@ -107,6 +107,8 @@ tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
+    # `TokioNet`/`TokioDelay`, the neutral transports the unified task runs on.
+    "net",
 ] }
 
 [package.metadata.docs.rs]
