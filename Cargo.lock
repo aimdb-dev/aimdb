@@ -187,6 +187,7 @@ dependencies = [
  "defmt 1.1.1",
  "embassy-executor",
  "embassy-net",
+ "embassy-net-driver-channel",
  "embassy-sync",
  "embassy-time",
  "embassy-time-driver",

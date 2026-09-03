@@ -28,7 +28,7 @@ connector-io = ["connectors", "dep:embedded-io-async"]
 # traits, so connector crates need no `embassy-net` dependency. Deliberately
 # does not imply `embassy-time`: that turns on `defmt-timestamp-uptime`, whose
 # `_defmt_timestamp` collides with every host test binary's `defmt::timestamp!`.
-net = ["connectors", "embassy-net-support", "dep:embedded-io-async"]
+net = ["connectors", "embassy-net-support", "embassy-net/udp", "dep:embedded-io-async"]
 
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]
@@ -77,6 +77,15 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = fal
     "alloc",
     "connector-session",
 ] }
+
+# Two crossover-wired embassy-net stacks for the host UDP test
+# (`tests/neutral_udp.rs`), the same rig the TCP connector's loopback uses.
+embassy-net = { workspace = true, features = [
+    "medium-ip",
+    "proto-ipv4",
+    "udp",
+] }
+embassy-net-driver-channel = "0.4.0"
 
 # For testing on embedded targets
 heapless = "0.9.1"

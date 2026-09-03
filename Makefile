@@ -177,8 +177,10 @@ test:
 	cargo test --package aimdb-tokio-adapter --features "net"
 	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, connector spine, doctests)$(NC)\n"
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
-	@printf "$(YELLOW)  → Testing embassy adapter (host: runtime-neutral UART stream and clock)$(NC)\n"
-	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time"
+	@printf "$(YELLOW)  → Testing embassy adapter (host: runtime-neutral transports, UART + UDP over two embassy-net stacks)$(NC)\n"
+	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,net"
+	@printf "$(YELLOW)  → Testing embassy adapter (host: the neutral clock; --lib only, embassy-time's uptime timestamp collides with the test binaries')$(NC)\n"
+	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --lib
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib: buffer semantics + shared contract suite; browser layer runs via wasm-test)$(NC)\n"
 	cargo test --package aimdb-wasm-adapter --no-default-features --lib
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib with observability)$(NC)\n"
@@ -286,7 +288,8 @@ clippy:
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime,embassy-net-support" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter (runtime-neutral transports, target and host tests)$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "alloc,net,embassy-runtime" -- -D warnings
-	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --all-targets -- -D warnings
+	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net" --all-targets -- -D warnings
+	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --lib -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
