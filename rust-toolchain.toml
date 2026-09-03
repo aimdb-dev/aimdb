@@ -12,4 +12,4 @@
 channel = "1.98.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
-targets = ["thumbv7em-none-eabihf", "wasm32-unknown-unknown"]
+targets = ["thumbv7em-none-eabihf", "thumbv8m.main-none-eabihf", "wasm32-unknown-unknown"]

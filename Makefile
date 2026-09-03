@@ -478,17 +478,17 @@ examples:
 	@printf "$(YELLOW)  → Building tokio-mqtt-connector-demo (native, tokio runtime)$(NC)\n"
 	cargo build --package tokio-mqtt-connector-demo
 	@printf "$(YELLOW)  → Building embassy-mqtt-connector-demo (embedded, embassy runtime)$(NC)\n"
-	cargo build --package embassy-mqtt-connector-demo --target thumbv7em-none-eabihf
+	cargo build --package embassy-mqtt-connector-demo --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building knx-connector-demo-common (shared KNX demo code, runtime-agnostic)$(NC)\n"
 	cargo build --package knx-connector-demo-common
 	@printf "$(YELLOW)  → Building tokio-knx-connector-demo (native, tokio runtime)$(NC)\n"
 	cargo build --package tokio-knx-connector-demo
 	@printf "$(YELLOW)  → Building embassy-knx-connector-demo (embedded, embassy runtime)$(NC)\n"
-	cargo build --package embassy-knx-connector-demo --target thumbv7em-none-eabihf
+	cargo build --package embassy-knx-connector-demo --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building embassy-serial-connector-demo (embedded, embassy runtime)$(NC)\n"
-	cargo build --package embassy-serial-connector-demo --target thumbv7em-none-eabihf
+	cargo build --package embassy-serial-connector-demo --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building embassy-bench-stm32h5 (B3 on-target profiling, embassy runtime)$(NC)\n"
-	cargo build --package embassy-bench-stm32h5 --target thumbv7em-none-eabihf
+	cargo build --package embassy-bench-stm32h5 --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-mesh-common$(NC)\n"
 	cargo build --package weather-mesh-common
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-hub (cloud aggregator)$(NC)\n"

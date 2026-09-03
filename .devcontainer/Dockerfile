@@ -100,6 +100,7 @@ ENV PATH="/home/$USERNAME/.cargo/bin:${PATH}"
 # download on first use; the thumbv6m/thumbv7m pair is a devcontainer-only
 # convenience for MCU work outside what the workspace builds.
 RUN rustup target add thumbv7em-none-eabihf \
+    && rustup target add thumbv8m.main-none-eabihf \
     && rustup target add wasm32-unknown-unknown \
     && rustup target add thumbv6m-none-eabi \
     && rustup target add thumbv7m-none-eabi
