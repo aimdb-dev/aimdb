@@ -91,11 +91,34 @@ impl ClientManager {
         self.connections.load(Ordering::Relaxed) as usize
     }
 
-    /// RAII guard: increments the connection count now, decrements on drop.
-    pub(crate) fn connection_guard(&self) -> ConnectionGuard {
-        self.connections.fetch_add(1, Ordering::Relaxed);
-        ConnectionGuard {
-            connections: self.connections.clone(),
+    /// Claim a connection slot, or `None` once `max_clients` are live.
+    ///
+    /// The check and the increment are one compare-exchange, so concurrent
+    /// upgrades cannot all pass on the same observed count — hence the retry
+    /// loop, which re-reads the value another thread just claimed. The returned
+    /// guard releases the slot on drop, so it must be held for as long as the
+    /// connection lives (see `ws_upgrade_handler`).
+    pub(crate) fn try_connection_guard(&self, max_clients: u64) -> Option<ConnectionGuard> {
+        let mut current = self.connections.load(Ordering::Relaxed);
+        // Try to claim the slot till success
+        loop {
+            if current >= max_clients {
+                return None;
+            }
+
+            match self.connections.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(ConnectionGuard {
+                        connections: self.connections.clone(),
+                    })
+                }
+                Err(actual) => current = actual,
+            }
         }
     }
 

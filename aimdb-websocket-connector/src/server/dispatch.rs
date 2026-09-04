@@ -25,7 +25,7 @@ use serde_json::Value;
 
 use super::{
     auth::{AuthHandler, ClientId, ClientInfo, Permissions},
-    client_manager::{ClientManager, ConnectionGuard},
+    client_manager::ClientManager,
     session::{QueryHandler, Router, SnapshotProvider},
 };
 
@@ -82,7 +82,6 @@ impl Dispatch for WsDispatch {
             late_join: self.late_join,
             runtime_ctx: self.runtime_ctx.clone(),
             info,
-            _conn_guard: self.client_mgr.connection_guard(),
         })
     }
 }
@@ -99,8 +98,6 @@ struct WsSession {
     late_join: bool,
     runtime_ctx: aimdb_core::RuntimeContext,
     info: Arc<ClientInfo>,
-    /// Decrements the live-connection count on drop.
-    _conn_guard: ConnectionGuard,
 }
 
 impl Session for WsSession {

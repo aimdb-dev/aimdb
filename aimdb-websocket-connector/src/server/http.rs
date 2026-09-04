@@ -4,6 +4,14 @@
 //! address, mounts the WebSocket endpoint at the configured path, and
 //! optionally mounts additional user-provided Axum routes.
 //!
+//! # Upgrade gates
+//!
+//! [`ws_upgrade_handler`] refuses a connection before the socket opens, with the
+//! status saying why: `426` for an incompatible AimX version, `503` once
+//! `with_max_clients` connections are live, `401` when the [`AuthHandler`]
+//! rejects. A slot for the cap is claimed at admission and released when the
+//! session ends, so `/health`'s count is exact from the moment the 101 goes out.
+//!
 //! # Health endpoint
 //!
 //! `GET /health` returns `200 OK` with a JSON body:
@@ -69,6 +77,8 @@ pub(crate) struct ServerState {
     pub client_mgr: ClientManager,
     /// Patterns to auto-subscribe each client to on connect.
     pub auto_subscribe: Arc<Vec<String>>,
+    /// Maximum number connection allowed
+    pub max_clients: usize,
     /// Per-connection subscription cap.
     pub max_subs_per_connection: usize,
     pub started_at: Instant,
@@ -154,6 +164,29 @@ async fn ws_upgrade_handler(
         query_params,
         remote_addr,
     };
+    // Connection cap, refused with 503 before the socket opens. The slot is
+    // claimed here rather than in `WsDispatch::open` so the check and the
+    // increment are one atomic step: `open` runs inside `run_session`, after the
+    // 101 is already on the wire, so a count read here would not yet include the
+    // connection admitted a moment ago and concurrent upgrades would all pass.
+    //
+    // WARNING: a connection lost without a TCP FIN (cut cable, NAT or firewall
+    // dropping the flow) holds its slot until the socket is noticed as dead —
+    // the server neither pings nor times out idle connections.
+    let max_clients = state.max_clients as u64;
+    let Some(conn_guard) = state.client_mgr.try_connection_guard(max_clients) else {
+        #[cfg(feature = "tracing")]
+        tracing::warn!(
+            "WebSocket upgrade from {} refused: {} clients connected",
+            remote_addr,
+            max_clients
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("maximum connected clients of {} reached", max_clients),
+        )
+            .into_response();
+    };
 
     // Protocol-version gate, before auth: the socket transports negotiate the
     // version inside `hello`, but the WS server runs `reads_hello:false` and a
@@ -212,7 +245,9 @@ async fn ws_upgrade_handler(
     let auto_subscribe = state.auto_subscribe.clone();
     let config = SessionConfig {
         limits: SessionLimits {
-            max_connections: usize::MAX, // axum owns the accept loop
+            // The engine's own connection limit stays off: axum owns the accept
+            // loop, and the cap is enforced above by `try_connection_guard`.
+            max_connections: usize::MAX,
             max_subs_per_connection: state.max_subs_per_connection,
         },
         reads_hello: false,
@@ -220,6 +255,9 @@ async fn ws_upgrade_handler(
     };
 
     ws.on_upgrade(move |socket: WebSocket| async move {
+        // Move the guard here, dropped when connection ends
+        // WsSession will no longer hold the guard, as the api currently does not allow that
+        let _conn_guard = conn_guard;
         let peer = PeerInfo::default().with_ext(Arc::new(info));
         let conn: Box<dyn Connection> =
             Box::new(WsServerConnection::new(socket, peer, &auto_subscribe));

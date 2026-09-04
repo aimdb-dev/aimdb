@@ -62,7 +62,8 @@ use super::{
 ///     .bind("0.0.0.0:8080")
 ///     .path("/ws")
 ///     .with_late_join(true)
-///     .with_max_clients(500);
+///     .with_max_clients(500)
+///     .with_max_subs_per_connection(500);
 /// ```
 pub struct WebSocketConnectorBuilder {
     bind_addr: SocketAddr,
@@ -70,6 +71,7 @@ pub struct WebSocketConnectorBuilder {
     auth: DynAuthHandler,
     late_join: bool,
     max_clients: usize,
+    max_subs_per_connection: usize,
     channel_capacity: usize,
     additional_routes: Option<AxumRouter>,
     /// Topics to subscribe every new client to automatically on connect.
@@ -93,6 +95,7 @@ impl Default for WebSocketConnectorBuilder {
             auth: Arc::new(NoAuth),
             late_join: true,
             max_clients: 1024,
+            max_subs_per_connection: 1024,
             channel_capacity: 256,
             additional_routes: None,
             auto_subscribe_topics: Vec::new(),
@@ -111,6 +114,7 @@ impl WebSocketConnectorBuilder {
     /// - auth: allow all
     /// - late-join snapshots: enabled
     /// - max clients: 1 024
+    /// - max subscriptions per connection: 1 024
     /// - per-client channel capacity: 256
     pub fn new() -> Self {
         Self::default()
@@ -154,13 +158,28 @@ impl WebSocketConnectorBuilder {
         self
     }
 
-    /// Set the per-connection subscription ceiling (default: 1 024).
+    /// Set the live-connection ceiling (default: 1 024).
     ///
-    /// Despite the name, this bounds live subscriptions per connection
-    /// (`max_subs_per_connection`), not the client count — connection count is the
-    /// axum accept loop's concern, not enforced here.
+    /// Enforced at the HTTP upgrade: once this many clients are connected,
+    /// further upgrades are refused with `503 Service Unavailable` before the
+    /// socket opens. A slot is claimed when the upgrade is admitted and released
+    /// when that connection's session ends.
+    ///
+    /// Note that a connection lost *without* a TCP FIN — a cut cable, a NAT or
+    /// firewall silently dropping the flow — holds its slot until the socket is
+    /// noticed as dead, since the server neither pings nor times out idle
+    /// connections. Size the cap with that in mind.
+    ///
+    /// This method previously set the per-connection subscription cap; that knob
+    /// is now [`with_max_subs_per_connection`](Self::with_max_subs_per_connection).
     pub fn with_max_clients(mut self, max: usize) -> Self {
         self.max_clients = max;
+        self
+    }
+
+    /// Set the per-connection subscription ceiling (default: 1 024).
+    pub fn with_max_subs_per_connection(mut self, max: usize) -> Self {
+        self.max_subs_per_connection = max;
         self
     }
 
@@ -317,9 +336,8 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 auth: self.auth.clone(),
                 client_mgr,
                 auto_subscribe: Arc::new(self.auto_subscribe_topics.clone()),
-                // `max_clients` now supplies the per-connection subscription cap;
-                // connection count stays axum's concern (see `with_max_clients`).
-                max_subs_per_connection: self.max_clients.max(1),
+                max_clients: self.max_clients.max(1),
+                max_subs_per_connection: self.max_subs_per_connection.max(1),
                 started_at: Instant::now(),
             };
             let additional = self.additional_routes.clone();
