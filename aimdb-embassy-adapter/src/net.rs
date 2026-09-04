@@ -271,7 +271,7 @@ type PendingAccept = Pin<Box<dyn Future<Output = TransportResult<TcpSocket<'stat
 /// *i*'s connection leaves the other `N-1` pending and still in `LISTEN` — a
 /// SYN arriving between accepts lands. Rebuilding them instead would need an
 /// `abort()` to make `accept()` re-enterable, and that abort is what drops the
-/// `LISTEN`. `aimdb-tcp-connector`'s `tests/neutral_pool.rs` holds both halves
+/// `LISTEN`. `aimdb-tcp-connector`'s `tests/accept_pool.rs` holds both halves
 /// of this to real sockets.
 pub struct EmbassyTcpListener<const N: usize> {
     local_endpoint: IpListenEndpoint,

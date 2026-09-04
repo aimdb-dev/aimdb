@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`tests/neutral_pool.rs`** — the adapter's pooled `StreamListener` over two
+- **`tests/accept_pool.rs`** — the adapter's pooled `StreamListener` over two
   crossover-wired `embassy-net` stacks, with a rebuild-and-cancel pool as the
   negative control: it loses a SYN arriving between accepts, the stored-accept
   pool does not.

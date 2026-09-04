@@ -89,7 +89,7 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = fal
 ] }
 
 # Two crossover-wired embassy-net stacks for the host UDP test
-# (`tests/neutral_udp.rs`), the same rig the TCP connector's loopback uses.
+# (`tests/udp.rs`), the same rig the TCP connector's loopback uses.
 embassy-net = { workspace = true, features = [
     "medium-ip",
     "proto-ipv4",

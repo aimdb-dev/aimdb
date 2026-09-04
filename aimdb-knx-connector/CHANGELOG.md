@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`neutral::connection_task` — one connection task for both runtimes.** Generic
+- **`client::connection_task` — one connection task for both runtimes.** Generic
   over core's `DatagramBinder` and `Delay`, it binds, advertises the socket's real
   local endpoint (HPAI) instead of the NAT-style `0.0.0.0:0` — falling back to NAT
   on a cycle whose stack exposes no address, so a rebind never re-advertises the

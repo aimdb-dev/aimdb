@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`net` feature — Embassy behind core's neutral I/O traits.** `EmbassyNet::tcp`,
+- **`net` feature — Embassy behind core's runtime-neutral I/O traits.** `EmbassyNet::tcp`,
   `listen::<N>`, `udp` and `EmbassyUart` supply the sockets and UART halves;
   `EmbassyDelay` is gated on `embassy-time` separately so a sockets-only consumer
   does not pull in `defmt-timestamp-uptime`'s `_defmt_timestamp`. The listener

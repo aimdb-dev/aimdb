@@ -3,7 +3,7 @@
 #![cfg(feature = "tokio-runtime")]
 
 use aimdb_core::session::Connection;
-use aimdb_serial_connector::neutral::{CobsFramer, TokioFramed, WRITE_CHUNK};
+use aimdb_serial_connector::framer::{CobsFramer, TokioFramed, WRITE_CHUNK};
 use aimdb_tokio_adapter::net::TokioByteStream;
 
 /// A duplex pipe standing in for a `SerialStream`, framed at both ends.

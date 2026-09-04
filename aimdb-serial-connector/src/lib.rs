@@ -32,10 +32,11 @@ extern crate alloc;
 
 pub mod framing;
 
-// The COBS framer against core's `Framer`, plus one `ByteStream` per byte
-// source — the runtime-neutral replacement for the two transport modules.
+// The COBS framer against core's `Framer`, plus the `FramedConnection` aliases
+// it forms with each adapter's byte source. Supersedes the two per-runtime
+// transport modules below, which it will replace outright.
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub mod neutral;
+pub mod framer;
 
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_transport;

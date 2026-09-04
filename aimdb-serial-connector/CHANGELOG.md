@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`neutral` module — the connector reduced to framing.** `CobsFramer` against
+- **`framer` module — the connector reduced to framing.** `CobsFramer` against
   core's `Framer` plus core's `FramedConnection` serve both runtimes; the byte
   sources come from the adapters (`TokioByteStream`, `EmbassyUart`), so this crate
   names no socket or UART type of its own.
