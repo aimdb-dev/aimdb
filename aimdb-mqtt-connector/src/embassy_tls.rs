@@ -68,7 +68,7 @@ pub(crate) const READ_BUF_MIN: usize = 16_640;
 /// and the RNG live in `StaticCell`s (or equivalents) owned by the
 /// application — the one party that knows the board's memory budget.
 pub struct TlsOptions {
-    pub(crate) rng: &'static mut dyn CryptoRngCore,
+    pub(crate) rng: &'static mut (dyn CryptoRngCore + Send),
     pub(crate) ca_der: &'static [u8],
     pub(crate) read_buf: &'static mut [u8],
     pub(crate) write_buf: &'static mut [u8],
@@ -79,14 +79,15 @@ impl TlsOptions {
     /// TLS with certificate verification against `ca_der` (the root CA, DER).
     ///
     /// * `rng` — CSPRNG for the handshake; on STM32 the hardware TRNG
-    ///   (`embassy_stm32::rng::Rng` implements `CryptoRngCore`).
+    ///   (`embassy_stm32::rng::Rng` implements `CryptoRngCore`). Must be
+    ///   `Send`, which every concrete CSPRNG satisfies.
     /// * `read_buf` — TLS record read buffer. At least 16 640 bytes (a
     ///   TLS 1.3 peer may send full-size records regardless of our
     ///   `max_fragment_length` offer); `build()` rejects smaller buffers.
     /// * `write_buf` — TLS record write buffer; 4 096 bytes is plenty for
     ///   MQTT-sized writes.
     pub fn new(
-        rng: &'static mut dyn CryptoRngCore,
+        rng: &'static mut (dyn CryptoRngCore + Send),
         ca_der: &'static [u8],
         read_buf: &'static mut [u8],
         write_buf: &'static mut [u8],

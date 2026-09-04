@@ -6,7 +6,7 @@
 //! dialer/listener/cell, and the force-`Send` plumbing all live in
 //! [`aimdb_embassy_adapter::connectors`]. So this module carries **no `unsafe`**
 //! (down from the seven `unsafe impl`s this half used to hand-roll) — the Embassy
-//! half is now structurally a sibling of the [Tokio half](crate::tokio_transport),
+//! half is now structurally a sibling of the Tokio half,
 //! both thin sugar over a shared spine.
 //!
 //! Generic over the `embedded-io-async` `Read`/`Write` halves (the common Embassy

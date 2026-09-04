@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime-neutral I/O layer (`session::io`, feature `connector-session`).**
+  `ByteStream`/`StreamDialer`/`StreamListener`/`Datagram`/`DatagramBinder`/`Delay`
+  sit below `Connection`, so an adapter owns sockets and clocks while a connector
+  owns framing. `FramedConnection` plus `FramingDialer`/`FramingListener` lift a
+  byte stream into the existing `Dialer`/`Listener`, and `OneShot<T>` is a
+  `Send + Sync` cell for moved-in resources with no `unsafe`.
 - **A panic is a bug, not an error channel — checked.** The crate is compiled
   under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
   its own tests. Four sites fixed: poisoned-mutex recovery in the

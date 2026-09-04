@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tokio-runtime` gains `embassy-sync`; `embassy-futures` is unconditional.**
+  Both are executor-independent, so one channel and select type serves either
+  runtime.
+- **Selecting a `critical-section` implementation is left to the final binary.**
+  `CriticalSectionRawMutex` needs one to link, but the impl is registered by
+  symbol name and is global to the binary, so a library that enables it hands
+  every downstream binary a duplicate-symbol error with no way to opt out — the
+  crate's own docs reserve the choice for the final binary. The new opt-in
+  `critical-section-std-impl` feature is available for a std binary that wants
+  it from here; this crate's tests get the impl from a dev-dependency.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written
@@ -18,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`client::connection_task` — one connection task for both runtimes.** Generic
+  over core's `DatagramBinder` and `Delay`, it binds, advertises the socket's real
+  local endpoint (HPAI) instead of the NAT-style `0.0.0.0:0` — falling back to NAT
+  on a cycle whose stack exposes no address, so a rebind never re-advertises the
+  previous cycle's port — drives the shared `TunnelEngine`, and rebinds on socket
+  reset. Its select alternates the inbound and command arms each pass, since
+  `select3` polls in declaration order where the `tokio::select!` it replaces
+  chose among ready arms at random. `shared_channel` bridges it to the
+  `embassy_sync` channels, which now back the task on std too.
 - **Spec-conformant TUNNELING_REQUEST retransmission — `TunnelConfig::ack_retransmits` (036 W4, default `1`).** When a tracked outbound telegram's ACK does not arrive within `ack_timeout_ms`, the engine now retransmits the byte-identical frame (same sequence counter, buffered in the pending-ACK slot per KNXnet/IP 3.8.4) and, when the repeat also goes unanswered, reports `Action::AckTimeout` **and tears the connection down** — so subsequent commands queue for the re-handshake instead of being sent into a dead tunnel. Hardware-bench evidence motivating this: ten button-press writes issued during a link outage's heartbeat-detection window (up to ~65 s) were silently lost with only warnings; with retransmission the loss window shrinks to ~2× `ack_timeout_ms`. `ack_retransmits: 0` restores the previous expire-and-warn behavior (no retransmit, no disconnect, no frame buffering — though the 16-slot frame capacity, ~4.5 KiB, is statically reserved either way on `heapless`). The retransmit delay is `ack_timeout_ms` (default 3 s, the constant both pre-engine implementations used); set it to `1_000` for strict spec timing. Covered by engine unit tests and a fake-gateway test that drops the first ACK and asserts the identical repeat.
 
 ### Fixed

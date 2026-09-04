@@ -149,6 +149,12 @@ pub use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
 // Runtime-neutral KNX/IP tunneling state machine shared by both transports.
 pub mod tunnel;
 
+// The connection task: one body for both runtimes, generic over core's
+// datagram and delay traits. Supersedes the two per-runtime client modules
+// below, which it will replace outright.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub mod client;
+
 // Platform-specific implementations
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_client;

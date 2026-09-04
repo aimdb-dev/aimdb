@@ -17,12 +17,12 @@
 //! - **`tokio-runtime`** (std, host/gateway): real serial via `tokio-serial`,
 //!   riding the generic [`SessionClientConnector`](aimdb_core::session::SessionClientConnector)
 //!   / [`SessionServerConnector`](aimdb_core::session::SessionServerConnector).
-//!   See [`tokio_transport`].
+//!   See `tokio_transport`.
 //! - **`embassy-runtime`** (`no_std + alloc`, MCU): generic over
-//!   [`embedded_io_async`] UART halves; the COBS `Framer` plus thin sugar over the
+//!   `embedded-io-async` UART halves; the COBS `Framer` plus thin sugar over the
 //!   centralized Embassy session spine in `aimdb-embassy-adapter`, which owns the
 //!   force-`Send` plumbing, the framed connection, and all the `unsafe` — this
-//!   crate carries none. See [`embassy_transport`].
+//!   crate carries none. See `embassy_transport`.
 //!
 //! Both speak the `serial://` scheme by default ([`DEFAULT_SCHEME`]).
 
@@ -30,6 +30,10 @@
 
 extern crate alloc;
 
+// The COBS codec, and (under either runtime feature) that codec behind core's
+// `Framer` plus the `FramedConnection` aliases it forms with each adapter's
+// byte source. Supersedes the two per-runtime transport modules below, which it
+// will replace outright.
 pub mod framing;
 
 #[cfg(feature = "tokio-runtime")]

@@ -102,7 +102,7 @@ consumes only the one that completes; the other `N-1` stay pending, untouched,
 still listening. Nothing is ever cancelled and no socket leaves `LISTEN`
 between calls.
 
-`aimdb-tcp-connector/tests/neutral_pool.rs` proves it over the same two
+`aimdb-tcp-connector/tests/accept_pool.rs` proves it over the same two
 crossover-wired `embassy-net` stacks the existing loopback smoke uses, driven
 in exactly the shape `serve` accepts in:
 
@@ -133,7 +133,7 @@ Embassy assembles the address from the socket's bound port and the stack's
 IPv4 config, and rebinds by `close()` + `bind()` on the same socket rather
 than recreating it (which would strand its buffers).
 
-`neutral::tests::unified_task_advertises_the_real_local_endpoint` drives the
+`client::tests::unified_task_advertises_the_real_local_endpoint` drives the
 unified task against a real UDP gateway socket and asserts the bytes: the
 CONNECT_REQUEST's control HPAI carries `127.0.0.1` and the socket's actual
 bound port, not `0.0.0.0:0`. Worth noting the Embassy half never set the
@@ -201,7 +201,7 @@ it.
 It is also fully mitigable in one line, which the branch does: the KNX
 connector's `tokio-runtime` feature now enables `critical-section/std` itself,
 so no downstream std user ever sees the error.
-`neutral::tests::shared_embassy_channels_carry_telegrams_on_tokio` then runs
+`client::tests::shared_embassy_channels_carry_telegrams_on_tokio` then runs
 §5.2's claim rather than asserting it — the unified task on Tokio, against a
 real UDP gateway, carrying a full handshake, an inbound telegram with its ACK,
 and an outbound command, all through the same `embassy_sync` channel types the
@@ -227,8 +227,8 @@ have to stay separable features — `net` does not imply `embassy-time`, and
 |---|---|
 | 1 | **Met.** Core carries the new traits, `FramedConnection`, `FramingDialer`/`FramingListener` and `OneShot`, and still cross-compiles to `thumbv7em-none-eabihf` with zero `unsafe`. |
 | 2 | Needs rewording (it overlooks `aimdb-wasm-adapter`'s 16 `unsafe impl`s and `aimdb-bench`'s one), but now reachable: MQTT is at zero, serial was already at zero, and the TCP connector's remaining three live in the module this design deletes — the adapter's `net` module already replaces them. |
-| 3 | **Met for serial**, and the doubt was unfounded: `tokio` for `io-util` alone suffices, with no `aimdb-tokio-adapter` dependency. See §3 of `neutral_framed.rs`. |
-| 4 | Still the sharpest criterion. `two_concurrent_sessions` and the three other loopback tests pass unchanged, and `neutral_pool.rs` adds the pooled-`StreamListener` equivalent. Note MQTT's `build_internal` tests are Tokio-only unit tests; there is still **no** host test for either Embassy MQTT path. |
+| 3 | **Met for serial**, and the doubt was unfounded: `tokio` for `io-util` alone suffices, with no `aimdb-tokio-adapter` dependency. See §3 of `framed.rs`. |
+| 4 | Still the sharpest criterion. `two_concurrent_sessions` and the three other loopback tests pass unchanged, and `accept_pool.rs` adds the pooled-`StreamListener` equivalent. Note MQTT's `build_internal` tests are Tokio-only unit tests; there is still **no** host test for either Embassy MQTT path. |
 | 5 | **Near-vacuous, unchanged.** `examples/embassy-bench-stm32h5` depends only on `aimdb-core`, `aimdb-embassy-adapter` and `aimdb-bench` — no connector — so it will show no change whatever the refactor does. Replace it with an allocation-counting test on a connector path. |
 | 6 | Still the most valuable, and still unbuilt. Build it first, not last (§6.3). |
 
@@ -284,7 +284,7 @@ entirely in step 5.
   behaviour, not plumbing. Acceptance 6 is the mitigation and should be built
   **first**.
 - **Everything else is now de-risked by running code.** The traits, both
-  adapters, the accept pool, the unified KNX task and the neutral framed
+  adapters, the accept pool, the unified KNX task and the framed
   connection all exist and are tested.
 - **What is well covered:** CI cross-compiles every Embassy connector to
   `thumbv7em-none-eabihf` (`make test-embedded`, 8 connector configurations),
@@ -304,13 +304,13 @@ New:
   for the TCP and UDP paths lives here.
 - `aimdb-tokio-adapter/src/net.rs` (feature `net`) — the std duals, every
   future a plain `async fn`, no `unsafe`.
-- `aimdb-knx-connector/src/neutral.rs` — one `connection_task` generic over
+- `aimdb-knx-connector/src/client.rs` — one `connection_task` generic over
   `DatagramBinder + Delay`, plus the `embassy_sync` channel bridges.
-- `aimdb-serial-connector/src/neutral.rs` — the COBS framer against core's
+- `aimdb-serial-connector/src/framing.rs` — the COBS framer against core's
   trait, and one `ByteStream` per byte source.
-- Tests: `aimdb-tcp-connector/tests/neutral_pool.rs`,
-  `aimdb-serial-connector/tests/neutral_framed.rs`, and unit tests in
-  `neutral.rs` and `tunnel.rs`.
+- Tests: `aimdb-tcp-connector/tests/accept_pool.rs`,
+  `aimdb-serial-connector/tests/framed.rs`, and unit tests in
+  `client.rs` and `tunnel.rs`.
 
 Changed: `TunnelIo::send` gains `+ Send`; `TlsOptions`'s RNG gains `+ Send`
 and `TlsSlot` becomes `OneShot`; the KNX `tokio-runtime` feature adopts

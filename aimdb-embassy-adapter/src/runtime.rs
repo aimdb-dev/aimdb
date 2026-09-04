@@ -10,7 +10,7 @@ use tracing::debug;
 ///
 /// A unit type: the runtime travels as `Arc<dyn RuntimeOps>` and network
 /// connectors take the `embassy_net::Stack` at construction (wrapped in
-/// [`NetStack`](crate::connectors::NetStack)), so the adapter carries no state
+/// `NetStack`, feature `connectors`), so the adapter carries no state
 /// and no `unsafe`. All futures are driven by the `AimDbRunner` returned from
 /// `AimDbBuilder::build()`, which is awaited inside the Embassy main task.
 ///

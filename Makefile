@@ -92,6 +92,8 @@ build:
 	cargo build --package aimdb-core --features "std,connector-session"
 	@printf "$(YELLOW)  → Building tokio adapter$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
+	@printf "$(YELLOW)  → Building tokio adapter (runtime-neutral transports)$(NC)\n"
+	cargo build --package aimdb-tokio-adapter --features "net"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
@@ -171,8 +173,14 @@ test:
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing"
 	@printf "$(YELLOW)  → Testing tokio adapter (with observability)$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
+	@printf "$(YELLOW)  → Testing tokio adapter (runtime-neutral transports)$(NC)\n"
+	cargo test --package aimdb-tokio-adapter --features "net"
 	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, connector spine, doctests)$(NC)\n"
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
+	@printf "$(YELLOW)  → Testing embassy adapter (host: runtime-neutral transports, UART + UDP over two embassy-net stacks)$(NC)\n"
+	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,net"
+	@printf "$(YELLOW)  → Testing embassy adapter (host: the neutral clock; --lib only, embassy-time's uptime timestamp collides with the test binaries')$(NC)\n"
+	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --lib
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib: buffer semantics + shared contract suite; browser layer runs via wasm-test)$(NC)\n"
 	cargo test --package aimdb-wasm-adapter --no-default-features --lib
 	@printf "$(YELLOW)  → Testing WASM adapter (host lib with observability)$(NC)\n"
@@ -217,6 +225,8 @@ test:
 	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-tokio"
 	@printf "$(YELLOW)  → Testing TCP connector (embassy: socket recycle + concurrent slots + redial over an embassy-net loopback)$(NC)\n"
 	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test embassy_loopback
+	@printf "$(YELLOW)  → Testing TCP connector (accept pool over two embassy-net stacks)$(NC)\n"
+	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test accept_pool
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
@@ -262,15 +272,24 @@ clippy:
 	cargo clippy --package aimdb-core --no-default-features --features "alloc,remote" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
 	cargo clippy --package aimdb-core --features "std,tracing,observability" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (connector-session contracts, no_std + alloc and std)$(NC)\n"
+	cargo clippy --package aimdb-core --no-default-features --features "alloc,connector-session" --all-targets -- -D warnings
+	cargo clippy --package aimdb-core --features "std,connector-session" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (log destination, alone and beside tracing)$(NC)\n"
 	cargo clippy --package aimdb-core --features "std,log" --all-targets -- -D warnings
 	cargo clippy --package aimdb-core --features "std,log,tracing" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter$(NC)\n"
 	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on tokio adapter (runtime-neutral transports)$(NC)\n"
+	cargo clippy --package aimdb-tokio-adapter --features "net" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter with network support$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime,embassy-net-support" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on embassy adapter (runtime-neutral transports, target and host tests)$(NC)\n"
+	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "alloc,net,embassy-runtime" -- -D warnings
+	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net" --all-targets -- -D warnings
+	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --lib -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
@@ -335,11 +354,16 @@ clippy:
 	cargo clippy --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on TCP connector (embassy-net loopback smoke, host)$(NC)\n"
 	cargo clippy --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test embassy_loopback -- -D warnings
+	@printf "$(YELLOW)  → Clippy on TCP connector (accept pool, host)$(NC)\n"
+	cargo clippy --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test accept_pool -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
 	cargo clippy --package aimdb-bench --all-targets -- -D warnings
 
+# Doc links are public API: one pointing at a private or feature-gated item
+# breaks the published page, and nothing else in `check` looks at rustdoc.
+doc: export RUSTDOCFLAGS := -D warnings
 doc:
 	@printf "$(GREEN)Generating dual-platform documentation...$(NC)\n"
 	@# Create directory structure
@@ -348,7 +372,7 @@ doc:
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
 	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard" --no-deps
 	cargo doc --package aimdb-core --features "std,tracing,observability" --no-deps
-	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --no-deps
+	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net" --no-deps
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --features "std,tokio-runtime" --no-deps
@@ -361,7 +385,7 @@ doc:
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
 	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps
-	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime,net" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "embassy-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
@@ -420,6 +444,9 @@ test-embedded:
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,observability"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter connector spine (connector-io) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,connector-io"
+	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter runtime-neutral transports, with and without the clock, on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,net,embassy-runtime"
+	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,net"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
@@ -438,6 +465,8 @@ test-embedded:
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-sync (no_std) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-sync --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features
+	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + TLS) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,embassy-tls"
 
 ## Example projects
 examples:
@@ -449,17 +478,17 @@ examples:
 	@printf "$(YELLOW)  → Building tokio-mqtt-connector-demo (native, tokio runtime)$(NC)\n"
 	cargo build --package tokio-mqtt-connector-demo
 	@printf "$(YELLOW)  → Building embassy-mqtt-connector-demo (embedded, embassy runtime)$(NC)\n"
-	cargo build --package embassy-mqtt-connector-demo --target thumbv7em-none-eabihf
+	cargo build --package embassy-mqtt-connector-demo --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building knx-connector-demo-common (shared KNX demo code, runtime-agnostic)$(NC)\n"
 	cargo build --package knx-connector-demo-common
 	@printf "$(YELLOW)  → Building tokio-knx-connector-demo (native, tokio runtime)$(NC)\n"
 	cargo build --package tokio-knx-connector-demo
 	@printf "$(YELLOW)  → Building embassy-knx-connector-demo (embedded, embassy runtime)$(NC)\n"
-	cargo build --package embassy-knx-connector-demo --target thumbv7em-none-eabihf
+	cargo build --package embassy-knx-connector-demo --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building embassy-serial-connector-demo (embedded, embassy runtime)$(NC)\n"
-	cargo build --package embassy-serial-connector-demo --target thumbv7em-none-eabihf
+	cargo build --package embassy-serial-connector-demo --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building embassy-bench-stm32h5 (B3 on-target profiling, embassy runtime)$(NC)\n"
-	cargo build --package embassy-bench-stm32h5 --target thumbv7em-none-eabihf
+	cargo build --package embassy-bench-stm32h5 --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-mesh-common$(NC)\n"
 	cargo build --package weather-mesh-common
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-hub (cloud aggregator)$(NC)\n"
@@ -469,7 +498,7 @@ examples:
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-beta (edge, synthetic)$(NC)\n"
 	cargo build --package weather-station-beta
 	@printf "$(YELLOW)  → Building weather-station-gamma (embedded, embassy runtime)$(NC)\n"
-	cargo build --package weather-station-gamma --target thumbv7em-none-eabihf
+	cargo build --package weather-station-gamma --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building remote-access-demo (AimX server + client)$(NC)\n"
 	cargo build --package remote-access-demo
 	@printf "$(YELLOW)  → Building hello-mailbox (sync)$(NC)\n"

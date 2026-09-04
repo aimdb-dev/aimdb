@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tests/accept_pool.rs`** — the adapter's pooled `StreamListener` over two
+  crossover-wired `embassy-net` stacks, with a rebuild-and-cancel pool as the
+  negative control: it loses a SYN arriving between accepts, the stored-accept
+  pool does not.
 - **New crate — the length-prefixed TCP transport for AimDB remote access (AimX over TCP, refs #121).** Contributes the `Dialer`/`Listener`/`Connection` transport triple plus thin `TcpClient`/`TcpServer` sugar; the AimX codec + dispatch and the runtime-neutral session engines (`run_client`/`serve`) are reused from `aimdb-core`. Every AimX envelope is framed as a `u32` big-endian length prefix. Two runtime halves:
   - **`tokio-runtime`** (std, host/gateway) — TCP transport over `tokio::net`.
   - **`embassy-runtime`** (`no_std + alloc`, MCU) — an explicit pool of caller-buffered `embassy-net` sockets, one accept/session worker per slot (`TcpServer::<N>::with_buffers`), with socket recycling across reconnects. A synchronous `accept()` failure (e.g. a port-0 endpoint rejected as `InvalidPort`) yields instead of spinning the cooperative executor.

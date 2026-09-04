@@ -28,8 +28,8 @@ use crate::record_id::{RecordId, RecordKey};
 ///
 /// A `record.list` reply enumerates records the server **registered**, not
 /// records that have carried a value — a server registering a fixed pool up
-/// front lists the whole pool. Only [`produced_count`](Self::produced_count)
-/// distinguishes them, and it is `observability`-gated by design (liveness
+/// front lists the whole pool. Only `produced_count` distinguishes them, and
+/// it is `observability`-gated by design (liveness
 /// derives from buffer counters, which constrained targets compile away). So a
 /// server whose clients need that distinction must be built with
 /// `observability` on; without it the honest client answer is "unknown".

@@ -9,8 +9,7 @@
 //! `pump_source` over the [`Source`] / [`Connector`](crate::transport::Connector)
 //! capabilities.
 //!
-//! All contracts are `dyn`-safe and compile on `std` and `no_std + alloc`. See
-//! `docs/design/remote-access-via-connectors.md` for the design.
+//! All contracts are `dyn`-safe and compile on `std` and `no_std + alloc`.
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::future::Future;
@@ -24,6 +23,8 @@ use futures_core::Stream;
 mod client;
 #[cfg(feature = "connector-session")]
 mod connector;
+#[cfg(feature = "connector-session")]
+mod io;
 #[cfg(feature = "connector-session")]
 mod pump;
 #[cfg(feature = "connector-session")]
@@ -43,6 +44,11 @@ pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
 pub use connector::{SessionClientConnector, SessionServerConnector};
 #[cfg(feature = "connector-session")]
+pub use io::{
+    ByteStream, Datagram, DatagramBinder, Delay, FramedConnection, Framer, FramerFactory,
+    FramingDialer, FramingListener, IoError, OneShot, StreamDialer, StreamListener,
+};
+#[cfg(feature = "connector-session")]
 pub use pump::{pump_sink, pump_source};
 #[cfg(feature = "connector-session")]
 pub use server::{run_session, serve, SessionConfig};
@@ -59,19 +65,16 @@ pub type BoxStream<'a, T> = Pin<Box<dyn Stream<Item = T> + Send + 'a>>;
 
 /// A serialized record value, carried opaquely through the codec.
 ///
-/// `Arc<[u8]>` so fan-out is a cheap refcount bump; bytes stay opaque on the hot
-/// path, with structured (`serde_json::Value`) conversion only where a handler
+/// `Arc<[u8]>` so fan-out is a refcount bump. Bytes stay opaque until a handler
 /// inspects them.
 pub type Payload = Arc<[u8]>;
 
 /// One update delivered on a subscription stream (server [`Session::subscribe`]
 /// and client [`ClientHandle::subscribe`] alike).
 ///
-/// `topic` names the concrete record that fired — `Some` on wildcard
-/// subscriptions, which fan in many records under one subscription id (and on
-/// any transport that tags every event, like the WS bus); `None` where the
-/// subscription is exact-topic and the wire stays minimal. `Arc<str>` so
-/// per-event tagging is a refcount bump, not a string allocation.
+/// `topic` names the concrete record that fired: `Some` on wildcard
+/// subscriptions, which fan in many records under one subscription id, and on
+/// any transport that tags every event; `None` on an exact-topic subscription.
 #[derive(Clone, Debug)]
 pub struct SubUpdate {
     /// Concrete record topic that fired, when the producer side tags it.
@@ -110,8 +113,7 @@ impl SubUpdate {
     }
 
     /// Mark that `n` updates were lost on this subscription immediately before
-    /// this one (`0` leaves the update lossless). Builder form so the server's
-    /// subscribe-stream fold can attach a buffer's `BufferLagged` count.
+    /// this one (`0` leaves the update lossless).
     pub fn with_skipped(mut self, n: u64) -> Self {
         self.skipped = n;
         self
@@ -250,10 +252,7 @@ pub enum RpcError {
     /// The handler failed.
     Internal,
     /// The peer's declared protocol version is incompatible with this server's
-    /// [`PROTOCOL_VERSION`](crate::remote::PROTOCOL_VERSION). Raised at the
-    /// handshake so an old-version client is refused fast, rather than
-    /// completing `hello` and tripping over the new reply/event shapes on its
-    /// first call.
+    /// `PROTOCOL_VERSION`. Raised at the handshake, before `hello` completes.
     VersionMismatch,
 }
 
@@ -333,15 +332,12 @@ pub enum Outbound<'a> {
         sub: &'a str,
         /// Monotonic sequence number, in the **same space** as this
         /// subscription's [`Event`](Outbound::Event)s: the burst is numbered
-        /// `1..=N` and the first event continues at `N + 1`. So a snapshot lost
-        /// anywhere between here and the subscriber surfaces as a gap in the
-        /// next delivered update's [`SubUpdate::skipped`].
+        /// `1..=N` and the first event continues at `N + 1`, so a lost snapshot
+        /// surfaces in the next update's [`SubUpdate::skipped`].
         seq: u64,
         /// Set on the last snapshot of the burst, so the loss total lands on an
-        /// update the subscriber is *guaranteed* to see. Without it a burst
-        /// truncated at its tail would stay silent until some later event
-        /// happened to close the sequence — which on a static subscription may
-        /// be never. The client engine reserves a sink slot for this frame.
+        /// update the subscriber is guaranteed to see. The client engine
+        /// reserves a sink slot for this frame.
         last: bool,
         /// Topic the snapshot is for.
         topic: &'a str,
@@ -392,9 +388,9 @@ pub trait Dialer: Send {
 }
 
 /// A boxed dialer is itself a [`Dialer`], so a runtime-selected
-/// `Box<dyn Dialer>` (e.g. from a `scheme://` URL resolver) can be handed
-/// straight to [`run_client`]`<D: Dialer>` without a generic transport at the
-/// call site. `dyn Dialer: Send` (supertrait) makes the box `Send + 'static`.
+/// `Box<dyn Dialer>` — from a `scheme://` URL resolver, say — can be passed
+/// where [`run_client`]`<D: Dialer>` is expected. The `Send` supertrait makes
+/// the box `Send + 'static`.
 impl Dialer for Box<dyn Dialer> {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
         (**self).connect()
@@ -457,27 +453,19 @@ pub trait Session: Send {
     /// [`subscribe`](Session::subscribe) and before the first event. Defaulted
     /// to empty (no snapshots).
     ///
-    /// The engine numbers the returned burst `1..=N` and starts the event
-    /// stream at `N + 1`, so "one snapshot per matched record" is *auditable*
-    /// downstream rather than merely intended: any snapshot dropped in transit
-    /// shows up as [`SubUpdate::skipped`] on the next delivered update.
+    /// The engine numbers the burst `1..=N` and starts the event stream at
+    /// `N + 1`, so a snapshot dropped in transit shows up as
+    /// [`SubUpdate::skipped`] on the next delivered update.
     ///
-    /// The burst's last snapshot is flagged, reaching the subscriber as the one
-    /// update with [`SubUpdate::snapshot_end`] set — the client engine reserves
-    /// a sink slot so it lands even when the rest of the burst overran a slow
-    /// consumer. Its `skipped` then carries the burst's whole loss, letting a
-    /// subscriber distinguish a complete initial state from a truncated one
-    /// *without* waiting for a live event, which a static subscription may
-    /// never produce.
+    /// The burst's last snapshot is flagged and reaches the subscriber as the
+    /// one update with [`SubUpdate::snapshot_end`] set, carrying the burst's
+    /// whole loss; the client engine reserves a sink slot so it survives a slow
+    /// consumer.
     ///
-    /// That covers the slow consumer, which is the case worth engineering for,
-    /// but it is not an unconditional promise and a subscriber must not *block*
-    /// on it: no such update arrives when `topic` matches no records (there is
-    /// no burst), nor when the final snapshot fails to encode or its frame is
-    /// rejected as malformed — the flag rides that frame and is lost with it.
-    /// Loss accounting itself survives all of these (the shortfall still folds
-    /// into the next delivered update's `skipped`); only the end-of-burst
-    /// signal is missing. Treat end-of-stream as terminal too.
+    /// **Do not block on that flag.** It is absent when `topic` matches no
+    /// records, and when the final snapshot fails to encode or its frame is
+    /// rejected — the flag rides that frame. Loss accounting survives all of
+    /// these; only the end-of-burst signal is lost.
     fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
         let _ = topic;
         Vec::new()
@@ -533,8 +521,8 @@ pub trait Source: Send {
 }
 
 // ===========================================================================
-// Object-safety: taking each trait as `&dyn Trait` forces the dyn-compatibility
-// check on all targets, not just under `cargo test`.
+// Taking each trait as `&dyn Trait` forces the dyn-compatibility check on all
+// targets, not just under `cargo test`.
 // ===========================================================================
 
 #[allow(dead_code, clippy::too_many_arguments)]
@@ -654,8 +642,7 @@ mod tests {
     }
 
     /// `Box<dyn Dialer>` satisfies the `Dialer` bound, so a runtime-selected
-    /// dialer (the URL resolver's return type) can be passed where `D: Dialer`
-    /// is expected. Compile-time proof via a generic that requires the bound.
+    /// dialer can be passed where `D: Dialer` is expected.
     #[test]
     fn boxed_dialer_is_a_dialer() {
         fn takes_dialer<D: Dialer + 'static>(_d: D) {}

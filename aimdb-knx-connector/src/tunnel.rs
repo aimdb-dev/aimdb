@@ -77,7 +77,7 @@ impl GroupWrite {
 pub enum Action {
     /// Send this datagram to the gateway. `await_ack` carries the sequence
     /// number of a tracked TUNNELING_REQUEST so a failed send can stop its
-    /// ACK tracking (see [`TunnelIo::send`]); `None` for everything else.
+    /// ACK tracking (see `TunnelIo::send`); `None` for everything else.
     Send { frame: Frame, await_ack: Option<u8> },
     /// Deliver a parsed inbound telegram toward `pump_source`
     /// (`try_send`, drop-on-full — never stall the protocol loop).
@@ -542,7 +542,11 @@ pub(crate) trait TunnelIo {
     /// path surfaces through the heartbeat-response timeout
     /// ([`TunnelConfig::heartbeat_response_timeout_ms`]), which drops the
     /// connection even when the recv path never errors.
-    async fn send(&mut self, frame: &[u8]) -> bool;
+    ///
+    /// `+ Send` on the return type, not an `async fn`: `drain_actions` is
+    /// generic over this trait and its future has to be boxable as the
+    /// runner's `Send` future. An impl whose socket future is `!Send` wraps it.
+    fn send(&mut self, frame: &[u8]) -> impl core::future::Future<Output = bool> + Send;
     /// Forward a parsed telegram toward `pump_source`. Non-blocking:
     /// drop + log on a full channel rather than stalling the protocol loop.
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>);
@@ -745,6 +749,18 @@ fn parse_telegram(cemi_data: &[u8]) -> Option<(GroupAddress, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `drain_actions` is generic over [`TunnelIo`] and the runner boxes its
+    /// future as `Send`. Type-checked from the bounds alone, so dropping
+    /// `+ Send` from `TunnelIo::send`'s return type stops this compiling.
+    #[allow(dead_code)]
+    fn drain_actions_future_is_send_in_generic_code<Io: TunnelIo + Send>(
+        engine: &mut TunnelEngine,
+        io: &mut Io,
+    ) {
+        fn assert_send<T: Send>(_: T) {}
+        assert_send(drain_actions(engine, io));
+    }
 
     /// Legacy-mode config: no retransmits, expire-and-warn only. Most tests
     /// pin this pre-retransmit contract; the retransmit tests use

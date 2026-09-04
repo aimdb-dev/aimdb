@@ -225,7 +225,7 @@ untouched, still in `LISTEN`. Nothing is ever cancelled, and no socket leaves
 `LISTEN` between calls — strictly better than today's behaviour, which has an
 `abort()`/re-`accept()` window.
 
-`aimdb-tcp-connector/tests/neutral_pool.rs` proves both halves over the two
+`aimdb-tcp-connector/tests/accept_pool.rs` proves both halves over the two
 crossover-wired `embassy-net` stacks the existing loopback smoke uses, driven
 in exactly the shape `serve` accepts in:
 
@@ -252,13 +252,13 @@ separately.
 | Crate | Becomes | Deleted |
 |---|---|---|
 | `aimdb-tcp-connector` | `framing.rs` + `TcpClient::new(dialer)` / `TcpServer::new(listener)` generic over the traits | `tokio_transport.rs`, `embassy_transport.rs` |
-| `aimdb-serial-connector` | `neutral.rs` (COBS `Framer` + one `ByteStream` per byte source) + sugar; the `tokio-serial` open helper stays under `std` | `embassy_transport.rs`, most of `tokio_transport.rs` |
+| `aimdb-serial-connector` | `framing.rs` (the COBS codec + core `Framer` + one `ByteStream` per byte source) + sugar; the `tokio-serial` open helper stays under `std` | `embassy_transport.rs`, most of `tokio_transport.rs` |
 | `aimdb-knx-connector` | `tunnel.rs` + one `connection_task<B: DatagramBinder, D: Delay>` | `tokio_client.rs`, `embassy_client.rs` |
 | `aimdb-mqtt-connector` | One `MqttConnector` type with two backends: `Native` (`rumqttc`, `std`) and `Embedded<N: StreamDialer + Delay>` (`mountain-mqtt` over `handle_messages`, as `embassy_tls.rs` already does) | `embassy_client.rs`'s stack plumbing; `tokio_client.rs` shrinks to the backend |
 | `aimdb-uds-connector` | Unchanged (std-only by nature); could be `FramedConnection<…, NdjsonFramer>` for uniformity | — |
 | `aimdb-websocket-connector` | Unchanged (axum, std-only) | — |
 
-**[verified] for serial.** `aimdb-serial-connector/src/neutral.rs` is the
+**[verified] for serial.** `aimdb-serial-connector/src/framing.rs` is the
 shape: one `CobsFramer` written against core's `Framer`, one `ByteStream` per
 byte source, and core's `FramedConnection` doing the rest. It needs **no**
 `aimdb-tokio-adapter` dependency — the manifest deliberately avoids one — and
@@ -273,7 +273,7 @@ compiles the *same* `FramedConnection<_, CobsFramer, _, _>` over
 `embedded-io-async` halves on `thumbv7em`, so "one connector module, no runtime
 `cfg` on the code path" is enforced by the compiler rather than asserted.
 
-**[verified] for KNX.** `aimdb-knx-connector/src/neutral.rs` is the single
+**[verified] for KNX.** `aimdb-knx-connector/src/client.rs` is the single
 `connection_task`, generic over `DatagramBinder + Delay`, compiling for
 Embassy on `thumbv7em` and for Tokio from one body. Two tests hold it to the
 contract that matters: `unified_task_is_boxable_as_the_runners_send_future`
@@ -410,7 +410,7 @@ it.
 It is fully mitigable in one line, and the connector must carry it rather than
 push it downstream: the KNX crate's `tokio-runtime` feature enables
 `critical-section/std` itself, so no std user of the connector ever sees the
-error. `neutral::tests::shared_embassy_channels_carry_telegrams_on_tokio` then
+error. `client::tests::shared_embassy_channels_carry_telegrams_on_tokio` then
 runs this section's claim rather than asserting it — the unified task on Tokio,
 against a real UDP gateway, carrying a full handshake, an inbound telegram with
 its ACK, and an outbound command, all through the same `embassy_sync` channel

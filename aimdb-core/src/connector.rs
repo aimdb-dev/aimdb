@@ -43,8 +43,8 @@ use crate::{builder::AimDb, DbResult};
 
 /// Error shared by outbound record serialization operations.
 ///
-/// This is deliberately separate from [`crate::CodecError`], which describes
-/// failures in a session envelope codec (AimX, WebSocket, and similar framed
+/// Deliberately separate from the session `CodecError`, which describes
+/// failures in an envelope codec (AimX, WebSocket, and similar framed
 /// protocols). A link codec sits one layer higher: it turns a typed record into
 /// the opaque payload passed to a connector.
 ///

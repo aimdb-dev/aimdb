@@ -2,14 +2,14 @@
 //!
 //! This module contributes only socket glue: a UDP socket, the channels
 //! between the pumps and the connection task, and a select loop driving the
-//! shared sans-io [`TunnelEngine`](crate::tunnel::TunnelEngine). The entire
+//! shared sans-io [`TunnelEngine`]. The entire
 //! tunneling lifecycle (handshake, ACK bookkeeping, keepalive, reconnect
 //! backoff) lives in [`crate::tunnel`].
 //!
-//! - Outbound rides core's `pump_sink`: [`KnxSink`] forwards each serialized
+//! - Outbound rides core's `pump_sink`: `KnxSink` forwards each serialized
 //!   record as a [`GroupWrite`] command to the connection task.
 //! - Inbound rides core's `pump_source`: the connection task pushes parsed
-//!   `(group-address, payload)` telegrams that [`KnxSource`] yields.
+//!   `(group-address, payload)` telegrams that `KnxSource` yields.
 
 use crate::tunnel::{
     drain_actions, GroupWrite, LocalEndpoint, TunnelConfig, TunnelEngine, TunnelIo,

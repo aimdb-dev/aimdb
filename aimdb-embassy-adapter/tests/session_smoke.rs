@@ -112,7 +112,7 @@ fn embassy_clock_drives_client_engine_rpc() {
     use futures::future::{select, Either};
 
     // The exact `run_client<_, _, EmbassyAdapter>` monomorphization an MCU uses.
-    let clock = Arc::new(EmbassyAdapter::default());
+    let clock = Arc::new(EmbassyAdapter);
     let config = ClientConfig {
         reconnect: false,
         sends_hello: false,

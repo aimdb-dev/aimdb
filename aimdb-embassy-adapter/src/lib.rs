@@ -13,8 +13,8 @@
 //! Embassy is a no_std async runtime, so this adapter is designed for embedded
 //! environments and works with the no_std version of aimdb-core by default.
 //! It provides the runtime ([`EmbassyAdapter`] implementing
-//! `aimdb_core::RuntimeOps`), the buffer implementations ([`EmbassyBuffer`]),
-//! and the connector spines (`connectors` feature).
+//! `aimdb_core::RuntimeOps`), the buffer implementations (`EmbassyBuffer`,
+//! `embassy-sync` feature), and the connector spines (`connectors` feature).
 
 #![no_std]
 
@@ -36,6 +36,11 @@ pub mod send_wrapper;
 // home for the single-core `unsafe` + `SendFutureWrapper`.
 #[cfg(all(not(feature = "std"), feature = "connectors"))]
 pub mod connectors;
+
+// Embassy implementations of core's runtime-neutral I/O traits, so connector
+// crates stay runtime-neutral.
+#[cfg(all(not(feature = "std"), feature = "net"))]
+pub mod net;
 
 /// Link stubs for **host** test binaries that touch the Embassy adapter:
 /// a no-op `#[defmt::global_logger]` + `#[defmt::panic_handler]`

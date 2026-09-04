@@ -29,6 +29,10 @@ tokio-runtime = [
     "aimdb-core/remote",
     "dep:tokio",
     "dep:tokio-serial",
+    # The adapter owns the byte source, as it does on Embassy; this crate
+    # contributes only the COBS framer.
+    "dep:aimdb-tokio-adapter",
+    "aimdb-tokio-adapter/net",
 ]
 
 # Embedded half: `no_std + alloc`, generic over `embedded-io-async` UART halves.
@@ -41,6 +45,8 @@ embassy-runtime = [
     "aimdb-core/remote",
     "dep:aimdb-embassy-adapter",
     "aimdb-embassy-adapter/connector-io",
+    # `EmbassyUart`, the neutral byte source the COBS framer rides.
+    "aimdb-embassy-adapter/net",
     # `embassy-time`/`-sync` give the `EmbassyAdapter` clock the smoke test runs on.
     "aimdb-embassy-adapter/embassy-time",
     "aimdb-embassy-adapter/embassy-sync",
@@ -55,13 +61,10 @@ tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 defmt = ["dep:defmt", "aimdb-core/defmt"]
 
-# Internal: host tokio integration tests need a concrete adapter. Kept off the
-# public `tokio-runtime` feature (a connector shouldn't pull an adapter in
-# production) and out of `[dev-dependencies]` (an unconditional tokio adapter
-# would force `aimdb-core/std` into the no_std `embassy-runtime` test build, where
-# the no_std `aimdb-embassy-adapter` can't compile against it). Run the tokio
-# tests with `--features _test-tokio`.
-_test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
+# Retained as an alias: `tokio-runtime` now carries the adapter itself, but the
+# host integration test and `serial_demo` still gate on this name. Kept out of
+# `[dev-dependencies]` so the no_std `embassy-runtime` test build never sees it.
+_test-tokio = ["tokio-runtime"]
 
 [dependencies]
 # AimX protocol (codec + dispatch) and the generic session connectors live in

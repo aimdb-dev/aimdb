@@ -4,7 +4,7 @@
 //! current AimDB API: `#[derive(RecordKey)]`, `BufferCfg`, and
 //! `AimDbBuilder::configure()`.
 //!
-//! Uses [`quote`] for quasi-quoting token streams and [`prettyplease`] for
+//! Uses `quote` for quasi-quoting token streams and `prettyplease` for
 //! formatting the output into idiomatic Rust.
 
 use proc_macro2::TokenStream;

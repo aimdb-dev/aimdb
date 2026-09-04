@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **`TlsOptions::new` requires a `Send` RNG** —
+  `&'static mut (dyn CryptoRngCore + Send)`. Every concrete CSPRNG already
+  satisfies it (`embassy_stm32::rng::Rng` included), so callers are unchanged
+  textually. With it, `TlsSlot` becomes core's `OneShot<TlsOptions>` and this
+  crate carries **zero `unsafe impl`s** (was two).
 - **Issue #131:** the Embassy `MqttConnectorBuilder::new` takes the network stack — `MqttConnectorBuilder::new(broker_url, stack)` — since the deleted `EmbassyNetwork` runtime trait can no longer supply it; both `ConnectorBuilder` impls and the `MqttLinkExt`/`MqttOutboundLinkExt` link-builder ext traits are non-generic over the runtime.
 
 ### Added

@@ -6,12 +6,11 @@
 //! # Architecture
 //!
 //! The data-flow (outbound publish, inbound routing) rides core's
-//! [`pump_sink`](aimdb_core::session::pump_sink) /
-//! [`pump_source`](aimdb_core::session::pump_source) via the force-`Send`
+//! [`pump_sink`] / [`pump_source`] via the force-`Send`
 //! [`EmbassySink`]/[`EmbassySource`] bridges in `aimdb-embassy-adapter`, exactly
 //! like the Tokio half rides them. This crate contributes only the
 //! transport-specific bits: the broker **manager task** (mountain-mqtt's `run`),
-//! the [`MqttSink`]/[`MqttSource`] over its action/event channels, and the
+//! the `MqttSink`/`MqttSource` over its action/event channels, and the
 //! `MqttOperations`/`FromApplicationMessage` glue. The single `unsafe` block
 //! is the [`NetStack`](aimdb_embassy_adapter::connectors::NetStack)
 //! construction in [`MqttConnectorBuilder::new`], acknowledging the adapter's
@@ -279,27 +278,18 @@ impl EmbassySourceRaw for MqttSource {
 /// neither `Sync` nor takeable through the `&self` that
 /// [`ConnectorBuilder::build`] receives without interior mutability.
 ///
-/// SAFETY invariant: same single-core cooperative-executor invariant as
-/// [`NetStack`](aimdb_embassy_adapter::connectors::NetStack); the slot is
-/// written by `with_tls` and taken exactly once inside `build()`, both on
-/// that executor.
+/// Core's cell supplies both without `unsafe`: it is `Send + Sync` for any
+/// `T: Send`, which is what the `+ Send` on [`TlsOptions`]'s RNG buys.
 #[cfg(feature = "embassy-tls")]
-struct TlsSlot(core::cell::RefCell<Option<TlsOptions>>);
-
-// SAFETY: see the struct-level invariant.
-#[cfg(feature = "embassy-tls")]
-unsafe impl Send for TlsSlot {}
-// SAFETY: see the struct-level invariant.
-#[cfg(feature = "embassy-tls")]
-unsafe impl Sync for TlsSlot {}
+type TlsSlot = aimdb_core::session::OneShot<TlsOptions>;
 
 /// MQTT connector builder for Embassy with router-based dispatch.
 ///
 /// Collects routes from the database during `build()` and wires the broker
 /// manager + the outbound/inbound pumps. The broker URL scheme selects the
 /// transport: `mqtt://` is plain TCP (default port 1883), `mqtts://` is TLS
-/// (default port 8883) and requires both the `embassy-tls` feature and
-/// [`with_tls`](Self::with_tls).
+/// (default port 8883) and requires both the `embassy-tls` feature and the
+/// `with_tls` method it gates.
 pub struct MqttConnectorBuilder {
     broker_url: String,
     client_id: String,
@@ -314,7 +304,7 @@ impl MqttConnectorBuilder {
     ///
     /// # Arguments
     /// * `broker_url` - Broker URL in format `mqtt://host:port` (plain TCP)
-    ///   or `mqtts://host:port` (TLS, see [`with_tls`](Self::with_tls))
+    ///   or `mqtts://host:port` (TLS, see `with_tls`, feature `embassy-tls`)
     /// * `stack` - The device's network stack (the runtime travels as
     ///   `Arc<dyn RuntimeOps>` and cannot surface it)
     pub fn new(broker_url: impl Into<String>, stack: &'static embassy_net::Stack<'static>) -> Self {
@@ -323,7 +313,7 @@ impl MqttConnectorBuilder {
             client_id: "aimdb-client".to_string(),
             credentials: None,
             #[cfg(feature = "embassy-tls")]
-            tls: TlsSlot(core::cell::RefCell::new(None)),
+            tls: TlsSlot::default(),
             // SAFETY: AimDB's Embassy integration requires a single-core
             // cooperative executor (the adapter's module-level invariant);
             // every future touching this stack — including the broker task
@@ -355,8 +345,8 @@ impl MqttConnectorBuilder {
     ///
     /// Required for `mqtts://` URLs; rejected at `build()` for `mqtt://`.
     #[cfg(feature = "embassy-tls")]
-    pub fn with_tls(self, options: TlsOptions) -> Self {
-        *self.tls.0.borrow_mut() = Some(options);
+    pub fn with_tls(mut self, options: TlsOptions) -> Self {
+        self.tls = TlsSlot::new(options);
         self
     }
 }
@@ -396,7 +386,7 @@ impl ConnectorBuilder for MqttConnectorBuilder {
             // The URL scheme selects the transport.
             #[cfg(feature = "embassy-tls")]
             let (action_sender, event_receiver, manager_tasks) = {
-                let tls_options = self.tls.0.borrow_mut().take();
+                let tls_options = self.tls.take();
                 match (broker.tls, tls_options) {
                     (true, Some(options)) => setup_tls_manager(
                         &broker,

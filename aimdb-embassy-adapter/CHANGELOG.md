@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`net` feature — Embassy behind core's runtime-neutral I/O traits.** `EmbassyNet::tcp`,
+  `listen::<N>`, `udp` and `EmbassyUart` supply the sockets and UART halves;
+  `EmbassyDelay` is gated on `embassy-time` separately so a sockets-only consumer
+  does not pull in `defmt-timestamp-uptime`'s `_defmt_timestamp`. The listener
+  stores one pending accept per slot, so every socket stays in `LISTEN` between
+  accepts and no SYN is lost — proven against two real stacks. Both the dial and
+  accept paths hold their socket in a drop guard, so a cancelled `connect()` or
+  `accept()` returns it to its slot instead of leaving the slot permanently
+  empty, and both yield before reporting a synchronously-failing attempt so a
+  misconfigured endpoint (port-0 `InvalidPort`) warn-loops rather than spinning
+  the single-core executor.
 - **`RuntimeOps` implemented for `EmbassyAdapter` (Issue #130, design 034 Phase 2).** The dyn-safe capability surface from `aimdb-executor`, gated on `embassy-time` like `TimeOps`: `now_nanos()` is boot-anchored uptime at microsecond granularity (the portable lower bound), `sleep` boxes `embassy_time::Timer::after`, `unix_time` rides the `set_unix_time` anchor, `log` forwards to the defmt-backed `Logger`. Covered by the shared contract test on the host (the test time driver now wakes immediately on `schedule_wake`, so already-expired timers complete; non-zero sleeps remain unusable on the pinned-at-0 host clock).
 - **M17 — centralized Embassy connector spines: the one audited home for the single-core `unsafe` ([Design 033](../docs/design/033-M17-unify-connectors-drop-send.md)).** New `connectors` module (features `connectors` / `connector-io`) collecting the force-`Send` plumbing every Embassy connector used to hand-roll, so a connector crate carries **no `unsafe` and no `SendFutureWrapper`**:
   - **Session spine** — `EmbassySessionClient` / `EmbassySessionServer` (the Embassy duals of core's `SessionClientConnector` / `SessionServerConnector`), the one-shot `OneShotDialer` / `OneShotListener` over a moved-in peripheral connection (the listener parks forever after the first accept — point-to-point), and the force-`Send + Sync` `OneShotCell` for builders holding a moved-in value. `EmbassySessionClient::new` defaults to `reconnect: false` (unlike `ClientConfig::default`): a one-shot dialer can't redial, so the engine would otherwise spin on `TransportError::Io` forever; a re-dialable transport opts back in via `with_config`.
@@ -30,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`TypedRecord::latest()` no longer always returns `None` on Embassy (M15).** With `latest_snapshot` removed in `aimdb-core`, reads go straight to the buffer via `peek()`; the Embassy adapter now implements `peek()` (above) so `latest()` returns the current value on `SingleLatest` / `Mailbox` instead of `None`.
 - **Stale `EmbassyBuffer` doc example.** It imported the removed `BufferBackend` trait (now `Buffer` / `BufferReader`) and put a non-`const` `new_spmc()` in a `static`; it never compiled because doctests didn't build on host before. Now corrected and exercised by `cargo test`'s doctest pass.
+- **Rustdoc links to feature-gated items.** The crate and `connectors` module docs linked `EmbassyBuffer` and `Framer` unconditionally, so `cargo doc` failed under any feature set that gates them out. `make doc` now passes `net` for this crate, so the new module's docs are covered by the `RUSTDOCFLAGS=-D warnings` CI already runs.
 
 ### Changed
 
