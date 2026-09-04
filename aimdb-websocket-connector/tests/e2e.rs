@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{http::StatusCode, Error, Message};
 
 // ── Injector record ──────────────────────────────────────────────────
 // Producing one pushes `payload` out on `topic` via the real outbound path.
@@ -254,6 +254,33 @@ async fn http_get(addr: SocketAddr, path: &str) -> (String, String) {
     let (head, body) = raw.split_once("\r\n\r\n").expect("no header/body split");
     let status = head.lines().next().unwrap_or_default().to_string();
     (status, body.to_string())
+}
+
+/// The live client count `/health` reports.
+async fn health_clients(addr: SocketAddr) -> usize {
+    let (status, body) = http_get(addr, "/health").await;
+    assert!(
+        status.contains("200"),
+        "unexpected /health status: {status}"
+    );
+    let parsed: Value = serde_json::from_str(&body).expect("health body is JSON");
+    parsed["clients"].as_u64().expect("clients field") as usize
+}
+
+/// [`health_clients`] polled until it reports `want`, returning the last value
+/// seen. A slot is *claimed* synchronously at the upgrade, so the admit side
+/// needs no wait — but it is *released* when the session future unwinds, one
+/// scheduler hop after the peer's close, so the disconnect side does.
+async fn health_clients_reaches(addr: SocketAddr, want: usize) -> usize {
+    let mut seen = health_clients(addr).await;
+    for _ in 0..200 {
+        if seen == want {
+            return seen;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        seen = health_clients(addr).await;
+    }
+    seen
 }
 
 /// Send one raw AimX frame (a JSON value) as a WS text message.
@@ -621,6 +648,111 @@ async fn server_rejects_incompatible_protocol_version() {
     )))
     .await;
     assert!(ok.is_ok(), "current version must upgrade");
+}
+
+/// The connection cap is enforced at the upgrade: once `with_max_clients` are
+/// connected, further upgrades are refused with 503 before the socket opens, and
+/// closing one frees its slot. A refused upgrade must not consume a slot itself.
+#[tokio::test]
+async fn server_rejects_upgrade_past_the_client_cap() {
+    const LIMIT: usize = 3;
+    let (addr, _db) = spawn(WebSocketConnector::new().with_max_clients(LIMIT)).await;
+
+    // Hold the sockets — dropping one would free its slot mid-test.
+    let mut live: Vec<WsClient> = Vec::new();
+    for _ in 0..LIMIT {
+        live.push(ws_connect(addr).await);
+    }
+    assert_eq!(
+        health_clients(addr).await,
+        LIMIT,
+        "a slot is claimed at the upgrade, so the count is exact once the 101 lands"
+    );
+
+    let err = tokio_tungstenite::connect_async(aimdb_core::remote::ws_url_with_version(&format!(
+        "ws://{addr}/ws"
+    )))
+    .await
+    .expect_err("the client past the cap must be refused");
+    let Error::Http(resp) = err else {
+        panic!("expected an HTTP rejection, got {err:?}");
+    };
+    // Asserting the status, not just the failure: the same dial would also fail
+    // with 426 or 401, and those would mean the cap never ran.
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "over-capacity upgrade must be refused with 503, body: {:?}",
+        resp.body().as_deref().map(String::from_utf8_lossy),
+    );
+    assert_eq!(
+        health_clients(addr).await,
+        LIMIT,
+        "a refused upgrade must not consume a slot"
+    );
+
+    // Closing one connection frees its slot for the next client.
+    drop(live.pop().expect("a live client"));
+    assert_eq!(
+        health_clients_reaches(addr, LIMIT - 1).await,
+        LIMIT - 1,
+        "a closed connection must release its slot"
+    );
+    live.push(ws_connect(addr).await);
+}
+
+/// The cap must hold when upgrades arrive *together*, not just one at a time.
+///
+/// A sequential test cannot catch this: on a current-thread runtime each dial is
+/// awaited to completion, so the server's session task is always scheduled before
+/// the next dial reads the count. Under concurrent dials every in-flight handler
+/// observes the same value, so the admission check and the counter's increment
+/// have to be one atomic step ([`ClientManager::try_connection_guard`]) — with a
+/// plain load-then-increment they all wave each other through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn client_cap_holds_under_concurrent_upgrades() {
+    const LIMIT: usize = 3;
+    const DIALS: usize = 8;
+    let (addr, _db) = spawn(WebSocketConnector::new().with_max_clients(LIMIT)).await;
+    let url = aimdb_core::remote::ws_url_with_version(&format!("ws://{addr}/ws"));
+
+    // All dials in flight at once, so they race the admission gate.
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..DIALS {
+        let url = url.clone();
+        set.spawn(async move { tokio_tungstenite::connect_async(url).await });
+    }
+
+    // Hold the admitted sockets — dropping one would free its slot mid-assertion.
+    let mut admitted: Vec<WsClient> = Vec::new();
+    let mut refused = 0usize;
+    while let Some(joined) = set.join_next().await {
+        match joined.expect("dial task panicked") {
+            Ok((sock, _)) => admitted.push(sock),
+            Err(Error::Http(resp)) => {
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "over-capacity dials must be refused with 503"
+                );
+                refused += 1;
+            }
+            Err(e) => panic!("unexpected dial failure: {e:?}"),
+        }
+    }
+
+    // Exact, not `<=`: this also catches a gate that refuses while slots are free.
+    assert_eq!(
+        admitted.len(),
+        LIMIT,
+        "cap of {LIMIT} not held under concurrent dials"
+    );
+    assert_eq!(
+        refused,
+        DIALS - LIMIT,
+        "every dial past the cap must be refused"
+    );
+    assert_eq!(health_clients(addr).await, LIMIT);
 }
 
 #[tokio::test]
