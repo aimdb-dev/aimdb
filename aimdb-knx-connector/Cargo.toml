@@ -21,8 +21,22 @@ tokio-runtime = [
     "async-stream",
     "futures-util",
     "embassy-sync",
-    "critical-section/std",
 ]
+
+# Selects `critical-section`'s std implementation.
+#
+# `embassy-sync`'s only `Sync` raw mutex is `CriticalSectionRawMutex`, which
+# needs a `critical-section` impl to link. That impl is registered by symbol
+# name and is global to the binary, so per `critical-section`'s own docs only
+# the **final binary** may choose one: a library enabling it would hand every
+# downstream binary a duplicate-symbol link error with no way to opt out.
+#
+# So this stays off by default and out of `tokio-runtime`. This crate's own
+# tests get the impl through a dev-dependency; a std binary that instantiates a
+# `CriticalSectionRawMutex` channel and has no other impl in its graph can
+# either depend on `critical-section` with `features = ["std"]` directly (the
+# documented way) or enable this feature.
+critical-section-std-impl = ["critical-section/std"]
 embassy-runtime = [
     "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
     "aimdb-core/connector-session",              # `pump_sink`/`pump_source`/`Source`/`Payload`
@@ -91,7 +105,9 @@ embassy-net = { version = "0.9.0", optional = true, features = [
 ] }
 
 # A `critical-section` impl must be linked wherever `CriticalSectionRawMutex`
-# is used; `tokio-runtime` turns on the std one so no std user has to.
+# is used. Choosing one is the final binary's call, so it is reachable only
+# through the opt-in `critical-section-std-impl` feature above; on Embassy the
+# HAL (cortex-m / embassy-rp / …) already provides it.
 critical-section = { version = "1.1", optional = true }
 
 # Embedded utilities (heapless is unconditional: the shared sans-io tunnel
@@ -104,6 +120,9 @@ defmt = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+# Test binaries are binaries: selecting the impl here lets `CriticalSectionRawMutex`
+# link for this crate's tests without imposing that choice on consumers.
+critical-section = { version = "1.2", features = ["std"] }
 tokio-test = "0.4"
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",

@@ -25,6 +25,7 @@ use aimdb_core::session::{
     TransportResult,
 };
 
+use embassy_futures::yield_now;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpEndpoint, IpListenEndpoint, Stack};
@@ -89,6 +90,48 @@ impl TcpSocketSlot {
         }
         if let Some(waker) = self.waker.borrow_mut().take() {
             waker.wake();
+        }
+    }
+}
+
+/// Holds a socket taken from a slot until it is either moved out on success or
+/// returned to the slot.
+///
+/// The `Drop` is the point: if the whole future is dropped while `connect()` or
+/// `accept()` is still pending — a `select!` timeout, a task shutdown — the
+/// socket would otherwise be dropped with it, leaving the slot permanently
+/// empty and every later dial failing with a bare `TransportError::Io`.
+/// Cancellation has no error path to observe, so the guard is the only hook.
+struct SlotReturn<'a> {
+    slot: &'a Arc<TcpSocketSlot>,
+    socket: Option<TcpSocket<'static>>,
+}
+
+impl<'a> SlotReturn<'a> {
+    fn new(slot: &'a Arc<TcpSocketSlot>, socket: TcpSocket<'static>) -> Self {
+        Self {
+            slot,
+            socket: Some(socket),
+        }
+    }
+
+    fn socket_mut(&mut self) -> &mut TcpSocket<'static> {
+        self.socket
+            .as_mut()
+            .expect("socket present until into_socket")
+    }
+
+    /// Take the socket back, defusing the guard so its `Drop` becomes a no-op.
+    fn into_socket(mut self) -> TcpSocket<'static> {
+        self.socket.take().expect("socket taken exactly once")
+    }
+}
+
+impl Drop for SlotReturn<'_> {
+    fn drop(&mut self) {
+        if let Some(mut socket) = self.socket.take() {
+            socket.abort();
+            self.slot.put(socket);
         }
     }
 }
@@ -184,15 +227,28 @@ impl StreamDialer for EmbassyTcpDialer {
             let addr: core::net::IpAddr = host.parse().map_err(|_| TransportError::Io)?;
             let endpoint = IpEndpoint::new(addr.into(), port);
 
-            let Some(mut socket) = self.slot.take() else {
+            let Some(socket) = self.slot.take() else {
                 return Err(TransportError::Io);
             };
-            socket.abort();
-            match socket.connect(endpoint).await {
-                Ok(()) => Ok(EmbassyTcpStream::recyclable(socket, self.slot.clone())),
+            // The guard owns the socket for the whole dial: on success it is
+            // defused and the socket moves into the stream, on failure *or
+            // cancellation* its `Drop` returns the socket to the slot.
+            let mut guard = SlotReturn::new(&self.slot, socket);
+            guard.socket_mut().abort();
+            // Bind the result before matching so the `connect()` future's borrow
+            // of `guard` ends here, freeing `guard` for `into_socket` below.
+            let connected = guard.socket_mut().connect(endpoint).await;
+            match connected {
+                Ok(()) => Ok(EmbassyTcpStream::recyclable(
+                    guard.into_socket(),
+                    self.slot.clone(),
+                )),
                 Err(_) => {
-                    socket.abort();
-                    self.slot.put(socket);
+                    // Dropping `guard` aborts the socket and returns it to the slot.
+                    drop(guard);
+                    // A synchronously-failing `connect()` gives the caller no
+                    // yield point before it retries; see `arm` below.
+                    yield_now().await;
                     Err(TransportError::Io)
                 }
             }
@@ -236,13 +292,25 @@ impl<const N: usize> EmbassyTcpListener<N> {
         let endpoint = self.local_endpoint;
         self.pending[i] = Some(Box::pin(async move {
             // A live connection may still hold the socket.
-            let mut socket = slot.acquire().await;
-            socket.abort();
-            match socket.accept(endpoint).await {
-                Ok(()) => Ok(socket),
+            let socket = slot.acquire().await;
+            // See `SlotReturn`: a dropped accept must not swallow the socket.
+            let mut guard = SlotReturn::new(&slot, socket);
+            guard.socket_mut().abort();
+            // Bind the result before matching so the `accept()` future's borrow
+            // of `guard` ends here, freeing `guard` for `into_socket` below.
+            let accepted = guard.socket_mut().accept(endpoint).await;
+            match accepted {
+                Ok(()) => Ok(guard.into_socket()),
                 Err(_) => {
-                    socket.abort();
-                    slot.put(socket);
+                    // Dropping `guard` aborts the socket and returns it to the slot.
+                    drop(guard);
+                    // `accept()` can fail synchronously (e.g. port-0
+                    // `InvalidPort`), and core's `serve` loop logs an accept
+                    // error and re-enters `accept()` immediately. Without a
+                    // yield point that spins forever on the single-core
+                    // cooperative executor, starving every other task. Yield so
+                    // a misconfig warn-loops instead of hanging the device.
+                    yield_now().await;
                     Err(TransportError::Io)
                 }
             }

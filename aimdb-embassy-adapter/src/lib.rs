@@ -13,8 +13,8 @@
 //! Embassy is a no_std async runtime, so this adapter is designed for embedded
 //! environments and works with the no_std version of aimdb-core by default.
 //! It provides the runtime ([`EmbassyAdapter`] implementing
-//! `aimdb_core::RuntimeOps`), the buffer implementations ([`EmbassyBuffer`]),
-//! and the connector spines (`connectors` feature).
+//! `aimdb_core::RuntimeOps`), the buffer implementations (`EmbassyBuffer`,
+//! `embassy-sync` feature), and the connector spines (`connectors` feature).
 
 #![no_std]
 

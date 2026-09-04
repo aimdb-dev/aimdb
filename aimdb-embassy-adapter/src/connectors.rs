@@ -1,5 +1,5 @@
 //! Centralized Embassy connector spines — the one audited home for the
-//! single-core `unsafe` + [`SendFutureWrapper`](crate::SendFutureWrapper) that
+//! single-core `unsafe` + [`SendFutureWrapper`] that
 //! every Embassy connector used to hand-roll.
 //!
 //! AimDB's connector contract is `Send`-everywhere (so a Tokio app can
@@ -9,8 +9,9 @@
 //! two requires force-`Send`ing the Embassy futures; this module does that
 //! **once**, so a connector crate carries **no `unsafe` and no wrapper**:
 //!
-//! - **Session transports** (serial, TCP, …) contribute a [`Framer`] (or a
-//!   [`Connection`]) and wrap it in [`EmbassySessionClient`] /
+//! - **Session transports** (serial, TCP, …) contribute a `Framer`
+//!   (`connector-io` feature) or a [`Connection`], and wrap it in
+//!   [`EmbassySessionClient`] /
 //!   [`EmbassySessionServer`] — the Embassy duals of core's
 //!   `SessionClientConnector` / `SessionServerConnector`.
 //! - **Data-plane transports** (MQTT, KNX) contribute an [`EmbassySinkRaw`]

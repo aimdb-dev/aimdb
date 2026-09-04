@@ -28,7 +28,13 @@ connector-io = ["connectors", "dep:embedded-io-async"]
 # traits, so connector crates need no `embassy-net` dependency. Deliberately
 # does not imply `embassy-time`: that turns on `defmt-timestamp-uptime`, whose
 # `_defmt_timestamp` collides with every host test binary's `defmt::timestamp!`.
-net = ["connectors", "embassy-net-support", "embassy-net/udp", "dep:embedded-io-async"]
+net = [
+    "connectors",
+    "embassy-net-support",
+    "embassy-net/udp",
+    "dep:embedded-io-async",
+    "dep:embassy-futures",
+]
 
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]
@@ -55,6 +61,10 @@ futures-core = { version = "0.3", default-features = false }
 
 # Generic framed `Connection` over async UART halves (feature `connector-io`).
 embedded-io-async = { workspace = true, optional = true }
+
+# Executor-independent `yield_now` for the accept/connect retry paths (feature
+# `net`). No dependencies of its own and pulls no executor.
+embassy-futures = { workspace = true, optional = true }
 
 # Embassy ecosystem for embedded async
 embassy-executor = { workspace = true, optional = true }

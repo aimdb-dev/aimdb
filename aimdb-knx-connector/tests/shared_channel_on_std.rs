@@ -4,9 +4,10 @@
 //! `CriticalSectionRawMutex` is the only `Sync` raw mutex `embassy-sync` offers
 //! — `NoopRawMutex` is `!Sync` and cannot back a shared channel at all — and
 //! using it pulls in `_critical_section_1_0_acquire`/`_release`, which nothing
-//! defines on std. The `tokio-runtime` feature enables `critical-section/std`
-//! so no downstream user meets that link error. These tests fail to *link*, not
-//! to compile, if that ever comes undone.
+//! defines on std. Selecting an impl is the final binary's call, so the library
+//! does not make it: a test binary is a binary, and gets the std impl through
+//! this crate's `critical-section` dev-dependency. These tests fail to *link*,
+//! not to compile, if that ever comes undone.
 #![cfg(feature = "tokio-runtime")]
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;

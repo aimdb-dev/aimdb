@@ -15,11 +15,11 @@ use core::future::Future;
 use core::net::SocketAddr;
 use core::time::Duration;
 
-use aimdb_core::session::{Datagram, DatagramBinder, Delay, Payload};
+use aimdb_core::session::{Datagram, DatagramBinder, Delay, Payload, TransportResult};
 use aimdb_core::{log_debug, log_error, log_warn, RuntimeOps};
 
 use crate::tunnel::{
-    drain_actions, GroupWrite, LocalEndpoint, TunnelConfig, TunnelEngine, TunnelIo,
+    drain_actions, GroupWrite, LocalEndpoint, Millis, TunnelConfig, TunnelEngine, TunnelIo,
 };
 use crate::GroupAddress;
 
@@ -104,7 +104,32 @@ async fn drive_connection<U, D, S, C>(
     // dependencies and its select is pure `core::task`.
     use embassy_futures::select::{select3, Either3};
 
+    /// Apply one received datagram, shared by the two arm orders below.
+    ///
+    /// A free function rather than a common `Event` enum: `GroupWrite` is large
+    /// enough that funnelling both arms through one value would park a second
+    /// copy of it in this task's state for the whole loop.
+    fn apply_inbound(
+        engine: &mut TunnelEngine,
+        buf: &[u8],
+        result: TransportResult<(usize, SocketAddr)>,
+        now: Millis,
+    ) {
+        match result {
+            Ok((len, _peer)) => engine.handle_datagram(&buf[..len], now),
+            Err(_) => engine.handle_socket_error(now),
+        }
+    }
+
     let now_ms = || runtime.now_nanos() / 1_000_000;
+
+    // `select3` polls its arms in declaration order and takes the first ready
+    // one — unlike the `tokio::select!` this task replaces, which picked among
+    // the ready arms at random. With a fixed order, sustained inbound traffic
+    // means the first arm is ready on every pass and the command arm is never
+    // reached, so outbound `GroupWrite`s stall until the channel drops them.
+    // Swapping the two contended arms each pass restores that fairness.
+    let mut inbound_first = true;
 
     loop {
         engine.poll(now_ms());
@@ -136,17 +161,27 @@ async fn drive_connection<U, D, S, C>(
             }
         };
 
-        match select3(socket.recv_from(&mut recv_buf), cmd_arm, deadline).await {
-            Either3::First(Ok((len, _peer))) => {
-                engine.handle_datagram(&recv_buf[..len], now_ms());
+        // The deadline arm stays last in both orders: it only ever asks for a
+        // `poll` the loop top would reach anyway.
+        if inbound_first {
+            match select3(socket.recv_from(&mut recv_buf), cmd_arm, deadline).await {
+                Either3::First(r) => apply_inbound(engine, &recv_buf, r, now_ms()),
+                Either3::Second(cmd) => {
+                    let _ = engine.handle_command(cmd, now_ms());
+                }
+                // Woken for the engine deadline; `poll` at the loop top fires it.
+                Either3::Third(()) => {}
             }
-            Either3::First(Err(_)) => engine.handle_socket_error(now_ms()),
-            Either3::Second(cmd) => {
-                let _ = engine.handle_command(cmd, now_ms());
+        } else {
+            match select3(cmd_arm, socket.recv_from(&mut recv_buf), deadline).await {
+                Either3::First(cmd) => {
+                    let _ = engine.handle_command(cmd, now_ms());
+                }
+                Either3::Second(r) => apply_inbound(engine, &recv_buf, r, now_ms()),
+                Either3::Third(()) => {}
             }
-            // Woken for the engine deadline; `poll` at the loop top fires it.
-            Either3::Third(()) => {}
         }
+        inbound_first = !inbound_first;
     }
 }
 
@@ -183,11 +218,21 @@ pub async fn connection_task<B, D, S, C>(
 
         // The handshake advertises the client's own endpoint (HPAI). Gateways
         // that reject the NAT-style `0.0.0.0:0` form need the real address.
-        if let Some(SocketAddr::V4(addr)) = socket.local_addr() {
-            engine.set_local_endpoint(LocalEndpoint::Explicit {
-                ip: addr.ip().octets(),
-                port: addr.port(),
-            });
+        //
+        // `engine` outlives the loop, so this must be set on *every* cycle, not
+        // just the ones that can answer. On Embassy `local_addr()` is `None`
+        // whenever the stack has no address — DHCP renewal, link flap — which
+        // is exactly what causes a rebind. Leaving the previous cycle's value
+        // in place would advertise a port nothing is bound to any more and wedge
+        // the handshake for good; NAT is degraded but recovers.
+        match socket.local_addr() {
+            Some(SocketAddr::V4(addr)) => {
+                engine.set_local_endpoint(LocalEndpoint::Explicit {
+                    ip: addr.ip().octets(),
+                    port: addr.port(),
+                });
+            }
+            _ => engine.set_local_endpoint(LocalEndpoint::Nat),
         }
 
         drive_connection(
@@ -246,10 +291,12 @@ pub mod shared_channel {
 #[cfg(all(test, feature = "tokio-runtime"))]
 mod tests {
     use super::*;
+    use aimdb_core::session::TransportError;
     use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
     use aimdb_tokio_adapter::TokioAdapter;
     use core::pin::Pin;
     use std::net::Ipv4Addr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     /// Collects forwarded telegrams; `Sync`, as [`TelegramSink`] requires.
@@ -429,6 +476,128 @@ mod tests {
         assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0420);
         assert_eq!(&buf[16..18], &[0x08, 0x08], "cEMI destination = 1/0/8");
         assert_eq!(buf[len - 1], 0x81, "APCI GroupValueWrite | value 1");
+
+        task.abort();
+    }
+
+    /// A real socket that can be told to report no bound address, as an Embassy
+    /// stack does whenever `config_v4()` is `None` — DHCP renewal, link flap.
+    struct FlappingSocket {
+        inner: tokio::net::UdpSocket,
+        report_addr: bool,
+        fail_recv: bool,
+    }
+
+    // Plain `async fn`s: on std the compiler discharges the traits' `+ Send`
+    // return bounds, exactly as the real `TokioNet` sockets do.
+    impl Datagram for FlappingSocket {
+        async fn send_to(&mut self, buf: &[u8], to: SocketAddr) -> TransportResult<()> {
+            self.inner
+                .send_to(buf, to)
+                .await
+                .map(|_| ())
+                .map_err(|_| TransportError::Io)
+        }
+
+        async fn recv_from(&mut self, buf: &mut [u8]) -> TransportResult<(usize, SocketAddr)> {
+            if self.fail_recv {
+                // Drives the engine to `ResetSocket`, so the task rebinds.
+                return Err(TransportError::Io);
+            }
+            self.inner
+                .recv_from(buf)
+                .await
+                .map_err(|_| TransportError::Io)
+        }
+
+        fn local_addr(&self) -> Option<SocketAddr> {
+            self.report_addr
+                .then(|| self.inner.local_addr().ok())
+                .flatten()
+        }
+    }
+
+    /// Binds a socket that knows its address on the first cycle and, like a
+    /// stack mid-DHCP-renewal, does not on the cycles after it.
+    #[derive(Default)]
+    struct FlappingBinder(AtomicUsize);
+
+    impl DatagramBinder for FlappingBinder {
+        type Socket = FlappingSocket;
+
+        async fn bind(&self, port: u16) -> TransportResult<Self::Socket> {
+            let cycle = self.0.fetch_add(1, Ordering::SeqCst);
+            let inner = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
+                .await
+                .map_err(|_| TransportError::Io)?;
+            Ok(FlappingSocket {
+                inner,
+                // Only the first cycle can answer `local_addr`.
+                report_addr: cycle == 0,
+                // ...and only the first cycle errors, to force the rebind.
+                fail_recv: cycle == 0,
+            })
+        }
+    }
+
+    /// A rebind that cannot learn its address must advertise the NAT-style
+    /// HPAI, never the previous cycle's port.
+    ///
+    /// `engine` outlives the bind loop, so an endpoint set on one cycle would
+    /// otherwise persist into the next. The gateway would then reply to a port
+    /// nothing is bound to any more and the handshake could never complete —
+    /// strictly worse than the `0.0.0.0:0` the explicit HPAI exists to avoid.
+    ///
+    /// The second request arrives after the engine's reconnect backoff, hence
+    /// the wider timeout.
+    #[tokio::test]
+    async fn a_rebind_that_cannot_learn_its_address_falls_back_to_nat() {
+        const BACKOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+        let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let task = tokio::spawn(connection_task(
+            FlappingBinder::default(),
+            gateway_addr,
+            runtime(),
+            TokioDelay,
+            VecSink::default(),
+            NoCommands,
+        ));
+
+        // Cycle 1: the socket knows its address, so the HPAI is explicit.
+        let mut buf = [0u8; 128];
+        let (len, _) = tokio::time::timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
+            .await
+            .expect("gateway received no first CONNECT_REQUEST")
+            .expect("recv_from");
+        assert!(len >= 14, "CONNECT_REQUEST should carry both HPAIs");
+        let first_port = u16::from_be_bytes([buf[12], buf[13]]);
+        assert_ne!(first_port, 0, "first cycle should advertise a real port");
+
+        // Cycle 2: the recv error reset the socket and the rebind cannot answer
+        // `local_addr`, so the endpoint must fall back rather than persist.
+        let mut buf = [0u8; 128];
+        let (len, _) = tokio::time::timeout(BACKOFF_TIMEOUT, gateway.recv_from(&mut buf))
+            .await
+            .expect("gateway received no CONNECT_REQUEST after the rebind")
+            .expect("recv_from");
+        assert!(len >= 14, "CONNECT_REQUEST should carry both HPAIs");
+
+        let second_port = u16::from_be_bytes([buf[12], buf[13]]);
+        assert_ne!(
+            second_port, first_port,
+            "rebind re-advertised the previous cycle's port: the endpoint went stale"
+        );
+        assert_eq!(
+            &buf[8..12],
+            &[0, 0, 0, 0],
+            "a rebind with no known address must advertise the NAT-style HPAI"
+        );
+        assert_eq!(second_port, 0, "NAT-style HPAI carries port 0");
 
         task.abort();
     }
