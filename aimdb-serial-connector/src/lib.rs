@@ -30,13 +30,11 @@
 
 extern crate alloc;
 
+// The COBS codec, and (under either runtime feature) that codec behind core's
+// `Framer` plus the `FramedConnection` aliases it forms with each adapter's
+// byte source. Supersedes the two per-runtime transport modules below, which it
+// will replace outright.
 pub mod framing;
-
-// The COBS framer against core's `Framer`, plus the `FramedConnection` aliases
-// it forms with each adapter's byte source. Supersedes the two per-runtime
-// transport modules below, which it will replace outright.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub mod framer;
 
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_transport;

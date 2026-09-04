@@ -306,7 +306,7 @@ New:
   future a plain `async fn`, no `unsafe`.
 - `aimdb-knx-connector/src/client.rs` — one `connection_task` generic over
   `DatagramBinder + Delay`, plus the `embassy_sync` channel bridges.
-- `aimdb-serial-connector/src/framer.rs` — the COBS framer against core's
+- `aimdb-serial-connector/src/framing.rs` — the COBS framer against core's
   trait, and one `ByteStream` per byte source.
 - Tests: `aimdb-tcp-connector/tests/accept_pool.rs`,
   `aimdb-serial-connector/tests/framed.rs`, and unit tests in

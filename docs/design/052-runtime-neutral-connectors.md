@@ -252,13 +252,13 @@ separately.
 | Crate | Becomes | Deleted |
 |---|---|---|
 | `aimdb-tcp-connector` | `framing.rs` + `TcpClient::new(dialer)` / `TcpServer::new(listener)` generic over the traits | `tokio_transport.rs`, `embassy_transport.rs` |
-| `aimdb-serial-connector` | `framer.rs` (COBS `Framer` + one `ByteStream` per byte source) + sugar; the `tokio-serial` open helper stays under `std` | `embassy_transport.rs`, most of `tokio_transport.rs` |
+| `aimdb-serial-connector` | `framing.rs` (the COBS codec + core `Framer` + one `ByteStream` per byte source) + sugar; the `tokio-serial` open helper stays under `std` | `embassy_transport.rs`, most of `tokio_transport.rs` |
 | `aimdb-knx-connector` | `tunnel.rs` + one `connection_task<B: DatagramBinder, D: Delay>` | `tokio_client.rs`, `embassy_client.rs` |
 | `aimdb-mqtt-connector` | One `MqttConnector` type with two backends: `Native` (`rumqttc`, `std`) and `Embedded<N: StreamDialer + Delay>` (`mountain-mqtt` over `handle_messages`, as `embassy_tls.rs` already does) | `embassy_client.rs`'s stack plumbing; `tokio_client.rs` shrinks to the backend |
 | `aimdb-uds-connector` | Unchanged (std-only by nature); could be `FramedConnection<…, NdjsonFramer>` for uniformity | — |
 | `aimdb-websocket-connector` | Unchanged (axum, std-only) | — |
 
-**[verified] for serial.** `aimdb-serial-connector/src/framer.rs` is the
+**[verified] for serial.** `aimdb-serial-connector/src/framing.rs` is the
 shape: one `CobsFramer` written against core's `Framer`, one `ByteStream` per
 byte source, and core's `FramedConnection` doing the rest. It needs **no**
 `aimdb-tokio-adapter` dependency — the manifest deliberately avoids one — and
