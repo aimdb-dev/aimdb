@@ -101,3 +101,78 @@ async fn a_boxed_connection_crosses_a_spawn() {
     );
     echo.await.expect("echo task");
 }
+
+// ---------------------------------------------------------------------------
+// The neutral client/server sugar over an adapter byte stream.
+// ---------------------------------------------------------------------------
+
+/// A UART is point-to-point: the stream is served once, so a second `accept`
+/// parks rather than erroring — `serve` would otherwise spin on it.
+#[tokio::test]
+async fn a_one_shot_listener_yields_once_then_parks() {
+    use aimdb_core::session::Listener;
+    use aimdb_serial_connector::connector::{framed, OneShotListener};
+
+    let (a, _b) = tokio::io::duplex(1024);
+    let mut listener = OneShotListener::new(framed(TokioByteStream(a)));
+
+    assert!(listener.accept().await.is_ok(), "first accept yields");
+
+    let parked =
+        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept()).await;
+    assert!(parked.is_err(), "a second accept must park, not resolve");
+}
+
+/// The dialer's dual: nothing to redial on a UART, so a second attempt is a
+/// real error rather than a silent reconnect loop.
+#[tokio::test]
+async fn a_one_shot_dialer_refuses_a_second_connect() {
+    use aimdb_core::session::Dialer;
+    use aimdb_serial_connector::connector::{framed, OneShotDialer};
+
+    let (a, _b) = tokio::io::duplex(1024);
+    let dialer = OneShotDialer::new(framed(TokioByteStream(a)));
+
+    assert!(dialer.connect().await.is_ok(), "first connect yields");
+    assert!(
+        dialer.connect().await.is_err(),
+        "a UART has no second connection to hand out"
+    );
+}
+
+/// The stream is moved in, so a second `build` is refused, and a `build()`
+/// future dropped before it is polled must leave the stream in place.
+#[tokio::test]
+async fn the_server_guards_its_moved_in_stream() {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::connector::ConnectorBuilder;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_serial_connector::connector::SerialServer;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let mut builder = AimDbBuilder::new().runtime(std::sync::Arc::new(TokioAdapter));
+    builder.configure::<u64>("counter", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    let (db, _runner) = builder.build().await.expect("build db");
+
+    let (a, _b) = tokio::io::duplex(1024);
+    let server = SerialServer::new(TokioByteStream(a));
+
+    // Unpolled build: the stream must survive it.
+    drop(server.build(&db));
+
+    let futures = server
+        .build(&db)
+        .await
+        .expect("the stream must survive an unpolled build");
+    assert_eq!(futures.len(), 1, "one serve future");
+
+    let Err(err) = server.build(&db).await else {
+        panic!("a second build must fail");
+    };
+    assert!(
+        format!("{err}").contains("already taken"),
+        "unexpected error: {err}"
+    );
+}

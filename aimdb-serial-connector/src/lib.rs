@@ -36,6 +36,10 @@ extern crate alloc;
 // will replace outright.
 pub mod framing;
 
+// Runtime-neutral `SerialClient`/`SerialServer` over an adapter's byte stream.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub mod connector;
+
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_transport;
 
