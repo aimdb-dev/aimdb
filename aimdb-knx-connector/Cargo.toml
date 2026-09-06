@@ -14,14 +14,9 @@ categories = ["network-programming", "embedded", "asynchronous"]
 [features]
 default = ["aimdb-core/alloc"]
 std = ["aimdb-core/std", "knx-pico/std", "thiserror"]
-tokio-runtime = [
-    "std",
-    "tokio",
-    "uuid",
-    "async-stream",
-    "futures-util",
-    "embassy-sync",
-]
+# The protocol is sans-io and the transports come from an adapter, so the host
+# leg adds only `std` and the executor-independent channel type.
+tokio-runtime = ["std", "embassy-sync"]
 
 # Selects `critical-section`'s std implementation.
 #
@@ -73,19 +68,6 @@ knx-pico = { package = "aimdb-knx-pico", version = "0.3.1", default-features = f
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }
 
-# UUID generation for client IDs (std only)
-uuid = { version = "1.0", features = ["v4"], optional = true }
-
-# Tokio runtime dependencies (std)
-tokio = { workspace = true, optional = true, features = [
-    "sync",
-    "time",
-    "net",
-] }
-async-stream = { version = "0.3", optional = true }
-futures-util = { version = "0.3", optional = true, default-features = false, features = [
-    "alloc",
-] }
 futures-core = { version = "0.3", default-features = false }
 
 # Embassy runtime dependencies (no_std)
@@ -129,7 +111,6 @@ aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     # `TokioNet`/`TokioDelay`, the neutral transports the unified task runs on.
     "net",
 ] }
-
 
 [package.metadata.docs.rs]
 all-features = true

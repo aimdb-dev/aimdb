@@ -209,7 +209,6 @@ dependencies = [
  "aimdb-embassy-adapter",
  "aimdb-knx-pico",
  "aimdb-tokio-adapter",
- "async-stream",
  "critical-section",
  "defmt 1.1.1",
  "embassy-executor",
@@ -218,13 +217,11 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "futures-core",
- "futures-util",
  "heapless 0.8.0",
  "static_cell",
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",
- "uuid",
 ]
 
 [[package]]
