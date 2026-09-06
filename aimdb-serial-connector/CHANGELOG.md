@@ -9,10 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One path for both runtimes (breaking).** `SerialServer::new` takes an
+  adapter byte stream (`EmbassyUart::new(rx, tx)`, `TokioByteStream(port)`)
+  instead of `(path, baud)` or split UART halves; the application opens the
+  device. `SerialClient::new(stream)` serves it once and
+  `SerialClient::over_port(path, baud)` reopens and redials on a host.
+  `tokio_transport` and `embassy_transport` are deleted with the whole
+  `Tokio*`/`Embassy*` alias set — `SerialDialer` is now `SerialPortDialer`, and
+  `SerialListener`/`TokioSerialConnection` are gone.
 - **`tokio-runtime` now depends on `aimdb-tokio-adapter`** (feature `net`), so the
   byte source is the adapter's on both runtimes rather than duplicated here. This
-  reverses the earlier decision to keep a concrete adapter off the public feature;
-  `_test-tokio` remains as an alias.
+  reverses the earlier decision to keep a concrete adapter off the public
+  feature, which also makes the internal `_test-tokio` feature redundant; it is
+  removed, and `tokio-runtime` gates the host tests and `serial_demo` directly.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written
@@ -22,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`connector` — runtime-neutral client and server sugar.** `SerialServer<S>`
+  and `SerialClient` over any adapter byte stream, plus `OneShotDialer` /
+  `OneShotListener`: a UART is point-to-point, so the stream is served once —
+  the dialer then errors, the listener parks, because `serve` loops on `accept`
+  and would spin on an error.
 - **`framing` gains core's `Framer` — the connector reduced to framing.** `CobsFramer` against
   core's `Framer` plus core's `FramedConnection` serve both runtimes; the byte
   sources come from the adapters (`TokioByteStream`, `EmbassyUart`), so this crate
