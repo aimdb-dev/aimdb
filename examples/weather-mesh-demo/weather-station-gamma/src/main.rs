@@ -28,7 +28,7 @@ use aimdb_core::{AimDbBuilder, RecordKey};
 #[cfg(feature = "sim")]
 use aimdb_data_contracts::{RandomWalkParams, SimProfile, SimulatableRegistrarExt};
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
-use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+use aimdb_mqtt_connector::MqttConnector;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
@@ -251,7 +251,7 @@ async fn main(spawner: Spawner) {
     let broker_url = format!("mqtt://{}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
 
     let mut builder = AimDbBuilder::new().runtime(runtime.clone()).with_connector(
-        MqttConnectorBuilder::new(&broker_url, stack).with_client_id("weather-station-gamma"),
+        MqttConnector::new(&broker_url, stack).with_client_id("weather-station-gamma"),
     );
 
     // Configure temperature record

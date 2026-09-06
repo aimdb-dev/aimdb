@@ -90,7 +90,7 @@ use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+use aimdb_mqtt_connector::MqttConnector;
 #[cfg(feature = "tls")]
 use aimdb_mqtt_connector::embassy_client::TlsOptions;
 
@@ -385,7 +385,7 @@ async fn main(spawner: Spawner) {
     // Read-only: each record has a single writer (a sensor source, or MQTT for the
     // command records), so remote `record.set` is refused — peers can
     // list/drain/subscribe, not write.
-    let mqtt = MqttConnectorBuilder::new(&broker_url, stack).with_client_id("embassy-demo-001");
+    let mqtt = MqttConnector::new(&broker_url, stack).with_client_id("embassy-demo-001");
 
     // TLS materials: the board's TRNG, the broker's root CA, and the record
     // buffers (16 640 bytes read is the enforced minimum — a TLS 1.3 peer

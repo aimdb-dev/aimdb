@@ -95,6 +95,10 @@
 extern crate alloc;
 
 // MQTT knobs over core's generic link builders (works on every feature leg)
+// One `MqttConnector` over the `Native` and `Embedded` protocol backends.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub mod connector;
+
 pub mod link_ext;
 pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};
 
@@ -116,21 +120,9 @@ pub mod embassy_tls;
 #[cfg(feature = "embassy-tls")]
 pub mod sntp;
 
-// Re-export platform-specific types
-// Both implementations use MqttConnectorBuilder for API consistency
-// When both features are enabled (e.g., during testing), prefer tokio
-#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_client::MqttConnectorBuilder as MqttConnector;
-
-#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_client::MqttConnectorBuilder as MqttConnector;
-
-// When both features are enabled, export both with different names
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::MqttConnectorBuilder as TokioMqttConnector;
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_client::MqttConnectorBuilder as EmbassyMqttConnector;
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::MqttConnectorBuilder as MqttConnector; // Default to tokio when both enabled
+#[cfg(feature = "embassy-runtime")]
+pub use connector::Embedded;
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub use connector::MqttConnector;
+#[cfg(feature = "tokio-runtime")]
+pub use connector::Native;
