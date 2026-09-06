@@ -16,6 +16,8 @@ tracing = ["dep:tracing", "dep:tracing-subscriber"]
 aimdb-core = { path = "../../aimdb-core", features = ["std", "derive"] }
 aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
     "tokio-runtime",
+    # `TokioNet`/`TokioDelay`: the adapter owns the socket and the clock.
+    "net",
     "tracing",
 ] }
 
@@ -28,6 +30,9 @@ knx-connector-demo-common = { path = "../knx-connector-demo-common", features = 
 # KNX connector
 aimdb-knx-connector = { path = "../../aimdb-knx-connector", features = [
     "tokio-runtime",
+    # The connector's channels are `CriticalSectionRawMutex`; only the final
+    # binary may pick the impl they need to link.
+    "critical-section-std-impl",
     "tracing",
 ] }
 

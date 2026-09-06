@@ -96,9 +96,9 @@ pub struct KnxConnector<B, D, const N: usize = DEFAULT_QUEUE> {
 /// The channel pair, held for the process lifetime.
 ///
 /// `'static` because the connection task and the pumps are spawned as
-/// `'static` futures; a `StaticCell` supplies this on the MCU and a leak at
-/// build does on a host, matching design 037's allocate-at-build model.
-pub struct Channels<const N: usize> {
+/// `'static` futures; a `StaticCell` supplies this on the MCU and a `static`
+/// item on a host, matching design 037's allocate-at-build model.
+pub struct Channels<const N: usize = DEFAULT_QUEUE> {
     telegrams: TelegramChannel<N>,
     commands: CommandChannel<N>,
 }
@@ -156,32 +156,6 @@ impl<B, D, const N: usize> KnxConnector<B, D, N> {
                     port
                 ))
             })
-    }
-}
-
-/// Host constructor: the Tokio transports and a leaked channel pair, so a
-/// caller (and `aimdb-codegen`) needs only the gateway URL.
-///
-/// The leak is one allocation at build for the process lifetime — the channels
-/// must outlive the `'static` task and pump futures. An MCU uses
-/// [`KnxConnector::new`] with a `StaticCell` instead.
-#[cfg(feature = "tokio-runtime")]
-impl
-    KnxConnector<
-        aimdb_tokio_adapter::net::TokioUdpBinder,
-        aimdb_tokio_adapter::net::TokioDelay,
-        DEFAULT_QUEUE,
-    >
-{
-    /// Connect to the KNX/IP gateway at `gateway_url` (`knx://host:port`).
-    pub fn tokio(gateway_url: impl Into<String>) -> Self {
-        use core::net::Ipv4Addr;
-        Self::new(
-            aimdb_tokio_adapter::net::TokioNet::udp(Ipv4Addr::UNSPECIFIED),
-            aimdb_tokio_adapter::net::TokioDelay,
-            gateway_url,
-            Box::leak(Box::new(Channels::new())),
-        )
     }
 }
 

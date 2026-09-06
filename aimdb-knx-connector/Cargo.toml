@@ -21,9 +21,6 @@ tokio-runtime = [
     "async-stream",
     "futures-util",
     "embassy-sync",
-    # The adapter owns the datagram socket and the clock, as it does on Embassy.
-    "dep:aimdb-tokio-adapter",
-    "aimdb-tokio-adapter/net",
 ]
 
 # Selects `critical-section`'s std implementation.
@@ -67,7 +64,6 @@ defmt = [
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
-aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
 
 # aimdb-dev fork: upstream 0.3.0 panics on an npdu_length=1 telegram. A patch
 # won't do — patches aren't published, so dependants resolve back to upstream.
@@ -128,6 +124,11 @@ tokio = { workspace = true, features = ["full"] }
 # link for this crate's tests without imposing that choice on consumers.
 critical-section = { version = "1.2", features = ["std"] }
 tokio-test = "0.4"
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
+    "tokio-runtime",
+    # `TokioNet`/`TokioDelay`, the neutral transports the unified task runs on.
+    "net",
+] }
 
 
 [package.metadata.docs.rs]

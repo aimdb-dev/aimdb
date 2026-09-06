@@ -34,8 +34,10 @@
 //! ```no_run
 //! use aimdb_core::buffer::BufferCfg;
 //! use aimdb_core::AimDbBuilder;
-//! use aimdb_knx_connector::KnxConnector;
+//! use aimdb_knx_connector::{Channels, KnxConnector};
+//! use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+//! use std::net::Ipv4Addr;
 //! use std::sync::Arc;
 //!
 //! #[derive(Debug, Clone)]
@@ -46,9 +48,15 @@
 //! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = Arc::new(TokioAdapter::new()?);
 //!
+//! static CHANNELS: Channels = Channels::new();
 //! let mut builder = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(KnxConnector::tokio("knx://192.168.1.19:3671"));
+//!     .with_connector(KnxConnector::new(
+//!         TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+//!         TokioDelay,
+//!         "knx://192.168.1.19:3671",
+//!         &CHANNELS,
+//!     ));
 //! builder.configure::<LightState>("light.state", |reg| {
 //!     reg.buffer(BufferCfg::SingleLatest)
 //!        // Inbound: Monitor KNX bus

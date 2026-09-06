@@ -11,9 +11,16 @@
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::TopicProvider;
 use aimdb_core::{AimDbBuilder, Producer, RuntimeContext};
+use aimdb_knx_connector::Channels;
+use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+
+/// The connector's channel pair, shared by the registration tests — none of
+/// them runs a connection task, so one pair serves all three.
+static CHANNELS: Channels = Channels::new();
 
 // ============================================================================
 // Test Types
@@ -317,7 +324,12 @@ async fn test_knx_topic_provider_with_connector_registration() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::tokio("knx://192.168.1.10:3671"),
+        aimdb_knx_connector::KnxConnector::new(
+            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+            TokioDelay,
+            "knx://192.168.1.10:3671",
+            &CHANNELS,
+        ),
     );
 
     // Register dimmer with dynamic group address provider
@@ -346,7 +358,12 @@ async fn test_knx_topic_resolver_with_connector_registration() {
     std::env::set_var("KNX_SWITCH_INPUT", "1/2/10");
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::tokio("knx://192.168.1.10:3671"),
+        aimdb_knx_connector::KnxConnector::new(
+            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+            TokioDelay,
+            "knx://192.168.1.10:3671",
+            &CHANNELS,
+        ),
     );
 
     // Register switch with dynamic group address resolver
@@ -373,7 +390,12 @@ async fn test_hvac_zone_routing() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::tokio("knx://192.168.1.10:3671"),
+        aimdb_knx_connector::KnxConnector::new(
+            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+            TokioDelay,
+            "knx://192.168.1.10:3671",
+            &CHANNELS,
+        ),
     );
 
     // HVAC setpoint with zone-based routing
