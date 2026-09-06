@@ -61,10 +61,6 @@ tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 defmt = ["dep:defmt", "aimdb-core/defmt"]
 
-# Retained as an alias: `tokio-runtime` now carries the adapter itself, but the
-# host integration test and `serial_demo` still gate on this name. Kept out of
-# `[dev-dependencies]` so the no_std `embassy-runtime` test build never sees it.
-_test-tokio = ["tokio-runtime"]
 
 [dependencies]
 # AimX protocol (codec + dispatch) and the generic session connectors live in
@@ -82,7 +78,7 @@ thiserror = { workspace = true, optional = true }
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 embedded-io-async = { workspace = true, optional = true }
 
-# --- test-only (see the `_test-tokio` feature) ---
+# --- test-only ---
 aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
 
 # --- logging ---
@@ -112,4 +108,4 @@ serde_json = { workspace = true }
 # the internal test feature so it doesn't pull an adapter into the embassy build.
 [[example]]
 name = "serial_demo"
-required-features = ["_test-tokio"]
+required-features = ["tokio-runtime"]

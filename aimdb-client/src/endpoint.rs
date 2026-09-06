@@ -131,7 +131,7 @@ pub fn dial(endpoint: &str) -> ClientResult<Box<dyn Dialer>> {
         Scheme::Serial => {
             #[cfg(feature = "transport-serial")]
             {
-                Ok(Box::new(aimdb_serial_connector::SerialDialer::new(
+                Ok(Box::new(aimdb_serial_connector::SerialPortDialer::new(
                     parsed.target,
                     parsed.baud.unwrap_or(DEFAULT_SERIAL_BAUD),
                 )))

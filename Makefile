@@ -218,7 +218,7 @@ test:
 	@printf "$(YELLOW)  → Testing UDS connector$(NC)\n"
 	cargo test --package aimdb-uds-connector
 	@printf "$(YELLOW)  → Testing serial connector (tokio: COBS framing + AimX round-trip over a duplex)$(NC)\n"
-	cargo test --package aimdb-serial-connector --no-default-features --features "_test-tokio"
+	cargo test --package aimdb-serial-connector --no-default-features --features "tokio-runtime"
 	@printf "$(YELLOW)  → Testing serial connector (embassy: COBS framing + client-engine smoke on the EmbassyAdapter clock)$(NC)\n"
 	cargo test --package aimdb-serial-connector --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Testing TCP connector (tokio: length-prefix framing + AimX loopback)$(NC)\n"
@@ -341,7 +341,7 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on UDS connector$(NC)\n"
 	cargo clippy --package aimdb-uds-connector --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on serial connector (tokio)$(NC)\n"
-	cargo clippy --package aimdb-serial-connector --no-default-features --features "_test-tokio" --all-targets -- -D warnings
+	cargo clippy --package aimdb-serial-connector --no-default-features --features "tokio-runtime" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on serial connector (embassy)$(NC)\n"
 	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on serial connector (embassy + defmt)$(NC)\n"

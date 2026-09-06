@@ -1,6 +1,6 @@
 //! Embassy client-exit smoke — the runtime-neutral `run_client` engine drives RPC
-//! over the **real** Embassy serial transport ([`SerialDialer`] /
-//! `EmbassySerialConnection`, COBS over `embedded-io-async`) on the
+//! over the **real** Embassy serial path (COBS framing over the adapter's
+//! `EmbassyUart`) on the
 //! [`EmbassyAdapter`] clock. The `thumbv7em` monomorphization an MCU uses, driven
 //! on the host by `futures::executor::block_on` (no `embassy-executor`, which does
 //! not build on the host).
@@ -27,9 +27,9 @@ use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use aimdb_core::session::{
     run_client, ClientConfig, CodecError, EnvelopeCodec, Inbound, Outbound, Payload,
 };
-use aimdb_embassy_adapter::connectors::{EmbassyConnection, OneShotDialer};
+use aimdb_embassy_adapter::net::EmbassyUart;
 use aimdb_embassy_adapter::EmbassyAdapter;
-use aimdb_serial_connector::embassy_transport::CobsFramer;
+use aimdb_serial_connector::connector::{framed, OneShotDialer};
 
 // No-op defmt logger + host time driver so the binary links: the engine holds
 // the adapter as `Arc<dyn RuntimeOps>`, whose vtable references
@@ -125,7 +125,7 @@ fn embassy_clock_drives_client_engine_rpc_over_serial() {
     use futures::executor::block_on;
     use futures::future::{select, Either};
 
-    // The exact `run_client<SerialDialer<_, _>, _, EmbassyAdapter>` monomorphization
+    // The exact `run_client<OneShotDialer<_>, _, EmbassyAdapter>` monomorphization
     // an MCU build uses — over the real COBS serial connection.
     let clock = Arc::new(EmbassyAdapter::default());
     let config = ClientConfig {
@@ -135,10 +135,9 @@ fn embassy_clock_drives_client_engine_rpc_over_serial() {
     };
 
     let uart = LoopbackUart::default();
-    // The one-shot dialer over the real COBS framed connection — the exact spine
-    // an MCU build uses (`OneShotDialer<EmbassyConnection<_, _, CobsFramer>>`).
-    let conn = EmbassyConnection::<_, _, _>::new(uart.clone(), uart, CobsFramer::new());
-    let dialer = OneShotDialer::new(conn);
+    // The one-shot dialer over the real COBS framed connection — the exact
+    // spine an MCU build uses.
+    let dialer = OneShotDialer::new(framed(EmbassyUart::new(uart.clone(), uart)));
     let (handle, engine_fut) = run_client(dialer, EchoCodec, config, clock);
 
     block_on(async move {

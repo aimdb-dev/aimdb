@@ -12,17 +12,10 @@
 //! newline — self-synchronizing on a lossy/unframed serial medium. See
 //! [`framing`].
 //!
-//! # Two halves
-//!
-//! - **`tokio-runtime`** (std, host/gateway): real serial via `tokio-serial`,
-//!   riding the generic [`SessionClientConnector`](aimdb_core::session::SessionClientConnector)
-//!   / [`SessionServerConnector`](aimdb_core::session::SessionServerConnector).
-//!   See `tokio_transport`.
-//! - **`embassy-runtime`** (`no_std + alloc`, MCU): generic over
-//!   `embedded-io-async` UART halves; the COBS `Framer` plus thin sugar over the
-//!   centralized Embassy session spine in `aimdb-embassy-adapter`, which owns the
-//!   force-`Send` plumbing, the framed connection, and all the `unsafe` — this
-//!   crate carries none. See `embassy_transport`.
+//! One path for both runtimes: the byte source comes from an adapter
+//! (`EmbassyUart` on the MCU, `TokioByteStream` over a `SerialStream` on the
+//! host) and this crate contributes only the COBS framer. A UART is
+//! point-to-point, so the stream is moved in and served once.
 //!
 //! Both speak the `serial://` scheme by default ([`DEFAULT_SCHEME`]).
 
@@ -39,12 +32,6 @@ pub mod framing;
 // Runtime-neutral `SerialClient`/`SerialServer` over an adapter's byte stream.
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub mod connector;
-
-#[cfg(feature = "tokio-runtime")]
-pub mod tokio_transport;
-
-#[cfg(feature = "embassy-runtime")]
-pub mod embassy_transport;
 
 /// The default scheme `SerialClient`/`SerialServer` register when none is given.
 ///
@@ -67,19 +54,8 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
     }
 }
 
-// Prefer the tokio names when both halves are compiled (e.g. host tests).
-#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_transport::{SerialClient, SerialDialer, SerialListener, SerialServer};
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub use connector::{framed, OneShotDialer, OneShotListener, SerialClient, SerialServer};
 
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_transport::{
-    SerialClient as EmbassySerialClient, SerialServer as EmbassySerialServer,
-};
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_transport::{
-    SerialClient as TokioSerialClient, SerialDialer, SerialListener,
-    SerialServer as TokioSerialServer,
-};
-
-#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_transport::{SerialClient, SerialServer};
+#[cfg(feature = "tokio-runtime")]
+pub use connector::SerialPortDialer;
