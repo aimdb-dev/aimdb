@@ -329,7 +329,7 @@ impl MqttConnectorBuilder<NoTransport> {
     /// Create a new MQTT connector builder for Embassy.
     ///
     /// Supply the transport with [`transport`](Self::transport) for `mqtt://`,
-    /// or [`tls`](Self::tls) for `mqtts://`.
+    /// or `tls` (feature `embassy-tls`) for `mqtts://`.
     pub fn new(broker_url: impl Into<String>) -> Self {
         Self {
             broker_url: broker_url.into(),

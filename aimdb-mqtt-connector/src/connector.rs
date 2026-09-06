@@ -58,8 +58,8 @@ impl MqttConnector<Native> {
 #[cfg(feature = "embassy-runtime")]
 impl MqttConnector<Embedded> {
     /// Connect to `broker_url`, then supply the transport with
-    /// [`transport`](Self::transport) (`mqtt://`) or [`tls`](Self::tls)
-    /// (`mqtts://`, feature `embassy-tls`).
+    /// [`transport`](Self::transport) for `mqtt://`, or `tls` (feature
+    /// `embassy-tls`) for `mqtts://`.
     pub fn new(broker_url: impl Into<alloc::string::String>) -> Self {
         Self {
             backend: Embedded(crate::embassy_client::MqttConnectorBuilder::new(broker_url)),
