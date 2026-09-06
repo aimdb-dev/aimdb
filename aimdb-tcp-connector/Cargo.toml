@@ -42,7 +42,7 @@ embassy-runtime = [
 tracing = ["aimdb-core/tracing"]
 defmt = ["aimdb-core/defmt"]
 
-_test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
+_test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter", "aimdb-tokio-adapter/net"]
 
 # Internal: the Embassy TCP half's runtime smoke (`tests/embassy_loopback.rs`)
 # stands up two real `embassy-net` stacks wired by an in-memory driver-channel

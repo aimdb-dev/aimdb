@@ -209,6 +209,7 @@ impl ByteStream for EmbassyTcpStream {
 }
 
 /// Dials TCP connections over one caller-owned socket.
+#[derive(Clone)]
 pub struct EmbassyTcpDialer {
     slot: Arc<TcpSocketSlot>,
 }

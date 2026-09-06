@@ -15,6 +15,12 @@ extern crate alloc;
 
 pub mod framing;
 
+// Runtime-neutral `TcpClient`/`TcpServer` over an adapter's stream transports.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub mod connector;
+
+// Superseded by `connector` over the adapters' stream transports; both are
+// deleted once the tests and examples move across.
 #[cfg(feature = "tokio-runtime")]
 pub mod tokio_transport;
 

@@ -91,3 +91,60 @@ impl FrameAccumulator {
         Some(Ok(self.buf.drain(..len).collect()))
     }
 }
+
+/// Length-prefix framing against core's [`Framer`](aimdb_core::session::Framer),
+/// so one framer serves both runtimes.
+///
+/// Unlike a self-synchronizing format, a length prefix has no delimiter to
+/// resync on, so a framing error is fatal: `next_frame` reports it once and the
+/// accumulator is left empty rather than pretending the stream is still
+/// aligned.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub struct LengthFramer {
+    acc: FrameAccumulator,
+    max_frame: usize,
+}
+
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+impl LengthFramer {
+    /// A framer bounded by [`DEFAULT_MAX_FRAME`].
+    pub fn new() -> Self {
+        Self::with_max_frame(DEFAULT_MAX_FRAME)
+    }
+
+    /// A framer bounded by `max_frame` payload bytes.
+    pub fn with_max_frame(max_frame: usize) -> Self {
+        Self {
+            acc: FrameAccumulator::with_max_frame(max_frame),
+            max_frame,
+        }
+    }
+}
+
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+impl Default for LengthFramer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+impl aimdb_core::session::Framer for LengthFramer {
+    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+        // Core's `Framer::encode` is infallible, so an oversized frame is
+        // dropped here rather than written half-encoded: the peer would read a
+        // length prefix with no payload behind it and desync permanently.
+        if frame.len() > self.max_frame {
+            return;
+        }
+        let _ = encode_frame(frame, out);
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) {
+        self.acc.push_bytes(bytes);
+    }
+
+    fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+        self.acc.next_frame().map(|r| r.map_err(|_| ()))
+    }
+}

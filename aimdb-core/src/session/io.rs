@@ -273,6 +273,19 @@ pub struct FramingDialer<D, FF, const RC: usize = 256, const WC: usize = 256> {
     port: u16,
 }
 
+/// `SessionClientConnector` clones its dialer per build, so a framed one must
+/// clone too.
+impl<D: Clone, FF: Clone, const RC: usize, const WC: usize> Clone for FramingDialer<D, FF, RC, WC> {
+    fn clone(&self) -> Self {
+        Self {
+            dialer: self.dialer.clone(),
+            framers: self.framers.clone(),
+            host: self.host.clone(),
+            port: self.port,
+        }
+    }
+}
+
 impl<D, FF, const RC: usize, const WC: usize> FramingDialer<D, FF, RC, WC> {
     /// Dial `host:port` through `dialer`, framing each stream with a framer
     /// from `framers`.
