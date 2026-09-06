@@ -27,6 +27,7 @@ extern crate alloc;
 use aimdb_core::{AimDbBuilder, RecordKey};
 #[cfg(feature = "sim")]
 use aimdb_data_contracts::{RandomWalkParams, SimProfile, SimulatableRegistrarExt};
+use aimdb_embassy_adapter::net::EmbassyNet;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_mqtt_connector::MqttConnector;
 use defmt::*;
@@ -250,8 +251,18 @@ async fn main(spawner: Spawner) {
     use alloc::format;
     let broker_url = format!("mqtt://{}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
 
+    // The adapter owns the socket, so its buffers are the caller's and visible
+    // here; the same line works on any runtime's adapter.
+    static MQTT_RX: StaticCell<[u8; 4096]> = StaticCell::new();
+    static MQTT_TX: StaticCell<[u8; 4096]> = StaticCell::new();
     let mut builder = AimDbBuilder::new().runtime(runtime.clone()).with_connector(
-        MqttConnector::new(&broker_url, stack).with_client_id("weather-station-gamma"),
+        MqttConnector::new(&broker_url)
+            .transport(EmbassyNet::tcp(
+                *stack,
+                MQTT_RX.init([0; 4096]),
+                MQTT_TX.init([0; 4096]),
+            ))
+            .with_client_id("weather-station-gamma"),
     );
 
     // Configure temperature record

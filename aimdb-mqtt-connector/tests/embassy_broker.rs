@@ -299,11 +299,14 @@ fn the_session_loop_connects_and_subscribes() {
         async move {
             let stack: &'static Stack<'static> = leak(client_stack);
 
-            let connector = MqttConnector::new(
-                alloc::format!("mqtt://{}:{}", BROKER_IP, BROKER_PORT),
-                stack,
-            )
-            .with_client_id("host-smoke");
+            let connector =
+                MqttConnector::new(alloc::format!("mqtt://{}:{}", BROKER_IP, BROKER_PORT))
+                    .transport(aimdb_embassy_adapter::net::EmbassyNet::tcp(
+                        *stack,
+                        buf(),
+                        buf(),
+                    ))
+                    .with_client_id("host-smoke");
 
             let mut builder = AimDbBuilder::new()
                 .runtime(Arc::new(TokioAdapter))

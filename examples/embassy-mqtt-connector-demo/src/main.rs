@@ -90,6 +90,7 @@ use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
+use aimdb_embassy_adapter::net::EmbassyNet;
 use aimdb_mqtt_connector::MqttConnector;
 #[cfg(feature = "tls")]
 use aimdb_mqtt_connector::embassy_client::TlsOptions;
@@ -385,21 +386,41 @@ async fn main(spawner: Spawner) {
     // Read-only: each record has a single writer (a sensor source, or MQTT for the
     // command records), so remote `record.set` is refused — peers can
     // list/drain/subscribe, not write.
-    let mqtt = MqttConnector::new(&broker_url, stack).with_client_id("embassy-demo-001");
+    // Plain `mqtt://`: the adapter owns the socket, so the buffers are the
+    // caller's and visible here. The same line on another runtime's adapter
+    // needs no change in the connector.
+    #[cfg(not(feature = "tls"))]
+    let mqtt = {
+        static MQTT_RX: StaticCell<[u8; 4096]> = StaticCell::new();
+        static MQTT_TX: StaticCell<[u8; 4096]> = StaticCell::new();
+        MqttConnector::new(&broker_url)
+            .transport(EmbassyNet::tcp(
+                *stack,
+                MQTT_RX.init([0; 4096]),
+                MQTT_TX.init([0; 4096]),
+            ))
+            .with_client_id("embassy-demo-001")
+    };
 
-    // TLS materials: the board's TRNG, the broker's root CA, and the record
-    // buffers (16 640 bytes read is the enforced minimum — a TLS 1.3 peer
-    // may send full-size records). `init_with` keeps the arrays off the stack.
+    // `mqtts://` keeps the stack: TLS resolves DNS itself and owns its buffers
+    // across sessions. The board's TRNG, the broker's root CA, and the record
+    // buffers (16 640 bytes read is the enforced minimum — a TLS 1.3 peer may
+    // send full-size records). `init_with` keeps the arrays off the stack.
     #[cfg(feature = "tls")]
     let mqtt = {
         static TLS_READ_BUF: StaticCell<[u8; 16_640]> = StaticCell::new();
         static TLS_WRITE_BUF: StaticCell<[u8; 4_096]> = StaticCell::new();
-        let mqtt = mqtt.with_tls(TlsOptions::new(
-            rng,
-            MQTT_CA_DER,
-            TLS_READ_BUF.init_with(|| [0; 16_640]),
-            TLS_WRITE_BUF.init_with(|| [0; 4_096]),
-        ));
+        let mqtt = MqttConnector::new(&broker_url)
+            .tls(
+                stack,
+                TlsOptions::new(
+                    rng,
+                    MQTT_CA_DER,
+                    TLS_READ_BUF.init_with(|| [0; 16_640]),
+                    TLS_WRITE_BUF.init_with(|| [0; 4_096]),
+                ),
+            )
+            .with_client_id("embassy-demo-001");
         match MQTT_CREDENTIALS {
             Some((username, password)) => mqtt.with_credentials(username, password),
             None => mqtt,

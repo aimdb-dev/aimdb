@@ -24,9 +24,11 @@ use aimdb_core::{AimDb, DbResult};
 #[cfg(feature = "tokio-runtime")]
 pub struct Native(crate::tokio_client::MqttConnectorBuilder);
 
-/// The `mountain-mqtt` backend: `no_std`, over the device's network stack.
+/// The `mountain-mqtt` backend: `no_std`, over a caller-supplied transport.
 #[cfg(feature = "embassy-runtime")]
-pub struct Embedded(crate::embassy_client::MqttConnectorBuilder);
+pub struct Embedded<D = crate::embassy_client::NoTransport>(
+    crate::embassy_client::MqttConnectorBuilder<D>,
+);
 
 /// An MQTT connector over the backend `B`.
 pub struct MqttConnector<B> {
@@ -55,22 +57,38 @@ impl MqttConnector<Native> {
 
 #[cfg(feature = "embassy-runtime")]
 impl MqttConnector<Embedded> {
-    /// Connect to `broker_url` over the device's network stack.
-    ///
-    /// `mqtt://` is plain TCP (default port 1883); `mqtts://` is TLS
-    /// (default 8883) and needs the `embassy-tls` feature plus
-    /// `with_tls` (feature `embassy-tls`).
-    pub fn new(
-        broker_url: impl Into<alloc::string::String>,
-        stack: &'static embassy_net::Stack<'static>,
-    ) -> Self {
+    /// Connect to `broker_url`, then supply the transport with
+    /// [`transport`](Self::transport) (`mqtt://`) or [`tls`](Self::tls)
+    /// (`mqtts://`, feature `embassy-tls`).
+    pub fn new(broker_url: impl Into<alloc::string::String>) -> Self {
         Self {
-            backend: Embedded(crate::embassy_client::MqttConnectorBuilder::new(
-                broker_url, stack,
-            )),
+            backend: Embedded(crate::embassy_client::MqttConnectorBuilder::new(broker_url)),
         }
     }
 
+    /// Dial plain sessions through an adapter's stream dialer — the same call
+    /// on any runtime's adapter, with no change in this crate.
+    pub fn transport<D>(self, dialer: D) -> MqttConnector<Embedded<D>> {
+        MqttConnector {
+            backend: Embedded(self.backend.0.transport(dialer)),
+        }
+    }
+
+    /// Provide the network stack and TLS materials for an `mqtts://` broker.
+    #[cfg(feature = "embassy-tls")]
+    pub fn tls(
+        self,
+        stack: &'static embassy_net::Stack<'static>,
+        options: crate::embassy_tls::TlsOptions,
+    ) -> Self {
+        Self {
+            backend: Embedded(self.backend.0.tls(stack, options)),
+        }
+    }
+}
+
+#[cfg(feature = "embassy-runtime")]
+impl<D> MqttConnector<Embedded<D>> {
     /// Set the MQTT client id (defaults to `aimdb-client`).
     pub fn with_client_id(self, client_id: impl Into<alloc::string::String>) -> Self {
         Self {
@@ -86,14 +104,6 @@ impl MqttConnector<Embedded> {
     ) -> Self {
         Self {
             backend: Embedded(self.backend.0.with_credentials(username, password)),
-        }
-    }
-
-    /// Provide the TLS materials for an `mqtts://` broker.
-    #[cfg(feature = "embassy-tls")]
-    pub fn with_tls(self, options: crate::embassy_tls::TlsOptions) -> Self {
-        Self {
-            backend: Embedded(self.backend.0.with_tls(options)),
         }
     }
 }
@@ -119,7 +129,11 @@ impl ConnectorBuilder for MqttConnector<Native> {
 }
 
 #[cfg(feature = "embassy-runtime")]
-impl ConnectorBuilder for MqttConnector<Embedded> {
+impl<D> ConnectorBuilder for MqttConnector<Embedded<D>>
+where
+    D: aimdb_core::session::StreamDialer + Clone + Send + Sync + 'static,
+    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
+{
     fn build<'a>(
         &'a self,
         db: &'a AimDb,
