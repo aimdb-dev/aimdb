@@ -20,7 +20,7 @@ use aimdb_core::session::{
 };
 use aimdb_core::{AimDb, DbError, DbResult};
 
-use crate::framing::{LengthFramer, DEFAULT_MAX_FRAME};
+use crate::framing::LengthFramer;
 use crate::DEFAULT_SCHEME;
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -35,6 +35,25 @@ pub const WRITE_CHUNK: usize = 1024;
 pub type TcpFramingDialer<D> = FramingDialer<D, fn() -> LengthFramer, READ_CHUNK, WRITE_CHUNK>;
 /// The listener half, framed.
 pub type TcpFramingListener<L> = FramingListener<L, fn() -> LengthFramer, READ_CHUNK, WRITE_CHUNK>;
+
+/// Frame an adapter's dialer for `host:port` with length-prefix framing.
+pub fn framed_dialer<D: StreamDialer>(
+    dialer: D,
+    host: impl Into<String>,
+    port: u16,
+) -> TcpFramingDialer<D> {
+    FramingDialer::new(
+        dialer,
+        LengthFramer::new as fn() -> LengthFramer,
+        host,
+        port,
+    )
+}
+
+/// Frame an adapter's listener with length-prefix framing.
+pub fn framed_listener<L: StreamListener>(listener: L) -> TcpFramingListener<L> {
+    FramingListener::new(listener, LengthFramer::new as fn() -> LengthFramer)
+}
 
 /// Constructs a TCP session client connector over an adapter's dialer.
 pub struct TcpClient;
@@ -145,10 +164,7 @@ where
                 reads_hello: false,
                 acks_subscribe: false,
             };
-            let framed: OneShot<TcpFramingListener<L>> = OneShot::new(FramingListener::new(
-                listener,
-                LengthFramer::new as fn() -> LengthFramer,
-            ));
+            let framed = OneShot::new(framed_listener(listener));
             let dispatch_config = config;
             let connector = SessionServerConnector::new(
                 move || {
@@ -175,9 +191,4 @@ where
     fn scheme(&self) -> &str {
         &self.scheme
     }
-}
-
-/// The default payload bound a caller gets when it does not set one.
-pub const fn default_max_frame() -> usize {
-    DEFAULT_MAX_FRAME
 }

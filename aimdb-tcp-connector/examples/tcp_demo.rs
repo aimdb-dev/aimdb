@@ -25,7 +25,8 @@ use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::AimxCodec;
 use aimdb_core::session::{run_client, ClientConfig, Payload};
 use aimdb_core::AimDbBuilder;
-use aimdb_tcp_connector::tokio_transport::{TcpDialer, TcpServer};
+use aimdb_tcp_connector::connector::{framed_dialer, TcpServer};
+use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -73,9 +74,12 @@ async fn run_server(bind_addr: String) {
         .max_connections(8)
         .max_subs_per_connection(32);
 
+    let listener = TokioNet::listen(&bind_addr)
+        .await
+        .expect("bind the TCP listener");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
-        .with_connector(TcpServer::new(bind_addr).with_config(config));
+        .with_connector(TcpServer::new(listener).with_config(config));
     builder.configure::<Counter>("counter", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
@@ -147,8 +151,9 @@ async fn run_set_mode(endpoint: String, level: u64) {
 }
 
 fn connect(endpoint: String) -> aimdb_core::session::ClientHandle {
+    let (host, port) = split_endpoint(&endpoint);
     let (handle, engine) = run_client(
-        TcpDialer::new(endpoint),
+        framed_dialer(TokioNet::tcp(), host, port),
         AimxCodec,
         ClientConfig {
             sends_hello: false,
@@ -158,4 +163,12 @@ fn connect(endpoint: String) -> aimdb_core::session::ClientHandle {
     );
     tokio::spawn(engine);
     handle
+}
+
+/// Split `host:port`, defaulting to the AimX TCP port when none is given.
+fn split_endpoint(endpoint: &str) -> (String, u16) {
+    match endpoint.rsplit_once(':') {
+        Some((host, port)) => (host.to_string(), port.parse().unwrap_or(7001)),
+        None => (endpoint.to_string(), 7001),
+    }
 }
