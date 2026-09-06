@@ -102,7 +102,7 @@ async fn main() -> DbResult<()> {
 
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector(aimdb_knx_connector::KnxConnector::new(
+        .with_connector(aimdb_knx_connector::KnxConnector::tokio(
             "knx://192.168.1.4:3671",
         ))
         .with_connector(UdsServer::from_config(remote_config));

@@ -484,6 +484,7 @@ impl Datagram for EmbassyUdpSocket {
 }
 
 /// Binds [`EmbassyUdpSocket`]s over one caller-owned socket.
+#[derive(Clone)]
 pub struct EmbassyUdpBinder {
     stack: Stack<'static>,
     slot: Arc<UdpSlot>,

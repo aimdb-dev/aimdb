@@ -266,7 +266,7 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
             let default = &c.default;
             let ctor: TokenStream = match c.protocol.as_str() {
                 "mqtt" => quote! { MqttConnector::new(&#var_ident) },
-                "knx" => quote! { KnxConnector::new(&#var_ident) },
+                "knx" => quote! { KnxConnector::tokio(&#var_ident) },
                 "ws" => quote! {
                     WebSocketConnector::new()
                         .bind(#var_ident.parse::<std::net::SocketAddr>()
@@ -1421,7 +1421,7 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
             v.push(quote! { .with_connector(MqttConnector::new(&mqtt_url)) });
         }
         if has_knx {
-            v.push(quote! { .with_connector(KnxConnector::new(&knx_gateway)) });
+            v.push(quote! { .with_connector(KnxConnector::tokio(&knx_gateway)) });
         }
         if has_ws {
             v.push(quote! { .with_connector(WebSocketConnector::new().bind(ws_bind).path("/ws")) });

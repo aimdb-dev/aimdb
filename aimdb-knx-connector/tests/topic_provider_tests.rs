@@ -317,7 +317,7 @@ async fn test_knx_topic_provider_with_connector_registration() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::new("knx://192.168.1.10:3671"),
+        aimdb_knx_connector::KnxConnector::tokio("knx://192.168.1.10:3671"),
     );
 
     // Register dimmer with dynamic group address provider
@@ -346,7 +346,7 @@ async fn test_knx_topic_resolver_with_connector_registration() {
     std::env::set_var("KNX_SWITCH_INPUT", "1/2/10");
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::new("knx://192.168.1.10:3671"),
+        aimdb_knx_connector::KnxConnector::tokio("knx://192.168.1.10:3671"),
     );
 
     // Register switch with dynamic group address resolver
@@ -373,7 +373,7 @@ async fn test_hvac_zone_routing() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_knx_connector::KnxConnector::new("knx://192.168.1.10:3671"),
+        aimdb_knx_connector::KnxConnector::tokio("knx://192.168.1.10:3671"),
     );
 
     // HVAC setpoint with zone-based routing
