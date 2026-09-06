@@ -46,6 +46,8 @@ embassy-runtime = [
     "embassy-net",
     "mountain-mqtt",
     "mountain-mqtt-embassy",
+    # The `SocketTransport` bridge names these traits in its bounds.
+    "dep:embedded-io-async",
     "heapless",
     "static_cell",
 ]

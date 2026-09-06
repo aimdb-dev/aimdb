@@ -208,6 +208,58 @@ impl ByteStream for EmbassyTcpStream {
     }
 }
 
+// `embedded-io-async` by delegation, so a protocol client that consumes those
+// traits (mountain-mqtt, embedded-tls) sees the type it expects. `ReadReady` is
+// the one `ByteStream` cannot express, and the socket has it.
+impl embedded_io_async::ErrorType for EmbassyTcpStream {
+    type Error = embedded_io_async::ErrorKind;
+}
+
+impl embedded_io_async::Read for EmbassyTcpStream {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::Read::read(socket, buf)
+            .await
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
+}
+
+impl embedded_io_async::Write for EmbassyTcpStream {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::Write::write(socket, buf)
+            .await
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::Write::flush(socket)
+            .await
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
+}
+
+impl embedded_io_async::ReadReady for EmbassyTcpStream {
+    fn read_ready(&mut self) -> Result<bool, Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::ReadReady::read_ready(socket)
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
+}
+
 /// Dials TCP connections over one caller-owned socket.
 pub struct EmbassyTcpDialer {
     slot: Arc<TcpSocketSlot>,

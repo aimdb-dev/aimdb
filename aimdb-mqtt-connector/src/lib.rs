@@ -99,6 +99,10 @@ extern crate alloc;
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub mod connector;
 
+// The broker transport seam for the `Embedded` backend.
+#[cfg(feature = "embassy-runtime")]
+pub mod transport;
+
 pub mod link_ext;
 pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};
 
