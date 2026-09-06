@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One connector for both runtimes (breaking).**
+  `KnxConnector::new(binder, delay, url, &CHANNELS)` is generic over core's
+  `DatagramBinder` and `Delay`; `KnxConnector::tokio(url)` supplies the host
+  transports. `with_command_queue_size` becomes the const generic `N` — an
+  `embassy_sync::Channel` is sized at compile time. `tokio_client` and
+  `embassy_client` are deleted with the `Tokio*`/`Embassy*` aliases, and
+  `aimdb-codegen` emits `KnxConnector::tokio(..)`.
 - **`tokio-runtime` gains `embassy-sync`; `embassy-futures` is unconditional.**
   Both are executor-independent, so one channel and select type serves either
   runtime.
