@@ -15,17 +15,9 @@ extern crate alloc;
 
 pub mod framing;
 
-// Runtime-neutral `TcpClient`/`TcpServer` over an adapter's stream transports.
+// `TcpClient`/`TcpServer` over an adapter's stream transports.
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub mod connector;
-
-// Superseded by `connector` over the adapters' stream transports; both are
-// deleted once the tests and examples move across.
-#[cfg(feature = "tokio-runtime")]
-pub mod tokio_transport;
-
-#[cfg(feature = "embassy-runtime")]
-pub mod embassy_transport;
 
 /// Default connector scheme.
 ///
@@ -45,20 +37,8 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
     }
 }
 
-#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_transport::{TcpClient, TcpConnection, TcpDialer, TcpListener, TcpServer};
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_transport::{
-    TcpClient as EmbassyTcpClient, TcpConnection as EmbassyTcpConnection,
-    TcpDialer as EmbassyTcpDialer, TcpListener as EmbassyTcpListener,
-    TcpServer as EmbassyTcpServer,
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+pub use connector::{
+    framed_dialer, framed_dialer_at, framed_listener, split_host_port, TcpClient, TcpServer,
+    DEFAULT_PORT,
 };
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_transport::{
-    TcpClient as TokioTcpClient, TcpConnection as TokioTcpConnection, TcpDialer, TcpListener,
-    TcpServer as TokioTcpServer,
-};
-
-#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_transport::{TcpClient, TcpConnection, TcpDialer, TcpListener, TcpServer};

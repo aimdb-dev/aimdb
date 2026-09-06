@@ -25,7 +25,7 @@ use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::AimxCodec;
 use aimdb_core::session::{run_client, ClientConfig, Payload};
 use aimdb_core::AimDbBuilder;
-use aimdb_tcp_connector::connector::{framed_dialer, TcpServer};
+use aimdb_tcp_connector::connector::{framed_dialer_at, TcpServer};
 use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
@@ -151,9 +151,8 @@ async fn run_set_mode(endpoint: String, level: u64) {
 }
 
 fn connect(endpoint: String) -> aimdb_core::session::ClientHandle {
-    let (host, port) = split_endpoint(&endpoint);
     let (handle, engine) = run_client(
-        framed_dialer(TokioNet::tcp(), host, port),
+        framed_dialer_at(TokioNet::tcp(), &endpoint),
         AimxCodec,
         ClientConfig {
             sends_hello: false,
@@ -163,12 +162,4 @@ fn connect(endpoint: String) -> aimdb_core::session::ClientHandle {
     );
     tokio::spawn(engine);
     handle
-}
-
-/// Split `host:port`, defaulting to the AimX TCP port when none is given.
-fn split_endpoint(endpoint: &str) -> (String, u16) {
-    match endpoint.rsplit_once(':') {
-        Some((host, port)) => (host.to_string(), port.parse().unwrap_or(7001)),
-        None => (endpoint.to_string(), 7001),
-    }
 }

@@ -144,7 +144,12 @@ pub fn dial(endpoint: &str) -> ClientResult<Box<dyn Dialer>> {
         Scheme::Tcp => {
             #[cfg(feature = "transport-tcp")]
             {
-                Ok(Box::new(aimdb_tcp_connector::TcpDialer::new(parsed.target)))
+                // The adapter owns the socket; the connector owns the
+                // host/port grammar.
+                Ok(Box::new(aimdb_tcp_connector::framed_dialer_at(
+                    aimdb_tokio_adapter::net::TokioNet::tcp(),
+                    &parsed.target,
+                )))
             }
             #[cfg(not(feature = "transport-tcp"))]
             {
