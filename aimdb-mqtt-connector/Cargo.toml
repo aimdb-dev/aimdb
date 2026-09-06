@@ -72,6 +72,23 @@ tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 defmt = ["dep:defmt", "aimdb-core/defmt"]
 
+# Internal: the Embassy broker session loop's host smoke
+# (`tests/embassy_broker.rs`) stands up two `embassy-net` stacks wired by an
+# in-memory driver-channel crossover, with a fake broker on one side. Kept off
+# `embassy-runtime` (production pulls no network device or critical-section
+# impl). Run with `--features _test-embassy-broker`.
+_test-embassy-broker = [
+    "embassy-runtime",
+    # The test builds an `AimDb`; `EmbassyAdapter`'s `RuntimeOps` impl is gated
+    # on the adapter's own clock feature, which production never needs here.
+    "aimdb-embassy-adapter/embassy-time",
+    "aimdb-embassy-adapter/embassy-sync",
+    "embassy-net/medium-ip",
+    "embassy-net/proto-ipv4",
+    "dep:embassy-net-driver-channel",
+    "dep:critical-section",
+]
+
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
@@ -137,8 +154,16 @@ static_cell = { version = "2.0", optional = true }
 # Optional observability
 defmt = { workspace = true, optional = true }
 
+embassy-net-driver-channel = { version = "0.4.0", optional = true }
+critical-section = { version = "1.1", features = ["std"], optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+heapless = { workspace = true }
+futures = "0.3"
+embassy-time-driver = "0.2.2"
+# The loopback harness must supply the defmt symbols smoltcp references.
+defmt = { workspace = true }
 tokio-test = "0.4"
 serde = { workspace = true }
 aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
