@@ -4,7 +4,7 @@
 //! certificate's validity window needs the current Unix time. This module
 //! keeps one crate-global clock: Unix seconds at the `embassy_time` epoch
 //! (boot), written after each SNTP sync and read through [`unix_now`] /
-//! [`SntpClock`]. The TLS manager spawns [`run`] alongside its broker loop
+//! [`SntpClock`]. The TLS manager spawns `run` alongside its broker loop
 //! and holds the first handshake until the first sync lands.
 
 use core::sync::atomic::{AtomicU32, Ordering};

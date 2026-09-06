@@ -68,7 +68,7 @@ use static_cell::StaticCell;
 use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
-use mountain_mqtt_embassy::mqtt_manager::{self, MqttEvent, Settings};
+use mountain_mqtt_embassy::mqtt_manager::{MqttEvent, Settings};
 
 #[cfg(feature = "embassy-tls")]
 pub use crate::embassy_tls::TlsOptions;
@@ -504,9 +504,10 @@ fn static_connection_settings(
 }
 
 /// Sender half of the event channel (used by the broker manager tasks).
-type EventSender = Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>;
+pub(crate) type EventSender =
+    Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>;
 /// Receiver half of the action channel (drained by the broker manager tasks).
-type ActionReceiver = Receiver<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>;
+pub(crate) type ActionReceiver = Receiver<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>;
 
 /// Initialise the static action/event channels shared by both transports
 /// (one MQTT connector per firmware — `StaticCell` enforces single init).
@@ -527,12 +528,11 @@ fn init_channels() -> (ActionSender, ActionReceiver, EventSender, EventReceiver)
     )
 }
 
-/// Set up the plain-TCP broker manager
-/// (mountain-mqtt-embassy's `run_with_subscriptions`), returning the action
-/// sender (outbound), the event receiver (inbound), and the manager task
-/// future. The manager re-subscribes the inbound topics on every connection,
-/// so routing survives reconnects. Synchronous — no `.await` — so the caller's
-/// `build` future stays `Send`.
+/// Set up the plain-TCP broker session loop, returning the action sender
+/// (outbound), the event receiver (inbound), and the task future. The loop
+/// re-subscribes the inbound topics on every connection, so routing survives
+/// reconnects. Synchronous — no `.await` — so the caller's `build` future
+/// stays `Send`.
 fn setup_manager(
     broker: &BrokerUrl,
     connection_settings: ConnectionSettings<'static>,
@@ -550,36 +550,37 @@ fn setup_manager(
     let settings = Settings::new(broker_addr, broker.port);
     let network = stack.get();
 
-    // Manager task: run the broker loop (never returns). The manager
-    // re-subscribes these topics on every connection, so inbound routing
-    // survives reconnects (unlike queuing subscribe actions once at startup).
-    let manager_task = into_box_future(async move {
-        let subscribe_topics: Vec<(&str, QualityOfService)> = topics
-            .iter()
-            .map(|topic| (topic.as_str(), QualityOfService::Qos1))
-            .collect();
+    // The socket buffers the dialer owns for the process lifetime. `StaticCell`
+    // enforces one MQTT connector per firmware, as the channels above do.
+    static SOCKET_RX: StaticCell<[u8; BUFFER_SIZE]> = StaticCell::new();
+    static SOCKET_TX: StaticCell<[u8; BUFFER_SIZE]> = StaticCell::new();
 
+    // The transport the session loop dials each cycle. Sockets come from the
+    // adapter; `run_with_subscriptions` is gone because it binds the stack and
+    // cannot take one.
+    let transport = crate::transport::SocketTransport::new(
+        aimdb_embassy_adapter::net::EmbassyNet::tcp(
+            *network,
+            SOCKET_RX.init([0; BUFFER_SIZE]),
+            SOCKET_TX.init([0; BUFFER_SIZE]),
+        ),
+        broker.host.clone(),
+        broker.port,
+    );
+
+    let manager_task = into_box_future(async move {
         #[cfg(feature = "defmt")]
         defmt::info!("MQTT background task starting");
 
-        #[allow(unreachable_code)]
-        {
-            let _: () = mqtt_manager::run_with_subscriptions::<
-                AimdbMqttAction,
-                AimdbMqttEvent,
-                MAX_PROPERTIES,
-                BUFFER_SIZE,
-                CHANNEL_SIZE,
-            >(
-                *network,
-                connection_settings,
-                settings,
-                &subscribe_topics,
-                event_sender,
-                action_receiver,
-            )
-            .await;
-        }
+        crate::transport::run_sessions(
+            transport,
+            topics,
+            connection_settings,
+            settings,
+            event_sender,
+            action_receiver,
+        )
+        .await
     });
 
     Ok((action_sender, event_receiver, alloc::vec![manager_task]))

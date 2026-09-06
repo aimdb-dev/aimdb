@@ -40,6 +40,7 @@ embassy-runtime = [
     "dep:aimdb-embassy-adapter",                 # Enable the optional dependency
     "aimdb-embassy-adapter/embassy-net-support", # Enable EmbassyNetwork trait for network stack access
     "aimdb-embassy-adapter/connectors",          # `EmbassySink`/`EmbassySource`/`into_box_future` spine
+    "aimdb-embassy-adapter/net",                 # `EmbassyNet::tcp` — the adapter owns the socket
     "embassy-executor",
     "embassy-time",
     "embassy-sync",

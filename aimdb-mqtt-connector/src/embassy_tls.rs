@@ -1,16 +1,14 @@
 //! TLS transport for the Embassy MQTT client.
 //!
 //! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over the Embassy
-//! TCP socket, wrapped in mountain-mqtt's [`ConnectionEmbedded`] so the MQTT
-//! layer is identical to the plain path. Certificate verification is
-//! `rustpki` (pure Rust) against the application-embedded root CA, with time
-//! from the [`sntp`](crate::sntp) task; entropy comes from the
-//! application-injected TRNG ([`TlsOptions::new`]).
+//! TCP socket, presented to the MQTT layer as its own `Connection` — not
+//! `ConnectionEmbedded`, which needs a `ReadReady` a TLS session cannot give
+//! (see `TlsSession` below). Certificate verification is `rustpki` (pure Rust)
+//! against the application-embedded root CA, with time from the [`sntp`] task;
+//! entropy comes from the application-injected TRNG ([`TlsOptions::new`]).
 //!
-//! The session loop is mountain-mqtt-embassy's own public
-//! [`handle_messages`](mountain_mqtt_embassy::mqtt_manager::handle_messages)
-//! (with [`State`](mountain_mqtt_embassy::mqtt_manager::State) /
-//! [`ChannelEventHandler`](mountain_mqtt_embassy::mqtt_manager::ChannelEventHandler)):
+//! The session loop is mountain-mqtt-embassy's own public `handle_messages`
+//! (with `State` / `ChannelEventHandler`):
 //! it is transport-agnostic (generic over `Client`), so the only thing this
 //! module supplies is the transport — resolve → TCP → TLS handshake → session.
 //! Upstream `run()` shares that exact loop, keeping the plain and TLS paths in

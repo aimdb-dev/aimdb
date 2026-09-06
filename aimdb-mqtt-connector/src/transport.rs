@@ -5,7 +5,7 @@
 //! [`ByteStream`](aimdb_core::session::ByteStream): the MQTT client needs
 //! `receive_if_ready` — a non-blocking peek — which a byte stream does not
 //! express and a TLS session cannot provide (its readiness is two-layered;
-//! see [`crate::embassy_tls`]). Wrapping core's trait would mean every
+//! see the `embassy_tls` module). Wrapping core's trait would mean every
 //! TLS-like transport faking a capability, so the client's own seam is the
 //! honest one.
 //!
@@ -67,5 +67,92 @@ where
         Ok(mountain_mqtt::embedded_io_async::ConnectionEmbedded::new(
             stream,
         ))
+    }
+}
+
+/// The broker session loop: connect, run MQTT until the session ends, wait,
+/// repeat. Never returns.
+///
+/// One implementation for every transport. `handle_messages` re-subscribes
+/// `subscribe_topics` on each connection, so inbound routing survives a
+/// reconnect — the property `run_with_subscriptions` used to provide, now
+/// explicit here because injecting a transport means giving that helper up.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_sessions<T>(
+    transport: T,
+    topics: alloc::vec::Vec<alloc::string::String>,
+    connection_settings: mountain_mqtt::client::ConnectionSettings<'static>,
+    settings: mountain_mqtt_embassy::mqtt_manager::Settings,
+    event_sender: crate::embassy_client::EventSender,
+    mut action_receiver: crate::embassy_client::ActionReceiver,
+) -> !
+where
+    T: BrokerTransport,
+{
+    use core::cell::RefCell;
+    use mountain_mqtt::client::ClientNoQueue;
+    use mountain_mqtt::data::quality_of_service::QualityOfService;
+    use mountain_mqtt::mqtt_manager::ConnectionId;
+    use mountain_mqtt_embassy::mqtt_manager::{
+        handle_messages, ChannelEventHandler, MqttEvent, State,
+    };
+
+    // Built once and borrowed for the loop; re-sent on every connection.
+    let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics
+        .iter()
+        .map(|topic| (topic.as_str(), QualityOfService::Qos1))
+        .collect();
+
+    let mut mqtt_buffer = [0u8; crate::embassy_client::BUFFER_SIZE];
+    let mut connection_index = 0u32;
+
+    loop {
+        let connection = match transport.connect().await {
+            Ok(connection) => connection,
+            Err(_e) => {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("MQTT: connect failed, will retry");
+                embassy_time::Timer::after(settings.reconnection_delay).await;
+                continue;
+            }
+        };
+
+        let state: RefCell<State<crate::embassy_client::AimdbMqttAction>> =
+            RefCell::new(State::new());
+        let connection_id = ConnectionId::new(connection_index);
+        connection_index += 1;
+
+        let event_handler = ChannelEventHandler::new(connection_id, &event_sender, &state);
+        let mut client = ClientNoQueue::new(
+            connection,
+            &mut mqtt_buffer,
+            mountain_mqtt::embedded_hal_async::DelayEmbedded::new(embassy_time::Delay),
+            settings.response_timeout.as_millis() as u32,
+            event_handler,
+        );
+
+        if let Err(error) = handle_messages(
+            connection_id,
+            &mut client,
+            &state,
+            &connection_settings,
+            &subscribe_topics,
+            &event_sender,
+            &mut action_receiver,
+            &settings,
+        )
+        .await
+        {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("MQTT: session errored: {:?}", error);
+            event_sender
+                .send(MqttEvent::Disconnected {
+                    connection_id,
+                    error,
+                })
+                .await;
+        }
+
+        embassy_time::Timer::after(settings.reconnection_delay).await;
     }
 }

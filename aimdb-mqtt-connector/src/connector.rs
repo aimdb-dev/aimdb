@@ -9,8 +9,8 @@
 //!
 //! | Backend | Client | QoS | TLS |
 //! |---|---|---|---|
-//! | [`Native`] | `rumqttc` (std) | 0–2 | rustls |
-//! | [`Embedded`] | `mountain-mqtt` (`no_std`) | 0–1 | `embedded-tls` |
+//! | `Native` (feature `tokio-runtime`) | `rumqttc` (std) | 0–2 | rustls |
+//! | `Embedded` (feature `embassy-runtime`) | `mountain-mqtt` (`no_std`) | 0–1 | `embedded-tls` |
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -59,7 +59,7 @@ impl MqttConnector<Embedded> {
     ///
     /// `mqtt://` is plain TCP (default port 1883); `mqtts://` is TLS
     /// (default 8883) and needs the `embassy-tls` feature plus
-    /// [`with_tls`](Self::with_tls).
+    /// `with_tls` (feature `embassy-tls`).
     pub fn new(
         broker_url: impl Into<alloc::string::String>,
         stack: &'static embassy_net::Stack<'static>,
