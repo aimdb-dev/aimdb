@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One `MqttConnector<B>` over two protocol backends (breaking on Embassy).**
+  `Native` is `rumqttc` (QoS 0–2, rustls); `Embedded<D>` is `mountain-mqtt` over
+  a caller-supplied transport. The Tokio path is unchanged; Embassy callers now
+  write `MqttConnector::new(url).transport(EmbassyNet::tcp(..))` or
+  `.tls(stack, opts)` instead of passing the stack to `new`. The
+  `Tokio*`/`Embassy*` aliases and `MqttConnectorBuilder` are gone.
+- **`run_with_subscriptions` replaced by an owned session loop.** It binds
+  `embassy_net::Stack` and cannot take a transport, so reconnect-and-resubscribe
+  is now explicit in `transport::run_sessions` — one loop for both plain and
+  TLS, extracted from the TLS path already running it.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written
@@ -18,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`transport` — the broker transport seam.** `BrokerTransport` over
+  `mountain-mqtt`'s own `Connection` (the client needs a non-blocking peek that
+  a byte stream cannot express and TLS cannot provide), plus `SocketTransport`
+  bridging from core's `StreamDialer`. A new runtime supplies MQTT by
+  implementing that dialer — no code here.
+- **`tests/embassy_broker.rs`** — the connector against a fake broker over two
+  crossover-wired `embassy-net` stacks, asserting CONNECT *and* SUBSCRIBE reach
+  the wire.
 - **Tokio client: the TLS backend for `mqtts://` is now a build-time choice.**
   Two new features — `tokio-native-tls` (system OpenSSL, what this crate linked
   before) and `tokio-rustls` (pure Rust, no `libssl`/`libcrypto`) — plus the
