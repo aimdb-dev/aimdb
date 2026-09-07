@@ -402,23 +402,27 @@ async fn main(spawner: Spawner) {
             .with_client_id("embassy-demo-001")
     };
 
-    // `mqtts://` keeps the stack: TLS resolves DNS itself and owns its buffers
-    // across sessions. The board's TRNG, the broker's root CA, and the record
+    // `mqtts://` dials through the same transport as `mqtt://`; the adapter
+    // resolves the host. The board's TRNG, the broker's root CA, and the record
     // buffers (16 640 bytes read is the enforced minimum — a TLS 1.3 peer may
     // send full-size records). `init_with` keeps the arrays off the stack.
+    // This board has no RTC, so the validity clock comes from SNTP.
     #[cfg(feature = "tls")]
     let mqtt = {
+        static MQTT_RX: StaticCell<[u8; 4096]> = StaticCell::new();
+        static MQTT_TX: StaticCell<[u8; 4096]> = StaticCell::new();
         static TLS_READ_BUF: StaticCell<[u8; 16_640]> = StaticCell::new();
         static TLS_WRITE_BUF: StaticCell<[u8; 4_096]> = StaticCell::new();
         let mqtt = MqttConnector::new(&broker_url)
             .tls(
-                stack,
+                EmbassyNet::tcp(*stack, MQTT_RX.init([0; 4096]), MQTT_TX.init([0; 4096])),
                 TlsOptions::new(
                     rng,
                     MQTT_CA_DER,
                     TLS_READ_BUF.init_with(|| [0; 16_640]),
                     TLS_WRITE_BUF.init_with(|| [0; 4_096]),
-                ),
+                )
+                .with_sntp(stack, "pool.ntp.org"),
             )
             .with_client_id("embassy-demo-001");
         match MQTT_CREDENTIALS {

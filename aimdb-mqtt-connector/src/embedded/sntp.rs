@@ -46,17 +46,6 @@ pub fn unix_now() -> Option<u64> {
     }
 }
 
-/// `embedded-tls` clock over the SNTP-synced time; `None` before the first
-/// sync (the TLS manager never handshakes in that state, so certificate
-/// validity is always actually checked).
-pub struct SntpClock;
-
-impl embedded_tls::TlsClock for SntpClock {
-    fn now() -> Option<u64> {
-        unix_now()
-    }
-}
-
 /// Keep the clock synced: query `server` until the first success, then
 /// re-sync hourly. Runs forever; spawned by the TLS connector build.
 pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
@@ -69,6 +58,9 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
                 match u32::try_from(unix_secs.saturating_sub(Instant::now().as_secs())) {
                     Ok(boot @ 1..) => {
                         BOOT_UNIX_SECS.store(boot, Ordering::Relaxed);
+                        // The TLS handshake reads the certificate-validity
+                        // clock, which a board with no RTC has only from here.
+                        crate::embedded::tls::WallClock::set_unix_secs(unix_secs as u32);
                         #[cfg(feature = "defmt")]
                         defmt::info!("SNTP: synced, unix time {}", unix_secs);
                         Timer::after(RESYNC_INTERVAL).await;

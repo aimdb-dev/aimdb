@@ -26,7 +26,7 @@ pub mod session;
 // TLS transport + SNTP time source.
 #[cfg(feature = "embassy-tls")]
 pub mod sntp;
-#[cfg(feature = "embassy-tls")]
+#[cfg(feature = "embedded-tls")]
 pub mod tls;
 
 extern crate alloc;
@@ -45,6 +45,7 @@ use core::net::Ipv4Addr;
 use core::pin::Pin;
 use core::str::FromStr;
 
+#[cfg(feature = "embedded-tls")]
 #[cfg(feature = "embassy-tls")]
 use aimdb_embassy_adapter::connectors::into_box_future;
 
@@ -54,10 +55,10 @@ use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
 
 use crate::embedded::manager::{MqttEvent, Settings};
 
-#[cfg(feature = "embassy-tls")]
+#[cfg(feature = "embedded-tls")]
 pub use crate::embedded::tls::TlsOptions;
-#[cfg(feature = "embassy-tls")]
-use crate::embedded::tls::{host_ip_literal, run_tls, READ_BUF_MIN};
+#[cfg(feature = "embedded-tls")]
+use crate::embedded::tls::{host_ip_literal, READ_BUF_MIN};
 
 /// Maximum number of pending MQTT actions and events
 pub(crate) const CHANNEL_SIZE: usize = 32;
@@ -275,7 +276,7 @@ impl aimdb_core::session::Source for MqttSource {
 ///
 /// Core's cell supplies both without `unsafe`: it is `Send + Sync` for any
 /// `T: Send`, which is what the `+ Send` on [`TlsOptions`]'s RNG buys.
-#[cfg(feature = "embassy-tls")]
+#[cfg(feature = "embedded-tls")]
 pub(crate) type TlsSlot = aimdb_core::session::OneShot<TlsOptions>;
 
 /// Connect and collect the data-plane futures for a plain `mqtt://` session.
@@ -315,14 +316,23 @@ where
 }
 
 /// Connect and collect the data-plane futures for an `mqtts://` session.
-#[cfg(feature = "embassy-tls")]
-pub(crate) fn build_tls<'a>(
+#[cfg(feature = "embedded-tls")]
+pub(crate) fn build_tls<'a, D>(
     db: &'a aimdb_core::builder::AimDb,
     broker_url: &'a str,
     client_id: Option<&'a str>,
     credentials: Option<&'a (String, String)>,
-    backend: &'a crate::connector::EmbeddedTls,
-) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>> {
+    backend: &'a crate::connector::EmbeddedTls<D>,
+) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
+where
+    D: aimdb_core::session::StreamDialer
+        + aimdb_core::session::Delay
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
+{
     Box::pin(async move {
         let topics = inbound_topics(db);
         let broker = parse_broker_url(broker_url)?;
@@ -339,7 +349,7 @@ pub(crate) fn build_tls<'a>(
             &broker,
             options,
             connection_settings,
-            backend.stack,
+            backend.dialer.clone(),
             topics,
             db.runtime_ops(),
         )?;
@@ -500,15 +510,24 @@ where
 /// Set up the TLS broker manager ([`run_tls`]) plus the SNTP time-source
 /// task. Synchronous — no `.await` — so the caller's `build` future stays
 /// `Send`.
-#[cfg(feature = "embassy-tls")]
-fn setup_tls_manager(
+#[cfg(feature = "embedded-tls")]
+fn setup_tls_manager<D>(
     broker: &BrokerUrl,
     options: TlsOptions,
     connection_settings: ConnectionSettings<'static>,
-    stack: aimdb_embassy_adapter::connectors::NetStack,
+    dialer: D,
     topics: Vec<String>,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
-) -> Result<ManagerSetup, aimdb_core::DbError> {
+) -> Result<ManagerSetup, aimdb_core::DbError>
+where
+    D: aimdb_core::session::StreamDialer
+        + aimdb_core::session::Delay
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
+{
     match host_ip_literal(&broker.host) {
         Some(core::net::IpAddr::V6(_)) => {
             return Err(build_err(
@@ -534,44 +553,57 @@ fn setup_tls_manager(
     let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
     let events: Arc<EventChannel> = Arc::new(EventChannel::new());
 
-    let network = stack.get();
     let host = broker.host.clone();
     let port = broker.port;
-    let sntp_server = options.sntp_server;
+    #[cfg(feature = "embassy-tls")]
+    let sntp = options.sntp;
 
-    let manager_task = into_box_future({
-        let actions = actions.clone();
-        let events = events.clone();
-        async move {
-            #[cfg(feature = "defmt")]
-            defmt::info!("MQTT-TLS background task starting");
+    let delay = dialer.clone();
+    // SAFETY: as for the plain path — `StreamDialer` guarantees `Stream: Send`,
+    // the channels are `CriticalSectionRawMutex`, and `TlsOptions` is `Send`
+    // (its RNG carries the bound). See `session::SendSession`.
+    #[cfg_attr(not(feature = "embassy-tls"), allow(unused_mut))]
+    let mut tasks: Vec<EmbassyBoxFuture> = alloc::vec![Box::pin(unsafe {
+        crate::embedded::session::SendSession::new({
+            let actions = actions.clone();
+            let events = events.clone();
+            async move {
+                #[cfg(feature = "defmt")]
+                defmt::info!("MQTT-TLS background task starting");
 
+                #[allow(unreachable_code)]
+                {
+                    let _: () = crate::embedded::tls::run_tls(
+                        dialer,
+                        options,
+                        host,
+                        port,
+                        topics,
+                        connection_settings,
+                        Settings::default(),
+                        events,
+                        actions,
+                        delay,
+                        runtime,
+                    )
+                    .await;
+                }
+            }
+        })
+    }) as EmbassyBoxFuture];
+
+    // Only a runtime with no wall clock of its own needs this.
+    #[cfg(feature = "embassy-tls")]
+    if let Some((stack, server)) = sntp {
+        tasks.push(into_box_future(async move {
             #[allow(unreachable_code)]
             {
-                let _: () = run_tls(
-                    *network,
-                    options,
-                    host,
-                    port,
-                    topics,
-                    connection_settings,
-                    Settings::default(),
-                    events,
-                    actions,
-                    runtime,
-                )
-                .await;
+                let _: () = crate::embedded::sntp::run(*stack.get(), server).await;
             }
-        }
-    });
-    let sntp_task = into_box_future(async move {
-        #[allow(unreachable_code)]
-        {
-            let _: () = crate::embedded::sntp::run(*network, sntp_server).await;
-        }
-    });
+        }));
+    }
 
-    Ok((actions, events, alloc::vec![manager_task, sntp_task]))
+    Ok((actions, events, tasks))
 }
 
 /// Map a QoS level (0/1/2) to mountain-mqtt's `QualityOfService` (2 downgrades to 1).

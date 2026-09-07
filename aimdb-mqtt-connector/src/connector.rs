@@ -39,14 +39,11 @@ pub struct Embedded<D> {
     pub(crate) dialer: D,
 }
 
-/// The `mountain-mqtt` backend over `embedded-tls`.
-///
-/// TLS keeps the network stack rather than taking a dialer: it resolves DNS
-/// itself and owns buffers across sessions, which a per-session dialer cannot
-/// express.
-#[cfg(feature = "embassy-tls")]
-pub struct EmbeddedTls {
-    pub(crate) stack: aimdb_embassy_adapter::connectors::NetStack,
+/// The `mountain-mqtt` backend over `embedded-tls`, on the same
+/// caller-supplied transport as the plain path.
+#[cfg(feature = "embedded-tls")]
+pub struct EmbeddedTls<D> {
+    pub(crate) dialer: D,
     pub(crate) options: crate::embedded::TlsSlot,
 }
 
@@ -85,22 +82,22 @@ impl MqttConnector<Native> {
         }
     }
 
-    /// Provide the network stack and TLS materials for an `mqtts://` broker.
-    #[cfg(feature = "embassy-tls")]
-    pub fn tls(
+    /// Dial `mqtts://` sessions through an adapter's stream dialer, with
+    /// `options` supplying the trust root, buffers and entropy.
+    ///
+    /// The dialer resolves the host, so TLS needs no network stack of its own.
+    #[cfg(feature = "embedded-tls")]
+    pub fn tls<D>(
         self,
-        stack: &'static embassy_net::Stack<'static>,
+        dialer: D,
         options: crate::embedded::tls::TlsOptions,
-    ) -> MqttConnector<EmbeddedTls> {
+    ) -> MqttConnector<EmbeddedTls<D>> {
         MqttConnector {
             broker_url: self.broker_url,
             client_id: self.client_id,
             credentials: self.credentials,
             backend: EmbeddedTls {
-                // SAFETY: AimDB's Embassy integration requires a single-core
-                // cooperative executor (the adapter's module-level invariant);
-                // every future touching this stack is polled on that executor.
-                stack: unsafe { aimdb_embassy_adapter::connectors::NetStack::new(stack) },
+                dialer,
                 options: crate::embedded::TlsSlot::new(options),
             },
         }
@@ -133,8 +130,8 @@ mod sealed {
     impl Sealed for super::Native {}
     #[cfg(feature = "embedded")]
     impl<D> Sealed for super::Embedded<D> {}
-    #[cfg(feature = "embassy-tls")]
-    impl Sealed for super::EmbeddedTls {}
+    #[cfg(feature = "embedded-tls")]
+    impl<D> Sealed for super::EmbeddedTls<D> {}
 }
 
 /// A backend with a build path compiled in.
@@ -193,8 +190,17 @@ where
     }
 }
 
-#[cfg(feature = "embassy-tls")]
-impl Backend for EmbeddedTls {
+#[cfg(feature = "embedded-tls")]
+impl<D> Backend for EmbeddedTls<D>
+where
+    D: aimdb_core::session::StreamDialer
+        + aimdb_core::session::Delay
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
+{
     fn build<'a>(
         &'a self,
         db: &'a AimDb,

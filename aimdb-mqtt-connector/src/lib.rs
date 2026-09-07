@@ -131,8 +131,8 @@ pub use crate::native as tokio_client;
 
 #[cfg(feature = "embedded")]
 pub use connector::Embedded;
-#[cfg(feature = "embassy-tls")]
+#[cfg(feature = "embedded-tls")]
 pub use connector::EmbeddedTls;
 pub use connector::{MqttConnector, Native};
-#[cfg(feature = "embassy-tls")]
+#[cfg(feature = "embedded-tls")]
 pub use embedded::tls::TlsOptions;

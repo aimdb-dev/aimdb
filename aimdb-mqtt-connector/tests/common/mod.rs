@@ -36,7 +36,10 @@ impl Seen {
 
 /// Read one MQTT packet: a fixed header byte, a varint remaining-length, then
 /// that many bytes.
-async fn read_packet(socket: &mut TcpStream, buf: &mut Vec<u8>) -> Option<(u8, Vec<u8>)> {
+async fn read_packet<S>(socket: &mut S, buf: &mut Vec<u8>) -> Option<(u8, Vec<u8>)>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
     let mut byte = [0u8; 1];
     socket.read_exact(&mut byte).await.ok()?;
     let first = byte[0];
@@ -203,6 +206,14 @@ pub struct AfterSuback<'a> {
 
 /// Serve one connection until it closes.
 async fn serve(socket: &mut TcpStream, seen: &Mutex<Seen>, after: AfterSuback<'_>) {
+    serve_stream(socket, seen, after).await
+}
+
+/// The broker loop over any stream, so a TLS session drives the same code.
+pub async fn serve_stream<S>(socket: &mut S, seen: &Mutex<Seen>, after: AfterSuback<'_>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut buf = Vec::new();
     let mut v5 = true;
 
