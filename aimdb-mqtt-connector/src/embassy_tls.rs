@@ -19,11 +19,10 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::net::IpAddr;
 
+use alloc::sync::Arc;
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, Stack};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
 use embassy_time::{Delay, Timer};
 
 use embedded_tls::pki::CertVerifier;
@@ -34,15 +33,15 @@ use embedded_tls::{
 
 use embedded_io_async::Write as _;
 
+use crate::manager::{
+    handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState, Settings,
+};
 use mountain_mqtt::client::{ClientNoQueue, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::embedded_hal_async::DelayEmbedded;
 use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packet_client::Connection;
-use mountain_mqtt_embassy::mqtt_manager::{
-    handle_messages, ChannelEventHandler, MqttEvent, Settings, State,
-};
 
 use crate::embassy_client::{
     AimdbMqttAction, AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES,
@@ -241,11 +240,13 @@ pub(crate) async fn run_tls(
     stack: Stack<'static>,
     options: TlsOptions,
     host: String,
+    port: u16,
     topics: Vec<String>,
     connection_settings: ConnectionSettings<'static>,
     settings: Settings,
-    event_sender: Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>,
-    mut action_receiver: Receiver<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>,
+    events: Arc<crate::embassy_client::EventChannel>,
+    actions: Arc<crate::embassy_client::ActionChannel>,
+    runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> ! {
     let TlsOptions {
         rng,
@@ -287,7 +288,8 @@ pub(crate) async fn run_tls(
                     "MQTT-TLS: DNS lookup for {} failed, will retry",
                     host.as_str()
                 );
-                Timer::after(settings.reconnection_delay).await;
+                aimdb_core::session::Delay::sleep(&EmbassyCoreDelay, settings.reconnection_delay)
+                    .await;
                 continue;
             }
         };
@@ -302,12 +304,12 @@ pub(crate) async fn run_tls(
             address,
             settings.port
         );
-        if let Err(e) = socket.connect((address, settings.port)).await {
+        if let Err(e) = socket.connect((address, port)).await {
             #[cfg(feature = "defmt")]
             defmt::warn!("MQTT-TLS: socket connect error, will retry: {:?}", e);
             #[cfg(not(feature = "defmt"))]
             let _ = e;
-            Timer::after(settings.reconnection_delay).await;
+            aimdb_core::session::Delay::sleep(&EmbassyCoreDelay, settings.reconnection_delay).await;
             continue;
         }
 
@@ -328,7 +330,7 @@ pub(crate) async fn run_tls(
             );
             #[cfg(not(feature = "defmt"))]
             let _ = e;
-            Timer::after(settings.reconnection_delay).await;
+            aimdb_core::session::Delay::sleep(&EmbassyCoreDelay, settings.reconnection_delay).await;
             continue;
         }
         #[cfg(feature = "defmt")]
@@ -342,7 +344,7 @@ pub(crate) async fn run_tls(
         let delay = DelayEmbedded::new(Delay);
         let timeout_millis = settings.response_timeout.as_millis() as u32;
 
-        let state: RefCell<State<AimdbMqttAction>> = RefCell::new(State::new());
+        let state: SessionState<AimdbMqttAction> = SessionState::new(now_ms(runtime.as_ref()));
 
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
@@ -353,7 +355,7 @@ pub(crate) async fn run_tls(
             AimdbMqttEvent,
             MAX_PROPERTIES,
             CHANNEL_SIZE,
-        > = ChannelEventHandler::new(connection_id, &event_sender, &state);
+        > = ChannelEventHandler::new(connection_id, &events, &state, runtime.as_ref());
 
         let mut client = ClientNoQueue::new(
             connection,
@@ -369,15 +371,17 @@ pub(crate) async fn run_tls(
             &state,
             &connection_settings,
             &subscribe_topics,
-            &event_sender,
-            &mut action_receiver,
+            &events,
+            &actions,
             &settings,
+            &EmbassyCoreDelay,
+            runtime.as_ref(),
         )
         .await
         {
             #[cfg(feature = "defmt")]
             defmt::warn!("MQTT-TLS: session errored: {:?}", error);
-            event_sender
+            events
                 .send(MqttEvent::Disconnected {
                     connection_id,
                     error,
@@ -385,7 +389,17 @@ pub(crate) async fn run_tls(
                 .await;
         }
 
-        Timer::after(settings.reconnection_delay).await;
+        aimdb_core::session::Delay::sleep(&EmbassyCoreDelay, settings.reconnection_delay).await;
+    }
+}
+
+/// The TLS path keeps `embassy_time` for its own waits, so it supplies core's
+/// [`Delay`](aimdb_core::session::Delay) to the shared message pump.
+struct EmbassyCoreDelay;
+
+impl aimdb_core::session::Delay for EmbassyCoreDelay {
+    fn sleep(&self, d: core::time::Duration) -> impl core::future::Future<Output = ()> + Send {
+        Timer::after(embassy_time::Duration::from_micros(d.as_micros() as u64))
     }
 }
 

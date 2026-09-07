@@ -92,6 +92,14 @@ impl StreamDialer for TokioTcpDialer {
     }
 }
 
+/// The dialer is also the clock, so a connector generic over it needs no
+/// separate handle.
+impl Delay for TokioTcpDialer {
+    fn sleep(&self, d: std::time::Duration) -> impl std::future::Future<Output = ()> + Send {
+        TokioDelay.sleep(d)
+    }
+}
+
 /// Accepts TCP connections.
 pub struct TokioTcpListener(TcpListener);
 

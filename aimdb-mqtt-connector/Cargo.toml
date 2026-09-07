@@ -46,11 +46,11 @@ embassy-runtime = [
     "embassy-sync",
     "embassy-net",
     "mountain-mqtt",
-    "mountain-mqtt-embassy",
-    # The `SocketTransport` bridge names these traits in its bounds.
+    # The `SocketTransport` bridge names these traits in its bounds, and the
+    # session loop bridges core's `Delay` to the client's `DelayNs`.
     "dep:embedded-io-async",
+    "dep:embedded-hal-async",
     "heapless",
-    "static_cell",
 ]
 # TLS (`mqtts://`) for the Embassy client — design 044. embedded-tls 1.3
 # session over the Embassy TCP socket, pure-Rust certificate verification
@@ -68,13 +68,16 @@ embassy-tls = [
 # `aimdb_core::__private`, so neither dependency is declared here any more.
 # The *features* stay: a `#[cfg]` in a `#[macro_export]`ed macro is resolved
 # where it expands, so without them this crate would emit nothing.
+# The session channels use `CriticalSectionRawMutex`, so a std binary must link
+# a `critical-section` impl. Off by default: an MCU's HAL already provides one.
+critical-section-std-impl = ["dep:critical-section", "critical-section/std"]
+
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 defmt = [
     "dep:defmt",
     "aimdb-core/defmt",
     "mountain-mqtt?/defmt",
-    "mountain-mqtt-embassy?/defmt",
 ]
 
 # Internal: the embedded backend's host smoke over `TokioNet::tcp()`
@@ -84,7 +87,7 @@ _test-tokio-broker = [
     "embassy-runtime",
     "aimdb-embassy-adapter/embassy-time",
     "aimdb-embassy-adapter/embassy-sync",
-    "dep:critical-section",
+    "critical-section-std-impl",
 ]
 
 # Internal: the Embassy broker session loop's host smoke
@@ -101,7 +104,7 @@ _test-embassy-broker = [
     "embassy-net/medium-ip",
     "embassy-net/proto-ipv4",
     "dep:embassy-net-driver-channel",
-    "dep:critical-section",
+    "critical-section-std-impl",
 ]
 
 [dependencies]
@@ -150,7 +153,6 @@ mountain-mqtt = { package = "aimdb-mountain-mqtt", version = "0.2.1", default-fe
     "embedded-io-async",
     "embedded-hal-async",
 ] }
-mountain-mqtt-embassy = { package = "aimdb-mountain-mqtt-embassy", version = "0.2.1", default-features = false, optional = true }
 
 # TLS for the Embassy client (no_std TLS 1.3; design 044)
 embedded-tls = { version = "0.19", default-features = false, optional = true, features = [
@@ -159,17 +161,17 @@ embedded-tls = { version = "0.19", default-features = false, optional = true, fe
     "p384",
 ] }
 embedded-io-async = { workspace = true, optional = true }
+embedded-hal-async = { workspace = true, optional = true }
 rand_core = { version = "0.6", default-features = false, optional = true }
 
 # Embedded utilities
 heapless = { workspace = true, optional = true }
-static_cell = { version = "2.0", optional = true }
 
 # Optional observability
 defmt = { workspace = true, optional = true }
 
 embassy-net-driver-channel = { version = "0.4.0", optional = true }
-critical-section = { version = "1.1", features = ["std"], optional = true }
+critical-section = { version = "1.1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

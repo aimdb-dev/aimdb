@@ -131,7 +131,12 @@ impl ConnectorBuilder for MqttConnector<Native> {
 #[cfg(feature = "embassy-runtime")]
 impl<D> ConnectorBuilder for MqttConnector<Embedded<D>>
 where
-    D: aimdb_core::session::StreamDialer + Clone + Send + Sync + 'static,
+    D: aimdb_core::session::StreamDialer
+        + aimdb_core::session::Delay
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     fn build<'a>(

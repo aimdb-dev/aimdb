@@ -103,6 +103,10 @@ pub mod connector;
 #[cfg(feature = "embassy-runtime")]
 pub mod transport;
 
+// Session state, event handler and message pump for the `Embedded` backend.
+#[cfg(feature = "embassy-runtime")]
+pub mod manager;
+
 pub mod link_ext;
 pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};
 

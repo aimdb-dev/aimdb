@@ -272,19 +272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aimdb-mountain-mqtt-embassy"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69ab4d7bdbef7a5e8a95edda95652887c2de8898a4fe1771345d8791ec127d3c"
-dependencies = [
- "aimdb-mountain-mqtt",
- "defmt 1.1.1",
- "embassy-net",
- "embassy-sync",
- "embassy-time",
-]
-
-[[package]]
 name = "aimdb-mqtt-connector"
 version = "0.6.0"
 dependencies = [
@@ -292,7 +279,6 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
  "aimdb-mountain-mqtt",
- "aimdb-mountain-mqtt-embassy",
  "aimdb-tokio-adapter",
  "async-stream",
  "critical-section",
@@ -303,6 +289,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-time-driver",
+ "embedded-hal-async",
  "embedded-io-async 0.7.0",
  "embedded-tls",
  "futures",
@@ -313,7 +300,6 @@ dependencies = [
  "rumqttc",
  "rustls-native-certs",
  "serde",
- "static_cell",
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",

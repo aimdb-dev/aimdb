@@ -189,7 +189,7 @@ async fn fake_broker(listener: TcpListener, seen: Arc<Mutex<Seen>>, hang_ups: us
 ///
 /// Losing that is silent: publishes keep working and inbound routing simply
 /// stops, so this is the assertion the reconnect loop exists for.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_session_loop_reconnects_and_resubscribes() {
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;

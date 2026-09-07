@@ -634,6 +634,15 @@ impl EmbassyNet {
     }
 }
 
+/// The dialer is also the clock, so a connector generic over it needs no
+/// separate handle.
+#[cfg(feature = "embassy-time")]
+impl aimdb_core::session::Delay for EmbassyTcpDialer {
+    fn sleep(&self, d: core::time::Duration) -> impl Future<Output = ()> + Send {
+        EmbassyDelay.sleep(d)
+    }
+}
+
 /// [`Delay`](aimdb_core::session::Delay) over `embassy_time::Timer`, which is
 /// `Send` and allocates nothing.
 ///

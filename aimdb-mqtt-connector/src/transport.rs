@@ -70,32 +70,83 @@ where
     }
 }
 
+/// Bridges core's [`Delay`](aimdb_core::session::Delay) to the `DelayNs` the
+/// MQTT client wants, so the client's timeouts run on the adapter's clock.
+pub(crate) struct ClientDelay<'a, D>(pub(crate) &'a D);
+
+impl<D> embedded_hal_async::delay::DelayNs for ClientDelay<'_, D>
+where
+    D: aimdb_core::session::Delay,
+{
+    async fn delay_ns(&mut self, ns: u32) {
+        self.0
+            .sleep(core::time::Duration::from_nanos(u64::from(ns)))
+            .await
+    }
+}
+
+/// Asserts that a broker session future is `Send`.
+///
+/// Everything the session holds is `Send`: [`StreamDialer`] guarantees
+/// `Stream: Send`, the channels use `CriticalSectionRawMutex`, and the state
+/// cell is a blocking mutex. What the compiler cannot see through is
+/// `embedded-io-async` — its traits put no `Send` bound on their futures, and
+/// the loop reaches them through a generic transport, so naming the bound needs
+/// return-type notation, still unstable on the pinned toolchain.
+///
+/// This is weaker than an executor assumption, not stronger: it rests on a
+/// trait guarantee, so it holds under a preemptive scheduler too.
+pub(crate) struct SendSession<F>(F);
+
+// SAFETY: upheld by the caller of `SendSession::new`.
+unsafe impl<F> Send for SendSession<F> {}
+
+impl<F> SendSession<F> {
+    /// # Safety
+    ///
+    /// Every value `f` holds across a suspend point must actually be `Send`.
+    pub(crate) unsafe fn new(f: F) -> Self {
+        Self(f)
+    }
+}
+
+impl<F: Future> Future for SendSession<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<F::Output> {
+        // SAFETY: a transparent projection; `SendSession` is never moved out of.
+        unsafe { self.map_unchecked_mut(|s| &mut s.0) }.poll(cx)
+    }
+}
+
 /// The broker session loop: connect, run MQTT until the session ends, wait,
 /// repeat. Never returns.
 ///
-/// One implementation for every transport. `handle_messages` re-subscribes
-/// `subscribe_topics` on each connection, so inbound routing survives a
-/// reconnect — the property `run_with_subscriptions` used to provide, now
-/// explicit here because injecting a transport means giving that helper up.
+/// One implementation for every transport. The manager re-subscribes
+/// `topics` on each connection, so inbound routing survives a reconnect.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_sessions<T>(
+pub(crate) async fn run_sessions<T, D>(
     transport: T,
     topics: alloc::vec::Vec<alloc::string::String>,
     connection_settings: mountain_mqtt::client::ConnectionSettings<'static>,
-    settings: mountain_mqtt_embassy::mqtt_manager::Settings,
-    event_sender: crate::embassy_client::EventSender,
-    mut action_receiver: crate::embassy_client::ActionReceiver,
+    settings: crate::manager::Settings,
+    events: alloc::sync::Arc<crate::embassy_client::EventChannel>,
+    actions: alloc::sync::Arc<crate::embassy_client::ActionChannel>,
+    delay: D,
+    runtime: alloc::sync::Arc<dyn aimdb_core::RuntimeOps>,
 ) -> !
 where
     T: BrokerTransport,
+    D: aimdb_core::session::Delay,
 {
-    use core::cell::RefCell;
     use mountain_mqtt::client::ClientNoQueue;
     use mountain_mqtt::data::quality_of_service::QualityOfService;
     use mountain_mqtt::mqtt_manager::ConnectionId;
-    use mountain_mqtt_embassy::mqtt_manager::{
-        handle_messages, ChannelEventHandler, MqttEvent, State,
-    };
+
+    use crate::manager::{handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState};
 
     // Built once and borrowed for the loop; re-sent on every connection.
     let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics
@@ -112,21 +163,22 @@ where
             Err(_e) => {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("MQTT: connect failed, will retry");
-                embassy_time::Timer::after(settings.reconnection_delay).await;
+                delay.sleep(settings.reconnection_delay).await;
                 continue;
             }
         };
 
-        let state: RefCell<State<crate::embassy_client::AimdbMqttAction>> =
-            RefCell::new(State::new());
+        let state: SessionState<crate::embassy_client::AimdbMqttAction> =
+            SessionState::new(now_ms(runtime.as_ref()));
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
 
-        let event_handler = ChannelEventHandler::new(connection_id, &event_sender, &state);
+        let event_handler =
+            ChannelEventHandler::new(connection_id, &events, &state, runtime.as_ref());
         let mut client = ClientNoQueue::new(
             connection,
             &mut mqtt_buffer,
-            mountain_mqtt::embedded_hal_async::DelayEmbedded::new(embassy_time::Delay),
+            mountain_mqtt::embedded_hal_async::DelayEmbedded::new(ClientDelay(&delay)),
             settings.response_timeout.as_millis() as u32,
             event_handler,
         );
@@ -137,15 +189,17 @@ where
             &state,
             &connection_settings,
             &subscribe_topics,
-            &event_sender,
-            &mut action_receiver,
+            &events,
+            &actions,
             &settings,
+            &delay,
+            runtime.as_ref(),
         )
         .await
         {
             #[cfg(feature = "defmt")]
             defmt::warn!("MQTT: session errored: {:?}", error);
-            event_sender
+            events
                 .send(MqttEvent::Disconnected {
                     connection_id,
                     error,
@@ -153,6 +207,6 @@ where
                 .await;
         }
 
-        embassy_time::Timer::after(settings.reconnection_delay).await;
+        delay.sleep(settings.reconnection_delay).await;
     }
 }
