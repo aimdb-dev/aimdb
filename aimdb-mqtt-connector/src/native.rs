@@ -1,10 +1,8 @@
-//! MQTT client management and lifecycle
+//! The `rumqttc` backend: one broker connection, QoS 0–2, platform trust roots.
 //!
-//! This module provides a client pool that:
-//! - Manages a single MQTT broker connection
-//! - Automatic event loop spawning
-//! - Thread-safe access from multiple consumers
-//! - Explicit lifecycle management (user controls when clients are created)
+//! `rumqttc` owns its socket, TLS and reconnect, so this module contributes
+//! only the connect-and-subscribe step and the `MqttSink`/`MqttEventLoopSource`
+//! adapters that core's pumps drive.
 
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::router::{Router, RouterBuilder};

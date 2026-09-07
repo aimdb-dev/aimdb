@@ -14,7 +14,7 @@ use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpEndpoint, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 
-use crate::embedded::sntp_codec;
+use crate::sntp_codec;
 
 /// Unix seconds at the `embassy_time` epoch; 0 = not yet synced. `u32` is
 /// unambiguous until 2106 and stays a single atomic on Cortex-M (no 64-bit

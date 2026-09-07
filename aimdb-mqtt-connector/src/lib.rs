@@ -109,19 +109,24 @@ pub mod native;
 #[cfg(feature = "embedded")]
 pub mod embedded;
 
+// SNTP wire codec — pure and feature-independent so it is unit-tested on the
+// host; only the TLS I/O task consumes it.
+#[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
+pub(crate) mod sntp_codec;
+
 // Deprecated module names, kept for one release so existing imports keep
 // working. The modules no longer name a runtime.
-#[cfg(feature = "std")]
-#[deprecated(since = "0.7.0", note = "renamed to `native`")]
-pub use crate::native as tokio_client;
 #[cfg(feature = "embedded")]
 #[deprecated(since = "0.7.0", note = "renamed to `embedded`")]
 pub use crate::embedded as embassy_client;
+#[cfg(feature = "std")]
+#[deprecated(since = "0.7.0", note = "renamed to `native`")]
+pub use crate::native as tokio_client;
 
 #[cfg(feature = "embedded")]
 pub use connector::Embedded;
 #[cfg(feature = "embassy-tls")]
 pub use connector::EmbeddedTls;
+pub use connector::{MqttConnector, Native};
 #[cfg(feature = "embassy-tls")]
 pub use embedded::tls::TlsOptions;
-pub use connector::{MqttConnector, Native};

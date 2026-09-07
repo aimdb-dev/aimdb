@@ -4,7 +4,7 @@
 //! the extension methods push exactly the `("qos", …)` / `("retain", …)`
 //! option keys the MQTT clients read from `protocol_options`.
 
-#![cfg(feature = "tokio-runtime")]
+#![cfg(feature = "std")]
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::AimDbBuilder;

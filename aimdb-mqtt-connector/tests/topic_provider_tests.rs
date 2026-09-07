@@ -6,7 +6,7 @@
 //!
 //! The tests use mock data and don't require a running MQTT broker.
 
-#![cfg(feature = "tokio-runtime")]
+#![cfg(feature = "std")]
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::TopicProvider;

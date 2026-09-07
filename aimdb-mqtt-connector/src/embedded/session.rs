@@ -146,7 +146,9 @@ where
     use mountain_mqtt::data::quality_of_service::QualityOfService;
     use mountain_mqtt::mqtt_manager::ConnectionId;
 
-    use crate::embedded::manager::{handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState};
+    use crate::embedded::manager::{
+        handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState,
+    };
 
     // Built once and borrowed for the loop; re-sent on every connection.
     let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics

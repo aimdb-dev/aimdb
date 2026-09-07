@@ -23,11 +23,6 @@
 pub mod manager;
 pub mod session;
 
-// SNTP wire codec — pure and feature-independent so it is unit-tested on the
-// host; only the TLS I/O task consumes it.
-#[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
-pub(crate) mod sntp_codec;
-
 // TLS transport + SNTP time source.
 #[cfg(feature = "embassy-tls")]
 pub mod sntp;
@@ -81,7 +76,8 @@ type EmbassyBoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type ManagerSetup = (Arc<ActionChannel>, Arc<EventChannel>, Vec<EmbassyBoxFuture>);
 
 /// Outbound publishes and subscriptions: pumps to broker session.
-pub(crate) type ActionChannel = crate::embedded::manager::ActionChannel<AimdbMqttAction, CHANNEL_SIZE>;
+pub(crate) type ActionChannel =
+    crate::embedded::manager::ActionChannel<AimdbMqttAction, CHANNEL_SIZE>;
 /// Inbound messages: broker session to pumps.
 pub(crate) type EventChannel = crate::embedded::manager::EventChannel<AimdbMqttEvent, CHANNEL_SIZE>;
 

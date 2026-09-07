@@ -1,6 +1,6 @@
-//! TLS transport for the Embassy MQTT client.
+//! The TLS transport for the embedded backend.
 //!
-//! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over the Embassy
+//! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over an Embassy
 //! TCP socket, presented to the MQTT layer as its own `Connection` — not
 //! `ConnectionEmbedded`, which needs a `ReadReady` a TLS session cannot give
 //! (see `TlsSession` below). Certificate verification is `rustpki` (pure Rust)
@@ -43,10 +43,8 @@ use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packet_client::Connection;
 
-use crate::embedded::{
-    AimdbMqttAction, AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES,
-};
 use crate::embedded::sntp::{self, SntpClock};
+use crate::embedded::{AimdbMqttAction, AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES};
 
 /// Room for the server's leaf certificate (DER) inside the verifier — 4 KB
 /// covers RSA-4096 leaves with headroom.
