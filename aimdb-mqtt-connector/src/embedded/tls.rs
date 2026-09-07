@@ -33,7 +33,7 @@ use embedded_tls::{
 
 use embedded_io_async::Write as _;
 
-use crate::manager::{
+use crate::embedded::manager::{
     handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState, Settings,
 };
 use mountain_mqtt::client::{ClientNoQueue, ConnectionSettings};
@@ -43,10 +43,10 @@ use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packet_client::Connection;
 
-use crate::embassy_client::{
+use crate::embedded::{
     AimdbMqttAction, AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES,
 };
-use crate::sntp::{self, SntpClock};
+use crate::embedded::sntp::{self, SntpClock};
 
 /// Room for the server's leaf certificate (DER) inside the verifier — 4 KB
 /// covers RSA-4096 leaves with headroom.
@@ -244,8 +244,8 @@ pub(crate) async fn run_tls(
     topics: Vec<String>,
     connection_settings: ConnectionSettings<'static>,
     settings: Settings,
-    events: Arc<crate::embassy_client::EventChannel>,
-    actions: Arc<crate::embassy_client::ActionChannel>,
+    events: Arc<crate::embedded::EventChannel>,
+    actions: Arc<crate::embedded::ActionChannel>,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> ! {
     let TlsOptions {

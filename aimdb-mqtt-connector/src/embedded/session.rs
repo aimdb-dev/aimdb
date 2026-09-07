@@ -132,9 +132,9 @@ pub(crate) async fn run_sessions<T, D>(
     transport: T,
     topics: alloc::vec::Vec<alloc::string::String>,
     connection_settings: mountain_mqtt::client::ConnectionSettings<'static>,
-    settings: crate::manager::Settings,
-    events: alloc::sync::Arc<crate::embassy_client::EventChannel>,
-    actions: alloc::sync::Arc<crate::embassy_client::ActionChannel>,
+    settings: crate::embedded::manager::Settings,
+    events: alloc::sync::Arc<crate::embedded::EventChannel>,
+    actions: alloc::sync::Arc<crate::embedded::ActionChannel>,
     delay: D,
     runtime: alloc::sync::Arc<dyn aimdb_core::RuntimeOps>,
 ) -> !
@@ -146,7 +146,7 @@ where
     use mountain_mqtt::data::quality_of_service::QualityOfService;
     use mountain_mqtt::mqtt_manager::ConnectionId;
 
-    use crate::manager::{handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState};
+    use crate::embedded::manager::{handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState};
 
     // Built once and borrowed for the loop; re-sent on every connection.
     let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics
@@ -154,7 +154,7 @@ where
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
 
-    let mut mqtt_buffer = [0u8; crate::embassy_client::BUFFER_SIZE];
+    let mut mqtt_buffer = [0u8; crate::embedded::BUFFER_SIZE];
     let mut connection_index = 0u32;
 
     loop {
@@ -168,7 +168,7 @@ where
             }
         };
 
-        let state: SessionState<crate::embassy_client::AimdbMqttAction> =
+        let state: SessionState<crate::embedded::AimdbMqttAction> =
             SessionState::new(now_ms(runtime.as_ref()));
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;

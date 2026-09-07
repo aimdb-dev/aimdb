@@ -20,6 +20,20 @@
 //!     .await?;
 //! ```
 
+pub mod manager;
+pub mod session;
+
+// SNTP wire codec — pure and feature-independent so it is unit-tested on the
+// host; only the TLS I/O task consumes it.
+#[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
+pub(crate) mod sntp_codec;
+
+// TLS transport + SNTP time source.
+#[cfg(feature = "embassy-tls")]
+pub mod sntp;
+#[cfg(feature = "embassy-tls")]
+pub mod tls;
+
 extern crate alloc;
 
 use aimdb_core::connector::ConnectorUrl;
@@ -43,12 +57,12 @@ use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
 
-use crate::manager::{MqttEvent, Settings};
+use crate::embedded::manager::{MqttEvent, Settings};
 
 #[cfg(feature = "embassy-tls")]
-pub use crate::embassy_tls::TlsOptions;
+pub use crate::embedded::tls::TlsOptions;
 #[cfg(feature = "embassy-tls")]
-use crate::embassy_tls::{host_ip_literal, run_tls, READ_BUF_MIN};
+use crate::embedded::tls::{host_ip_literal, run_tls, READ_BUF_MIN};
 
 /// Maximum number of pending MQTT actions and events
 pub(crate) const CHANNEL_SIZE: usize = 32;
@@ -67,9 +81,9 @@ type EmbassyBoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type ManagerSetup = (Arc<ActionChannel>, Arc<EventChannel>, Vec<EmbassyBoxFuture>);
 
 /// Outbound publishes and subscriptions: pumps to broker session.
-pub(crate) type ActionChannel = crate::manager::ActionChannel<AimdbMqttAction, CHANNEL_SIZE>;
+pub(crate) type ActionChannel = crate::embedded::manager::ActionChannel<AimdbMqttAction, CHANNEL_SIZE>;
 /// Inbound messages: broker session to pumps.
-pub(crate) type EventChannel = crate::manager::EventChannel<AimdbMqttEvent, CHANNEL_SIZE>;
+pub(crate) type EventChannel = crate::embedded::manager::EventChannel<AimdbMqttEvent, CHANNEL_SIZE>;
 
 /// MQTT actions that can be performed
 ///
@@ -167,12 +181,12 @@ pub enum AimdbMqttEvent {
     MessageReceived {
         /// The topic the message was received on
         topic: String,
-        /// The message payload
-        payload: Vec<u8>,
+        /// The message payload, built once from the wire bytes.
+        payload: Payload,
     },
 }
 
-impl crate::manager::FromApplicationMessage<MAX_PROPERTIES> for AimdbMqttEvent {
+impl crate::embedded::manager::FromApplicationMessage<MAX_PROPERTIES> for AimdbMqttEvent {
     fn from_application_message(
         message: &mountain_mqtt::packets::publish::ApplicationMessage<MAX_PROPERTIES>,
     ) -> Result<Self, mountain_mqtt::client::EventHandlerError> {
@@ -185,7 +199,9 @@ impl crate::manager::FromApplicationMessage<MAX_PROPERTIES> for AimdbMqttEvent {
 
         Ok(Self::MessageReceived {
             topic: message.topic_name.to_string(),
-            payload: message.payload.to_vec(),
+            // Straight to `Payload` — one allocation and one copy, where a
+            // `Vec` here would be converted again on the way out.
+            payload: Payload::from(message.payload),
         })
     }
 }
@@ -246,7 +262,7 @@ impl aimdb_core::session::Source for MqttSource {
                     MqttEvent::ApplicationEvent {
                         event: AimdbMqttEvent::MessageReceived { topic, payload },
                         ..
-                    } => return Some((topic, Payload::from(payload))),
+                    } => return Some((topic, payload)),
                     // Connection lifecycle events carry no record data; skip
                     // and keep draining.
                     _ => continue,
@@ -454,20 +470,20 @@ where
     // on — both come from the caller-supplied dialer.
     let delay = dialer.clone();
     let transport =
-        crate::transport::SocketTransport::new(dialer, broker.host.clone(), broker.port);
+        crate::embedded::session::SocketTransport::new(dialer, broker.host.clone(), broker.port);
 
     // SAFETY: every value the session holds is `Send` — `StreamDialer`
     // guarantees `Stream: Send`, the channels are `CriticalSectionRawMutex`
     // and the state cell is a blocking mutex. See `SendSession`.
     let manager_task: EmbassyBoxFuture = Box::pin(unsafe {
-        crate::transport::SendSession::new({
+        crate::embedded::session::SendSession::new({
             let actions = actions.clone();
             let events = events.clone();
             async move {
                 #[cfg(feature = "defmt")]
                 defmt::info!("MQTT background task starting");
 
-                crate::transport::run_sessions(
+                crate::embedded::session::run_sessions(
                     transport,
                     topics,
                     connection_settings,
@@ -555,7 +571,7 @@ fn setup_tls_manager(
     let sntp_task = into_box_future(async move {
         #[allow(unreachable_code)]
         {
-            let _: () = crate::sntp::run(*network, sntp_server).await;
+            let _: () = crate::embedded::sntp::run(*network, sntp_server).await;
         }
     });
 

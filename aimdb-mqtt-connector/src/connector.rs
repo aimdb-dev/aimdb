@@ -34,7 +34,7 @@ type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + S
 pub struct Native;
 
 /// The `mountain-mqtt` backend over a caller-supplied transport.
-#[cfg(feature = "embassy-runtime")]
+#[cfg(feature = "embedded")]
 pub struct Embedded<D> {
     pub(crate) dialer: D,
 }
@@ -47,7 +47,7 @@ pub struct Embedded<D> {
 #[cfg(feature = "embassy-tls")]
 pub struct EmbeddedTls {
     pub(crate) stack: aimdb_embassy_adapter::connectors::NetStack,
-    pub(crate) options: crate::embassy_client::TlsSlot,
+    pub(crate) options: crate::embedded::TlsSlot,
 }
 
 /// An MQTT connector over the backend `B`.
@@ -75,7 +75,7 @@ impl MqttConnector<Native> {
 
     /// Dial plain sessions through an adapter's stream dialer — the same call
     /// on any runtime's adapter, with no change in this crate.
-    #[cfg(feature = "embassy-runtime")]
+    #[cfg(feature = "embedded")]
     pub fn transport<D>(self, dialer: D) -> MqttConnector<Embedded<D>> {
         MqttConnector {
             broker_url: self.broker_url,
@@ -90,7 +90,7 @@ impl MqttConnector<Native> {
     pub fn tls(
         self,
         stack: &'static embassy_net::Stack<'static>,
-        options: crate::embassy_tls::TlsOptions,
+        options: crate::embedded::tls::TlsOptions,
     ) -> MqttConnector<EmbeddedTls> {
         MqttConnector {
             broker_url: self.broker_url,
@@ -101,7 +101,7 @@ impl MqttConnector<Native> {
                 // cooperative executor (the adapter's module-level invariant);
                 // every future touching this stack is polled on that executor.
                 stack: unsafe { aimdb_embassy_adapter::connectors::NetStack::new(stack) },
-                options: crate::embassy_client::TlsSlot::new(options),
+                options: crate::embedded::TlsSlot::new(options),
             },
         }
     }
@@ -131,7 +131,7 @@ impl<B> MqttConnector<B> {
 mod sealed {
     pub trait Sealed {}
     impl Sealed for super::Native {}
-    #[cfg(feature = "embassy-runtime")]
+    #[cfg(feature = "embedded")]
     impl<D> Sealed for super::Embedded<D> {}
     #[cfg(feature = "embassy-tls")]
     impl Sealed for super::EmbeddedTls {}
@@ -158,7 +158,7 @@ pub trait Backend: sealed::Sealed + Send + Sync {
     ) -> BuildFuture<'a>;
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 impl Backend for Native {
     fn build<'a>(
         &'a self,
@@ -167,11 +167,11 @@ impl Backend for Native {
         client_id: Option<&'a str>,
         credentials: Option<&'a (String, String)>,
     ) -> BuildFuture<'a> {
-        crate::tokio_client::build(db, broker_url, client_id, credentials)
+        crate::native::build(db, broker_url, client_id, credentials)
     }
 }
 
-#[cfg(feature = "embassy-runtime")]
+#[cfg(feature = "embedded")]
 impl<D> Backend for Embedded<D>
 where
     D: aimdb_core::session::StreamDialer
@@ -189,7 +189,7 @@ where
         client_id: Option<&'a str>,
         credentials: Option<&'a (String, String)>,
     ) -> BuildFuture<'a> {
-        crate::embassy_client::build_plain(db, broker_url, client_id, credentials, &self.dialer)
+        crate::embedded::build_plain(db, broker_url, client_id, credentials, &self.dialer)
     }
 }
 
@@ -202,7 +202,7 @@ impl Backend for EmbeddedTls {
         client_id: Option<&'a str>,
         credentials: Option<&'a (String, String)>,
     ) -> BuildFuture<'a> {
-        crate::embassy_client::build_tls(db, broker_url, client_id, credentials, self)
+        crate::embedded::build_tls(db, broker_url, client_id, credentials, self)
     }
 }
 

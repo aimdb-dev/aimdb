@@ -94,41 +94,34 @@
 
 extern crate alloc;
 
-// MQTT knobs over core's generic link builders (works on every feature leg)
 // One `MqttConnector` over the `Native` and `Embedded` protocol backends.
 pub mod connector;
 
-// The broker transport seam for the `Embedded` backend.
-#[cfg(feature = "embassy-runtime")]
-pub mod transport;
-
-// Session state, event handler and message pump for the `Embedded` backend.
-#[cfg(feature = "embassy-runtime")]
-pub mod manager;
-
+// MQTT knobs over core's generic link builders (works on every feature leg).
 pub mod link_ext;
 pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};
 
-// Platform-specific implementations
-#[cfg(feature = "tokio-runtime")]
-pub mod tokio_client;
+// The `rumqttc` backend.
+#[cfg(feature = "std")]
+pub mod native;
 
-#[cfg(feature = "embassy-runtime")]
-pub mod embassy_client;
+// The `mountain-mqtt` backend: session loop, manager, and the TLS transport.
+#[cfg(feature = "embedded")]
+pub mod embedded;
 
-// SNTP wire codec — pure and feature-independent so it is unit-tested on the
-// host; only the `embassy-tls` I/O task consumes it.
-#[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
-pub(crate) mod sntp_codec;
+// Deprecated module names, kept for one release so existing imports keep
+// working. The modules no longer name a runtime.
+#[cfg(feature = "std")]
+#[deprecated(since = "0.7.0", note = "renamed to `native`")]
+pub use crate::native as tokio_client;
+#[cfg(feature = "embedded")]
+#[deprecated(since = "0.7.0", note = "renamed to `embedded`")]
+pub use crate::embedded as embassy_client;
 
-// TLS transport + SNTP time source for the Embassy client
-#[cfg(feature = "embassy-tls")]
-pub mod embassy_tls;
-#[cfg(feature = "embassy-tls")]
-pub mod sntp;
-
-#[cfg(feature = "embassy-runtime")]
+#[cfg(feature = "embedded")]
 pub use connector::Embedded;
 #[cfg(feature = "embassy-tls")]
 pub use connector::EmbeddedTls;
+#[cfg(feature = "embassy-tls")]
+pub use embedded::tls::TlsOptions;
 pub use connector::{MqttConnector, Native};

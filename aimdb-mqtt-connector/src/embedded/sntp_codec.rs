@@ -1,7 +1,7 @@
 //! SNTPv4 wire format (RFC 4330 subset) — pure encode/parse, no I/O.
 //!
 //! Feature-independent so the codec is unit-tested on the host; the Embassy
-//! I/O task around it lives in [`sntp`](crate::sntp) (`embassy-tls` only).
+//! I/O task around it lives in [`sntp`](crate::embedded::sntp) (`embassy-tls` only).
 
 /// Seconds between the NTP epoch (1900-01-01) and the Unix epoch (1970-01-01).
 const NTP_UNIX_OFFSET: u64 = 2_208_988_800;

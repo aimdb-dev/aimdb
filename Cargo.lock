@@ -283,7 +283,6 @@ dependencies = [
  "async-stream",
  "critical-section",
  "defmt 1.1.1",
- "embassy-executor",
  "embassy-net",
  "embassy-net-driver-channel",
  "embassy-sync",
