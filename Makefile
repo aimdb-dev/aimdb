@@ -94,6 +94,8 @@ build:
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Building tokio adapter (runtime-neutral transports)$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "net"
+	@printf "$(YELLOW)  → Building tokio adapter (embedded-io streams)$(NC)\n"
+	cargo build --package aimdb-tokio-adapter --features "embedded-io"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
@@ -175,6 +177,8 @@ test:
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Testing tokio adapter (runtime-neutral transports)$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "net"
+	@printf "$(YELLOW)  → Testing tokio adapter (embedded-io streams)$(NC)\n"
+	cargo test --package aimdb-tokio-adapter --features "embedded-io"
 	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, connector spine, doctests)$(NC)\n"
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
 	@printf "$(YELLOW)  → Testing embassy adapter (host: runtime-neutral transports, UART + UDP over two embassy-net stacks)$(NC)\n"
@@ -284,6 +288,8 @@ clippy:
 	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter (runtime-neutral transports)$(NC)\n"
 	cargo clippy --package aimdb-tokio-adapter --features "net" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on tokio adapter (embedded-io streams)$(NC)\n"
+	cargo clippy --package aimdb-tokio-adapter --features "embedded-io" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter with network support$(NC)\n"
@@ -376,7 +382,7 @@ doc:
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
 	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard" --no-deps
 	cargo doc --package aimdb-core --features "std,tracing,observability" --no-deps
-	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net" --no-deps
+	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net,embedded-io" --no-deps
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --features "std,tokio-runtime" --no-deps

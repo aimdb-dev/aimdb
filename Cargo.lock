@@ -405,6 +405,7 @@ dependencies = [
  "aimdb-client",
  "aimdb-core",
  "aimdb-uds-connector",
+ "embedded-io-async 0.7.0",
  "futures",
  "log",
  "serde",
