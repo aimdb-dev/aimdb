@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mqtt-connector"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",

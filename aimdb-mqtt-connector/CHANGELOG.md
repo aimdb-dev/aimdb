@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **The backend split is std vs `no_std`, not Tokio vs Embassy.** The embedded
+  backend runs on any target whose adapter supplies a `StreamDialer`, so a new
+  platform costs one adapter crate and no change here. Features rename
+  accordingly: `std` carries the `rumqttc` backend (`tokio-runtime` is a
+  deprecated alias), `embedded` carries `mountain-mqtt` with `alloc` only — no
+  executor, network stack, adapter or logger in its graph — and `embassy-runtime`
+  becomes a convenience bundle over it. TLS splits the same way: `embedded-tls`
+  is runtime-neutral, `embassy-tls` adds the SNTP time source a board with no
+  RTC needs. Modules follow: `tokio_client` → `native`, `embassy_client` →
+  `embedded` (both kept as deprecated re-exports for one release).
+- **One constructor.** `MqttConnector::new(url)` is unconditional, and the
+  transport — or its absence — picks the backend, so both compile into one
+  binary. Previously the two inherent `new`s collided with `E0034` whenever
+  both features were on. Broker URL, client id and credentials moved onto
+  `MqttConnector` itself, so `with_client_id` / `with_credentials` work on
+  either backend; `with_credentials` now reaches `rumqttc` too, taking
+  precedence over the URL authority.
+- **`.tls(dialer, options)` replaces `.tls(stack, options)`.** The dialer
+  resolves the host, so TLS needs no network stack: DNS, the socket buffers and
+  the SNTP task all leave the TLS path. The certificate-validity clock comes
+  from `RuntimeOps::unix_time()`; SNTP is opt-in via `TlsOptions::with_sntp`
+  for a runtime with no wall clock of its own.
+- **The `mountain-mqtt-embassy` fork is absorbed and dropped.** Its state,
+  event handler and message pump live in `embedded::manager`, with the mutex
+  and the clock as this crate's choices rather than the fork's.
+- **Session channels use `CriticalSectionRawMutex` in an `Arc`.** They are
+  therefore `Sync`, so `MqttSink` and `MqttSource` are plain `Connector` /
+  `Source` impls and the `EmbassySink`/`EmbassySource` force-`Send` spine is
+  gone from the data plane. std binaries need a `critical-section` impl; the
+  `critical-section-std-impl` feature supplies one, mirroring the KNX connector.
+  A single documented `unsafe impl Send` remains on the session future:
+  `embedded-io-async` puts no `Send` bound on its futures and the loop reaches
+  them through a generic transport, which needs return-type notation to express
+  — still unstable on the pinned toolchain. It rests on `StreamDialer`'s
+  `Stream: Send` guarantee rather than on a single-core executor, so it holds
+  under a preemptive scheduler.
+- **Time comes from core's `Delay`**, supplied by the dialer, so the session
+  loop names no executor. `Settings` is `core::time::Duration` and lost its
+  dead `address`/`port` fields.
+
+### Fixed
+
+- **A second connector in one process no longer steals the first's identity.**
+  Client id and credentials were parked in process-global `OnceLock`s, so every
+  connector after the first connected as the first.
+- **One allocation per inbound message instead of two.** The payload is built
+  as a `Payload` on arrival rather than as a `Vec` that is converted again.
+- **`defmt` is no longer forced on `mountain-mqtt`**, and is absent from the
+  `embedded` graph entirely.
+
+### Added
+
+- **Host coverage for the embedded backend**, which previously had none. A fake
+  MQTT broker over real sockets drives the session loop on a multi-thread Tokio
+  runtime: reconnect-and-resubscribe, record round-trip both ways, both backends
+  against one broker in one process, and — the first test the TLS path has ever
+  had — an `mqtts://` handshake against a self-signed certificate pinned as the
+  root CA, with no SNTP.
+- **`#[diagnostic::on_unimplemented]` for a missing backend.** A `no_std` build
+  that forgets `.transport(..)` now gets a message naming the fix instead of an
+  unsatisfied `ConnectorBuilder` bound.
+
 ### Changed
 
 - **One `MqttConnector<B>` over two protocol backends (breaking on Embassy).**

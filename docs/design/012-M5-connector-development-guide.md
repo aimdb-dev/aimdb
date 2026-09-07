@@ -151,69 +151,147 @@ fn publish(&self, dest: &str, config: &ConnectorConfig, payload: &[u8]) -> ... {
 
 ---
 
-## Tokio Implementation Pattern
+## Choosing the Transport Seam (do this first)
 
-**Dependencies:**
-```toml
-[features]
-tokio-runtime = ["std", "tokio", "protocol-client-crate"]
+Before writing any integration code, answer one question about the protocol
+library you are considering:
 
-[dependencies]
-tokio = { workspace = true, optional = true }
-# Add protocol-specific client library
-```
+> **Does it hand me bytes, or does it hand me a client?**
 
-**Key patterns:**
-- Use `std` types: `std::sync::Arc`, `std::string::String`
-- Spawn: `tokio::spawn(async move { ... })`
-- Logging: `tracing::{info, warn, error}`
-- Async client libraries (e.g., `rumqttc`)
+The answer fixes the shape of your connector and it is not recoverable later.
+A library that owns its own socket will not accept yours no matter how the
+adapter layer is designed. This is a **library-selection** decision, not an
+implementation decision.
 
-**See:** `aimdb-mqtt-connector/` for complete Tokio implementation
+### The three tiers
+
+| Tier | Who owns the protocol | Example in this workspace | Shape you get |
+|---|---|---|---|
+| **1** | **AimDB** — you write the framing | TCP (`framing.rs`, length-prefix), serial (COBS `Framer`) | Symmetric. The adapter supplies bytes on both std and embedded; one implementation |
+| **2** | **A sans-io library**, AimDB owns the lifecycle | KNX — `knx-pico` is sans-io, `tunnel.rs` owns tunnelling behind a three-method `TunnelIo` | Symmetric. Design 052 §2 found the two halves already 90 % shared |
+| **3** | **A batteries-included client** — owns socket, TLS, reconnect | `rumqttc` (MQTT std half), `axum` / `tokio-tungstenite` (WebSocket) | **Asymmetric, or std-only.** The library dials; you cannot inject a stream |
+
+Tiers 1 and 2 are the good cases and they cost the same to build. Tier 3 is
+sometimes the right trade, a mature client buys QoS 2, a hardened TLS stack,
+platform trust roots, but buy it knowingly.
+
+### How to tell which tier a candidate library is
+
+Read its constructor and its transport type before anything else:
+
+- **Tier 1/2 signature** — takes a connection, a stream or nothing:
+  ```rust
+  ClientNoQueue::new(connection, buffer, delay, timeout, handler)  // mountain-mqtt
+  ```
+  Anything generic over `embedded_io_async::{Read, Write}`, or over its own
+  minimal `Connection` trait, is injectable. Good.
+- **Tier 3 signature** — takes options and an address:
+  ```rust
+  AsyncClient::new(mqtt_options, capacity)                          // rumqttc
+  mqtt_options.set_transport(Transport::Tls(..))                    // closed enum
+  ```
+  If the transport is a **closed enum** with no "bring your own stream" variant,
+  the library dials internally and the seam is fixed above it.
+
+Also check: does it pull `tokio` (or any executor) in its own `[dependencies]`,
+or only `embedded-io-async` / `embedded-hal-async`? An executor dependency in
+the protocol crate is a reliable tier-3 signal.
+
+### What each tier means for you
+
+| | Tier 1 / 2 | Tier 3 |
+|---|---|---|
+| Runtime neutrality | Free — one module, no runtime `cfg` | Not achievable for that half |
+| New runtime (FreeRTOS, …) | Zero connector edits — a new adapter is enough | Needs a second backend, or the connector stays std-only |
+| Host tests for the embedded path | Run the same code over the std adapter's transport | Only if a second, injectable backend exists |
+| Cost | You write framing or lifecycle logic | The library writes it for you |
+
+### If you land on tier 3
+
+Two legitimate outcomes, both present in this workspace:
+
+- **std-only connector** — WebSocket and UDS. Honest and simple when there is no
+  embedded use case. Do not invent an embedded half that nobody wants.
+- **Two backends behind one type** — MQTT. `MqttConnector<B>` carries `Native`
+  (`rumqttc`, std) and `Embedded<D>` (`mountain-mqtt`, any target with a
+  `StreamDialer`). The seam is the *backend*, not the runtime.
+
+What **not** to do: give the tier-3 backend a `.transport()` method that accepts
+a dialer and discards it, to make the two look alike. A signature that lies is
+worse than a documented asymmetry.
+
+**See:** Design 052 (runtime-neutral connectors) for the trait set tiers 1 and 2
+build on.
 
 ---
 
-## Embassy Implementation Pattern
+## Implementation Pattern
 
-Embassy's primitives are `!Send` (single-core, cooperative), but AimDB's connector
-contract is `Send`-everywhere (so a Tokio app can `tokio::spawn(runner.run())`). **Do not
-hand-roll the `unsafe`/force-`Send` bridge** — it lives, audited and once, in
-`aimdb_embassy_adapter::connectors` (Design 033). A connector crate contributes only its
-transport-specific logic and carries **no `unsafe`**.
+Write **one** connector, generic over core's I/O traits. The adapter owns
+sockets, clocks and channels; the connector owns framing, protocol logic and
+sugar. There is no `tokio_*` / `embassy_*` module and no runtime `cfg` on the
+code path — a new platform is one adapter crate and zero connector edits.
 
-**Dependencies:**
+**Features name the environment, not the runtime.** The real split is std vs
+`no_std`: a `no_std` connector runs under Embassy, FreeRTOS or a host test
+alike. Keep runtime names for convenience bundles only.
+
 ```toml
 [features]
-# Session transport (serial/TCP): needs the framed-connection spine.
-embassy-runtime = ["aimdb-core/connector-session", "aimdb-embassy-adapter/connector-io", …]
-# Data-plane transport (MQTT/KNX): needs the sink/source bridges + pumps.
-embassy-runtime = ["aimdb-core/connector-session", "aimdb-embassy-adapter/connectors", …]
+# The std backend, if the protocol library is tier 3 and std-only.
+std = ["aimdb-core/std", "protocol-client-crate"]
+# The neutral backend: `alloc` only, no executor and no network stack.
+embedded = ["aimdb-core/alloc", "aimdb-core/connector-session"]
+# Convenience: `embedded` plus one adapter's transports.
+embassy-runtime = ["embedded", "aimdb-embassy-adapter/net"]
 ```
 
-**Session transport** (a framed byte stream — serial, TCP):
-- Implement `aimdb_embassy_adapter::connectors::Framer` (encode/accumulate/next-frame).
-- Client sugar → `EmbassySessionClient::new(OneShotDialer::new(EmbassyConnection::new(rx, tx, MyFramer)), Codec)`.
-- Server sugar → `EmbassySessionServer::new(OneShotListener::new(conn), Codec, dispatch_factory, cfg)`,
-  or a thin `ConnectorBuilder` that stores the moved-in connection in a `OneShotCell` and
-  drives `serve` (see `aimdb-serial-connector`).
+**Session transport** (a framed byte stream — serial, TCP): contribute a
+`Framer` and let core's `FramedConnection` / `FramingDialer` / `FramingListener`
+do the rest over the adapter's `StreamDialer` or `StreamListener`.
 
-**Data-plane transport** (a pub/sub channel — MQTT, KNX):
-- Implement `EmbassySinkRaw` (outbound publish) and/or `EmbassySourceRaw` (inbound next),
-  then ride core's pumps:
-  `pump_sink(db, scheme, Arc::new(EmbassySink(my_sink)))` /
-  `pump_source(db, scheme, EmbassySource(my_source))`.
-  (If your channels are already `Send` — e.g. `CriticalSectionRawMutex` — implement core's
-  `Connector`/`Source` directly and skip the bridges; see `aimdb-knx-connector`.)
-- Force-`Send` the long-lived protocol task with `into_box_future(async move { … })`.
+**Data-plane transport** (a pub/sub channel — MQTT, KNX): implement core's
+`Connector` (outbound) and `Source` (inbound) over an
+`embassy_sync::channel::Channel<CriticalSectionRawMutex, _, N>`, then ride
+`pump_sink` / `pump_source`. `CriticalSectionRawMutex` is what makes the
+channel `Sync`, and therefore what lets these be plain impls with no
+force-`Send` wrapper. It is a link-time obligation on std: enable
+`critical-section/std` from your own feature so no std user meets the
+undefined-symbol error.
 
-**Other:** `alloc` types (`alloc::sync::Arc`, `alloc::string::String`), `StaticCell<T>` for
-channels, `defmt` logging behind `#[cfg(feature = "defmt")]`. Network connectors take the
-`embassy_net::Stack` at builder construction, wrapped in
-`aimdb_embassy_adapter::connectors::NetStack` (the `EmbassyNetwork` runtime trait is gone
-since issue #131 — a `dyn RuntimeOps` cannot surface adapter-specific capabilities).
+**Time:** take core's `Delay` rather than a runtime timer. `RuntimeOps::sleep`
+is `dyn` and boxes per call, which a poll loop cannot afford; `Delay` is
+generic and allocates nothing. The clock for elapsed time stays
+`RuntimeOps::now_nanos()`, and wall-clock time is `RuntimeOps::unix_time()`.
 
-**See:** `aimdb-serial-connector` (session), `aimdb-mqtt-connector` / `aimdb-knx-connector`
-(data-plane), and `examples/embassy-mqtt-connector-demo/`.
+### The `Send` rule, and its one escape hatch
+
+`ConnectorBuilder::build` returns `Send` futures, so **every trait a generic
+connector task calls through needs `+ Send` on its return type** — not just
+core's. A bare `async fn` in your own trait will not do it:
+
+```rust
+-    async fn send(&mut self, frame: &[u8]) -> bool;
++    fn send(&mut self, frame: &[u8]) -> impl Future<Output = bool> + Send;
+```
+
+That fixes every trait you own. It cannot fix a **foreign** trait: nothing adds
+a bound to `embedded_io_async::Read`, and a generic parameter hides whether the
+concrete future is `Send`. Expressing it needs return-type notation, which is
+not stable on the pinned toolchain. Where that bites, the choices are a
+documented `unsafe impl Send` on the task future — sound when the trait bounds
+already guarantee every held value is `Send`, as `StreamDialer`'s
+`Stream: Send` does — or type-erasing the stream behind `dyn` and paying an
+allocation per read. Prefer the first, at exactly one site, with the
+justification written down; see `aimdb-mqtt-connector`'s `SendSession`.
+
+Moved-in resources go in `aimdb_core::session::OneShot<T>`, which is
+`Send + Sync` for `T: Send` without `unsafe`. If it refuses your type, fix the
+type — a missing `+ Send` on a trait object, usually — rather than forcing the
+bound.
+
+**See:** `aimdb-serial-connector` (session), `aimdb-mqtt-connector` /
+`aimdb-knx-connector` (data-plane), and `examples/embassy-mqtt-connector-demo/`.
 
 ---
 
@@ -238,24 +316,26 @@ if topic == "sensor/temp" { temp_producer.send(data).await; }
 router.route(topic, data).await?;
 ```
 
-**Embassy lifetime issues:**
+**A channel that cannot cross a thread:**
 ```rust
-// ❌ Stack allocation
-let channel = Channel::new();
+// ❌ `NoopRawMutex` is !Sync, so the sink and source need a force-`Send`
+//    wrapper and the whole connector is welded to a single-core executor.
+static CH: StaticCell<Channel<NoopRawMutex, Action, N>> = StaticCell::new();
 
-// ✅ Static allocation
-static CH: StaticCell<Channel<...>> = StaticCell::new();
-let ch = CH.init(Channel::new());
+// ✅ `CriticalSectionRawMutex` is Send + Sync, so `Connector`/`Source` are
+//    plain impls. `Arc` over `StaticCell` allows several connectors per
+//    process; `StaticCell` is still right for one-connector firmware.
+let actions = Arc::new(Channel::<CriticalSectionRawMutex, Action, N>::new());
 ```
 
-**Force-`Send` a protocol task (Embassy):**
+**Process-global state where per-connector state belongs:**
 ```rust
-// ❌ Don't hand-roll the unsafe wrapper in your connector crate
-Box::pin(SendFutureWrapper(async move { ... }))
+// ❌ The second connector silently connects as the first
+static CLIENT_ID: OnceLock<String> = OnceLock::new();
+let id: &'static str = CLIENT_ID.get_or_init(|| client_id.to_string());
 
-// ✅ Use the adapter spine's helper (the unsafe lives there, audited once)
-use aimdb_embassy_adapter::connectors::into_box_future;
-into_box_future(async move { ... })
+// ✅ One small leak per connector, at build
+let id: &'static str = Box::leak(client_id.to_string().into_boxed_str());
 ```
 
 ---
@@ -445,7 +525,7 @@ Users configure it per link:
 
 ## Connector Implementation Checklist
 
-- [ ] Create crate with `tokio-runtime` and `embassy-runtime` features
+- [ ] Create crate with `std` and `embedded` features (runtime names are bundles)
 - [ ] Implement `ConnectorBuilder<R>` trait with `build()` and `scheme()`
 - [ ] Implement `Connector` trait with `publish()`
 - [ ] In `build()`: Collect inbound routes via `db.collect_inbound_routes(scheme)`
