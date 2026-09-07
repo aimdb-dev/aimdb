@@ -6,14 +6,20 @@
 //!
 //! ## Features
 //!
-//! - `tokio-runtime`: Tokio-based connector using `rumqttc`
-//! - `embassy-runtime`: Embassy connector for embedded systems using `mountain-mqtt`
-//! - `embassy-tls`: TLS (`mqtts://`), broker authentication, DNS, and the
-//!   SNTP time source for the Embassy connector
-//! - `tracing`: Debug logging support (std)
-//! - `defmt`: Debug logging support (no_std)
+//! The split is std vs `no_std`, not Tokio vs Embassy: the embedded backend
+//! runs on any target that can supply a `StreamDialer`.
 //!
-//! ## Tokio Usage (Standard Library)
+//! - `std`: the `rumqttc` backend (QoS 0–2, platform trust roots)
+//! - `embedded`: the `mountain-mqtt` backend over a caller-supplied transport;
+//!   `alloc` only, with no executor, network stack or adapter
+//! - `embassy-runtime`: `embedded` plus the Embassy transport and clock
+//! - `embassy-tls`: TLS (`mqtts://`), DNS and the SNTP time source, on Embassy
+//! - `critical-section-std-impl`: links a `critical-section` impl for std
+//!   binaries, which the session channels need
+//! - `tokio-runtime`: deprecated alias for `std`
+//! - `tracing` / `defmt`: logging destinations
+//!
+//! ## Std Usage
 //!
 //! ```no_run
 //! use aimdb_core::AimDbBuilder;
