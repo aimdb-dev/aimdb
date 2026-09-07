@@ -17,6 +17,8 @@ use tokio::net::{TcpListener, TcpStream};
 pub struct Seen {
     pub connects: usize,
     pub client_ids: Vec<String>,
+    /// The username/password each CONNECT carried, when it carried any.
+    pub credentials: Vec<Option<(String, String)>>,
     pub subscribes: Vec<Vec<String>>,
     pub published: Vec<(String, Vec<u8>)>,
 }
@@ -84,9 +86,19 @@ fn is_v5(body: &[u8]) -> bool {
     body.get(6).is_some_and(|level| *level >= 5)
 }
 
-/// The client id a CONNECT carries. It opens the payload, which follows the
-/// 10-byte variable header plus, on MQTT 5, a property block.
-fn connect_client_id(body: &[u8], v5: bool) -> Option<String> {
+/// Read a length-prefixed field and step past it.
+fn take_field(body: &[u8], i: &mut usize) -> Option<String> {
+    let len = u16::from_be_bytes([*body.get(*i)?, *body.get(*i + 1)?]) as usize;
+    let field = String::from_utf8_lossy(body.get(*i + 2..*i + 2 + len)?).into_owned();
+    *i += 2 + len;
+    Some(field)
+}
+
+/// The identity a CONNECT carries: client id, then the credentials its flags
+/// advertise. The payload follows the 10-byte variable header plus, on MQTT 5,
+/// a property block. Nothing here sets a will, so the fields are contiguous.
+fn connect_identity(body: &[u8], v5: bool) -> Option<(String, Option<(String, String)>)> {
+    let flags = *body.get(7)?;
     let mut i = 10;
     if v5 {
         let start = i;
@@ -94,8 +106,20 @@ fn connect_client_id(body: &[u8], v5: bool) -> Option<String> {
         // The varint is the property block's length, which follows it.
         i += *body.get(start)? as usize;
     }
-    let len = u16::from_be_bytes([*body.get(i)?, *body.get(i + 1)?]) as usize;
-    Some(String::from_utf8_lossy(body.get(i + 2..i + 2 + len)?).into_owned())
+
+    let client_id = take_field(body, &mut i)?;
+    let credentials = if flags & 0x80 != 0 {
+        let username = take_field(body, &mut i)?;
+        let password = if flags & 0x40 != 0 {
+            take_field(body, &mut i)?
+        } else {
+            String::new()
+        };
+        Some((username, password))
+    } else {
+        None
+    };
+    Some((client_id, credentials))
 }
 
 /// Collect the topics from a SUBSCRIBE body and build the matching SUBACK.
@@ -193,8 +217,9 @@ async fn serve(socket: &mut TcpStream, seen: &Mutex<Seen>, after: AfterSuback<'_
                 {
                     let mut seen = seen.lock().unwrap();
                     seen.connects += 1;
-                    if let Some(id) = connect_client_id(&body, v5) {
+                    if let Some((id, credentials)) = connect_identity(&body, v5) {
                         seen.client_ids.push(id);
+                        seen.credentials.push(credentials);
                     }
                 }
                 let ack: &[u8] = if v5 {

@@ -13,7 +13,6 @@ use tokio::net::TcpListener;
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::AimDbBuilder;
-use aimdb_mqtt_connector::connector::{Embedded, Native};
 use aimdb_mqtt_connector::MqttConnector;
 use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
@@ -34,6 +33,9 @@ unsafe impl defmt::Logger for HostTestLogger {
 fn defmt_panic() -> ! {
     core::panic!("defmt panic in host test")
 }
+// Nothing else defines `_defmt_timestamp` now that the connector pulls no
+// crate enabling `embassy-time/defmt-timestamp-uptime`.
+defmt::timestamp!("{=u64:us}", 0);
 
 struct HostClock;
 impl embassy_time_driver::Driver for HostClock {
@@ -100,10 +102,10 @@ async fn both_backends_round_trip_against_one_broker() {
     let url = format!("mqtt://127.0.0.1:{port}");
     let seen = Arc::new(Mutex::new(Seen::default()));
 
-    // The turbofish is what disambiguates the two `new`s while both backends
-    // are compiled in.
-    let native = MqttConnector::<Native>::new(url.clone()).with_client_id("parity-native");
-    let embedded = MqttConnector::<Embedded>::new(url)
+    // One `new` whichever backends are compiled in: the transport, or its
+    // absence, picks the backend.
+    let native = MqttConnector::new(url.clone()).with_client_id("parity-native");
+    let embedded = MqttConnector::new(url)
         .transport(TokioNet::tcp())
         .with_client_id("parity-embedded");
 
@@ -179,4 +181,55 @@ async fn both_backends_round_trip_against_one_broker() {
         vec![b"1".as_slice(), b"2".as_slice()],
         "each backend must publish its own record's bytes"
     );
+}
+
+/// `with_credentials` reaches the wire on both backends.
+///
+/// It is new plumbing on `Native` — `rumqttc` previously took credentials only
+/// from the URL authority — so a setter that was accepted and dropped would
+/// look exactly like success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_credentials_reaches_the_wire_on_both_backends() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("mqtt://127.0.0.1:{port}");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let native = MqttConnector::new(url.clone())
+        .with_client_id("creds-native")
+        .with_credentials("hub", "s3cret");
+    let embedded = MqttConnector::new(url)
+        .transport(TokioNet::tcp())
+        .with_client_id("creds-embedded")
+        .with_credentials("hub", "s3cret");
+
+    let (_native_db, native_runner) = build_db(native, 1).await;
+    let (_embedded_db, embedded_runner) = build_db(embedded, 2).await;
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), None);
+    let seen_for_wait = seen.clone();
+
+    tokio::select! {
+        _ = native_runner.run() => panic!("the native runner returned"),
+        _ = embedded_runner.run() => panic!("the embedded runner returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = async {
+            while seen_for_wait.lock().unwrap().credentials.len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        } => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            panic!("watchdog: saw {:?}", seen.lock().unwrap().credentials);
+        }
+    }
+
+    let seen = seen.lock().unwrap();
+    let expected = Some((String::from("hub"), String::from("s3cret")));
+    for (n, credentials) in seen.credentials.iter().enumerate() {
+        assert_eq!(
+            *credentials, expected,
+            "connection {n} ({}) dropped the credentials",
+            seen.client_ids[n]
+        );
+    }
 }

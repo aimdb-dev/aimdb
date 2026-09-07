@@ -96,7 +96,6 @@ extern crate alloc;
 
 // MQTT knobs over core's generic link builders (works on every feature leg)
 // One `MqttConnector` over the `Native` and `Embedded` protocol backends.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub mod connector;
 
 // The broker transport seam for the `Embedded` backend.
@@ -130,7 +129,6 @@ pub mod sntp;
 
 #[cfg(feature = "embassy-runtime")]
 pub use connector::Embedded;
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use connector::MqttConnector;
-#[cfg(feature = "tokio-runtime")]
-pub use connector::Native;
+#[cfg(feature = "embassy-tls")]
+pub use connector::EmbeddedTls;
+pub use connector::{MqttConnector, Native};

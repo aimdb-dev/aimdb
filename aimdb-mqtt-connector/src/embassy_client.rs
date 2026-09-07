@@ -8,25 +8,16 @@
 //!
 //! # Usage
 //!
-//! Illustrative (not compiled: requires the `embassy-runtime` feature and a
-//! device network stack):
-//!
 //! ```rust,ignore
-//! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
-//! use aimdb_core::AimDbBuilder;
-//!
-//! // `stack: &'static embassy_net::Stack<'static>` — the device's network stack.
 //! let db = AimDbBuilder::new()
 //!     .runtime(embassy_adapter)
 //!     .with_connector(
-//!         MqttConnectorBuilder::new("mqtt://192.168.1.100:1883", stack)
+//!         MqttConnector::new("mqtt://192.168.1.100:1883")
+//!             .transport(EmbassyNet::tcp(stack, rx, tx))
 //!             .with_client_id("my-unique-device-id"),
 //!     )
-//!     .configure::<Temperature>("temperature", |reg| {
-//!         reg.link_to("mqtt://sensors/temperature").finish();
-//!         reg.link_from("mqtt://commands/temperature").finish();
-//!     })
-//!     .build().await?;
+//!     .build()
+//!     .await?;
 //! ```
 
 extern crate alloc;
@@ -35,7 +26,6 @@ use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::router::RouterBuilder;
 use aimdb_core::session::{pump_sink, pump_source, Payload};
 use aimdb_core::transport::{ConnectorConfig, PublishError};
-use aimdb_core::ConnectorBuilder;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -274,129 +264,16 @@ impl aimdb_core::session::Source for MqttSource {
 /// Core's cell supplies both without `unsafe`: it is `Send + Sync` for any
 /// `T: Send`, which is what the `+ Send` on [`TlsOptions`]'s RNG buys.
 #[cfg(feature = "embassy-tls")]
-type TlsSlot = aimdb_core::session::OneShot<TlsOptions>;
+pub(crate) type TlsSlot = aimdb_core::session::OneShot<TlsOptions>;
 
-/// MQTT connector builder for Embassy with router-based dispatch.
-///
-/// Collects routes from the database during `build()` and wires the broker
-/// manager + the outbound/inbound pumps. The broker URL scheme selects the
-/// transport: `mqtt://` is plain TCP (default port 1883), `mqtts://` is TLS
-/// (default port 8883) and requires both the `embassy-tls` feature and the
-/// `with_tls` method it gates.
-/// Where the broker connection comes from.
-///
-/// Plain sessions dial through a caller-supplied [`StreamDialer`], so a new
-/// runtime supplies MQTT by passing its own. TLS keeps the stack: it resolves
-/// DNS itself and owns buffers across sessions, which a per-session dialer
-/// cannot express.
-pub(crate) enum Transport<D> {
-    Plain(D),
-    #[cfg(feature = "embassy-tls")]
-    Tls(aimdb_embassy_adapter::connectors::NetStack, TlsSlot),
-}
-
-/// A dialer placeholder for TLS-only connectors, which never dial through one.
-#[derive(Clone, Copy, Default)]
-pub struct NoTransport;
-
-impl aimdb_core::session::StreamDialer for NoTransport {
-    type Stream = aimdb_embassy_adapter::net::EmbassyTcpStream;
-
-    async fn connect(
-        &self,
-        _host: &str,
-        _port: u16,
-    ) -> aimdb_core::session::TransportResult<Self::Stream> {
-        Err(aimdb_core::session::TransportError::Io)
-    }
-}
-
-pub struct MqttConnectorBuilder<D = NoTransport> {
-    broker_url: String,
-    client_id: String,
-    credentials: Option<(String, String)>,
-    pub(crate) transport: Transport<D>,
-}
-
-impl MqttConnectorBuilder<NoTransport> {
-    /// Create a new MQTT connector builder for Embassy.
-    ///
-    /// Supply the transport with [`transport`](Self::transport) for `mqtt://`,
-    /// or `tls` (feature `embassy-tls`) for `mqtts://`.
-    pub fn new(broker_url: impl Into<String>) -> Self {
-        Self {
-            broker_url: broker_url.into(),
-            client_id: "aimdb-client".to_string(),
-            credentials: None,
-            transport: Transport::Plain(NoTransport),
-        }
-    }
-
-    /// Dial plain `mqtt://` sessions through an adapter's stream dialer.
-    ///
-    /// `EmbassyNet::tcp(stack, rx, tx)` on Embassy; the same call on any other
-    /// runtime's adapter, with no change here.
-    pub fn transport<D>(self, dialer: D) -> MqttConnectorBuilder<D> {
-        MqttConnectorBuilder {
-            broker_url: self.broker_url,
-            client_id: self.client_id,
-            credentials: self.credentials,
-            transport: Transport::Plain(dialer),
-        }
-    }
-
-    /// Provide the network stack and TLS materials for an `mqtts://` broker.
-    ///
-    /// TLS keeps the stack rather than taking a dialer: it resolves DNS itself
-    /// and owns buffers across sessions.
-    #[cfg(feature = "embassy-tls")]
-    pub fn tls(
-        self,
-        stack: &'static embassy_net::Stack<'static>,
-        options: TlsOptions,
-    ) -> MqttConnectorBuilder<NoTransport> {
-        MqttConnectorBuilder {
-            broker_url: self.broker_url,
-            client_id: self.client_id,
-            credentials: self.credentials,
-            // SAFETY: AimDB's Embassy integration requires a single-core
-            // cooperative executor (the adapter's module-level invariant);
-            // every future touching this stack is polled on that executor.
-            transport: Transport::Tls(
-                unsafe { aimdb_embassy_adapter::connectors::NetStack::new(stack) },
-                TlsSlot::new(options),
-            ),
-        }
-    }
-}
-
-impl<D> MqttConnectorBuilder<D> {
-    /// Set the MQTT client ID (should be unique per device).
-    pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
-        self.client_id = client_id.into();
-        self
-    }
-
-    /// Authenticate with the broker (MQTT CONNECT username/password).
-    ///
-    /// Works on both transports, but note that over `mqtt://` the credential
-    /// transits in cleartext — pair it with `mqtts://` outside a trusted LAN.
-    pub fn with_credentials(
-        mut self,
-        username: impl Into<String>,
-        password: impl Into<String>,
-    ) -> Self {
-        self.credentials = Some((username.into(), password.into()));
-        self
-    }
-}
-
-/// Implement ConnectorBuilder trait for Embassy.
-///
-/// The network stack is taken at construction (see
-/// [`MqttConnectorBuilder::new`]), so the builder needs nothing from the
-/// runtime beyond the dyn-safe capabilities the database already holds.
-impl<D> ConnectorBuilder for MqttConnectorBuilder<D>
+/// Connect and collect the data-plane futures for a plain `mqtt://` session.
+pub(crate) fn build_plain<'a, D>(
+    db: &'a aimdb_core::builder::AimDb,
+    broker_url: &'a str,
+    client_id: Option<&'a str>,
+    credentials: Option<&'a (String, String)>,
+    dialer: &'a D,
+) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
 where
     D: aimdb_core::session::StreamDialer
         + aimdb_core::session::Delay
@@ -406,89 +283,86 @@ where
         + 'static,
     D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
-    fn build<'a>(
-        &'a self,
-        db: &'a aimdb_core::builder::AimDb,
-    ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            // Inbound topics to subscribe to (the manager sends `Subscribe` for each).
-            let inbound_routes = db.collect_inbound_routes("mqtt");
-            let topics: Vec<String> = RouterBuilder::from_routes(inbound_routes)
-                .build()
-                .resource_ids()
-                .iter()
-                .map(|t| t.to_string())
-                .collect();
+    Box::pin(async move {
+        let topics = inbound_topics(db);
+        let broker = parse_broker_url(broker_url)?;
+        if broker.tls {
+            return Err(build_err("mqtts:// broker URLs require .tls(...)"));
+        }
+        let connection_settings = static_connection_settings(client_id, credentials);
 
-            #[cfg(feature = "defmt")]
-            defmt::info!("MQTT: subscribing to {} inbound topics", topics.len());
+        let (actions, events, manager_tasks) = setup_manager(
+            &broker,
+            connection_settings,
+            dialer.clone(),
+            topics,
+            db.runtime_ops(),
+        )?;
+        Ok(collect_pumps(db, actions, events, manager_tasks))
+    })
+}
 
-            let broker = parse_broker_url(&self.broker_url)?;
-            let connection_settings =
-                static_connection_settings(&self.client_id, self.credentials.as_ref());
+/// Connect and collect the data-plane futures for an `mqtts://` session.
+#[cfg(feature = "embassy-tls")]
+pub(crate) fn build_tls<'a>(
+    db: &'a aimdb_core::builder::AimDb,
+    broker_url: &'a str,
+    client_id: Option<&'a str>,
+    credentials: Option<&'a (String, String)>,
+    backend: &'a crate::connector::EmbeddedTls,
+) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>> {
+    Box::pin(async move {
+        let topics = inbound_topics(db);
+        let broker = parse_broker_url(broker_url)?;
+        if !broker.tls {
+            return Err(build_err(".tls(...) requires an mqtts:// broker URL"));
+        }
+        let options = backend
+            .options
+            .take()
+            .ok_or_else(|| build_err("TLS materials already taken; build() ran twice"))?;
+        let connection_settings = static_connection_settings(client_id, credentials);
 
-            // Broker manager task(s) + the channel ends for the pumps.
-            // The URL scheme selects the transport.
-            #[cfg(feature = "embassy-tls")]
-            let (actions, events, manager_tasks) = match &self.transport {
-                Transport::Tls(stack, slot) if broker.tls => {
-                    let options = slot.take().ok_or_else(|| {
-                        build_err("TLS materials already taken; build() ran twice")
-                    })?;
-                    setup_tls_manager(
-                        &broker,
-                        options,
-                        connection_settings,
-                        *stack,
-                        topics,
-                        db.runtime_ops(),
-                    )?
-                }
-                Transport::Tls(..) => {
-                    return Err(build_err(".tls(...) requires an mqtts:// broker URL"))
-                }
-                Transport::Plain(_) if broker.tls => {
-                    return Err(build_err("mqtts:// broker URLs require .tls(...)"))
-                }
-                Transport::Plain(dialer) => setup_manager(
-                    &broker,
-                    connection_settings,
-                    dialer.clone(),
-                    topics,
-                    db.runtime_ops(),
-                )?,
-            };
-            #[cfg(not(feature = "embassy-tls"))]
-            let (actions, events, manager_tasks) = {
-                if broker.tls {
-                    return Err(build_err(
-                        "mqtts:// broker URLs require the `embassy-tls` feature of aimdb-mqtt-connector",
-                    ));
-                }
-                let Transport::Plain(dialer) = &self.transport;
-                setup_manager(
-                    &broker,
-                    connection_settings,
-                    dialer.clone(),
-                    topics,
-                    db.runtime_ops(),
-                )?
-            };
+        let (actions, events, manager_tasks) = setup_tls_manager(
+            &broker,
+            options,
+            connection_settings,
+            backend.stack,
+            topics,
+            db.runtime_ops(),
+        )?;
+        Ok(collect_pumps(db, actions, events, manager_tasks))
+    })
+}
 
-            // Outbound publishes + inbound routing ride core's pumps.
-            let mut futures = pump_sink(db, "mqtt", Arc::new(MqttSink { actions }));
-            futures.extend(pump_source(db, "mqtt", MqttSource { events }));
-            // The broker session loop, plus the SNTP time source on TLS.
-            futures.extend(manager_tasks);
+/// The inbound topics the session must subscribe on every connection.
+fn inbound_topics(db: &aimdb_core::builder::AimDb) -> Vec<String> {
+    let inbound_routes = db.collect_inbound_routes("mqtt");
+    let topics: Vec<String> = RouterBuilder::from_routes(inbound_routes)
+        .build()
+        .resource_ids()
+        .iter()
+        .map(|t| t.to_string())
+        .collect();
 
-            Ok(futures)
-        })
-    }
+    #[cfg(feature = "defmt")]
+    defmt::info!("MQTT: subscribing to {} inbound topics", topics.len());
 
-    fn scheme(&self) -> &str {
-        "mqtt"
-    }
+    topics
+}
+
+/// Outbound publishes and inbound routing ride core's pumps; the session tasks
+/// join them.
+fn collect_pumps(
+    db: &aimdb_core::builder::AimDb,
+    actions: Arc<ActionChannel>,
+    events: Arc<EventChannel>,
+    manager_tasks: Vec<EmbassyBoxFuture>,
+) -> Vec<EmbassyBoxFuture> {
+    let mut futures = pump_sink(db, "mqtt", Arc::new(MqttSink { actions }));
+    futures.extend(pump_source(db, "mqtt", MqttSource { events }));
+    futures.extend(manager_tasks);
+    futures
 }
 
 /// Parsed broker endpoint: transport + authority.
@@ -532,14 +406,14 @@ fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> 
 /// per connector at build. A shared cell would be smaller but would hand every
 /// connector after the first the identity of the first.
 fn static_connection_settings(
-    client_id: &str,
+    client_id: Option<&str>,
     credentials: Option<&(String, String)>,
 ) -> ConnectionSettings<'static> {
     fn leak(s: &str) -> &'static str {
         Box::leak(s.to_string().into_boxed_str())
     }
 
-    let client_id = leak(client_id);
+    let client_id = leak(client_id.unwrap_or("aimdb-client"));
     match credentials {
         Some((username, password)) => {
             ConnectionSettings::authenticated(client_id, leak(username), leak(password).as_bytes())

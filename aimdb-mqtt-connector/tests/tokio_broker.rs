@@ -28,6 +28,9 @@ unsafe impl defmt::Logger for HostTestLogger {
 fn defmt_panic() -> ! {
     core::panic!("defmt panic in host test")
 }
+// Nothing else defines `_defmt_timestamp` now that the connector pulls no
+// crate enabling `embassy-time/defmt-timestamp-uptime`.
+defmt::timestamp!("{=u64:us}", 0);
 
 /// Real wall-clock time; the session loop's delays are `embassy_time`'s until
 /// it takes core's `Delay`.
