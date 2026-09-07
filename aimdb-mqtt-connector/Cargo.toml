@@ -77,6 +77,16 @@ defmt = [
     "mountain-mqtt-embassy?/defmt",
 ]
 
+# Internal: the embedded backend's host smoke over `TokioNet::tcp()`
+# (`tests/tokio_broker.rs`) — a real TCP socket and a fake broker, no network
+# stack. Run with `--features _test-tokio-broker`.
+_test-tokio-broker = [
+    "embassy-runtime",
+    "aimdb-embassy-adapter/embassy-time",
+    "aimdb-embassy-adapter/embassy-sync",
+    "dep:critical-section",
+]
+
 # Internal: the Embassy broker session loop's host smoke
 # (`tests/embassy_broker.rs`) stands up two `embassy-net` stacks wired by an
 # in-memory driver-channel crossover, with a fake broker on one side. Kept off
@@ -175,6 +185,7 @@ aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = fa
 ] }
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
+    "embedded-io",
 ] }
 
 [package.metadata.docs.rs]

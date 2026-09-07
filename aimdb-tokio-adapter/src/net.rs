@@ -78,6 +78,7 @@ where
 }
 
 /// Dials TCP connections.
+#[derive(Clone, Copy, Default)]
 pub struct TokioTcpDialer;
 
 impl StreamDialer for TokioTcpDialer {

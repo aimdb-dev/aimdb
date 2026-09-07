@@ -233,6 +233,8 @@ test:
 	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test accept_pool
 	@printf "$(YELLOW)  → Testing MQTT connector (broker session loop against a fake broker)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-embassy-broker" --test embassy_broker
+	@printf "$(YELLOW)  → Testing MQTT connector (embedded backend over TokioNet, reconnect)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
@@ -366,6 +368,8 @@ clippy:
 	cargo clippy --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test accept_pool -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (broker session loop, host)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-embassy-broker" --test embassy_broker -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (embedded backend over TokioNet)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
