@@ -90,6 +90,10 @@ _test-tokio-broker = [
     "critical-section-std-impl",
 ]
 
+# Internal: both backends against one fake broker in one process
+# (`tests/backend_parity.rs`). Run with `--features _test-backend-parity`.
+_test-backend-parity = ["_test-tokio-broker", "tokio-runtime"]
+
 # Internal: the Embassy broker session loop's host smoke
 # (`tests/embassy_broker.rs`) stands up two `embassy-net` stacks wired by an
 # in-memory driver-channel crossover, with a fake broker on one side. Kept off

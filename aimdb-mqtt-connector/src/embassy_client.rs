@@ -48,7 +48,6 @@ use core::str::FromStr;
 
 #[cfg(feature = "embassy-tls")]
 use aimdb_embassy_adapter::connectors::into_box_future;
-use embassy_sync::once_lock::OnceLock;
 
 use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
@@ -527,25 +526,23 @@ fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> 
     })
 }
 
-/// Build the `ConnectionSettings<'static>` for MQTT CONNECT, parking the
-/// identity strings in statics for the `'static` lifetime requirement.
+/// Build the `ConnectionSettings<'static>` for MQTT CONNECT.
+///
+/// The identity strings are leaked to reach `'static`: one small, bounded leak
+/// per connector at build. A shared cell would be smaller but would hand every
+/// connector after the first the identity of the first.
 fn static_connection_settings(
     client_id: &str,
     credentials: Option<&(String, String)>,
 ) -> ConnectionSettings<'static> {
-    static CLIENT_ID_STORAGE: OnceLock<String> = OnceLock::new();
-    static CREDENTIALS_STORAGE: OnceLock<(String, String)> = OnceLock::new();
+    fn leak(s: &str) -> &'static str {
+        Box::leak(s.to_string().into_boxed_str())
+    }
 
-    let client_id: &'static str = CLIENT_ID_STORAGE.get_or_init(|| client_id.to_string());
+    let client_id = leak(client_id);
     match credentials {
-        Some(credentials) => {
-            let credentials: &'static (String, String) =
-                CREDENTIALS_STORAGE.get_or_init(|| credentials.clone());
-            ConnectionSettings::authenticated(
-                client_id,
-                credentials.0.as_str(),
-                credentials.1.as_bytes(),
-            )
+        Some((username, password)) => {
+            ConnectionSettings::authenticated(client_id, leak(username), leak(password).as_bytes())
         }
         None => ConnectionSettings::unauthenticated(client_id),
     }
