@@ -300,7 +300,7 @@ pub(crate) async fn run_tls(
             "MQTT-TLS: connecting to {} ({}) port {}...",
             host.as_str(),
             address,
-            settings.port
+            port
         );
         if let Err(e) = socket.connect((address, port)).await {
             #[cfg(feature = "defmt")]
