@@ -33,7 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default. It bounds what one connection can make the receiver buffer, which is
   a memory limit on an MCU and a DoS limit on an exposed port.
   `split_host_port` and `framed_dialer_at` carry the `host:port` grammar and
-  are fallible, returning `EndpointError`. Brackets are what let an IPv6
+  are fallible, returning `EndpointError`. The grammar itself now lives in
+  `aimdb_core::session::endpoint` and is re-exported here unchanged — same
+  paths, same behaviour — so `aimdb-client` can share it without depending on
+  this crate. Brackets are what let an IPv6
   literal carry a port, so an unbracketed one (`fe80::1`, `2001:db8::dead:beef`)
   keeps every colon as address and takes the default port rather than having its
   last group read as one. A port that is written but is not a number in

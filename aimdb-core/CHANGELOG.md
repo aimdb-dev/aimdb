@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaches the caller as `TransportError::Framing` rather than a silent `Ok`.
   `TransportError` also gains `Busy`, for a transport whose one endpoint
   resource is already in use — distinguishable from `Io`, and retried like it.
+- **`session::endpoint` — the `host:port` grammar, in one place.**
+  `split_host_port_opt` / `split_host_port` and `EndpointError`, moved up from
+  `aimdb-tcp-connector` because more than one crate needs them and they do not
+  all depend on each other: `aimdb-client` resolves `tcp://` URLs whether or not
+  that connector is compiled in, so it had grown a 56-line copy of the same
+  grammar. `_opt` reports whether a port was written at all, so one caller can
+  default it while another rejects an endpoint that omits it.
 - **A panic is a bug, not an error channel — checked.** The crate is compiled
   under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
   its own tests. Four sites fixed: poisoned-mutex recovery in the

@@ -24,6 +24,8 @@ mod client;
 #[cfg(feature = "connector-session")]
 mod connector;
 #[cfg(feature = "connector-session")]
+mod endpoint;
+#[cfg(feature = "connector-session")]
 mod io;
 #[cfg(feature = "connector-session")]
 mod pump;
@@ -43,6 +45,8 @@ pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
 pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
 pub use connector::{SessionClientConnector, SessionServerConnector};
+#[cfg(feature = "connector-session")]
+pub use endpoint::{split_host_port, split_host_port_opt, EndpointError};
 #[cfg(feature = "connector-session")]
 pub use io::{
     ByteStream, Datagram, DatagramBinder, Delay, FrameFault, FramedConnection, Framer,
