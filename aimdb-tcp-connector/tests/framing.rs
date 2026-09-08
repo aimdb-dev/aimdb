@@ -89,7 +89,7 @@ fn empty_payload_roundtrips() {
 // connection is told about a failure, which is what decides whether a desynced
 // link closes or silently keeps reading.
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 mod framer {
     use aimdb_core::session::{FrameFault, Framer, FramerFactory};
     use aimdb_tcp_connector::framing::{LengthFramer, LengthFramers};

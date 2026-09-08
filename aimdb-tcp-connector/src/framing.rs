@@ -100,13 +100,13 @@ impl FrameAccumulator {
 /// resync on, so a framing error is fatal: `next_frame` reports it once and the
 /// accumulator is left empty rather than pretending the stream is still
 /// aligned.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub struct LengthFramer {
     acc: FrameAccumulator,
     max_frame: usize,
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl LengthFramer {
     /// A framer bounded by [`DEFAULT_MAX_FRAME`].
     pub fn new() -> Self {
@@ -122,7 +122,7 @@ impl LengthFramer {
     }
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl Default for LengthFramer {
     fn default() -> Self {
         Self::new()
@@ -136,13 +136,13 @@ impl Default for LengthFramer {
 /// framed type aliases nameable *and* lets a deployment choose the cap — on a
 /// constrained target it is a memory bound, on an exposed port a limit on what
 /// a peer can make the receiver buffer.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 #[derive(Debug, Clone, Copy)]
 pub struct LengthFramers {
     max_frame: usize,
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl LengthFramers {
     /// Framers bounded by `max_frame` payload bytes.
     pub fn new(max_frame: usize) -> Self {
@@ -150,14 +150,14 @@ impl LengthFramers {
     }
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl Default for LengthFramers {
     fn default() -> Self {
         Self::new(DEFAULT_MAX_FRAME)
     }
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl aimdb_core::session::FramerFactory for LengthFramers {
     type Framer = LengthFramer;
 
@@ -166,7 +166,7 @@ impl aimdb_core::session::FramerFactory for LengthFramers {
     }
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl aimdb_core::session::Framer for LengthFramer {
     fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
         // An oversized frame is dropped whole rather than written half-encoded:

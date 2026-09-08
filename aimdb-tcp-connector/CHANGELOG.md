@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Features name what the code needs, not an executor.** New `connector`
+  feature gates everything the session layer backs; `std` becomes orthogonal,
+  since `src/` contains no `std::` and is `alloc`-only either way. The eleven
+  `any(tokio-runtime, embassy-runtime)` gates — never once naming a single
+  runtime, because after the migration there is no per-runtime code — collapse to
+  one `cfg(feature = "connector")`. `tokio-runtime` and `embassy-runtime` remain
+  as aliases and will be removed after a release. A third runtime (FreeRTOS with
+  lwIP) now enables `connector` and supplies its own transport, rather than
+  enabling a feature named after an executor it does not use.
+- **`embassy-runtime` no longer pulls `aimdb-embassy-adapter`.** `src/` never
+  named it; only the loopback harness does, so it moves to
+  `_test-embassy-loopback` — which is where the Tokio side already had its
+  adapter. The Embassy *library* graph is now `aimdb-core` alone.
 - **One path for both runtimes (breaking).** `TcpServer::new` takes an
   already-bound listener from an adapter (`TokioNet::listen`,
   `EmbassyNet::listen::<N>`) instead of a bind string, and `TcpClient::new`

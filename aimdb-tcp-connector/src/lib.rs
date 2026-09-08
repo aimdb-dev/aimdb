@@ -18,7 +18,7 @@ extern crate alloc;
 pub mod framing;
 
 // `TcpClient`/`TcpServer` over an adapter's stream transports.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub mod connector;
 
 /// Default connector scheme.
@@ -28,7 +28,7 @@ pub const DEFAULT_SCHEME: &str = "tcp";
 
 /// Mark each record named in the policy's writable set as writable, so
 /// `record.list` advertises the writable flag. The dispatch also enforces it.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote::AimxConfig) {
     for key in config.security_policy.writable_records() {
         if let Some(id) = db.inner().resolve_str(&key) {
@@ -39,7 +39,7 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
     }
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub use connector::{
     framed_dialer, framed_dialer_at, framed_dialer_bounded, framed_listener,
     framed_listener_bounded, split_host_port, EndpointError, TcpClient, TcpServer, DEFAULT_PORT,

@@ -13,27 +13,27 @@ categories = ["network-programming", "embedded", "no-std"]
 [features]
 default = ["aimdb-core/alloc"]
 
-std = [
-    "aimdb-core/std",
+# The connector needs core's session layer, and nothing else: `src/` names no
+# adapter and no `std::`, so one gate covers every target. A runtime is chosen by
+# passing an adapter's dialer/listener — a dependency the caller adds, not a
+# feature here — which is what lets a third runtime work with no edit to this
+# crate.
+connector = [
     "aimdb-core/alloc",
     "aimdb-core/connector-session",
     "aimdb-core/remote",
 ]
 
-tokio-runtime = [
-    "std",
-    "aimdb-core/connector-session",
-    "aimdb-core/remote",
-]
+# Orthogonal to `connector`: the code is `alloc`-only either way, so this only
+# lifts `no_std` and forwards core's own `std`.
+std = ["connector", "aimdb-core/std"]
 
-embassy-runtime = [
-    "aimdb-core/alloc",
-    "aimdb-core/connector-session",
-    "aimdb-core/remote",
-    "dep:aimdb-embassy-adapter",
-    "aimdb-embassy-adapter/connectors",
-    "aimdb-embassy-adapter/net",
-]
+# Deprecated aliases. They name executors this crate never mentions, which blocks
+# a FreeRTOS/lwIP build from enabling the connector without claiming to be
+# Embassy. Kept so existing consumers and CI legs keep working; remove after a
+# release.
+tokio-runtime = ["std"]
+embassy-runtime = ["connector"]
 
 tracing = ["aimdb-core/tracing"]
 defmt = ["aimdb-core/defmt"]
@@ -48,6 +48,9 @@ _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter", "aimdb-tokio-adapter/
 # the `_test-tokio` build too). Run with `--features _test-embassy-loopback`.
 _test-embassy-loopback = [
     "embassy-runtime",
+    "dep:aimdb-embassy-adapter",
+    "aimdb-embassy-adapter/connectors",
+    "aimdb-embassy-adapter/net",
     "dep:embassy-net",
     "embassy-net/medium-ip",
     "embassy-net/proto-ipv4",
