@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports a bad header as `FrameFault::Fatal` and the connection closes instead
   of reading on; an oversized outbound frame is still dropped whole rather than
   written half-encoded, but is now reported rather than silently discarded.
+  The frame cap is settable again: `LengthFramers` is a `FramerFactory` holding
+  `max_frame`, where the `fn() -> LengthFramer` it replaces was stateless and
+  could only ever produce `DEFAULT_MAX_FRAME`. Reach it through
+  `TcpServer::max_frame(n)`, `TcpClient::bounded(..)`, `framed_dialer_bounded`
+  or `framed_listener_bounded`; the un-suffixed constructors keep the 64 KiB
+  default. It bounds what one connection can make the receiver buffer, which is
+  a memory limit on an MCU and a DoS limit on an exposed port.
   `split_host_port` and `framed_dialer_at` carry the `host:port` grammar and
   are fallible, returning `EndpointError`. Brackets are what let an IPv6
   literal carry a port, so an unbracketed one (`fe80::1`, `2001:db8::dead:beef`)

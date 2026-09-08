@@ -129,6 +129,43 @@ impl Default for LengthFramer {
     }
 }
 
+/// Builds one [`LengthFramer`] per connection, bounded by `max_frame`.
+///
+/// A `fn() -> LengthFramer` is nameable but stateless, so it can only ever
+/// produce [`DEFAULT_MAX_FRAME`]. Carrying the bound in a factory keeps the
+/// framed type aliases nameable *and* lets a deployment choose the cap — on a
+/// constrained target it is a memory bound, on an exposed port a limit on what
+/// a peer can make the receiver buffer.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[derive(Debug, Clone, Copy)]
+pub struct LengthFramers {
+    max_frame: usize,
+}
+
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+impl LengthFramers {
+    /// Framers bounded by `max_frame` payload bytes.
+    pub fn new(max_frame: usize) -> Self {
+        Self { max_frame }
+    }
+}
+
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+impl Default for LengthFramers {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_FRAME)
+    }
+}
+
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+impl aimdb_core::session::FramerFactory for LengthFramers {
+    type Framer = LengthFramer;
+
+    fn framer(&self) -> LengthFramer {
+        LengthFramer::with_max_frame(self.max_frame)
+    }
+}
+
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 impl aimdb_core::session::Framer for LengthFramer {
     fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {

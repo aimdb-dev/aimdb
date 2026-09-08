@@ -39,6 +39,6 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
 
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 pub use connector::{
-    framed_dialer, framed_dialer_at, framed_listener, split_host_port, EndpointError, TcpClient,
-    TcpServer, DEFAULT_PORT,
+    framed_dialer, framed_dialer_at, framed_dialer_bounded, framed_listener,
+    framed_listener_bounded, split_host_port, EndpointError, TcpClient, TcpServer, DEFAULT_PORT,
 };

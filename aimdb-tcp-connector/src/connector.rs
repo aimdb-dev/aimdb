@@ -2,7 +2,8 @@
 //!
 //! Both are generic over core's [`StreamDialer`] / [`StreamListener`], so the
 //! socket comes from an adapter and this crate contributes only the
-//! length-prefix [`LengthFramer`].
+//! length-prefix [`LengthFramer`](crate::framing::LengthFramer), bounded by a
+//! [`LengthFramers`] factory so the cap stays settable.
 
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
@@ -20,7 +21,7 @@ use aimdb_core::session::{
 };
 use aimdb_core::{AimDb, DbError, DbResult};
 
-use crate::framing::LengthFramer;
+use crate::framing::{LengthFramers, DEFAULT_MAX_FRAME};
 use crate::DEFAULT_SCHEME;
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -32,9 +33,9 @@ pub const READ_CHUNK: usize = 1024;
 pub const WRITE_CHUNK: usize = 1024;
 
 /// The dialer half, framed.
-pub type TcpFramingDialer<D> = FramingDialer<D, fn() -> LengthFramer, READ_CHUNK, WRITE_CHUNK>;
+pub type TcpFramingDialer<D> = FramingDialer<D, LengthFramers, READ_CHUNK, WRITE_CHUNK>;
 /// The listener half, framed.
-pub type TcpFramingListener<L> = FramingListener<L, fn() -> LengthFramer, READ_CHUNK, WRITE_CHUNK>;
+pub type TcpFramingListener<L> = FramingListener<L, LengthFramers, READ_CHUNK, WRITE_CHUNK>;
 
 /// Port used when an endpoint names only a host.
 pub const DEFAULT_PORT: u16 = 7001;
@@ -118,23 +119,38 @@ pub fn framed_dialer_at<D: StreamDialer>(
     Ok(framed_dialer(dialer, host, port))
 }
 
-/// Frame an adapter's dialer for `host:port` with length-prefix framing.
+/// Frame an adapter's dialer for `host:port` with length-prefix framing,
+/// bounded by [`DEFAULT_MAX_FRAME`].
 pub fn framed_dialer<D: StreamDialer>(
     dialer: D,
     host: impl Into<String>,
     port: u16,
 ) -> TcpFramingDialer<D> {
-    FramingDialer::new(
-        dialer,
-        LengthFramer::new as fn() -> LengthFramer,
-        host,
-        port,
-    )
+    framed_dialer_bounded(dialer, host, port, DEFAULT_MAX_FRAME)
 }
 
-/// Frame an adapter's listener with length-prefix framing.
+/// As [`framed_dialer`], capping an inbound frame at `max_frame` payload bytes.
+pub fn framed_dialer_bounded<D: StreamDialer>(
+    dialer: D,
+    host: impl Into<String>,
+    port: u16,
+    max_frame: usize,
+) -> TcpFramingDialer<D> {
+    FramingDialer::new(dialer, LengthFramers::new(max_frame), host, port)
+}
+
+/// Frame an adapter's listener with length-prefix framing, bounded by
+/// [`DEFAULT_MAX_FRAME`].
 pub fn framed_listener<L: StreamListener>(listener: L) -> TcpFramingListener<L> {
-    FramingListener::new(listener, LengthFramer::new as fn() -> LengthFramer)
+    framed_listener_bounded(listener, DEFAULT_MAX_FRAME)
+}
+
+/// As [`framed_listener`], capping an inbound frame at `max_frame` payload bytes.
+pub fn framed_listener_bounded<L: StreamListener>(
+    listener: L,
+    max_frame: usize,
+) -> TcpFramingListener<L> {
+    FramingListener::new(listener, LengthFramers::new(max_frame))
 }
 
 /// Constructs a TCP session client connector over an adapter's dialer.
@@ -151,13 +167,19 @@ impl TcpClient {
         host: impl Into<String>,
         port: u16,
     ) -> SessionClientConnector<TcpFramingDialer<D>, AimxCodec> {
+        Self::bounded(dialer, host, port, DEFAULT_MAX_FRAME)
+    }
+
+    /// As [`new`](Self::new), capping an inbound frame at `max_frame` payload
+    /// bytes rather than [`DEFAULT_MAX_FRAME`].
+    pub fn bounded<D: StreamDialer>(
+        dialer: D,
+        host: impl Into<String>,
+        port: u16,
+        max_frame: usize,
+    ) -> SessionClientConnector<TcpFramingDialer<D>, AimxCodec> {
         SessionClientConnector::new(
-            FramingDialer::new(
-                dialer,
-                LengthFramer::new as fn() -> LengthFramer,
-                host,
-                port,
-            ),
+            framed_dialer_bounded(dialer, host, port, max_frame),
             AimxCodec,
         )
         .scheme(DEFAULT_SCHEME)
@@ -172,6 +194,7 @@ pub struct TcpServer<L> {
     listener: OneShot<L>,
     config: AimxConfig,
     scheme: String,
+    max_frame: usize,
 }
 
 impl<L> TcpServer<L> {
@@ -184,7 +207,18 @@ impl<L> TcpServer<L> {
             listener: OneShot::new(listener),
             config: AimxConfig::uds_default(),
             scheme: DEFAULT_SCHEME.to_string(),
+            max_frame: DEFAULT_MAX_FRAME,
         }
+    }
+
+    /// Cap an inbound frame at `max_frame` payload bytes.
+    ///
+    /// The default is [`DEFAULT_MAX_FRAME`]. Lower it on a memory-constrained
+    /// target, or on a port reachable by peers you do not control: it bounds
+    /// what one connection can make the receiver buffer.
+    pub fn max_frame(mut self, max_frame: usize) -> Self {
+        self.max_frame = max_frame;
+        self
     }
 
     /// Use a prepared [`AimxConfig`] for limits and security policy.
@@ -246,7 +280,7 @@ where
                 reads_hello: false,
                 acks_subscribe: false,
             };
-            let framed = OneShot::new(framed_listener(listener));
+            let framed = OneShot::new(framed_listener_bounded(listener, self.max_frame));
             let dispatch_config = config;
             let connector = SessionServerConnector::new(
                 move || {

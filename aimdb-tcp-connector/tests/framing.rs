@@ -91,8 +91,8 @@ fn empty_payload_roundtrips() {
 
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 mod framer {
-    use aimdb_core::session::{FrameFault, Framer};
-    use aimdb_tcp_connector::framing::LengthFramer;
+    use aimdb_core::session::{FrameFault, Framer, FramerFactory};
+    use aimdb_tcp_connector::framing::{LengthFramer, LengthFramers};
 
     #[test]
     fn a_frame_within_the_cap_roundtrips() {
@@ -133,5 +133,28 @@ mod framer {
             Some(Err(FrameFault::Fatal)),
             "reported fatal, so the connection closes instead of resyncing"
         );
+    }
+
+    /// The cap is settable again: a `fn()` factory is stateless and could only
+    /// ever produce `DEFAULT_MAX_FRAME`, so `LengthFramers` carries it instead.
+    #[test]
+    fn the_factory_carries_its_bound_into_every_framer() {
+        let mut wire = Vec::new();
+
+        let bounded = LengthFramers::new(4).framer();
+        assert_eq!(
+            bounded.encode(b"12345", &mut wire),
+            Err(FrameFault::Recoverable),
+            "a 5-byte frame exceeds the 4-byte cap this factory was built with"
+        );
+        assert!(wire.is_empty());
+
+        // The same payload is fine under the default, so the bound really came
+        // from the factory rather than being hard-wired.
+        LengthFramers::default()
+            .framer()
+            .encode(b"12345", &mut wire)
+            .expect("well under the default cap");
+        assert!(!wire.is_empty());
     }
 }
