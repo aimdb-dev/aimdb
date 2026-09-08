@@ -415,7 +415,10 @@ doc:
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
 	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps
 	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime,net" --no-deps
+	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embedded" --no-deps
+	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embedded-tls" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-tls" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "embassy-runtime" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
 	@printf "$(YELLOW)  → Building WASM/browser documentation$(NC)\n"

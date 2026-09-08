@@ -11,8 +11,8 @@
 //!
 //! | Backend | Client | QoS | TLS |
 //! |---|---|---|---|
-//! | [`Native`] (no transport supplied) | `rumqttc` (std) | 0–2 | rustls |
-//! | [`Embedded`] (`.transport(..)`) | `mountain-mqtt` (`no_std`) | 0–1 | `embedded-tls` |
+//! | `Native` (no transport supplied) | `rumqttc` (std) | 0–2 | rustls |
+//! | `Embedded` (`.transport(..)`) | `mountain-mqtt` (`no_std`) | 0–1 | `embedded-tls` |
 
 use alloc::boxed::Box;
 use alloc::string::String;

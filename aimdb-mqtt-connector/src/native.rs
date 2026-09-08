@@ -67,7 +67,7 @@ pub(crate) fn build<'a>(
 
 /// Internal MQTT connector build helpers.
 ///
-/// A namespace for the broker-connection setup invoked from [`build`]; the
+/// A namespace for the broker-connection setup invoked from `build`; the
 /// data-plane loops themselves live in the reusable `pump_sink` /
 /// `pump_source` helpers + the `MqttSink` / `MqttEventLoopSource` adapters
 /// below.

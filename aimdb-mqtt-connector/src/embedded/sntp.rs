@@ -1,11 +1,9 @@
-//! SNTP time source for TLS certificate validation.
+//! SNTP time source, for a board whose runtime has no wall clock of its own.
 //!
-//! The reference boards have no battery-backed RTC, but checking a
-//! certificate's validity window needs the current Unix time. This module
-//! keeps one crate-global clock: Unix seconds at the `embassy_time` epoch
-//! (boot), written after each SNTP sync and read through [`unix_now`] /
-//! [`SntpClock`]. The TLS manager spawns `run` alongside its broker loop
-//! and holds the first handshake until the first sync lands.
+//! Checking a certificate's validity window needs the current Unix time, and
+//! the reference boards have no battery-backed RTC. Each sync feeds both
+//! [`unix_now`] and the TLS handshake clock. Opt in with `TlsOptions::with_sntp`;
+//! a runtime that answers `unix_time()` needs none of this.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
