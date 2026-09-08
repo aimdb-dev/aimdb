@@ -10,6 +10,7 @@
 //! The declared length is payload bytes only. Oversized frames are fatal because
 //! length-prefix TCP has no delimiter that would let the receiver safely resync.
 
+use aimdb_core::session::FrameFault;
 use alloc::vec::Vec;
 
 /// Number of bytes in the fixed frame header.
@@ -130,21 +131,26 @@ impl Default for LengthFramer {
 
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 impl aimdb_core::session::Framer for LengthFramer {
-    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
-        // Core's `Framer::encode` is infallible, so an oversized frame is
-        // dropped here rather than written half-encoded: the peer would read a
-        // length prefix with no payload behind it and desync permanently.
+    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
+        // An oversized frame is dropped whole rather than written half-encoded:
+        // the peer would read a length prefix with no payload behind it and
+        // desync permanently. The link itself is untouched, so the fault is
+        // recoverable and the caller decides what to do with the connection.
         if frame.len() > self.max_frame {
-            return;
+            return Err(FrameFault::Recoverable);
         }
-        let _ = encode_frame(frame, out);
+        encode_frame(frame, out).map_err(|_| FrameFault::Recoverable)
     }
 
     fn push_bytes(&mut self, bytes: &[u8]) {
         self.acc.push_bytes(bytes);
     }
 
-    fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
-        self.acc.next_frame().map(|r| r.map_err(|_| ()))
+    fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
+        // A length prefix has no delimiter to resync on, so a bad header is
+        // fatal: nothing downstream tells payload bytes from the next header.
+        self.acc
+            .next_frame()
+            .map(|r| r.map_err(|_| FrameFault::Fatal))
     }
 }

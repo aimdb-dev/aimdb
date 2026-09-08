@@ -45,8 +45,8 @@ pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 pub use connector::{SessionClientConnector, SessionServerConnector};
 #[cfg(feature = "connector-session")]
 pub use io::{
-    ByteStream, Datagram, DatagramBinder, Delay, FramedConnection, Framer, FramerFactory,
-    FramingDialer, FramingListener, IoError, OneShot, StreamDialer, StreamListener,
+    ByteStream, Datagram, DatagramBinder, Delay, FrameFault, FramedConnection, Framer,
+    FramerFactory, FramingDialer, FramingListener, IoError, OneShot, StreamDialer, StreamListener,
 };
 #[cfg(feature = "connector-session")]
 pub use pump::{pump_sink, pump_source};
@@ -231,6 +231,8 @@ pub enum TransportError {
     Closed,
     /// An underlying I/O operation failed.
     Io,
+    /// The byte stream could not be framed, and the framer cannot resynchronize.
+    Framing,
 }
 
 /// Envelope-codec failure — a frame could not be decoded/encoded.

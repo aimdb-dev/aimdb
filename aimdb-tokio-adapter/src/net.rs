@@ -181,7 +181,9 @@ impl Delay for TokioDelay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aimdb_core::session::{Dialer, Framer, FramingDialer, FramingListener, Listener};
+    use aimdb_core::session::{
+        Dialer, FrameFault, Framer, FramingDialer, FramingListener, Listener,
+    };
     use std::net::Ipv4Addr;
 
     /// Length-prefixed framer, enough to drive a `FramedConnection`.
@@ -191,14 +193,15 @@ mod tests {
     }
 
     impl Framer for LenFramer {
-        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
             out.push(frame.len() as u8);
             out.extend_from_slice(frame);
+            Ok(())
         }
         fn push_bytes(&mut self, bytes: &[u8]) {
             self.buf.extend_from_slice(bytes);
         }
-        fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+        fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
             let len = *self.buf.first()? as usize;
             if self.buf.len() < len + 1 {
                 return None;

@@ -19,6 +19,7 @@
 //! own. That half needs `aimdb_core::session`, so it is gated on the runtime
 //! features that enable core's `connector-session`.
 
+use aimdb_core::session::FrameFault;
 use alloc::vec::Vec;
 
 /// A frame could not be recovered — line noise, a truncated frame, a mid-stream
@@ -184,18 +185,21 @@ impl CobsFramer {
 
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 impl aimdb_core::session::Framer for CobsFramer {
-    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
         encode_frame(frame, out);
+        Ok(())
     }
 
     fn push_bytes(&mut self, bytes: &[u8]) {
         self.acc.push_bytes(bytes);
     }
 
-    fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
-        // `FrameError` collapses to `()`: the connection only distinguishes
-        // "got a frame" from "skip and resync".
-        self.acc.next_frame().map(|r| r.map_err(|_| ()))
+    fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
+        // COBS delimits frames, and the accumulator already resyncs on the next
+        // sentinel, so a dropped run never invalidates the rest of the stream.
+        self.acc
+            .next_frame()
+            .map(|r| r.map_err(|_| FrameFault::Recoverable))
     }
 }
 

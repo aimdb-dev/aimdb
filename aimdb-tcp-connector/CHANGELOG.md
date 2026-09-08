@@ -21,8 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`connector` — runtime-neutral `TcpClient`/`TcpServer`** over core's
   `StreamDialer`/`StreamListener`, plus `framing::LengthFramer` against core's
-  `Framer`. `split_host_port` and `framed_dialer_at` carry the `host:port`
-  grammar, including bracketed IPv6 literals.
+  `Framer`. A length prefix has no delimiter to resync on, so `LengthFramer`
+  reports a bad header as `FrameFault::Fatal` and the connection closes instead
+  of reading on; an oversized outbound frame is still dropped whole rather than
+  written half-encoded, but is now reported rather than silently discarded.
+  `split_host_port` and `framed_dialer_at` carry the `host:port` grammar,
+  including bracketed IPv6 literals.
 - **`tests/accept_pool.rs`** — the adapter's pooled `StreamListener` over two
   crossover-wired `embassy-net` stacks, with a rebuild-and-cancel pool as the
   negative control: it loses a SYN arriving between accepts, the stored-accept

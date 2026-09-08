@@ -82,3 +82,56 @@ fn empty_payload_roundtrips() {
     acc.push_bytes(&wire);
     assert_eq!(acc.next_frame().unwrap().unwrap(), b"");
 }
+
+// --- LengthFramer against core's `Framer` contract -------------------------
+//
+// The accumulator tests above cover the wire format; these cover what the
+// connection is told about a failure, which is what decides whether a desynced
+// link closes or silently keeps reading.
+
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+mod framer {
+    use aimdb_core::session::{FrameFault, Framer};
+    use aimdb_tcp_connector::framing::LengthFramer;
+
+    #[test]
+    fn a_frame_within_the_cap_roundtrips() {
+        let mut framer = LengthFramer::new();
+        let mut wire = Vec::new();
+        framer.encode(b"hello", &mut wire).expect("encode");
+
+        framer.push_bytes(&wire);
+        assert_eq!(framer.next_frame(), Some(Ok(b"hello".to_vec())));
+        assert_eq!(framer.next_frame(), None, "nothing left buffered");
+    }
+
+    #[test]
+    fn an_oversized_frame_is_rejected_and_nothing_is_written() {
+        let framer = LengthFramer::with_max_frame(4);
+        let mut wire = Vec::new();
+
+        assert_eq!(
+            framer.encode(b"too long", &mut wire),
+            Err(FrameFault::Recoverable),
+            "the caller is told, rather than the frame vanishing behind an Ok"
+        );
+        assert!(
+            wire.is_empty(),
+            "a length prefix with no payload would desync the peer permanently"
+        );
+    }
+
+    #[test]
+    fn a_bad_length_prefix_is_fatal() {
+        let mut framer = LengthFramer::with_max_frame(4);
+        // A header claiming more than the cap: there is no delimiter to resync
+        // on, so the rest of the stream cannot be interpreted.
+        framer.push_bytes(&5u32.to_be_bytes());
+
+        assert_eq!(
+            framer.next_frame(),
+            Some(Err(FrameFault::Fatal)),
+            "reported fatal, so the connection closes instead of resyncing"
+        );
+    }
+}
