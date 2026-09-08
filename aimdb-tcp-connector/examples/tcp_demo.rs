@@ -151,8 +151,10 @@ async fn run_set_mode(endpoint: String, level: u64) {
 }
 
 fn connect(endpoint: String) -> aimdb_core::session::ClientHandle {
+    let dialer = framed_dialer_at(TokioNet::tcp(), &endpoint)
+        .unwrap_or_else(|e| panic!("invalid endpoint {endpoint:?}: {e}"));
     let (handle, engine) = run_client(
-        framed_dialer_at(TokioNet::tcp(), &endpoint),
+        dialer,
         AimxCodec,
         ClientConfig {
             sends_hello: false,

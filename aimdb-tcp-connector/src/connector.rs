@@ -39,30 +39,70 @@ pub type TcpFramingListener<L> = FramingListener<L, fn() -> LengthFramer, READ_C
 /// Port used when an endpoint names only a host.
 pub const DEFAULT_PORT: u16 = 7001;
 
-/// Split a `host:port` endpoint, falling back to `default_port` when no port is
-/// given or it does not parse.
+/// Why an endpoint is not a `host:port`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointError {
+    /// The endpoint names no host.
+    EmptyHost,
+    /// A bracketed IPv6 literal with no closing `]`.
+    UnclosedBracket,
+    /// A port was written, and is not one.
+    BadPort,
+}
+
+impl core::fmt::Display for EndpointError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::EmptyHost => "endpoint names no host",
+            Self::UnclosedBracket => "missing closing bracket for IPv6 host",
+            Self::BadPort => "port is not a number in 0..=65535",
+        })
+    }
+}
+
+/// Split a `host:port` endpoint, defaulting the port when the endpoint names
+/// only a host.
 ///
 /// A bracketed IPv6 literal carries colons of its own, so only a colon *after*
 /// the closing bracket separates the port; the brackets are stripped, because
-/// that is the form both adapters resolve.
-pub fn split_host_port(endpoint: &str, default_port: u16) -> (String, u16) {
+/// that is the form both adapters resolve. An **unbracketed** IPv6 literal
+/// cannot carry a port at all — brackets are what add one — so every colon in
+/// it belongs to the address.
+///
+/// A port that is written but is not one is an error, not a fallback to
+/// `default_port`: silently dialing a different service is worse than not
+/// dialing.
+pub fn split_host_port(endpoint: &str, default_port: u16) -> Result<(String, u16), EndpointError> {
     if let Some(rest) = endpoint.strip_prefix('[') {
-        return match rest.split_once(']') {
-            Some((host, tail)) => {
-                let port = tail
-                    .strip_prefix(':')
-                    .and_then(|p| p.parse().ok())
-                    .unwrap_or(default_port);
-                (host.to_string(), port)
-            }
-            None => (rest.to_string(), default_port),
+        let Some((host, tail)) = rest.split_once(']') else {
+            return Err(EndpointError::UnclosedBracket);
         };
+        if host.is_empty() {
+            return Err(EndpointError::EmptyHost);
+        }
+        let port = if tail.is_empty() {
+            default_port
+        } else {
+            // Anything but `:port` after `]` is junk, including junk that has a
+            // port behind it — `[::1]oops:7003` names no reachable service.
+            tail.strip_prefix(':')
+                .ok_or(EndpointError::BadPort)?
+                .parse()
+                .map_err(|_| EndpointError::BadPort)?
+        };
+        return Ok((host.to_string(), port));
     }
     match endpoint.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => {
-            (host.to_string(), port.parse().unwrap_or(default_port))
-        }
-        _ => (endpoint.to_string(), default_port),
+        // Another colon before the last one: an unbracketed IPv6 literal, whose
+        // trailing group is part of the address rather than a port.
+        Some((head, _)) if head.contains(':') => Ok((endpoint.to_string(), default_port)),
+        Some(("", _)) => Err(EndpointError::EmptyHost),
+        Some((host, port)) => Ok((
+            host.to_string(),
+            port.parse().map_err(|_| EndpointError::BadPort)?,
+        )),
+        None if endpoint.is_empty() => Err(EndpointError::EmptyHost),
+        None => Ok((endpoint.to_string(), default_port)),
     }
 }
 
@@ -70,9 +110,12 @@ pub fn split_host_port(endpoint: &str, default_port: u16) -> (String, u16) {
 ///
 /// The split-then-dial sugar every caller wants; use [`framed_dialer`] directly
 /// when host and port are already separate.
-pub fn framed_dialer_at<D: StreamDialer>(dialer: D, endpoint: &str) -> TcpFramingDialer<D> {
-    let (host, port) = split_host_port(endpoint, DEFAULT_PORT);
-    framed_dialer(dialer, host, port)
+pub fn framed_dialer_at<D: StreamDialer>(
+    dialer: D,
+    endpoint: &str,
+) -> Result<TcpFramingDialer<D>, EndpointError> {
+    let (host, port) = split_host_port(endpoint, DEFAULT_PORT)?;
+    Ok(framed_dialer(dialer, host, port))
 }
 
 /// Frame an adapter's dialer for `host:port` with length-prefix framing.
@@ -234,47 +277,72 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{split_host_port, DEFAULT_PORT};
+    use super::{split_host_port, EndpointError, DEFAULT_PORT};
+
+    /// `Ok` shorthand: the split every passing case expects.
+    fn split(endpoint: &str) -> Result<(String, u16), EndpointError> {
+        split_host_port(endpoint, DEFAULT_PORT)
+    }
 
     #[test]
     fn splits_host_and_port() {
-        assert_eq!(
-            split_host_port("127.0.0.1:7002", DEFAULT_PORT),
-            ("127.0.0.1".into(), 7002)
-        );
+        assert_eq!(split("127.0.0.1:7002"), Ok(("127.0.0.1".into(), 7002)));
     }
 
     #[test]
     fn a_bare_host_takes_the_default_port() {
         assert_eq!(
-            split_host_port("example.test", DEFAULT_PORT),
-            ("example.test".into(), DEFAULT_PORT)
+            split("example.test"),
+            Ok(("example.test".into(), DEFAULT_PORT))
         );
     }
 
+    /// A written port that is not one names no service, so it is an error
+    /// rather than a silent fallback to `DEFAULT_PORT` — that would dial a
+    /// different, possibly live, server.
     #[test]
-    fn an_unparsable_port_takes_the_default() {
-        assert_eq!(
-            split_host_port("host:not-a-port", DEFAULT_PORT),
-            ("host".into(), DEFAULT_PORT)
-        );
+    fn an_unparsable_port_is_rejected() {
+        assert_eq!(split("host:not-a-port"), Err(EndpointError::BadPort));
+        assert_eq!(split("10.0.0.5:8080x"), Err(EndpointError::BadPort));
+        assert_eq!(split("host:99999"), Err(EndpointError::BadPort));
+        assert_eq!(split("host:"), Err(EndpointError::BadPort));
     }
 
     /// A bracketed IPv6 literal is full of colons; only the one after `]`
     /// separates the port, and the brackets are not part of the address.
     #[test]
     fn brackets_are_stripped_from_an_ipv6_literal() {
-        assert_eq!(
-            split_host_port("[::1]:7003", DEFAULT_PORT),
-            ("::1".into(), 7003)
-        );
+        assert_eq!(split("[::1]:7003"), Ok(("::1".into(), 7003)));
     }
 
     #[test]
     fn a_bracketed_ipv6_host_without_a_port_is_not_mangled() {
+        assert_eq!(split("[::1]"), Ok(("::1".into(), DEFAULT_PORT)));
+    }
+
+    /// Brackets are what let an IPv6 literal carry a port, so without them
+    /// every colon belongs to the address and the port is the default.
+    #[test]
+    fn an_unbracketed_ipv6_literal_keeps_all_its_colons() {
+        assert_eq!(split("::1"), Ok(("::1".into(), DEFAULT_PORT)));
+        assert_eq!(split("fe80::1"), Ok(("fe80::1".into(), DEFAULT_PORT)));
         assert_eq!(
-            split_host_port("[::1]", DEFAULT_PORT),
-            ("::1".into(), DEFAULT_PORT)
+            split("2001:db8::dead:beef"),
+            Ok(("2001:db8::dead:beef".into(), DEFAULT_PORT)),
+            "the trailing group is address, not a port"
+        );
+    }
+
+    #[test]
+    fn a_malformed_endpoint_is_rejected() {
+        assert_eq!(split(":99999"), Err(EndpointError::EmptyHost));
+        assert_eq!(split(""), Err(EndpointError::EmptyHost));
+        assert_eq!(split("[]:7001"), Err(EndpointError::EmptyHost));
+        assert_eq!(split("[::1"), Err(EndpointError::UnclosedBracket));
+        assert_eq!(
+            split("[::1]oops:7003"),
+            Err(EndpointError::BadPort),
+            "an explicit port behind junk is not silently honoured"
         );
     }
 }

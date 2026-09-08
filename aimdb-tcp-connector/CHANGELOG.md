@@ -25,8 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports a bad header as `FrameFault::Fatal` and the connection closes instead
   of reading on; an oversized outbound frame is still dropped whole rather than
   written half-encoded, but is now reported rather than silently discarded.
-  `split_host_port` and `framed_dialer_at` carry the `host:port` grammar,
-  including bracketed IPv6 literals.
+  `split_host_port` and `framed_dialer_at` carry the `host:port` grammar and
+  are fallible, returning `EndpointError`. Brackets are what let an IPv6
+  literal carry a port, so an unbracketed one (`fe80::1`, `2001:db8::dead:beef`)
+  keeps every colon as address and takes the default port rather than having its
+  last group read as one. A port that is written but is not a number in
+  `0..=65535` is rejected instead of falling back to `DEFAULT_PORT`, which would
+  dial a different — possibly live — service.
 - **`tests/accept_pool.rs`** — the adapter's pooled `StreamListener` over two
   crossover-wired `embassy-net` stacks, with a rebuild-and-cancel pool as the
   negative control: it loses a SYN arriving between accepts, the stored-accept
