@@ -2,8 +2,9 @@
 //! through a real `AimDb`.
 //!
 //! The socket comes from `TokioNet`; this crate supplies only the length-prefix
-//! framer. Mirrors `tokio_roundtrip.rs`, which still drives the runtime-specific
-//! transports.
+//! framer. Complements `tokio_roundtrip.rs`, which drives the same framed
+//! transports straight through the session engines: that file covers the wire
+//! path, this one covers the connector builders sitting on top of it.
 #![cfg(feature = "_test-tokio")]
 
 use std::sync::Arc;

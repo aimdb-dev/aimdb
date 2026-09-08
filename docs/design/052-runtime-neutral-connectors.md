@@ -169,7 +169,7 @@ Three details the prototype settled:
   not `Rd`/`Wr` halves like today's `EmbassyConnection`. That is what lets it
   wrap an owned `embassy_net::tcp::TcpSocket`, whose `split()` yields only
   *borrowed* halves while `Connection` must own the socket — the exact reason
-  [`embassy_transport.rs`](../../aimdb-tcp-connector/src/embassy_transport.rs)
+  `embassy_transport.rs` (deleted by this design)
   gives for not reusing `connector-io` today. It costs nothing: `Connection`'s
   own `recv`/`send` already take `&mut self`, so reads and writes were already
   serialized.
@@ -192,7 +192,7 @@ Three details the prototype settled:
   serial connector under `std`; that dependency does not belong in the adapter.
 - **`aimdb-embassy-adapter`**: `EmbassyNet::tcp(stack, rx, tx)`,
   `EmbassyNet::listen::<N>(stack, endpoint, rx[N], tx[N])` (the socket-slot pool
-  moves here from [`aimdb-tcp-connector/src/embassy_transport.rs`](../../aimdb-tcp-connector/src/embassy_transport.rs)),
+  moves here from `aimdb-tcp-connector/src/embassy_transport.rs`, since deleted),
   `EmbassyNet::udp(stack, …)`, `EmbassyUart::split(rx, tx)`, and `Delay`
   returning `embassy_time::Timer`. Each stream/datagram newtype is
   `unsafe impl Send` and wraps the inner future in `SendFutureWrapper`. The

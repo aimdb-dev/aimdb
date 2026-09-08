@@ -295,24 +295,14 @@ where
 
 /// Lifts a [`StreamDialer`] and a [`FramerFactory`] into a [`Dialer`], so
 /// `run_client` drives an adapter transport unchanged.
+///
+/// `Clone` because `SessionClientConnector` clones its dialer per build.
+#[derive(Clone)]
 pub struct FramingDialer<D, FF, const RC: usize = 256, const WC: usize = 256> {
     dialer: D,
     framers: FF,
     host: String,
     port: u16,
-}
-
-/// `SessionClientConnector` clones its dialer per build, so a framed one must
-/// clone too.
-impl<D: Clone, FF: Clone, const RC: usize, const WC: usize> Clone for FramingDialer<D, FF, RC, WC> {
-    fn clone(&self) -> Self {
-        Self {
-            dialer: self.dialer.clone(),
-            framers: self.framers.clone(),
-            host: self.host.clone(),
-            port: self.port,
-        }
-    }
 }
 
 impl<D, FF, const RC: usize, const WC: usize> FramingDialer<D, FF, RC, WC> {

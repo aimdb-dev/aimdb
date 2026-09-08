@@ -1,7 +1,9 @@
 //! Length-prefixed TCP transport connector for AimDB remote access.
 //!
-//! This crate contributes only the TCP transport triple plus thin
-//! [`TcpClient`]/[`TcpServer`] sugar. AimX protocol bytes still come from
+//! This crate contributes only the length-prefix framing plus thin
+//! [`TcpClient`]/[`TcpServer`] sugar; the socket comes from an adapter
+//! (`TokioNet`, `EmbassyNet`) through core's `StreamDialer`/`StreamListener`.
+//! AimX protocol bytes still come from
 //! [`AimxCodec`](aimdb_core::session::aimx::AimxCodec), and the session engines
 //! still live in `aimdb-core`.
 //!
