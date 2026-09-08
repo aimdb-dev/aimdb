@@ -244,7 +244,7 @@ fn recycle_then_reaccept() {
         ));
         let dialer = framed_dialer(
             EmbassyNet::tcp(client_stack, buf(), buf()),
-            &server_host(),
+            server_host(),
             7000,
         );
 
@@ -285,12 +285,12 @@ fn two_concurrent_sessions() {
         ));
         let dialer_a = framed_dialer(
             EmbassyNet::tcp(client_stack, buf(), buf()),
-            &server_host(),
+            server_host(),
             7001,
         );
         let dialer_b = framed_dialer(
             EmbassyNet::tcp(client_stack, buf(), buf()),
-            &server_host(),
+            server_host(),
             7001,
         );
 
@@ -330,7 +330,7 @@ fn a_cloned_dialer_reports_a_busy_socket() {
         ));
         let dialer = framed_dialer(
             EmbassyNet::tcp(client_stack, buf(), buf()),
-            &server_host(),
+            server_host(),
             7001,
         );
         let clone = dialer.clone();
@@ -356,7 +356,7 @@ fn dialer_redials_after_failure_and_drop() {
     drive(|server_stack, client_stack| async move {
         let dialer = framed_dialer(
             EmbassyNet::tcp(client_stack, buf(), buf()),
-            &server_host(),
+            server_host(),
             7003,
         );
 
@@ -405,7 +405,7 @@ fn cancelled_accept_recycles_socket() {
         ));
         let dialer = framed_dialer(
             EmbassyNet::tcp(client_stack, buf(), buf()),
-            &server_host(),
+            server_host(),
             7005,
         );
 
