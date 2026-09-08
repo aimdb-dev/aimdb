@@ -209,6 +209,13 @@ impl ByteStream for EmbassyTcpStream {
 }
 
 /// Dials TCP connections over one caller-owned socket.
+///
+/// `Clone` shares that socket rather than duplicating it — it exists so a
+/// framed dialer can satisfy `SessionClientConnector`'s `Clone` bound. A clone
+/// dialing while another handle holds the connection gets
+/// [`TransportError::Busy`]. For a second *concurrent* connection call
+/// [`EmbassyNet::tcp`] again with its own buffers, which is the only way to get
+/// a second socket.
 #[derive(Clone)]
 pub struct EmbassyTcpDialer {
     slot: Arc<TcpSocketSlot>,
@@ -229,7 +236,7 @@ impl StreamDialer for EmbassyTcpDialer {
             let endpoint = IpEndpoint::new(addr.into(), port);
 
             let Some(socket) = self.slot.take() else {
-                return Err(TransportError::Io);
+                return Err(TransportError::Busy);
             };
             // The guard owns the socket for the whole dial: on success it is
             // defused and the socket moves into the stream, on failure *or

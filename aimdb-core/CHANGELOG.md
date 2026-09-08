@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prefix must do, having no delimiter to resync on). `encode` returns
   `Result<(), FrameFault>` for the same reason, so a frame the framer refuses
   reaches the caller as `TransportError::Framing` rather than a silent `Ok`.
+  `TransportError` also gains `Busy`, for a transport whose one endpoint
+  resource is already in use — distinguishable from `Io`, and retried like it.
 - **A panic is a bug, not an error channel — checked.** The crate is compiled
   under `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` outside
   its own tests. Four sites fixed: poisoned-mutex recovery in the

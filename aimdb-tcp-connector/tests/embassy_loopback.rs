@@ -18,7 +18,7 @@ extern crate alloc;
 
 use core::future::Future;
 
-use aimdb_core::session::{Connection, Dialer, Listener};
+use aimdb_core::session::{Connection, Dialer, Listener, TransportError};
 use aimdb_embassy_adapter::net::EmbassyNet;
 use aimdb_tcp_connector::connector::{framed_dialer, framed_listener};
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4};
@@ -304,6 +304,39 @@ fn two_concurrent_sessions() {
             echo_once(b_srv.as_mut()),
             send_and_verify(a_cli.as_mut(), b"aaa"),
             send_and_verify(b_cli.as_mut(), b"bbb"),
+        );
+    });
+}
+
+/// `Clone` on the dialer shares its one socket rather than duplicating it — the
+/// derive exists only to satisfy `SessionClientConnector`'s bound, which clones
+/// per build. A clone dialing while the original holds the link must say so:
+/// a bare `Io` is indistinguishable from the peer being down, and the client
+/// engine would retry-loop forever without ever naming the real cause.
+#[test]
+fn a_cloned_dialer_reports_a_busy_socket() {
+    drive(|server_stack, client_stack| async move {
+        let mut listener = framed_listener(EmbassyNet::listen::<1>(
+            server_stack,
+            7001u16,
+            [(buf(), buf())],
+        ));
+        let dialer = framed_dialer(
+            EmbassyNet::tcp(client_stack, buf(), buf()),
+            SERVER_HOST,
+            7001,
+        );
+        let clone = dialer.clone();
+
+        let (srv, cli) = futures::join!(listener.accept(), dialer.connect());
+        let _srv = srv.expect("accept");
+        let _cli = cli.expect("connect");
+
+        // `_cli` still holds the only socket.
+        assert_eq!(
+            clone.connect().await.err(),
+            Some(TransportError::Busy),
+            "a clone shares the socket, so the second dial is Busy, not Io"
         );
     });
 }

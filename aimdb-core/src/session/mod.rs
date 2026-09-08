@@ -233,6 +233,9 @@ pub enum TransportError {
     Io,
     /// The byte stream could not be framed, and the framer cannot resynchronize.
     Framing,
+    /// The transport's one endpoint resource is already in use — a second dial
+    /// on a single-socket transport while the first connection is live.
+    Busy,
 }
 
 /// Envelope-codec failure — a frame could not be decoded/encoded.
