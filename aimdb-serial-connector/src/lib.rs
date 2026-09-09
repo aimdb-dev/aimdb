@@ -8,8 +8,9 @@
 //! verbatim from `aimdb-core`.
 //!
 //! Core's session items are named unlinked throughout these docs: they exist
-//! only when a runtime feature pulls in `aimdb-core/connector-session`, and a
-//! link to them fails `cargo doc` on a build without one.
+//! only when the `connector` feature pulls in `aimdb-core/connector-session`,
+//! and a link to them fails `cargo doc` on a build without it. The same goes for
+//! anything gated on `std`.
 //!
 //! The wire is the same compact AimX JSON as UDS, but framed with **COBS**
 //! (Consistent Overhead Byte Stuffing) and a `0x00` delimiter instead of a
@@ -27,10 +28,7 @@
 
 extern crate alloc;
 
-// The COBS codec, and (under either runtime feature) that codec behind core's
-// `Framer` plus the `FramedConnection` aliases it forms with each adapter's
-// byte source. Supersedes the two per-runtime transport modules below, which it
-// will replace outright.
+// The COBS codec, and — under `connector` — that codec behind core's `Framer`.
 pub mod framing;
 
 // Runtime-neutral `SerialClient`/`SerialServer` over an adapter's byte stream.

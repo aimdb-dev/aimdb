@@ -18,7 +18,8 @@
 //! Session transports (serial, TCP, …) no longer come through here. They ride
 //! core's runtime-neutral spine directly — `SessionClientConnector` /
 //! `SessionServerConnector` over `FramedConnection`, with the byte source from
-//! [`crate::io`] or [`crate::net`] — so the Embassy duals this module used to
+//! this crate's `io` or `net` module (unlinked: neither exists in a
+//! `connectors`-only build) — so the Embassy duals this module used to
 //! carry (`EmbassySessionClient`/`Server`, `EmbassyConnection`, `OneShotCell`
 //! and the one-shot dialer/listener) are gone. Their one-shot semantics live in
 //! core as `OneShot`, `OneShotDialer` and `OneShotListener`.

@@ -95,13 +95,16 @@ impl SerialClient {
     /// Mirror records to and from the AimX peer on `stream`, served once.
     ///
     /// Reconnect is **disabled** (unlike `ClientConfig::default`): the stream is
-    /// moved in and cannot be re-acquired. `run_client` would stop anyway —
-    /// it treats a dialer's [`TransportError::Closed`] as terminal — but
-    /// saying so here keeps the intent local rather than resting on that
-    /// two-crate handshake, and skips a pointless backoff and "dial failed"
-    /// warning on the way out. A caller whose stream really can be redialed
-    /// opts back in with `.with_config(...)`; on a host, prefer
-    /// [`over_port`](Self::over_port), which reopens the device for real.
+    /// moved in and cannot be re-acquired. `run_client` would stop anyway — it
+    /// treats a dialer's `TransportError::Closed` as terminal — but saying so
+    /// here keeps the intent local rather than resting on that two-crate
+    /// handshake, and skips a pointless backoff and "dial failed" warning on the
+    /// way out. A caller whose stream really can be redialed opts back in with
+    /// `.with_config(...)`; on a host, prefer `over_port`, which reopens the
+    /// device for real.
+    ///
+    /// (Both names are unlinked deliberately: `TransportError` and `over_port`
+    /// only exist under `std`, and this item does not.)
     #[allow(clippy::new_ret_no_self)]
     pub fn new<S>(stream: S) -> SessionClientConnector<OneShotDialer<SerialFramed<S>>, AimxCodec>
     where
