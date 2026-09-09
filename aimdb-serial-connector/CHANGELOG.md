@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tokio_transport` and `embassy_transport` are deleted with the whole
   `Tokio*`/`Embassy*` alias set — `SerialDialer` is now `SerialPortDialer`, and
   `SerialListener`/`TokioSerialConnection` are gone.
+- **The host read chunk drops 256 → 64.** The deleted `TokioSerialConnection`
+  carried its own `READ_CHUNK = 256`; both paths now share `framing::READ_CHUNK`,
+  sized for an MCU UART ring, so a host reading a real port issues four times the
+  `read` calls per kilobyte. Kept deliberately — one code path, one chunk size —
+  and `SerialFramed`'s chunks are const generics, so a host-specific value stays
+  available without structural change.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written
