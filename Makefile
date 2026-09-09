@@ -384,12 +384,23 @@ doc:
 	cargo doc --package aimdb-persistence --no-deps
 	cargo doc --package aimdb-persistence-sqlite --no-deps
 	cargo doc --package aimdb-websocket-connector --features "tokio-runtime" --no-deps
+	cargo doc --package aimdb-uds-connector --no-deps
+	@# The serial and TCP connectors document a different item set per feature:
+	@# `std` adds the host-only port/socket helpers, `connector` is the neutral
+	@# half an MCU gets. Both legs run - a link from an ungated item to a gated
+	@# one only breaks in the leg that lacks it (see the embedded section below).
+	cargo doc --package aimdb-serial-connector --no-default-features --features "std" --no-deps
+	cargo doc --package aimdb-tcp-connector --no-default-features --features "std" --no-deps
+	cargo doc --package aimdb-client --features "transport-serial,transport-tcp" --no-deps
+	cargo doc --package aimdb-derive --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
 	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps
 	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime,net" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-serial-connector --no-default-features --features "connector" --no-deps
+	cargo doc --package aimdb-tcp-connector --no-default-features --features "connector" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
 	@printf "$(YELLOW)  → Building WASM/browser documentation$(NC)\n"
 	cargo doc --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" --no-deps
