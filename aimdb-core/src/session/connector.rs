@@ -48,11 +48,6 @@ type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + S
 /// it in a one-line sugar constructor (e.g. `UdsClient`).
 pub struct SessionClientConnector<D, C> {
     scheme: String,
-    // Moved in, not cloned: `run_client` takes the dialer by value and `build`
-    // hands it over exactly once, so the only reason this ever needed `Clone`
-    // was `build`'s `&self`. A `OneShot` covers that without forcing every
-    // dialer to be cloneable — a dialer wrapping a moved-in peripheral or
-    // socket cannot be.
     dialer: OneShot<D>,
     codec: C,
     config: ClientConfig,
