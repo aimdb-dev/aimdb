@@ -77,7 +77,7 @@ use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
 use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
-use aimdb_serial_connector::connector::SerialServer;
+use aimdb_serial_connector::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;

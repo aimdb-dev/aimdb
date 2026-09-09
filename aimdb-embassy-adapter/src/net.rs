@@ -364,15 +364,6 @@ impl<const N: usize> StreamListener for EmbassyTcpListener<N> {
 }
 
 // ===========================================================================
-// UART.
-// ===========================================================================
-
-// A UART borrows nothing from `embassy-net`, so `EmbassyUart` itself lives in
-// [`crate::io`] under `connector-io`; `net` enables that feature, and this
-// re-export keeps the `net::EmbassyUart` path a caller may already have.
-pub use crate::io::EmbassyUart;
-
-// ===========================================================================
 // Datagrams.
 // ===========================================================================
 

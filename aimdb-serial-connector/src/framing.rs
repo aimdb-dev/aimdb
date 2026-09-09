@@ -207,19 +207,13 @@ impl aimdb_core::session::Framer for CobsFramer {
     }
 }
 
-// The per-adapter aliases that used to live here — `EmbassyFramed<Rd, Wr>` and
-// `TokioFramed<S>` — are gone. Both were one-liners over the generic
-// `SerialFramed<S>` in `connector`, and naming an adapter in their definition is
-// what forced an adapter dependency into this crate's features. Callers write
-// `SerialFramed<EmbassyUart<Rd, Wr>>` or `SerialFramed<TokioByteStream<S>>`.
-
 /// The same framer and the same core connection over the Embassy UART, boxed as
 /// the runner takes it.
 ///
 /// Type-checking this on `thumbv7em` is what "one connector module, no runtime
 /// `cfg` on the code path" means concretely: if the two paths diverge, the
 /// embedded check fails here rather than in an example.
-#[cfg(feature = "_check-embassy")]
+#[cfg(feature = "_test-embassy")]
 #[allow(dead_code)]
 fn _same_framed_connection_serves_the_uart<Rd, Wr>(rx: Rd, tx: Wr)
 where

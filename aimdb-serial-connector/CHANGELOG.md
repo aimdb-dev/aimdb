@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tokio-runtime` and `embassy-runtime` are gone**, with no aliases: consumers
   move to `std` and `connector` respectively. The `thumbv7em` type-check that
   keeps the two byte sources on one code path survives as the internal
-  `_check-embassy` feature.
+  `_test-embassy` feature.
 - **One path for both runtimes (breaking).** `SerialServer::new` takes an
   adapter byte stream (`EmbassyUart::new(rx, tx)`, `TokioByteStream(port)`)
   instead of `(path, baud)` or split UART halves; the application opens the

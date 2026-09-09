@@ -193,7 +193,7 @@ Three details the prototype settled:
 - **`aimdb-embassy-adapter`**: `EmbassyNet::tcp(stack, rx, tx)`,
   `EmbassyNet::listen::<N>(stack, endpoint, rx[N], tx[N])` (the socket-slot pool
   moves here from `aimdb-tcp-connector/src/embassy_transport.rs`, since deleted),
-  `EmbassyNet::udp(stack, …)`, `EmbassyUart::split(rx, tx)`, and `Delay`
+  `EmbassyNet::udp(stack, …)`, `EmbassyUart::new(rx, tx)`, and `Delay`
   returning `embassy_time::Timer`. Each stream/datagram newtype is
   `unsafe impl Send` and wraps the inner future in `SendFutureWrapper`. The
   `unsafe` stays exactly where design 033 put it. `NetStack` construction moves
@@ -579,7 +579,8 @@ let mqtt = MqttConnector::new(broker_url).transport(TokioNet::tcp());
 ### 7.2 Embassy
 
 ```rust
-use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyNet, EmbassyUart};
+use aimdb_embassy_adapter::io::EmbassyUart;
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyNet};
 use aimdb_mqtt_connector::MqttConnector;
 #[cfg(feature = "tls")]
 use aimdb_mqtt_connector::embedded::TlsOptions;
@@ -610,7 +611,7 @@ let mqtt = mqtt.with_tls(TlsOptions::new(
 // CHANGED: the UART halves go through the adapter too, instead of the
 // connector's `embassy_transport` module.
 let (serial_tx, serial_rx) = uart.split();
-let serial = SerialServer::new(EmbassyUart::split(serial_rx, serial_tx))
+let serial = SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
     .security_policy(SecurityPolicy::read_only());
 
 let mut builder = AimDbBuilder::new()
@@ -637,8 +638,10 @@ What moved:
   RNG that does not will see the error at this line rather than a stray
   `unsafe impl` deep in the connector, which is the point.
 - **The serial UART goes through the adapter.** `SerialServer::new(rx, tx)`
-  becomes `SerialServer::new(EmbassyUart::split(rx, tx))`, so the connector
-  names no `embedded-io-async` halves of its own.
+  becomes `SerialServer::new(EmbassyUart::new(rx, tx))`, so the connector names
+  no `embedded-io-async` halves of its own. `EmbassyUart` lives in the adapter's
+  `io` module, behind `connector-io` — it borrows nothing from `embassy-net`, so
+  a serial-only board compiles no network stack to frame a UART.
 
 Behind the scenes the type is `MqttConnector<Embedded<N>>` for the
 `.transport(...)` path and `MqttConnector<Native>` for the rumqttc path.
