@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! # board (Embassy SerialServer) ⇄ host:
-//! cargo run --example serial_demo --features _test-tokio -- client /dev/ttyACM0
+//! cargo run --example serial_demo --features std -- client /dev/ttyACM0
 //!
 //! # host SerialServer ⇄ host client over a PTY (no hardware):
 //! socat -d -d pty,raw,echo=0 pty,raw,echo=0          # prints two /dev/pts/N
@@ -22,8 +22,8 @@
 //! - `raw <device> [baud] [method] [name]` — low-level debug: send one request and
 //!   print the full decoded reply (no engine), handy when `client` misbehaves.
 //!
-//! Built only under the internal `_test-tokio` feature (it needs a concrete
-//! adapter); see the crate's `Cargo.toml`.
+//! Built only under `std` (it needs the `tokio-serial` port backend); see the
+//! crate's `Cargo.toml`.
 //!
 //! On macOS the board's VCP is `/dev/cu.usbmodem…` (use the `cu.*`, not `tty.*`,
 //! node). Run from the workspace root, and make sure nothing else holds the port
@@ -37,7 +37,8 @@ use aimdb_core::remote::AimxConfig;
 use aimdb_core::session::aimx::AimxCodec;
 use aimdb_core::session::{run_client, ClientConfig, Payload};
 use aimdb_core::AimDbBuilder;
-use aimdb_serial_connector::tokio_transport::{SerialDialer, SerialServer};
+use aimdb_serial_connector::connector::{SerialPortDialer, SerialServer};
+use aimdb_tokio_adapter::net::TokioByteStream;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -172,7 +173,7 @@ async fn run_set_mode(device: String, baud: u32) {
     println!("[set] writing `setting` over {device} @ {baud} baud");
 
     let (handle, engine) = run_client(
-        SerialDialer::new(device, baud),
+        SerialPortDialer::new(device, baud),
         AimxCodec,
         ClientConfig {
             sends_hello: false,
@@ -217,9 +218,13 @@ async fn run_set_mode(device: String, baud: u32) {
 async fn run_server(device: String, baud: u32) {
     println!("[server] serving AimX over {device} @ {baud} baud (Ctrl-C to stop)");
 
+    // The application opens the device; the connector only frames it.
+    let port = open_port(&device, baud);
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
-        .with_connector(SerialServer::new(device, baud).with_config(AimxConfig::uds_default()));
+        .with_connector(
+            SerialServer::new(TokioByteStream(port)).with_config(AimxConfig::uds_default()),
+        );
     builder.configure::<Counter>("counter", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
@@ -246,7 +251,7 @@ async fn run_client_mode(device: String, baud: u32) {
     println!("[client] querying AimX over {device} @ {baud} baud");
 
     let (handle, engine) = run_client(
-        SerialDialer::new(device, baud),
+        SerialPortDialer::new(device, baud),
         AimxCodec,
         ClientConfig {
             sends_hello: false,
@@ -270,5 +275,17 @@ async fn run_client_mode(device: String, baud: u32) {
             Err(e) => println!("[client] record.get failed: {e:?}"),
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Open a serial device, or exit with a readable message.
+fn open_port(device: &str, baud: u32) -> tokio_serial::SerialStream {
+    use tokio_serial::SerialPortBuilderExt;
+    match tokio_serial::new(device, baud).open_native_async() {
+        Ok(port) => port,
+        Err(e) => {
+            eprintln!("[server] cannot open {device} @ {baud} baud: {e}");
+            std::process::exit(1);
+        }
     }
 }

@@ -501,7 +501,7 @@ async fn client_loop<D, C>(
                 // `Closed` is terminal — the dialer signals it will never succeed
                 // again (e.g. the caller stopped the bridge), so retrying would
                 // spin a permanently-failing redial forever. Only transient
-                // failures (`Io`) earn a backoff+retry. Other transports' dialers
+                // failures (`Io`, `Busy`) earn a backoff+retry. Other transports' dialers
                 // map connect failures to `Io`, never `Closed`, so this is safe.
                 if e == TransportError::Closed {
                     return;

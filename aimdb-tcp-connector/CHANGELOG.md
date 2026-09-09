@@ -7,8 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Features name what the code needs, not an executor.** New `connector`
+  feature gates everything the session layer backs; `std` becomes orthogonal,
+  since `src/` contains no `std::` and is `alloc`-only either way. The eleven
+  `any(tokio-runtime, embassy-runtime)` gates — never once naming a single
+  runtime, because after the migration there is no per-runtime code — collapse to
+  one `cfg(feature = "connector")`. `tokio-runtime` and `embassy-runtime` remain
+  as aliases and will be removed after a release. A third runtime (FreeRTOS with
+  lwIP) now enables `connector` and supplies its own transport, rather than
+  enabling a feature named after an executor it does not use.
+- **`embassy-runtime` no longer pulls `aimdb-embassy-adapter`.** `src/` never
+  named it; only the loopback harness does, so it moves to
+  `_test-embassy-loopback` — which is where the Tokio side already had its
+  adapter. The Embassy *library* graph is now `aimdb-core` alone.
+- **One path for both runtimes (breaking).** `TcpServer::new` takes an
+  already-bound listener from an adapter (`TokioNet::listen`,
+  `EmbassyNet::listen::<N>`) instead of a bind string, and `TcpClient::new`
+  takes a dialer. `tokio_transport` and `embassy_transport` are deleted with the
+  whole `Tokio*`/`Embassy*` alias set, and with them the crate's last three
+  `unsafe impl`s. The library no longer depends on `tokio`, `embassy-net`,
+  `embassy-futures` or `embedded-io-async`.
+
 ### Added
 
+- **`connector` — runtime-neutral `TcpClient`/`TcpServer`** over core's
+  `StreamDialer`/`StreamListener`, plus `framing::LengthFramer` against core's
+  `Framer`. A length prefix has no delimiter to resync on, so `LengthFramer`
+  reports a bad header as `FrameFault::Fatal` and the connection closes instead
+  of reading on; an oversized outbound frame is still dropped whole rather than
+  written half-encoded, but is now reported rather than silently discarded.
+  The frame cap is settable again: `LengthFramers` is a `FramerFactory` holding
+  `max_frame`, where the `fn() -> LengthFramer` it replaces was stateless and
+  could only ever produce `DEFAULT_MAX_FRAME`. Reach it through
+  `TcpServer::max_frame(n)`, `TcpClient::bounded(..)`, `framed_dialer_bounded`
+  or `framed_listener_bounded`; the un-suffixed constructors keep the 64 KiB
+  default. It bounds what one connection can make the receiver buffer, which is
+  a memory limit on an MCU and a DoS limit on an exposed port.
+  `split_host_port` and `framed_dialer_at` carry the `host:port` grammar and
+  are fallible, returning `EndpointError`. The grammar itself now lives in
+  `aimdb_core::session::endpoint` and is re-exported here unchanged — same
+  paths, same behaviour — so `aimdb-client` can share it without depending on
+  this crate. Brackets are what let an IPv6
+  literal carry a port, so an unbracketed one (`fe80::1`, `2001:db8::dead:beef`)
+  keeps every colon as address and takes the default port rather than having its
+  last group read as one. A port that is written but is not a number in
+  `0..=65535` is rejected instead of falling back to `DEFAULT_PORT`, which would
+  dial a different — possibly live — service.
 - **`tests/accept_pool.rs`** — the adapter's pooled `StreamListener` over two
   crossover-wired `embassy-net` stacks, with a rebuild-and-cancel pool as the
   negative control: it loses a SYN arriving between accepts, the stored-accept

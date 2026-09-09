@@ -29,9 +29,9 @@ use crate::builder::AimDb;
 use crate::connector::ConnectorBuilder;
 use crate::session::{
     pump_client, run_client, serve, ClientConfig, Dialer, Dispatch, EnvelopeCodec, Listener,
-    SessionConfig,
+    OneShot, SessionConfig,
 };
-use crate::DbResult;
+use crate::{DbError, DbResult};
 
 /// The default scheme a session connector registers when none is given.
 pub const DEFAULT_SCHEME: &str = "remote";
@@ -48,7 +48,7 @@ type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + S
 /// it in a one-line sugar constructor (e.g. `UdsClient`).
 pub struct SessionClientConnector<D, C> {
     scheme: String,
-    dialer: D,
+    dialer: OneShot<D>,
     codec: C,
     config: ClientConfig,
 }
@@ -59,7 +59,7 @@ impl<D, C> SessionClientConnector<D, C> {
     pub fn new(dialer: D, codec: C) -> Self {
         Self {
             scheme: DEFAULT_SCHEME.to_string(),
-            dialer,
+            dialer: OneShot::new(dialer),
             codec,
             config: ClientConfig::default(),
         }
@@ -81,13 +81,22 @@ impl<D, C> SessionClientConnector<D, C> {
 
 impl<D, C> ConnectorBuilder for SessionClientConnector<D, C>
 where
-    D: Dialer + Clone + Send + Sync + 'static,
+    D: Dialer + Send + 'static,
     C: EnvelopeCodec + Clone + 'static,
 {
     fn build<'a>(&'a self, db: &'a AimDb) -> BuildFuture<'a> {
         Box::pin(async move {
+            // Taken on first poll, not at call time: a `build()` future dropped
+            // before it is polled must leave the dialer where it was.
+            let dialer = self
+                .dialer
+                .take()
+                .ok_or_else(|| DbError::InvalidOperation {
+                    operation: "SessionClientConnector::build".to_string(),
+                    reason: "the moved-in dialer was already taken; build() ran twice".to_string(),
+                })?;
             let (handle, engine_fut) = run_client(
-                self.dialer.clone(),
+                dialer,
                 self.codec.clone(),
                 self.config.clone(),
                 db.runtime_ops(),

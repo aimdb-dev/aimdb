@@ -17,6 +17,12 @@ aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
 ] }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
+    # `EmbassyUart`, the byte source the serial connector frames.
+    "connector-io",
+    # `EmbassyNet::udp` and `EmbassyDelay`, the UDP socket and clock the KNX
+    # connector tunnels over. Until #251 this arrived transitively through the
+    # serial connector; that crate is runtime-neutral now, so declare it here.
+    "net",
 ] }
 aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = false, features = [
     "embassy-runtime",
@@ -24,9 +30,9 @@ aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = f
 ] }
 # Serial remote-access server — serves this db's records over a UART (ST-LINK VCP)
 # so a host can read them with `aimdb --features transport-serial --connect serial://…`.
-# Its `embassy-runtime` feature also turns on `aimdb-core/remote`.
+# Its `connector` feature also turns on `aimdb-core/remote`.
 aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-features = false, features = [
-    "embassy-runtime",
+    "connector",
     "defmt",
 ] }
 

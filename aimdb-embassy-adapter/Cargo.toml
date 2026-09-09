@@ -22,17 +22,20 @@ embassy-runtime = ["embassy-executor", "embassy-time", "embassy-sync"]
 embassy-net-support = ["embassy-net"]                                  # Network stack support for connectors
 
 connectors = ["aimdb-core/connector-session"]
+# The framed `Connection` spine plus the non-socket byte sources in `io`
+# (`EmbassyUart`): core's I/O traits over `embedded-io-async`, no network stack.
 connector-io = ["connectors", "dep:embedded-io-async"]
 
-# Embassy sockets, dialers and UART halves behind core's runtime-neutral I/O
-# traits, so connector crates need no `embassy-net` dependency. Deliberately
+# Embassy sockets and dialers behind core's runtime-neutral I/O traits, so
+# connector crates need no `embassy-net` dependency. Deliberately
 # does not imply `embassy-time`: that turns on `defmt-timestamp-uptime`, whose
 # `_defmt_timestamp` collides with every host test binary's `defmt::timestamp!`.
 net = [
-    "connectors",
+    # The UART in `io` is `connector-io`'s, not this feature's; `net` enables it
+    # so one feature still gets a caller every byte source the adapter offers.
+    "connector-io",
     "embassy-net-support",
     "embassy-net/udp",
-    "dep:embedded-io-async",
     "dep:embassy-futures",
 ]
 
