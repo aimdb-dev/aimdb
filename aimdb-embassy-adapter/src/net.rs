@@ -209,6 +209,14 @@ impl ByteStream for EmbassyTcpStream {
 }
 
 /// Dials TCP connections over one caller-owned socket.
+///
+/// `Clone` shares that socket rather than duplicating it — it exists so a
+/// framed dialer can satisfy `SessionClientConnector`'s `Clone` bound. A clone
+/// dialing while another handle holds the connection gets
+/// [`TransportError::Busy`]. For a second *concurrent* connection call
+/// [`EmbassyNet::tcp`] again with its own buffers, which is the only way to get
+/// a second socket.
+#[derive(Clone)]
 pub struct EmbassyTcpDialer {
     slot: Arc<TcpSocketSlot>,
 }
@@ -228,7 +236,7 @@ impl StreamDialer for EmbassyTcpDialer {
             let endpoint = IpEndpoint::new(addr.into(), port);
 
             let Some(socket) = self.slot.take() else {
-                return Err(TransportError::Io);
+                return Err(TransportError::Busy);
             };
             // The guard owns the socket for the whole dial: on success it is
             // defused and the socket moves into the stream, on failure *or
@@ -634,7 +642,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aimdb_core::session::{Connection, FramedConnection, Framer};
+    use aimdb_core::session::{Connection, FrameFault, FramedConnection, Framer};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -689,14 +697,15 @@ mod tests {
     }
 
     impl Framer for LenFramer {
-        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
             out.push(frame.len() as u8);
             out.extend_from_slice(frame);
+            Ok(())
         }
         fn push_bytes(&mut self, bytes: &[u8]) {
             self.buf.extend_from_slice(bytes);
         }
-        fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+        fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
             let len = *self.buf.first()? as usize;
             if self.buf.len() < len + 1 {
                 return None;

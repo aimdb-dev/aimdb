@@ -27,11 +27,15 @@ impl TokioNet {
     }
 
     /// Bind a TCP listener on `addr` (`"host:port"`).
-    pub async fn listen(addr: &str) -> TransportResult<TokioTcpListener> {
-        TcpListener::bind(addr)
-            .await
-            .map(TokioTcpListener)
-            .map_err(|_| TransportError::Io)
+    ///
+    /// Yields `std::io::Error` rather than [`TransportError`], which cannot
+    /// carry a cause: it is `Clone + PartialEq + Eq` in a `no_std` crate. A bind
+    /// failure is one an operator has to act on and cannot infer — the port is
+    /// taken, the port is privileged, the interface is absent — and only the OS
+    /// distinguishes them. This is a constructor, not a trait method, so it is
+    /// free to say which.
+    pub async fn listen(addr: &str) -> std::io::Result<TokioTcpListener> {
+        TcpListener::bind(addr).await.map(TokioTcpListener)
     }
 
     /// A UDP binder on `local_ip`, which sockets are bound to as
@@ -78,6 +82,7 @@ where
 }
 
 /// Dials TCP connections.
+#[derive(Clone, Copy, Default)]
 pub struct TokioTcpDialer;
 
 impl StreamDialer for TokioTcpDialer {
@@ -180,7 +185,9 @@ impl Delay for TokioDelay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aimdb_core::session::{Dialer, Framer, FramingDialer, FramingListener, Listener};
+    use aimdb_core::session::{
+        Dialer, FrameFault, Framer, FramingDialer, FramingListener, Listener,
+    };
     use std::net::Ipv4Addr;
 
     /// Length-prefixed framer, enough to drive a `FramedConnection`.
@@ -190,14 +197,15 @@ mod tests {
     }
 
     impl Framer for LenFramer {
-        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
             out.push(frame.len() as u8);
             out.extend_from_slice(frame);
+            Ok(())
         }
         fn push_bytes(&mut self, bytes: &[u8]) {
             self.buf.extend_from_slice(bytes);
         }
-        fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+        fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
             let len = *self.buf.first()? as usize;
             if self.buf.len() < len + 1 {
                 return None;
@@ -206,6 +214,26 @@ mod tests {
             self.buf.drain(..len + 1);
             Some(Ok(frame))
         }
+    }
+
+    /// A bind failure names its cause. `TransportError` cannot carry one, so
+    /// `listen` yields `io::Error` — the difference between "port taken",
+    /// "port privileged" and "no such interface" is the whole content of the
+    /// error, and an operator cannot infer it from the address they supplied.
+    #[tokio::test]
+    async fn a_failed_bind_reports_why() {
+        let held = TokioNet::listen("127.0.0.1:0").await.expect("first bind");
+        let addr = held.local_addr().expect("bound addr");
+
+        let Err(err) = TokioNet::listen(&addr.to_string()).await else {
+            panic!("binding a held port must fail");
+        };
+
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::AddrInUse,
+            "the OS reason must survive, not collapse to a bare Io"
+        );
     }
 
     #[tokio::test]

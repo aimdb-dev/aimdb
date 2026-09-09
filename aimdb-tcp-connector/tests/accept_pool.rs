@@ -61,8 +61,11 @@ const MTU: usize = 1514;
 const SERVER_IP: Ipv4Address = Ipv4Address::new(192, 168, 0, 1);
 const CLIENT_IP: Ipv4Address = Ipv4Address::new(192, 168, 0, 2);
 
-/// As `StreamDialer::connect` takes it: a host string the adapter resolves.
-const SERVER_HOST: &str = "192.168.0.1";
+/// As `StreamDialer::connect` takes it, derived from [`SERVER_IP`] so a second
+/// literal cannot drift from the address the stack is configured with.
+fn server_host() -> alloc::string::String {
+    alloc::format!("{SERVER_IP}")
+}
 
 type ChState = ch::State<MTU, 4, 4>;
 
@@ -256,7 +259,12 @@ fn pool_keeps_every_slot_listening_between_accepts() {
         // Accept #1 arms both slots, returns when A lands.
         let (accepted_a, mut client_a) = futures::join!(
             async { listener.accept().await.expect("accept A") },
-            async { dialer_a.connect(SERVER_HOST, 7101).await.expect("dial A") },
+            async {
+                dialer_a
+                    .connect(&server_host(), 7101)
+                    .await
+                    .expect("dial A")
+            },
         );
         let (mut server_a, peer_a) = accepted_a;
         assert!(
@@ -268,7 +276,7 @@ fn pool_keeps_every_slot_listening_between_accepts() {
         roundtrip(&mut server_a, &mut client_a, b"aaa").await;
 
         // Slot 1 must still be in LISTEN.
-        let mut client_b = dialer_b.connect(SERVER_HOST, 7101).await.expect(
+        let mut client_b = dialer_b.connect(&server_host(), 7101).await.expect(
             "second SYN was refused: the pool did not keep slot 1 listening between accepts",
         );
 
@@ -300,11 +308,16 @@ fn naive_pool_loses_the_syn_that_arrives_between_accepts() {
 
         let (socket_a, _client_a) = futures::join!(
             async { listener.accept().await.expect("accept A") },
-            async { dialer_a.connect(SERVER_HOST, 7102).await.expect("dial A") },
+            async {
+                dialer_a
+                    .connect(&server_host(), 7102)
+                    .await
+                    .expect("dial A")
+            },
         );
         let _keep_a = socket_a;
 
-        let refused = dialer_b.connect(SERVER_HOST, 7102).await;
+        let refused = dialer_b.connect(&server_host(), 7102).await;
         assert_eq!(
             refused.err(),
             Some(TransportError::Io),

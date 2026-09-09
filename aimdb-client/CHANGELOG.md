@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`tcp://` endpoint validation shares one grammar with the connector.**
+  `require_tcp_target` had grown a 56-line private copy of the `host:port`
+  grammar; it now calls `aimdb_core::session::split_host_port_opt` and keeps
+  only its own policy on top — a URL must name its port, where a connector
+  constructor may default one. Rejection messages are unchanged and now pinned
+  by a test, including the two that are easy to confuse: an unbracketed IPv6
+  literal is told to add brackets, a bracketed one missing its port is told to
+  add a port.
+
 ### Changed (breaking) — Design 047
 
 - **One subscription API: `AimxConnection::subscribe`.** It now yields

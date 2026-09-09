@@ -19,7 +19,8 @@ observability = ["aimdb-core/observability"]
 # compiled in is rejected at resolve time.
 transport-uds = ["dep:aimdb-uds-connector"]
 transport-serial = ["dep:aimdb-serial-connector"]
-transport-tcp = ["dep:aimdb-tcp-connector"]
+# The TCP dialer comes from the adapter's `net` transports.
+transport-tcp = ["dep:aimdb-tcp-connector", "aimdb-tokio-adapter/net"]
 
 [dependencies]
 # Core dependencies - protocol types from aimdb-core. `connector-session`
