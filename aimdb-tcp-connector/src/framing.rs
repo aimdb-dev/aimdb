@@ -10,6 +10,9 @@
 //! The declared length is payload bytes only. Oversized frames are fatal because
 //! length-prefix TCP has no delimiter that would let the receiver safely resync.
 
+// Gated with the items that use it: the accumulator below is `alloc`-only and
+// builds without core's session layer.
+#[cfg(feature = "connector")]
 use aimdb_core::session::FrameFault;
 use alloc::vec::Vec;
 
