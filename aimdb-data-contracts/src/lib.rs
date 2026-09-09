@@ -179,7 +179,8 @@ pub trait Settable: SchemaType {
 /// Project a schema type onto a numeric domain signal.
 ///
 /// The trait's kernel is the numeric projection: implement it, call
-/// [`ObservableRegistrarExt::observe`],
+/// `ObservableRegistrarExt::observe` (unlinked — it exists only behind the
+/// `observable` feature),
 /// and the signal is folded into live last/min/max/mean statistics that surface
 /// on `record.list` / `record.get` and stage profiling. The signal can also feed
 /// threshold checks, alerting, and aggregation.

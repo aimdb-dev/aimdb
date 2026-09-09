@@ -11,14 +11,18 @@
 //! the round-trip is unit-tested on the host without any transport.
 //!
 //! Two layers live here. [`encode_frame`] and [`FrameAccumulator`] are the COBS
-//! codec itself, with no dependency on the session substrate. [`CobsFramer`]
-//! below is that codec behind core's `Framer` trait, plus the
+//! codec itself, with no dependency on the session substrate. `CobsFramer`
+//! below — unlinked, as it exists only behind a runtime feature — is that codec
+//! behind core's `Framer` trait, plus the
 //! `FramedConnection` aliases it forms with each adapter's byte source — the
 //! whole of what this crate contributes to a session, since the byte sources
 //! come from the adapters and this crate names no socket or UART type of its
 //! own. That half needs `aimdb_core::session`, so it is gated on the runtime
 //! features that enable core's `connector-session`.
 
+// Gated with the items that use it: the accumulator below is `alloc`-only and
+// builds without core's session layer.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 use aimdb_core::session::FrameFault;
 use alloc::vec::Vec;
 

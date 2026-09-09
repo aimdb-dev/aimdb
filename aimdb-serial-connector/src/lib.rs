@@ -3,9 +3,12 @@
 //!
 //! A thin, swappable transport crate (the serial sibling of `aimdb-uds-connector`):
 //! it contributes only the `Dialer`/`Listener`/`Connection` triple plus thin
-//! sugar; the AimX codec ([`AimxCodec`](aimdb_core::session::aimx::AimxCodec)),
-//! dispatch ([`AimxDispatch`](aimdb_core::session::aimx::AimxDispatch)), and the
+//! sugar; the AimX codec (`AimxCodec`), dispatch (`AimxDispatch`), and the
 //! runtime-neutral session engines are reused verbatim from `aimdb-core`.
+//!
+//! Core's session items are named unlinked throughout these docs: they exist
+//! only when a runtime feature pulls in `aimdb-core/connector-session`, and a
+//! link to them fails `cargo doc` on a build without one.
 //!
 //! The wire is the same compact AimX JSON as UDS, but framed with **COBS**
 //! (Consistent Overhead Byte Stuffing) and a `0x00` delimiter instead of a
@@ -15,8 +18,7 @@
 //! # Two halves
 //!
 //! - **`tokio-runtime`** (std, host/gateway): real serial via `tokio-serial`,
-//!   riding the generic [`SessionClientConnector`](aimdb_core::session::SessionClientConnector)
-//!   / [`SessionServerConnector`](aimdb_core::session::SessionServerConnector).
+//!   riding the generic `SessionClientConnector` / `SessionServerConnector`.
 //!   See `tokio_transport`.
 //! - **`embassy-runtime`** (`no_std + alloc`, MCU): generic over
 //!   `embedded-io-async` UART halves; the COBS `Framer` plus thin sugar over the
