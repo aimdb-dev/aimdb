@@ -125,7 +125,7 @@ build:
 	@printf "$(YELLOW)  → Building UDS connector$(NC)\n"
 	cargo build --package aimdb-uds-connector
 	@printf "$(YELLOW)  → Building serial connector (tokio)$(NC)\n"
-	cargo build --package aimdb-serial-connector --no-default-features --features "tokio-runtime"
+	cargo build --package aimdb-serial-connector --no-default-features --features "std"
 	@printf "$(YELLOW)  → Building TCP connector (tokio)$(NC)\n"
 	cargo build --package aimdb-tcp-connector --no-default-features --features "tokio-runtime"
 	@printf "$(YELLOW)  → Building WASM adapter$(NC)\n"
@@ -218,9 +218,9 @@ test:
 	@printf "$(YELLOW)  → Testing UDS connector$(NC)\n"
 	cargo test --package aimdb-uds-connector
 	@printf "$(YELLOW)  → Testing serial connector (tokio: COBS framing + AimX round-trip over a duplex)$(NC)\n"
-	cargo test --package aimdb-serial-connector --no-default-features --features "tokio-runtime"
+	cargo test --package aimdb-serial-connector --no-default-features --features "std"
 	@printf "$(YELLOW)  → Testing serial connector (embassy: COBS framing + client-engine smoke on the EmbassyAdapter clock)$(NC)\n"
-	cargo test --package aimdb-serial-connector --no-default-features --features "embassy-runtime"
+	cargo test --package aimdb-serial-connector --no-default-features --features "_check-embassy"
 	@printf "$(YELLOW)  → Testing TCP connector (tokio: length-prefix framing + AimX loopback)$(NC)\n"
 	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-tokio"
 	@printf "$(YELLOW)  → Testing TCP connector (embassy: socket recycle + concurrent slots + redial over an embassy-net loopback)$(NC)\n"
@@ -341,11 +341,11 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on UDS connector$(NC)\n"
 	cargo clippy --package aimdb-uds-connector --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on serial connector (tokio)$(NC)\n"
-	cargo clippy --package aimdb-serial-connector --no-default-features --features "tokio-runtime" --all-targets -- -D warnings
+	cargo clippy --package aimdb-serial-connector --no-default-features --features "std" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on serial connector (embassy)$(NC)\n"
-	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
+	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "_check-embassy" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on serial connector (embassy + defmt)$(NC)\n"
-	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	cargo clippy --package aimdb-serial-connector --target thumbv7em-none-eabihf --no-default-features --features "_check-embassy,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on TCP connector (tokio)$(NC)\n"
 	cargo clippy --package aimdb-tcp-connector --no-default-features --features "_test-tokio" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on TCP connector (embassy)$(NC)\n"
@@ -456,9 +456,9 @@ test-embedded:
 	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-serial-connector (Embassy: full no_std AimX serial client+server) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-serial-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
+	cargo check --package aimdb-serial-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "_check-embassy"
 	@printf "$(YELLOW)  → Checking aimdb-serial-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-serial-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
+	cargo check --package aimdb-serial-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "_check-embassy,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-tcp-connector (Embassy TCP client) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-tcp-connector (Embassy TCP client + defmt) on thumbv7em-none-eabihf target$(NC)\n"

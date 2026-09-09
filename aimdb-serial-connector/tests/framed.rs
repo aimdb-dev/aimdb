@@ -1,21 +1,19 @@
 //! The COBS framer and core's `FramedConnection` over the Tokio adapter's byte
 //! stream — the same pairing the Embassy side gets from `EmbassyUart`.
-#![cfg(feature = "tokio-runtime")]
+#![cfg(feature = "std")]
 
 use aimdb_core::session::Connection;
-use aimdb_serial_connector::framing::{CobsFramer, TokioFramed, WRITE_CHUNK};
+use aimdb_serial_connector::connector::{framed, SerialFramed};
+use aimdb_serial_connector::framing::WRITE_CHUNK;
 use aimdb_tokio_adapter::net::TokioByteStream;
 
 /// A duplex pipe standing in for a `SerialStream`, framed at both ends.
 fn pipe() -> (
-    TokioFramed<tokio::io::DuplexStream>,
-    TokioFramed<tokio::io::DuplexStream>,
+    SerialFramed<TokioByteStream<tokio::io::DuplexStream>>,
+    SerialFramed<TokioByteStream<tokio::io::DuplexStream>>,
 ) {
     let (a, b) = tokio::io::duplex(8 * 1024);
-    (
-        TokioFramed::new(TokioByteStream(a), CobsFramer::new()),
-        TokioFramed::new(TokioByteStream(b), CobsFramer::new()),
-    )
+    (framed(TokioByteStream(a)), framed(TokioByteStream(b)))
 }
 
 #[tokio::test]

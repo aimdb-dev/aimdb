@@ -22,7 +22,7 @@
 
 // Gated with the items that use it: the accumulator below is `alloc`-only and
 // builds without core's session layer.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 use aimdb_core::session::FrameFault;
 use alloc::vec::Vec;
 
@@ -160,11 +160,11 @@ impl FrameAccumulator {
 // ===========================================================================
 
 /// Per-`read` chunk, matching the UART ring size.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub const READ_CHUNK: usize = 64;
 /// Per-`write_all` chunk: some HAL `BufferedUart::write` rejects a single write
 /// larger than its TX ring.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub const WRITE_CHUNK: usize = 64;
 
 /// COBS framing against core's [`Framer`](aimdb_core::session::Framer), so one
@@ -173,13 +173,13 @@ pub const WRITE_CHUNK: usize = 64;
 /// `encode` COBS-encodes a frame and appends the [`DELIM`] sentinel; the
 /// accumulator yields one frame per sentinel, skipping a malformed run (COBS is
 /// self-synchronizing).
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 #[derive(Default)]
 pub struct CobsFramer {
     acc: FrameAccumulator,
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl CobsFramer {
     /// A fresh COBS framer.
     pub fn new() -> Self {
@@ -187,7 +187,7 @@ impl CobsFramer {
     }
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 impl aimdb_core::session::Framer for CobsFramer {
     fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
         encode_frame(frame, out);
@@ -207,24 +207,11 @@ impl aimdb_core::session::Framer for CobsFramer {
     }
 }
 
-/// A framed connection over the Embassy adapter's UART halves.
-#[cfg(feature = "embassy-runtime")]
-pub type EmbassyFramed<Rd, Wr> = aimdb_core::session::FramedConnection<
-    aimdb_embassy_adapter::net::EmbassyUart<Rd, Wr>,
-    CobsFramer,
-    READ_CHUNK,
-    WRITE_CHUNK,
->;
-
-/// A framed connection over any Tokio byte source — a `tokio_serial::SerialStream`
-/// in production, a `tokio::io::duplex()` pipe in tests.
-#[cfg(feature = "tokio-runtime")]
-pub type TokioFramed<S> = aimdb_core::session::FramedConnection<
-    aimdb_tokio_adapter::net::TokioByteStream<S>,
-    CobsFramer,
-    READ_CHUNK,
-    WRITE_CHUNK,
->;
+// The per-adapter aliases that used to live here — `EmbassyFramed<Rd, Wr>` and
+// `TokioFramed<S>` — are gone. Both were one-liners over the generic
+// `SerialFramed<S>` in `connector`, and naming an adapter in their definition is
+// what forced an adapter dependency into this crate's features. Callers write
+// `SerialFramed<EmbassyUart<Rd, Wr>>` or `SerialFramed<TokioByteStream<S>>`.
 
 /// The same framer and the same core connection over the Embassy UART, boxed as
 /// the runner takes it.
@@ -232,7 +219,7 @@ pub type TokioFramed<S> = aimdb_core::session::FramedConnection<
 /// Type-checking this on `thumbv7em` is what "one connector module, no runtime
 /// `cfg` on the code path" means concretely: if the two paths diverge, the
 /// embedded check fails here rather than in an example.
-#[cfg(feature = "embassy-runtime")]
+#[cfg(feature = "_check-embassy")]
 #[allow(dead_code)]
 fn _same_framed_connection_serves_the_uart<Rd, Wr>(rx: Rd, tx: Wr)
 where
@@ -243,7 +230,7 @@ where
     use aimdb_embassy_adapter::net::EmbassyUart;
     use alloc::boxed::Box;
 
-    let conn: EmbassyFramed<Rd, Wr> =
-        EmbassyFramed::new(EmbassyUart::new(rx, tx), CobsFramer::new());
+    let conn: crate::connector::SerialFramed<EmbassyUart<Rd, Wr>> =
+        crate::connector::framed(EmbassyUart::new(rx, tx));
     let _boxed: Box<dyn Connection> = Box::new(conn);
 }

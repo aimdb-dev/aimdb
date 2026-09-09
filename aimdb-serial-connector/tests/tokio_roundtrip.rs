@@ -4,7 +4,7 @@
 //! `run_client` engine drives RPC on the other — proving the COBS framing over
 //! the adapter's byte stream carries the real protocol both directions.
 
-#![cfg(feature = "tokio-runtime")]
+#![cfg(feature = "std")]
 
 use std::sync::Arc;
 use std::time::Duration;

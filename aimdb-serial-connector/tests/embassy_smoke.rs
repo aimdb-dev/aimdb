@@ -11,7 +11,7 @@
 //! [`EchoCodec`], so no second node is needed), exercising COBS encode → wire →
 //! decode under the engine.
 
-#![cfg(feature = "embassy-runtime")]
+#![cfg(feature = "_check-embassy")]
 
 extern crate alloc;
 

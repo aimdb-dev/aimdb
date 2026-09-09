@@ -19,7 +19,7 @@ aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features
     "embassy-runtime",
 ] }
 aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-features = false, features = [
-    "embassy-runtime",
+    "connector",
     "defmt",
 ] }
 

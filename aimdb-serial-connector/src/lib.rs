@@ -34,7 +34,7 @@ extern crate alloc;
 pub mod framing;
 
 // Runtime-neutral `SerialClient`/`SerialServer` over an adapter's byte stream.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub mod connector;
 
 /// The default scheme `SerialClient`/`SerialServer` register when none is given.
@@ -47,7 +47,7 @@ pub const DEFAULT_SCHEME: &str = "serial";
 /// Mark each record named in the policy's writable set as writable, so
 /// `record.list` advertises the `writable` flag (the dispatch also enforces it).
 /// Shared by both `SerialServer` halves; mirrors the UDS connector.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote::AimxConfig) {
     for key in config.security_policy.writable_records() {
         if let Some(id) = db.inner().resolve_str(&key) {
@@ -58,8 +58,8 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
     }
 }
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub use connector::{framed, OneShotDialer, OneShotListener, SerialClient, SerialServer};
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 pub use connector::SerialPortDialer;

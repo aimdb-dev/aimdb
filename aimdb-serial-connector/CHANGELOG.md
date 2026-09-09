@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
 ### Changed
+
+- **Features name what the code needs; no runtime appears in the public surface.**
+  `connector` gates the COBS framer and the sugar over it — `framed`, the
+  one-shot `Dialer`/`Listener`, `SerialClient`/`SerialServer` — which need core's
+  session layer and nothing else. Its library graph is `aimdb-core` + `cobs`,
+  with no adapter, so **Embassy is no longer a feature of this crate**: an
+  Embassy caller enables `connector` and passes `EmbassyUart`, the same line a
+  FreeRTOS caller writes with its own UART.
+- **`std` gains a meaning it did not have.** It previously gated no code at all —
+  the sole `cfg(feature = "std")` was the `no_std` attribute — and carried an
+  unused `thiserror` dependency, now dropped. It adds core's `std` plus the
+  `tokio-serial` port backend behind `SerialPortDialer`, the one item here that
+  needs a specific async runtime, and the 23 crates (`serialport`, `nix`,
+  `libc`, …) that come with it. A host caller wanting only the neutral half
+  enables `connector`, which builds fine on std.
+- **`EmbassyFramed<Rd, Wr>` and `TokioFramed<S>` are removed (breaking).** Both
+  were one-liners over the generic `SerialFramed<S>`, neither had a call site
+  outside this crate's own tests, and naming an adapter in their definition was
+  the only thing forcing an adapter dependency into the features. Write
+  `SerialFramed<EmbassyUart<Rd, Wr>>` / `SerialFramed<TokioByteStream<S>>`.
+- **`tokio-runtime` and `embassy-runtime` are gone**, with no aliases: consumers
+  move to `std` and `connector` respectively. The `thumbv7em` type-check that
+  keeps the two byte sources on one code path survives as the internal
+  `_check-embassy` feature, matching the crate's existing `_test-*` convention.
 
 - **One path for both runtimes (breaking).** `SerialServer::new` takes an
   adapter byte stream (`EmbassyUart::new(rx, tx)`, `TokioByteStream(port)`)

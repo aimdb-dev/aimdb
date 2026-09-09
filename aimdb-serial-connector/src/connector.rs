@@ -102,14 +102,14 @@ impl<C: Connection + 'static> Listener for OneShotListener<C> {
 /// `run_client` reconnects after a drop. Cheap to clone (path plus baud).
 /// `tokio-serial` stays here rather than in the adapter — opening a tty is not
 /// a runtime concern.
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 #[derive(Clone)]
 pub struct SerialPortDialer {
     path: String,
     baud: u32,
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 impl SerialPortDialer {
     /// Dial the serial device at `path` (e.g. `/dev/ttyUSB0`) at `baud`.
     pub fn new(path: impl Into<String>, baud: u32) -> Self {
@@ -120,7 +120,7 @@ impl SerialPortDialer {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 impl Dialer for SerialPortDialer {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
         Box::pin(async move {
@@ -159,7 +159,7 @@ impl SerialClient {
 
     /// Mirror records over a serial device this process opens by path,
     /// reconnecting after a drop.
-    #[cfg(feature = "tokio-runtime")]
+    #[cfg(feature = "std")]
     pub fn over_port(
         path: impl Into<String>,
         baud: u32,
