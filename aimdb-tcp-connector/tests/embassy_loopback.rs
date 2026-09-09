@@ -1,15 +1,13 @@
-//! Runtime smoke for the Embassy TCP half (feature `_test-embassy-loopback`).
+//! Runtime smoke for the Embassy TCP path (feature `_test-embassy-loopback`).
 //!
-//! The transport is welded to a concrete `embassy_net::tcp::TcpSocket` with no
-//! seam for a fake, so socket recycling and waker handoff can only be exercised
-//! over a real stack. Two `embassy-net` stacks wired by an in-memory
-//! `embassy-net-driver-channel` crossover drive the real
-//! `TcpListener`/`TcpDialer`/`TcpConnection` triple under `block_on`:
+//! Socket recycling and waker handoff can only be exercised over a real stack,
+//! so two `embassy-net` stacks wired by an in-memory
+//! `embassy-net-driver-channel` crossover drive the adapter's transports under
+//! the connector's framing, via `block_on`:
 //!
 //! - recycle: accept -> exchange -> drop -> re-accept (`recycle_then_reaccept`);
-//! - concurrency: one pooled `N = 2` listener keeps both sockets in `accept()`
-//!   on a single port (via the test-only `accept_on`, one accept per index) while
-//!   two clients dial it (`two_concurrent_sessions`);
+//! - concurrency: one pooled `N = 2` listener serves two clients on a single
+//!   port across sequential accepts (`two_concurrent_sessions`);
 //! - redial: after a failed connect and after a dropped link
 //!   (`dialer_redials_after_failure_and_drop`);
 //! - cancellation: a cancelled accept returns its socket to the slot
@@ -20,9 +18,10 @@ extern crate alloc;
 
 use core::future::Future;
 
-use aimdb_core::session::{Connection, Dialer, Listener};
-use aimdb_tcp_connector::{TcpDialer, TcpListener};
-use embassy_net::{Config, IpAddress, IpEndpoint, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4};
+use aimdb_core::session::{Connection, Dialer, Listener, TransportError};
+use aimdb_embassy_adapter::net::EmbassyNet;
+use aimdb_tcp_connector::connector::{framed_dialer, framed_listener};
+use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4};
 use embassy_net_driver_channel as ch;
 use embassy_net_driver_channel::driver::{HardwareAddress, LinkState};
 
@@ -180,8 +179,14 @@ where
     });
 }
 
-fn endpoint(port: u16) -> IpEndpoint {
-    IpEndpoint::new(IpAddress::Ipv4(SERVER_IP), port)
+/// As `StreamDialer::connect` takes it: a host string the adapter resolves.
+///
+/// Derived from [`SERVER_IP`] rather than written out again — a second literal
+/// can drift from the address the stack is actually configured with, and the
+/// symptom is every test parking until the watchdog rather than an assertion
+/// naming the mismatch.
+fn server_host() -> alloc::string::String {
+    alloc::format!("{SERVER_IP}")
 }
 
 /// Exchange one framed request + reply over an already-connected pair, asserting
@@ -232,8 +237,16 @@ async fn send_and_verify(client: &mut dyn Connection, tag: &[u8]) {
 #[test]
 fn recycle_then_reaccept() {
     drive(|server_stack, client_stack| async move {
-        let mut listener = TcpListener::new(server_stack, 7000u16, buf(), buf());
-        let dialer = TcpDialer::new(client_stack, endpoint(7000), buf(), buf());
+        let mut listener = framed_listener(EmbassyNet::listen::<1>(
+            server_stack,
+            7000u16,
+            [(buf(), buf())],
+        ));
+        let dialer = framed_dialer(
+            EmbassyNet::tcp(client_stack, buf(), buf()),
+            server_host(),
+            7000,
+        );
 
         // First connection over the single pooled socket.
         let (accepted, connected) = futures::join!(listener.accept(), dialer.connect());
@@ -255,34 +268,40 @@ fn recycle_then_reaccept() {
     });
 }
 
-/// One pooled `N = 2` listener keeps both of its sockets in `accept()` on a
-/// single port while two clients dial that port at once — the same-port fan-out
-/// and pooled worker creation that `TcpListener::<N>::with_buffers` exists for.
-/// Each client lands on a distinct pooled slot; a broken pool (only one socket
-/// accepting, or both racing to the same slot) would hang the second session and
-/// trip the watchdog. (Wiring the pool into the AimX session engine via
-/// `TcpServer<N>` is intentionally outside this transport-level smoke test.)
+/// One pooled `N = 2` listener serves two clients on a single port. A broken
+/// pool — only one socket listening, or both racing the same slot — would hang
+/// the second session and trip the watchdog.
+///
+/// `accept_pool.rs` covers the sharper property (every slot stays in `LISTEN`
+/// *between* accepts, with a negative control); this adds framing on top.
 #[test]
 fn two_concurrent_sessions() {
     drive(|server_stack, client_stack| async move {
         // One pooled listener, two sockets, both bound to port 7001.
-        let listener =
-            TcpListener::<2>::with_buffers(server_stack, 7001u16, [buf(), buf()], [buf(), buf()]);
-        let dialer_a = TcpDialer::new(client_stack, endpoint(7001), buf(), buf());
-        let dialer_b = TcpDialer::new(client_stack, endpoint(7001), buf(), buf());
-
-        // Drive the pooled sockets directly via the test-only `accept_on`, one
-        // accept per index (its single-caller-per-index contract): both sockets
-        // accept on 7001 while both clients dial it, each landing on its own slot.
-        let (a_srv, b_srv, a_cli, b_cli) = futures::join!(
-            listener.accept_on(0),
-            listener.accept_on(1),
-            dialer_a.connect(),
-            dialer_b.connect(),
+        let mut listener = framed_listener(EmbassyNet::listen::<2>(
+            server_stack,
+            7001u16,
+            [(buf(), buf()), (buf(), buf())],
+        ));
+        let dialer_a = framed_dialer(
+            EmbassyNet::tcp(client_stack, buf(), buf()),
+            server_host(),
+            7001,
         );
-        let mut a_srv = a_srv.expect("accept slot 0");
-        let mut b_srv = b_srv.expect("accept slot 1");
+        let dialer_b = framed_dialer(
+            EmbassyNet::tcp(client_stack, buf(), buf()),
+            server_host(),
+            7001,
+        );
+
+        // No per-index hook any more: the pool keeps every slot listening across
+        // calls, so two sequential accepts serve both clients.
+        let (a_srv, a_cli) = futures::join!(listener.accept(), dialer_a.connect());
+        let mut a_srv = a_srv.expect("accept A");
         let mut a_cli = a_cli.expect("connect A");
+
+        let (b_srv, b_cli) = futures::join!(listener.accept(), dialer_b.connect());
+        let mut b_srv = b_srv.expect("accept B");
         let mut b_cli = b_cli.expect("connect B");
 
         // Drive both sessions at once. Servers echo (the stack picks the pairing);
@@ -296,13 +315,50 @@ fn two_concurrent_sessions() {
     });
 }
 
+/// `Clone` on the dialer shares its one socket rather than duplicating it — the
+/// derive exists only to satisfy `SessionClientConnector`'s bound, which clones
+/// per build. A clone dialing while the original holds the link must say so:
+/// a bare `Io` is indistinguishable from the peer being down, and the client
+/// engine would retry-loop forever without ever naming the real cause.
+#[test]
+fn a_cloned_dialer_reports_a_busy_socket() {
+    drive(|server_stack, client_stack| async move {
+        let mut listener = framed_listener(EmbassyNet::listen::<1>(
+            server_stack,
+            7001u16,
+            [(buf(), buf())],
+        ));
+        let dialer = framed_dialer(
+            EmbassyNet::tcp(client_stack, buf(), buf()),
+            server_host(),
+            7001,
+        );
+        let clone = dialer.clone();
+
+        let (srv, cli) = futures::join!(listener.accept(), dialer.connect());
+        let _srv = srv.expect("accept");
+        let _cli = cli.expect("connect");
+
+        // `_cli` still holds the only socket.
+        assert_eq!(
+            clone.connect().await.err(),
+            Some(TransportError::Busy),
+            "a clone shares the socket, so the second dial is Busy, not Io"
+        );
+    });
+}
+
 /// Dialer reuses its single socket: a connect to a port with no listener fails
 /// (the peer stack RSTs), then a connect after a listener appears succeeds; and a
 /// connect after the previous link was dropped succeeds again.
 #[test]
 fn dialer_redials_after_failure_and_drop() {
     drive(|server_stack, client_stack| async move {
-        let dialer = TcpDialer::new(client_stack, endpoint(7003), buf(), buf());
+        let dialer = framed_dialer(
+            EmbassyNet::tcp(client_stack, buf(), buf()),
+            server_host(),
+            7003,
+        );
 
         // No socket is listening on 7003 yet -> the server stack RSTs the SYN ->
         // connect fails. The dialer must recycle its socket for a redial.
@@ -312,7 +368,11 @@ fn dialer_redials_after_failure_and_drop() {
         );
 
         // Bring a listener up; the recycled dialer socket now connects.
-        let mut listener = TcpListener::new(server_stack, 7003u16, buf(), buf());
+        let mut listener = framed_listener(EmbassyNet::listen::<1>(
+            server_stack,
+            7003u16,
+            [(buf(), buf())],
+        ));
         let (accepted, connected) = futures::join!(listener.accept(), dialer.connect());
         let mut server = accepted.expect("accept after listener up");
         let mut client = connected.expect("redial after failed connect");
@@ -329,17 +389,25 @@ fn dialer_redials_after_failure_and_drop() {
 }
 
 /// A cancelled accept — its future dropped mid-`accept()`, as a `select!` timeout
-/// or shutdown branch would drop it — must return the pooled socket to its slot.
-/// Without the drop guard the socket is dropped instead of recycled, the slot
-/// stays empty, and the follow-up accept below would hang until the watchdog.
+/// or shutdown branch would drop it — must leave the pool able to accept again.
+/// The stored accepts survive the outer future's cancellation; a slot leaked
+/// instead would hang the follow-up accept until the watchdog.
 #[test]
 fn cancelled_accept_recycles_socket() {
     use futures::future::{ready, select, Either};
     use futures::pin_mut;
 
     drive(|server_stack, client_stack| async move {
-        let mut listener = TcpListener::new(server_stack, 7005u16, buf(), buf());
-        let dialer = TcpDialer::new(client_stack, endpoint(7005), buf(), buf());
+        let mut listener = framed_listener(EmbassyNet::listen::<1>(
+            server_stack,
+            7005u16,
+            [(buf(), buf())],
+        ));
+        let dialer = framed_dialer(
+            EmbassyNet::tcp(client_stack, buf(), buf()),
+            server_host(),
+            7005,
+        );
 
         // No client dials 7005, so this accept takes the pooled socket and then
         // parks in `TcpSocket::accept`. Cancel it by letting a ready future win a
@@ -362,7 +430,5 @@ fn cancelled_accept_recycles_socket() {
     });
 }
 
-// Note: there is no shipped public multi-slot accept to misuse — the pooled path
-// is `TcpServer<N>` (one worker per slot) and the `accept_on` used above is a
-// test-only, single-caller-per-index hook. So the one-waiter-per-slot invariant
-// is upheld by construction and there is nothing to assert at runtime.
+// The pool exposes a single `accept()`, so there is no per-slot entry point to
+// misuse and the one-waiter-per-slot invariant holds by construction.

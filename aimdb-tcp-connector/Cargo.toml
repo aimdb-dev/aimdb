@@ -13,36 +13,32 @@ categories = ["network-programming", "embedded", "no-std"]
 [features]
 default = ["aimdb-core/alloc"]
 
-std = [
-    "aimdb-core/std",
+# The connector needs core's session layer, and nothing else: `src/` names no
+# adapter and no `std::`, so one gate covers every target. A runtime is chosen by
+# passing an adapter's dialer/listener — a dependency the caller adds, not a
+# feature here — which is what lets a third runtime work with no edit to this
+# crate.
+connector = [
     "aimdb-core/alloc",
     "aimdb-core/connector-session",
     "aimdb-core/remote",
 ]
 
-tokio-runtime = [
-    "std",
-    "aimdb-core/connector-session",
-    "aimdb-core/remote",
-    "dep:tokio",
-]
+# Orthogonal to `connector`: the code is `alloc`-only either way, so this only
+# lifts `no_std` and forwards core's own `std`.
+std = ["connector", "aimdb-core/std"]
 
-embassy-runtime = [
-    "aimdb-core/alloc",
-    "aimdb-core/connector-session",
-    "aimdb-core/remote",
-    "dep:aimdb-embassy-adapter",
-    "aimdb-embassy-adapter/connectors",
-    "aimdb-embassy-adapter/embassy-net-support",
-    "dep:embassy-net",
-    "dep:embassy-futures",
-    "dep:embedded-io-async",
-]
+# Deprecated aliases. They name executors this crate never mentions, which blocks
+# a FreeRTOS/lwIP build from enabling the connector without claiming to be
+# Embassy. Kept so existing consumers and CI legs keep working; remove after a
+# release.
+tokio-runtime = ["std"]
+embassy-runtime = ["connector"]
 
 tracing = ["aimdb-core/tracing"]
 defmt = ["aimdb-core/defmt"]
 
-_test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
+_test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter", "aimdb-tokio-adapter/net"]
 
 # Internal: the Embassy TCP half's runtime smoke (`tests/embassy_loopback.rs`)
 # stands up two real `embassy-net` stacks wired by an in-memory driver-channel
@@ -52,9 +48,10 @@ _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter"]
 # the `_test-tokio` build too). Run with `--features _test-embassy-loopback`.
 _test-embassy-loopback = [
     "embassy-runtime",
-    # The adapter's neutral transports, exercised by `tests/accept_pool.rs`
-    # over the same two real stacks as `embassy_loopback.rs`.
+    "dep:aimdb-embassy-adapter",
+    "aimdb-embassy-adapter/connectors",
     "aimdb-embassy-adapter/net",
+    "dep:embassy-net",
     "embassy-net/medium-ip",
     "embassy-net/proto-ipv4",
     "dep:embassy-net-driver-channel",
@@ -64,12 +61,11 @@ _test-embassy-loopback = [
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
 
-tokio = { workspace = true, optional = true, features = ["net", "io-util"] }
-
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+
+# Test-only: the loopback harness stands up two real stacks (see
+# `_test-embassy-loopback`). The crate itself names no socket type.
 embassy-net = { workspace = true, optional = true }
-embassy-futures = { workspace = true, optional = true }
-embedded-io-async = { workspace = true, optional = true }
 
 aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
 

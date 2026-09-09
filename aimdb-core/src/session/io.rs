@@ -156,15 +156,31 @@ pub trait Delay {
 // Framing — a transport crate contributes one of these and inherits the rest.
 // ===========================================================================
 
+/// How badly a framing step failed.
+///
+/// A self-delimiting format resyncs on its next delimiter; a length prefix has
+/// none, so nothing tells payload bytes from the next header. Only the framer
+/// knows which case it is in, so it says, rather than the connection guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFault {
+    /// Bad frame, good link: skip it and keep reading.
+    Recoverable,
+    /// The link can no longer be interpreted and must close.
+    Fatal,
+}
+
 /// Frames a byte stream: COBS, length-prefix, NDJSON.
 pub trait Framer {
     /// Encode one logical frame, appending its wire bytes to `out`.
-    fn encode(&self, frame: &[u8], out: &mut Vec<u8>);
+    ///
+    /// On `Err` nothing is appended, so a rejected frame never reaches the wire
+    /// half-written.
+    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault>;
     /// Feed received bytes into the accumulator.
     fn push_bytes(&mut self, bytes: &[u8]);
-    /// Pull the next complete frame: `Some(Ok(frame))`, `Some(Err(()))` for a
-    /// malformed/unsynced run (skipped, the stream resyncs), or `None`.
-    fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>>;
+    /// Pull the next complete frame: `Some(Ok(frame))`, `Some(Err(fault))` (see
+    /// [`FrameFault`]), or `None` when more bytes are needed.
+    fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>>;
 }
 
 /// Builds a fresh [`Framer`] per connection.
@@ -231,11 +247,17 @@ where
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
         Box::pin(async move {
             loop {
-                // A run that fails to decode is line noise or a mid-stream
-                // join, not fatal: skip it and resync on the next frame.
                 match self.framer.next_frame() {
                     Some(Ok(frame)) => return Ok(Some(frame)),
-                    Some(Err(())) => continue,
+                    // Line noise or a mid-stream join: skip it and resync on
+                    // the next frame.
+                    Some(Err(FrameFault::Recoverable)) => continue,
+                    // No boundary left to resync on: reading on would reinterpret
+                    // payload bytes as headers for the life of the connection.
+                    Some(Err(FrameFault::Fatal)) => {
+                        log_warn!("framed recv: unrecoverable framing error, closing connection");
+                        return Err(TransportError::Framing);
+                    }
                     None => {}
                 }
                 let mut chunk = [0u8; RC];
@@ -251,7 +273,14 @@ where
     fn send<'a>(&'a mut self, frame: &'a [u8]) -> BoxFut<'a, TransportResult<()>> {
         Box::pin(async move {
             let mut out = Vec::new();
-            self.framer.encode(frame, &mut out);
+            if let Err(_fault) = self.framer.encode(frame, &mut out) {
+                log_warn!(
+                    "framed send: framer rejected a {}-byte frame ({:?}), closing connection",
+                    frame.len(),
+                    _fault
+                );
+                return Err(TransportError::Framing);
+            }
             for chunk in out.chunks(WC) {
                 self.stream.write_all(chunk).await?;
             }
@@ -266,6 +295,9 @@ where
 
 /// Lifts a [`StreamDialer`] and a [`FramerFactory`] into a [`Dialer`], so
 /// `run_client` drives an adapter transport unchanged.
+///
+/// `Clone` because `SessionClientConnector` clones its dialer per build.
+#[derive(Clone)]
 pub struct FramingDialer<D, FF, const RC: usize = 256, const WC: usize = 256> {
     dialer: D,
     framers: FF,
@@ -437,25 +469,35 @@ mod tests {
     // --- Test doubles -----------------------------------------------------
 
     /// Length-prefixed framer: one length byte, then that many payload bytes.
-    /// A `0xFF` length marks a corrupt run, so resync has something to skip.
+    /// A `0xFF` length marks a corrupt run, so resync has something to skip;
+    /// `0xFE` marks an unrecoverable one. A frame too long for the one-byte
+    /// length is rejected by `encode`.
     #[derive(Default)]
     struct LenFramer {
         buf: Vec<u8>,
     }
 
     impl Framer for LenFramer {
-        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+        fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
+            if frame.len() >= 0xFE {
+                return Err(FrameFault::Recoverable);
+            }
             out.push(frame.len() as u8);
             out.extend_from_slice(frame);
+            Ok(())
         }
         fn push_bytes(&mut self, bytes: &[u8]) {
             self.buf.extend_from_slice(bytes);
         }
-        fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+        fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
             let len = *self.buf.first()? as usize;
             if len == 0xFF {
                 self.buf.remove(0);
-                return Some(Err(()));
+                return Some(Err(FrameFault::Recoverable));
+            }
+            if len == 0xFE {
+                self.buf.clear();
+                return Some(Err(FrameFault::Fatal));
             }
             if self.buf.len() < len + 1 {
                 return None;
@@ -597,6 +639,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recv_closes_on_an_unrecoverable_framing_error() {
+        // The bytes after the bad header are unreadable, so the connection ends
+        // rather than reinterpreting them as the next header forever.
+        let mut conn = framed(MockStream::with_reads(vec![vec![0xFE, 2, b'o', b'k']]));
+        assert_eq!(
+            conn.recv().await,
+            Err(TransportError::Framing),
+            "a fatal fault ends the connection, it is not skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_reports_a_frame_the_framer_rejects() {
+        let stream = MockStream::default();
+        let mut conn = framed(stream.clone());
+        let oversized = vec![b'x'; 0xFE];
+
+        assert_eq!(
+            conn.send(&oversized).await,
+            Err(TransportError::Framing),
+            "a dropped frame is an error, never a silent Ok"
+        );
+        let st = stream.0.lock();
+        assert!(
+            st.written.is_empty(),
+            "nothing half-encoded reaches the wire"
+        );
+        assert_eq!(st.flushes, 0);
+    }
+
+    #[tokio::test]
     async fn recv_propagates_the_streams_own_error() {
         let mut conn = FramedConnection::<_, _, 256, 256>::new(FailingStream, LenFramer::default());
         assert_eq!(
@@ -676,9 +749,11 @@ mod tests {
     fn framer_factory_is_implemented_for_closures() {
         struct Noop;
         impl Framer for Noop {
-            fn encode(&self, _frame: &[u8], _out: &mut Vec<u8>) {}
+            fn encode(&self, _frame: &[u8], _out: &mut Vec<u8>) -> Result<(), FrameFault> {
+                Ok(())
+            }
             fn push_bytes(&mut self, _bytes: &[u8]) {}
-            fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
+            fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
                 None
             }
         }

@@ -144,7 +144,14 @@ pub fn dial(endpoint: &str) -> ClientResult<Box<dyn Dialer>> {
         Scheme::Tcp => {
             #[cfg(feature = "transport-tcp")]
             {
-                Ok(Box::new(aimdb_tcp_connector::TcpDialer::new(parsed.target)))
+                // The adapter owns the socket; the connector owns the
+                // host/port grammar.
+                let dialer = aimdb_tcp_connector::framed_dialer_at(
+                    aimdb_tokio_adapter::net::TokioNet::tcp(),
+                    &parsed.target,
+                )
+                .map_err(|e| ClientError::unsupported_endpoint(endpoint, e.to_string()))?;
+                Ok(Box::new(dialer))
             }
             #[cfg(not(feature = "transport-tcp"))]
             {
@@ -167,60 +174,38 @@ fn require_nonempty(endpoint: &str, target: &str) -> ClientResult<()> {
 }
 
 /// Validate `tcp://host:port`.
+///
+/// The grammar itself is [`split_host_port_opt`] — one implementation, shared
+/// with the connector, reachable here even when `transport-tcp` is off. What
+/// this adds is the client's own policy: a URL must name its port, where a
+/// connector constructor may default one.
 fn require_tcp_target(endpoint: &str, target: &str) -> ClientResult<()> {
     require_nonempty(endpoint, target)?;
 
-    let (host, port) = if let Some(rest) = target.strip_prefix('[') {
-        let Some((host, after_host)) = rest.split_once(']') else {
-            return Err(ClientError::unsupported_endpoint(
-                endpoint,
-                "missing closing bracket for IPv6 TCP host",
-            ));
-        };
-        let Some(port) = after_host.strip_prefix(':') else {
-            return Err(ClientError::unsupported_endpoint(
-                endpoint,
-                "missing TCP port",
-            ));
-        };
-        (host, port)
-    } else {
-        if target.matches(':').count() > 1 {
-            return Err(ClientError::unsupported_endpoint(
-                endpoint,
-                "IPv6 TCP hosts must be bracketed, e.g. tcp://[::1]:7001",
-            ));
-        }
-        let Some((host, port)) = target.split_once(':') else {
-            return Err(ClientError::unsupported_endpoint(
-                endpoint,
-                "missing TCP port",
-            ));
-        };
-        if host.contains(['[', ']']) {
-            return Err(ClientError::unsupported_endpoint(
-                endpoint,
-                "malformed TCP host",
-            ));
-        }
-        (host, port)
-    };
+    let (host, port) = aimdb_core::session::split_host_port_opt(target)
+        .map_err(|e| ClientError::unsupported_endpoint(endpoint, e.to_string()))?;
 
-    if host.is_empty() {
+    // Brackets are stripped from a well-formed literal, so any left over came
+    // from the middle of a host: `tcp://foo[bar:7001`.
+    if host.contains(['[', ']']) {
         return Err(ClientError::unsupported_endpoint(
             endpoint,
-            "missing TCP host",
+            "malformed TCP host",
         ));
     }
-    if port.is_empty() {
-        return Err(ClientError::unsupported_endpoint(
-            endpoint,
-            "missing TCP port",
-        ));
+
+    if port.is_none() {
+        // An unbracketed IPv6 literal cannot carry a port, so "add one" is the
+        // wrong advice — say what actually has to change. Keyed on the original
+        // target, since a bracketed host arrives here already stripped.
+        let reason = if !target.starts_with('[') && host.contains(':') {
+            "IPv6 TCP hosts must be bracketed, e.g. tcp://[::1]:7001"
+        } else {
+            "missing TCP port"
+        };
+        return Err(ClientError::unsupported_endpoint(endpoint, reason));
     }
-    port.parse::<u16>().map_err(|_| {
-        ClientError::unsupported_endpoint(endpoint, format!("invalid TCP port {port:?}"))
-    })?;
+
     Ok(())
 }
 
@@ -306,6 +291,25 @@ mod tests {
         let p = parse_endpoint("tcp://[fe80::1]:7001").expect("parse");
         assert_eq!(p.scheme, Scheme::Tcp);
         assert_eq!(p.target, "[fe80::1]:7001");
+    }
+
+    /// Each rejection says what has to change. Asserting the reasons, not just
+    /// `is_err`, is what stops the grammar move from silently degrading them —
+    /// an unbracketed IPv6 literal needs brackets, not a port appended.
+    #[test]
+    fn a_rejected_tcp_endpoint_says_what_is_wrong() {
+        let reason = |ep: &str| match parse_endpoint(ep) {
+            Err(ClientError::UnsupportedEndpoint { reason, .. }) => reason,
+            other => panic!("{ep} should be rejected as an endpoint, got {other:?}"),
+        };
+
+        assert!(reason("tcp://host").contains("missing TCP port"));
+        assert!(reason("tcp://[fe80::1]").contains("missing TCP port"));
+        assert!(reason("tcp://fe80::1").contains("must be bracketed"));
+        assert!(reason("tcp://:1234").contains("no host"));
+        assert!(reason("tcp://[]:7001").contains("no host"));
+        assert!(reason("tcp://host:fast").contains("not a number"));
+        assert!(reason("tcp://[fe80::1:7001").contains("closing bracket"));
     }
 
     #[test]

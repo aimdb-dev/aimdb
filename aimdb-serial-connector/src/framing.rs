@@ -11,14 +11,19 @@
 //! the round-trip is unit-tested on the host without any transport.
 //!
 //! Two layers live here. [`encode_frame`] and [`FrameAccumulator`] are the COBS
-//! codec itself, with no dependency on the session substrate. [`CobsFramer`]
-//! below is that codec behind core's `Framer` trait, plus the
+//! codec itself, with no dependency on the session substrate. `CobsFramer`
+//! below — unlinked, as it exists only behind a runtime feature — is that codec
+//! behind core's `Framer` trait, plus the
 //! `FramedConnection` aliases it forms with each adapter's byte source — the
 //! whole of what this crate contributes to a session, since the byte sources
 //! come from the adapters and this crate names no socket or UART type of its
 //! own. That half needs `aimdb_core::session`, so it is gated on the runtime
 //! features that enable core's `connector-session`.
 
+// Gated with the items that use it: the accumulator below is `alloc`-only and
+// builds without core's session layer.
+#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+use aimdb_core::session::FrameFault;
 use alloc::vec::Vec;
 
 /// A frame could not be recovered — line noise, a truncated frame, a mid-stream
@@ -184,18 +189,21 @@ impl CobsFramer {
 
 #[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
 impl aimdb_core::session::Framer for CobsFramer {
-    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) {
+    fn encode(&self, frame: &[u8], out: &mut Vec<u8>) -> Result<(), FrameFault> {
         encode_frame(frame, out);
+        Ok(())
     }
 
     fn push_bytes(&mut self, bytes: &[u8]) {
         self.acc.push_bytes(bytes);
     }
 
-    fn next_frame(&mut self) -> Option<Result<Vec<u8>, ()>> {
-        // `FrameError` collapses to `()`: the connection only distinguishes
-        // "got a frame" from "skip and resync".
-        self.acc.next_frame().map(|r| r.map_err(|_| ()))
+    fn next_frame(&mut self) -> Option<Result<Vec<u8>, FrameFault>> {
+        // COBS delimits frames, and the accumulator already resyncs on the next
+        // sentinel, so a dropped run never invalidates the rest of the stream.
+        self.acc
+            .next_frame()
+            .map(|r| r.map_err(|_| FrameFault::Recoverable))
     }
 }
 

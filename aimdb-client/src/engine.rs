@@ -1,6 +1,7 @@
 //! Engine-based AimX client.
 //!
-//! The client rides the shared session engine: a [`UdsDialer`] + the symmetric
+//! The client rides the shared session engine: a `UdsDialer` (unlinked — it
+//! exists only behind `transport-uds`) + the symmetric
 //! [`AimxCodec`] drive [`run_client`], which owns the wire, the request-id
 //! demux, and (optionally) reconnect. The public surface is the cheap-clone
 //! [`ClientHandle`] plus typed convenience wrappers and per-subscription
