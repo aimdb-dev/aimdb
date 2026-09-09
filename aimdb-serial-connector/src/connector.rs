@@ -16,6 +16,7 @@ use core::future::Future;
 use core::pin::Pin;
 
 use aimdb_core::connector::ConnectorBuilder;
+use aimdb_core::log_info;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
@@ -242,6 +243,7 @@ where
                     operation: "SerialServer::build".to_string(),
                     reason: "the moved-in stream was already taken; build() ran twice".to_string(),
                 })?;
+            log_info!("Initializing AimX serial server on scheme '{}'", scheme);
             let session_config = SessionConfig {
                 limits: SessionLimits {
                     // A UART carries a single peer.
