@@ -174,3 +174,110 @@ async fn the_server_guards_its_moved_in_stream() {
         "unexpected error: {err}"
     );
 }
+
+/// The client sugar must actually be registrable: `SessionClientConnector` only
+/// implements `ConnectorBuilder` when its dialer satisfies the bounds, and a
+/// dialer wrapping a moved-in stream cannot be `Clone`. Nothing else in the repo
+/// calls `SerialClient::new`, so without this the constructor can stop
+/// compiling at its use site while every leg stays green.
+#[tokio::test]
+async fn a_serial_client_is_a_registrable_connector() {
+    use aimdb_core::connector::ConnectorBuilder;
+    use aimdb_serial_connector::connector::SerialClient;
+
+    fn assert_builder<T: ConnectorBuilder>(_: T) {}
+
+    let (a, _b) = tokio::io::duplex(1024);
+    assert_builder(SerialClient::new(TokioByteStream(a)));
+}
+
+/// A moved-in stream cannot be re-acquired, so the client engine must end when
+/// the peer goes away rather than redial a dialer that can never succeed again.
+///
+/// Two independent things guarantee that, and this pins their conjunction:
+/// `SerialClient::new` sets `reconnect: false`, and `run_client` treats a
+/// dialer's `Closed` as terminal. Drop either and the test still passes; drop
+/// both — `reconnect: true` with the dialer reporting `Io` — and it hangs until
+/// the timeout, which is what a board would do forever.
+#[tokio::test]
+async fn a_one_shot_client_stops_instead_of_redialing_forever() {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::connector::ConnectorBuilder;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_serial_connector::connector::{SerialClient, SerialServer};
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    // An outbound route is what keeps a `ClientHandle` alive past `build`;
+    // without one every sender drops there and the engine ends on its own,
+    // whatever the reconnect policy says. The route needs a connector
+    // registered under its scheme to pass validation, so a `SerialServer` on a
+    // duplex nobody talks to stands in — the client under test is built by hand
+    // below so its futures stay reachable.
+    let (server_end, _server_peer) = tokio::io::duplex(1024);
+    let mut builder = AimDbBuilder::new()
+        .runtime(std::sync::Arc::new(TokioAdapter))
+        .with_connector(SerialServer::new(TokioByteStream(server_end)));
+    builder.configure::<u64>("counter", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .link_to("serial://counter")
+            .with_serializer(|_ctx, v: &u64| Ok(v.to_le_bytes().to_vec()))
+            .finish();
+    });
+    let (db, _runner) = builder.build().await.expect("build db");
+
+    let (a, b) = tokio::io::duplex(1024);
+    let client = SerialClient::new(TokioByteStream(a));
+
+    let mut futures = client.build(&db).await.expect("build the connector");
+    assert_eq!(
+        futures.len(),
+        2,
+        "one outbound pump plus the engine — the pump is what holds the handle"
+    );
+    // `SessionClientConnector::build` pushes the engine after the pumps.
+    let engine = futures.pop().expect("engine future");
+
+    // Peer hangs up: the one connection this dialer had is gone for good.
+    drop(b);
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), engine)
+        .await
+        .expect("the engine must end, not redial a stream that cannot be reopened");
+}
+
+/// The dialer is moved in, so a second `build` is refused rather than handing
+/// out a connection that was already consumed.
+#[tokio::test]
+async fn the_client_guards_its_moved_in_dialer() {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::connector::ConnectorBuilder;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_serial_connector::connector::SerialClient;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let mut builder = AimDbBuilder::new().runtime(std::sync::Arc::new(TokioAdapter));
+    builder.configure::<u64>("counter", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    let (db, _runner) = builder.build().await.expect("build db");
+
+    let (a, _b) = tokio::io::duplex(1024);
+    let client = SerialClient::new(TokioByteStream(a));
+
+    // Unpolled build: the dialer must survive it.
+    drop(client.build(&db));
+
+    client
+        .build(&db)
+        .await
+        .expect("the dialer must survive an unpolled build");
+
+    let Err(err) = client.build(&db).await else {
+        panic!("a second build must fail");
+    };
+    assert!(
+        format!("{err}").contains("already taken"),
+        "unexpected error: {err}"
+    );
+}

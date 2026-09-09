@@ -19,9 +19,9 @@ use aimdb_core::connector::ConnectorBuilder;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
-    BoxFut, ByteStream, Connection, Dialer, Dispatch, FramedConnection, Listener, OneShot,
-    SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector, TransportError,
-    TransportResult,
+    BoxFut, ByteStream, ClientConfig, Connection, Dialer, Dispatch, FramedConnection, Listener,
+    OneShot, SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector,
+    TransportError, TransportResult,
 };
 use aimdb_core::{AimDb, DbError, DbResult};
 
@@ -146,19 +146,33 @@ pub struct SerialClient;
 
 impl SerialClient {
     /// Mirror records to and from the AimX peer on `stream`, served once.
+    ///
+    /// Reconnect is **disabled** (unlike `ClientConfig::default`): the stream is
+    /// moved in and cannot be re-acquired. `run_client` would stop anyway —
+    /// it treats a dialer's [`TransportError::Closed`] as terminal — but
+    /// saying so here keeps the intent local rather than resting on that
+    /// two-crate handshake, and skips a pointless backoff and "dial failed"
+    /// warning on the way out. A caller whose stream really can be redialed
+    /// opts back in with `.with_config(...)`; on a host, prefer
+    /// [`over_port`](Self::over_port), which reopens the device for real.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new<S>(
-        stream: S,
-    ) -> SessionClientConnector<Arc<OneShotDialer<SerialFramed<S>>>, AimxCodec>
+    pub fn new<S>(stream: S) -> SessionClientConnector<OneShotDialer<SerialFramed<S>>, AimxCodec>
     where
         S: ByteStream + Send + 'static,
     {
-        SessionClientConnector::new(Arc::new(OneShotDialer::new(framed(stream))), AimxCodec)
+        SessionClientConnector::new(OneShotDialer::new(framed(stream)), AimxCodec)
             .scheme(DEFAULT_SCHEME)
+            .with_config(ClientConfig {
+                reconnect: false,
+                ..ClientConfig::default()
+            })
     }
 
     /// Mirror records over a serial device this process opens by path,
     /// reconnecting after a drop.
+    ///
+    /// Keeps `ClientConfig`'s default `reconnect: true` — unlike
+    /// [`new`](Self::new), this dialer can genuinely reopen the device.
     #[cfg(feature = "std")]
     pub fn over_port(
         path: impl Into<String>,
