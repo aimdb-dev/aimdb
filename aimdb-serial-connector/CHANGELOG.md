@@ -7,7 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-
 ### Changed
 
 - **Features name what the code needs; no runtime appears in the public surface.**
@@ -22,8 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unused `thiserror` dependency, now dropped. It adds core's `std` plus the
   `tokio-serial` port backend behind `SerialPortDialer`, the one item here that
   needs a specific async runtime, and the 23 crates (`serialport`, `nix`,
-  `libc`, …) that come with it. A host caller wanting only the neutral half
-  enables `connector`, which builds fine on std.
+  `libc`, …) that come with it. It also pulls `aimdb-tokio-adapter` (feature
+  `net`), so the byte source is the adapter's on both runtimes rather than
+  duplicated here — reversing the earlier decision to keep a concrete adapter off
+  the public feature, and making the internal `_test-tokio` feature redundant. It
+  is removed; `std` gates the host tests and `serial_demo` directly. A host
+  caller wanting only the neutral half enables `connector`, which builds fine on
+  std.
 - **`EmbassyFramed<Rd, Wr>` and `TokioFramed<S>` are removed (breaking).** Both
   were one-liners over the generic `SerialFramed<S>`, neither had a call site
   outside this crate's own tests, and naming an adapter in their definition was
@@ -32,21 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tokio-runtime` and `embassy-runtime` are gone**, with no aliases: consumers
   move to `std` and `connector` respectively. The `thumbv7em` type-check that
   keeps the two byte sources on one code path survives as the internal
-  `_check-embassy` feature, matching the crate's existing `_test-*` convention.
-
+  `_check-embassy` feature.
 - **One path for both runtimes (breaking).** `SerialServer::new` takes an
   adapter byte stream (`EmbassyUart::new(rx, tx)`, `TokioByteStream(port)`)
   instead of `(path, baud)` or split UART halves; the application opens the
-  device. `SerialClient::new(stream)` serves it once and
+  device. `SerialClient::new(stream)` serves it once — with
+  `reconnect` off, since a moved-in stream cannot be reopened — and
   `SerialClient::over_port(path, baud)` reopens and redials on a host.
   `tokio_transport` and `embassy_transport` are deleted with the whole
   `Tokio*`/`Embassy*` alias set — `SerialDialer` is now `SerialPortDialer`, and
   `SerialListener`/`TokioSerialConnection` are gone.
-- **`tokio-runtime` now depends on `aimdb-tokio-adapter`** (feature `net`), so the
-  byte source is the adapter's on both runtimes rather than duplicated here. This
-  reverses the earlier decision to keep a concrete adapter off the public
-  feature, which also makes the internal `_test-tokio` feature redundant; it is
-  removed, and `tokio-runtime` gates the host tests and `serial_demo` directly.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written

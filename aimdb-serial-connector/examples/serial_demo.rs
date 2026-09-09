@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! # board (Embassy SerialServer) ⇄ host:
-//! cargo run --example serial_demo --features tokio-runtime -- client /dev/ttyACM0
+//! cargo run --example serial_demo --features std -- client /dev/ttyACM0
 //!
 //! # host SerialServer ⇄ host client over a PTY (no hardware):
 //! socat -d -d pty,raw,echo=0 pty,raw,echo=0          # prints two /dev/pts/N
@@ -22,8 +22,8 @@
 //! - `raw <device> [baud] [method] [name]` — low-level debug: send one request and
 //!   print the full decoded reply (no engine), handy when `client` misbehaves.
 //!
-//! Built only under `tokio-runtime` (it needs a concrete
-//! adapter); see the crate's `Cargo.toml`.
+//! Built only under `std` (it needs the `tokio-serial` port backend); see the
+//! crate's `Cargo.toml`.
 //!
 //! On macOS the board's VCP is `/dev/cu.usbmodem…` (use the `cu.*`, not `tty.*`,
 //! node). Run from the workspace root, and make sure nothing else holds the port

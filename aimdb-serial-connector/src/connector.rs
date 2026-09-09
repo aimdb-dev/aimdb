@@ -5,8 +5,8 @@
 //! contributes only the COBS [`CobsFramer`].
 //!
 //! A UART is point-to-point, so the stream is moved in and served once; there
-//! is no accept loop. `SerialPortDialer` (feature `tokio-runtime`) is the one
-//! exception, because a host can reopen a device by path.
+//! is no accept loop. `SerialPortDialer` (feature `std`) is the one exception,
+//! because a host can reopen a device by path.
 
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
