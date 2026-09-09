@@ -13,41 +13,42 @@ categories = ["embedded", "network-programming", "no-std"]
 [features]
 default = ["aimdb-core/alloc"]
 
-# std build (host). Pulls the tokio half's std bits.
-std = [
-    "aimdb-core/std",
+# The COBS framer and the runtime-neutral sugar over it: `framed`, the one-shot
+# `Dialer`/`Listener`, `SerialClient`/`SerialServer`. Needs core's session layer
+# and nothing else — no adapter, no `std` — so any runtime enables just this and
+# hands `framed` its own `ByteStream`. That includes Embassy: the caller passes
+# `EmbassyUart`, exactly as a FreeRTOS caller passes its own UART, which is why
+# there is no runtime feature here to choose between them.
+connector = [
     "aimdb-core/alloc",
     "aimdb-core/connector-session",
-    "thiserror",
+    "aimdb-core/remote",
 ]
 
-# Host / gateway half: real serial via `tokio-serial`, riding the generic
-# `SessionClientConnector`/`SessionServerConnector` from core.
-tokio-runtime = [
-    "std",
-    "aimdb-core/connector-session",
-    "aimdb-core/remote",
+# Host build. Adds core's `std` plus the `tokio-serial` port backend behind
+# `SerialPortDialer` — the one item here that needs a specific async runtime, and
+# 23 crates (`serialport`, `nix`, `libc`, …) that a neutral build does not pay
+# for. A host caller wanting only the neutral half enables `connector` instead;
+# it builds fine on std.
+std = [
+    "connector",
+    "aimdb-core/std",
     "dep:tokio",
     "dep:tokio-serial",
-    # The adapter owns the byte source, as it does on Embassy; this crate
-    # contributes only the COBS framer.
     "dep:aimdb-tokio-adapter",
     "aimdb-tokio-adapter/net",
 ]
 
-# Embedded half: `no_std + alloc`, generic over `embedded-io-async` UART halves.
-# Thin sugar over the centralized Embassy session spine in `aimdb-embassy-adapter`
-# (`connector-io`), which owns the single-core `unsafe` + force-`Send`; this crate
-# contributes only the COBS `Framer`.
-embassy-runtime = [
-    "aimdb-core/alloc",
-    "aimdb-core/connector-session",
-    "aimdb-core/remote",
+# Internal: type-checks the Embassy byte source against the same `SerialFramed`
+# the host uses, on `thumbv7em`, so a divergence between the two paths fails here
+# rather than in a demo. Not part of the public surface — an Embassy consumer
+# enables `connector` and brings its own adapter.
+_test-embassy = [
+    "connector",
     "dep:aimdb-embassy-adapter",
+    # `connector-io` carries `EmbassyUart` and the framed spine; no `net`, so
+    # this leg type-checks a UART without compiling a TCP/IP stack.
     "aimdb-embassy-adapter/connector-io",
-    # `EmbassyUart`, the neutral byte source the COBS framer rides.
-    "aimdb-embassy-adapter/net",
-    # `embassy-time`/`-sync` give the `EmbassyAdapter` clock the smoke test runs on.
     "aimdb-embassy-adapter/embassy-time",
     "aimdb-embassy-adapter/embassy-sync",
     "dep:embedded-io-async",
@@ -61,10 +62,6 @@ tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 defmt = ["dep:defmt", "aimdb-core/defmt"]
 
-# Retained as an alias: `tokio-runtime` now carries the adapter itself, but the
-# host integration test and `serial_demo` still gate on this name. Kept out of
-# `[dev-dependencies]` so the no_std `embassy-runtime` test build never sees it.
-_test-tokio = ["tokio-runtime"]
 
 [dependencies]
 # AimX protocol (codec + dispatch) and the generic session connectors live in
@@ -76,13 +73,12 @@ cobs = { workspace = true, features = ["alloc"] }
 # --- tokio half (std) ---
 tokio = { workspace = true, optional = true, features = ["io-util"] }
 tokio-serial = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
 
 # --- embassy half (no_std) ---
 aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 embedded-io-async = { workspace = true, optional = true }
 
-# --- test-only (see the `_test-tokio` feature) ---
+# --- test-only ---
 aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
 
 # --- logging ---
@@ -93,7 +89,7 @@ defmt = { workspace = true, optional = true }
 # (no-op defmt logger + host time driver, 035 §2.4); the expansion references
 # `defmt` and `embassy-time-driver` at the invocation site, so both must stay
 # resolvable in the test binary. (`aimdb-embassy-adapter` itself is the regular
-# `embassy-runtime` optional dep — keeping it out of dev-deps avoids a
+# `_test-embassy` optional dep — keeping it out of dev-deps avoids a
 # std/no_std unification clash with the tokio tests, where it would otherwise
 # compile against a std `aimdb-core`.)
 embassy-time-driver = "0.2.2"
@@ -108,8 +104,7 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# The real-serial host demo needs a concrete adapter (and tokio-serial); gate it on
-# the internal test feature so it doesn't pull an adapter into the embassy build.
+# The real-serial host demo needs the port backend, which only `std` supplies.
 [[example]]
 name = "serial_demo"
-required-features = ["_test-tokio"]
+required-features = ["std"]

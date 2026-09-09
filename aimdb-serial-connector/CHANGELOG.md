@@ -9,10 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`tokio-runtime` now depends on `aimdb-tokio-adapter`** (feature `net`), so the
-  byte source is the adapter's on both runtimes rather than duplicated here. This
-  reverses the earlier decision to keep a concrete adapter off the public feature;
-  `_test-tokio` remains as an alias.
+- **Features name what the code needs; no runtime appears in the public surface.**
+  `connector` gates the COBS framer and the sugar over it — `framed`, the
+  one-shot `Dialer`/`Listener`, `SerialClient`/`SerialServer` — which need core's
+  session layer and nothing else. Its library graph is `aimdb-core` + `cobs`,
+  with no adapter, so **Embassy is no longer a feature of this crate**: an
+  Embassy caller enables `connector` and passes `EmbassyUart`, the same line a
+  FreeRTOS caller writes with its own UART.
+- **`std` gains a meaning it did not have.** It previously gated no code at all —
+  the sole `cfg(feature = "std")` was the `no_std` attribute — and carried an
+  unused `thiserror` dependency, now dropped. It adds core's `std` plus the
+  `tokio-serial` port backend behind `SerialPortDialer`, the one item here that
+  needs a specific async runtime, and the 23 crates (`serialport`, `nix`,
+  `libc`, …) that come with it. It also pulls `aimdb-tokio-adapter` (feature
+  `net`), so the byte source is the adapter's on both runtimes rather than
+  duplicated here — reversing the earlier decision to keep a concrete adapter off
+  the public feature, and making the internal `_test-tokio` feature redundant. It
+  is removed; `std` gates the host tests and `serial_demo` directly. A host
+  caller wanting only the neutral half enables `connector`, which builds fine on
+  std.
+- **`EmbassyFramed<Rd, Wr>` and `TokioFramed<S>` are removed (breaking).** Both
+  were one-liners over the generic `SerialFramed<S>`, neither had a call site
+  outside this crate's own tests, and naming an adapter in their definition was
+  the only thing forcing an adapter dependency into the features. Write
+  `SerialFramed<EmbassyUart<Rd, Wr>>` / `SerialFramed<TokioByteStream<S>>`.
+- **`tokio-runtime` and `embassy-runtime` are gone**, with no aliases: consumers
+  move to `std` and `connector` respectively. The `thumbv7em` type-check that
+  keeps the two byte sources on one code path survives as the internal
+  `_test-embassy` feature.
+- **One path for both runtimes (breaking).** `SerialServer::new` takes an
+  adapter byte stream (`EmbassyUart::new(rx, tx)`, `TokioByteStream(port)`)
+  instead of `(path, baud)` or split UART halves; the application opens the
+  device. `SerialClient::new(stream)` serves it once — with
+  `reconnect` off, since a moved-in stream cannot be reopened — and
+  `SerialClient::over_port(path, baud)` reopens and redials on a host.
+  `tokio_transport` and `embassy_transport` are deleted with the whole
+  `Tokio*`/`Embassy*` alias set — `SerialDialer` is now `SerialPortDialer`, and
+  `SerialListener`/`TokioSerialConnection` are gone.
+- **The host read chunk drops 256 → 64.** The deleted `TokioSerialConnection`
+  carried its own `READ_CHUNK = 256`; both paths now share `framing::READ_CHUNK`,
+  sized for an MCU UART ring, so a host reading a real port issues four times the
+  `read` calls per kilobyte. Kept deliberately — one code path, one chunk size —
+  and `SerialFramed`'s chunks are const generics, so a host-specific value stays
+  available without structural change.
 - **Reports through the `log_*` facade instead of `tracing::` directly** (design
   050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
   events too. Each call site also shed the hand-written
@@ -22,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`connector` — runtime-neutral client and server sugar.** `SerialServer<S>`
+  and `SerialClient` over any adapter byte stream, plus `OneShotDialer` /
+  `OneShotListener`: a UART is point-to-point, so the stream is served once —
+  the dialer then errors, the listener parks, because `serve` loops on `accept`
+  and would spin on an error.
 - **`framing` gains core's `Framer` — the connector reduced to framing.** `CobsFramer` against
   core's `Framer` plus core's `FramedConnection` serve both runtimes; the byte
   sources come from the adapters (`TokioByteStream`, `EmbassyUart`), so this crate

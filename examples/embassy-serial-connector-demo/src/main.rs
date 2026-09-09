@@ -33,8 +33,9 @@ extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, Producer};
+use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
-use aimdb_serial_connector::embassy_transport::SerialServer;
+use aimdb_serial_connector::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::usart::{BufferedUart, Config as UartConfig};
@@ -144,7 +145,7 @@ async fn main(spawner: Spawner) {
     let runtime = alloc::sync::Arc::new(EmbassyAdapter::default());
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector(SerialServer::new(rx, tx).security_policy(policy));
+        .with_connector(SerialServer::new(EmbassyUart::new(rx, tx)).security_policy(policy));
     builder.configure::<Counter>("counter", |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access();

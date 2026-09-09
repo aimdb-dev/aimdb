@@ -35,7 +35,7 @@ aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
 # binary links only what it needs.
 aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector", optional = true }
 aimdb-serial-connector = { version = "0.1.0", path = "../aimdb-serial-connector", default-features = false, features = [
-    "tokio-runtime",
+    "std",
 ], optional = true }
 aimdb-tcp-connector = { version = "0.1.0", path = "../aimdb-tcp-connector", default-features = false, features = [
     "tokio-runtime",

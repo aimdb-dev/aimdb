@@ -2,29 +2,25 @@
 //! remote access over a serial line.
 //!
 //! A thin, swappable transport crate (the serial sibling of `aimdb-uds-connector`):
-//! it contributes only the `Dialer`/`Listener`/`Connection` triple plus thin
-//! sugar; the AimX codec (`AimxCodec`), dispatch (`AimxDispatch`), and the
-//! runtime-neutral session engines are reused verbatim from `aimdb-core`.
+//! it contributes only the COBS framing plus thin sugar; the AimX codec
+//! (`AimxCodec`), dispatch (`AimxDispatch`), `Connection` itself
+//! (`FramedConnection`), and the runtime-neutral session engines are reused
+//! verbatim from `aimdb-core`.
 //!
 //! Core's session items are named unlinked throughout these docs: they exist
-//! only when a runtime feature pulls in `aimdb-core/connector-session`, and a
-//! link to them fails `cargo doc` on a build without one.
+//! only when the `connector` feature pulls in `aimdb-core/connector-session`,
+//! and a link to them fails `cargo doc` on a build without it. The same goes for
+//! anything gated on `std`.
 //!
 //! The wire is the same compact AimX JSON as UDS, but framed with **COBS**
 //! (Consistent Overhead Byte Stuffing) and a `0x00` delimiter instead of a
 //! newline — self-synchronizing on a lossy/unframed serial medium. See
 //! [`framing`].
 //!
-//! # Two halves
-//!
-//! - **`tokio-runtime`** (std, host/gateway): real serial via `tokio-serial`,
-//!   riding the generic `SessionClientConnector` / `SessionServerConnector`.
-//!   See `tokio_transport`.
-//! - **`embassy-runtime`** (`no_std + alloc`, MCU): generic over
-//!   `embedded-io-async` UART halves; the COBS `Framer` plus thin sugar over the
-//!   centralized Embassy session spine in `aimdb-embassy-adapter`, which owns the
-//!   force-`Send` plumbing, the framed connection, and all the `unsafe` — this
-//!   crate carries none. See `embassy_transport`.
+//! One path for both runtimes: the byte source comes from an adapter
+//! (`EmbassyUart` on the MCU, `TokioByteStream` over a `SerialStream` on the
+//! host) and this crate contributes only the COBS framer. A UART is
+//! point-to-point, so the stream is moved in and served once.
 //!
 //! Both speak the `serial://` scheme by default ([`DEFAULT_SCHEME`]).
 
@@ -32,17 +28,12 @@
 
 extern crate alloc;
 
-// The COBS codec, and (under either runtime feature) that codec behind core's
-// `Framer` plus the `FramedConnection` aliases it forms with each adapter's
-// byte source. Supersedes the two per-runtime transport modules below, which it
-// will replace outright.
+// The COBS codec, and — under `connector` — that codec behind core's `Framer`.
 pub mod framing;
 
-#[cfg(feature = "tokio-runtime")]
-pub mod tokio_transport;
-
-#[cfg(feature = "embassy-runtime")]
-pub mod embassy_transport;
+// Runtime-neutral `SerialClient`/`SerialServer` over an adapter's byte stream.
+#[cfg(feature = "connector")]
+pub mod connector;
 
 /// The default scheme `SerialClient`/`SerialServer` register when none is given.
 ///
@@ -54,7 +45,7 @@ pub const DEFAULT_SCHEME: &str = "serial";
 /// Mark each record named in the policy's writable set as writable, so
 /// `record.list` advertises the `writable` flag (the dispatch also enforces it).
 /// Shared by both `SerialServer` halves; mirrors the UDS connector.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote::AimxConfig) {
     for key in config.security_policy.writable_records() {
         if let Some(id) = db.inner().resolve_str(&key) {
@@ -65,19 +56,8 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
     }
 }
 
-// Prefer the tokio names when both halves are compiled (e.g. host tests).
-#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_transport::{SerialClient, SerialDialer, SerialListener, SerialServer};
+#[cfg(feature = "connector")]
+pub use connector::{framed, SerialClient, SerialServer};
 
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_transport::{
-    SerialClient as EmbassySerialClient, SerialServer as EmbassySerialServer,
-};
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_transport::{
-    SerialClient as TokioSerialClient, SerialDialer, SerialListener,
-    SerialServer as TokioSerialServer,
-};
-
-#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_transport::{SerialClient, SerialServer};
+#[cfg(feature = "std")]
+pub use connector::SerialPortDialer;

@@ -414,6 +414,65 @@ impl<T> From<T> for OneShot<T> {
     }
 }
 
+/// Hands out one pre-built connection, then refuses.
+///
+/// The [`Dialer`] a point-to-point transport wants: a moved-in UART, pipe or
+/// socket has nothing to redial, so the second attempt is
+/// [`TransportError::Closed`] — which [`run_client`](super::run_client) treats
+/// as terminal — rather than a silent reconnect loop.
+pub struct OneShotDialer<C> {
+    conn: OneShot<C>,
+}
+
+impl<C> OneShotDialer<C> {
+    /// Hold `conn` for the first [`connect`](Dialer::connect).
+    pub fn new(conn: C) -> Self {
+        Self {
+            conn: OneShot::new(conn),
+        }
+    }
+}
+
+impl<C: Connection + 'static> Dialer for OneShotDialer<C> {
+    fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        Box::pin(async move {
+            self.conn
+                .take()
+                .map(|c| Box::new(c) as Box<dyn Connection>)
+                .ok_or(TransportError::Closed)
+        })
+    }
+}
+
+/// Hands out one pre-built connection, then parks forever.
+///
+/// The [`Listener`] dual of [`OneShotDialer`]: [`serve`](super::serve) loops on
+/// `accept`, and a point-to-point link has no second peer, so parking is the
+/// correct end state rather than an error the loop would spin on.
+pub struct OneShotListener<C> {
+    conn: OneShot<C>,
+}
+
+impl<C> OneShotListener<C> {
+    /// Hold `conn` for the first [`accept`](Listener::accept).
+    pub fn new(conn: C) -> Self {
+        Self {
+            conn: OneShot::new(conn),
+        }
+    }
+}
+
+impl<C: Connection + 'static> Listener for OneShotListener<C> {
+    fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        Box::pin(async move {
+            match self.conn.take() {
+                Some(c) => Ok(Box::new(c) as Box<dyn Connection>),
+                None => core::future::pending().await,
+            }
+        })
+    }
+}
+
 // ===========================================================================
 // Compile-time assertions.
 // ===========================================================================

@@ -37,6 +37,11 @@ pub mod send_wrapper;
 #[cfg(all(not(feature = "std"), feature = "connectors"))]
 pub mod connectors;
 
+// Embassy byte sources behind core's I/O traits that need no network stack —
+// a UART is not a socket, so it does not pay for one.
+#[cfg(all(not(feature = "std"), feature = "connector-io"))]
+pub mod io;
+
 // Embassy implementations of core's runtime-neutral I/O traits, so connector
 // crates stay runtime-neutral.
 #[cfg(all(not(feature = "std"), feature = "net"))]
