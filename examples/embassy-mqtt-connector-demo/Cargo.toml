@@ -21,13 +21,15 @@ std = []
 aimdb-core = { path = "../../aimdb-core", default-features = false }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
+    # `EmbassyUart`, the byte source the serial connector frames.
+    "connector-io",
 ] }
 aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", default-features = false, features = [
     "embassy-runtime",
 ] }
 # Serial remote-access server — serves this db's records over a UART (ST-LINK VCP)
 # so a host can read them with `aimdb --features transport-serial --connect serial://…`.
-# Its `embassy-runtime` feature also turns on `aimdb-core/remote`.
+# Its `connector` feature also turns on `aimdb-core/remote`.
 aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-features = false, features = [
     "connector",
     "defmt",

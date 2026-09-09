@@ -27,7 +27,7 @@ use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use aimdb_core::session::{
     run_client, ClientConfig, CodecError, EnvelopeCodec, Inbound, Outbound, Payload,
 };
-use aimdb_embassy_adapter::net::EmbassyUart;
+use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::EmbassyAdapter;
 use aimdb_serial_connector::connector::{framed, OneShotDialer};
 

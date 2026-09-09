@@ -42,7 +42,7 @@ extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, RecordKey, RuntimeContext};
-use aimdb_embassy_adapter::net::EmbassyUart;
+use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;

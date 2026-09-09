@@ -46,8 +46,9 @@ std = [
 _check-embassy = [
     "connector",
     "dep:aimdb-embassy-adapter",
+    # `connector-io` carries `EmbassyUart` and the framed spine; no `net`, so
+    # this leg type-checks a UART without compiling a TCP/IP stack.
     "aimdb-embassy-adapter/connector-io",
-    "aimdb-embassy-adapter/net",
     "aimdb-embassy-adapter/embassy-time",
     "aimdb-embassy-adapter/embassy-sync",
     "dep:embedded-io-async",

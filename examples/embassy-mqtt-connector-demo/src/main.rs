@@ -75,7 +75,7 @@ extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
-use aimdb_embassy_adapter::net::EmbassyUart;
+use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_serial_connector::connector::SerialServer;
 use defmt::*;

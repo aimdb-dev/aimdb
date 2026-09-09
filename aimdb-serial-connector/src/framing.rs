@@ -227,7 +227,7 @@ where
     Wr: embedded_io_async::Write + Send + 'static,
 {
     use aimdb_core::session::Connection;
-    use aimdb_embassy_adapter::net::EmbassyUart;
+    use aimdb_embassy_adapter::io::EmbassyUart;
     use alloc::boxed::Box;
 
     let conn: crate::connector::SerialFramed<EmbassyUart<Rd, Wr>> =
