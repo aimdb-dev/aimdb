@@ -59,7 +59,7 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
 }
 
 #[cfg(feature = "connector")]
-pub use connector::{framed, OneShotDialer, OneShotListener, SerialClient, SerialServer};
+pub use connector::{framed, SerialClient, SerialServer};
 
 #[cfg(feature = "std")]
 pub use connector::SerialPortDialer;

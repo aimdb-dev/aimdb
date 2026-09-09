@@ -109,7 +109,8 @@ async fn a_boxed_connection_crosses_a_spawn() {
 #[tokio::test]
 async fn a_one_shot_listener_yields_once_then_parks() {
     use aimdb_core::session::Listener;
-    use aimdb_serial_connector::connector::{framed, OneShotListener};
+    use aimdb_core::session::OneShotListener;
+    use aimdb_serial_connector::connector::framed;
 
     let (a, _b) = tokio::io::duplex(1024);
     let mut listener = OneShotListener::new(framed(TokioByteStream(a)));
@@ -126,7 +127,8 @@ async fn a_one_shot_listener_yields_once_then_parks() {
 #[tokio::test]
 async fn a_one_shot_dialer_refuses_a_second_connect() {
     use aimdb_core::session::Dialer;
-    use aimdb_serial_connector::connector::{framed, OneShotDialer};
+    use aimdb_core::session::OneShotDialer;
+    use aimdb_serial_connector::connector::framed;
 
     let (a, _b) = tokio::io::duplex(1024);
     let dialer = OneShotDialer::new(framed(TokioByteStream(a)));

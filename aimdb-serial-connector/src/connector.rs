@@ -20,10 +20,13 @@ use aimdb_core::log_info;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
-    BoxFut, ByteStream, ClientConfig, Connection, Dialer, Dispatch, FramedConnection, Listener,
-    OneShot, SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector,
-    TransportError, TransportResult,
+    ByteStream, ClientConfig, Dispatch, FramedConnection, OneShot, OneShotDialer, OneShotListener,
+    SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector,
 };
+// `SerialPortDialer` is the only item here that dials anything itself, and it is
+// `std`-only; everything else rides core's one-shots.
+#[cfg(feature = "std")]
+use aimdb_core::session::{BoxFut, Connection, Dialer, TransportError, TransportResult};
 use aimdb_core::{AimDb, DbError, DbResult};
 
 use crate::framing::{CobsFramer, READ_CHUNK, WRITE_CHUNK};
@@ -38,63 +41,6 @@ pub type SerialFramed<S> = FramedConnection<S, CobsFramer, READ_CHUNK, WRITE_CHU
 /// Frame an adapter's byte stream with COBS.
 pub fn framed<S: ByteStream>(stream: S) -> SerialFramed<S> {
     FramedConnection::new(stream, CobsFramer::new())
-}
-
-/// Hands out one pre-built connection, then refuses.
-///
-/// A UART is point-to-point: there is nothing to redial, so the second attempt
-/// is an error rather than a silent reconnect loop.
-pub struct OneShotDialer<C> {
-    conn: OneShot<C>,
-}
-
-impl<C> OneShotDialer<C> {
-    /// Hold `conn` for the first [`connect`](Dialer::connect).
-    pub fn new(conn: C) -> Self {
-        Self {
-            conn: OneShot::new(conn),
-        }
-    }
-}
-
-impl<C: Connection + 'static> Dialer for OneShotDialer<C> {
-    fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
-        Box::pin(async move {
-            self.conn
-                .take()
-                .map(|c| Box::new(c) as Box<dyn Connection>)
-                .ok_or(TransportError::Closed)
-        })
-    }
-}
-
-/// Hands out one pre-built connection, then parks forever.
-///
-/// The [`Listener`] dual of [`OneShotDialer`]: `serve` loops on `accept`, and a
-/// point-to-point link has no second peer to accept, so parking is the correct
-/// end state rather than an error the loop would spin on.
-pub struct OneShotListener<C> {
-    conn: OneShot<C>,
-}
-
-impl<C> OneShotListener<C> {
-    /// Hold `conn` for the first [`accept`](Listener::accept).
-    pub fn new(conn: C) -> Self {
-        Self {
-            conn: OneShot::new(conn),
-        }
-    }
-}
-
-impl<C: Connection + 'static> Listener for OneShotListener<C> {
-    fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
-        Box::pin(async move {
-            match self.conn.take() {
-                Some(c) => Ok(Box::new(c) as Box<dyn Connection>),
-                None => core::future::pending().await,
-            }
-        })
-    }
 }
 
 /// Opens a serial device by path on each [`connect`](Dialer::connect).

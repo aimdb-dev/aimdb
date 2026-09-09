@@ -15,8 +15,9 @@ use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
     run_client, serve, ClientConfig, Connection, Dispatch, Payload, SessionConfig, SessionLimits,
 };
+use aimdb_core::session::{OneShotDialer, OneShotListener};
 use aimdb_core::AimDbBuilder;
-use aimdb_serial_connector::connector::{framed, OneShotDialer, OneShotListener};
+use aimdb_serial_connector::connector::framed;
 use aimdb_tokio_adapter::net::TokioByteStream;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
