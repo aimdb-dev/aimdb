@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dialer's do) that `Clone` shares the socket, why the bound exists, and that a
   second concurrent socket needs another `EmbassyNet::udp` call with its own
   buffers — which matters because that constructor serves both KNX/IP and SNTP.
+  `tests/udp.rs` pins the variant (it previously asserted only `is_err()`, so it
+  passed either way) and adds the clone case the `Clone` derive invites,
+  including that releasing the socket frees the clone.
 
 ### Changed (breaking)
 

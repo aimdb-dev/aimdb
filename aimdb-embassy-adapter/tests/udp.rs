@@ -10,7 +10,7 @@ extern crate alloc;
 
 use core::future::Future;
 
-use aimdb_core::session::{Datagram, DatagramBinder};
+use aimdb_core::session::{Datagram, DatagramBinder, TransportError};
 use aimdb_embassy_adapter::net::EmbassyNet;
 use embassy_net::udp::PacketMetadata;
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4};
@@ -207,13 +207,50 @@ fn a_binder_rebinds_after_its_socket_is_dropped() {
 }
 
 /// The binder owns exactly one socket, so a second bind while the first is
-/// live is refused rather than silently sharing.
+/// live is refused rather than silently sharing — as `Busy`, not `Io`.
+///
+/// The variant is the point, not just the failure: a consumer's bind-retry
+/// loop treats `Io` as transient, so reporting it for a socket that is held
+/// turns a caller mistake into an endless unexplained retry.
 #[test]
-fn a_second_bind_fails_while_the_socket_is_held() {
+fn a_second_bind_is_busy_while_the_socket_is_held() {
     let outcome = drive(|a_stack, _b_stack| async move {
         let binder = EmbassyNet::udp(a_stack, meta(), buf(), meta(), buf());
         let _held = binder.bind(3671).await.expect("first bind");
-        assert!(binder.bind(3672).await.is_err(), "socket is already taken");
+        assert_eq!(
+            binder.bind(3672).await.err(),
+            Some(TransportError::Busy),
+            "the socket is held, so the second bind is Busy, not Io"
+        );
+    });
+    assert_eq!(outcome, Ok(()));
+}
+
+/// A clone shares the one socket rather than duplicating it, so it is `Busy`
+/// too — the case the `Clone` derive invites, since a connector needs the
+/// bound to hand an owned binder to its `'static` task.
+///
+/// Releasing the socket frees the clone: the sharing is a live handoff, not a
+/// permanent claim by whoever bound first.
+#[test]
+fn a_clone_shares_the_socket_and_is_busy_until_it_is_released() {
+    let outcome = drive(|a_stack, _b_stack| async move {
+        let binder = EmbassyNet::udp(a_stack, meta(), buf(), meta(), buf());
+        let clone = binder.clone();
+
+        let held = binder.bind(3671).await.expect("first bind");
+        assert_eq!(
+            clone.bind(3672).await.err(),
+            Some(TransportError::Busy),
+            "a clone shares the socket, so its bind is Busy"
+        );
+
+        drop(held);
+        let recovered = clone
+            .bind(3672)
+            .await
+            .expect("the clone binds once released");
+        assert_eq!(recovered.local_addr().unwrap().port(), 3672);
     });
     assert_eq!(outcome, Ok(()));
 }
