@@ -774,6 +774,45 @@ impl AimDbBuilder {
         // transport, applies the security policy's writable marking, and drives
         // the shared session engine. See `with_connector`'s docs.
 
+        // A connector that claims every route for its scheme must be the only
+        // one registered under it (see `ConnectorBuilder::owns_scheme`).
+        // Checked before any `build`, so the error names the misconfiguration
+        // instead of surfacing later as duplicated or misdirected traffic.
+        // Keyless `ConfigError`s: the mistake is the db's, not a record's.
+        let mut duplicate_schemes: Vec<crate::error::ConfigError> = Vec::new();
+        for (i, builder) in self.connector_builders.iter().enumerate() {
+            if !builder.owns_scheme() {
+                continue;
+            }
+            let first = self.connector_builders[..i]
+                .iter()
+                .position(|earlier| earlier.scheme() == builder.scheme());
+            // Only the second registration reports; a third would repeat it.
+            if first.is_some()
+                && !duplicate_schemes
+                    .iter()
+                    .any(|e| e.url.as_deref() == Some(builder.scheme()))
+            {
+                duplicate_schemes.push(crate::error::ConfigError::new(
+                    "",
+                    Some(builder.scheme().into()),
+                    alloc::format!(
+                        "More than one connector registered for scheme '{}'. Routes are \
+                         collected by scheme alone, so each connector would claim all of \
+                         them: every `link_to` would publish twice, and the routes cannot \
+                         be divided between the two. Register one connector for this \
+                         scheme, or give one of them a distinct scheme.",
+                        builder.scheme()
+                    ),
+                ));
+            }
+        }
+        if !duplicate_schemes.is_empty() {
+            return Err(DbError::InvalidConfiguration {
+                errors: duplicate_schemes,
+            });
+        }
+
         // Collect connector futures. Connector builders return a
         // `Vec<BoxFuture>` for the runner to drive — there is no connector
         // object to keep.

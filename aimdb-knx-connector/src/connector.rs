@@ -199,6 +199,18 @@ where
     fn scheme(&self) -> &str {
         "knx"
     }
+
+    /// One KNX connector per db.
+    ///
+    /// Not a limit on group addresses — one connector is one tunnel to one
+    /// gateway, and that is the whole bus behind it: every record's
+    /// `link_from`/`link_to` names its own address, and they all ride this one
+    /// connector. What it rules out is a *second gateway*, which cannot work
+    /// today because `build` collects every `knx://` route regardless of which
+    /// gateway it was meant for.
+    fn owns_scheme(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -320,6 +332,44 @@ mod tests {
             2,
             "connection task + pump_source, and no publisher"
         );
+    }
+
+    /// A second KNX connector is a configuration error, whether or not it
+    /// shares the first one's channels.
+    ///
+    /// Sharing is the louder mistake — both tasks would drain one command
+    /// queue — but separate channels are broken too: each connector collects
+    /// *all* `knx://` routes, so every `link_to` gets two publishers and
+    /// nothing says which gateway a route belongs to.
+    #[tokio::test]
+    async fn a_second_knx_connector_fails_the_build() {
+        static A: Channels<8> = Channels::new();
+        static B: Channels<8> = Channels::new();
+
+        for (second_channels, case) in [(&A, "shared channels"), (&B, "separate channels")] {
+            let builder = AimDbBuilder::new()
+                .runtime(Arc::new(TokioAdapter))
+                .with_connector(KnxConnector::<_, _, 8>::new(
+                    TokioNet::udp(Ipv4Addr::LOCALHOST),
+                    TokioDelay,
+                    "knx://127.0.0.1:3671",
+                    &A,
+                ))
+                .with_connector(KnxConnector::<_, _, 8>::new(
+                    TokioNet::udp(Ipv4Addr::LOCALHOST),
+                    TokioDelay,
+                    "knx://127.0.0.2:3671",
+                    second_channels,
+                ));
+
+            let Err(err) = builder.build().await else {
+                panic!("a second KNX connector must be rejected ({case})");
+            };
+            assert!(
+                format!("{err}").contains("More than one connector registered for scheme 'knx'"),
+                "unexpected error ({case}): {err}"
+            );
+        }
     }
 
     /// The whole wiring against a real UDP gateway: the task binds, advertises

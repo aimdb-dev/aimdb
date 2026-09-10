@@ -68,6 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A second KNX connector now fails the build instead of silently duplicating
+  every route.** `KnxConnector` declares core's new
+  `ConnectorBuilder::owns_scheme`, so registering two is a configuration error.
+  It never worked: `build` collects every `knx://` route regardless of which
+  gateway it was meant for, so each connector claimed all of them — every
+  `link_to` got two publishers, and sharing one `Channels` additionally put two
+  connection tasks on one command queue, splitting writes between gateways at
+  random. This is a guard, not a new limit: one connector is one tunnel to one
+  gateway and carries the whole bus behind it, with as many group addresses as
+  records declare. What it rules out is a second *gateway*, which the
+  scheme-keyed routing cannot express.
 - **An unspecified bind address now advertises the NAT HPAI, not a real port
   beside `0.0.0.0`.** The CONNECT_REQUEST's HPAI was built from `local_addr()`
   with no check on the address, so binding `0.0.0.0` — the host default, and

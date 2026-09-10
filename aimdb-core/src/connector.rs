@@ -779,6 +779,28 @@ pub trait ConnectorBuilder: Send + Sync {
     /// will be registered under. Used for routing `.link_from()` and `.link_to()`
     /// declarations to the appropriate connector.
     fn scheme(&self) -> &str;
+
+    /// Whether registering a second connector under this scheme is an error.
+    ///
+    /// Say `true` when [`build`](Self::build) claims every route for its
+    /// scheme — [`collect_inbound_routes`](crate::AimDb::collect_inbound_routes),
+    /// [`collect_outbound_routes`](crate::AimDb::collect_outbound_routes),
+    /// [`pump_source`](crate::session::pump_source),
+    /// [`pump_sink`](crate::session::pump_sink) and
+    /// [`pump_client`](crate::session::pump_client) all filter by scheme alone,
+    /// so two such connectors each collect *all* of it: every `link_to` gets two
+    /// publishers, and the routes cannot be divided between the two endpoints
+    /// because nothing in a route names which connector it belongs to. That
+    /// misconfiguration is otherwise silent, and it fails as duplicated or
+    /// misdirected traffic at runtime rather than at build.
+    ///
+    /// Leave it `false` — the default — for a connector that only serves what
+    /// it is given, such as a session *server*: it binds its own listener and
+    /// collects no routes, so two of them under one scheme are two endpoints
+    /// onto the same dispatch, which is useful rather than broken.
+    fn owns_scheme(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
