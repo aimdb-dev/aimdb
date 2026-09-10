@@ -442,6 +442,20 @@ impl Datagram for EmbassyUdpSocket {
 }
 
 /// Binds [`EmbassyUdpSocket`]s over one caller-owned socket.
+///
+/// `Clone` shares that socket rather than duplicating it — it exists so a
+/// binder can satisfy the `Clone` bound a connector needs to hand an owned
+/// binder to its `'static` task (`KnxConnector`, for one). A clone binding
+/// while another handle holds the socket gets [`TransportError::Busy`]. For a
+/// second *concurrent* socket call [`EmbassyNet::udp`] again with its own
+/// buffers, which is the only way to get one — `EmbassyNet::udp` serves both
+/// KNX/IP and SNTP, so two consumers on one stack need two calls, not two
+/// clones.
+///
+/// Note this is unlike [`TokioUdpBinder`](https://docs.rs/aimdb-tokio-adapter),
+/// whose `bind` opens a fresh OS socket per call and whose clones are therefore
+/// independent. The same `Clone` bound means different things on the two
+/// adapters, which is why it is spelled out here.
 #[derive(Clone)]
 pub struct EmbassyUdpBinder {
     stack: Stack<'static>,
@@ -458,12 +472,17 @@ impl DatagramBinder for EmbassyUdpBinder {
 
     fn bind(&self, port: u16) -> impl Future<Output = TransportResult<Self::Socket>> + Send + '_ {
         SendFutureWrapper(async move {
+            // `Busy`, not `Io`: the socket is held by another handle on this
+            // binder (a clone, or a live `EmbassyUdpSocket` not yet dropped).
+            // That is a caller mistake and never resolves on its own, where a
+            // failed `bind` below may; a retry loop that cannot tell them apart
+            // spins forever on the first with nothing to point at.
             let mut socket = self
                 .slot
                 .socket
                 .borrow_mut()
                 .take()
-                .ok_or(TransportError::Io)?;
+                .ok_or(TransportError::Busy)?;
             // Idempotent: a socket returned by a dropped `EmbassyUdpSocket` is
             // already closed, and closing an unbound socket is a no-op.
             socket.close();

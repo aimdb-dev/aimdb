@@ -15,7 +15,9 @@ use core::future::Future;
 use core::net::SocketAddr;
 use core::time::Duration;
 
-use aimdb_core::session::{Datagram, DatagramBinder, Delay, Payload, TransportResult};
+use aimdb_core::session::{
+    Datagram, DatagramBinder, Delay, Payload, TransportError, TransportResult,
+};
 use aimdb_core::{log_debug, log_error, log_warn, RuntimeOps};
 
 use crate::tunnel::{
@@ -209,6 +211,20 @@ pub async fn connection_task<B, D, S, C>(
     loop {
         let mut socket = match binder.bind(0).await {
             Ok(socket) => socket,
+            // `Busy` is a caller mistake, not a transient fault: the binder's
+            // one socket is held elsewhere — typically a clone of a
+            // single-socket binder — and no amount of retrying frees it. Same
+            // recovery either way (a `Busy` binder *can* free up if the other
+            // holder drops), but the log has to say which, or the misuse reads
+            // as an endless unexplained bind failure.
+            Err(TransportError::Busy) => {
+                log_error!(
+                    "KNX bind failed: the binder's socket is held by another handle \
+                     (a clone of a single-socket binder?); retrying"
+                );
+                delay.sleep(BIND_RETRY).await;
+                continue;
+            }
             Err(_) => {
                 log_error!("KNX bind failed; retrying");
                 delay.sleep(BIND_RETRY).await;
@@ -589,6 +605,78 @@ mod tests {
                 fail_recv: cycle == 0,
             })
         }
+    }
+
+    /// Reports `Busy` for the first two binds, then hands over a real socket —
+    /// a single-socket binder whose socket another handle is holding.
+    struct BusyThenFreeBinder {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl DatagramBinder for BusyThenFreeBinder {
+        type Socket = FlappingSocket;
+
+        async fn bind(&self, port: u16) -> TransportResult<Self::Socket> {
+            if self.attempts.fetch_add(1, Ordering::SeqCst) < 2 {
+                return Err(TransportError::Busy);
+            }
+            let inner = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
+                .await
+                .map_err(|_| TransportError::Io)?;
+            Ok(FlappingSocket {
+                inner,
+                report_addr: true,
+                fail_recv: false,
+            })
+        }
+    }
+
+    /// A `Busy` bind must not end the task: it retries, and connects once the
+    /// other handle releases the socket.
+    ///
+    /// `start_paused` so the `BIND_RETRY` sleeps are virtual — the two retries
+    /// cost 10 s of tokio's clock and no wall time.
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_binder_retries_and_recovers() {
+        let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let task = tokio::spawn(connection_task(
+            BusyThenFreeBinder {
+                attempts: attempts.clone(),
+            },
+            gateway_addr,
+            runtime(),
+            TokioDelay,
+            VecSink::default(),
+            NoCommands,
+        ));
+
+        // Must exceed the two `BIND_RETRY` sleeps the task waits out. `RECV_TIMEOUT`
+        // would not: it and the first retry share the t=5s deadline, and under a
+        // paused clock the timeout wins before the second retry is ever reached.
+        const PAST_TWO_RETRIES: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let mut buf = [0u8; 128];
+        let (len, _) = tokio::time::timeout(PAST_TWO_RETRIES, gateway.recv_from(&mut buf))
+            .await
+            .expect("no CONNECT_REQUEST: the task did not retry past Busy")
+            .expect("recv_from");
+
+        assert!(
+            len >= 14,
+            "CONNECT_REQUEST reached the wire after the retries"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            3,
+            "two Busy binds, then the one that succeeded"
+        );
+
+        task.abort();
     }
 
     /// A rebind that cannot learn its address must advertise the NAT-style

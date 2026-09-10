@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `Busy` bind is logged as the caller mistake it is.** The bind-retry loop
+  treated every failure alike, so a binder whose socket is held elsewhere — a
+  clone of a single-socket `EmbassyUdpBinder`, say — produced one identical
+  "KNX bind failed; retrying" line every 5 s with nothing pointing at the
+  cause. `TransportError::Busy` now logs distinctly. Recovery is unchanged: a
+  `Busy` binder can free up if the other holder drops, so both cases still
+  retry.
 - **A second KNX connector now fails the build instead of silently duplicating
   every route.** `KnxConnector` declares core's new
   `ConnectorBuilder::owns_scheme`, so registering two is a configuration error.
