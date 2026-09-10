@@ -51,7 +51,7 @@ aimdb-core = "0.3"
 aimdb-tokio-adapter = { version = "0.3", features = ["tokio-runtime"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.2", features = ["tokio-runtime"] }
+# aimdb-knx-connector = { version = "0.2", features = ["std", "critical-section-std-impl"] }
 
 # Optional: MQTT connector
 # aimdb-mqtt-connector = { version = "0.3", features = ["tokio-runtime"] }
@@ -152,7 +152,7 @@ aimdb-core = { version = "0.3", default-features = false }
 aimdb-embassy-adapter = { version = "0.3", features = ["embassy-runtime", "embassy-task-pool-16"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.2", features = ["embassy-runtime"], default-features = false }
+# aimdb-knx-connector = { version = "0.2", features = ["connector"], default-features = false }
 
 # Optional: MQTT connector
 # aimdb-mqtt-connector = { version = "0.3", features = ["embassy-runtime"], default-features = false }
@@ -295,11 +295,14 @@ The KNX connector provides KNX/IP tunneling support for building automation syst
 
 **Add to Cargo.toml:**
 ```toml
-# For Tokio
-aimdb-knx-connector = { version = "0.2", features = ["tokio-runtime"] }
+# Host. `critical-section-std-impl` selects the impl the connector's channels
+# need to link — only a final binary may pick one.
+aimdb-knx-connector = { version = "0.5", features = ["std", "critical-section-std-impl"] }
+aimdb-tokio-adapter = { version = "0.6", features = ["tokio-runtime", "net"] }
 
-# For Embassy
-aimdb-knx-connector = { version = "0.2", features = ["embassy-runtime"], default-features = false }
+# Embedded. `connector` is the same code on `no_std + alloc`; the HAL already
+# provides a `critical-section` impl.
+aimdb-knx-connector = { version = "0.5", features = ["connector"], default-features = false }
 
 # REQUIRED PATCH (bug fixes not yet on crates.io)
 [patch.crates-io]
@@ -310,7 +313,9 @@ knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master
 ```rust
 use aimdb_core::prelude::*;
 use aimdb_tokio_adapter::TokioAdapter;
-use aimdb_knx_connector::KnxConnector;
+use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
+use aimdb_knx_connector::{Channels, KnxConnector};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -318,13 +323,23 @@ struct LightState {
     is_on: bool,
 }
 
+// One channel pair per connector, held for the process lifetime.
+static CHANNELS: Channels = Channels::new();
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = Arc::new(TokioAdapter::new()?);
     
     let db = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector(KnxConnector::new("knx://192.168.1.19:3671"))
+        // The adapter owns the UDP socket and the clock; the connector owns
+        // the tunnelling protocol.
+        .with_connector(KnxConnector::new(
+            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+            TokioDelay,
+            "knx://192.168.1.19:3671",
+            &CHANNELS,
+        ))
         .configure::<LightState>("light.state", |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                .link_from("knx://1/0/7")
