@@ -13,10 +13,33 @@ categories = ["network-programming", "embedded", "asynchronous"]
 
 [features]
 default = ["aimdb-core/alloc"]
-std = ["aimdb-core/std", "knx-pico/std", "thiserror"]
-# The protocol is sans-io and the transports come from an adapter, so the host
-# leg adds only `std` and the executor-independent channel type.
-tokio-runtime = ["std", "embassy-sync"]
+
+# The whole connector: the sans-io tunnel engine, the unified connection task,
+# and `KnxConnector` over core's `DatagramBinder`/`Delay`. `src/` names no
+# adapter and no `std::`, so one gate covers every target. A runtime is chosen
+# by passing an adapter's binder and clock — a dependency the caller adds, not a
+# feature here — which is what lets a third runtime (FreeRTOS/lwIP) use this
+# crate with no edit to it.
+#
+# `embassy-sync` is not an Embassy dependency in the executor sense: it is
+# no_std, no_alloc, and pulls no executor, and its `Channel` is this connector's
+# public queue type (`Channels`) on every runtime.
+connector = [
+    "aimdb-core/alloc",
+    "aimdb-core/connector-session", # `pump_sink`/`pump_source`/`Source`/`Payload`
+    "embassy-sync",
+]
+
+# Orthogonal to `connector`: the code is `alloc`-only either way, so this only
+# lifts `no_std`, forwards core's own `std`, and adds knx-pico's std error impls
+# plus the back-compat DPT re-exports.
+std = ["connector", "aimdb-core/std", "knx-pico/std"]
+
+# Deprecated aliases. They name executors this crate never mentions, which
+# blocks a FreeRTOS/lwIP build from enabling the connector without claiming to
+# be Embassy. Kept so existing consumers keep working; remove after a release.
+tokio-runtime = ["std"]
+embassy-runtime = ["connector"]
 
 # Selects `critical-section`'s std implementation.
 #
@@ -26,79 +49,46 @@ tokio-runtime = ["std", "embassy-sync"]
 # the **final binary** may choose one: a library enabling it would hand every
 # downstream binary a duplicate-symbol link error with no way to opt out.
 #
-# So this stays off by default and out of `tokio-runtime`. This crate's own
+# So this stays off by default and out of `connector`/`std`. This crate's own
 # tests get the impl through a dev-dependency; a std binary that instantiates a
 # `CriticalSectionRawMutex` channel and has no other impl in its graph can
 # either depend on `critical-section` with `features = ["std"]` directly (the
-# documented way) or enable this feature.
+# documented way) or enable this feature. On Embassy the HAL (cortex-m /
+# embassy-rp / ...) already provides one.
 critical-section-std-impl = ["critical-section/std"]
-embassy-runtime = [
-    "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
-    "aimdb-core/connector-session",              # `pump_sink`/`pump_source`/`Source`/`Payload`
-    "dep:aimdb-embassy-adapter",                 # Enable the optional dependency
-    "aimdb-embassy-adapter/embassy-net-support", # Enable EmbassyNetwork trait for network stack access
-    "aimdb-embassy-adapter/connectors",          # `into_box_future` spine helper
-    "embassy-executor",
-    "embassy-time",
-    "embassy-sync",
-    "embassy-net",
-    "static_cell",
-]
+
 # Design 050 §10.4/§10.5: the facade reaches both destinations through
 # `aimdb_core::__private`, so neither dependency is declared here any more.
 # The *features* stay: a `#[cfg]` in a `#[macro_export]`ed macro is resolved
 # where it expands, so without them this crate would emit nothing.
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
-defmt = [
-    "dep:defmt",
-    "aimdb-core/defmt",
-    "knx-pico/defmt",
-] # Only use knx-pico's defmt for logging
+defmt = ["aimdb-core/defmt", "knx-pico/defmt"]
 
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
-aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # aimdb-dev fork: upstream 0.3.0 panics on an npdu_length=1 telegram. A patch
 # won't do — patches aren't published, so dependants resolve back to upstream.
 # Keyed `knx-pico` to keep imports and feature references unchanged.
 knx-pico = { package = "aimdb-knx-pico", version = "0.3.1", default-features = false }
 
-# Error handling (std only)
-thiserror = { workspace = true, optional = true }
-
-futures-core = { version = "0.3", default-features = false }
-
-# Embassy runtime dependencies (no_std)
-# Note: These use the workspace's local embassy checkout to avoid conflicts
-embassy-executor = { version = "0.10.0", optional = true }
-embassy-time = { version = "0.5.1", optional = true }
+# Executor-independent, despite the names: neither pulls an executor and both
+# build on std, so one channel type and one select serve every runtime.
+# `embassy-sync` is optional because it is only reachable through `connector`;
+# `embassy-futures` is unconditional (its `[dependencies]` is empty bar optional
+# defmt/log, so the std graph is unaffected).
 embassy-sync = { version = "0.8.0", path = "../_external/embassy/embassy-sync", optional = true }
-# Unconditional: its `[dependencies]` is empty bar optional defmt/log, so the
-# std graph is unaffected and one select loop serves both runtimes.
 embassy-futures = { version = "0.1.2" }
-embassy-net = { version = "0.9.0", optional = true, features = [
-    "tcp",
-    "udp",
-    "dhcpv4",
-    "medium-ethernet",
-    "proto-ipv4",
-] }
 
 # A `critical-section` impl must be linked wherever `CriticalSectionRawMutex`
 # is used. Choosing one is the final binary's call, so it is reachable only
-# through the opt-in `critical-section-std-impl` feature above; on Embassy the
-# HAL (cortex-m / embassy-rp / …) already provides it.
+# through the opt-in `critical-section-std-impl` feature above.
 critical-section = { version = "1.1", optional = true }
 
 # Embedded utilities (heapless is unconditional: the shared sans-io tunnel
 # engine uses stack-allocated frames on both runtimes)
 heapless = { workspace = true }
-static_cell = { version = "2.0", optional = true }
-
-# Optional observability
-defmt = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

@@ -6,10 +6,24 @@
 //!
 //! ## Features
 //!
-//! - `tokio-runtime`: Tokio-based connector using UDP sockets
-//! - `embassy-runtime`: Embassy connector for embedded systems
+//! No feature here names a runtime: `src/` mentions no adapter and no `std::`,
+//! and a runtime is chosen by *passing* an adapter's `DatagramBinder` and
+//! `Delay` to `KnxConnector::new`. A third runtime (FreeRTOS/lwIP) works with
+//! no edit to this crate.
+//!
+//! - `connector`: the whole connector — tunnel engine, connection task, and
+//!   `KnxConnector` — on `no_std + alloc`. This is the gate an embedded caller
+//!   enables.
+//! - `std`: `connector` plus core's `std`, knx-pico's std error impls, and the
+//!   back-compat DPT re-exports. Lifts `no_std`; adds no runtime.
+//! - `critical-section-std-impl`: **final binaries only** — selects
+//!   `critical-section`'s std impl, which `Channels` needs to link on a host.
+//!   An Embassy HAL already provides one.
 //! - `tracing`: Debug logging support (std)
 //! - `defmt`: Debug logging support (no_std)
+//!
+//! `tokio-runtime` and `embassy-runtime` are deprecated aliases for `std` and
+//! `connector` respectively, kept for one release.
 //!
 //! ## Production Status
 //!
@@ -157,15 +171,14 @@ pub use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
 // Runtime-neutral KNX/IP tunneling state machine shared by both transports.
 pub mod tunnel;
 
-// The connection task: one body for both runtimes, generic over core's
-// datagram and delay traits. Supersedes the two per-runtime client modules
-// below, which it will replace outright.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+// The connection task: one body for every runtime, generic over core's
+// datagram and delay traits.
+#[cfg(feature = "connector")]
 pub mod client;
 
 // Runtime-neutral `KnxConnector` over an adapter's datagram transport.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub mod connector;
 
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub use connector::{Channels, KnxConnector};

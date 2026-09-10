@@ -257,7 +257,7 @@ pub async fn connection_task<B, D, S, C>(
 
 /// Channel bridges over `embassy_sync`, which is executor-independent, so the
 /// same types back the task on both runtimes.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub mod shared_channel {
     use super::{CommandSource, GroupWrite, Payload, TelegramSink};
     use alloc::string::String;
@@ -288,7 +288,7 @@ pub mod shared_channel {
     }
 }
 
-#[cfg(all(test, feature = "tokio-runtime"))]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use aimdb_core::session::TransportError;

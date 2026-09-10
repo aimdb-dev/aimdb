@@ -19,9 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `embassy_sync::Channel` is sized at compile time. `tokio_client` and
   `embassy_client` are deleted with the `Tokio*`/`Embassy*` aliases, and
   `aimdb-codegen` emits the same call with the Tokio transports.
-- **`tokio-runtime` gains `embassy-sync`; `embassy-futures` is unconditional.**
-  Both are executor-independent, so one channel and select type serves either
-  runtime.
+- **Feature gates split `std` / `no_std + alloc` instead of naming runtimes
+  (breaking), matching the TCP and serial connectors.** The new `connector`
+  gate is the whole connector — tunnel engine, connection task, `KnxConnector`
+  — on `no_std + alloc`; `std = ["connector", "aimdb-core/std",
+  "knx-pico/std"]` only lifts `no_std` and adds knx-pico's std error impls plus
+  the back-compat DPT re-exports. Neither gate names an executor, so a
+  FreeRTOS/lwIP caller enables `connector` and passes its own binder and clock
+  without claiming to be Embassy. `tokio-runtime` and `embassy-runtime` remain
+  as deprecated aliases for `std` and `connector`; remove after a release.
+
+  This drops the dependencies the deleted per-runtime clients had needed:
+  `aimdb-embassy-adapter`, `embassy-net`, `embassy-time`, `static_cell` and
+  `dep:defmt` (plus the long-unused `futures-core`, `thiserror` and
+  `embassy-executor`). The embedded graph goes from 88 crates to 46, and the
+  crate no longer depends on *either* adapter — the asymmetry that survived the
+  constructor change, since only the Tokio side had been cleaned up.
+
+  `embassy-sync` stays, moved onto `connector`: it is no_std, no_alloc, pulls
+  no executor, and its `Channel` is this connector's public queue type
+  (`Channels`) on every runtime. `embassy-futures` stays unconditional.
 - **Selecting a `critical-section` implementation is left to the final binary.**
   `CriticalSectionRawMutex` needs one to link, but the impl is registered by
   symbol name and is global to the binary, so a library that enables it hands

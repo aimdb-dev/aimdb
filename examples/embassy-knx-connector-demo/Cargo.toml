@@ -25,7 +25,9 @@ aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features
     "net",
 ] }
 aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = false, features = [
-    "embassy-runtime",
+    # No runtime named: the connector is neutral and takes this binary's
+    # `EmbassyNet`/`EmbassyDelay` as arguments.
+    "connector",
     "defmt",
 ] }
 # Serial remote-access server — serves this db's records over a UART (ST-LINK VCP)

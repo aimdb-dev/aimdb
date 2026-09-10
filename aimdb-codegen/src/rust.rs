@@ -505,7 +505,7 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
         optional_connector_deps.push_str(
             "# critical-section-std-impl: the KNX channels need an impl, and only \
 the binary may pick one.\n\
-aimdb-knx-connector = { version = \"0.5\", features = [\"tokio-runtime\", \"critical-section-std-impl\"] }\n",
+aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
         );
     }
     if has_ws {
@@ -1342,7 +1342,7 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
         connector_deps.push_str(
             "# critical-section-std-impl: the KNX channels need an impl, and only \
 the binary may pick one.\n\
-aimdb-knx-connector = { version = \"0.5\", features = [\"tokio-runtime\", \"critical-section-std-impl\"] }\n",
+aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
         );
     }
     if has_ws {

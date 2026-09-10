@@ -1,6 +1,6 @@
 //! Unit tests for KNX group address parsing and formatting
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 mod tokio_tests {
     use aimdb_knx_connector::GroupAddress;
 

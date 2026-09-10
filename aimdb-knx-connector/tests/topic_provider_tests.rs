@@ -6,7 +6,7 @@
 //!
 //! The tests use mock data and don't require a running KNX/IP gateway.
 
-#![cfg(feature = "tokio-runtime")]
+#![cfg(feature = "std")]
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::TopicProvider;

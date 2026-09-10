@@ -119,7 +119,7 @@ build:
 	@printf "$(YELLOW)  → Building persistence SQLite backend$(NC)\n"
 	cargo build --package aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Building KNX connector$(NC)\n"
-	cargo build --package aimdb-knx-connector --features "std,tokio-runtime"
+	cargo build --package aimdb-knx-connector --no-default-features --features "std"
 	@printf "$(YELLOW)  → Building WebSocket connector (server + client)$(NC)\n"
 	cargo build --package aimdb-websocket-connector --features "server,client"
 	@printf "$(YELLOW)  → Building UDS connector$(NC)\n"
@@ -212,7 +212,7 @@ test:
 	@printf "$(YELLOW)  → Testing MQTT connector (tokio + rustls)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-rustls"
 	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
-	cargo test --package aimdb-knx-connector --features "std,tokio-runtime"
+	cargo test --package aimdb-knx-connector --no-default-features --features "std"
 	@printf "$(YELLOW)  → Testing WebSocket connector (server + client: unit, real-socket e2e, AimDB round-trip)$(NC)\n"
 	cargo test --package aimdb-websocket-connector --features "server,client"
 	@printf "$(YELLOW)  → Testing WebSocket connector client-only build$(NC)\n"
@@ -323,9 +323,9 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on persistence SQLite backend$(NC)\n"
 	cargo clippy --package aimdb-persistence-sqlite --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (std)$(NC)\n"
-	cargo clippy --package aimdb-knx-connector --features "std,tokio-runtime" --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on KNX connector (embassy)$(NC)\n"
-	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime" -- -D warnings
+	cargo clippy --package aimdb-knx-connector --no-default-features --features "std" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on KNX connector (neutral, no_std+alloc)$(NC)\n"
+	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio, no TLS backend)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-runtime" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio + native-tls)$(NC)\n"
@@ -336,8 +336,8 @@ clippy:
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + TLS + defmt)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-tls,defmt" -- -D warnings
-	@printf "$(YELLOW)  → Clippy on KNX connector (embassy + defmt)$(NC)\n"
-	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on KNX connector (neutral + defmt)$(NC)\n"
+	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
 	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on UDS connector$(NC)\n"
@@ -377,7 +377,7 @@ doc:
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net" --no-deps
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
-	cargo doc --package aimdb-knx-connector --features "std,tokio-runtime" --no-deps
+	cargo doc --package aimdb-knx-connector --no-default-features --features "std" --no-deps
 	cargo doc --package aimdb-codegen --no-deps
 	cargo doc --package aimdb-cli --no-deps
 	cargo doc --package aimdb-mcp --no-deps
@@ -398,7 +398,7 @@ doc:
 	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps
 	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime,net" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
-	cargo doc --package aimdb-knx-connector --no-default-features --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-knx-connector --no-default-features --features "connector" --no-deps
 	cargo doc --package aimdb-serial-connector --no-default-features --features "connector" --no-deps
 	cargo doc --package aimdb-tcp-connector --no-default-features --features "connector" --no-deps
 	@cp -r target/doc/* target/doc-final/embedded/
@@ -464,10 +464,10 @@ test-embedded:
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
-	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
-	@printf "$(YELLOW)  → Checking aimdb-knx-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
+	@printf "$(YELLOW)  → Checking aimdb-knx-connector (neutral, no_std+alloc) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "connector"
+	@printf "$(YELLOW)  → Checking aimdb-knx-connector (neutral + defmt) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-knx-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "connector,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-serial-connector (Embassy: full no_std AimX serial client+server) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-serial-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "_test-embassy"
 	@printf "$(YELLOW)  → Checking aimdb-serial-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"

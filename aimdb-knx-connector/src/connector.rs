@@ -207,7 +207,7 @@ where
     }
 }
 
-#[cfg(all(test, feature = "tokio-runtime"))]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use aimdb_core::buffer::BufferCfg;
