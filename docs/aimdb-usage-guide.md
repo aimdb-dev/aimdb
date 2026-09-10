@@ -47,17 +47,18 @@ edition = "2021"
 
 [dependencies]
 # AimDB core and Tokio runtime adapter
-aimdb-core = "0.3"
-aimdb-tokio-adapter = { version = "0.3", features = ["tokio-runtime"] }
+aimdb-core = "1.2"
+aimdb-tokio-adapter = { version = "0.6", features = ["tokio-runtime"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.2", features = ["std", "critical-section-std-impl"] }
+# aimdb-knx-connector = { version = "0.5", features = ["std", "critical-section-std-impl"] }
+# aimdb-tokio-adapter's "net" feature is also required — see the KNX section.
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.3", features = ["tokio-runtime"] }
+# aimdb-mqtt-connector = { version = "0.6", features = ["tokio-runtime"] }
 
 # Optional: Sync API wrapper (for blocking code)
-# aimdb-sync = "0.3"
+# aimdb-sync = "0.6"
 
 # Tokio runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -148,18 +149,18 @@ Once you have an Embassy project set up, add AimDB:
 ```toml
 [dependencies]
 # AimDB core and Embassy runtime adapter
-aimdb-core = { version = "0.3", default-features = false }
-aimdb-embassy-adapter = { version = "0.3", features = ["embassy-runtime", "embassy-task-pool-16"] }
+aimdb-core = { version = "1.2", default-features = false }
+aimdb-embassy-adapter = { version = "0.6", features = ["embassy-runtime"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.2", features = ["connector"], default-features = false }
+# aimdb-knx-connector = { version = "0.5", features = ["connector"], default-features = false }
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.3", features = ["embassy-runtime"], default-features = false }
+# aimdb-mqtt-connector = { version = "0.6", features = ["embassy-runtime"], default-features = false }
 
 # Embassy runtime (example for RP2040)
-embassy-executor = { version = "0.6", features = ["arch-cortex-m", "executor-thread"] }
-embassy-time = { version = "0.3", features = ["generic-queue-16"] } # REQUIRED — see note below
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-time = { version = "0.5", features = ["generic-queue-16"] } # REQUIRED — see note below
 embassy-rp = { version = "0.2", features = ["time-driver"] }
 
 # CRITICAL: Patch dependencies for compatibility
@@ -373,10 +374,10 @@ The MQTT connector enables pub/sub messaging with MQTT brokers.
 **Add to Cargo.toml:**
 ```toml
 # For Tokio
-aimdb-mqtt-connector = { version = "0.3", features = ["tokio-runtime"] }
+aimdb-mqtt-connector = { version = "0.6", features = ["tokio-runtime"] }
 
 # For Embassy
-aimdb-mqtt-connector = { version = "0.3", features = ["embassy-runtime"], default-features = false }
+aimdb-mqtt-connector = { version = "0.6", features = ["embassy-runtime"], default-features = false }
 
 # REQUIRED PATCH for Embassy (version compatibility)
 [patch.crates-io]
@@ -553,17 +554,17 @@ For maximum stability, you can pin to specific versions on crates.io:
 
 ```toml
 [dependencies]
-aimdb-core = "=0.3.0"
-aimdb-tokio-adapter = "=0.3.0"
-aimdb-mqtt-connector = "=0.3.0"
-aimdb-knx-connector = "=0.2.0"
+aimdb-core = "=1.2.0"
+aimdb-tokio-adapter = "=0.6.0"
+aimdb-mqtt-connector = "=0.6.0"
+aimdb-knx-connector = "=0.5.0"
 ```
 
 Or use standard semver:
 ```toml
 [dependencies]
-aimdb-core = "0.3"  # Will use latest 0.3.x
-aimdb-knx-connector = "0.2"  # Will use latest 0.2.x
+aimdb-core = "1.2"  # Will use latest 1.2.x
+aimdb-knx-connector = "0.5"  # Will use latest 0.5.x
 ```
 
 ## Migration Path
@@ -573,14 +574,14 @@ As bug fixes are upstreamed and published, the patches can be removed:
 ```toml
 # Current (with patches)
 [dependencies]
-aimdb-knx-connector = "0.2"
+aimdb-knx-connector = "0.5"
 
 [patch.crates-io]
 knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master" }
 
 # After upstream fixes are published
 [dependencies]
-aimdb-knx-connector = "0.2"  # or newer version
+aimdb-knx-connector = "0.5"  # or newer version
 
 # [patch.crates-io]  <-- Just delete this section!
 ```
