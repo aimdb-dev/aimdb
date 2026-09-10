@@ -23,7 +23,10 @@ use aimdb_core::{log_info, AimDb, DbError, DbResult, RuntimeOps};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 
-use crate::client::{connection_task, shared_channel::ChannelCommands, TelegramSink};
+use crate::client::{
+    connection_task,
+    shared_channel::{ChannelCommands, ChannelSink},
+};
 use crate::tunnel::GroupWrite;
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -60,15 +63,6 @@ impl<const N: usize> Connector for KnxSink<'_, N> {
             self.commands.send(command?).await;
             Ok(())
         })
-    }
-}
-
-/// Inbound half: the connection task pushes telegrams here for `pump_source`.
-struct ChannelTelegrams<'a, const N: usize>(&'a TelegramChannel<N>);
-
-impl<const N: usize> TelegramSink for ChannelTelegrams<'_, N> {
-    fn try_send(&self, topic: String, payload: Payload) -> bool {
-        self.0.try_send((topic, payload)).is_ok()
     }
 }
 
@@ -179,7 +173,7 @@ where
                 gateway,
                 runtime,
                 self.delay.clone(),
-                ChannelTelegrams::<N>(&channels.telegrams),
+                ChannelSink::<N>(channels.telegrams.sender()),
                 ChannelCommands::<N>(channels.commands.receiver()),
             ));
 
@@ -245,12 +239,52 @@ mod tests {
         );
     }
 
-    /// The connector registers under the `knx` scheme and contributes the
-    /// connection task plus its pump futures.
+    /// A db with one inbound and one outbound `knx` route, so both pumps have
+    /// something to contribute.
+    ///
+    /// A connector must be registered or the builder rejects the routes ("no
+    /// connector registered for scheme 'knx'"). It gets its own channel pair:
+    /// two connectors sharing one would split the command queue between them.
+    /// Nothing here is ever driven — `build` only collects futures.
+    async fn routed_db() -> AimDb {
+        static REGISTERED: Channels<8> = Channels::new();
+        let mut builder = AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(KnxConnector::<_, _, 8>::new(
+                TokioNet::udp(Ipv4Addr::LOCALHOST),
+                TokioDelay,
+                "knx://127.0.0.1:3671",
+                &REGISTERED,
+            ));
+        builder.configure::<u64>("switch", |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_from("knx://1/0/7")
+                .with_deserializer(
+                    |_ctx, data: &[u8]| Ok(data.first().copied().unwrap_or(0) as u64),
+                )
+                .finish();
+        });
+        builder.configure::<u64>("lamp", |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_to("knx://1/0/6")
+                .with_serializer(|_ctx, v: &u64| Ok(vec![*v as u8]))
+                .finish();
+        });
+        builder.build().await.expect("build db").0
+    }
+
+    /// The connector registers under the `knx` scheme and contributes exactly
+    /// the connection task, one `pump_source`, and one publisher per outbound
+    /// route.
+    ///
+    /// The count is asserted, not just non-emptiness: `pump_source` yields one
+    /// future unconditionally and `pump_sink` one per outbound route, so a pump
+    /// silently dropping out of `build` is the failure this catches, and
+    /// `!is_empty()` would not — the connection task alone satisfies that.
     #[tokio::test]
     async fn build_yields_the_connection_task_and_pumps() {
         static CH: Channels<8> = Channels::new();
-        let db = db().await;
+        let db = routed_db().await;
         let connector = KnxConnector::<_, _, 8>::new(
             TokioNet::udp(Ipv4Addr::LOCALHOST),
             TokioDelay,
@@ -260,9 +294,31 @@ mod tests {
         assert_eq!(ConnectorBuilder::scheme(&connector), "knx");
 
         let futures = connector.build(&db).await.expect("build");
-        assert!(
-            !futures.is_empty(),
-            "at least the connection task is contributed"
+        assert_eq!(
+            futures.len(),
+            3,
+            "connection task + pump_source + one publisher for `knx://1/0/6`"
+        );
+    }
+
+    /// With no outbound route, `pump_sink` contributes nothing and the count
+    /// drops to two — the half of the contract the routed test cannot show.
+    #[tokio::test]
+    async fn an_inbound_only_db_yields_no_publisher() {
+        static CH: Channels<8> = Channels::new();
+        let db = db().await;
+        let connector = KnxConnector::<_, _, 8>::new(
+            TokioNet::udp(Ipv4Addr::LOCALHOST),
+            TokioDelay,
+            "knx://127.0.0.1:3671",
+            &CH,
+        );
+
+        let futures = connector.build(&db).await.expect("build");
+        assert_eq!(
+            futures.len(),
+            2,
+            "connection task + pump_source, and no publisher"
         );
     }
 
