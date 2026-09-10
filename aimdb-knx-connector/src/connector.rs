@@ -268,6 +268,11 @@ mod tests {
 
     /// The whole wiring against a real UDP gateway: the task binds, advertises
     /// its endpoint, and the handshake reaches the wire.
+    ///
+    /// Binds `LOCALHOST`, not the `UNSPECIFIED` the demos and `aimdb-codegen`
+    /// pass, precisely so `local_addr()` yields a routable address and the
+    /// explicit-HPAI branch is the one under test. The NAT branch that an
+    /// unspecified bind takes has its own test in `client`.
     #[tokio::test]
     async fn the_wired_connector_reaches_a_gateway() {
         static CH: Channels<8> = Channels::new();

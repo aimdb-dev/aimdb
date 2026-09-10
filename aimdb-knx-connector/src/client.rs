@@ -225,8 +225,17 @@ pub async fn connection_task<B, D, S, C>(
         // is exactly what causes a rebind. Leaving the previous cycle's value
         // in place would advertise a port nothing is bound to any more and wedge
         // the handshake for good; NAT is degraded but recovers.
+        //
+        // An unspecified IP is NAT too, not an address. Binding `0.0.0.0` is the
+        // normal host default (it is what the demos, the doc example and
+        // `aimdb-codegen` all pass), and the socket then reports `0.0.0.0:port`
+        // — a real port paired with an IP that routes nowhere. Advertising that
+        // verbatim is worse than either honest option: a gateway that honours
+        // the HPAI sends its tunnel data into the void, while `0.0.0.0:0` is the
+        // form KNXnet/IP 5.2.3 defines for exactly this case and makes the
+        // gateway reply to the datagram's source address instead.
         match socket.local_addr() {
-            Some(SocketAddr::V4(addr)) => {
+            Some(SocketAddr::V4(addr)) if !addr.ip().is_unspecified() => {
                 engine.set_local_endpoint(LocalEndpoint::Explicit {
                     ip: addr.ip().octets(),
                     port: addr.port(),
@@ -379,6 +388,48 @@ mod tests {
             u16::from_be_bytes([buf[12], buf[13]]),
             from.port(),
             "advertised port must be the socket's real bound port"
+        );
+
+        task.abort();
+    }
+
+    /// The counterpart of the test above, for the bind address everything
+    /// actually ships with.
+    ///
+    /// `Ipv4Addr::UNSPECIFIED` is what the demos, the crate doc example and
+    /// `aimdb-codegen` all pass, so `local_addr()` reports `0.0.0.0:<port>`.
+    /// That must go out as the NAT HPAI (`0.0.0.0:0`), not as the port paired
+    /// with an IP that routes nowhere — a gateway honouring the latter would
+    /// send its tunnel data into the void.
+    #[tokio::test]
+    async fn an_unspecified_bind_address_advertises_the_nat_hpai() {
+        let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let task = tokio::spawn(connection_task(
+            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+            gateway_addr,
+            runtime(),
+            TokioDelay,
+            VecSink::default(),
+            NoCommands,
+        ));
+
+        let mut buf = [0u8; 128];
+        let (len, _from) = tokio::time::timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
+            .await
+            .expect("gateway received no CONNECT_REQUEST")
+            .expect("recv_from");
+
+        assert!(len >= 14, "CONNECT_REQUEST should carry both HPAIs");
+        assert_eq!(&buf[8..12], &[0, 0, 0, 0], "NAT HPAI address");
+        assert_eq!(
+            u16::from_be_bytes([buf[12], buf[13]]),
+            0,
+            "NAT HPAI must zero the port too: a real port beside 0.0.0.0 is \
+             neither an endpoint nor the spec's NAT form"
         );
 
         task.abort();

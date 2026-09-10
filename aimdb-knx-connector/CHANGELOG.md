@@ -59,8 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over core's `DatagramBinder` and `Delay`, it binds, advertises the socket's real
   local endpoint (HPAI) instead of the NAT-style `0.0.0.0:0` — falling back to NAT
   on a cycle whose stack exposes no address, so a rebind never re-advertises the
-  previous cycle's port — drives the shared `TunnelEngine`, and rebinds on socket
-  reset. Its select alternates the inbound and command arms each pass, since
+  previous cycle's port, and on a socket bound to an unspecified IP (see *Fixed*)
+  — drives the shared `TunnelEngine`, and rebinds on socket reset. Its select alternates the inbound and command arms each pass, since
   `select3` polls in declaration order where the `tokio::select!` it replaces
   chose among ready arms at random. `shared_channel` bridges it to the
   `embassy_sync` channels, which now back the task on std too.
@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unspecified bind address now advertises the NAT HPAI, not a real port
+  beside `0.0.0.0`.** The CONNECT_REQUEST's HPAI was built from `local_addr()`
+  with no check on the address, so binding `0.0.0.0` — the host default, and
+  what both demos, the crate doc example and `aimdb-codegen` all pass, since a
+  binary rarely knows which interface to pick — put `0.0.0.0:<real port>` on the
+  wire. That is neither an endpoint a gateway can reach nor the NAT form the
+  spec defines, and a gateway honouring the HPAI would send its tunnel data into
+  the void. An unspecified IP now takes the `LocalEndpoint::Nat` branch and
+  emits `0.0.0.0:0` (KNXnet/IP 5.2.3), which tells the gateway to reply to the
+  datagram's source address. A bind to a real interface address is unaffected
+  and still advertised explicitly. Both pre-rewrite clients had this (the tokio
+  one bound `"0.0.0.0:0"` and ran the same logic), so the handshake changes for
+  every default deployment.
 - **Inbound single-octet telegrams no longer decode to `0` (#210).** A telegram carrying exactly one data octet — every DPT5 datapoint (5.001 percentage, 5.003 angle, 5.010 counter, …) — was published as `0` instead of its value. `knx-pico` derived the application data as `[9 .. 7 + npdu_length)`, one octet short of the KNX encoding (the NPDU length octet counts the APCI octet plus the data octets, so the data spans `[9 .. 8 + npdu_length)`); the slice came back empty, the telegram was taken for a 6-bit encoded one, and its value was read out of the APCI octet as `0x80 & 0x3F` — zero. Only single-octet payloads were affected: DPT1 was genuinely 6-bit encoded, and DPT9/DPT14 happened to work because the old code ignored the parsed slice and read to the end of the datagram. Fixed at the root in the fork (`aimdb-dev/knx-pico` `b4883c4`, reported upstream as [cc90202/knx-pico#4](https://github.com/cc90202/knx-pico/issues/4)) — the same off-by-one that made 6-bit telegrams panic, which the previously carried patch had only clamped to an empty slice. `parse_telegram` now reads the parsed frame instead of re-deriving cEMI offsets, so the payload is bounded by the NPDU length octet rather than running to the end of the datagram. **Requires the updated fork** — see the patch note in the [usage guide](../docs/aimdb-usage-guide.md).
 - **Heartbeat-response liveness — a dead send path or expired gateway channel now reconnects (review follow-up to #135).** The engine tracks each CONNECTIONSTATE_REQUEST and drops the connection when the gateway's CONNECTIONSTATE_RESPONSE doesn't arrive within the new `TunnelConfig::heartbeat_response_timeout_ms` (default 10 s, the KNX spec timeout) or reports a non-zero status (e.g. the gateway expired the channel during an outage). This restores the old tokio client's recovery from silently-failing sends — the recv path of an unconnected UDP socket never errors, so without it a route flap left the tunnel `Connected` forever with a stale channel id — and adds genuine liveness detection on both runtimes.
 - **Pending-ACK tracking is accurate under send failures and bursts.** A frame the transport could not hand to the socket is untracked (`TunnelIo::send` reports success; previously the 3 s sweep warned "ACK timeout" for a telegram that never left the host), and a burst deeper than the 16-entry pending map evicts-and-reports the oldest entry instead of silently dropping its timeout reporting.
