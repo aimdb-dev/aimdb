@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`EmbassyUdpBinder::bind` reports `TransportError::Busy`, not `Io`, when its
+  socket is already held.** The binder owns exactly one socket and `Clone`
+  shares it, so a clone binding while another handle holds it failed as a
+  generic `Io` — indistinguishable from a real bind failure, which a consumer's
+  retry loop treats as transient. A caller mistake then read as an endless
+  unexplained bind failure. `EmbassyTcpDialer` already returned `Busy` for the
+  identical case; the UDP binder now matches it, and its docs say (as the TCP
+  dialer's do) that `Clone` shares the socket, why the bound exists, and that a
+  second concurrent socket needs another `EmbassyNet::udp` call with its own
+  buffers — which matters because that constructor serves both KNX/IP and SNTP.
+  `tests/udp.rs` pins the variant (it previously asserted only `is_err()`, so it
+  passed either way) and adds the clone case the `Clone` derive invites,
+  including that releasing the socket frees the clone.
+
 ### Changed (breaking)
 
 - **Issue #131 — `EmbassyAdapter` is a stateless unit type; network capability moves to connector construction.** The `EmbassyNetwork` trait and `EmbassyAdapter::new_with_network` are deleted (an `Arc<dyn RuntimeOps>` runtime can't surface adapter-specific capabilities); network connectors take the `embassy_net::Stack` at construction, wrapped in the new force-`Send + Sync` `connectors::NetStack` so the single-core `unsafe` stays in the audited `connectors` module — the adapter itself now carries **zero `unsafe`**. `EmbassyAdapter::new()` returns `Self` (was a never-failing `ExecutorResult<Self>` forcing `.unwrap()` at every call site) and `new_db_result()` is deleted. `NetStack::new` is an `unsafe fn`: the force-`Send + Sync` rests on the single-core cooperative-executor invariant, which the constructor cannot check, so each connector constructing one acknowledges it with a `SAFETY` comment (constructing on a multicore / multi-executor setup is UB). `EmbassyRecordRegistrarExt` shrinks to `.buffer(cfg)`; `EmbassyRecordRegistrarExtCustom` (`buffer_sized`, `source_with_context`) re-targets the non-generic `RecordRegistrar<'a, T>` with the concrete `RuntimeContext`, and `source_with_context` drops its needless `Sync` bounds (`Ctx: Send`, `F: Send`, matching core's relaxed `source`). `join_queue.rs` (`EmbassyJoinQueue`) is deleted with the `JoinFanInRuntime` family; the core join queue closes when forwarders exit (the Embassy queue previously never closed) and its capacity is 16 (was 8).

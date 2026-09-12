@@ -1596,6 +1596,76 @@ mod tests {
         }
     }
 
+    /// A connector that claims every route for its scheme, as KNX and the
+    /// session *clients* do.
+    struct OwningConnectorBuilder(&'static str);
+
+    impl crate::connector::ConnectorBuilder for OwningConnectorBuilder {
+        fn build<'a>(
+            &'a self,
+            _db: &'a crate::AimDb,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn scheme(&self) -> &str {
+            self.0
+        }
+        fn owns_scheme(&self) -> bool {
+            true
+        }
+    }
+
+    /// Two scheme-owning connectors under one scheme is a configuration error,
+    /// not a silently duplicated route set.
+    #[tokio::test]
+    async fn two_owning_connectors_on_one_scheme_fail_the_build() {
+        let builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(OwningConnectorBuilder("knx"))
+            .with_connector(OwningConnectorBuilder("knx"));
+
+        let Err(err) = builder.build().await else {
+            panic!("a second connector for an owned scheme must be rejected");
+        };
+        let msg = alloc::format!("{err}");
+        assert!(
+            msg.contains("More than one connector registered for scheme 'knx'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Distinct schemes are fine — that is how a caller runs two of the same
+    /// transport side by side.
+    #[tokio::test]
+    async fn owning_connectors_on_distinct_schemes_build() {
+        let builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(OwningConnectorBuilder("knx"))
+            .with_connector(OwningConnectorBuilder("mqtt"));
+
+        assert!(builder.build().await.is_ok());
+    }
+
+    /// A connector that collects no routes — a session *server*, say — may be
+    /// registered twice under one scheme: two endpoints onto one dispatch.
+    /// `owns_scheme` defaults to `false`, so this must keep working.
+    #[tokio::test]
+    async fn two_non_owning_connectors_on_one_scheme_build() {
+        let builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder)
+            .with_connector(NoopConnectorBuilder);
+
+        assert!(builder.build().await.is_ok());
+    }
+
     /// Acceptance criterion: a builder with three distinct
     /// mistakes reports all three from one `build()` call.
     #[tokio::test]

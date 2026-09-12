@@ -8,7 +8,7 @@
 //! does not make it: a test binary is a binary, and gets the std impl through
 //! this crate's `critical-section` dev-dependency. These tests fail to *link*,
 //! not to compile, if that ever comes undone.
-#![cfg(feature = "tokio-runtime")]
+#![cfg(feature = "std")]
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;

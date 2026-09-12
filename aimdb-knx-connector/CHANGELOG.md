@@ -9,9 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`tokio-runtime` gains `embassy-sync`; `embassy-futures` is unconditional.**
-  Both are executor-independent, so one channel and select type serves either
-  runtime.
+- **One connector for both runtimes (breaking).**
+  `KnxConnector::new(binder, delay, url, &CHANNELS)` is generic over core's
+  `DatagramBinder` and `Delay`: a host passes `TokioNet::udp(..)`/`TokioDelay`
+  where an MCU passes `EmbassyNet::udp(..)`/`EmbassyDelay`. One constructor, no
+  runtime named in this crate's API, and no `aimdb-tokio-adapter` dependency —
+  the adapter stays a dev-dependency, as design 052 §8 calls for.
+  `with_command_queue_size` becomes the const generic `N` — an
+  `embassy_sync::Channel` is sized at compile time. `tokio_client` and
+  `embassy_client` are deleted with the `Tokio*`/`Embassy*` aliases, and
+  `aimdb-codegen` emits the same call with the Tokio transports.
+- **Feature gates split `std` / `no_std + alloc` instead of naming runtimes
+  (breaking), matching the TCP and serial connectors.** The new `connector`
+  gate is the whole connector — tunnel engine, connection task, `KnxConnector`
+  — on `no_std + alloc`; `std = ["connector", "aimdb-core/std",
+  "knx-pico/std"]` only lifts `no_std` and adds knx-pico's std error impls plus
+  the back-compat DPT re-exports. Neither gate names an executor, so a
+  FreeRTOS/lwIP caller enables `connector` and passes its own binder and clock
+  without claiming to be Embassy. `tokio-runtime` and `embassy-runtime` remain
+  as deprecated aliases for `std` and `connector`; remove after a release.
+
+  This drops the dependencies the deleted per-runtime clients had needed:
+  `aimdb-embassy-adapter`, `embassy-net`, `embassy-time`, `static_cell` and
+  `dep:defmt` (plus the long-unused `futures-core`, `thiserror` and
+  `embassy-executor`). The embedded graph goes from 88 crates to 46, and the
+  crate no longer depends on *either* adapter — the asymmetry that survived the
+  constructor change, since only the Tokio side had been cleaned up.
+
+  `embassy-sync` stays, moved onto `connector`: it is no_std, no_alloc, pulls
+  no executor, and its `Channel` is this connector's public queue type
+  (`Channels`) on every runtime. `embassy-futures` stays unconditional.
 - **Selecting a `critical-section` implementation is left to the final binary.**
   `CriticalSectionRawMutex` needs one to link, but the impl is registered by
   symbol name and is global to the binary, so a library that enables it hands
@@ -32,8 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over core's `DatagramBinder` and `Delay`, it binds, advertises the socket's real
   local endpoint (HPAI) instead of the NAT-style `0.0.0.0:0` — falling back to NAT
   on a cycle whose stack exposes no address, so a rebind never re-advertises the
-  previous cycle's port — drives the shared `TunnelEngine`, and rebinds on socket
-  reset. Its select alternates the inbound and command arms each pass, since
+  previous cycle's port, and on a socket bound to an unspecified IP (see *Fixed*)
+  — drives the shared `TunnelEngine`, and rebinds on socket reset. Its select alternates the inbound and command arms each pass, since
   `select3` polls in declaration order where the `tokio::select!` it replaces
   chose among ready arms at random. `shared_channel` bridges it to the
   `embassy_sync` channels, which now back the task on std too.
@@ -41,6 +68,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `Busy` bind is logged as the caller mistake it is.** The bind-retry loop
+  treated every failure alike, so a binder whose socket is held elsewhere — a
+  clone of a single-socket `EmbassyUdpBinder`, say — produced one identical
+  "KNX bind failed; retrying" line every 5 s with nothing pointing at the
+  cause. `TransportError::Busy` now logs distinctly. Recovery is unchanged: a
+  `Busy` binder can free up if the other holder drops, so both cases still
+  retry.
+- **A second KNX connector now fails the build instead of silently duplicating
+  every route.** `KnxConnector` declares core's new
+  `ConnectorBuilder::owns_scheme`, so registering two is a configuration error.
+  It never worked: `build` collects every `knx://` route regardless of which
+  gateway it was meant for, so each connector claimed all of them — every
+  `link_to` got two publishers, and sharing one `Channels` additionally put two
+  connection tasks on one command queue, splitting writes between gateways at
+  random. This is a guard, not a new limit: one connector is one tunnel to one
+  gateway and carries the whole bus behind it, with as many group addresses as
+  records declare. What it rules out is a second *gateway*, which the
+  scheme-keyed routing cannot express.
+- **An unspecified bind address now advertises the NAT HPAI, not a real port
+  beside `0.0.0.0`.** The CONNECT_REQUEST's HPAI was built from `local_addr()`
+  with no check on the address, so binding `0.0.0.0` — the host default, and
+  what both demos, the crate doc example and `aimdb-codegen` all pass, since a
+  binary rarely knows which interface to pick — put `0.0.0.0:<real port>` on the
+  wire. That is neither an endpoint a gateway can reach nor the NAT form the
+  spec defines, and a gateway honouring the HPAI would send its tunnel data into
+  the void. An unspecified IP now takes the `LocalEndpoint::Nat` branch and
+  emits `0.0.0.0:0` (KNXnet/IP 5.2.3), which tells the gateway to reply to the
+  datagram's source address. A bind to a real interface address is unaffected
+  and still advertised explicitly. Both pre-rewrite clients had this (the tokio
+  one bound `"0.0.0.0:0"` and ran the same logic), so the handshake changes for
+  every default deployment.
 - **Inbound single-octet telegrams no longer decode to `0` (#210).** A telegram carrying exactly one data octet — every DPT5 datapoint (5.001 percentage, 5.003 angle, 5.010 counter, …) — was published as `0` instead of its value. `knx-pico` derived the application data as `[9 .. 7 + npdu_length)`, one octet short of the KNX encoding (the NPDU length octet counts the APCI octet plus the data octets, so the data spans `[9 .. 8 + npdu_length)`); the slice came back empty, the telegram was taken for a 6-bit encoded one, and its value was read out of the APCI octet as `0x80 & 0x3F` — zero. Only single-octet payloads were affected: DPT1 was genuinely 6-bit encoded, and DPT9/DPT14 happened to work because the old code ignored the parsed slice and read to the end of the datagram. Fixed at the root in the fork (`aimdb-dev/knx-pico` `b4883c4`, reported upstream as [cc90202/knx-pico#4](https://github.com/cc90202/knx-pico/issues/4)) — the same off-by-one that made 6-bit telegrams panic, which the previously carried patch had only clamped to an empty slice. `parse_telegram` now reads the parsed frame instead of re-deriving cEMI offsets, so the payload is bounded by the NPDU length octet rather than running to the end of the datagram. **Requires the updated fork** — see the patch note in the [usage guide](../docs/aimdb-usage-guide.md).
 - **Heartbeat-response liveness — a dead send path or expired gateway channel now reconnects (review follow-up to #135).** The engine tracks each CONNECTIONSTATE_REQUEST and drops the connection when the gateway's CONNECTIONSTATE_RESPONSE doesn't arrive within the new `TunnelConfig::heartbeat_response_timeout_ms` (default 10 s, the KNX spec timeout) or reports a non-zero status (e.g. the gateway expired the channel during an outage). This restores the old tokio client's recovery from silently-failing sends — the recv path of an unconnected UDP socket never errors, so without it a route flap left the tunnel `Connected` forever with a stale channel id — and adds genuine liveness detection on both runtimes.
 - **Pending-ACK tracking is accurate under send failures and bursts.** A frame the transport could not hand to the socket is untracked (`TunnelIo::send` reports success; previously the 3 s sweep warned "ACK timeout" for a telegram that never left the host), and a burst deeper than the 16-entry pending map evicts-and-reports the oldest entry instead of silently dropping its timeout reporting.

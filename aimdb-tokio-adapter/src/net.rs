@@ -151,6 +151,7 @@ impl Datagram for TokioDatagram {
 }
 
 /// Binds [`TokioDatagram`]s, one per reconnect cycle.
+#[derive(Clone, Copy)]
 pub struct TokioUdpBinder {
     local_ip: IpAddr,
 }

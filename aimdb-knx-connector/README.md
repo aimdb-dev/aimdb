@@ -10,7 +10,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aimdb-knx-connector = { version = "0.1", features = ["tokio-runtime"] }
+# `std` is the host leg. `critical-section-std-impl` selects the impl the
+# connector's channels need to link — only a final binary may pick one.
+aimdb-knx-connector = { version = "0.5", features = [
+    "std",
+    "critical-section-std-impl",
+] }
+# The host also needs the adapter's UDP socket and clock.
+aimdb-tokio-adapter = { version = "0.6", features = ["tokio-runtime", "net"] }
 
 # REQUIRED: Patch knx-pico to use fork with bug fixes
 [patch.crates-io]
@@ -26,7 +33,8 @@ We're working with upstream to get these changes merged. Once published, the pat
 
 ## Features
 
-- **Dual Runtime Support**: Works with both Tokio (std) and Embassy (no_std) runtimes
+- **Runtime-Neutral**: One connector for every runtime — you pass an adapter's
+  UDP binder and clock, so no feature here names an executor
 - **KNXnet/IP Tunneling**: Full protocol support via UDP port 3671
 - **Bidirectional Communication**: Monitor bus activity and send commands
 - **Type-Safe Records**: KNX telegrams become strongly-typed Rust records
@@ -37,19 +45,33 @@ We're working with upstream to get these changes merged. Once published, the pat
 ## Quick Start (Tokio)
 
 ```rust
-use aimdb_knx_connector::KnxConnector;
+use aimdb_knx_connector::{Channels, KnxConnector};
+use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 use aimdb_tokio_adapter::TokioAdapter;
+use std::net::Ipv4Addr;
 
 #[derive(Debug, Clone)]
 struct LightState {
     is_on: bool,
 }
 
+// The connector's queues. `'static` because the connection task and the pumps
+// are spawned as `'static` futures; a `StaticCell` supplies this on an MCU.
+// One pair per connector — do not share it between two `KnxConnector`s.
+static CHANNELS: Channels = Channels::new();
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = AimDbBuilder::new()
         .runtime(TokioAdapter::new()?)
-        .with_connector(KnxConnector::new("knx://192.168.1.19:3671"))
+        // The adapter owns the UDP socket and the clock; this crate owns the
+        // tunnelling protocol.
+        .with_connector(KnxConnector::new(
+            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+            TokioDelay,
+            "knx://192.168.1.19:3671",
+            &CHANNELS,
+        ))
         .configure::<LightState>(|reg| {
             reg.buffer(BufferCfg::SingleLatest)
                .link_from("knx://1/0/7")
@@ -74,7 +96,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Quick Start (Embassy)
 
-See `examples/embassy-knx-connector-demo/` for embedded usage.
+The same constructor — only the binder and clock change, and the channels come
+from a `static` instead of being sized at runtime:
+
+```rust
+use aimdb_embassy_adapter::net::{EmbassyDelay, EmbassyNet};
+use aimdb_knx_connector::{Channels, KnxConnector};
+
+static CHANNELS: Channels<32> = Channels::new();
+
+let binder = EmbassyNet::udp(stack, rx_meta, rx_buf, tx_meta, tx_buf);
+
+let builder = AimDbBuilder::new()
+    .runtime(runtime)
+    .with_connector(KnxConnector::new(
+        binder,
+        EmbassyDelay,
+        "knx://192.168.1.19:3671",
+        &CHANNELS,
+    ));
+```
+
+Enable `features = ["connector"], default-features = false` — no
+`critical-section-std-impl`, since the HAL already provides an impl. See
+`examples/embassy-knx-connector-demo/` for the full wiring.
 
 ## Group Address Format
 

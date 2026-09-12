@@ -250,7 +250,10 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
         .iter()
         .filter_map(|c| match c.protocol.as_str() {
             "mqtt" => Some(quote! { use aimdb_mqtt_connector::MqttConnector; }),
-            "knx" => Some(quote! { use aimdb_knx_connector::KnxConnector; }),
+            "knx" => Some(quote! {
+                use aimdb_knx_connector::{Channels, KnxConnector};
+                use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
+            }),
             "ws" => Some(quote! { use aimdb_websocket_connector::WebSocketConnector; }),
             _ => None,
         })
@@ -266,7 +269,19 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
             let default = &c.default;
             let ctor: TokenStream = match c.protocol.as_str() {
                 "mqtt" => quote! { MqttConnector::new(&#var_ident) },
-                "knx" => quote! { KnxConnector::new(&#var_ident) },
+                // The adapter owns the socket and the clock; the channels are
+                // the binary's, in a block-scoped `static`.
+                "knx" => quote! {
+                    {
+                        static KNX_CHANNELS: Channels = Channels::new();
+                        KnxConnector::new(
+                            TokioNet::udp(std::net::Ipv4Addr::UNSPECIFIED),
+                            TokioDelay,
+                            &#var_ident,
+                            &KNX_CHANNELS,
+                        )
+                    }
+                },
                 "ws" => quote! {
                     WebSocketConnector::new()
                         .bind(#var_ident.parse::<std::net::SocketAddr>()
@@ -474,6 +489,12 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
     let has_knx = bin.external_connectors.iter().any(|c| c.protocol == "knx");
     let has_ws = bin.external_connectors.iter().any(|c| c.protocol == "ws");
 
+    let tokio_adapter_features = if has_knx {
+        "[\"tokio-runtime\", \"net\"]"
+    } else {
+        "[\"tokio-runtime\"]"
+    };
+
     let mut optional_connector_deps = String::new();
     if has_mqtt {
         optional_connector_deps.push_str(
@@ -482,7 +503,9 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
     }
     if has_knx {
         optional_connector_deps.push_str(
-            "aimdb-knx-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+            "# critical-section-std-impl: the KNX channels need an impl, and only \
+the binary may pick one.\n\
+aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
         );
     }
     if has_ws {
@@ -506,7 +529,7 @@ path = \"src/main.rs\"\n\
 [dependencies]\n\
 {common_crate_dep} = {{ path = \"../{common_crate_name}\" }}\n\
 aimdb-core = {{ version = \"0.5\" }}\n\
-aimdb-tokio-adapter = {{ version = \"0.5\", features = [\"tokio-runtime\"] }}\n\
+aimdb-tokio-adapter = {{ version = \"0.5\", features = {tokio_adapter_features} }}\n\
 {optional_connector_deps}\
 tokio = {{ version = \"1\", features = [\"full\"] }}\n\
 tracing = \"0.1\"\n\
@@ -1303,6 +1326,12 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
         .iter()
         .any(|r| r.connectors.iter().any(|c| c.protocol == "ws"));
 
+    let tokio_adapter_features = if has_knx {
+        "[\"tokio-runtime\", \"net\"]"
+    } else {
+        "[\"tokio-runtime\"]"
+    };
+
     let mut connector_deps = String::new();
     if has_mqtt {
         connector_deps.push_str(
@@ -1311,7 +1340,9 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
     }
     if has_knx {
         connector_deps.push_str(
-            "aimdb-knx-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+            "# critical-section-std-impl: the KNX channels need an impl, and only \
+the binary may pick one.\n\
+aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
         );
     }
     if has_ws {
@@ -1338,7 +1369,7 @@ path = \"src/main.rs\"\n\
 {common_crate_name} = {{ path = \"../{common_crate_name}\" }}\n\
 aimdb-core = {{ version = \"0.5\" }}\n\
 aimdb-data-contracts = {{ version = \"0.5\", features = [\"linkable\"] }}\n\
-aimdb-tokio-adapter = {{ version = \"0.5\", features = [\"tokio-runtime\"] }}\n\
+aimdb-tokio-adapter = {{ version = \"0.5\", features = {tokio_adapter_features} }}\n\
 {connector_deps}\
 tokio = {{ version = \"1\", features = [\"full\"] }}\n\
 tracing = \"0.1\"\n\
@@ -1379,7 +1410,10 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
             v.push(quote! { use aimdb_mqtt_connector::MqttConnector; });
         }
         if has_knx {
-            v.push(quote! { use aimdb_knx_connector::KnxConnector; });
+            v.push(quote! {
+                use aimdb_knx_connector::{Channels, KnxConnector};
+                use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
+            });
         }
         if has_ws {
             v.push(quote! { use aimdb_websocket_connector::WebSocketConnector; });
@@ -1421,7 +1455,17 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
             v.push(quote! { .with_connector(MqttConnector::new(&mqtt_url)) });
         }
         if has_knx {
-            v.push(quote! { .with_connector(KnxConnector::new(&knx_gateway)) });
+            v.push(quote! {
+                .with_connector({
+                    static KNX_CHANNELS: Channels = Channels::new();
+                    KnxConnector::new(
+                        TokioNet::udp(std::net::Ipv4Addr::UNSPECIFIED),
+                        TokioDelay,
+                        &knx_gateway,
+                        &KNX_CHANNELS,
+                    )
+                })
+            });
         }
         if has_ws {
             v.push(quote! { .with_connector(WebSocketConnector::new().bind(ws_bind).path("/ws")) });

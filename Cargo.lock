@@ -206,25 +206,14 @@ name = "aimdb-knx-connector"
 version = "0.5.0"
 dependencies = [
  "aimdb-core",
- "aimdb-embassy-adapter",
  "aimdb-knx-pico",
  "aimdb-tokio-adapter",
- "async-stream",
  "critical-section",
- "defmt 1.1.1",
- "embassy-executor",
  "embassy-futures 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "embassy-net",
  "embassy-sync",
- "embassy-time",
- "futures-core",
- "futures-util",
  "heapless 0.8.0",
- "static_cell",
- "thiserror 2.0.17",
  "tokio",
  "tokio-test",
- "uuid",
 ]
 
 [[package]]
