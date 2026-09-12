@@ -41,9 +41,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
-use core::net::Ipv4Addr;
 use core::pin::Pin;
-use core::str::FromStr;
 
 #[cfg(feature = "embedded-tls")]
 #[cfg(feature = "embassy-tls")]
@@ -102,13 +100,19 @@ pub enum AimdbMqttAction {
 }
 
 /// Implementation of MqttOperations trait for AimDB actions
+///
+/// `is_retry` is part of the upstream trait and is always `false` here: the
+/// session performs each action exactly once and drops it if it fails (see
+/// `handle_messages`' "Delivery" note), so nothing is ever a second attempt.
+/// A failure is logged with its topic before it propagates, because it ends
+/// the session and takes the message with it.
 impl MqttOperations for AimdbMqttAction {
     async fn perform<'a, 'b, C>(
         &'b mut self,
         client: &mut C,
         _client_id: &'a str,
         _connection_id: ConnectionId,
-        is_retry: bool,
+        _is_retry: bool,
     ) -> Result<(), ClientError>
     where
         C: Client<'a>,
@@ -121,23 +125,25 @@ impl MqttOperations for AimdbMqttAction {
                 retain,
             } => {
                 #[cfg(feature = "defmt")]
-                {
-                    if is_retry {
-                        defmt::debug!("Retrying publish to {}", topic.as_str());
-                    } else {
-                        defmt::debug!(
-                            "Publishing {} bytes to {} (QoS={:?})",
+                defmt::debug!(
+                    "Publishing {} bytes to {} (QoS={:?})",
+                    payload.len(),
+                    topic.as_str(),
+                    qos
+                );
+
+                client
+                    .publish(topic, payload, *qos, *retain)
+                    .await
+                    .inspect_err(|_e| {
+                        #[cfg(feature = "defmt")]
+                        defmt::warn!(
+                            "MQTT: dropping publish of {} bytes to {}: {}",
                             payload.len(),
                             topic.as_str(),
-                            qos
+                            _e
                         );
-                    }
-                }
-
-                #[cfg(not(feature = "defmt"))]
-                let _ = is_retry;
-
-                client.publish(topic, payload, *qos, *retain).await?;
+                    })?;
 
                 #[cfg(feature = "defmt")]
                 defmt::info!("Published {} bytes to {}", payload.len(), topic.as_str());
@@ -146,18 +152,12 @@ impl MqttOperations for AimdbMqttAction {
             }
             Self::Subscribe { topic, qos } => {
                 #[cfg(feature = "defmt")]
-                {
-                    if is_retry {
-                        defmt::debug!("Retrying subscribe to {} (QoS={:?})", topic.as_str(), qos);
-                    } else {
-                        defmt::info!("Subscribing to {} (QoS={:?})", topic.as_str(), qos);
-                    }
-                }
+                defmt::info!("Subscribing to {} (QoS={:?})", topic.as_str(), qos);
 
-                #[cfg(not(feature = "defmt"))]
-                let _ = is_retry;
-
-                client.subscribe(topic, *qos).await?;
+                client.subscribe(topic, *qos).await.inspect_err(|_e| {
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!("MQTT: dropping subscribe to {}: {}", topic.as_str(), _e);
+                })?;
 
                 #[cfg(feature = "defmt")]
                 defmt::info!("Subscribed to {}", topic.as_str());
@@ -465,10 +465,6 @@ where
         + 'static,
     D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
-    Ipv4Addr::from_str(&broker.host).map_err(|_| {
-        build_err("Invalid broker IP address (plain mqtt:// needs an IPv4 literal)")
-    })?;
-
     let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
     let events: Arc<EventChannel> = Arc::new(EventChannel::new());
 

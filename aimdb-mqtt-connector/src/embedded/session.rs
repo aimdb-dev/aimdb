@@ -170,8 +170,7 @@ where
             }
         };
 
-        let state: SessionState<crate::embedded::AimdbMqttAction> =
-            SessionState::new(now_ms(runtime.as_ref()));
+        let state = SessionState::new(now_ms(runtime.as_ref()));
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
 

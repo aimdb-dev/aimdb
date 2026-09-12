@@ -36,7 +36,7 @@ use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packet_client::Connection;
 
-use crate::embedded::{AimdbMqttAction, AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES};
+use crate::embedded::{AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES};
 
 /// Room for the server's leaf certificate (DER) inside the verifier — 4 KB
 /// covers RSA-4096 leaves with headroom.
@@ -379,18 +379,13 @@ where
         };
         let timeout_millis = settings.response_timeout.as_millis() as u32;
 
-        let state: SessionState<AimdbMqttAction> = SessionState::new(now_ms(runtime.as_ref()));
+        let state = SessionState::new(now_ms(runtime.as_ref()));
 
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
 
-        let event_handler: ChannelEventHandler<
-            '_,
-            AimdbMqttAction,
-            AimdbMqttEvent,
-            MAX_PROPERTIES,
-            CHANNEL_SIZE,
-        > = ChannelEventHandler::new(connection_id, &events, &state, runtime.as_ref());
+        let event_handler: ChannelEventHandler<'_, AimdbMqttEvent, MAX_PROPERTIES, CHANNEL_SIZE> =
+            ChannelEventHandler::new(connection_id, &events, &state, runtime.as_ref());
 
         let mut client = ClientNoQueue::new(
             connection,

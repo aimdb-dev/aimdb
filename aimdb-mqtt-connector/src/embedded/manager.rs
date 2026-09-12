@@ -148,24 +148,21 @@ pub enum MqttEvent<E> {
 /// is not `Sync`, so a session future holding one could not be boxed as the
 /// runner requires. Every lock is a straight-line read or write, never held
 /// across an `await`.
-pub(crate) struct SessionState<A> {
-    inner: BlockingMutex<CriticalSectionRawMutex, RefCell<Inner<A>>>,
+pub(crate) struct SessionState {
+    inner: BlockingMutex<CriticalSectionRawMutex, RefCell<Inner>>,
 }
 
-struct Inner<A> {
+struct Inner {
     /// When the broker last proved it was alive.
     last_connection_event_ms: u64,
-    /// An action whose `perform` failed, to retry on the next iteration.
-    pending_action: Option<A>,
 }
 
-impl<A> SessionState<A> {
+impl SessionState {
     /// Fresh state for a new connection; the liveness window starts now.
     pub(crate) fn new(now_ms: u64) -> Self {
         Self {
             inner: BlockingMutex::new(RefCell::new(Inner {
                 last_connection_event_ms: now_ms,
-                pending_action: None,
             })),
         }
     }
@@ -179,38 +176,28 @@ impl<A> SessionState<A> {
         self.inner
             .lock(|state| state.borrow().last_connection_event_ms)
     }
-
-    fn take_pending_action(&self) -> Option<A> {
-        self.inner
-            .lock(|state| state.borrow_mut().pending_action.take())
-    }
-
-    fn set_pending_action(&self, action: A) {
-        self.inner
-            .lock(|state| state.borrow_mut().pending_action = Some(action));
-    }
 }
 
 /// Forwards received MQTT events onto the event channel and refreshes the
 /// liveness timestamp on every broker acknowledgement.
-pub(crate) struct ChannelEventHandler<'a, A, E, const P: usize, const Q: usize>
+pub(crate) struct ChannelEventHandler<'a, E, const P: usize, const Q: usize>
 where
     E: FromApplicationMessage<P> + Clone,
 {
     connection_id: ConnectionId,
     events: &'a EventChannel<E, Q>,
-    state: &'a SessionState<A>,
+    state: &'a SessionState,
     runtime: &'a dyn RuntimeOps,
 }
 
-impl<'a, A, E, const P: usize, const Q: usize> ChannelEventHandler<'a, A, E, P, Q>
+impl<'a, E, const P: usize, const Q: usize> ChannelEventHandler<'a, E, P, Q>
 where
     E: FromApplicationMessage<P> + Clone,
 {
     pub(crate) fn new(
         connection_id: ConnectionId,
         events: &'a EventChannel<E, Q>,
-        state: &'a SessionState<A>,
+        state: &'a SessionState,
         runtime: &'a dyn RuntimeOps,
     ) -> Self {
         Self {
@@ -222,7 +209,7 @@ where
     }
 }
 
-impl<A, E, const P: usize, const Q: usize> EventHandler<P> for ChannelEventHandler<'_, A, E, P, Q>
+impl<E, const P: usize, const Q: usize> EventHandler<P> for ChannelEventHandler<'_, E, P, Q>
 where
     E: FromApplicationMessage<P> + Clone,
 {
@@ -271,45 +258,33 @@ where
     }
 }
 
-/// Perform one action, parking it for retry if the client rejects it.
-async fn try_action<'a, A, C>(
-    connection_id: ConnectionId,
-    client: &mut C,
-    state: &SessionState<A>,
-    connection_settings: &ConnectionSettings<'static>,
-    mut action: A,
-    is_retry: bool,
-) -> Result<(), ClientError>
-where
-    C: Client<'a>,
-    A: MqttOperations + Clone,
-{
-    if let Err(e) = action
-        .perform(
-            client,
-            connection_settings.client_id(),
-            connection_id,
-            is_retry,
-        )
-        .await
-    {
-        state.set_pending_action(action);
-        return Err(e);
-    }
-    Ok(())
-}
-
 /// Drive one MQTT session until an error ends it: connect, subscribe
 /// `subscribe_topics`, then keep it alive while dispatching actions and
 /// forwarding events.
 ///
 /// `subscribe_topics` is re-sent on every call, i.e. once per connection, so
 /// inbound routing survives a reconnect.
+///
+/// # Delivery
+///
+/// **At most once, at this layer.** An action is taken off `actions` before it
+/// is performed, so the one action in flight when the session ends is lost;
+/// everything still queued survives, because `actions` outlives the session.
+/// The action logs what it dropped before the error propagates.
+///
+/// Resending is deliberately not done here. The window is narrow — a dead link
+/// is normally found by the 10 ms poll or the 2 s ping, not by a publish — and
+/// the case where a publish *is* the detector is a response timeout, where the
+/// broker has most likely already received the message and a resend would
+/// duplicate it. This layer cannot tell a telemetry sample (resend is
+/// pointless, a fresher value is already queued behind it) from a command
+/// (resend may be actively wrong). An application that needs at-least-once
+/// knows which it has, and can re-produce on [`MqttEvent::Connected`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_messages<'a, A, C, E, D, const P: usize, const Q: usize>(
     connection_id: ConnectionId,
     client: &mut C,
-    state: &SessionState<A>,
+    state: &SessionState,
     connection_settings: &ConnectionSettings<'static>,
     subscribe_topics: &[(&str, QualityOfService)],
     events: &EventChannel<E, Q>,
@@ -365,28 +340,18 @@ where
         // Poll with no delay while packets are waiting.
         while client.poll(false).await? {}
 
-        if let Some(action) = state.take_pending_action() {
-            try_action(
-                connection_id,
-                client,
-                state,
-                connection_settings,
-                action,
-                true,
-            )
-            .await?;
-        }
-
-        while let Ok(action) = actions.try_receive() {
-            try_action(
-                connection_id,
-                client,
-                state,
-                connection_settings,
-                action,
-                false,
-            )
-            .await?;
+        // A failed action ends the session, and the action is gone with it —
+        // see this function's "Delivery" note. `is_retry` is always `false`:
+        // nothing is ever performed twice.
+        while let Ok(mut action) = actions.try_receive() {
+            action
+                .perform(
+                    client,
+                    connection_settings.client_id(),
+                    connection_id,
+                    false,
+                )
+                .await?;
         }
     }
 }

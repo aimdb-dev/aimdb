@@ -316,9 +316,9 @@ async fn main(spawner: Spawner) {
     //     gateway: Some(Ipv4Address::new(192, 168, 1, 1)),
     // });
 
-    // Initialize network stack (TLS builds carry two extra sockets: DNS + SNTP)
+    // Initialize network stack (TLS builds carry one extra socket: SNTP)
     #[cfg(not(feature = "tls"))]
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
     #[cfg(feature = "tls")]
     static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
     static STACK_CELL: StaticCell<embassy_net::Stack<'static>> = StaticCell::new();

@@ -233,3 +233,58 @@ async fn with_credentials_reaches_the_wire_on_both_backends() {
         );
     }
 }
+
+/// A **hostname** is a broker address on both backends.
+///
+/// The embedded backend used to vet plain `mqtt://` hosts with
+/// `Ipv4Addr::from_str` and reject everything else, so `.transport(..)` — the
+/// call that is supposed to leave behaviour unchanged — was the difference
+/// between a URL that works and one that does not. Resolving `host` is the
+/// dialer's job on every adapter, so the gate is gone and the two agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hostname_is_a_broker_address_on_both_backends() {
+    // Bound by name, so the address the broker listens on is whichever one
+    // `localhost` resolves to first here — the same one the dialers get.
+    let listener = TcpListener::bind("localhost:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("mqtt://localhost:{port}");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let native = MqttConnector::new(url.clone()).with_client_id("host-native");
+    let embedded = MqttConnector::new(url)
+        .transport(TokioNet::tcp())
+        .with_client_id("host-embedded");
+
+    let (_native_db, native_runner) = build_db(native, 1).await;
+    let (_embedded_db, embedded_runner) = build_db(embedded, 2).await;
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), None);
+    let seen_for_wait = seen.clone();
+
+    tokio::select! {
+        _ = native_runner.run() => panic!("the native runner returned"),
+        _ = embedded_runner.run() => panic!("the embedded runner returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = async {
+            while seen_for_wait.lock().unwrap().connects < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        } => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            let seen = seen.lock().unwrap();
+            panic!(
+                "watchdog: only {} of 2 backends connected by name ({:?})",
+                seen.connects, seen.client_ids
+            );
+        }
+    }
+
+    let seen = seen.lock().unwrap();
+    let mut ids = seen.client_ids.clone();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![String::from("host-embedded"), String::from("host-native")],
+        "both backends must reach the broker through a hostname"
+    );
+}

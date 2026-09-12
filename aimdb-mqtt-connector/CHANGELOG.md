@@ -51,6 +51,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A broker hostname works on every backend, `mqtt://` and `mqtts://` alike.**
+  `setup_manager` vetted plain `mqtt://` hosts with `Ipv4Addr::from_str`, a
+  rule inherited from the days when this crate built the `embassy_net`
+  address itself. Since the host string now goes to a `StreamDialer`, that gate
+  described no dialer in particular: `mqtt://broker.local:1883` connected on
+  `Native`, and the same URL with `.transport(TokioNet::tcp())` — a dialer that
+  resolves names perfectly well — was rejected at `build()`. On Embassy the
+  mirror image bit `mqtts://`, which skips the gate: its hostname reached a
+  dialer that parsed only IP literals — and a hostname is the configuration
+  `build()` steers TLS users toward — so it reconnect-looped. The gate is gone
+  and `EmbassyTcpDialer` resolves (see the adapter's changelog: its `net`
+  feature now enables `embassy-net/dns` and each stack needs one more
+  `StackResources` slot). `backend_parity` dials `localhost` on both backends.
+- **The embedded session's dead retry path is gone, and a dropped publish now
+  says so.** `try_action` parked a failed action in `SessionState` for the next
+  loop iteration to retry, but both call sites propagated the error with `?`,
+  which ends the session — and `run_sessions` built a *fresh* `SessionState`
+  per connection, so the parked action was dropped with the old one.
+  `take_pending_action` could only ever return `None` and `is_retry` was never
+  `true`. The mechanism is removed rather than repaired: the loss window is
+  narrow (a dead link is normally found by the 10 ms poll or the 2 s ping, not
+  by a publish), and where a publish *is* the detector — a response timeout —
+  the broker has most likely already received the message, so a resend would
+  duplicate it. An action that fails now logs its topic and the `ClientError`
+  before the session ends, so the drop is visible instead of silent, and
+  `handle_messages` documents the at-most-once contract: the action in flight
+  is lost, everything still queued survives. Dropping the parking slot also
+  makes `SessionState` non-generic and removes the unused type parameter it
+  forced onto `ChannelEventHandler`.
 - **A second connector in one process no longer steals the first's identity.**
   Client id and credentials were parked in process-global `OnceLock`s, so every
   connector after the first connected as the first.

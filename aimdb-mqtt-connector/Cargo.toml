@@ -93,11 +93,7 @@ critical-section-std-impl = ["dep:critical-section", "critical-section/std"]
 
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
-defmt = [
-    "dep:defmt",
-    "aimdb-core/defmt",
-    "mountain-mqtt?/defmt",
-]
+defmt = ["dep:defmt", "aimdb-core/defmt", "mountain-mqtt?/defmt"]
 
 # Internal: the embedded backend's host smoke over `TokioNet::tcp()`
 # (`tests/tokio_broker.rs`) — a real TCP socket and a fake broker, no network
