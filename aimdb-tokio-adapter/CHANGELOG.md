@@ -25,9 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`Delay` and `Clone` for `TokioTcpDialer`.** The dialer supplies the session
-  clock and can be handed to several sessions, which is what lets the embedded
-  MQTT backend run on a host unchanged.
+- **`Delay` for `TokioTcpDialer`.** The dialer supplies the session clock,
+  which — together with the `Clone` it already derived — is what lets the
+  embedded MQTT backend run on a host unchanged.
 - **`embedded-io` feature — the `embedded-io-async` trio on the `net` streams.**
   `TokioByteStream<S>` implements `Read`/`Write` for any
   `AsyncRead`/`AsyncWrite`, and `ReadReady` on `TokioByteStream<TcpStream>` via

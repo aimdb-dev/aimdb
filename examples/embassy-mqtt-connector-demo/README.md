@@ -11,9 +11,9 @@ The `aimdb-mqtt-connector` library with Embassy support is fully implemented and
 
 ## What's Implemented
 
-The core Embassy MQTT client (`aimdb-mqtt-connector::embassy_client`) provides:
+The connector (`aimdb-mqtt-connector`, feature `embassy-runtime`) provides:
 
-- ✅ Async MQTT publishing with mountain-mqtt-embassy
+- ✅ Async MQTT publishing with mountain-mqtt
 - ✅ Channel-based architecture for background task communication
 - ✅ Automatic reconnection handling
 - ✅ QoS 0/1/2 support
@@ -21,30 +21,32 @@ The core Embassy MQTT client (`aimdb-mqtt-connector::embassy_client`) provides:
 
 ## API Usage Pattern
 
+The connector is registered on the builder and the runner drives it; there is
+no pool to hold and no task to spawn by hand. Records publish and subscribe
+through their links.
+
 ```rust
-use aimdb_mqtt_connector::embassy_client::MqttClientPool;
-use embassy_net::Stack;
+use aimdb_embassy_adapter::net::EmbassyNet;
+use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt, MqttOutboundLinkExt};
 
-// Create MQTT client (requires initialized network stack)
-let mqtt_result = MqttClientPool::create(
-    network_stack,        // embassy_net::Stack
-    "192.168.1.100",      // Broker IP
-    1883,                 // Broker port
-    "my-client-id",       // Client ID
-).await?;
+// The adapter owns the socket; the connector takes a transport from it.
+let mut builder = AimDbBuilder::new()
+    .runtime(runtime)
+    .with_connector(
+        MqttConnector::new("mqtt://192.168.1.100:1883")
+            .transport(EmbassyNet::tcp(*stack, rx_buf, tx_buf))
+            .with_client_id("my-client-id"),
+    );
 
-// Spawn background task (runs forever, maintains connection)
-spawner.spawn(async move {
-    mqtt_result.task.run().await
-}).unwrap();
-
-// Use the pool to publish messages
-mqtt_result.pool.publish_async(
-    "sensors/temperature",  // Topic
-    b"{\"value\":23.5}",   // Payload
-    1,                      // QoS (0, 1, or 2)
-    false                   // Retain flag
-).await?;
+builder.configure::<Temperature>("temperature", |reg| {
+    reg.buffer(BufferCfg::SingleLatest)
+        .source(sensor_producer)
+        .link_to("mqtt://sensors/temperature")   // outbound
+        .with_qos(1)
+        .with_retain(false)
+        .with_serializer(|_ctx, v: &Temperature| Ok(v.to_bytes()))
+        .finish();
+});
 ```
 
 ## Hardware Requirements (for full example)
@@ -160,7 +162,7 @@ aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", features = ["embas
 
 ## Resources
 
-- [MQTT Client Implementation](../../aimdb-mqtt-connector/src/embassy_client.rs)
+- [MQTT Client Implementation](../../aimdb-mqtt-connector/src/embedded/mod.rs)
 - [Embassy Documentation](https://embassy.dev/)
 - [mountain-mqtt](https://github.com/mountainlizard/mountain-mqtt)
 - [AimDB Core Documentation](../../README.md)

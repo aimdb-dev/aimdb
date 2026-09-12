@@ -95,6 +95,7 @@ Example:
 #![no_main]
 
 use aimdb_core::AimDbBuilder;
+use aimdb_embassy_adapter::net::EmbassyNet;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt};
 use aimdb_mqtt_connector::MqttConnector;
 use alloc::sync::Arc;

@@ -94,7 +94,7 @@ use {defmt_rtt as _, panic_probe as _};
 use aimdb_embassy_adapter::net::EmbassyNet;
 use aimdb_mqtt_connector::MqttConnector;
 #[cfg(feature = "tls")]
-use aimdb_mqtt_connector::embassy_client::TlsOptions;
+use aimdb_mqtt_connector::TlsOptions;
 
 // Import shared types, monitors, and compile-time safe keys from the common crate
 use mqtt_connector_demo_common::{

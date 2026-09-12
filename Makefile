@@ -349,11 +349,11 @@ clippy:
 	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-native-tls" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio + rustls)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-rustls" --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + defmt)$(NC)\n"
+	@printf "$(YELLOW)  → Clippy on MQTT connector (neutral, no_std+alloc)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (Embassy bundle + defmt)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
-	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + TLS + defmt)$(NC)\n"
+	@printf "$(YELLOW)  → Clippy on MQTT connector (neutral + TLS)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded-tls" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (Embassy + TLS + defmt)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-tls,defmt" -- -D warnings

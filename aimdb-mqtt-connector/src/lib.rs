@@ -12,8 +12,10 @@
 //! - `std`: the `rumqttc` backend (QoS 0–2, platform trust roots)
 //! - `embedded`: the `mountain-mqtt` backend over a caller-supplied transport;
 //!   `alloc` only, with no executor, network stack or adapter
+//! - `embedded-tls`: `mqtts://` via `embedded-tls`, on the same transport
 //! - `embassy-runtime`: `embedded` plus the Embassy transport and clock
-//! - `embassy-tls`: TLS (`mqtts://`), DNS and the SNTP time source, on Embassy
+//! - `embassy-tls`: `embedded-tls` plus the SNTP time source, for a board with
+//!   no RTC
 //! - `critical-section-std-impl`: links a `critical-section` impl for std
 //!   binaries, which the session channels need
 //! - `tokio-runtime`: deprecated alias for `std`
@@ -65,22 +67,28 @@
 //! # }
 //! ```
 //!
-//! ## Embassy Usage (Embedded)
+//! ## Embedded Usage
 //!
 //! Illustrative (not compiled: requires the `embassy-runtime` feature and a
-//! device network stack):
+//! device network stack). The transport is what selects the backend — the same
+//! call on any other adapter's dialer gets the same connector.
 //!
 //! ```rust,ignore
 //! use aimdb_core::AimDbBuilder;
+//! use aimdb_embassy_adapter::net::EmbassyNet;
 //! use aimdb_embassy_adapter::EmbassyAdapter;
-//! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+//! use aimdb_mqtt_connector::MqttConnector;
 //! use alloc::sync::Arc;
 //!
 //! let runtime = Arc::new(EmbassyAdapter::new());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883", stack))
+//!     .with_connector(
+//!         MqttConnector::new("mqtt://192.168.1.100:1883")
+//!             .transport(EmbassyNet::tcp(stack, rx, tx))
+//!             .with_client_id("my-unique-device-id"),
+//!     )
 //!     .configure::<SensorData>(|reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)
