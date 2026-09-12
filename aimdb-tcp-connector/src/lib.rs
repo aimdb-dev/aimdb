@@ -1,9 +1,13 @@
 //! Length-prefixed TCP transport connector for AimDB remote access.
 //!
-//! This crate contributes only the TCP transport triple plus thin
-//! [`TcpClient`]/[`TcpServer`] sugar. AimX protocol bytes still come from
-//! [`AimxCodec`](aimdb_core::session::aimx::AimxCodec), and the session engines
+//! This crate contributes only the length-prefix framing plus thin
+//! `TcpClient`/`TcpServer` sugar; the socket comes from an adapter
+//! (`TokioNet`, `EmbassyNet`) through core's `StreamDialer`/`StreamListener`.
+//! AimX protocol bytes still come from `AimxCodec`, and the session engines
 //! still live in `aimdb-core`.
+//!
+//! Names above are unlinked on purpose: they exist only behind the `connector`
+//! feature, and a link to them fails `cargo doc` on a build without it.
 //!
 //! TCP is a byte stream, so the transport frames every AimX envelope as
 //! `u32` big-endian payload length followed by the payload bytes. See
@@ -15,11 +19,9 @@ extern crate alloc;
 
 pub mod framing;
 
-#[cfg(feature = "tokio-runtime")]
-pub mod tokio_transport;
-
-#[cfg(feature = "embassy-runtime")]
-pub mod embassy_transport;
+// `TcpClient`/`TcpServer` over an adapter's stream transports.
+#[cfg(feature = "connector")]
+pub mod connector;
 
 /// Default connector scheme.
 ///
@@ -28,7 +30,7 @@ pub const DEFAULT_SCHEME: &str = "tcp";
 
 /// Mark each record named in the policy's writable set as writable, so
 /// `record.list` advertises the writable flag. The dispatch also enforces it.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+#[cfg(feature = "connector")]
 pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote::AimxConfig) {
     for key in config.security_policy.writable_records() {
         if let Some(id) = db.inner().resolve_str(&key) {
@@ -39,20 +41,8 @@ pub(crate) fn apply_writable(db: &aimdb_core::AimDb, config: &aimdb_core::remote
     }
 }
 
-#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_transport::{TcpClient, TcpConnection, TcpDialer, TcpListener, TcpServer};
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_transport::{
-    TcpClient as EmbassyTcpClient, TcpConnection as EmbassyTcpConnection,
-    TcpDialer as EmbassyTcpDialer, TcpListener as EmbassyTcpListener,
-    TcpServer as EmbassyTcpServer,
+#[cfg(feature = "connector")]
+pub use connector::{
+    framed_dialer, framed_dialer_at, framed_dialer_bounded, framed_listener,
+    framed_listener_bounded, split_host_port, EndpointError, TcpClient, TcpServer, DEFAULT_PORT,
 };
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_transport::{
-    TcpClient as TokioTcpClient, TcpConnection as TokioTcpConnection, TcpDialer, TcpListener,
-    TcpServer as TokioTcpServer,
-};
-
-#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_transport::{TcpClient, TcpConnection, TcpDialer, TcpListener, TcpServer};

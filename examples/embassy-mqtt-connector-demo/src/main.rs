@@ -75,8 +75,9 @@ extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
+use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
-use aimdb_serial_connector::embassy_transport::SerialServer;
+use aimdb_serial_connector::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
@@ -435,7 +436,8 @@ async fn main(spawner: Spawner) {
         .runtime(runtime.clone())
         .with_connector(mqtt)
         .with_connector(
-            SerialServer::new(serial_rx, serial_tx).security_policy(SecurityPolicy::read_only()),
+            SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
+                .security_policy(SecurityPolicy::read_only()),
         );
 
     // ========================================================================

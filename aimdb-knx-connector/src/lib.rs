@@ -6,10 +6,24 @@
 //!
 //! ## Features
 //!
-//! - `tokio-runtime`: Tokio-based connector using UDP sockets
-//! - `embassy-runtime`: Embassy connector for embedded systems
+//! No feature here names a runtime: `src/` mentions no adapter and no `std::`,
+//! and a runtime is chosen by *passing* an adapter's `DatagramBinder` and
+//! `Delay` to `KnxConnector::new`. A third runtime (FreeRTOS/lwIP) works with
+//! no edit to this crate.
+//!
+//! - `connector`: the whole connector — tunnel engine, connection task, and
+//!   `KnxConnector` — on `no_std + alloc`. This is the gate an embedded caller
+//!   enables.
+//! - `std`: `connector` plus core's `std`, knx-pico's std error impls, and the
+//!   back-compat DPT re-exports. Lifts `no_std`; adds no runtime.
+//! - `critical-section-std-impl`: **final binaries only** — selects
+//!   `critical-section`'s std impl, which `Channels` needs to link on a host.
+//!   An Embassy HAL already provides one.
 //! - `tracing`: Debug logging support (std)
 //! - `defmt`: Debug logging support (no_std)
+//!
+//! `tokio-runtime` and `embassy-runtime` are deprecated aliases for `std` and
+//! `connector` respectively, kept for one release.
 //!
 //! ## Production Status
 //!
@@ -34,8 +48,10 @@
 //! ```no_run
 //! use aimdb_core::buffer::BufferCfg;
 //! use aimdb_core::AimDbBuilder;
-//! use aimdb_knx_connector::KnxConnector;
+//! use aimdb_knx_connector::{Channels, KnxConnector};
+//! use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+//! use std::net::Ipv4Addr;
 //! use std::sync::Arc;
 //!
 //! #[derive(Debug, Clone)]
@@ -46,9 +62,15 @@
 //! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = Arc::new(TokioAdapter::new()?);
 //!
+//! static CHANNELS: Channels = Channels::new();
 //! let mut builder = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(KnxConnector::new("knx://192.168.1.19:3671"));
+//!     .with_connector(KnxConnector::new(
+//!         TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+//!         TokioDelay,
+//!         "knx://192.168.1.19:3671",
+//!         &CHANNELS,
+//!     ));
 //! builder.configure::<LightState>("light.state", |reg| {
 //!     reg.buffer(BufferCfg::SingleLatest)
 //!        // Inbound: Monitor KNX bus
@@ -78,14 +100,14 @@
 //! ```rust,ignore
 //! use aimdb_core::AimDbBuilder;
 //! use aimdb_embassy_adapter::EmbassyAdapter;
-//! use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
+//! use aimdb_knx_connector::connector::{Channels, KnxConnector};
 //! use alloc::sync::Arc;
 //!
 //! let runtime = Arc::new(EmbassyAdapter::new());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(KnxConnectorBuilder::new("knx://192.168.1.19:3671", stack))
+//!     .with_connector(KnxConnector::new(binder, EmbassyDelay, gateway, &CHANNELS))
 //!     .configure::<SensorData>(|reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)
@@ -149,34 +171,14 @@ pub use knx_pico::dpt::{Dpt1, Dpt5, Dpt9, DptDecode, DptEncode};
 // Runtime-neutral KNX/IP tunneling state machine shared by both transports.
 pub mod tunnel;
 
-// The connection task: one body for both runtimes, generic over core's
-// datagram and delay traits. Supersedes the two per-runtime client modules
-// below, which it will replace outright.
-#[cfg(any(feature = "tokio-runtime", feature = "embassy-runtime"))]
+// The connection task: one body for every runtime, generic over core's
+// datagram and delay traits.
+#[cfg(feature = "connector")]
 pub mod client;
 
-// Platform-specific implementations
-#[cfg(feature = "tokio-runtime")]
-pub mod tokio_client;
+// Runtime-neutral `KnxConnector` over an adapter's datagram transport.
+#[cfg(feature = "connector")]
+pub mod connector;
 
-#[cfg(feature = "embassy-runtime")]
-pub mod embassy_client;
-
-// Re-export platform-specific types
-// Both implementations use KnxConnectorBuilder for API consistency
-// When both features are enabled (e.g., during testing), prefer tokio
-#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_client::KnxConnectorBuilder as KnxConnector;
-
-#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_client::KnxConnectorBuilder as KnxConnector;
-
-// When both features are enabled, export both with different names
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::KnxConnectorBuilder as TokioKnxConnector;
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_client::KnxConnectorBuilder as EmbassyKnxConnector;
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::KnxConnectorBuilder as KnxConnector; // Default to tokio when both enabled
+#[cfg(feature = "connector")]
+pub use connector::{Channels, KnxConnector};

@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supplies the session clock, so a connector generic over it needs no separate
   handle — which is what keeps the MQTT call sites unchanged.
 
+### Fixed
+
+- **`EmbassyUdpBinder::bind` reports `TransportError::Busy`, not `Io`, when its
+  socket is already held.** The binder owns exactly one socket and `Clone`
+  shares it, so a clone binding while another handle holds it failed as a
+  generic `Io` — indistinguishable from a real bind failure, which a consumer's
+  retry loop treats as transient. A caller mistake then read as an endless
+  unexplained bind failure. `EmbassyTcpDialer` already returned `Busy` for the
+  identical case; the UDP binder now matches it, and its docs say (as the TCP
+  dialer's do) that `Clone` shares the socket, why the bound exists, and that a
+  second concurrent socket needs another `EmbassyNet::udp` call with its own
+  buffers — which matters because that constructor serves both KNX/IP and SNTP.
+  `tests/udp.rs` pins the variant (it previously asserted only `is_err()`, so it
+  passed either way) and adds the clone case the `Clone` derive invites,
+  including that releasing the socket frees the clone.
+
 ### Changed (breaking)
 
 - **Issue #131 — `EmbassyAdapter` is a stateless unit type; network capability moves to connector construction.** The `EmbassyNetwork` trait and `EmbassyAdapter::new_with_network` are deleted (an `Arc<dyn RuntimeOps>` runtime can't surface adapter-specific capabilities); network connectors take the `embassy_net::Stack` at construction, wrapped in the new force-`Send + Sync` `connectors::NetStack` so the single-core `unsafe` stays in the audited `connectors` module — the adapter itself now carries **zero `unsafe`**. `EmbassyAdapter::new()` returns `Self` (was a never-failing `ExecutorResult<Self>` forcing `.unwrap()` at every call site) and `new_db_result()` is deleted. `NetStack::new` is an `unsafe fn`: the force-`Send + Sync` rests on the single-core cooperative-executor invariant, which the constructor cannot check, so each connector constructing one acknowledges it with a `SAFETY` comment (constructing on a multicore / multi-executor setup is UB). `EmbassyRecordRegistrarExt` shrinks to `.buffer(cfg)`; `EmbassyRecordRegistrarExtCustom` (`buffer_sized`, `source_with_context`) re-targets the non-generic `RecordRegistrar<'a, T>` with the concrete `RuntimeContext`, and `source_with_context` drops its needless `Sync` bounds (`Ctx: Send`, `F: Send`, matching core's relaxed `source`). `join_queue.rs` (`EmbassyJoinQueue`) is deleted with the `JoinFanInRuntime` family; the core join queue closes when forwarders exit (the Embassy queue previously never closed) and its capacity is 16 (was 8).
@@ -29,7 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `accept()` returns it to its slot instead of leaving the slot permanently
   empty, and both yield before reporting a synchronously-failing attempt so a
   misconfigured endpoint (port-0 `InvalidPort`) warn-loops rather than spinning
-  the single-core executor.
+  the single-core executor. `EmbassyTcpDialer` is `Clone` so a framed dialer can
+  meet `SessionClientConnector`'s bound, but a clone **shares** the one socket
+  rather than duplicating it: a clone dialing while another handle holds the
+  link gets `TransportError::Busy`, not `Io`, so the client engine's dial-failed
+  warning names the real cause instead of looking like a dead peer. A second
+  concurrent connection needs a second `EmbassyNet::tcp` with its own buffers.
 - **`RuntimeOps` implemented for `EmbassyAdapter` (Issue #130, design 034 Phase 2).** The dyn-safe capability surface from `aimdb-executor`, gated on `embassy-time` like `TimeOps`: `now_nanos()` is boot-anchored uptime at microsecond granularity (the portable lower bound), `sleep` boxes `embassy_time::Timer::after`, `unix_time` rides the `set_unix_time` anchor, `log` forwards to the defmt-backed `Logger`. Covered by the shared contract test on the host (the test time driver now wakes immediately on `schedule_wake`, so already-expired timers complete; non-zero sleeps remain unusable on the pinned-at-0 host clock).
 - **M17 — centralized Embassy connector spines: the one audited home for the single-core `unsafe` ([Design 033](../docs/design/033-M17-unify-connectors-drop-send.md)).** New `connectors` module (features `connectors` / `connector-io`) collecting the force-`Send` plumbing every Embassy connector used to hand-roll, so a connector crate carries **no `unsafe` and no `SendFutureWrapper`**:
   - **Session spine** — `EmbassySessionClient` / `EmbassySessionServer` (the Embassy duals of core's `SessionClientConnector` / `SessionServerConnector`), the one-shot `OneShotDialer` / `OneShotListener` over a moved-in peripheral connection (the listener parks forever after the first accept — point-to-point), and the force-`Send + Sync` `OneShotCell` for builders holding a moved-in value. `EmbassySessionClient::new` defaults to `reconnect: false` (unlike `ClientConfig::default`): a one-shot dialer can't redial, so the engine would otherwise spin on `TransportError::Io` forever; a re-dialable transport opts back in via `with_config`.

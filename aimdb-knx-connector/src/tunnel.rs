@@ -528,11 +528,8 @@ impl TunnelEngine {
 /// non-blocking inbound forward. Implemented once per runtime shim; the policy
 /// for applying [`Action`]s lives in [`drain_actions`] so it cannot drift
 /// between the tokio and Embassy loops.
-// Unused only when the crate is built without either runtime shim.
-#[cfg_attr(
-    not(any(feature = "tokio-runtime", feature = "embassy-runtime")),
-    allow(dead_code)
-)]
+// Unused only when the crate is built without the connection task.
+#[cfg_attr(not(feature = "connector"), allow(dead_code))]
 pub(crate) trait TunnelIo {
     /// Send one datagram to the gateway. Returns `false` when the datagram
     /// could not be handed to the socket; [`drain_actions`] then stops the
@@ -558,10 +555,7 @@ pub(crate) trait TunnelIo {
 /// Apply every pending engine action through `io`. Returns `true` when the
 /// engine asked for the socket to be torn down ([`Action::ResetSocket`]); the
 /// transport reacts once the drain completes.
-#[cfg_attr(
-    not(any(feature = "tokio-runtime", feature = "embassy-runtime")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(feature = "connector"), allow(dead_code))]
 pub(crate) async fn drain_actions(engine: &mut TunnelEngine, io: &mut impl TunnelIo) -> bool {
     let mut reset = false;
     while let Some(action) = engine.next_action() {

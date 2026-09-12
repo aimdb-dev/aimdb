@@ -19,8 +19,9 @@ use futures::StreamExt;
 
 use aimdb_core::session::{
     run_client, serve, AuthError, BoxFut, BoxStream, ClientConfig, CodecError, Connection, Dialer,
-    Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo, RpcError, Session,
-    SessionConfig, SessionCtx, SessionLimits, SubUpdate, TransportError, TransportResult,
+    Dispatch, EnvelopeCodec, Inbound, Listener, OneShotDialer, OneShotListener, Outbound, Payload,
+    PeerInfo, RpcError, Session, SessionConfig, SessionCtx, SessionLimits, SubUpdate,
+    TransportError, TransportResult,
 };
 
 /// Engine-test clock (aimdb-core can't depend on a runtime adapter — that
@@ -1004,4 +1005,96 @@ async fn a_concurrent_batch_of_timeouts_leaves_the_connection_usable() {
     drop(handle);
     drop(peer);
     let _ = client.await;
+}
+
+// ===========================================================================
+// One-shot transports — the moved-in dual of the re-dialable/re-bindable pair.
+//
+// Ported here from `aimdb-embassy-adapter`'s connector smoke test when the
+// Embassy-specific spine was retired: the types are runtime-neutral now, and
+// `serve` has no other test of its own.
+// ===========================================================================
+
+/// A moved-in stream has nothing to redial, so the second attempt must be an
+/// error — and specifically `Closed`, which `run_client` treats as terminal
+/// rather than backing off into a permanently-failing redial loop.
+#[tokio::test]
+async fn a_one_shot_dialer_hands_out_one_connection_then_reports_closed() {
+    let (a, _b) = conn_pair();
+    let dialer = OneShotDialer::new(a);
+
+    assert!(dialer.connect().await.is_ok(), "first connect hands it out");
+    assert_eq!(
+        dialer.connect().await.err(),
+        Some(TransportError::Closed),
+        "`Closed` is what stops the engine; `Io` would earn a backoff and retry"
+    );
+}
+
+/// The listener dual: `serve` loops on `accept`, so a point-to-point link with
+/// no second peer must park rather than error — an erroring accept would tear
+/// the server down.
+#[tokio::test]
+async fn a_one_shot_listener_parks_after_its_only_accept() {
+    let (a, _b) = conn_pair();
+    let mut listener = OneShotListener::new(a);
+
+    assert!(listener.accept().await.is_ok(), "first accept yields");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "the second accept must park, not resolve"
+    );
+}
+
+/// End to end: `serve` handles the one peer the listener has, and when that
+/// peer hangs up it goes back to waiting on the parked accept instead of
+/// returning — the exact shape a UART server runs in.
+#[tokio::test]
+async fn serve_over_a_one_shot_listener_handles_the_peer_then_keeps_waiting() {
+    let writes: WriteLog = Arc::new(Mutex::new(Vec::new()));
+    let dispatch = Arc::new(EchoDispatch {
+        writes: writes.clone(),
+    });
+
+    let (server_end, mut client_end) = conn_pair();
+    let server = tokio::spawn(serve(
+        OneShotListener::new(server_end),
+        Arc::new(LineCodec),
+        dispatch,
+        SessionConfig::default(),
+    ));
+
+    // One fire-and-forget write, then hang up.
+    client_end
+        .send(
+            b"WRITE
+topic
+hello",
+        )
+        .await
+        .expect("send the write");
+    drop(client_end);
+
+    // The session ran: the write reached the dispatch.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if !writes.lock().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the write never reached the dispatch"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    // ...and `serve` is still running, parked on the second accept.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), server)
+            .await
+            .is_err(),
+        "serve must keep waiting on the parked accept, not return"
+    );
 }

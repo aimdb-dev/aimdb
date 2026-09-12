@@ -1,6 +1,6 @@
 //! Integration tests for connection state management
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 mod tests {
     #[test]
     fn test_channel_state_sequence_management() {

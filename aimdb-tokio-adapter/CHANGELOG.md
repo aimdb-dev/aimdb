@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **`TokioNet::listen` yields `std::io::Result` instead of `TransportResult`.**
+  `TransportError` cannot carry a cause — it is `Clone + PartialEq + Eq` in a
+  `no_std` crate — so every bind failure arrived as a bare `Io`: "port already
+  taken", "port privileged", and "no such interface" were indistinguishable,
+  though only the OS can tell them apart and an operator has to act on which.
+  `listen` is a constructor rather than a trait method, and this adapter is
+  `std`, so it is free to say. Callers using `?` or `.expect(..)` need no change;
+  they simply start reporting the reason.
 - **Issue #131 — `TokioRecordRegistrarExt` shrinks to `.buffer(cfg)` only.** `source`/`tap`/`transform` are inherent methods on the non-generic `aimdb_core::RecordRegistrar<'a, T>` (closures keep the `(ctx, producer)` arg order — typically only the import changes); `join_queue.rs` (`TokioJoinQueue`) is deleted with the `JoinFanInRuntime` family (join fan-in lives in core on `async-channel`).
 
 ### Removed (breaking)

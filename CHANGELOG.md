@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ConnectorBuilder::owns_scheme` — a connector may declare that it must be the
+  only one registered under its scheme.** Routes are collected by scheme alone
+  (`collect_inbound_routes`, `collect_outbound_routes`, `pump_source`,
+  `pump_sink`, `pump_client`), so two connectors that each collect their
+  scheme's routes both claim *all* of them: every `link_to` gets two publishers,
+  and nothing in a route says which connector it belongs to. `AimDbBuilder::build`
+  now rejects that before building any connector, with an error naming the
+  scheme. Defaults to `false`, so nothing changes for a connector that collects
+  no routes — a session *server* binds its own listener, and two of them under
+  one scheme remain two endpoints onto one dispatch. `aimdb-knx-connector` opts
+  in; MQTT and the session clients are candidates but are left alone for now.
 - **`AimDbHandle::shutdown(&self)` / `is_closed()`.** The shutdown contract a
   foreign-language binding needs, moved into the crate whose thread it is
   about; pinned by `aimdb-sync/tests/shutdown_contract_test.rs`. `detach(self)`

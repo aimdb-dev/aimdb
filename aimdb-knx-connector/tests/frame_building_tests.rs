@@ -1,6 +1,6 @@
 //! Unit tests for KNX frame building and parsing
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "std")]
 mod tests {
     #[test]
     fn test_connect_request_structure() {

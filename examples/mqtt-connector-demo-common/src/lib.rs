@@ -16,7 +16,8 @@
 //! # Compile-Time Safe Keys
 //!
 //! This crate also demonstrates the `RecordKey` derive macro for type-safe
-//! record keys. See the [`keys`] module for examples.
+//! record keys. See the `keys` module for examples — unlinked, as it exists
+//! only behind the `derive` feature.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

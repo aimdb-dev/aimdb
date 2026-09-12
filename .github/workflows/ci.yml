@@ -165,3 +165,10 @@ jobs:
     
     - name: Generate documentation
       run: make doc
+
+    # `make check` runs every crate-level leg but not `examples`, so the demo
+    # binaries — the only end-to-end proof of the embedded path — were the one
+    # artifact CI never compiled. `all` is `build test examples`; the first two
+    # re-run here against a warm cache.
+    - name: Build everything, including the example binaries
+      run: make all

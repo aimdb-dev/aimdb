@@ -42,13 +42,16 @@ extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::{AimDbBuilder, RecordKey, RuntimeContext};
+use aimdb_embassy_adapter::io::EmbassyUart;
+use aimdb_embassy_adapter::net::{EmbassyDelay, EmbassyNet};
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
+use aimdb_knx_connector::connector::{Channels, KnxConnector};
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
-use aimdb_knx_connector::embassy_client::KnxConnectorBuilder;
-use aimdb_serial_connector::embassy_transport::SerialServer;
+use aimdb_serial_connector::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
+use embassy_net::udp::PacketMetadata;
 use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
 use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
@@ -269,13 +272,34 @@ async fn main(spawner: Spawner) {
     .unwrap();
     let (serial_tx, serial_rx) = uart.split();
 
+    // The adapter owns the UDP socket and the clock; the connector owns the
+    // tunnelling protocol. Buffers and channels are `'static`, as on any MCU.
+    static KNX_RX_META: StaticCell<[PacketMetadata; 8]> = StaticCell::new();
+    static KNX_RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
+    static KNX_TX_META: StaticCell<[PacketMetadata; 8]> = StaticCell::new();
+    static KNX_TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
+    static KNX_CHANNELS: Channels<32> = Channels::new();
+    let knx_binder = EmbassyNet::udp(
+        *stack,
+        KNX_RX_META.init([PacketMetadata::EMPTY; 8]),
+        KNX_RX_BUF.init([0; 1024]),
+        KNX_TX_META.init([PacketMetadata::EMPTY; 8]),
+        KNX_TX_BUF.init([0; 1024]),
+    );
+
     // Read-only: KNX owns the writer for every record (single-writer-per-key), so
     // remote `record.set` is refused — peers can list/get/subscribe, not write.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector(KnxConnectorBuilder::new(&gateway_url, stack))
+        .with_connector(KnxConnector::new(
+            knx_binder,
+            EmbassyDelay,
+            &gateway_url,
+            &KNX_CHANNELS,
+        ))
         .with_connector(
-            SerialServer::new(serial_rx, serial_tx).security_policy(SecurityPolicy::read_only()),
+            SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
+                .security_policy(SecurityPolicy::read_only()),
         );
 
     // ========================================================================

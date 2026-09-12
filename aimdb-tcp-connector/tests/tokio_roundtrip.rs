@@ -10,7 +10,8 @@ use aimdb_core::session::{
     run_client, serve, ClientConfig, Dispatch, Payload, SessionConfig, SessionLimits,
 };
 use aimdb_core::AimDbBuilder;
-use aimdb_tcp_connector::tokio_transport::{TcpDialer, TcpListener};
+use aimdb_tcp_connector::connector::{framed_dialer, framed_listener};
+use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -32,9 +33,7 @@ async fn aimx_roundtrips_over_tcp_loopback() {
     db.set_record_from_json("setting", json!({ "level": 42 }))
         .expect("seed setting");
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind tcp");
+    let listener = TokioNet::listen("127.0.0.1:0").await.expect("bind tcp");
     let addr = listener.local_addr().expect("local addr");
 
     let dispatch: Arc<dyn Dispatch> =
@@ -48,7 +47,7 @@ async fn aimx_roundtrips_over_tcp_loopback() {
         acks_subscribe: false,
     };
     tokio::spawn(serve(
-        TcpListener::new(listener),
+        framed_listener(listener),
         Arc::new(AimxCodec),
         dispatch,
         session_config,
@@ -59,7 +58,7 @@ async fn aimx_roundtrips_over_tcp_loopback() {
         ..ClientConfig::default()
     };
     let (handle, engine) = run_client(
-        TcpDialer::new(addr.to_string()),
+        framed_dialer(TokioNet::tcp(), addr.ip().to_string(), addr.port()),
         AimxCodec,
         client_config,
         Arc::new(TokioAdapter),

@@ -17,9 +17,11 @@ aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
 ] }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
+    # `EmbassyUart`, the byte source the serial connector frames.
+    "connector-io",
 ] }
 aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-features = false, features = [
-    "embassy-runtime",
+    "connector",
     "defmt",
 ] }
 
