@@ -1,11 +1,9 @@
-//! SNTP time source for TLS certificate validation.
+//! SNTP time source, for a board whose runtime has no wall clock of its own.
 //!
-//! The reference boards have no battery-backed RTC, but checking a
-//! certificate's validity window needs the current Unix time. This module
-//! keeps one crate-global clock: Unix seconds at the `embassy_time` epoch
-//! (boot), written after each SNTP sync and read through [`unix_now`] /
-//! [`SntpClock`]. The TLS manager spawns [`run`] alongside its broker loop
-//! and holds the first handshake until the first sync lands.
+//! Checking a certificate's validity window needs the current Unix time, and
+//! the reference boards have no battery-backed RTC. Each sync feeds both
+//! [`unix_now`] and the TLS handshake clock. Opt in with `TlsOptions::with_sntp`;
+//! a runtime that answers `unix_time()` needs none of this.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -46,17 +44,6 @@ pub fn unix_now() -> Option<u64> {
     }
 }
 
-/// `embedded-tls` clock over the SNTP-synced time; `None` before the first
-/// sync (the TLS manager never handshakes in that state, so certificate
-/// validity is always actually checked).
-pub struct SntpClock;
-
-impl embedded_tls::TlsClock for SntpClock {
-    fn now() -> Option<u64> {
-        unix_now()
-    }
-}
-
 /// Keep the clock synced: query `server` until the first success, then
 /// re-sync hourly. Runs forever; spawned by the TLS connector build.
 pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
@@ -69,6 +56,9 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
                 match u32::try_from(unix_secs.saturating_sub(Instant::now().as_secs())) {
                     Ok(boot @ 1..) => {
                         BOOT_UNIX_SECS.store(boot, Ordering::Relaxed);
+                        // The TLS handshake reads the certificate-validity
+                        // clock, which a board with no RTC has only from here.
+                        crate::embedded::tls::WallClock::set_unix_secs(unix_secs as u32);
                         #[cfg(feature = "defmt")]
                         defmt::info!("SNTP: synced, unix time {}", unix_secs);
                         Timer::after(RESYNC_INTERVAL).await;

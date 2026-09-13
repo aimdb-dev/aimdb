@@ -1,13 +1,13 @@
 [package]
 name = "aimdb-mqtt-connector"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "MQTT connector for AimDB - bidirectional pub/sub for Tokio and Embassy runtimes"
+description = "MQTT connector for AimDB - bidirectional pub/sub on std and no_std runtimes"
 keywords = ["mqtt", "connector", "iot", "embedded", "pubsub"]
 categories = ["network-programming", "embedded", "asynchronous"]
 
@@ -15,15 +15,20 @@ categories = ["network-programming", "embedded", "asynchronous"]
 default = ["aimdb-core/alloc"]
 # `aimdb-core/connector-session` provides the data-plane `pump_sink`/`pump_source`
 # helpers the tokio client builds on (re-exported there; `std` implies it too).
-std = ["aimdb-core/std", "aimdb-core/alloc", "aimdb-core/connector-session", "thiserror"]
-tokio-runtime = [
-    "std",
+# The `rumqttc` backend, which owns its socket, TLS and reconnect.
+std = [
+    "aimdb-core/std",
+    "aimdb-core/alloc",
+    "aimdb-core/connector-session",
+    "thiserror",
     "tokio",
     "rumqttc",
     "uuid",
     "async-stream",
     "futures-util",
 ]
+# Deprecated alias for `std`, kept so existing manifests keep working.
+tokio-runtime = ["std"]
 # TLS backend for the tokio client (`mqtts://`). Pick one, or neither.
 #
 # Neither is a real choice rather than an oversight: a deployment that speaks
@@ -31,33 +36,50 @@ tokio-runtime = [
 # library is the difference between inheriting a system OpenSSL ABI and
 # inheriting nothing. `mqtts://` then fails at connect time with a message
 # naming the missing feature, rather than at the linker.
-tokio-native-tls = ["tokio-runtime", "rumqttc/use-native-tls"]
-tokio-rustls = ["tokio-runtime", "rumqttc/use-rustls", "dep:rustls-native-certs"]
+tokio-native-tls = ["std", "rumqttc/use-native-tls"]
+tokio-rustls = ["std", "rumqttc/use-rustls", "dep:rustls-native-certs"]
 
-embassy-runtime = [
-    "aimdb-core/alloc",                          # Need alloc for collect_inbound_routes
-    "aimdb-core/connector-session",              # `pump_sink`/`pump_source`/`Source`/`Payload`
-    "dep:aimdb-embassy-adapter",                 # Enable the optional dependency
-    "aimdb-embassy-adapter/embassy-net-support", # Enable EmbassyNetwork trait for network stack access
-    "aimdb-embassy-adapter/connectors",          # `EmbassySink`/`EmbassySource`/`into_box_future` spine
-    "embassy-executor",
-    "embassy-time",
-    "embassy-sync",
-    "embassy-net",
+# The `mountain-mqtt` backend over a caller-supplied transport. `alloc` only:
+# no executor, no network stack, no adapter — any target with a `StreamDialer`
+# that also offers `embedded-io-async` can run it.
+embedded = [
+    "aimdb-core/alloc",
+    "aimdb-core/connector-session",
     "mountain-mqtt",
-    "mountain-mqtt-embassy",
-    "heapless",
-    "static_cell",
-]
-# TLS (`mqtts://`) for the Embassy client — design 044. embedded-tls 1.3
-# session over the Embassy TCP socket, pure-Rust certificate verification
-# (`rustpki`; `rsa`/`p384` so public CA chains verify out of the box), broker
-# hostname resolution (embassy-net DNS), and the SNTP time source (UDP).
-embassy-tls = [
-    "embassy-runtime",
-    "dep:embedded-tls",
+    # The transport bridge names these traits in its bounds, and the session
+    # loop bridges core's `Delay` to the client's `DelayNs`.
     "dep:embedded-io-async",
-    "dep:rand_core",
+    "dep:embedded-hal-async",
+    # Executor-independent: channels only.
+    "embassy-sync",
+]
+
+# Convenience bundle: `embedded` plus the Embassy transport and clock. The
+# connector itself no longer knows what a runtime is.
+embassy-runtime = [
+    "embedded",
+    "dep:aimdb-embassy-adapter",
+    "aimdb-embassy-adapter/embassy-net-support",
+    "aimdb-embassy-adapter/connectors",
+    "aimdb-embassy-adapter/net",
+    # `EmbassyTcpDialer` supplies the session clock, which needs this.
+    "aimdb-embassy-adapter/embassy-time",
+    "embassy-time",
+    "embassy-net",
+]
+
+# TLS (`mqtts://`) for the embedded backend — design 044. An `embedded-tls`
+# 1.3 session over the caller's transport, with pure-Rust certificate
+# verification (`rustpki`; `rsa`/`p384` so public CA chains verify out of the
+# box). Runtime-neutral: the dialer resolves the host and the runtime's wall
+# clock dates the certificate.
+embedded-tls = ["embedded", "dep:embedded-tls", "dep:rand_core"]
+
+# `embedded-tls` plus the SNTP time source, for a board with no RTC. Needs a
+# network stack of its own, which is why it is the Embassy half.
+embassy-tls = [
+    "embedded-tls",
+    "embassy-runtime",
     "embassy-net/dns",
     "embassy-net/udp",
 ]
@@ -65,9 +87,49 @@ embassy-tls = [
 # `aimdb_core::__private`, so neither dependency is declared here any more.
 # The *features* stay: a `#[cfg]` in a `#[macro_export]`ed macro is resolved
 # where it expands, so without them this crate would emit nothing.
+# The session channels use `CriticalSectionRawMutex`, so a std binary must link
+# a `critical-section` impl. Off by default: an MCU's HAL already provides one.
+critical-section-std-impl = ["dep:critical-section", "critical-section/std"]
+
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
-defmt = ["dep:defmt", "aimdb-core/defmt"]
+defmt = ["dep:defmt", "aimdb-core/defmt", "mountain-mqtt?/defmt"]
+
+# Internal: the embedded backend's host smoke over `TokioNet::tcp()`
+# (`tests/tokio_broker.rs`) — a real TCP socket and a fake broker, no network
+# stack. Run with `--features _test-tokio-broker`.
+_test-tokio-broker = [
+    "embassy-runtime",
+    "aimdb-embassy-adapter/embassy-time",
+    "aimdb-embassy-adapter/embassy-sync",
+    "critical-section-std-impl",
+]
+
+# Internal: both backends against one fake broker in one process
+# (`tests/backend_parity.rs`). Run with `--features _test-backend-parity`.
+_test-backend-parity = ["_test-tokio-broker", "std"]
+
+# Internal: the embedded backend's `mqtts://` host smoke against a local broker
+# with a self-signed certificate pinned as the root CA
+# (`tests/tls_broker.rs`). Run with `--features _test-tls-broker`.
+_test-tls-broker = ["_test-tokio-broker", "embedded-tls"]
+
+# Internal: the Embassy broker session loop's host smoke
+# (`tests/embassy_broker.rs`) stands up two `embassy-net` stacks wired by an
+# in-memory driver-channel crossover, with a fake broker on one side. Kept off
+# `embassy-runtime` (production pulls no network device or critical-section
+# impl). Run with `--features _test-embassy-broker`.
+_test-embassy-broker = [
+    "embassy-runtime",
+    # The test builds an `AimDb`; `EmbassyAdapter`'s `RuntimeOps` impl is gated
+    # on the adapter's own clock feature, which production never needs here.
+    "aimdb-embassy-adapter/embassy-time",
+    "aimdb-embassy-adapter/embassy-sync",
+    "embassy-net/medium-ip",
+    "embassy-net/proto-ipv4",
+    "dep:embassy-net-driver-channel",
+    "critical-section-std-impl",
+]
 
 [dependencies]
 aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
@@ -98,7 +160,6 @@ futures-core = { version = "0.3", default-features = false }
 
 # Embassy runtime dependencies (no_std). Only embassy-sync still comes from the
 # local checkout — see the workspace `[patch.crates-io]` for why.
-embassy-executor = { version = "0.10.0", optional = true }
 embassy-time = { version = "0.5.1", optional = true }
 embassy-sync = { version = "0.8.0", path = "../_external/embassy/embassy-sync", optional = true }
 embassy-net = { version = "0.9.0", optional = true, features = [
@@ -114,9 +175,7 @@ embassy-net = { version = "0.9.0", optional = true, features = [
 mountain-mqtt = { package = "aimdb-mountain-mqtt", version = "0.2.1", default-features = false, optional = true, features = [
     "embedded-io-async",
     "embedded-hal-async",
-    "defmt",
 ] }
-mountain-mqtt-embassy = { package = "aimdb-mountain-mqtt-embassy", version = "0.2.1", optional = true }
 
 # TLS for the Embassy client (no_std TLS 1.3; design 044)
 embedded-tls = { version = "0.19", default-features = false, optional = true, features = [
@@ -125,17 +184,27 @@ embedded-tls = { version = "0.19", default-features = false, optional = true, fe
     "p384",
 ] }
 embedded-io-async = { workspace = true, optional = true }
+embedded-hal-async = { workspace = true, optional = true }
 rand_core = { version = "0.6", default-features = false, optional = true }
 
-# Embedded utilities
-heapless = { workspace = true, optional = true }
-static_cell = { version = "2.0", optional = true }
 
 # Optional observability
 defmt = { workspace = true, optional = true }
 
+embassy-net-driver-channel = { version = "0.4.0", optional = true }
+critical-section = { version = "1.1", optional = true }
+
 [dev-dependencies]
+# The `mqtts://` host smoke: a self-signed certificate and a real TLS server.
+rand = "0.8"
+rcgen = "0.13"
+tokio-rustls = "0.26"
 tokio = { workspace = true, features = ["full"] }
+heapless = { workspace = true }
+futures = "0.3"
+embassy-time-driver = "0.2.2"
+# The loopback harness must supply the defmt symbols smoltcp references.
+defmt = { workspace = true }
 tokio-test = "0.4"
 serde = { workspace = true }
 aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
@@ -143,6 +212,7 @@ aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = fa
 ] }
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
+    "embedded-io",
 ] }
 
 [package.metadata.docs.rs]

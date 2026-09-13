@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Delay` for `EmbassyTcpDialer`** (feature `embassy-time`). The dialer
+  supplies the session clock, so a connector generic over it needs no separate
+  handle — which is what keeps the MQTT call sites unchanged.
+
 ### Fixed
 
 - **`EmbassyUdpBinder::bind` reports `TransportError::Busy`, not `Io`, when its
@@ -24,6 +30,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including that releasing the socket frees the clone.
 
 ### Changed (breaking)
+
+- **`EmbassyTcpDialer` resolves hostnames, and `net` therefore enables
+  `embassy-net/dns`.** `StreamDialer::connect` takes a host *string* and the
+  trait puts resolution on the adapter, but the Embassy dialer only parsed IP
+  literals — so a connector handing through a name dialed fine on
+  `TokioTcpDialer` and failed with `TransportError::Io` here, forever, on every
+  reconnect. Connectors papered over it with per-runtime validation gates (the
+  MQTT connector rejected any plain `mqtt://` host that was not an IPv4
+  literal); those are gone now that the contract holds on both adapters.
+  `EmbassyNet::tcp` takes the `Stack` into the dialer and queries it — `A`
+  first, `AAAA` only if that answers nothing — while an IP literal is still
+  parsed locally and never queried, so a stack with no resolver configured
+  dials literals exactly as before.
+  **Action required:** `embassy_net::new` adds the resolver socket itself, so
+  every application using the `net` feature must grow its `StackResources<N>`
+  by one; too small a `N` panics at stack construction. A name needs a DNS
+  server in the config (DHCP supplies one; `StaticConfigV4` lists them in
+  `dns_servers`). `tests/dns.rs` covers the name, literal and
+  does-not-resolve paths against two crossover-wired stacks.
 
 - **Issue #131 — `EmbassyAdapter` is a stateless unit type; network capability moves to connector construction.** The `EmbassyNetwork` trait and `EmbassyAdapter::new_with_network` are deleted (an `Arc<dyn RuntimeOps>` runtime can't surface adapter-specific capabilities); network connectors take the `embassy_net::Stack` at construction, wrapped in the new force-`Send + Sync` `connectors::NetStack` so the single-core `unsafe` stays in the audited `connectors` module — the adapter itself now carries **zero `unsafe`**. `EmbassyAdapter::new()` returns `Self` (was a never-failing `ExecutorResult<Self>` forcing `.unwrap()` at every call site) and `new_db_result()` is deleted. `NetStack::new` is an `unsafe fn`: the force-`Send + Sync` rests on the single-core cooperative-executor invariant, which the constructor cannot check, so each connector constructing one acknowledges it with a `SAFETY` comment (constructing on a multicore / multi-executor setup is UB). `EmbassyRecordRegistrarExt` shrinks to `.buffer(cfg)`; `EmbassyRecordRegistrarExtCustom` (`buffer_sized`, `source_with_context`) re-targets the non-generic `RecordRegistrar<'a, T>` with the concrete `RuntimeContext`, and `source_with_context` drops its needless `Sync` bounds (`Ctx: Send`, `F: Send`, matching core's relaxed `source`). `join_queue.rs` (`EmbassyJoinQueue`) is deleted with the `JoinFanInRuntime` family; the core join queue closes when forwarders exit (the Embassy queue previously never closed) and its capacity is 16 (was 8).
 

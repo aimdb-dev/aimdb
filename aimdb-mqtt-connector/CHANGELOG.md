@@ -7,17 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Changed (breaking)
 
-- **Reports through the `log_*` facade instead of `tracing::` directly** (design
-  050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
-  events too. Each call site also shed the hand-written
-  `#[cfg(feature = "tracing")]` the facade carries itself. The `tracing` feature
-  no longer pulls `dep:tracing`; a mirrored `log` feature is added alongside it.
-  No change to what is emitted, or to a consumer that enables `tracing`.
+- **The backend split is std vs `no_std`, not Tokio vs Embassy.** The embedded
+  backend runs on any target whose adapter supplies a `StreamDialer`, so a new
+  platform costs one adapter crate and no change here. Features rename
+  accordingly: `std` carries the `rumqttc` backend (`tokio-runtime` is a
+  deprecated alias), `embedded` carries `mountain-mqtt` with `alloc` only — no
+  executor, network stack, adapter or logger in its graph — and `embassy-runtime`
+  becomes a convenience bundle over it. TLS splits the same way: `embedded-tls`
+  is runtime-neutral, `embassy-tls` adds the SNTP time source a board with no
+  RTC needs. Modules follow: `tokio_client` → `native`, `embassy_client` →
+  `embedded` (both kept as deprecated re-exports for one release).
+- **One constructor.** `MqttConnector::new(url)` is unconditional, and the
+  transport — or its absence — picks the backend, so both compile into one
+  binary. Previously the two inherent `new`s collided with `E0034` whenever
+  both features were on. Broker URL, client id and credentials moved onto
+  `MqttConnector` itself, so `with_client_id` / `with_credentials` work on
+  either backend; `with_credentials` now reaches `rumqttc` too, taking
+  precedence over the URL authority.
+- **`.tls(dialer, options)` replaces `.tls(stack, options)`.** The dialer
+  resolves the host, so TLS needs no network stack: DNS, the socket buffers and
+  the SNTP task all leave the TLS path. The certificate-validity clock comes
+  from `RuntimeOps::unix_time()`; SNTP is opt-in via `TlsOptions::with_sntp`
+  for a runtime with no wall clock of its own.
+- **The `mountain-mqtt-embassy` fork is absorbed and dropped.** Its state,
+  event handler and message pump live in `embedded::manager`, with the mutex
+  and the clock as this crate's choices rather than the fork's.
+- **Session channels use `CriticalSectionRawMutex` in an `Arc`.** They are
+  therefore `Sync`, so `MqttSink` and `MqttSource` are plain `Connector` /
+  `Source` impls and the `EmbassySink`/`EmbassySource` force-`Send` spine is
+  gone from the data plane. std binaries need a `critical-section` impl; the
+  `critical-section-std-impl` feature supplies one, mirroring the KNX connector.
+  A single documented `unsafe impl Send` remains on the session future:
+  `embedded-io-async` puts no `Send` bound on its futures and the loop reaches
+  them through a generic transport, which needs return-type notation to express
+  — still unstable on the pinned toolchain. It rests on `StreamDialer`'s
+  `Stream: Send` guarantee rather than on a single-core executor, so it holds
+  under a preemptive scheduler.
+- **Time comes from core's `Delay`**, supplied by the dialer, so the session
+  loop names no executor. `Settings` is `core::time::Duration` and lost its
+  dead `address`/`port` fields.
+- **Two protocol backends behind one type.** `Native` is `rumqttc` (QoS 0–2,
+  rustls); `Embedded<D>` is `mountain-mqtt` over a caller-supplied transport.
+  The Tokio path is unchanged; Embassy callers now write
+  `MqttConnector::new(url).transport(EmbassyNet::tcp(..))`, or
+  `.tls(EmbassyNet::tcp(..), opts)` for `mqtts://`, instead of passing the
+  stack to `new`. The `Tokio*`/`Embassy*` aliases and `MqttConnectorBuilder`
+  are gone.
+- **`run_with_subscriptions` replaced by an owned session loop.** It binds
+  `embassy_net::Stack` and cannot take a transport, so reconnect-and-resubscribe
+  is now explicit in `embedded::session::run_sessions` — one loop for both plain
+  and TLS, extracted from the TLS path already running it.
+
+
+- **`TlsOptions::new` requires a `Send` RNG** —
+  `&'static mut (dyn CryptoRngCore + Send)`. Every concrete CSPRNG already
+  satisfies it (`embassy_stm32::rng::Rng` included), so callers are unchanged
+  textually. With it, `TlsSlot` becomes core's `OneShot<TlsOptions>` and this
+  crate carries **zero `unsafe impl`s** (was two).
+- **Issue #131:** the Embassy `MqttConnectorBuilder::new` takes the network stack — `MqttConnectorBuilder::new(broker_url, stack)` — since the deleted `EmbassyNetwork` runtime trait can no longer supply it; both `ConnectorBuilder` impls and the `MqttLinkExt`/`MqttOutboundLinkExt` link-builder ext traits are non-generic over the runtime.
+
+
+- **`ConnectorBuilder::build()` now returns `Vec<BoxFuture<'static, ()>>` instead of `Arc<dyn Connector>` (Issue #88).** Both Tokio and Embassy implementations updated. The MQTT event-loop, the Embassy event-router, and every outbound publisher are returned as futures that the `AimDbRunner` drives — no more `runtime.spawn` / `tokio::spawn` inside the connector. `R: Spawn` bounds dropped throughout in favour of `R: RuntimeAdapter`.
+- `spawn_event_loop()` → `build_event_loop_future()` (Tokio side). `spawn_outbound_publishers()` → `collect_outbound_futures()` on both Tokio and Embassy.
+- The `transport::Connector` impl on `MqttConnectorImpl` was removed alongside the discarded `Arc<dyn Connector>` return path; direct programmatic publish was already unreachable through the `AimDbBuilder` public API.
+- **`MqttConnectorImpl` (Embassy) removed entirely (M17).** It was a build-time aggregation holder; its logic collapsed into the private `setup_manager` + the pump composition in `build()`. Register via `MqttConnectorBuilder` as before — the builder's public API is unchanged.
 
 ### Added
 
+- **Host coverage for the embedded backend**, which previously had none. A fake
+  MQTT broker over real sockets drives the session loop on a multi-thread Tokio
+  runtime: reconnect-and-resubscribe, record round-trip both ways, both backends
+  against one broker in one process, and — the first test the TLS path has ever
+  had — an `mqtts://` handshake against a self-signed certificate pinned as the
+  root CA, with no SNTP.
+- **`#[diagnostic::on_unimplemented]` for a missing backend.** A `no_std` build
+  that forgets `.transport(..)` now gets a message naming the fix instead of an
+  unsatisfied `ConnectorBuilder` bound.
+- **`embedded::session` — the broker transport seam.** `BrokerTransport` over
+  `mountain-mqtt`'s own `Connection` (the client needs a non-blocking peek that
+  a byte stream cannot express and TLS cannot provide), plus `SocketTransport`
+  bridging from core's `StreamDialer`. A new runtime supplies MQTT by
+  implementing that dialer — no code here.
+- **`tests/embassy_broker.rs`** — the connector against a fake broker over two
+  crossover-wired `embassy-net` stacks, asserting CONNECT *and* SUBSCRIBE reach
+  the wire.
 - **Tokio client: the TLS backend for `mqtts://` is now a build-time choice.**
   Two new features — `tokio-native-tls` (system OpenSSL, what this crate linked
   before) and `tokio-rustls` (pure Rust, no `libssl`/`libcrypto`) — plus the
@@ -31,7 +106,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`MqttConnectorBuilder::with_credentials(username, password)` (Embassy, design 044 D8).** Feeds the MQTT CONNECT username/password on both the plain and TLS transports. The `aimdb-dev/mountain-mqtt` fork submodule is bumped to pick up upstream 0.4's `ConnectionSettings::with_auth`/`authenticated` (`aimdb-dev/mountain-mqtt@89a7129`).
 - `make check` gains an `embassy-runtime,embassy-tls,defmt` clippy leg on `thumbv7em-none-eabihf`.
 
+
+- **`MqttLinkExt` / `MqttOutboundLinkExt` — the MQTT knobs, now where the protocol lives (Issue #134, design 034 §3.6).** New `link_ext` module (compiled on every feature leg, `alloc`-only) with extension traits over core's generic link builders: `MqttLinkExt::with_qos(u8)` on outbound *and* inbound links (publish / subscribe QoS), and `MqttOutboundLinkExt::with_retain(bool)` on outbound links only (retain is a publish-side flag). They push the exact `("qos", …)` / `("retain", …)` option keys both clients have always read from `protocol_options` — wire behavior identical to the deleted core methods; only an extra `use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};` is needed. The crate now declares `extern crate alloc` unconditionally.
+
+### Changed
+
+- **Reports through the `log_*` facade instead of `tracing::` directly** (design
+  050 §10.5), so a `log` destination — an FFI layer's, say — sees this crate's
+  events too. Each call site also shed the hand-written
+  `#[cfg(feature = "tracing")]` the facade carries itself. The `tracing` feature
+  no longer pulls `dep:tracing`; a mirrored `log` feature is added alongside it.
+  No change to what is emitted, or to a consumer that enables `tracing`.
+
+
+- **Embassy connector reuses the upstream session loop instead of copying it.** The TLS path no longer duplicates mountain-mqtt-embassy's `handle_messages`/`State`/`ChannelEventHandler`/`try_action` (~195 lines): the `aimdb-dev/mountain-mqtt` fork now exposes them publicly (plus a `run_with_subscriptions`), so the plain and TLS transports share one keep-alive/action-dispatch/event loop and can no longer drift. The plain `mqtt://` path also switches to `run_with_subscriptions`, which **re-subscribes inbound topics on every connection** — previously it queued subscribe actions once at startup, so subscriptions were silently lost after a reconnect. The submodule is bumped to the matching change; no public API change.
+- **Embassy broker URL parsing now validates the scheme.** `MqttConnectorBuilder::new`'s URL must be `mqtt://` or `mqtts://` (previously any scheme's host/port were used as-is); this is what selects the transport for the `embassy-tls` change above.
+
+
+- **Connector-build errors carry their message on `no_std` too (Issue #129).** With `DbError` unified on `alloc::String`, the dual `#[cfg]` error-construction branches in both clients collapse to one `DbError::runtime_error(...)` expression; the Embassy client's "Failed to build MQTT connector" detail is no longer dropped on embedded targets. No API change.
+- **Tokio client rebuilt on the shared data-plane toolkit (Issue #39, [design doc](../docs/design/remote-access-via-connectors.md)).** The hand-rolled consume-serialize-publish and read-route loops are replaced by `aimdb-core`'s `pump_sink` / `pump_source` helpers (the connector now writes only its `Connector`/`Source` I/O adapters and composes the pumps in `build()`). Per-route configuration (`qos` / `retain` / `timeout_ms` / …) is threaded from each link URL's query via `ConnectorConfig::from_query`. `std` now enables `aimdb-core/connector-session` (where the pump helpers live; `std` implies it transitively). No public API change.
+- **Outbound publisher survives a consumer lag (Embassy client, Issue #39).** A `BufferLagged` (SPMC-ring overflow) on the outbound reader now skips the gap and keeps publishing instead of terminating the publisher; only a closed buffer stops it.
+- **M17 — Embassy client rebuilt on core's pumps via the adapter spine ([Design 033](../docs/design/033-M17-unify-connectors-drop-send.md)).** The hand-rolled outbound publisher and inbound event-router loops are gone: the Embassy half now rides core's `pump_sink` / `pump_source` through the force-`Send` `EmbassySink` / `EmbassySource` bridges in `aimdb-embassy-adapter::connectors`, exactly like the Tokio half rides them — this crate contributes only the broker **manager task** (mountain-mqtt's `run`, force-`Send`ed once via `into_box_future`) and the `MqttSink` / `MqttSource` over its action/event channels. **No `unsafe`, no `SendFutureWrapper`** remain in this crate. Per-route `qos` / `retain` still arrive from each link URL's query (now via `ConnectorConfig::protocol_options`, parsed per publish). Note: per-message inbound routing logs moved from this crate's `defmt` calls into core's `pump_source` (`tracing` feature), so defmt-only MCU builds no longer log per-message routing failures.
+
 ### Fixed
+
+- **A broker hostname works on every backend, `mqtt://` and `mqtts://` alike.**
+  `setup_manager` vetted plain `mqtt://` hosts with `Ipv4Addr::from_str`, a
+  rule inherited from the days when this crate built the `embassy_net`
+  address itself. Since the host string now goes to a `StreamDialer`, that gate
+  described no dialer in particular: `mqtt://broker.local:1883` connected on
+  `Native`, and the same URL with `.transport(TokioNet::tcp())` — a dialer that
+  resolves names perfectly well — was rejected at `build()`. On Embassy the
+  mirror image bit `mqtts://`, which skips the gate: its hostname reached a
+  dialer that parsed only IP literals — and a hostname is the configuration
+  `build()` steers TLS users toward — so it reconnect-looped. The gate is gone
+  and `EmbassyTcpDialer` resolves (see the adapter's changelog: its `net`
+  feature now enables `embassy-net/dns` and each stack needs one more
+  `StackResources` slot). `backend_parity` dials `localhost` on both backends.
+- **The embedded session's dead retry path is gone, and a dropped publish now
+  says so.** `try_action` parked a failed action in `SessionState` for the next
+  loop iteration to retry, but both call sites propagated the error with `?`,
+  which ends the session — and `run_sessions` built a *fresh* `SessionState`
+  per connection, so the parked action was dropped with the old one.
+  `take_pending_action` could only ever return `None` and `is_retry` was never
+  `true`. The mechanism is removed rather than repaired: the loss window is
+  narrow (a dead link is normally found by the 10 ms poll or the 2 s ping, not
+  by a publish), and where a publish *is* the detector — a response timeout —
+  the broker has most likely already received the message, so a resend would
+  duplicate it. An action that fails now logs its topic and the `ClientError`
+  before the session ends, so the drop is visible instead of silent, and
+  `handle_messages` documents the at-most-once contract: the action in flight
+  is lost, everything still queued survives. Dropping the parking slot also
+  makes `SessionState` non-generic and removes the unused type parameter it
+  forced onto `ChannelEventHandler`.
+- **A second connector in one process no longer steals the first's identity.**
+  Client id and credentials were parked in process-global `OnceLock`s, so every
+  connector after the first connected as the first.
+- **One allocation per inbound message instead of two.** The payload is built
+  as a `Payload` on arrival rather than as a `Vec` that is converted again.
+- **`defmt` is no longer forced on `mountain-mqtt`**, and is absent from the
+  `embedded` graph entirely.
+
 
 - **The rustls path no longer builds its configuration through
   `TlsConfiguration::default()`**, which `expect`s on `load_native_certs()` and
@@ -39,38 +174,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through an FFI boundary where a panic is undefined behaviour rather than an
   error. The configuration is now built explicitly, and a machine with no usable
   trust roots gets a message saying so.
-
-### Changed
-
-- **Embassy connector reuses the upstream session loop instead of copying it.** The TLS path no longer duplicates mountain-mqtt-embassy's `handle_messages`/`State`/`ChannelEventHandler`/`try_action` (~195 lines): the `aimdb-dev/mountain-mqtt` fork now exposes them publicly (plus a `run_with_subscriptions`), so the plain and TLS transports share one keep-alive/action-dispatch/event loop and can no longer drift. The plain `mqtt://` path also switches to `run_with_subscriptions`, which **re-subscribes inbound topics on every connection** — previously it queued subscribe actions once at startup, so subscriptions were silently lost after a reconnect. The submodule is bumped to the matching change; no public API change.
-- **Embassy broker URL parsing now validates the scheme.** `MqttConnectorBuilder::new`'s URL must be `mqtt://` or `mqtts://` (previously any scheme's host/port were used as-is); this is what selects the transport for the `embassy-tls` change above.
-
-### Changed (breaking)
-
-- **`TlsOptions::new` requires a `Send` RNG** —
-  `&'static mut (dyn CryptoRngCore + Send)`. Every concrete CSPRNG already
-  satisfies it (`embassy_stm32::rng::Rng` included), so callers are unchanged
-  textually. With it, `TlsSlot` becomes core's `OneShot<TlsOptions>` and this
-  crate carries **zero `unsafe impl`s** (was two).
-- **Issue #131:** the Embassy `MqttConnectorBuilder::new` takes the network stack — `MqttConnectorBuilder::new(broker_url, stack)` — since the deleted `EmbassyNetwork` runtime trait can no longer supply it; both `ConnectorBuilder` impls and the `MqttLinkExt`/`MqttOutboundLinkExt` link-builder ext traits are non-generic over the runtime.
-
-### Added
-
-- **`MqttLinkExt` / `MqttOutboundLinkExt` — the MQTT knobs, now where the protocol lives (Issue #134, design 034 §3.6).** New `link_ext` module (compiled on every feature leg, `alloc`-only) with extension traits over core's generic link builders: `MqttLinkExt::with_qos(u8)` on outbound *and* inbound links (publish / subscribe QoS), and `MqttOutboundLinkExt::with_retain(bool)` on outbound links only (retain is a publish-side flag). They push the exact `("qos", …)` / `("retain", …)` option keys both clients have always read from `protocol_options` — wire behavior identical to the deleted core methods; only an extra `use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};` is needed. The crate now declares `extern crate alloc` unconditionally.
-
-### Changed
-
-- **Connector-build errors carry their message on `no_std` too (Issue #129).** With `DbError` unified on `alloc::String`, the dual `#[cfg]` error-construction branches in both clients collapse to one `DbError::runtime_error(...)` expression; the Embassy client's "Failed to build MQTT connector" detail is no longer dropped on embedded targets. No API change.
-- **Tokio client rebuilt on the shared data-plane toolkit (Issue #39, [design doc](../docs/design/remote-access-via-connectors.md)).** The hand-rolled consume-serialize-publish and read-route loops are replaced by `aimdb-core`'s `pump_sink` / `pump_source` helpers (the connector now writes only its `Connector`/`Source` I/O adapters and composes the pumps in `build()`). Per-route configuration (`qos` / `retain` / `timeout_ms` / …) is threaded from each link URL's query via `ConnectorConfig::from_query`. `std` now enables `aimdb-core/connector-session` (where the pump helpers live; `std` implies it transitively). No public API change.
-- **Outbound publisher survives a consumer lag (Embassy client, Issue #39).** A `BufferLagged` (SPMC-ring overflow) on the outbound reader now skips the gap and keeps publishing instead of terminating the publisher; only a closed buffer stops it.
-- **M17 — Embassy client rebuilt on core's pumps via the adapter spine ([Design 033](../docs/design/033-M17-unify-connectors-drop-send.md)).** The hand-rolled outbound publisher and inbound event-router loops are gone: the Embassy half now rides core's `pump_sink` / `pump_source` through the force-`Send` `EmbassySink` / `EmbassySource` bridges in `aimdb-embassy-adapter::connectors`, exactly like the Tokio half rides them — this crate contributes only the broker **manager task** (mountain-mqtt's `run`, force-`Send`ed once via `into_box_future`) and the `MqttSink` / `MqttSource` over its action/event channels. **No `unsafe`, no `SendFutureWrapper`** remain in this crate. Per-route `qos` / `retain` still arrive from each link URL's query (now via `ConnectorConfig::protocol_options`, parsed per publish). Note: per-message inbound routing logs moved from this crate's `defmt` calls into core's `pump_source` (`tracing` feature), so defmt-only MCU builds no longer log per-message routing failures.
-
-### Changed (breaking)
-
-- **`ConnectorBuilder::build()` now returns `Vec<BoxFuture<'static, ()>>` instead of `Arc<dyn Connector>` (Issue #88).** Both Tokio and Embassy implementations updated. The MQTT event-loop, the Embassy event-router, and every outbound publisher are returned as futures that the `AimDbRunner` drives — no more `runtime.spawn` / `tokio::spawn` inside the connector. `R: Spawn` bounds dropped throughout in favour of `R: RuntimeAdapter`.
-- `spawn_event_loop()` → `build_event_loop_future()` (Tokio side). `spawn_outbound_publishers()` → `collect_outbound_futures()` on both Tokio and Embassy.
-- The `transport::Connector` impl on `MqttConnectorImpl` was removed alongside the discarded `Arc<dyn Connector>` return path; direct programmatic publish was already unreachable through the `AimDbBuilder` public API.
-- **`MqttConnectorImpl` (Embassy) removed entirely (M17).** It was a build-time aggregation holder; its logic collapsed into the private `setup_manager` + the pump composition in `build()`. Register via `MqttConnectorBuilder` as before — the builder's public API is unchanged.
 
 ## [0.6.0] - 2026-05-22
 

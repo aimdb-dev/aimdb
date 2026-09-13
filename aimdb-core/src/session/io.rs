@@ -70,6 +70,7 @@ pub trait StreamDialer {
     type Stream: ByteStream + Send;
 
     /// Open a stream to `host:port`.
+    /// `host` is either a hostname or an unbracketed IP literal
     fn connect<'a>(
         &'a self,
         host: &'a str,

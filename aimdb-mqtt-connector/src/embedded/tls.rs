@@ -1,32 +1,22 @@
-//! TLS transport for the Embassy MQTT client.
+//! The TLS transport for the embedded backend.
 //!
-//! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over the Embassy
-//! TCP socket, wrapped in mountain-mqtt's [`ConnectionEmbedded`] so the MQTT
-//! layer is identical to the plain path. Certificate verification is
-//! `rustpki` (pure Rust) against the application-embedded root CA, with time
-//! from the [`sntp`](crate::sntp) task; entropy comes from the
-//! application-injected TRNG ([`TlsOptions::new`]).
+//! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over the caller's
+//! transport, presented to the MQTT layer as its own `Connection` — not
+//! `ConnectionEmbedded`, which needs a `ReadReady` a TLS session cannot give
+//! (see `TlsSession` below). Certificate verification is `rustpki` (pure Rust)
+//! against the application-embedded root CA, dated by the runtime's wall
+//! clock; entropy
+//! comes from the application-injected TRNG ([`TlsOptions::new`]).
 //!
-//! The session loop is mountain-mqtt-embassy's own public
-//! [`handle_messages`](mountain_mqtt_embassy::mqtt_manager::handle_messages)
-//! (with [`State`](mountain_mqtt_embassy::mqtt_manager::State) /
-//! [`ChannelEventHandler`](mountain_mqtt_embassy::mqtt_manager::ChannelEventHandler)):
-//! it is transport-agnostic (generic over `Client`), so the only thing this
-//! module supplies is the transport — resolve → TCP → TLS handshake → session.
-//! Upstream `run()` shares that exact loop, keeping the plain and TLS paths in
-//! lock-step with no copied code to drift.
+//! The dialer resolves the host, so there is no network stack here: the same
+//! session runs on a host over the Tokio adapter's transport.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::net::IpAddr;
 
-use embassy_net::dns::DnsQueryType;
-use embassy_net::tcp::TcpSocket;
-use embassy_net::{IpAddress, Stack};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Receiver, Sender};
-use embassy_time::{Delay, Timer};
+use alloc::sync::Arc;
 
 use embedded_tls::pki::CertVerifier;
 use embedded_tls::{
@@ -36,20 +26,17 @@ use embedded_tls::{
 
 use embedded_io_async::Write as _;
 
+use crate::embedded::manager::{
+    handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState, Settings,
+};
 use mountain_mqtt::client::{ClientNoQueue, ConnectionSettings};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::embedded_hal_async::DelayEmbedded;
 use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packet_client::Connection;
-use mountain_mqtt_embassy::mqtt_manager::{
-    handle_messages, ChannelEventHandler, MqttEvent, Settings, State,
-};
 
-use crate::embassy_client::{
-    AimdbMqttAction, AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES,
-};
-use crate::sntp::{self, SntpClock};
+use crate::embedded::{AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES};
 
 /// Room for the server's leaf certificate (DER) inside the verifier — 4 KB
 /// covers RSA-4096 leaves with headroom.
@@ -72,7 +59,10 @@ pub struct TlsOptions {
     pub(crate) ca_der: &'static [u8],
     pub(crate) read_buf: &'static mut [u8],
     pub(crate) write_buf: &'static mut [u8],
-    pub(crate) sntp_server: &'static str,
+    /// Where the certificate-validity clock comes from on a board with no RTC.
+    /// `None` means the runtime's own wall clock answers.
+    #[cfg(feature = "embassy-tls")]
+    pub(crate) sntp: Option<(aimdb_embassy_adapter::connectors::NetStack, &'static str)>,
 }
 
 impl TlsOptions {
@@ -97,56 +87,70 @@ impl TlsOptions {
             ca_der,
             read_buf,
             write_buf,
-            sntp_server: "pool.ntp.org",
+            #[cfg(feature = "embassy-tls")]
+            sntp: None,
         }
     }
 
-    /// Override the SNTP server used as the certificate-validation time
-    /// source (default `pool.ntp.org`).
-    pub fn with_sntp_server(mut self, server: &'static str) -> Self {
-        self.sntp_server = server;
+    /// Take the certificate-validity clock from SNTP over `stack`.
+    ///
+    /// Needed only where the runtime has no wall clock of its own — an MCU
+    /// with no RTC. A host runtime answers `unix_time()` and needs no task.
+    #[cfg(feature = "embassy-tls")]
+    pub fn with_sntp(
+        mut self,
+        stack: &'static embassy_net::Stack<'static>,
+        server: &'static str,
+    ) -> Self {
+        // SAFETY: AimDB's Embassy integration requires a single-core
+        // cooperative executor (the adapter's module-level invariant); the
+        // SNTP task touching this stack is polled on that executor.
+        self.sntp = Some((
+            unsafe { aimdb_embassy_adapter::connectors::NetStack::new(stack) },
+            server,
+        ));
         self
     }
 }
 
-/// The TCP socket shared between the TLS session (its transport) and the
+/// The stream shared between the TLS session (its transport) and the
 /// MQTT-level readiness probe ([`TlsSession::receive_if_ready`]), which needs
-/// `can_recv()` after the socket has been handed to `embedded-tls`.
+/// to ask the wire after the stream has been handed to `embedded-tls`.
 ///
 /// Borrow discipline: the session task drives exactly one client operation at
 /// a time, so a `borrow_mut` held across an I/O `.await` can never overlap
 /// the probe's short `borrow` — both are called sequentially from the same
 /// loop.
-struct SharedTcp<'r, 'a>(&'r RefCell<TcpSocket<'a>>);
+struct SharedStream<'r, S>(&'r RefCell<S>);
 
-impl Clone for SharedTcp<'_, '_> {
+impl<S> Clone for SharedStream<'_, S> {
     fn clone(&self) -> Self {
         Self(self.0)
     }
 }
 
-impl SharedTcp<'_, '_> {
+impl<S: embedded_io_async::ReadReady> SharedStream<'_, S> {
     fn can_recv(&self) -> bool {
-        self.0.borrow().can_recv()
+        self.0.borrow_mut().read_ready().unwrap_or(false)
     }
 }
 
-impl embedded_io_async::ErrorType for SharedTcp<'_, '_> {
-    type Error = embassy_net::tcp::Error;
+impl<S: embedded_io_async::ErrorType> embedded_io_async::ErrorType for SharedStream<'_, S> {
+    type Error = S::Error;
 }
 
 // The held-across-await borrows below are safe by the struct-level borrow
 // discipline (sequential single-task use); a panic would mean a second client
 // operation ran concurrently, which the session loop cannot do.
 #[allow(clippy::await_holding_refcell_ref)]
-impl embedded_io_async::Read for SharedTcp<'_, '_> {
+impl<S: embedded_io_async::Read> embedded_io_async::Read for SharedStream<'_, S> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         self.0.borrow_mut().read(buf).await
     }
 }
 
 #[allow(clippy::await_holding_refcell_ref)]
-impl embedded_io_async::Write for SharedTcp<'_, '_> {
+impl<S: embedded_io_async::Write> embedded_io_async::Write for SharedStream<'_, S> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         self.0.borrow_mut().write(buf).await
     }
@@ -169,14 +173,20 @@ impl embedded_io_async::Write for SharedTcp<'_, '_> {
 /// (unsolicited session tickets, KeyUpdate) make `receive` wait for the next
 /// real record; if the broker stays silent, the keep-alive lapse tears the
 /// session down and the manager reconnects.
-struct TlsSession<'r, 'a, 'b> {
-    tls: TlsConnection<'b, SharedTcp<'r, 'a>, Aes128GcmSha256>,
-    socket: SharedTcp<'r, 'a>,
+struct TlsSession<'r, 'b, S>
+where
+    S: embedded_io_async::Read + embedded_io_async::Write,
+{
+    tls: TlsConnection<'b, SharedStream<'r, S>, Aes128GcmSha256>,
+    socket: SharedStream<'r, S>,
     /// Decrypted-but-unread plaintext left in the TLS record buffer.
     plaintext_remaining: usize,
 }
 
-impl Connection for TlsSession<'_, '_, '_> {
+impl<S> Connection for TlsSession<'_, '_, S>
+where
+    S: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
+{
     async fn send(&mut self, buf: &[u8]) -> Result<(), PacketWriteError> {
         self.tls
             .write_all(buf)
@@ -211,13 +221,47 @@ impl Connection for TlsSession<'_, '_, '_> {
     }
 }
 
+/// Unix seconds for certificate validity, refreshed before each handshake.
+///
+/// `embedded_tls::TlsClock::now` is a static method, so the reading has to
+/// reach it through a global. The source is whatever the runtime's wall clock
+/// reports; a runtime with no clock of its own (an MCU without an RTC) gets
+/// one from the SNTP task instead.
+static UNIX_SECS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The certificate-validity clock. `u32` is unambiguous until 2106 and stays a
+/// single atomic on Cortex-M, which has no 64-bit atomics.
+pub(crate) struct WallClock;
+
+impl WallClock {
+    /// Record a wall-clock reading. Ignores a zero, which means "unknown".
+    pub(crate) fn set_unix_secs(secs: u32) {
+        if secs != 0 {
+            UNIX_SECS.store(secs, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn unix_secs() -> Option<u64> {
+        match UNIX_SECS.load(core::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            secs => Some(u64::from(secs)),
+        }
+    }
+}
+
+impl embedded_tls::TlsClock for WallClock {
+    fn now() -> Option<u64> {
+        Self::unix_secs()
+    }
+}
+
 /// [`CryptoProvider`] pairing the injected TRNG with `rustpki` certificate
-/// verification (time from [`SntpClock`]). Client-certificate signing is
+/// verification (time from [`WallClock`]). Client-certificate signing is
 /// deliberately absent — the mesh authenticates with MQTT credentials
 /// instead.
 struct TrngProvider<'a> {
-    rng: &'a mut dyn CryptoRngCore,
-    verifier: CertVerifier<'static, Aes128GcmSha256, SntpClock, CERT_BUFFER_SIZE>,
+    rng: &'a mut (dyn CryptoRngCore + Send),
+    verifier: CertVerifier<'static, Aes128GcmSha256, WallClock, CERT_BUFFER_SIZE>,
 }
 
 impl CryptoProvider for TrngProvider<'_> {
@@ -234,21 +278,29 @@ impl CryptoProvider for TrngProvider<'_> {
     }
 }
 
-/// The TLS broker manager: resolve → TCP → TLS handshake → MQTT session,
-/// reconnecting forever with the same [`Settings`] cadence as the plain
-/// path's `mqtt_manager::run` (`settings.address` is unused — the TLS path
-/// resolves `host` per attempt instead).
+/// The TLS broker manager: dial → TLS handshake → MQTT session, reconnecting
+/// forever with the same [`Settings`] cadence as the plain path.
+///
+/// The dialer resolves the host, so there is no DNS here and no network stack:
+/// any runtime whose streams offer the `embedded-io-async` trio can run this.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_tls(
-    stack: Stack<'static>,
+pub(crate) async fn run_tls<D>(
+    dialer: D,
     options: TlsOptions,
     host: String,
+    port: u16,
     topics: Vec<String>,
     connection_settings: ConnectionSettings<'static>,
     settings: Settings,
-    event_sender: Sender<'static, NoopRawMutex, MqttEvent<AimdbMqttEvent>, CHANNEL_SIZE>,
-    mut action_receiver: Receiver<'static, NoopRawMutex, AimdbMqttAction, CHANNEL_SIZE>,
-) -> ! {
+    events: Arc<crate::embedded::EventChannel>,
+    actions: Arc<crate::embedded::ActionChannel>,
+    delay: D,
+    runtime: Arc<dyn aimdb_core::RuntimeOps>,
+) -> !
+where
+    D: aimdb_core::session::StreamDialer + aimdb_core::session::Delay,
+    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
+{
     let TlsOptions {
         rng,
         ca_der,
@@ -257,8 +309,6 @@ pub(crate) async fn run_tls(
         ..
     } = options;
 
-    let mut rx_buffer = [0u8; BUFFER_SIZE];
-    let mut tx_buffer = [0u8; BUFFER_SIZE];
     let mut mqtt_buffer = [0u8; BUFFER_SIZE];
 
     // Re-subscribed by `handle_messages` on every (re)connection, so inbound
@@ -271,50 +321,36 @@ pub(crate) async fn run_tls(
     let mut connection_index = 0u32;
 
     loop {
-        // Certificate validity needs real time — hold the first handshake
-        // until SNTP has synced.
-        if sntp::unix_now().is_none() {
+        // Certificate validity needs real time. Take it from the runtime when
+        // it has a wall clock; otherwise wait for whatever feeds `WallClock`
+        // (the SNTP task, on a board with no RTC).
+        if let Some((secs, _)) = runtime.unix_time() {
+            WallClock::set_unix_secs(secs as u32);
+        }
+        if WallClock::unix_secs().is_none() {
             #[cfg(feature = "defmt")]
-            defmt::info!("MQTT-TLS: waiting for SNTP time sync...");
-            while sntp::unix_now().is_none() {
-                Timer::after_millis(500).await;
+            defmt::info!("MQTT-TLS: waiting for a wall-clock reading...");
+            while WallClock::unix_secs().is_none() {
+                if let Some((secs, _)) = runtime.unix_time() {
+                    WallClock::set_unix_secs(secs as u32);
+                }
+                aimdb_core::session::Delay::sleep(&delay, core::time::Duration::from_millis(500))
+                    .await;
             }
         }
 
-        let address = match resolve(stack, &host).await {
-            Some(address) => address,
-            None => {
+        let stream = match dialer.connect(&host, port).await {
+            Ok(stream) => stream,
+            Err(_e) => {
                 #[cfg(feature = "defmt")]
-                defmt::warn!(
-                    "MQTT-TLS: DNS lookup for {} failed, will retry",
-                    host.as_str()
-                );
-                Timer::after(settings.reconnection_delay).await;
+                defmt::warn!("MQTT-TLS: connect failed, will retry");
+                aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
                 continue;
             }
         };
 
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(None);
-
-        #[cfg(feature = "defmt")]
-        defmt::info!(
-            "MQTT-TLS: connecting to {} ({}) port {}...",
-            host.as_str(),
-            address,
-            settings.port
-        );
-        if let Err(e) = socket.connect((address, settings.port)).await {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("MQTT-TLS: socket connect error, will retry: {:?}", e);
-            #[cfg(not(feature = "defmt"))]
-            let _ = e;
-            Timer::after(settings.reconnection_delay).await;
-            continue;
-        }
-
-        let socket = RefCell::new(socket);
-        let shared = SharedTcp(&socket);
+        let stream = RefCell::new(stream);
+        let shared = SharedStream(&stream);
 
         let tls_config = TlsConfig::new().with_server_name(&host);
         let mut tls = TlsConnection::new(shared.clone(), &mut *read_buf, &mut *write_buf);
@@ -330,7 +366,7 @@ pub(crate) async fn run_tls(
             );
             #[cfg(not(feature = "defmt"))]
             let _ = e;
-            Timer::after(settings.reconnection_delay).await;
+            aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
             continue;
         }
         #[cfg(feature = "defmt")]
@@ -341,26 +377,20 @@ pub(crate) async fn run_tls(
             socket: shared,
             plaintext_remaining: 0,
         };
-        let delay = DelayEmbedded::new(Delay);
         let timeout_millis = settings.response_timeout.as_millis() as u32;
 
-        let state: RefCell<State<AimdbMqttAction>> = RefCell::new(State::new());
+        let state = SessionState::new(now_ms(runtime.as_ref()));
 
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
 
-        let event_handler: ChannelEventHandler<
-            '_,
-            AimdbMqttAction,
-            AimdbMqttEvent,
-            MAX_PROPERTIES,
-            CHANNEL_SIZE,
-        > = ChannelEventHandler::new(connection_id, &event_sender, &state);
+        let event_handler: ChannelEventHandler<'_, AimdbMqttEvent, MAX_PROPERTIES, CHANNEL_SIZE> =
+            ChannelEventHandler::new(connection_id, &events, &state, runtime.as_ref());
 
         let mut client = ClientNoQueue::new(
             connection,
             &mut mqtt_buffer,
-            delay,
+            DelayEmbedded::new(crate::embedded::session::ClientDelay(&delay)),
             timeout_millis,
             event_handler,
         );
@@ -371,15 +401,17 @@ pub(crate) async fn run_tls(
             &state,
             &connection_settings,
             &subscribe_topics,
-            &event_sender,
-            &mut action_receiver,
+            &events,
+            &actions,
             &settings,
+            &delay,
+            runtime.as_ref(),
         )
         .await
         {
             #[cfg(feature = "defmt")]
             defmt::warn!("MQTT-TLS: session errored: {:?}", error);
-            event_sender
+            events
                 .send(MqttEvent::Disconnected {
                     connection_id,
                     error,
@@ -387,16 +419,7 @@ pub(crate) async fn run_tls(
                 .await;
         }
 
-        Timer::after(settings.reconnection_delay).await;
-    }
-}
-
-/// Resolve the broker host to its first A record (IP literals short-circuit
-/// inside `dns_query` without a network round trip).
-async fn resolve(stack: Stack<'static>, host: &str) -> Option<IpAddress> {
-    match stack.dns_query(host, DnsQueryType::A).await {
-        Ok(addresses) => addresses.first().copied(),
-        Err(_) => None,
+        aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
     }
 }
 

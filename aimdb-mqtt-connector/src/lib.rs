@@ -6,14 +6,22 @@
 //!
 //! ## Features
 //!
-//! - `tokio-runtime`: Tokio-based connector using `rumqttc`
-//! - `embassy-runtime`: Embassy connector for embedded systems using `mountain-mqtt`
-//! - `embassy-tls`: TLS (`mqtts://`), broker authentication, DNS, and the
-//!   SNTP time source for the Embassy connector
-//! - `tracing`: Debug logging support (std)
-//! - `defmt`: Debug logging support (no_std)
+//! The split is std vs `no_std`, not Tokio vs Embassy: the embedded backend
+//! runs on any target that can supply a `StreamDialer`.
 //!
-//! ## Tokio Usage (Standard Library)
+//! - `std`: the `rumqttc` backend (QoS 0–2, platform trust roots)
+//! - `embedded`: the `mountain-mqtt` backend over a caller-supplied transport;
+//!   `alloc` only, with no executor, network stack or adapter
+//! - `embedded-tls`: `mqtts://` via `embedded-tls`, on the same transport
+//! - `embassy-runtime`: `embedded` plus the Embassy transport and clock
+//! - `embassy-tls`: `embedded-tls` plus the SNTP time source, for a board with
+//!   no RTC
+//! - `critical-section-std-impl`: links a `critical-section` impl for std
+//!   binaries, which the session channels need
+//! - `tokio-runtime`: deprecated alias for `std`
+//! - `tracing` / `defmt`: logging destinations
+//!
+//! ## Std Usage
 //!
 //! ```no_run
 //! use aimdb_core::AimDbBuilder;
@@ -59,22 +67,28 @@
 //! # }
 //! ```
 //!
-//! ## Embassy Usage (Embedded)
+//! ## Embedded Usage
 //!
 //! Illustrative (not compiled: requires the `embassy-runtime` feature and a
-//! device network stack):
+//! device network stack). The transport is what selects the backend — the same
+//! call on any other adapter's dialer gets the same connector.
 //!
 //! ```rust,ignore
 //! use aimdb_core::AimDbBuilder;
+//! use aimdb_embassy_adapter::net::EmbassyNet;
 //! use aimdb_embassy_adapter::EmbassyAdapter;
-//! use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+//! use aimdb_mqtt_connector::MqttConnector;
 //! use alloc::sync::Arc;
 //!
 //! let runtime = Arc::new(EmbassyAdapter::new());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883", stack))
+//!     .with_connector(
+//!         MqttConnector::new("mqtt://192.168.1.100:1883")
+//!             .transport(EmbassyNet::tcp(stack, rx, tx))
+//!             .with_client_id("my-unique-device-id"),
+//!     )
 //!     .configure::<SensorData>(|reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)
@@ -94,43 +108,39 @@
 
 extern crate alloc;
 
-// MQTT knobs over core's generic link builders (works on every feature leg)
+// One `MqttConnector` over the `Native` and `Embedded` protocol backends.
+pub mod connector;
+
+// MQTT knobs over core's generic link builders (works on every feature leg).
 pub mod link_ext;
 pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};
 
-// Platform-specific implementations
-#[cfg(feature = "tokio-runtime")]
-pub mod tokio_client;
+// The `rumqttc` backend.
+#[cfg(feature = "std")]
+pub mod native;
 
-#[cfg(feature = "embassy-runtime")]
-pub mod embassy_client;
+// The `mountain-mqtt` backend: session loop, manager, and the TLS transport.
+#[cfg(feature = "embedded")]
+pub mod embedded;
 
 // SNTP wire codec — pure and feature-independent so it is unit-tested on the
-// host; only the `embassy-tls` I/O task consumes it.
+// host; only the TLS I/O task consumes it.
 #[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
 pub(crate) mod sntp_codec;
 
-// TLS transport + SNTP time source for the Embassy client
-#[cfg(feature = "embassy-tls")]
-pub mod embassy_tls;
-#[cfg(feature = "embassy-tls")]
-pub mod sntp;
+// Deprecated module names, kept for one release so existing imports keep
+// working. The modules no longer name a runtime.
+#[cfg(feature = "embedded")]
+#[deprecated(since = "0.7.0", note = "renamed to `embedded`")]
+pub use crate::embedded as embassy_client;
+#[cfg(feature = "std")]
+#[deprecated(since = "0.7.0", note = "renamed to `native`")]
+pub use crate::native as tokio_client;
 
-// Re-export platform-specific types
-// Both implementations use MqttConnectorBuilder for API consistency
-// When both features are enabled (e.g., during testing), prefer tokio
-#[cfg(all(feature = "tokio-runtime", not(feature = "embassy-runtime")))]
-pub use tokio_client::MqttConnectorBuilder as MqttConnector;
-
-#[cfg(all(feature = "embassy-runtime", not(feature = "tokio-runtime")))]
-pub use embassy_client::MqttConnectorBuilder as MqttConnector;
-
-// When both features are enabled, export both with different names
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::MqttConnectorBuilder as TokioMqttConnector;
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use embassy_client::MqttConnectorBuilder as EmbassyMqttConnector;
-
-#[cfg(all(feature = "tokio-runtime", feature = "embassy-runtime"))]
-pub use tokio_client::MqttConnectorBuilder as MqttConnector; // Default to tokio when both enabled
+#[cfg(feature = "embedded")]
+pub use connector::Embedded;
+#[cfg(feature = "embedded-tls")]
+pub use connector::EmbeddedTls;
+pub use connector::{MqttConnector, Native};
+#[cfg(feature = "embedded-tls")]
+pub use embedded::tls::TlsOptions;

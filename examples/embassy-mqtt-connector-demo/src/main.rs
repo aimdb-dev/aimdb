@@ -91,9 +91,10 @@ use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+use aimdb_embassy_adapter::net::EmbassyNet;
+use aimdb_mqtt_connector::MqttConnector;
 #[cfg(feature = "tls")]
-use aimdb_mqtt_connector::embassy_client::TlsOptions;
+use aimdb_mqtt_connector::TlsOptions;
 
 // Import shared types, monitors, and compile-time safe keys from the common crate
 use mqtt_connector_demo_common::{
@@ -315,9 +316,9 @@ async fn main(spawner: Spawner) {
     //     gateway: Some(Ipv4Address::new(192, 168, 1, 1)),
     // });
 
-    // Initialize network stack (TLS builds carry two extra sockets: DNS + SNTP)
+    // Initialize network stack (TLS builds carry one extra socket: SNTP)
     #[cfg(not(feature = "tls"))]
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
     #[cfg(feature = "tls")]
     static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
     static STACK_CELL: StaticCell<embassy_net::Stack<'static>> = StaticCell::new();
@@ -386,21 +387,45 @@ async fn main(spawner: Spawner) {
     // Read-only: each record has a single writer (a sensor source, or MQTT for the
     // command records), so remote `record.set` is refused — peers can
     // list/drain/subscribe, not write.
-    let mqtt = MqttConnectorBuilder::new(&broker_url, stack).with_client_id("embassy-demo-001");
+    // Plain `mqtt://`: the adapter owns the socket, so the buffers are the
+    // caller's and visible here. The same line on another runtime's adapter
+    // needs no change in the connector.
+    #[cfg(not(feature = "tls"))]
+    let mqtt = {
+        static MQTT_RX: StaticCell<[u8; 4096]> = StaticCell::new();
+        static MQTT_TX: StaticCell<[u8; 4096]> = StaticCell::new();
+        MqttConnector::new(&broker_url)
+            .transport(EmbassyNet::tcp(
+                *stack,
+                MQTT_RX.init([0; 4096]),
+                MQTT_TX.init([0; 4096]),
+            ))
+            .with_client_id("embassy-demo-001")
+    };
 
-    // TLS materials: the board's TRNG, the broker's root CA, and the record
-    // buffers (16 640 bytes read is the enforced minimum — a TLS 1.3 peer
-    // may send full-size records). `init_with` keeps the arrays off the stack.
+    // `mqtts://` dials through the same transport as `mqtt://`; the adapter
+    // resolves the host. The board's TRNG, the broker's root CA, and the record
+    // buffers (16 640 bytes read is the enforced minimum — a TLS 1.3 peer may
+    // send full-size records). `init_with` keeps the arrays off the stack.
+    // This board has no RTC, so the validity clock comes from SNTP.
     #[cfg(feature = "tls")]
     let mqtt = {
+        static MQTT_RX: StaticCell<[u8; 4096]> = StaticCell::new();
+        static MQTT_TX: StaticCell<[u8; 4096]> = StaticCell::new();
         static TLS_READ_BUF: StaticCell<[u8; 16_640]> = StaticCell::new();
         static TLS_WRITE_BUF: StaticCell<[u8; 4_096]> = StaticCell::new();
-        let mqtt = mqtt.with_tls(TlsOptions::new(
-            rng,
-            MQTT_CA_DER,
-            TLS_READ_BUF.init_with(|| [0; 16_640]),
-            TLS_WRITE_BUF.init_with(|| [0; 4_096]),
-        ));
+        let mqtt = MqttConnector::new(&broker_url)
+            .tls(
+                EmbassyNet::tcp(*stack, MQTT_RX.init([0; 4096]), MQTT_TX.init([0; 4096])),
+                TlsOptions::new(
+                    rng,
+                    MQTT_CA_DER,
+                    TLS_READ_BUF.init_with(|| [0; 16_640]),
+                    TLS_WRITE_BUF.init_with(|| [0; 4_096]),
+                )
+                .with_sntp(stack, "pool.ntp.org"),
+            )
+            .with_client_id("embassy-demo-001");
         match MQTT_CREDENTIALS {
             Some((username, password)) => mqtt.with_credentials(username, password),
             None => mqtt,

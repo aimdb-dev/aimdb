@@ -27,6 +27,9 @@ RED := \033[0;31m
 # pthread_atfork fork detector) silently un-no_std's the crate if it is not
 # marked optional and gated behind `std`.
 SYNC_NO_STD_FORBIDDEN := tokio|libc
+# The embedded MQTT backend runs on any target with a `StreamDialer`, so no
+# executor, network stack, adapter or logger may reach its graph.
+MQTT_EMBEDDED_FORBIDDEN := embassy-net|embassy-executor|embassy-time|static_cell|aimdb-embassy-adapter|defmt
 NC := \033[0m # No Color
 
 ## Show available commands
@@ -94,6 +97,8 @@ build:
 	cargo build --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Building tokio adapter (runtime-neutral transports)$(NC)\n"
 	cargo build --package aimdb-tokio-adapter --features "net"
+	@printf "$(YELLOW)  → Building tokio adapter (embedded-io streams)$(NC)\n"
+	cargo build --package aimdb-tokio-adapter --features "embedded-io"
 	@printf "$(YELLOW)  → Building sync wrapper$(NC)\n"
 	cargo build --package aimdb-sync
 	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
@@ -177,6 +182,8 @@ test:
 	cargo test --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability"
 	@printf "$(YELLOW)  → Testing tokio adapter (runtime-neutral transports)$(NC)\n"
 	cargo test --package aimdb-tokio-adapter --features "net"
+	@printf "$(YELLOW)  → Testing tokio adapter (embedded-io streams)$(NC)\n"
+	cargo test --package aimdb-tokio-adapter --features "embedded-io"
 	@printf "$(YELLOW)  → Testing embassy adapter (host, no executor: buffers, join-queue, connector spine, doctests)$(NC)\n"
 	cargo test --package aimdb-embassy-adapter --no-default-features --features "alloc,embassy-sync,embassy-time,connectors"
 	@printf "$(YELLOW)  → Testing embassy adapter (host: runtime-neutral transports, UART + UDP over two embassy-net stacks)$(NC)\n"
@@ -206,11 +213,11 @@ test:
 	@printf "$(YELLOW)  → Testing persistence SQLite backend$(NC)\n"
 	cargo test --package aimdb-persistence-sqlite
 	@printf "$(YELLOW)  → Testing MQTT connector (tokio, no TLS backend)$(NC)\n"
-	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime"
+	cargo test --package aimdb-mqtt-connector --features "std"
 	@printf "$(YELLOW)  → Testing MQTT connector (tokio + native-tls)$(NC)\n"
-	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-native-tls"
+	cargo test --package aimdb-mqtt-connector --features "std,tokio-native-tls"
 	@printf "$(YELLOW)  → Testing MQTT connector (tokio + rustls)$(NC)\n"
-	cargo test --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-rustls"
+	cargo test --package aimdb-mqtt-connector --features "std,tokio-rustls"
 	@printf "$(YELLOW)  → Testing KNX connector$(NC)\n"
 	cargo test --package aimdb-knx-connector --no-default-features --features "std"
 	@printf "$(YELLOW)  → Testing WebSocket connector (server + client: unit, real-socket e2e, AimDB round-trip)$(NC)\n"
@@ -229,6 +236,14 @@ test:
 	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test embassy_loopback
 	@printf "$(YELLOW)  → Testing TCP connector (accept pool over two embassy-net stacks)$(NC)\n"
 	cargo test --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test accept_pool
+	@printf "$(YELLOW)  → Testing MQTT connector (broker session loop against a fake broker)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-embassy-broker" --test embassy_broker
+	@printf "$(YELLOW)  → Testing MQTT connector (embedded backend over TokioNet, reconnect)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker
+	@printf "$(YELLOW)  → Testing MQTT connector (both backends, one broker, one process)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test backend_parity
+	@printf "$(YELLOW)  → Testing MQTT connector (mqtts:// against a pinned self-signed root)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_broker
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
@@ -284,6 +299,8 @@ clippy:
 	cargo clippy --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on tokio adapter (runtime-neutral transports)$(NC)\n"
 	cargo clippy --package aimdb-tokio-adapter --features "net" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on tokio adapter (embedded-io streams)$(NC)\n"
+	cargo clippy --package aimdb-tokio-adapter --features "embedded-io" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter$(NC)\n"
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --features "embassy-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embassy adapter with network support$(NC)\n"
@@ -327,14 +344,18 @@ clippy:
 	@printf "$(YELLOW)  → Clippy on KNX connector (neutral, no_std+alloc)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio, no TLS backend)$(NC)\n"
-	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-runtime" --all-targets -- -D warnings
+	cargo clippy --package aimdb-mqtt-connector --features "std" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio + native-tls)$(NC)\n"
-	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-native-tls" --all-targets -- -D warnings
+	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-native-tls" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio + rustls)$(NC)\n"
-	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-runtime,tokio-rustls" --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + defmt)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --features "std,tokio-rustls" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (neutral, no_std+alloc)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (Embassy bundle + defmt)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,defmt" -- -D warnings
-	@printf "$(YELLOW)  → Clippy on MQTT connector (embassy + TLS + defmt)$(NC)\n"
+	@printf "$(YELLOW)  → Clippy on MQTT connector (neutral + TLS)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded-tls" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (Embassy + TLS + defmt)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-tls,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (neutral + defmt)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector,defmt" -- -D warnings
@@ -358,6 +379,14 @@ clippy:
 	cargo clippy --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test embassy_loopback -- -D warnings
 	@printf "$(YELLOW)  → Clippy on TCP connector (accept pool, host)$(NC)\n"
 	cargo clippy --package aimdb-tcp-connector --no-default-features --features "_test-embassy-loopback" --test accept_pool -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (broker session loop, host)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-embassy-broker" --test embassy_broker -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (embedded backend over TokioNet)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (backend parity)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test backend_parity -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (mqtts:// host smoke)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_broker -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WASM adapter$(NC)\n"
 	cargo clippy --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
@@ -374,9 +403,9 @@ doc:
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
 	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard" --no-deps
 	cargo doc --package aimdb-core --features "std,tracing,observability" --no-deps
-	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net" --no-deps
+	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net,embedded-io" --no-deps
 	cargo doc --package aimdb-sync --no-deps
-	cargo doc --package aimdb-mqtt-connector --features "std,tokio-runtime" --no-deps
+	cargo doc --package aimdb-mqtt-connector --features "std" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "std" --no-deps
 	cargo doc --package aimdb-codegen --no-deps
 	cargo doc --package aimdb-cli --no-deps
@@ -397,7 +426,10 @@ doc:
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
 	cargo doc --package aimdb-core --no-default-features --features alloc --no-deps
 	cargo doc --package aimdb-embassy-adapter --features "embassy-runtime,net" --no-deps
+	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embedded" --no-deps
+	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embedded-tls" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
+	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-tls" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "connector" --no-deps
 	cargo doc --package aimdb-serial-connector --no-default-features --features "connector" --no-deps
 	cargo doc --package aimdb-tcp-connector --no-default-features --features "connector" --no-deps
@@ -460,7 +492,19 @@ test-embedded:
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter runtime-neutral transports, with and without the clock, on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,net,embassy-runtime"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,net"
-	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy) on thumbv7em-none-eabihf target$(NC)\n"
+	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (runtime-neutral embedded backend) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embedded"
+	@printf "$(YELLOW)  → Asserting no runtime crates in the embedded MQTT backend$(NC)\n"
+	@out=$$(cargo tree -p aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -e features,no-dev 2>&1) || { \
+		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
+		printf '%s\n' "$$out"; exit 1; \
+	}; \
+	if printf '%s\n' "$$out" | grep -qiE '$(MQTT_EMBEDDED_FORBIDDEN)'; then \
+		printf "$(RED)✗ a runtime crate leaked into the embedded MQTT graph$(NC)\n"; \
+		printf '%s\n' "$$out" | grep -iE '$(MQTT_EMBEDDED_FORBIDDEN)'; exit 1; \
+	fi
+	@printf "$(BLUE)✓ embedded MQTT graph is free of $(MQTT_EMBEDDED_FORBIDDEN)$(NC)\n"
+	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy bundle) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
@@ -478,6 +522,8 @@ test-embedded:
 	cargo check --package aimdb-tcp-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-sync (no_std) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-sync --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features
+	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (runtime-neutral TLS) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embedded-tls"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + TLS) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime,embassy-tls"
 

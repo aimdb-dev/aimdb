@@ -10,30 +10,26 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-# For Tokio runtime (std)
-aimdb-mqtt-connector = { version = "0.2", features = ["tokio-runtime"] }
+# The rumqttc backend (std): QoS 0-2, platform trust roots
+aimdb-mqtt-connector = { version = "0.7", features = ["std"] }
 
-# For Embassy runtime (embedded)
-aimdb-mqtt-connector = { version = "0.2", features = ["embassy-runtime"] }
+# The mountain-mqtt backend: any target that can supply a transport
+aimdb-mqtt-connector = { version = "0.7", default-features = false, features = ["embedded"] }
 
-# REQUIRED for Embassy: Patch mountain-mqtt to match Embassy versions
-[patch.crates-io]
-mountain-mqtt = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch = "main" }
-mountain-mqtt-embassy = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch = "main" }
+# ... or the Embassy convenience bundle, which adds the transport and clock
+aimdb-mqtt-connector = { version = "0.7", default-features = false, features = ["embassy-runtime"] }
 ```
 
-**Why the patch?**
-- Embassy dependency version compatibility
-- Our workspace uses a specific Embassy version that differs from crates.io
-
-**Tokio runtime users**: The patch is optional but recommended for consistency.
+The split is **std vs `no_std`**, not Tokio vs Embassy: the embedded backend
+runs on any runtime whose adapter supplies a `StreamDialer`, so a new platform
+needs an adapter crate and no change here.
 
 ## Overview
 
-`aimdb-mqtt-connector` provides MQTT publishing capabilities for AimDB records with automatic consumer registration. Works seamlessly across standard library (Tokio) and embedded (Embassy) environments.
+`aimdb-mqtt-connector` provides MQTT publishing capabilities for AimDB records with automatic consumer registration. One `MqttConnector` covers both backends: supply no transport and it is `rumqttc`; supply one with `.transport(..)` and it is `mountain-mqtt` over whatever the adapter dials.
 
 **Key Features:**
-- **Dual Runtime Support**: Works with both Tokio and Embassy
+- **Two backends, one type**: `rumqttc` on std, `mountain-mqtt` anywhere else
 - **Automatic Consumer Registration**: Connects to records via builder pattern
 - **Topic Mapping**: Flexible record-to-topic configuration
 - **Custom Serialization**: Pluggable serializers (JSON, MessagePack, etc.)
@@ -88,9 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-aimdb-core = { version = "0.1", default-features = false }
-aimdb-embassy-adapter = { version = "0.1", default-features = false }
-aimdb-mqtt-connector = { version = "0.1", default-features = false, features = ["embassy-runtime"] }
+aimdb-core = { version = "1", default-features = false }
+aimdb-embassy-adapter = { version = "0.6", default-features = false }
+aimdb-mqtt-connector = { version = "0.7", default-features = false, features = ["embassy-runtime"] }
 ```
 
 Example:
@@ -99,8 +95,9 @@ Example:
 #![no_main]
 
 use aimdb_core::AimDbBuilder;
+use aimdb_embassy_adapter::net::EmbassyNet;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExt};
-use aimdb_mqtt_connector::embassy_client::MqttConnectorBuilder;
+use aimdb_mqtt_connector::MqttConnector;
 use alloc::sync::Arc;
 
 #[embassy_executor::main]
@@ -108,14 +105,17 @@ async fn main(spawner: Spawner) {
     // Initialize network stack
     let stack: &'static embassy_net::Stack<'static> = /* ... */;
 
-    // The adapter is a stateless unit type; the connector takes the
-    // network stack at construction.
+    // The adapter is a stateless unit type; the connector takes a transport
+    // from it, and nothing else about the runtime.
     let runtime = Arc::new(EmbassyAdapter::new());
 
     // Build database with MQTT connector
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector(MqttConnectorBuilder::new("mqtt://192.168.1.100:1883", stack));
+        .with_connector(
+            MqttConnector::new("mqtt://192.168.1.100:1883")
+                .transport(EmbassyNet::tcp(*stack, rx_buf, tx_buf)),
+        );
 
     builder.configure::<SensorData>("sensor-data", |reg| {
         reg.buffer_sized::<4, 1>(EmbassyBufferType::SingleLatest)
@@ -311,13 +311,16 @@ The connector automatically handles reconnection. Serialization errors will be l
 
 ## Features
 
-```toml
-[features]
-tokio-runtime = ["dep:rumqttc", "dep:tokio"]      # Tokio support
-embassy-runtime = ["dep:mountain-mqtt"]           # Embassy support
-tracing = ["dep:tracing"]                         # Logging (std)
-defmt = ["dep:defmt"]                             # Logging (embedded)
-```
+| Feature | Backend |
+|---|---|
+| `std` | `rumqttc`: QoS 0-2, platform trust roots |
+| `embedded` | `mountain-mqtt` over a caller-supplied transport; `alloc` only, no executor or network stack |
+| `embedded-tls` | `mqtts://` via `embedded-tls`, on the same transport |
+| `embassy-runtime` | `embedded` plus the Embassy transport and clock |
+| `embassy-tls` | `embedded-tls` plus the SNTP time source, for a board with no RTC |
+| `critical-section-std-impl` | links a `critical-section` impl, which a std binary needs |
+| `tokio-runtime` | deprecated alias for `std` |
+| `tracing` / `defmt` | logging destinations |
 
 ## Connection Management
 
@@ -341,16 +344,29 @@ When broker is unavailable:
 docker run -d -p 1883:1883 eclipse-mosquitto
 
 # Run tests
-cargo test -p aimdb-mqtt-connector --features tokio-runtime
+cargo test -p aimdb-mqtt-connector --features std
 ```
 
-### Embassy Tests
+### Embedded Tests
+
+The embedded backend runs on the host over the Tokio adapter's transport, so it
+is covered by real tests rather than a cross-compile alone:
+
 ```bash
-# Cross-compile test
-cargo build -p aimdb-mqtt-connector \
+# Host smoke: session loop, reconnect and record round-trip
+cargo test -p aimdb-mqtt-connector --no-default-features --features _test-tokio-broker --test tokio_broker
+
+# Both backends against one broker, in one process
+cargo test -p aimdb-mqtt-connector --no-default-features --features _test-backend-parity --test backend_parity
+
+# `mqtts://` against a pinned self-signed root
+cargo test -p aimdb-mqtt-connector --no-default-features --features _test-tls-broker --test tls_broker
+
+# Cross-compile check
+cargo check -p aimdb-mqtt-connector \
     --target thumbv7em-none-eabihf \
     --no-default-features \
-    --features embassy-runtime
+    --features embedded
 ```
 
 ## Examples

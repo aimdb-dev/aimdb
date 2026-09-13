@@ -96,6 +96,14 @@ impl StreamDialer for TokioTcpDialer {
     }
 }
 
+/// The dialer is also the clock, so a connector generic over it needs no
+/// separate handle.
+impl Delay for TokioTcpDialer {
+    fn sleep(&self, d: std::time::Duration) -> impl std::future::Future<Output = ()> + Send {
+        TokioDelay.sleep(d)
+    }
+}
+
 /// Accepts TCP connections.
 pub struct TokioTcpListener(TcpListener);
 
@@ -116,6 +124,61 @@ impl StreamListener for TokioTcpListener {
         let mut peer = PeerInfo::default();
         peer.peer_addr = Some(addr.to_string());
         Ok((TokioByteStream(stream), peer))
+    }
+}
+
+// `embedded-io-async` by delegation, so a protocol client written against those
+// traits (mountain-mqtt, embedded-tls) runs on a host. `ReadReady` is a
+// synchronous probe, so it takes the concrete `TcpStream` and its `poll_peek`.
+#[cfg(feature = "embedded-io")]
+mod embedded_io_impls {
+    use super::TokioByteStream;
+    use core::task::{Context, Poll, Waker};
+    use embedded_io_async::ErrorKind;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
+    use tokio::net::TcpStream;
+
+    impl<S> embedded_io_async::ErrorType for TokioByteStream<S> {
+        type Error = ErrorKind;
+    }
+
+    impl<S> embedded_io_async::Read for TokioByteStream<S>
+    where
+        S: tokio::io::AsyncRead + Unpin,
+    {
+        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            self.0.read(buf).await.map_err(|e| e.kind().into())
+        }
+    }
+
+    impl<S> embedded_io_async::Write for TokioByteStream<S>
+    where
+        S: tokio::io::AsyncWrite + Unpin,
+    {
+        async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            self.0.write(buf).await.map_err(|e| e.kind().into())
+        }
+
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            self.0.flush().await.map_err(|e| e.kind().into())
+        }
+    }
+
+    impl embedded_io_async::ReadReady for TokioByteStream<TcpStream> {
+        fn read_ready(&mut self) -> Result<bool, Self::Error> {
+            let mut byte = [0u8; 1];
+            let mut buf = ReadBuf::new(&mut byte);
+            // MSG_PEEK leaves the byte queued. `Ok(0)` is EOF, which counts as
+            // ready: a read returns immediately rather than blocking.
+            match self
+                .0
+                .poll_peek(&mut Context::from_waker(Waker::noop()), &mut buf)
+            {
+                Poll::Ready(Ok(_)) => Ok(true),
+                Poll::Ready(Err(e)) => Err(e.kind().into()),
+                Poll::Pending => Ok(false),
+            }
+        }
     }
 }
 
@@ -333,6 +396,65 @@ mod tests {
 
         let second = binder.bind(port).await.unwrap();
         assert_eq!(second.local_addr().unwrap().port(), port);
+    }
+
+    /// The probe must not consume what it reports.
+    #[cfg(feature = "embedded-io")]
+    #[tokio::test]
+    async fn the_embedded_io_trio_round_trips_and_probes_without_consuming() {
+        use embedded_io_async::{Read, ReadReady, Write};
+
+        let mut listener = TokioNet::listen("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 16];
+            let n = Read::read(&mut stream, &mut buf).await.unwrap();
+            Write::write(&mut stream, &buf[..n]).await.unwrap();
+            Write::flush(&mut stream).await.unwrap();
+        });
+
+        let mut client = TokioNet::tcp().connect("127.0.0.1", port).await.unwrap();
+        assert!(
+            !client.read_ready().unwrap(),
+            "nothing sent yet, so the probe must not claim readiness"
+        );
+
+        Write::write(&mut client, b"ping").await.unwrap();
+        Write::flush(&mut client).await.unwrap();
+        server.await.unwrap();
+
+        // The peek must leave the byte queued: the read below is what proves it.
+        assert!(client.read_ready().unwrap(), "the echo is waiting");
+        assert!(
+            client.read_ready().unwrap(),
+            "and probing did not consume it"
+        );
+
+        let mut buf = [0u8; 16];
+        let n = Read::read(&mut client, &mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ping");
+    }
+
+    /// EOF counts as ready: a read returns `Ok(0)` without blocking.
+    #[cfg(feature = "embedded-io")]
+    #[tokio::test]
+    async fn the_readiness_probe_reports_eof_as_ready() {
+        use embedded_io_async::ReadReady;
+
+        let mut listener = TokioNet::listen("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(stream);
+        });
+
+        let mut client = TokioNet::tcp().connect("127.0.0.1", port).await.unwrap();
+        server.await.unwrap();
+        // Give the FIN a moment to land, then the probe must say "ready".
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(client.read_ready().unwrap());
     }
 
     #[tokio::test]
