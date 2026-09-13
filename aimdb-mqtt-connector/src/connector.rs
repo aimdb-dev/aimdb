@@ -136,13 +136,13 @@ mod sealed {
 
 /// A backend with a build path compiled in.
 ///
-/// Implemented for [`Native`] only under `tokio-runtime`, so a `no_std` build
+/// Implemented for [`Native`] only under `std`, so a `no_std` build
 /// that forgets `.transport(..)` fails here with a message naming the fix
 /// rather than on core's `ConnectorBuilder`.
 #[diagnostic::on_unimplemented(
     message = "`MqttConnector<{Self}>` has no MQTT backend compiled in",
     label = "no backend for this configuration",
-    note = "supply a transport — `.transport(dialer)` — for the mountain-mqtt backend, or enable this crate's `tokio-runtime` feature for the rumqttc one"
+    note = "supply a transport — `.transport(dialer)` — for the mountain-mqtt backend, or enable this crate's `std` feature for the rumqttc one"
 )]
 pub trait Backend: sealed::Sealed + Send + Sync {
     /// Connect and collect this backend's data-plane futures.

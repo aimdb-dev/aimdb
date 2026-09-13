@@ -9,6 +9,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rand::SeedableRng as _;
 use tokio::net::TcpListener;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::ServerConfig;
@@ -172,5 +173,3 @@ async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root
         seen.subscribed_topics()
     );
 }
-
-use rand::SeedableRng as _;

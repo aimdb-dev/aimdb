@@ -5,7 +5,7 @@
 //! [`ByteStream`](aimdb_core::session::ByteStream): the MQTT client needs
 //! `receive_if_ready` — a non-blocking peek — which a byte stream does not
 //! express and a TLS session cannot provide (its readiness is two-layered;
-//! see the `embassy_tls` module). Wrapping core's trait would mean every
+//! see the `tls` module). Wrapping core's trait would mean every
 //! TLS-like transport faking a capability, so the client's own seam is the
 //! honest one.
 //!

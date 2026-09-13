@@ -43,7 +43,6 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
-#[cfg(feature = "embedded-tls")]
 #[cfg(feature = "embassy-tls")]
 use aimdb_embassy_adapter::connectors::into_box_future;
 
