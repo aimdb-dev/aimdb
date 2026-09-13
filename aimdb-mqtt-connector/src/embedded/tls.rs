@@ -106,9 +106,18 @@ impl TlsOptions {
 /// One clone is read while another is written, so the directions take
 /// **separate async locks** — `TlsReader` only ever touches `rx`, `TlsWriter`
 /// only `tx`, and a guard may be held across the inner `.await`. That holds
-/// only while `embedded-tls` never writes from its reader;
-/// `tests/tls_duplex.rs` drives a concurrent read and write so a version bump
-/// that changed it shows up there.
+/// only while `embedded-tls` never writes from its reader.
+///
+/// Two tests cover that, and only one of them can see the bet go bad:
+///
+/// * `a_parked_reader_does_not_hold_up_the_writer` below proves the locks
+///   really are separate — but over mock halves, with no `embedded-tls` in the
+///   picture, so it would keep passing if a version bump started writing from
+///   the read path.
+/// * `tls_session::a_slow_puback_over_tls_does_not_block_the_ping` is the one
+///   that would catch it: a real `TlsConnection`, split, writing a ping while
+///   the reader is parked on a PUBACK the broker is withholding. Check that
+///   test still passes after bumping `embedded-tls`.
 struct DuplexHandle<'a, Rx, Tx> {
     rx: &'a Mutex<CriticalSectionRawMutex, Rx>,
     tx: &'a Mutex<CriticalSectionRawMutex, Tx>,
@@ -464,6 +473,11 @@ mod tests {
 
     /// A read parked inside one clone of the handle must not hold up a write
     /// through another.
+    ///
+    /// Mock halves, so this is about [`DuplexHandle`]'s own locking and nothing
+    /// else: it cannot tell you whether `embedded-tls` still reads and writes
+    /// from the halves it was given. `tls_session::a_slow_puback_over_tls_does_not_block_the_ping`
+    /// is the test that does.
     #[test]
     fn a_parked_reader_does_not_hold_up_the_writer() {
         let rx = Mutex::new(PendingRead);
