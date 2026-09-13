@@ -10,8 +10,8 @@
 use std::net::{IpAddr, SocketAddr};
 
 use aimdb_core::session::{
-    ByteStream, Datagram, DatagramBinder, Delay, PeerInfo, StreamDialer, StreamListener,
-    TransportError, TransportResult,
+    ByteRead, ByteStream, ByteWrite, Datagram, DatagramBinder, Delay, PeerInfo, StreamDialer,
+    StreamListener, TransportError, TransportResult,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -69,6 +69,50 @@ where
         self.0.read(buf).await.map_err(|_| TransportError::Io)
     }
 
+    async fn write_all(&mut self, buf: &[u8]) -> TransportResult<()> {
+        self.0
+            .write_all(buf)
+            .await
+            .map_err(|_| TransportError::Closed)
+    }
+
+    async fn flush(&mut self) -> TransportResult<()> {
+        self.0.flush().await.map_err(|_| TransportError::Closed)
+    }
+
+    /// Borrow the stream as halves through `tokio::io::split`.
+    ///
+    /// That is the general path, and it costs a lock: the two halves share the
+    /// stream behind a mutex taken inside each `poll`. It is never held across
+    /// an await, so it cannot deadlock, but it is a serialisation point the
+    /// native `TcpStream::split` does not have. The native one is unreachable
+    /// here — this type is generic over `S`, so an impl specialised to
+    /// `TcpStream` would overlap this one.
+    fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
+        let (rx, tx) = tokio::io::split(&mut self.0);
+        (TokioReadHalf(rx), TokioWriteHalf(tx))
+    }
+}
+
+/// The read half of a split [`TokioByteStream`].
+struct TokioReadHalf<S>(tokio::io::ReadHalf<S>);
+
+/// The write half of a split [`TokioByteStream`].
+struct TokioWriteHalf<S>(tokio::io::WriteHalf<S>);
+
+impl<S> ByteRead for TokioReadHalf<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    async fn read(&mut self, buf: &mut [u8]) -> TransportResult<usize> {
+        self.0.read(buf).await.map_err(|_| TransportError::Io)
+    }
+}
+
+impl<S> ByteWrite for TokioWriteHalf<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
     async fn write_all(&mut self, buf: &[u8]) -> TransportResult<()> {
         self.0
             .write_all(buf)

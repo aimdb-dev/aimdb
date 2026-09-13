@@ -33,17 +33,51 @@ pub type IoError = TransportError;
 // Byte streams — the one real fork between runtimes.
 // ===========================================================================
 
+/// The read half of a [`split`](ByteStream::split) stream.
+pub trait ByteRead {
+    /// Read into `buf`, returning the byte count; `Ok(0)` is EOF.
+    fn read<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+    ) -> impl Future<Output = TransportResult<usize>> + Send + 'a;
+}
+
+/// The write half of a [`split`](ByteStream::split) stream.
+pub trait ByteWrite {
+    /// Write every byte of `buf`, or fail.
+    fn write_all<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> impl Future<Output = TransportResult<()>> + Send + 'a;
+
+    /// Flush any buffered bytes toward the peer.
+    fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_;
+}
+
 /// An unframed, bidirectional byte stream — one TCP connection, one UART, one
 /// TLS session. The adapter owns it; the connector never names its type.
 ///
 /// `read` returning `Ok(0)` is end of stream, matching both
 /// `embedded_io_async::Read` and `tokio::io::AsyncRead`.
 ///
-/// The stream is **unsplit** — one value, `&mut self` on both directions —  so
-/// it can wrap a socket that lends out only borrowed halves while a
-/// [`Connection`](super::Connection) must own it. Nothing is lost by it:
-/// `Connection`'s own `recv`/`send` take `&mut self`, so reads and writes were
-/// already serialized.
+/// The stream is **one value** — `&mut self` on both directions — so it can
+/// wrap a socket that lends out only borrowed halves while a
+/// [`Connection`](super::Connection) must own it. A caller needing the two
+/// directions to run at once borrows them apart with
+/// [`split`](ByteStream::split); one that does not is serialized anyway, as
+/// `Connection`'s own `recv`/`send` are.
+///
+/// # Cancellation
+///
+/// [`read`](ByteStream::read) is cancel-safe on both adapters AimDB ships:
+/// dropping the future before it completes consumes nothing. That is a
+/// property of those transports rather than a promise of this trait — a
+/// reader that cannot resume mid-packet is still free to implement it — so a
+/// caller that drops reads has to know which transport it holds.
+///
+/// [`write_all`](ByteStream::write_all) is **not** cancel-safe anywhere, and
+/// must never sit in a `select` arm: a partial write desynchronises the
+/// framing above it with nothing to resync on.
 pub trait ByteStream {
     /// Read into `buf`, returning the byte count; `Ok(0)` is EOF.
     fn read<'a>(
@@ -59,6 +93,16 @@ pub trait ByteStream {
 
     /// Flush any buffered bytes toward the peer.
     fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_;
+
+    /// Borrow this stream as independent read and write halves.
+    ///
+    /// Both may be polled concurrently and neither sees the other's state, so
+    /// a reader and a writer can share one stack frame without either waiting
+    /// on the other. The halves borrow the stream rather than owning it —
+    /// enough for two futures in one `select`, which is what a full-duplex
+    /// session loop needs; a caller wanting owned or `'static` halves needs a
+    /// different seam.
+    fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_);
 }
 
 /// Produces streams: the client side.
@@ -619,6 +663,30 @@ mod tests {
             self.0.lock().flushes += 1;
             Ok(())
         }
+
+        fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
+            (MockHalf(self.clone()), MockHalf(self.clone()))
+        }
+    }
+
+    /// Either half of a split [`MockStream`]. The mock is already a shared
+    /// handle, so a half is just a clone of it.
+    struct MockHalf(MockStream);
+
+    impl ByteRead for MockHalf {
+        async fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> TransportResult<usize> {
+            ByteStream::read(&mut self.0, buf).await
+        }
+    }
+
+    impl ByteWrite for MockHalf {
+        async fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> TransportResult<()> {
+            ByteStream::write_all(&mut self.0, buf).await
+        }
+
+        async fn flush(&mut self) -> TransportResult<()> {
+            ByteStream::flush(&mut self.0).await
+        }
     }
 
     /// A stream whose first read fails, to check the error is propagated as-is
@@ -634,6 +702,81 @@ mod tests {
         }
         async fn flush(&mut self) -> TransportResult<()> {
             Ok(())
+        }
+        fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
+            (FailingHalf, FailingHalf)
+        }
+    }
+
+    /// Either half of a split [`FailingStream`].
+    struct FailingHalf;
+
+    impl ByteRead for FailingHalf {
+        async fn read<'a>(&'a mut self, _buf: &'a mut [u8]) -> TransportResult<usize> {
+            Err(TransportError::Closed)
+        }
+    }
+
+    impl ByteWrite for FailingHalf {
+        async fn write_all<'a>(&'a mut self, _buf: &'a [u8]) -> TransportResult<()> {
+            Err(TransportError::Closed)
+        }
+
+        async fn flush(&mut self) -> TransportResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A stream whose read cannot finish until its write half has run: the
+    /// read waits to be notified, and only `write_all` notifies. Drives the one
+    /// property [`ByteStream::split`] exists for — a blocked reader must not
+    /// block the writer — which a single `&mut` stream cannot express at all.
+    #[derive(Clone, Default)]
+    struct DuplexMock {
+        written: Arc<spin::Mutex<Vec<u8>>>,
+        wrote: Arc<tokio::sync::Notify>,
+    }
+
+    impl ByteStream for DuplexMock {
+        async fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> TransportResult<usize> {
+            self.wrote.notified().await;
+            let written = self.written.lock();
+            let n = written.len().min(buf.len());
+            buf[..n].copy_from_slice(&written[..n]);
+            Ok(n)
+        }
+
+        async fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> TransportResult<()> {
+            self.written.lock().extend_from_slice(buf);
+            self.wrote.notify_one();
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> TransportResult<()> {
+            Ok(())
+        }
+
+        fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
+            (DuplexHalf(self.clone()), DuplexHalf(self.clone()))
+        }
+    }
+
+    /// Either half of a split [`DuplexMock`].
+    struct DuplexHalf(DuplexMock);
+
+    impl ByteRead for DuplexHalf {
+        async fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> TransportResult<usize> {
+            ByteStream::read(&mut self.0, buf).await
+        }
+    }
+
+    impl ByteWrite for DuplexHalf {
+        async fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> TransportResult<()> {
+            ByteStream::write_all(&mut self.0, buf).await
+        }
+
+        async fn flush(&mut self) -> TransportResult<()> {
+            ByteStream::flush(&mut self.0).await
         }
     }
 
@@ -789,6 +932,41 @@ mod tests {
     fn a_framed_connection_is_boxable_as_dyn_connection() {
         let conn = framed(MockStream::default());
         let _boxed: Box<dyn Connection> = Box::new(conn);
+    }
+
+    // --- ByteStream::split ------------------------------------------------
+
+    #[tokio::test]
+    async fn split_halves_run_concurrently() {
+        let mut stream = DuplexMock::default();
+        let (mut rx, mut tx) = stream.split();
+
+        // The read cannot complete until the write has run, so this joining at
+        // all is the assertion: both halves were live at the same time.
+        let mut buf = [0u8; 4];
+        let (read, write) = tokio::join!(rx.read(&mut buf), tx.write_all(b"ping"));
+
+        write.expect("write half");
+        assert_eq!(read.expect("read half"), 4);
+        assert_eq!(&buf, b"ping");
+    }
+
+    #[tokio::test]
+    async fn split_halves_address_the_same_stream() {
+        let stream = MockStream::with_reads(vec![b"hi".to_vec()]);
+        let mut split_me = stream.clone();
+        let (mut rx, mut tx) = split_me.split();
+
+        tx.write_all(b"out").await.expect("write half");
+        let mut buf = [0u8; 8];
+        let n = rx.read(&mut buf).await.expect("read half");
+
+        assert_eq!(&buf[..n], b"hi", "the read half drains the stream's reads");
+        assert_eq!(
+            stream.0.lock().written,
+            b"out",
+            "the write half reaches the stream the halves came from"
+        );
     }
 
     // --- OneShot / FramerFactory ------------------------------------------

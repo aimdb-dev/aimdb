@@ -17,7 +17,7 @@
 
 use core::future::Future;
 
-use aimdb_core::session::{ByteStream, TransportError, TransportResult};
+use aimdb_core::session::{ByteRead, ByteStream, ByteWrite, TransportError, TransportResult};
 
 use crate::SendFutureWrapper;
 
@@ -64,6 +64,60 @@ where
 
     fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_ {
         SendFutureWrapper(async move { self.tx.flush().await.map_err(|_| TransportError::Closed) })
+    }
+
+    /// Hand back the halves this type was built from: a UART arrives already
+    /// split, so there is nothing to divide and nothing to lock.
+    fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
+        (
+            EmbassyUartReader(&mut self.rx),
+            EmbassyUartWriter(&mut self.tx),
+        )
+    }
+}
+
+/// The read half of a split [`EmbassyUart`].
+struct EmbassyUartReader<'a, Rd>(&'a mut Rd);
+
+/// The write half of a split [`EmbassyUart`].
+struct EmbassyUartWriter<'a, Wr>(&'a mut Wr);
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant,
+// which is what already makes `EmbassyUart` itself `Send`.
+unsafe impl<Rd> Send for EmbassyUartReader<'_, Rd> {}
+// SAFETY: as above.
+unsafe impl<Wr> Send for EmbassyUartWriter<'_, Wr> {}
+
+impl<Rd> ByteRead for EmbassyUartReader<'_, Rd>
+where
+    Rd: embedded_io_async::Read,
+{
+    fn read<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+    ) -> impl Future<Output = TransportResult<usize>> + Send + 'a {
+        SendFutureWrapper(async move { self.0.read(buf).await.map_err(|_| TransportError::Io) })
+    }
+}
+
+impl<Wr> ByteWrite for EmbassyUartWriter<'_, Wr>
+where
+    Wr: embedded_io_async::Write,
+{
+    fn write_all<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> impl Future<Output = TransportResult<()>> + Send + 'a {
+        SendFutureWrapper(async move {
+            self.0
+                .write_all(buf)
+                .await
+                .map_err(|_| TransportError::Closed)
+        })
+    }
+
+    fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_ {
+        SendFutureWrapper(async move { self.0.flush().await.map_err(|_| TransportError::Closed) })
     }
 }
 

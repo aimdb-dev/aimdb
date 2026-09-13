@@ -21,8 +21,8 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use aimdb_core::session::{
-    ByteStream, Datagram, DatagramBinder, PeerInfo, StreamDialer, StreamListener, TransportError,
-    TransportResult,
+    ByteRead, ByteStream, ByteWrite, Datagram, DatagramBinder, PeerInfo, StreamDialer,
+    StreamListener, TransportError, TransportResult,
 };
 
 use embassy_futures::yield_now;
@@ -205,6 +205,68 @@ impl ByteStream for EmbassyTcpStream {
         SendFutureWrapper(async move {
             let socket = self.socket_mut()?;
             socket.flush().await.map_err(|_| TransportError::Closed)
+        })
+    }
+
+    /// Borrow the socket's own halves, which `embassy-net` hands out lock-free
+    /// — both are a copy of the socket's `io` handle.
+    ///
+    /// A stream whose socket is already gone still has to produce halves, so
+    /// each carries the `Option` and reports [`TransportError::Closed`] on use,
+    /// exactly as the unsplit methods do.
+    fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
+        let (rx, tx) = match self.socket.as_mut() {
+            Some(socket) => {
+                let (rx, tx) = socket.split();
+                (Some(rx), Some(tx))
+            }
+            None => (None, None),
+        };
+        (EmbassyTcpReader(rx), EmbassyTcpWriter(tx))
+    }
+}
+
+/// The read half of a split [`EmbassyTcpStream`]; `None` once the socket is
+/// gone.
+struct EmbassyTcpReader<'s>(Option<embassy_net::tcp::TcpReader<'s>>);
+
+/// The write half of a split [`EmbassyTcpStream`]; `None` once the socket is
+/// gone.
+struct EmbassyTcpWriter<'s>(Option<embassy_net::tcp::TcpWriter<'s>>);
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant,
+// which is what already makes `EmbassyTcpStream` itself `Send`.
+unsafe impl Send for EmbassyTcpReader<'_> {}
+// SAFETY: as above.
+unsafe impl Send for EmbassyTcpWriter<'_> {}
+
+impl ByteRead for EmbassyTcpReader<'_> {
+    fn read<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+    ) -> impl Future<Output = TransportResult<usize>> + Send + 'a {
+        SendFutureWrapper(async move {
+            let rx = self.0.as_mut().ok_or(TransportError::Closed)?;
+            rx.read(buf).await.map_err(|_| TransportError::Io)
+        })
+    }
+}
+
+impl ByteWrite for EmbassyTcpWriter<'_> {
+    fn write_all<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> impl Future<Output = TransportResult<()>> + Send + 'a {
+        SendFutureWrapper(async move {
+            let tx = self.0.as_mut().ok_or(TransportError::Closed)?;
+            tx.write_all(buf).await.map_err(|_| TransportError::Closed)
+        })
+    }
+
+    fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_ {
+        SendFutureWrapper(async move {
+            let tx = self.0.as_mut().ok_or(TransportError::Closed)?;
+            tx.flush().await.map_err(|_| TransportError::Closed)
         })
     }
 }
