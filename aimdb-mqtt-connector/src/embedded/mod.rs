@@ -320,7 +320,7 @@ fn build_err(msg: &str) -> aimdb_core::DbError {
 fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> {
     // Add a dummy topic if none, so parsing succeeds.
     let mut url = broker_url.to_string();
-    if !url.contains('/') || url.matches('/').count() < 3 {
+    if url.matches('/').count() < 3 {
         url = format!("{}/dummy", url.trim_end_matches('/'));
     }
     let connector_url = ConnectorUrl::parse(&url).map_err(|_| build_err("Invalid MQTT URL"))?;
@@ -339,9 +339,16 @@ fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> 
 
 /// Build the `ConnectionSettings<'static>` for MQTT CONNECT.
 ///
-/// The identity strings are leaked to reach `'static`: one small, bounded leak
-/// per connector at build, so that a second connector cannot inherit the
-/// first's identity.
+/// The identity strings are leaked to reach `'static` — the session task is
+/// `'static`, so what it borrows must be too — giving each connector its own
+/// identity rather than a shared one.
+///
+/// The leak is per `build()` call, not per connector: three short strings, once
+/// at startup, which is the normal case and indistinguishable from a static.
+/// Only a process that rebuilds the database repeatedly accumulates them. The
+/// alternative is owning the strings in the session task and rebuilding
+/// `ConnectionSettings` per connection, which costs four signatures for memory
+/// nobody misses.
 fn static_connection_settings(
     client_id: Option<&str>,
     credentials: Option<&(String, String)>,

@@ -252,7 +252,10 @@ where
 /// Unix seconds for certificate validity, refreshed before each handshake.
 ///
 /// A global because `embedded_tls::TlsClock::now` is a static method. Fed by
-/// the runtime's wall clock, or by the SNTP task on an MCU with no RTC.
+/// the runtime's wall clock, or by the SNTP task on an MCU with no RTC — and
+/// process-wide, so two TLS connectors share one reading rather than keeping a
+/// clock each. Harmless while they agree on what time it is, which any two
+/// sources of wall-clock time had better.
 static UNIX_SECS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// The certificate-validity clock. `u32` is unambiguous until 2106 and stays a
