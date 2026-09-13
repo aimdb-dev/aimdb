@@ -642,9 +642,9 @@ mod tests {
 
     #[test]
     fn test_qos_mapping() {
-        assert!(matches!(map_qos(0), QualityOfService::Qos0));
-        assert!(matches!(map_qos(1), QualityOfService::Qos1));
-        assert!(matches!(map_qos(2), QualityOfService::Qos1)); // Downgrades to QoS 1
-        assert!(matches!(map_qos(99), QualityOfService::Qos0)); // Defaults to QoS 0
+        assert!(matches!(map_qos(0), Ok(QualityOfService::Qos0)));
+        assert!(matches!(map_qos(1), Ok(QualityOfService::Qos1)));
+        assert!(matches!(map_qos(2), Ok(QualityOfService::Qos1))); // Downgrades to QoS 1
+        assert!(matches!(map_qos(99), Err(PublishError::UnsupportedQoS))); // Not a QoS level
     }
 }

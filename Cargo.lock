@@ -249,11 +249,11 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mountain-mqtt"
-version = "0.2.1"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5035a7a126cd374a5e1e83dcbb04d5d5361d28084f32f59710c6f144b5b26349"
+checksum = "0069824828d8b3102324245a42618e65bab9c63fd2917ed52fa49e016d89cecf"
 dependencies = [
- "defmt 0.3.100",
+ "defmt 1.1.1",
  "embedded-hal-async",
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
