@@ -16,8 +16,10 @@ use mountain_mqtt::packets::packet_generic::PacketGeneric;
 
 /// Reassembles MQTT packets from arbitrary byte chunks.
 ///
-/// `N` bounds the largest packet that can be received; a longer one is
-/// [`PacketReadError::PacketTooLargeForBuffer`] rather than a stall.
+/// A packet of up to `N` minus one feed chunk is always received; a longer one
+/// is [`PacketReadError::PacketTooLargeForBuffer`] rather than a stall. The
+/// chunk of slack is what [`feed`](Self::feed) needs to take a whole read at
+/// once — do not reclaim it without changing `feed` to accept partial chunks.
 pub(crate) struct PacketReader<const N: usize> {
     buf: [u8; N],
     len: usize,
@@ -32,8 +34,10 @@ impl<const N: usize> PacketReader<N> {
         }
     }
 
-    /// Append freshly read bytes. Fails only if the peer sent a packet larger
-    /// than `N`.
+    /// Append freshly read bytes, all or nothing: the whole chunk has to fit
+    /// beside what is already buffered. So a packet within a chunk of `N` can
+    /// still be refused, when the chunk completing it also carries the head of
+    /// the next one — see the type's stated limit.
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Result<(), PacketReadError> {
         if self.len + bytes.len() > N {
             return Err(PacketReadError::PacketTooLargeForBuffer);

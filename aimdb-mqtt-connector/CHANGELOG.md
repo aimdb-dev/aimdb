@@ -25,11 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two consequences worth knowing about. A partial packet is now "not enough
   yet" rather than a parked loop, because packets are reassembled incrementally
   instead of being read to a length the peer promised. And **the largest MQTT
-  packet the session can receive is 3584 bytes** (previously 4096): the
+  packet the session can receive is 3328 bytes** (previously 4096): the
   reassembly buffer, the read scratch and the inbound slot are carved out of
-  the same total the old single buffer cost, rather than added to it. Outbound
-  packets are encoded to exactly their own size on the heap the action channel
-  already uses, so they gain no fixed cap.
+  the same total the old single buffer cost, rather than added to it, and the
+  reassembly buffer keeps one read chunk of that in reserve so a chunk
+  completing one packet can still carry the head of the next. Outbound packets
+  are encoded to exactly their own size on the heap the action channel already
+  uses, so they gain no fixed cap.
+
+  Size the inbound topics accordingly: an over-limit packet ends the session
+  rather than being skipped. An ordinary publish then costs one dropped message
+  and a reconnect, because the session is clean-start and the broker requeues
+  nothing — but a **retained** message lives with the topic, so it is replayed
+  on every resubscribe and reconnect-loops the connector until it is cleared.
+  Either way the cause is named in the session's error log.
 
 - **TLS runs that same session** (design 053 §6.6). `mqtts://` was a loop of
   its own because the MQTT client wanted a readiness peek that a TLS session
