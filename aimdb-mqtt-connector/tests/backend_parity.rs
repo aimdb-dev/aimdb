@@ -1,9 +1,9 @@
 //! Both backends against the same broker, in one process
 //! (`_test-backend-parity`).
 //!
-//! `Native` is `rumqttc` over MQTT 3.1.1; `Embedded` is `mountain-mqtt` over
-//! MQTT 5 and `TokioNet::tcp()`. The point is that the two are interchangeable
-//! from a record's point of view: same link URLs, same payloads on the wire.
+//! `Native` is `rumqttc` over MQTT 3.1.1, `Embedded` is `mountain-mqtt` over
+//! MQTT 5 — interchangeable from a record's point of view: same link URLs, same
+//! payloads on the wire.
 #![cfg(feature = "_test-backend-parity")]
 
 use std::sync::{Arc, Mutex};
@@ -185,9 +185,8 @@ async fn both_backends_round_trip_against_one_broker() {
 
 /// `with_credentials` reaches the wire on both backends.
 ///
-/// It is new plumbing on `Native` — `rumqttc` previously took credentials only
-/// from the URL authority — so a setter that was accepted and dropped would
-/// look exactly like success.
+/// A setter that was accepted and then dropped would look exactly like success,
+/// so the assertion is on the CONNECT packet the broker saw.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn with_credentials_reaches_the_wire_on_both_backends() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -236,11 +235,8 @@ async fn with_credentials_reaches_the_wire_on_both_backends() {
 
 /// A **hostname** is a broker address on both backends.
 ///
-/// The embedded backend used to vet plain `mqtt://` hosts with
-/// `Ipv4Addr::from_str` and reject everything else, so `.transport(..)` — the
-/// call that is supposed to leave behaviour unchanged — was the difference
-/// between a URL that works and one that does not. Resolving `host` is the
-/// dialer's job on every adapter, so the gate is gone and the two agree.
+/// Resolving `host` is the dialer's job on every adapter, so `.transport(..)`
+/// makes no difference to which broker URLs are accepted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hostname_is_a_broker_address_on_both_backends() {
     // Bound by name, so the address the broker listens on is whichever one

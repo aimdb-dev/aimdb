@@ -1,22 +1,13 @@
 //! Incremental MQTT packet framing: push bytes in, take whole packets out.
 //!
-//! This is what makes a partial packet a non-event. `mountain-mqtt`'s own
-//! reader asks the transport for exactly as many bytes as the fixed header
-//! promises and waits inside that read until they arrive, so a peer that
-//! stalls mid-packet parks the caller — with the polled session loop that
-//! meant pings, liveness and every queued publish stopped with it. Here a
-//! partial packet is simply "not enough yet": [`feed`](PacketReader::feed)
-//! takes whatever arrived, [`framed_len`](PacketReader::framed_len) says
-//! whether a whole packet is present, and nothing blocks.
+//! A partial packet is a non-event: nothing blocks, where `mountain-mqtt`'s own
+//! reader waits inside one read for as many bytes as the fixed header promises
+//! and so parks the caller on a peer that stalls mid-packet.
 //!
-//! # Why framing and parsing are separate
-//!
-//! `framed_len` borrows nothing and [`parse`](PacketReader::parse) takes
-//! `&self`, because `MqttBufReader` holds `&[u8]` rather than `&mut [u8]`. So
-//! a parsed packet holds a *shared* borrow of the buffer, it ends when the
-//! caller drops the packet, and [`consume`](PacketReader::consume) is then
-//! free to take `&mut self` and compact. No `unsafe`, no self-referential
-//! struct, no allocation per packet.
+//! Framing and parsing are separate because [`parse`](PacketReader::parse)
+//! takes `&self`: a parsed packet holds only a shared borrow, so dropping it
+//! leaves [`consume`](PacketReader::consume) free to take `&mut self` and
+//! compact. No `unsafe`, no self-referential struct, no allocation per packet.
 
 use mountain_mqtt::codec::mqtt_reader::{MqttBufReader, MqttReader};
 use mountain_mqtt::data::packet_type::PacketType;
@@ -41,10 +32,8 @@ impl<const N: usize> PacketReader<N> {
         }
     }
 
-    /// Append freshly read bytes.
-    ///
-    /// Fails only if they would not fit, which at this layer means the peer
-    /// sent a packet larger than `N`.
+    /// Append freshly read bytes. Fails only if the peer sent a packet larger
+    /// than `N`.
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Result<(), PacketReadError> {
         if self.len + bytes.len() > N {
             return Err(PacketReadError::PacketTooLargeForBuffer);
@@ -55,10 +44,7 @@ impl<const N: usize> PacketReader<N> {
     }
 
     /// Total length of the complete packet at the head of the buffer, or
-    /// `Ok(None)` if not enough bytes have landed yet.
-    ///
-    /// This is upstream's `receive_rest_of_packet` varint scan restated as a
-    /// pure function over what is already buffered, so it borrows nothing and
+    /// `Ok(None)` if not enough bytes have landed yet. Borrows nothing and
     /// commits to nothing.
     pub(crate) fn framed_len(&self) -> Result<Option<usize>, PacketReadError> {
         if self.len < 1 {
@@ -102,7 +88,7 @@ impl<const N: usize> PacketReader<N> {
     /// Parse the complete packet at the head of the buffer.
     ///
     /// `total` must come from [`framed_len`](Self::framed_len). Takes `&self`,
-    /// so the returned packet holds only a shared borrow — see the module note.
+    /// so the returned packet holds only a shared borrow.
     pub(crate) fn parse<const P: usize, const W: usize, const S: usize>(
         &self,
         total: usize,
@@ -111,8 +97,8 @@ impl<const N: usize> PacketReader<N> {
         reader.get()
     }
 
-    /// Drop a consumed packet from the head, sliding any bytes of the next one
-    /// down. Needs `&mut self`, so it can only run once the packet is dropped.
+    /// Drop a consumed packet from the head, sliding the next one down. Takes
+    /// `&mut self`, so it can only run once the parsed packet is dropped.
     pub(crate) fn consume(&mut self, total: usize) {
         self.buf.copy_within(total..self.len, 0);
         self.len -= total;

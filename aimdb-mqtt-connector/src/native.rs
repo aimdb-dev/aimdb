@@ -65,26 +65,17 @@ pub(crate) fn build<'a>(
     })
 }
 
-/// Internal MQTT connector build helpers.
-///
-/// A namespace for the broker-connection setup invoked from `build`; the
-/// data-plane loops themselves live in the reusable `pump_sink` /
-/// `pump_source` helpers + the `MqttSink` / `MqttEventLoopSource` adapters
-/// below.
+/// The broker-connection setup invoked from `build`; the data-plane loops
+/// themselves are core's `pump_sink` / `pump_source`.
 pub struct MqttConnectorImpl;
 
 impl MqttConnectorImpl {
-    /// Connect to the broker and subscribe to all configured topics (internal).
+    /// Connect to the broker and subscribe to every topic in `router`, sizing
+    /// the send channel from the route count.
     ///
-    /// Creates the MQTT client, sizes the send-channel from the route count, and
-    /// subscribes to every topic in `router`. Returns the shared client (for the
-    /// outbound `pump_sink`) plus the raw event loop (handed to a
-    /// [`MqttEventLoopSource`] for the inbound `pump_source`).
-    ///
-    /// # Arguments
-    /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
-    /// * `client_id` - Optional client ID (if None, generates UUID-based ID)
-    /// * `router` - Routes used only for the subscription list + capacity sizing
+    /// Returns the shared client (for the outbound `pump_sink`) plus the raw
+    /// event loop (for [`MqttEventLoopSource`] and the inbound `pump_source`).
+    /// A `None` `client_id` generates a UUID-based one.
     async fn build_internal(
         broker_url: &str,
         client_id: Option<&str>,
@@ -200,10 +191,8 @@ impl MqttConnectorImpl {
 
 /// Pure outbound publish adapter driven by `pump_sink`.
 ///
-/// Wraps the shared rumqttc client. `qos`/`retain` come from the route's protocol
-/// options (threaded through by `pump_sink` via [`ConnectorConfig::from_query`]),
-/// interpreted with MQTT's legacy defaults — **QoS 1 (`AtLeastOnce`)** when
-/// unspecified, no retain — so the wire stays byte-identical to the old loop.
+/// Wraps the shared rumqttc client. `qos`/`retain` come from the route's
+/// protocol options, defaulting to **QoS 1 (`AtLeastOnce`)** and no retain.
 struct MqttSink {
     client: Arc<AsyncClient>,
 }
@@ -265,16 +254,13 @@ impl Connector for MqttSink {
 
 /// Inbound frame source driven by `pump_source`.
 ///
-/// Yields `(topic, payload)` for each incoming MQTT publish. The inner poll loop
-/// discards non-publish packets — keeping QoS handshakes and keepalive flowing —
-/// and backs off 5s on a connection error before retrying, reproducing the old
-/// hand-rolled event-loop future exactly. It never yields `None`: the reader runs
-/// for the lifetime of the connector.
+/// Yields `(topic, payload)` for each incoming MQTT publish, discarding other
+/// packets and backing off 5s on a connection error. Never yields `None`: the
+/// reader runs for the lifetime of the connector.
 struct MqttEventLoopSource {
     event_loop: EventLoop,
-    /// Only ever used to name the broker in an error line. One `String` per
-    /// connection, held for its lifetime — no longer feature-gated, because the
-    /// facade decides its own gating and a `#[cfg]` here could not follow it.
+    /// Only ever used to name the broker in an error line. Ungated, because the
+    /// logging facade decides its own gating.
     broker_key: String,
 }
 
@@ -316,9 +302,9 @@ fn tls_configuration() -> Result<rumqttc::TlsConfiguration, String> {
     Ok(rumqttc::TlsConfiguration::Native)
 }
 
-/// Built by hand rather than via `TlsConfiguration::default()`, which does the
-/// same work and then `expect`s on failure. A panic on the connect path is
-/// undefined behaviour across an FFI boundary; a returned error is a status.
+/// Built by hand rather than via `TlsConfiguration::default()`, which `expect`s
+/// on failure: a panic on the connect path is undefined behaviour across an FFI
+/// boundary.
 #[cfg(all(feature = "tokio-rustls", not(feature = "tokio-native-tls")))]
 fn tls_configuration() -> Result<rumqttc::TlsConfiguration, String> {
     use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};

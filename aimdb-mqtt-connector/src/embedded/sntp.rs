@@ -1,9 +1,8 @@
 //! SNTP time source, for a board whose runtime has no wall clock of its own.
 //!
-//! Checking a certificate's validity window needs the current Unix time, and
-//! the reference boards have no battery-backed RTC. Each sync feeds both
-//! [`unix_now`] and the TLS handshake clock. Opt in with `TlsOptions::with_sntp`;
-//! a runtime that answers `unix_time()` needs none of this.
+//! Certificate validity needs the current Unix time, and the reference boards
+//! have no battery-backed RTC. Each sync feeds both [`unix_now`] and the TLS
+//! handshake clock. Opt in with `TlsOptions::with_sntp`.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,16 +13,14 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 
 use crate::sntp_codec;
 
-/// Unix seconds at the `embassy_time` epoch; 0 = not yet synced. `u32` is
-/// unambiguous until 2106 and stays a single atomic on Cortex-M (no 64-bit
-/// atomics there).
+/// Unix seconds at the `embassy_time` epoch; 0 = not yet synced. `u32` stays a
+/// single atomic on Cortex-M, which has no 64-bit atomics.
 static BOOT_UNIX_SECS: AtomicU32 = AtomicU32::new(0);
 
 /// NTP server port.
 const SNTP_PORT: u16 = 123;
-/// Local ephemeral-port range for the client socket. smoltcp cannot bind
-/// port 0, so "random source port" is randomized here per attempt — a reply
-/// must land on the right port *and* echo the request nonce to be accepted.
+/// Local ephemeral-port range for the client socket, randomized per attempt
+/// because smoltcp cannot bind port 0.
 const LOCAL_PORT_BASE: u16 = 49152;
 const LOCAL_PORT_SPAN: u16 = 16384;
 /// How long to wait for a server reply before treating the sync as failed.
@@ -98,11 +95,9 @@ pub(crate) enum SntpError {
     InvalidReply,
 }
 
-/// Best-effort request nonce: the hardware TRNG belongs to the TLS session
-/// (injected via `TlsOptions`), so unpredictability comes from the tick
-/// counter through a splitmix64 finalizer. Enough to defeat *blind* reply
-/// spoofing — an off-path attacker cannot observe when the request fired —
-/// while an on-path attacker defeats unauthenticated NTP regardless.
+/// Best-effort request nonce from the tick counter — the hardware TRNG belongs
+/// to the TLS session. Enough to defeat blind reply spoofing; an on-path
+/// attacker defeats unauthenticated NTP regardless.
 fn request_nonce() -> u64 {
     let mut z = Instant::now()
         .as_ticks()

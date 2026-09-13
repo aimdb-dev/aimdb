@@ -2,27 +2,19 @@
 //! backend: dial, run one MQTT session over the stream's two halves, wait,
 //! repeat.
 //!
-//! Built on core's [`ByteStream`](aimdb_core::session::ByteStream) alone. The
-//! MQTT client used to need `receive_if_ready` — a non-blocking peek a byte
-//! stream cannot express and a TLS session cannot honestly provide — because
-//! the session polled. Nothing polls any more (design 053), so the peek is
-//! gone and with it the transport seam that existed to carry it: a runtime that
-//! can dial a [`StreamDialer`](aimdb_core::session::StreamDialer) can speak
-//! MQTT, with no protocol code and no `embedded-io-async` of its own.
+//! Built on core's [`ByteStream`](aimdb_core::session::ByteStream) alone: any
+//! runtime that can dial a
+//! [`StreamDialer`](aimdb_core::session::StreamDialer) can speak MQTT.
 
 use core::future::Future;
 
 /// Asserts that a broker session future is `Send`.
 ///
-/// Everything the session holds is `Send`: [`StreamDialer`] guarantees
-/// `Stream: Send`, the channels use `CriticalSectionRawMutex`, and the state
-/// cell is a blocking mutex. What the compiler cannot see through is
-/// `embedded-io-async` — its traits put no `Send` bound on their futures, and
-/// the loop reaches them through a generic transport, so naming the bound needs
-/// return-type notation, still unstable on the pinned toolchain.
-///
-/// This is weaker than an executor assumption, not stronger: it rests on a
-/// trait guarantee, so it holds under a preemptive scheduler too.
+/// Everything the session holds is `Send` — [`StreamDialer`] guarantees
+/// `Stream: Send`, the channels use `CriticalSectionRawMutex` — but
+/// `embedded-io-async` puts no `Send` bound on its futures, and naming that
+/// bound through a generic transport needs return-type notation, unstable on
+/// the pinned toolchain.
 pub(crate) struct SendSession<F>(F);
 
 // SAFETY: upheld by the caller of `SendSession::new`.
@@ -51,9 +43,8 @@ impl<F: Future> Future for SendSession<F> {
 
 /// Dial, run one session, wait, repeat. Never returns.
 ///
-/// One implementation for every transport: the dialer supplies both the stream
-/// and the clock. `topics` is re-subscribed on each connection, so inbound
-/// routing survives a reconnect.
+/// The dialer supplies both the stream and the clock. `topics` is re-subscribed
+/// on each connection, so inbound routing survives a reconnect.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_sessions<D>(
     dialer: D,

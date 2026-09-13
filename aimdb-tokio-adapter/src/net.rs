@@ -82,12 +82,10 @@ where
 
     /// Borrow the stream as halves through `tokio::io::split`.
     ///
-    /// That is the general path, and it costs a lock: the two halves share the
-    /// stream behind a mutex taken inside each `poll`. It is never held across
-    /// an await, so it cannot deadlock, but it is a serialisation point the
-    /// native `TcpStream::split` does not have. The native one is unreachable
-    /// here — this type is generic over `S`, so an impl specialised to
-    /// `TcpStream` would overlap this one.
+    /// This costs a lock taken inside each `poll` — never held across an await,
+    /// so it cannot deadlock, but a serialisation point the native
+    /// `TcpStream::split` does not have. That one is unreachable here: this type
+    /// is generic over `S`, so a `TcpStream`-specialised impl would overlap it.
     fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
         let (rx, tx) = tokio::io::split(&mut self.0);
         (TokioReadHalf(rx), TokioWriteHalf(tx))

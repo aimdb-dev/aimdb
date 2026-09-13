@@ -1,11 +1,8 @@
-//! What the event-driven session promises that the polled one could not
-//! (design 053 §10, criteria 1, 2, 4 and 11).
+//! Liveness under a stalled peer, pings that keep flowing while a QoS 1 publish
+//! is outstanding, and an idle session that wakes at the ping cadence.
 //!
-//! These are behavioural, not smoke: every one of them passes trivially on a
-//! loop that polls at 100 Hz and blocks inline for acknowledgements, or fails
-//! outright on it. The broker here is scripted rather than the shared
-//! `common::fake_broker`, because each test needs to control *when* it answers
-//! — mid-packet, late, or not at all.
+//! The broker is scripted rather than `common::fake_broker`, because each test
+//! controls *when* it answers — mid-packet, late, or not at all.
 #![cfg(feature = "_test-tokio-broker")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};

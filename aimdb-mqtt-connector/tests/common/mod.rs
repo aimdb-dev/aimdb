@@ -1,8 +1,6 @@
 //! A fake MQTT broker over a real TCP socket, speaking just enough of both
 //! dialects to complete a session: 3.1.1 for `rumqttc`, 5 for `mountain-mqtt`.
-//!
-//! The version is read off the CONNECT packet, so one broker serves both
-//! backends and a parity test needs only one listener.
+//! The version is read off the CONNECT packet, so one listener serves both.
 //!
 //! Compiled into each test binary, so not every item is used by all of them.
 #![allow(dead_code)]
@@ -82,9 +80,6 @@ fn varint(mut n: usize, out: &mut Vec<u8>) {
 }
 
 /// Decode an MQTT variable-byte integer at `i`, stepping past it.
-///
-/// Returns the value, because every caller here wants it: each varint is a
-/// property block's length, and the block itself has to be stepped over too.
 fn take_varint(body: &[u8], i: &mut usize) -> Option<usize> {
     let mut value = 0usize;
     let mut shift = 0;
@@ -125,8 +120,7 @@ fn take_field(body: &[u8], i: &mut usize) -> Option<String> {
 }
 
 /// The identity a CONNECT carries: client id, then the credentials its flags
-/// advertise. The payload follows the 10-byte variable header plus, on MQTT 5,
-/// a property block. Nothing here sets a will, so the fields are contiguous.
+/// advertise. Nothing here sets a will, so the payload fields are contiguous.
 fn connect_identity(body: &[u8], v5: bool) -> Option<(String, Option<(String, String)>)> {
     let flags = *body.get(7)?;
     let mut i = 10;
@@ -333,8 +327,7 @@ pub async fn fake_broker(
     }
 }
 
-/// Serve several clients at once, which a parity test needs: both backends
-/// hold a connection simultaneously.
+/// Serve several clients at once, as a parity test needs.
 pub async fn fake_broker_concurrent(
     listener: TcpListener,
     seen: Arc<Mutex<Seen>>,
@@ -412,11 +405,9 @@ pub enum Script {
 
 /// The broker's write side.
 ///
-/// While `hold` is `Some`, the broker has a packet half-written and must not
-/// put anything else on the wire: a byte stream carries packets in order, so
-/// injecting a PUBACK between the halves of a PUBLISH would corrupt the
-/// framing rather than test it. Held bytes go out behind the packet's tail —
-/// which is exactly what a sender whose peer is slow ends up doing.
+/// While `hold` is `Some`, a packet is half-written and nothing else may go on
+/// the wire: injecting a PUBACK between the halves of a PUBLISH would corrupt
+/// the framing rather than test it. Held bytes go out behind the packet's tail.
 struct Wire<S> {
     writer: tokio::io::WriteHalf<S>,
     hold: Option<Vec<u8>>,
@@ -437,13 +428,11 @@ async fn send<S: tokio::io::AsyncWrite>(writer: &Writer<S>, bytes: &[u8]) -> boo
 
 /// Serve one already-accepted connection, following `script`.
 ///
-/// Generic over the stream, so the same script runs over plain TCP and over a
-/// TLS session — which is what lets the TLS path be held to the same criteria.
+/// Generic over the stream, so the same script runs over plain TCP and TLS.
 ///
-/// The stream is split and every scripted delay runs in its own task, so the
-/// broker **never stops reading**. That is what makes the stall counters mean
-/// anything: a ping that arrives while the broker is stalling has to be read
-/// and counted while the stall is still open, not afterwards.
+/// Every scripted delay runs in its own task, so the broker **never stops
+/// reading** — without which a ping arriving mid-stall would be counted after
+/// the stall rather than during it.
 pub async fn scripted_broker<S>(stream: S, log: Arc<Mutex<Log>>, script: Script)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
@@ -589,8 +578,8 @@ where
 // ===========================================================================
 
 /// `TokioNet::tcp()` with a tally of every `Delay::sleep` the connector asks
-/// for. The connector takes its clock from the dialer, so this is the seam
-/// where "how often does the session wake?" is observable at all.
+/// for — the connector takes its clock from the dialer, so this is where the
+/// wake cadence is observable.
 #[derive(Clone)]
 pub struct CountingDialer {
     inner: aimdb_tokio_adapter::net::TokioTcpDialer,

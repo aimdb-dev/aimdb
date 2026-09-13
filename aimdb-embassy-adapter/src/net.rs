@@ -208,12 +208,10 @@ impl ByteStream for EmbassyTcpStream {
         })
     }
 
-    /// Borrow the socket's own halves, which `embassy-net` hands out lock-free
-    /// — both are a copy of the socket's `io` handle.
+    /// Borrow the socket's own halves, which `embassy-net` hands out lock-free.
     ///
     /// A stream whose socket is already gone still has to produce halves, so
-    /// each carries the `Option` and reports [`TransportError::Closed`] on use,
-    /// exactly as the unsplit methods do.
+    /// each carries the `Option` and reports [`TransportError::Closed`] on use.
     fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
         let (rx, tx) = match self.socket.as_mut() {
             Some(socket) => {
@@ -351,17 +349,11 @@ unsafe impl Sync for EmbassyTcpDialer {}
 impl EmbassyTcpDialer {
     /// Turn a host into an address to dial.
     ///
-    /// An IP literal is parsed here and never queried, so a stack with no DNS
-    /// server configured keeps dialing literals. A name goes to the stack's
-    /// resolver: `A` first and `AAAA` only if that answers nothing, which is
-    /// the order a dual-stack `getaddrinfo` reports for the same name — the
-    /// point being that a connector sees one behaviour across adapters. The
-    /// second query costs a round trip (or, against an unreachable server, a
-    /// second timeout) but only on a dial that was going to fail anyway.
-    ///
-    /// Every failure is [`TransportError::Io`], matching `TokioTcpDialer`,
-    /// where `TcpStream::connect` folds resolution and connection into one
-    /// `io::Error` too.
+    /// An IP literal is never queried, so a stack with no DNS server configured
+    /// still dials literals. A name goes to the resolver, `A` first and `AAAA`
+    /// only if that answers nothing — the order `getaddrinfo` reports, so a
+    /// connector sees one behaviour across adapters. Every failure is
+    /// [`TransportError::Io`], matching `TokioTcpDialer`.
     async fn resolve(&self, host: &str) -> TransportResult<IpAddress> {
         if let Ok(addr) = host.parse::<core::net::IpAddr>() {
             return Ok(addr.into());

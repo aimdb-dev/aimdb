@@ -1,11 +1,9 @@
 //! Host smoke for the resolution half of [`StreamDialer`] on Embassy.
 //!
-//! `connect` takes a host *string* and every adapter must accept both a
-//! hostname and an IP literal, or a connector has to grow a per-runtime
-//! validation gate — which is exactly what `mqtt://`/`mqtts://` had. Only a
-//! real stack can show a name being queried, so two crossover-wired
-//! `embassy-net` stacks drive it: B answers DNS on UDP/53 and listens on TCP,
-//! A dials it by name.
+//! `connect` takes a host *string*, and every adapter must accept both a
+//! hostname and an IP literal so no connector needs a per-runtime validation
+//! gate. Only a real stack shows a name being queried, so two crossover-wired
+//! `embassy-net` stacks drive it: B answers DNS on UDP/53, A dials it by name.
 #![cfg(feature = "net")]
 
 extern crate alloc;
@@ -121,10 +119,9 @@ async fn cable(mut tx: ch::TxRunner<'static, MTU>, mut rx: ch::RxRunner<'static,
 /// Build a reply to `query`: one `A` record holding [`B_IP`] when the query
 /// names [`BROKER`], `NXDomain` otherwise.
 ///
-/// Enough of RFC 1035 to satisfy smoltcp's client and no more — it checks the
-/// transaction id, the question type, and that the answer's name equals the
-/// one it asked about, so the question is echoed verbatim and the answer name
-/// repeated uncompressed rather than written as a `0xC00C` pointer.
+/// Enough of RFC 1035 for smoltcp's client, which checks the transaction id,
+/// the question type and the answer's name — so the question is echoed verbatim
+/// and the answer name repeated uncompressed rather than as a `0xC00C` pointer.
 fn reply(query: &[u8]) -> Option<alloc::vec::Vec<u8>> {
     const A: u16 = 0x0001;
     const IN: u16 = 0x0001;
@@ -267,10 +264,8 @@ where
 // Tests.
 // ===========================================================================
 
-/// The regression behind `mqtts://broker.example.com`: a hostname reached the
-/// dialer, which only parsed IP literals, so the connector reconnect-looped
-/// forever. Dial by name and exchange a byte to prove the resolved address is
-/// the one that got connected.
+/// A hostname is resolved rather than rejected: dial by name and exchange a
+/// byte, proving the resolved address is the one that got connected.
 #[test]
 fn dials_a_hostname() {
     let outcome = drive(|a_stack, b_stack| async move {
@@ -292,8 +287,8 @@ fn dials_a_hostname() {
     assert_eq!(outcome, Ok(()));
 }
 
-/// An IP literal still dials without a query, so a deployment with no resolver
-/// configured is unaffected by the name path above.
+/// An IP literal dials without a query, so a deployment with no resolver
+/// configured is unaffected by the name path.
 #[test]
 fn dials_an_ip_literal() {
     let outcome = drive(|a_stack, b_stack| async move {
@@ -309,9 +304,9 @@ fn dials_an_ip_literal() {
     assert_eq!(outcome, Ok(()));
 }
 
-/// A name that does not resolve fails as a connect failure would, and — the
-/// part that matters for a reconnect loop — hands the socket back, so the next
-/// dial is not stuck on [`TransportError::Busy`] forever.
+/// A name that does not resolve fails as a connect failure would *and* hands
+/// the socket back, so a reconnect loop is not stuck on
+/// [`TransportError::Busy`] forever.
 #[test]
 fn an_unresolvable_name_fails_and_frees_the_socket() {
     let outcome = drive(|a_stack, b_stack| async move {

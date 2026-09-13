@@ -1,11 +1,8 @@
 //! Host smoke for the Embassy broker session loop (`_test-embassy-broker`).
 //!
-//! The loop is what replaced mountain-mqtt-embassy's `run_with_subscriptions`
-//! when the transport became injectable, so reconnect-and-resubscribe is this
-//! crate's behaviour now rather than the helper's. Two `embassy-net` stacks
-//! wired by an in-memory driver-channel crossover drive it against a fake
-//! broker that speaks just enough MQTT: CONNECT/CONNACK, SUBSCRIBE/SUBACK, and
-//! a server-initiated PUBLISH.
+//! Two `embassy-net` stacks wired by an in-memory driver-channel crossover,
+//! against a fake broker speaking CONNECT/CONNACK, SUBSCRIBE/SUBACK and a
+//! server-initiated PUBLISH.
 #![cfg(feature = "_test-embassy-broker")]
 
 extern crate alloc;
@@ -158,9 +155,8 @@ where
 // A fake broker: just enough MQTT 5 to complete a session.
 // ---------------------------------------------------------------------------
 
-/// Accept one TCP connection and answer CONNECT and SUBSCRIBE, then push a
-/// PUBLISH. Records what it saw so the test can assert on the wire, not on
-/// side effects.
+/// Accept one connection, answer CONNECT and SUBSCRIBE, then push a PUBLISH,
+/// recording what it saw so the test asserts on the wire.
 #[derive(Default)]
 struct Seen {
     connect: bool,
@@ -279,12 +275,9 @@ async fn fake_broker(stack: Stack<'static>, seen: &core::cell::RefCell<Seen>) {
 // The test.
 // ---------------------------------------------------------------------------
 
-/// The session loop completes a broker session over the injected transport:
-/// CONNECT is answered, and the inbound topics are **subscribed on the wire**.
-///
-/// That subscribe is the property `run_with_subscriptions` used to provide and
-/// this crate now owns — without it, inbound routing dies silently on the first
-/// reconnect.
+/// A broker session completes over the injected transport, with the inbound
+/// topics **subscribed on the wire** — losing that kills inbound routing
+/// silently.
 #[test]
 fn the_session_loop_connects_and_subscribes() {
     use aimdb_core::buffer::BufferCfg;

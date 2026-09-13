@@ -1,9 +1,8 @@
 //! `mqtts://` on the host: the embedded backend against a local broker whose
 //! self-signed certificate is pinned as the root CA (`_test-tls-broker`).
 //!
-//! The first host coverage the TLS path has had. It runs the same
-//! `embedded-tls` session an MCU runs, over `TokioNet::tcp()`, with the clock
-//! from the runtime's wall clock and no SNTP task.
+//! The same `embedded-tls` session an MCU runs, over `TokioNet::tcp()`, clocked
+//! by the runtime's wall clock with no SNTP task.
 #![cfg(feature = "_test-tls-broker")]
 
 use std::sync::{Arc, Mutex};
@@ -34,13 +33,12 @@ fn defmt_panic() -> ! {
 defmt::timestamp!("{=u64:us}", 0);
 
 /// The name the certificate is issued for, and the name the client verifies.
-/// A hostname rather than an IP literal: `rustpki` matches an IP only through
-/// the CN fallback, which is a narrower path than this test should depend on.
+/// A hostname rather than an IP literal, which `rustpki` matches only through
+/// the narrower CN fallback.
 const BROKER_HOST: &str = "localhost";
 
-/// A self-signed certificate for `localhost`, returned as (server chain,
-/// server key, root CA in DER) — the same bytes on both sides, which is what
-/// "pinned root" means.
+/// A self-signed certificate for `localhost`, as (server chain, key, root CA in
+/// DER) — the same bytes on both sides, which is what "pinned" means.
 fn self_signed() -> (
     CertificateDer<'static>,
     PrivateKeyDer<'static>,
@@ -82,9 +80,8 @@ async fn tls_broker(
     }
 }
 
-/// A `mqtts://` session completes and round-trips a record, with the
-/// certificate verified against the pinned root and the clock from
-/// `SystemTime` — no SNTP anywhere.
+/// A `mqtts://` session completes and round-trips a record, verified against
+/// the pinned root and clocked by `SystemTime` — no SNTP anywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root() {
     use aimdb_core::buffer::BufferCfg;

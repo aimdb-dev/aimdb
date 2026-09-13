@@ -1,10 +1,9 @@
 //! Host smoke for the embedded MQTT backend over `TokioNet::tcp()`
 //! (`_test-tokio-broker`).
 //!
-//! The same session loop the Embassy smoke drives, but over a real TCP socket
-//! and a fake broker on the same host — no network stack to stand up. What it
-//! adds over that smoke is the reconnect: the broker hangs up after the first
-//! SUBACK, and the loop must dial again and re-subscribe.
+//! The same loop as the Embassy smoke, over a real TCP socket with no network
+//! stack to stand up, plus the reconnect: the broker hangs up after the first
+//! SUBACK and the loop must dial again and re-subscribe.
 #![cfg(feature = "_test-tokio-broker")]
 
 use std::sync::{Arc, Mutex};
@@ -56,10 +55,8 @@ embassy_time_driver::time_driver_impl!(static HOST_CLOCK: HostClock = HostClock)
 // The test.
 // ---------------------------------------------------------------------------
 
-/// The session loop re-subscribes after the broker hangs up.
-///
-/// Losing that is silent: publishes keep working and inbound routing simply
-/// stops, so this is the assertion the reconnect loop exists for.
+/// The session loop re-subscribes after the broker hangs up. Losing that is
+/// silent — publishes keep working and only inbound routing stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_session_loop_reconnects_and_resubscribes() {
     use aimdb_core::buffer::BufferCfg;
@@ -128,8 +125,7 @@ async fn the_session_loop_reconnects_and_resubscribes() {
 }
 
 /// The embedded backend carries records both ways over `TokioNet::tcp()`, on a
-/// multi-thread runtime: an inbound PUBLISH reaches a record, and a record's
-/// outbound link reaches the broker.
+/// multi-thread runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
     use aimdb_core::buffer::BufferCfg;
@@ -223,10 +219,9 @@ async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
     assert_eq!(payload, b"42", "the serializer's bytes must arrive intact");
 }
 
-/// Two connectors in one process keep their own identities.
-///
-/// They shared a process-global cell before the channels moved to `Arc`, so the
-/// second silently connected under the first's client id.
+/// Two connectors in one process keep their own identities: nothing about a
+/// connector's client id is process-global, so the second does not connect
+/// under the first's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_connectors_in_one_process_keep_their_own_client_ids() {
     use aimdb_core::buffer::BufferCfg;

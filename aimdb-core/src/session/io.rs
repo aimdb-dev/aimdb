@@ -58,26 +58,18 @@ pub trait ByteWrite {
 /// TLS session. The adapter owns it; the connector never names its type.
 ///
 /// `read` returning `Ok(0)` is end of stream, matching both
-/// `embedded_io_async::Read` and `tokio::io::AsyncRead`.
-///
-/// The stream is **one value** — `&mut self` on both directions — so it can
-/// wrap a socket that lends out only borrowed halves while a
-/// [`Connection`](super::Connection) must own it. A caller needing the two
-/// directions to run at once borrows them apart with
-/// [`split`](ByteStream::split); one that does not is serialized anyway, as
-/// `Connection`'s own `recv`/`send` are.
+/// `embedded_io_async::Read` and `tokio::io::AsyncRead`. The stream is **one
+/// value** — `&mut self` on both directions — so it can wrap a socket that
+/// lends out only borrowed halves; a caller needing both directions at once
+/// borrows them apart with [`split`](ByteStream::split).
 ///
 /// # Cancellation
 ///
-/// [`read`](ByteStream::read) is cancel-safe on both adapters AimDB ships:
-/// dropping the future before it completes consumes nothing. That is a
-/// property of those transports rather than a promise of this trait — a
-/// reader that cannot resume mid-packet is still free to implement it — so a
-/// caller that drops reads has to know which transport it holds.
-///
-/// [`write_all`](ByteStream::write_all) is **not** cancel-safe anywhere, and
-/// must never sit in a `select` arm: a partial write desynchronises the
-/// framing above it with nothing to resync on.
+/// [`read`](ByteStream::read) is cancel-safe on both adapters AimDB ships, but
+/// that is a property of those transports, not a promise of this trait.
+/// [`write_all`](ByteStream::write_all) is **not** cancel-safe anywhere and
+/// must never sit in a `select` arm: a partial write desynchronises the framing
+/// above it with nothing to resync on.
 pub trait ByteStream {
     /// Read into `buf`, returning the byte count; `Ok(0)` is EOF.
     fn read<'a>(
@@ -94,14 +86,11 @@ pub trait ByteStream {
     /// Flush any buffered bytes toward the peer.
     fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_;
 
-    /// Borrow this stream as independent read and write halves.
+    /// Borrow this stream as independent read and write halves, pollable
+    /// concurrently without either waiting on the other.
     ///
-    /// Both may be polled concurrently and neither sees the other's state, so
-    /// a reader and a writer can share one stack frame without either waiting
-    /// on the other. The halves borrow the stream rather than owning it —
-    /// enough for two futures in one `select`, which is what a full-duplex
-    /// session loop needs; a caller wanting owned or `'static` halves needs a
-    /// different seam.
+    /// The halves borrow rather than own, so a caller wanting owned or
+    /// `'static` halves needs a different seam.
     fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_);
 }
 
@@ -727,10 +716,8 @@ mod tests {
         }
     }
 
-    /// A stream whose read cannot finish until its write half has run: the
-    /// read waits to be notified, and only `write_all` notifies. Drives the one
-    /// property [`ByteStream::split`] exists for — a blocked reader must not
-    /// block the writer — which a single `&mut` stream cannot express at all.
+    /// A stream whose read cannot finish until its write half has run, so a
+    /// blocked reader that blocked the writer would deadlock the test.
     #[derive(Clone, Default)]
     struct DuplexMock {
         written: Arc<spin::Mutex<Vec<u8>>>,

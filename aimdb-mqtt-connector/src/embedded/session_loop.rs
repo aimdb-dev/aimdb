@@ -1,41 +1,14 @@
 //! The event-driven broker session: three futures in one `select3`.
 //!
-//! Design 053 §5.1. The stream is split, so reading and writing never contend,
-//! and **the only thing ever cancelled is a channel receive**:
+//! The stream is split and the only thing ever cancelled is a channel receive,
+//! so the non-cancel-safe `write_all` never sits in a `select` arm and no
+//! partially-read packet is ever discarded — which is what lets the TLS path
+//! share this loop.
 //!
-//! - [`read_into`] frames nothing and knows no MQTT — it lifts bytes off the
-//!   socket and hands them on. Never cancelled.
-//! - [`write_out`] drains encoded packets to the socket. Never cancelled, which
-//!   is what keeps `write_all` — which is *not* cancel-safe — out of a `select`
-//!   arm by construction.
-//! - [`client_loop`] selects on two channels and one timer. It owns every piece
-//!   of client state: the [`PacketReader`], the `ClientState`, the liveness
-//!   window and the deadlines. Nothing is shared across the three futures, so
-//!   there is no `RefCell` and no cross-future wakeup.
-//!
-//! Because no socket read is ever dropped, no partially-read packet is ever
-//! discarded — not ours, and not a TLS record reader's. That is what lets the
-//! TLS path share this loop.
-//!
-//! # What replaces the poll
-//!
-//! Nothing wakes this loop but data, an action, or a deadline. A connected idle
-//! session wakes at the ping cadence (2 s) rather than the 100 Hz the previous
-//! loop paid, and a QoS 1 publish no longer spins at 1 kHz waiting inline for
-//! its PUBACK: the acknowledgement arrives through the read half like any other
-//! packet, and the action arm simply stays parked until it does.
-//!
-//! # Framing division
-//!
-//! §5.1 sketches `rx_fut` framing whole packets into the channel. This does the
-//! division one notch lower — raw chunks cross the channel and `client_loop`
-//! frames them — because a packet-granular channel needs a second packet-sized
-//! buffer for its slot, and criterion 7 requires the framing buffer, the
-//! channel slots and the encode buffer to come out of the existing
-//! `BUFFER_SIZE` rather than add to it. Chunks cost two 256-byte buffers
-//! instead of two 2 KB ones, which is what pays for the reassembly buffer being
-//! as large as it is. `rx_fut` ends up with even less knowledge than §5.1 gives
-//! it, which is the direction that section argues for.
+//! [`read_into`] and [`write_out`] know no MQTT; [`client_loop`] owns all
+//! client state and wakes only on data, an action or a deadline. Raw chunks
+//! cross the inbound channel rather than whole packets, so framing needs no
+//! second packet-sized buffer.
 
 use core::convert::Infallible;
 use core::time::Duration;
@@ -69,11 +42,9 @@ const RX_CHUNK: usize = 256;
 
 /// The largest MQTT packet the session can receive.
 ///
-/// The memory budget is criterion 7: the reassembly buffer, the inbound slots
-/// and the encode buffer together must not exceed what the old loop's single
-/// `mqtt_buffer` cost. `rx`'s scratch plus one inbound slot take `2 * RX_CHUNK`
-/// of it; outbound packets are encoded to exactly-sized `Vec<u8>`s, the same
-/// heap the action channel already uses, so they hold no fixed buffer at all.
+/// Reassembly, the inbound slots and the encode buffer all come out of one
+/// `BUFFER_SIZE`; outbound packets are encoded to exactly-sized `Vec<u8>`s
+/// rather than a fixed buffer.
 const PACKET_BUFFER_SIZE: usize = BUFFER_SIZE - 2 * RX_CHUNK;
 
 /// One chunk of freshly read bytes, in flight from the read half to the loop.
@@ -81,18 +52,12 @@ type Chunk = heapless::Vec<u8, RX_CHUNK>;
 
 /// Drive one MQTT session over a split stream until an error ends it.
 ///
-/// Connects, subscribes `subscribe_topics`, then keeps the session alive while
-/// dispatching actions and forwarding events. Returns only on failure — the
-/// caller reconnects.
+/// Connects, subscribes `subscribe_topics`, then dispatches actions and
+/// forwards events. Returns only on failure — the caller reconnects.
 ///
-/// # Delivery
-///
-/// **At most once, at this layer**, unchanged from the polled loop it replaces:
-/// an action is taken off `actions` before it is performed, so the one action
-/// in flight when a session ends is lost. Everything still queued survives,
-/// because `actions` outlives the session. What has changed is *when* a publish
-/// is considered failed: a QoS 1 publish no longer blocks the loop waiting for
-/// its PUBACK, so a slow broker no longer stops pings.
+/// **At most once**: an action is taken off `actions` before it is performed,
+/// so the one in flight when a session ends is lost. Everything still queued
+/// survives.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_session<R, W, D>(
     connection_id: ConnectionId,
@@ -460,7 +425,7 @@ impl Received {
 /// Turn one queued action into a packet on the wire.
 ///
 /// Sent before the state update, as upstream does: a state that believes a
-/// publish is in flight when it is not would park the action arm forever.
+/// publish is in flight when it is not parks the action arm forever.
 fn perform(
     action: AimdbMqttAction,
     state: &mut ClientStateNoQueue,
@@ -514,12 +479,8 @@ fn perform(
     Ok(())
 }
 
-/// Encode a packet to exactly its own length.
-///
-/// Two passes over a counting writer and then a real one, which is how the
-/// codec measures a packet anyway — the alternative is a fixed buffer sized for
-/// the largest packet anyone might send, which is what criterion 7 is trying to
-/// avoid. The bytes are the same heap the action channel already carries.
+/// Encode a packet to exactly its own length: a counting pass, then a real
+/// one, so no fixed buffer is sized for the largest packet anyone might send.
 fn encode<P: Write>(packet: &P) -> Result<Vec<u8>, Error> {
     let mut len_writer = MqttLenWriter::new();
     len_writer.put(packet).map_err(write_error)?;
@@ -532,10 +493,9 @@ fn encode<P: Write>(packet: &P) -> Result<Vec<u8>, Error> {
 
 /// Queue encoded bytes for the write half.
 ///
-/// Never blocks: the action arm is gated on there being room, and a ping or
-/// PUBACK dropped because the write half is backed up is recovered by the next
-/// deadline or by the broker redelivering. Blocking here instead would park the
-/// loop that has to notice the link is gone.
+/// Never blocks — blocking would park the loop that has to notice the link is
+/// gone. A ping or PUBACK dropped because the write half is backed up is
+/// recovered by the next deadline or by redelivery.
 fn queue(outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>, bytes: Vec<u8>) {
     if outbound.try_send(bytes).is_err() {
         #[cfg(feature = "defmt")]
@@ -624,20 +584,8 @@ mod tests {
         assert_eq!(next_deadline(0, true, 100, 500, None, Some(20)), 20);
     }
 
-    /// Criterion 7, as an enforced bound rather than an argument: the session
-    /// task's footprint must not grow past what the polled loop cost.
-    ///
-    /// That loop held one `BUFFER_SIZE` packet buffer plus its client; this one
-    /// holds the reassembly buffer, the read scratch and one inbound slot,
-    /// which `the_buffer_budget_is_what_the_old_loop_cost` pins at exactly
-    /// `BUFFER_SIZE` between them. What this adds is a ceiling on everything
-    /// else — client state, channel overhead, the three futures' frames —
-    /// measured at 6184 bytes when written.
-    ///
-    /// The bound is `BUFFER_SIZE * 2` rather than that measurement: a few dozen
-    /// bytes either way is codegen, and a test that fails on a toolchain bump
-    /// teaches people to raise it rather than to look. Another buffer of any
-    /// consequence does not fit underneath it.
+    /// A ceiling on the session task's footprint. The bound is loose enough to
+    /// absorb codegen drift, but not loose enough to fit another buffer.
     #[test]
     fn the_session_future_has_not_outgrown_the_loop_it_replaced() {
         let events = EventChannel::new();

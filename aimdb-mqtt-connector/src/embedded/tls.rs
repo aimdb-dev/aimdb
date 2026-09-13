@@ -1,25 +1,11 @@
 //! The TLS transport for the embedded backend.
 //!
-//! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over the caller's
-//! transport, split into halves the session loop reads and writes exactly as
-//! it does a plaintext socket. Certificate verification is `rustpki` (pure
-//! Rust) against the application-embedded root CA, dated by the runtime's wall
-//! clock; entropy comes from the application-injected TRNG
-//! ([`TlsOptions::new`]).
-//!
-//! The dialer resolves the host, so there is no network stack here: the same
-//! session runs on a host over the Tokio adapter's transport.
-//!
-//! # Why this path used to be different
-//!
-//! The MQTT client needed a non-blocking peek (`receive_if_ready`), which a
-//! TLS session cannot answer honestly: its readiness is two-layered, since
-//! bytes on the wire may decrypt to no application data at all. That forced a
-//! bespoke `Connection` here, a readiness probe onto the raw socket underneath
-//! the TLS session, and one `RefCell` wrapping the whole socket so both could
-//! reach it. Nothing polls any more, so the peek is gone and with it all
-//! three: TLS now differs from the plain path by two adapter types and a
-//! handshake.
+//! An `embedded-tls` 1.3 session over the caller's transport, split into halves
+//! the session loop reads and writes exactly as it does a plaintext socket.
+//! Certificate verification is `rustpki` against the application-embedded root
+//! CA, dated by the runtime's wall clock; entropy comes from the injected TRNG
+//! ([`TlsOptions::new`]). The dialer resolves the host, so there is no network
+//! stack here.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -46,18 +32,15 @@ use mountain_mqtt::mqtt_manager::ConnectionId;
 /// covers RSA-4096 leaves with headroom.
 const CERT_BUFFER_SIZE: usize = 4096;
 
-/// Minimum TLS record read buffer: a TLS 1.3 peer may send full-size records
-/// (2^14 payload + record overhead) regardless of our `max_fragment_length`
-/// offer, and `embedded-tls` fails any record larger than the buffer — a
-/// smaller buffer works until the first big record, then reconnect-loops.
-/// Enforced at `build()` so undersizing fails loudly instead.
+/// Minimum TLS record read buffer. A peer may send full-size records (2^14 +
+/// overhead) whatever `max_fragment_length` we offer, and `embedded-tls` fails
+/// any record larger than the buffer, so `build()` rejects a smaller one.
 pub(crate) const READ_BUF_MIN: usize = 16_640;
 
 /// TLS materials for a `mqtts://` broker connection.
 ///
-/// All references are `'static`: the session outlives `build()`, so buffers
-/// and the RNG live in `StaticCell`s (or equivalents) owned by the
-/// application — the one party that knows the board's memory budget.
+/// All references are `'static`: the session outlives `build()`, so the buffers
+/// and the RNG are owned by the application, which knows the memory budget.
 pub struct TlsOptions {
     pub(crate) rng: &'static mut (dyn CryptoRngCore + Send),
     pub(crate) ca_der: &'static [u8],
@@ -120,26 +103,12 @@ impl TlsOptions {
 /// The socket's two halves behind one handle, so `embedded-tls` can clone a
 /// "socket" into its reader and its writer.
 ///
-/// [`TlsConnection::split`] requires `Socket: Clone` and hands a clone to each
-/// half, so the handle must tolerate one clone being read while another is
-/// written — which is exactly what the session does. **Separate locks per
-/// direction** make that safe by type: `TlsReader`'s impls require only
-/// `AsyncRead` and `TlsWriter`'s only `AsyncWrite`, so the reader only ever
-/// touches `rx` and the writer only `tx`. They never contend, and neither ever
-/// waits on the other.
-///
-/// The locks are async rather than `RefCell`s because a guard is held across
-/// the inner `.await`. A `RefCell` there would be either a panic waiting for
-/// the first genuinely concurrent read and write — which is what the session
-/// now does on every connection — or an `await_holding_refcell_ref` allow
-/// papering over it. Uncontended by construction, so the cost is an atomic
-/// apiece.
-///
-/// **The disjointness is an argument about a dependency**, and the one real
-/// risk here: an `embedded-tls` that let its reader write — to answer a
-/// KeyUpdate inline, say — would make the two halves contend at runtime.
-/// `tests/tls_duplex.rs` drives a concurrent read and write to completion so
-/// that shows up at a version bump rather than in the field.
+/// One clone is read while another is written, so the directions take
+/// **separate async locks** — `TlsReader` only ever touches `rx`, `TlsWriter`
+/// only `tx`, and a guard may be held across the inner `.await`. That holds
+/// only while `embedded-tls` never writes from its reader;
+/// `tests/tls_duplex.rs` drives a concurrent read and write so a version bump
+/// that changed it shows up there.
 struct DuplexHandle<'a, Rx, Tx> {
     rx: &'a Mutex<CriticalSectionRawMutex, Rx>,
     tx: &'a Mutex<CriticalSectionRawMutex, Tx>,
@@ -198,17 +167,10 @@ where
 
 /// Asserts that a TLS half's I/O future is `Send`.
 ///
-/// `embedded-tls` holds a `Range<*const u8>` over its own record buffer across
-/// an await, so its futures are `!Send` by type even though nothing in them is
-/// shared: the pointers address the very buffer the future owns exclusively.
-///
-/// The session's three futures are polled as one task, and the TLS halves are
-/// reachable from nowhere else, so no value here is ever touched from two
-/// threads at once. A task that migrates between threads moves the whole of
-/// itself, which is exactly what `Send` on the composed future asserts — and
-/// the connector already asserts it, one level up, for the session as a whole
-/// ([`SendSession`](crate::embedded::session::SendSession)). This states the
-/// same thing at the point where the type system actually needs it.
+/// `embedded-tls` holds a `Range<*const u8>` into the record buffer its own
+/// future owns exclusively, which makes that future `!Send` by type. The
+/// session's three futures are polled as one task, so nothing here is ever
+/// touched from two threads at once.
 struct AssertSend<F>(F);
 
 // SAFETY: upheld by the single-task argument above.
@@ -226,11 +188,8 @@ impl<F: Future> Future for AssertSend<F> {
     }
 }
 
-/// The TLS session's read half, as the session loop's [`ByteRead`].
-///
-/// This pair is the whole of what TLS costs the loop: below them the session
-/// cannot tell a plaintext socket from a record stream, so both paths run the
-/// same three futures.
+/// The TLS session's read half, as the session loop's [`ByteRead`]. Below this
+/// pair the session cannot tell a plaintext socket from a record stream.
 struct TlsRead<'a, 'b, Rx, Tx>(TlsReader<'a, DuplexHandle<'b, Rx, Tx>, Aes128GcmSha256>);
 
 /// The TLS session's write half, as the session loop's [`ByteWrite`].
@@ -283,10 +242,8 @@ where
 
 /// Unix seconds for certificate validity, refreshed before each handshake.
 ///
-/// `embedded_tls::TlsClock::now` is a static method, so the reading has to
-/// reach it through a global. The source is whatever the runtime's wall clock
-/// reports; a runtime with no clock of its own (an MCU without an RTC) gets
-/// one from the SNTP task instead.
+/// A global because `embedded_tls::TlsClock::now` is a static method. Fed by
+/// the runtime's wall clock, or by the SNTP task on an MCU with no RTC.
 static UNIX_SECS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// The certificate-validity clock. `u32` is unambiguous until 2106 and stays a
@@ -316,9 +273,8 @@ impl embedded_tls::TlsClock for WallClock {
 }
 
 /// [`CryptoProvider`] pairing the injected TRNG with `rustpki` certificate
-/// verification (time from [`WallClock`]). Client-certificate signing is
-/// deliberately absent — the mesh authenticates with MQTT credentials
-/// instead.
+/// verification (time from [`WallClock`]). No client-certificate signing: the
+/// mesh authenticates with MQTT credentials.
 struct TrngProvider<'a> {
     rng: &'a mut (dyn CryptoRngCore + Send),
     verifier: CertVerifier<'static, Aes128GcmSha256, WallClock, CERT_BUFFER_SIZE>,
@@ -340,9 +296,6 @@ impl CryptoProvider for TrngProvider<'_> {
 
 /// The TLS broker manager: dial → TLS handshake → MQTT session, reconnecting
 /// forever with the same [`Settings`] cadence as the plain path.
-///
-/// The dialer resolves the host, so there is no DNS here and no network stack:
-/// any runtime whose streams offer the `embedded-io-async` trio can run this.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_tls<D>(
     dialer: D,
@@ -467,13 +420,11 @@ where
     }
 }
 
-/// Parse the broker host as an IP literal (with or without URL-style
-/// brackets, `[::1]`). `build()` uses this to vet `mqtts://` hosts:
-/// certificate verification prefers a DNS name, but an IPv4 literal can
-/// still pass through `rustpki`'s CN fallback when a private CA pins the
-/// dotted quad there (the dev bench does) — allowed with a warning. An IPv6
-/// literal can never match (the verifier's hostname charset has no `:`) and
-/// is rejected.
+/// Parse the broker host as an IP literal, brackets optional (`[::1]`).
+///
+/// `build()` vets `mqtts://` hosts with this: an IPv4 literal can still match
+/// through `rustpki`'s CN fallback, so it is allowed with a warning, while an
+/// IPv6 literal never can (the hostname charset has no `:`) and is rejected.
 pub(crate) fn host_ip_literal(host: &str) -> Option<IpAddr> {
     let host = host
         .strip_prefix('[')
@@ -511,10 +462,8 @@ mod tests {
         }
     }
 
-    /// §6.6's disjointness, as an assertion rather than an argument: a read
-    /// parked inside one clone of the handle must not hold up a write through
-    /// another. Over a single shared cell — what `SharedStream` was — this is
-    /// precisely the shape that panics; over two locks it simply works.
+    /// A read parked inside one clone of the handle must not hold up a write
+    /// through another.
     #[test]
     fn a_parked_reader_does_not_hold_up_the_writer() {
         let rx = Mutex::new(PendingRead);

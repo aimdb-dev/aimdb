@@ -2,23 +2,9 @@
 //!
 //! Outbound publishes and inbound routing ride core's [`pump_sink`] /
 //! [`pump_source`] directly — the session channels are `Sync`, so nothing
-//! force-`Send` stands between them and the runner. This module contributes
-//! the connector builder, the `MqttSink`/`MqttSource` over those channels, and
-//! the actions and events that cross them.
+//! force-`Send` stands between them and the runner.
 //!
-//! # Usage
-//!
-//! ```rust,ignore
-//! let db = AimDbBuilder::new()
-//!     .runtime(embassy_adapter)
-//!     .with_connector(
-//!         MqttConnector::new("mqtt://192.168.1.100:1883")
-//!             .transport(EmbassyNet::tcp(stack, rx, tx))
-//!             .with_client_id("my-unique-device-id"),
-//!     )
-//!     .build()
-//!     .await?;
-//! ```
+//! See the crate docs for a usage example.
 
 pub mod manager;
 pub mod session;
@@ -86,7 +72,7 @@ pub(crate) type EventChannel = crate::embedded::manager::EventChannel<AimdbMqttE
 /// What the pumps ask the session to put on the wire.
 ///
 /// The session encodes each of these itself against the MQTT client state, so
-/// an action is data rather than a call: see `session_loop::perform`.
+/// an action is data rather than a call (`session_loop::perform`).
 #[derive(Clone)]
 pub enum AimdbMqttAction {
     /// Publish a message to a topic
@@ -103,10 +89,7 @@ pub enum AimdbMqttAction {
     },
 }
 
-/// MQTT events for received messages
-///
-/// Handles incoming MQTT messages that will be routed to the appropriate
-/// record producers via core's `pump_source`.
+/// What the session hands back for `pump_source` to route.
 #[derive(Clone)]
 pub enum AimdbMqttEvent {
     /// A message was received from a subscribed topic
@@ -144,8 +127,8 @@ impl crate::embedded::manager::FromApplicationMessage<MAX_PROPERTIES> for AimdbM
 // wrapper stands between them and the runner.
 // ===========================================================================
 
-/// Outbound sink: turns a `pump_sink` publish into an
-/// `AimdbMqttAction::Publish` enqueued onto the session's action channel.
+/// Turns a `pump_sink` publish into an `AimdbMqttAction::Publish` on the
+/// session's action channel.
 struct MqttSink {
     actions: Arc<ActionChannel>,
 }
@@ -182,8 +165,7 @@ impl aimdb_core::transport::Connector for MqttSink {
     }
 }
 
-/// Inbound source: drains the session's event channel, yielding each received
-/// message as `(topic, payload)` for `pump_source` to fan out.
+/// Drains the session's event channel as `(topic, payload)` for `pump_source`.
 struct MqttSource {
     events: Arc<EventChannel>,
 }
@@ -207,12 +189,8 @@ impl aimdb_core::session::Source for MqttSource {
 }
 
 /// Force-`Send + Sync` slot for the TLS materials: [`TlsOptions`] holds
-/// `&'static mut` exclusive resources (TRNG, record buffers), so it is
-/// neither `Sync` nor takeable through the `&self` that
-/// [`ConnectorBuilder::build`] receives without interior mutability.
-///
-/// Core's cell supplies both without `unsafe`: it is `Send + Sync` for any
-/// `T: Send`, which is what the `+ Send` on [`TlsOptions`]'s RNG buys.
+/// `&'static mut` exclusive resources, so it is neither `Sync` nor takeable
+/// through the `&self` that [`ConnectorBuilder::build`] receives.
 #[cfg(feature = "embedded-tls")]
 pub(crate) type TlsSlot = aimdb_core::session::OneShot<TlsOptions>;
 
@@ -360,8 +338,8 @@ fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> 
 /// Build the `ConnectionSettings<'static>` for MQTT CONNECT.
 ///
 /// The identity strings are leaked to reach `'static`: one small, bounded leak
-/// per connector at build. A shared cell would be smaller but would hand every
-/// connector after the first the identity of the first.
+/// per connector at build, so that a second connector cannot inherit the
+/// first's identity.
 fn static_connection_settings(
     client_id: Option<&str>,
     credentials: Option<&(String, String)>,
@@ -380,10 +358,8 @@ fn static_connection_settings(
 }
 
 /// Set up the plain-TCP broker session loop, returning the action channel
-/// (outbound), the event channel (inbound), and the task future. The loop
-/// re-subscribes the inbound topics on every connection, so routing survives
-/// reconnects. Synchronous — no `.await` — so the caller's `build` future
-/// stays `Send`.
+/// (outbound), the event channel (inbound), and the task future. Synchronous —
+/// no `.await` — so the caller's `build` future stays `Send`.
 fn setup_manager<D>(
     broker: &BrokerUrl,
     connection_settings: ConnectionSettings<'static>,
@@ -436,9 +412,8 @@ where
     Ok((actions, events, alloc::vec![manager_task]))
 }
 
-/// Set up the TLS broker manager ([`run_tls`]) plus the SNTP time-source
-/// task. Synchronous — no `.await` — so the caller's `build` future stays
-/// `Send`.
+/// Set up the TLS broker manager ([`run_tls`]) plus the SNTP time-source task.
+/// Synchronous — no `.await` — so the caller's `build` future stays `Send`.
 #[cfg(feature = "embedded-tls")]
 fn setup_tls_manager<D>(
     broker: &BrokerUrl,
@@ -536,10 +511,8 @@ where
 
 /// Map a QoS level to mountain-mqtt's `QualityOfService`.
 ///
-/// `2` downgrades to 1: MQTT 5 exactly-once is not implemented by the client.
-/// Anything above 2 is not a QoS level at all and is rejected, as `Native`
-/// rejects it — a typo in a link URL should not silently publish at a
-/// different guarantee than asked for.
+/// `2` downgrades to 1 (the client implements no exactly-once); anything above
+/// 2 is rejected, as `Native` rejects it.
 fn map_qos(qos: u8) -> Result<QualityOfService, PublishError> {
     match qos {
         0 => Ok(QualityOfService::Qos0),

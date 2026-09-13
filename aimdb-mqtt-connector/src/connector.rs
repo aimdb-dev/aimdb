@@ -1,13 +1,9 @@
 //! One `MqttConnector` over two protocol backends.
 //!
-//! Unlike the other connectors, MQTT does not converge on a single protocol
-//! implementation. `rumqttc` owns its socket, TLS and reconnect — its
-//! `Transport` is a closed enum, so no stream can be injected — while
-//! `mountain-mqtt` is generic over `embedded-io-async`. The two stay separate,
-//! and this type is the seam between them.
-//!
-//! Broker URL, client id and credentials live here rather than in a backend, so
-//! there is one constructor and one set of setters whichever backend runs.
+//! The two backends cannot converge: `rumqttc`'s `Transport` is a closed enum,
+//! so no stream can be injected, while `mountain-mqtt` is generic over
+//! `embedded-io-async`. Broker URL, client id and credentials live here rather
+//! than in either backend, so there is one set of setters whichever runs.
 //!
 //! | Backend | Client | QoS | TLS |
 //! |---|---|---|---|
@@ -58,9 +54,9 @@ pub struct MqttConnector<B = Native> {
 impl MqttConnector<Native> {
     /// Connect to `broker_url` (`mqtt://host:port` or `mqtts://host:port`).
     ///
-    /// Without a transport this is the `rumqttc` backend, and without
-    /// [`with_client_id`](Self::with_client_id) it generates a UUID-based
-    /// client id at build.
+    /// Without a transport this is the `rumqttc` backend; without
+    /// [`with_client_id`](Self::with_client_id) the client id is a generated
+    /// UUID.
     pub fn new(broker_url: impl Into<String>) -> Self {
         Self {
             broker_url: broker_url.into(),
@@ -70,8 +66,7 @@ impl MqttConnector<Native> {
         }
     }
 
-    /// Dial plain sessions through an adapter's stream dialer — the same call
-    /// on any runtime's adapter, with no change in this crate.
+    /// Dial plain sessions through an adapter's stream dialer.
     #[cfg(feature = "embedded")]
     pub fn transport<D>(self, dialer: D) -> MqttConnector<Embedded<D>> {
         MqttConnector {
@@ -84,8 +79,6 @@ impl MqttConnector<Native> {
 
     /// Dial `mqtts://` sessions through an adapter's stream dialer, with
     /// `options` supplying the trust root, buffers and entropy.
-    ///
-    /// The dialer resolves the host, so TLS needs no network stack of its own.
     #[cfg(feature = "embedded-tls")]
     pub fn tls<D>(
         self,
@@ -136,9 +129,8 @@ mod sealed {
 
 /// A backend with a build path compiled in.
 ///
-/// Implemented for [`Native`] only under `std`, so a `no_std` build
-/// that forgets `.transport(..)` fails here with a message naming the fix
-/// rather than on core's `ConnectorBuilder`.
+/// Implemented for [`Native`] only under `std`, so a `no_std` build that
+/// forgets `.transport(..)` fails here rather than deep in core.
 #[diagnostic::on_unimplemented(
     message = "`MqttConnector<{Self}>` has no MQTT backend compiled in",
     label = "no backend for this configuration",

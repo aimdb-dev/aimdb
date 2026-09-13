@@ -2,9 +2,8 @@
 //! them over.
 //!
 //! Channels use `CriticalSectionRawMutex`, so they are `Sync` and the sink and
-//! source are plain `Connector`/`Source` impls with no force-`Send` wrapper.
-//! Time comes from core's [`aimdb_core::session::Delay`] and the runtime's
-//! monotonic clock, so nothing here names an executor.
+//! source need no force-`Send` wrapper. Time comes from core's
+//! [`aimdb_core::session::Delay`], so nothing here names an executor.
 
 use core::time::Duration;
 

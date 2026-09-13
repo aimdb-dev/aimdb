@@ -1,17 +1,10 @@
-//! The event-driven session's promises, held over `mqtts://`
-//! (design 053 criterion 8, and the guard on risk 1).
+//! `tests/session_loop.rs`'s promises, re-driven over a real TLS 1.3 session
+//! against a pinned self-signed root.
 //!
-//! `tests/session_loop.rs` drives criteria 1, 2 and 4 over a plaintext socket;
-//! this drives the same three over a real TLS 1.3 session against a pinned
-//! self-signed root. The point is that the session below the record layer is
-//! the *same* session — after design 053 the TLS path is two adapter types and
-//! a handshake, not a loop of its own.
-//!
-//! It is also where `DuplexHandle`'s disjointness is exercised for real
-//! (criterion 9): while the session's read half is parked inside `TlsReader`,
-//! its write half has to push pings through `TlsWriter`. If a future
-//! `embedded-tls` ever made its reader take the write lock, these tests would
-//! stop completing rather than fail quietly in the field.
+//! Also where `DuplexHandle`'s disjointness is exercised for real: while the
+//! read half is parked inside `TlsReader`, the write half has to push pings
+//! through `TlsWriter`. An `embedded-tls` whose reader took the write lock would
+//! hang these tests rather than fail quietly in the field.
 #![cfg(feature = "_test-tls-broker")]
 
 use std::sync::atomic::Ordering;
@@ -275,13 +268,8 @@ async fn a_partial_packet_over_tls_stops_neither_pings_nor_publishes() {
 // Criterion 4 over TLS — and criterion 9's concurrent read and write.
 // ---------------------------------------------------------------------------
 
-/// A QoS 1 publish waiting on a slow broker must not stop the ping.
-///
-/// Over TLS this is also the live test of `DuplexHandle`: for a ping to reach
-/// the broker while the PUBACK is outstanding, `TlsWriter` has to take the
-/// write lock while `TlsReader` is parked holding the read one. The two are
-/// disjoint by type today; if that ever stopped being true, this test would
-/// hang rather than pass.
+/// A QoS 1 publish waiting on a slow broker must not stop the ping — which over
+/// TLS means `TlsWriter` taking the write lock while `TlsReader` is parked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slow_puback_over_tls_does_not_block_the_ping() {
     let (listener, acceptor, options, port) = tls_setup();
