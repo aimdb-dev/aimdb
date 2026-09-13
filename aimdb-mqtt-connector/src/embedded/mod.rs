@@ -10,7 +10,7 @@ pub mod manager;
 pub mod session;
 
 // The session's own machinery: incremental framing, and the three futures that
-// replace the polled loop (design 053 §5.1).
+// replace the polled loop.
 pub(crate) mod packet_reader;
 pub(crate) mod session_loop;
 

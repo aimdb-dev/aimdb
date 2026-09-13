@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
-- **The embedded session is event-driven: nothing polls** (design 053). The
+- **The embedded session is event-driven: nothing polls.** The
   loop used to wake every 10 ms to ask three sources whether they had work,
   which on a battery node is the only state that normally runs — and the
   "non-blocking peek" it polled with could block indefinitely, parking the loop
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on every resubscribe and reconnect-loops the connector until it is cleared.
   Either way the cause is named in the session's error log.
 
-- **TLS runs that same session** (design 053 §6.6). `mqtts://` was a loop of
+- **TLS runs that same session.** `mqtts://` was a loop of
   its own because the MQTT client wanted a readiness peek that a TLS session
   cannot answer honestly — its readiness is two-layered, since bytes on the
   wire may decrypt to no application data at all. Nothing peeks any more, so
@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gone** from the connector's builders. A relaxation, so no caller breaks: the
   connector now reaches a stream only through core's byte-stream traits.
 
-- **The `mountain-mqtt` dependency is the codec alone** (design 053 §6.7). It
+- **The `mountain-mqtt` dependency is the codec alone.** It
   moves to `aimdb-mountain-mqtt` 0.5.1 — upstream `main` with a zero-line
   source delta — with `default-features = false` and **no features**, `defmt`
   added back on the defmt leg alone. What this crate takes from it is the

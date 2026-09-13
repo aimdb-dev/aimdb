@@ -117,7 +117,7 @@ async fn build_db(
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 1 — an idle session wakes at the ping cadence, not at 100 Hz.
+// An idle session wakes at the ping cadence, not at 100 Hz.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -157,7 +157,7 @@ async fn an_idle_session_wakes_at_the_ping_cadence() {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 2 — a partial packet stops neither pings nor publishes.
+// A partial packet stops neither pings nor publishes.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -212,7 +212,7 @@ async fn a_partial_packet_stops_neither_pings_nor_publishes() {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 4 — a QoS 1 publish survives a slow broker without blocking pings.
+// A QoS 1 publish survives a slow broker without blocking pings.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -261,7 +261,7 @@ async fn a_slow_puback_does_not_block_the_ping() {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 11 — neither direction starves the other.
+// Neither direction starves the other.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -174,7 +174,7 @@ async fn build_tls_db(
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 1, over TLS.
+// An idle TLS session wakes at the ping cadence.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -209,7 +209,7 @@ async fn an_idle_tls_session_wakes_at_the_ping_cadence() {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 2, over TLS.
+// A partial packet over TLS stops neither pings nor publishes.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -265,7 +265,7 @@ async fn a_partial_packet_over_tls_stops_neither_pings_nor_publishes() {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 4 over TLS — and criterion 9's concurrent read and write.
+// A slow PUBACK over TLS does not block the ping — a concurrent read and write.
 // ---------------------------------------------------------------------------
 
 /// A QoS 1 publish waiting on a slow broker must not stop the ping — which over

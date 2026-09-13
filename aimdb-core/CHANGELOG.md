@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`ByteStream::split`, with `ByteRead` / `ByteWrite`** (design 053 §6.1).
+- **`ByteStream::split`, with `ByteRead` / `ByteWrite`.**
   Borrows a stream into independently usable read and write halves, so a
   session can run a reader and a writer concurrently in one `select` — which a
   single `&mut` stream cannot express at all. Borrowed halves are enough: both
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not apply. `read`/`write_all`/`flush` stay for the handshake and for
   callers that never split. The MQTT connector's event-driven session is the
   first consumer; the Embassy and Tokio adapters implement it.
-- **The cancellation contract is written down** (design 053 §6.2). `read` is
+- **The cancellation contract is written down.** `read` is
   cancel-safe on both adapters AimDB ships — dropping the future consumes
   nothing, verified per layer and end to end over a drip transport — but that
   is documented as a property of those transports rather than a promise of the

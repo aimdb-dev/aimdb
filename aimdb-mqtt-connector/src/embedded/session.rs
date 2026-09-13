@@ -90,7 +90,7 @@ where
         connection_index += 1;
 
         // The halves live exactly as long as the session that reads and writes
-        // them, which is why borrowed halves are enough (design 053 §6.1).
+        // them, which is why borrowed halves are enough.
         let (rx, tx) = stream.split();
         let error = run_session(
             connection_id,

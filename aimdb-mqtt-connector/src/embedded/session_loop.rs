@@ -247,8 +247,9 @@ async fn client_loop<D: Delay>(
         // --- park until something happens ----------------------------------
 
         // The action arm is armed only when a publish can actually be sent:
-        // connected, nothing awaiting acknowledgement (§6.4's single in-flight
-        // slot), every subscription placed, and room to queue the bytes. This
+        // connected, nothing awaiting acknowledgement (the client state holds
+        // one in-flight slot), every subscription placed, and room to queue the
+        // bytes. This
         // is what replaces the old inline wait for a PUBACK — the ping and
         // liveness deadlines keep running while it is parked.
         let action_ready = connected
@@ -585,7 +586,7 @@ mod tests {
 
     #[test]
     fn the_buffer_budget_is_what_the_old_loop_cost() {
-        // Criterion 7: the reassembly buffer plus the read scratch plus one
+        // The reassembly buffer plus the read scratch plus one
         // inbound slot come out of `BUFFER_SIZE`, not in addition to it.
         assert_eq!(PACKET_BUFFER_SIZE + 2 * RX_CHUNK, BUFFER_SIZE);
     }

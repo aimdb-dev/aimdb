@@ -367,7 +367,7 @@ pub async fn fake_broker_concurrent(
 
 // ===========================================================================
 // The scripted broker: the same wire format as above, but the test decides
-// when each answer goes out (design 053's criteria 1, 2, 4 and 11).
+// when each answer goes out.
 // ===========================================================================
 
 /// The topic the scripted broker pushes on.
