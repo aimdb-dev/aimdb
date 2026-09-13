@@ -1,25 +1,35 @@
-//! Per-session broker state, the event handler that feeds the event channel,
-//! and the pump that keeps one connection alive.
+//! Session settings, the events a session reports, and — until TLS joins the
+//! event-driven loop — the polled pump that keeps one TLS connection alive.
 //!
 //! Channels use `CriticalSectionRawMutex`, so they are `Sync` and the sink and
 //! source are plain `Connector`/`Source` impls with no force-`Send` wrapper.
-//! Time comes from core's [`Delay`] and the runtime's monotonic clock, so the
-//! pump names no executor.
+//! Time comes from core's [`aimdb_core::session::Delay`] and the
+//! runtime's monotonic clock, so nothing here names an executor.
 
-use core::cell::RefCell;
 use core::time::Duration;
 
-use aimdb_core::session::Delay;
+#[cfg(feature = "embedded-tls")]
+use core::cell::RefCell;
+
 use aimdb_core::RuntimeOps;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::Channel;
-use mountain_mqtt::client::{
-    Client, ClientError, ClientReceivedEvent, ConnectionSettings, EventHandler, EventHandlerError,
-};
+use mountain_mqtt::client::{ClientError, EventHandlerError};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
-use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
+use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packets::publish::ApplicationMessage;
+
+// The TLS path still drives `ClientNoQueue` through the polled loop below; the
+// plain path drives `ClientState` directly (design 053 §6.4). Everything gated
+// on `embedded-tls` in this module goes when TLS joins the same loop.
+#[cfg(feature = "embedded-tls")]
+use aimdb_core::session::Delay;
+#[cfg(feature = "embedded-tls")]
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+#[cfg(feature = "embedded-tls")]
+use mountain_mqtt::client::{Client, ClientReceivedEvent, ConnectionSettings, EventHandler};
+#[cfg(feature = "embedded-tls")]
+use mountain_mqtt::mqtt_manager::MqttOperations;
 
 /// The event channel: broker session to `pump_source`.
 pub(crate) type EventChannel<E, const Q: usize> = Channel<CriticalSectionRawMutex, MqttEvent<E>, Q>;
@@ -141,22 +151,24 @@ pub enum MqttEvent<E> {
         connection_id: ConnectionId,
     },
 }
-
 /// Per-connection bookkeeping, shared between the pump and its event handler.
 ///
 /// The blocking mutex is what makes `&SessionState` `Send`: a bare `RefCell`
 /// is not `Sync`, so a session future holding one could not be boxed as the
 /// runner requires. Every lock is a straight-line read or write, never held
 /// across an `await`.
+#[cfg(feature = "embedded-tls")]
 pub(crate) struct SessionState {
     inner: BlockingMutex<CriticalSectionRawMutex, RefCell<Inner>>,
 }
 
+#[cfg(feature = "embedded-tls")]
 struct Inner {
     /// When the broker last proved it was alive.
     last_connection_event_ms: u64,
 }
 
+#[cfg(feature = "embedded-tls")]
 impl SessionState {
     /// Fresh state for a new connection; the liveness window starts now.
     pub(crate) fn new(now_ms: u64) -> Self {
@@ -177,9 +189,9 @@ impl SessionState {
             .lock(|state| state.borrow().last_connection_event_ms)
     }
 }
-
 /// Forwards received MQTT events onto the event channel and refreshes the
 /// liveness timestamp on every broker acknowledgement.
+#[cfg(feature = "embedded-tls")]
 pub(crate) struct ChannelEventHandler<'a, E, const P: usize, const Q: usize>
 where
     E: FromApplicationMessage<P> + Clone,
@@ -190,6 +202,7 @@ where
     runtime: &'a dyn RuntimeOps,
 }
 
+#[cfg(feature = "embedded-tls")]
 impl<'a, E, const P: usize, const Q: usize> ChannelEventHandler<'a, E, P, Q>
 where
     E: FromApplicationMessage<P> + Clone,
@@ -209,6 +222,7 @@ where
     }
 }
 
+#[cfg(feature = "embedded-tls")]
 impl<E, const P: usize, const Q: usize> EventHandler<P> for ChannelEventHandler<'_, E, P, Q>
 where
     E: FromApplicationMessage<P> + Clone,
@@ -280,6 +294,7 @@ where
 /// pointless, a fresher value is already queued behind it) from a command
 /// (resend may be actively wrong). An application that needs at-least-once
 /// knows which it has, and can re-produce on [`MqttEvent::Connected`].
+#[cfg(feature = "embedded-tls")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_messages<'a, A, C, E, D, const P: usize, const Q: usize>(
     connection_id: ConnectionId,

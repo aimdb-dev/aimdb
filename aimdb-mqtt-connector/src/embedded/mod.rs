@@ -23,6 +23,11 @@
 pub mod manager;
 pub mod session;
 
+// The session's own machinery: incremental framing, and the three futures that
+// replace the polled loop (design 053 §5.1).
+pub(crate) mod packet_reader;
+pub(crate) mod session_loop;
+
 // TLS transport + SNTP time source.
 #[cfg(feature = "embassy-tls")]
 pub mod sntp;
@@ -46,8 +51,13 @@ use core::pin::Pin;
 #[cfg(feature = "embassy-tls")]
 use aimdb_embassy_adapter::connectors::into_box_future;
 
-use mountain_mqtt::client::{Client, ClientError, ConnectionSettings};
+use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
+
+// Named only by the TLS path's `MqttOperations` impl, which goes with it.
+#[cfg(feature = "embedded-tls")]
+use mountain_mqtt::client::{Client, ClientError};
+#[cfg(feature = "embedded-tls")]
 use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
 
 use crate::embedded::manager::{MqttEvent, Settings};
@@ -100,11 +110,16 @@ pub enum AimdbMqttAction {
 
 /// Implementation of MqttOperations trait for AimDB actions
 ///
+/// Only the TLS path still needs this: the plain path drives `ClientState`
+/// directly and encodes each action itself (design 053 §6.4). It goes when TLS
+/// joins the same loop.
+///
 /// `is_retry` is part of the upstream trait and is always `false` here: the
 /// session performs each action exactly once and drops it if it fails (see
 /// `handle_messages`' "Delivery" note), so nothing is ever a second attempt.
 /// A failure is logged with its topic before it propagates, because it ends
 /// the session and takes the message with it.
+#[cfg(feature = "embedded-tls")]
 impl MqttOperations for AimdbMqttAction {
     async fn perform<'a, 'b, C>(
         &'b mut self,
@@ -469,11 +484,9 @@ where
     let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
     let events: Arc<EventChannel> = Arc::new(EventChannel::new());
 
-    // The transport the session loop dials each cycle, and the clock it runs
-    // on — both come from the caller-supplied dialer.
-    let delay = dialer.clone();
-    let transport =
-        crate::embedded::session::SocketTransport::new(dialer, broker.host.clone(), broker.port);
+    // The dialer is both the transport and the clock the session runs on.
+    let host = broker.host.clone();
+    let port = broker.port;
 
     // SAFETY: every value the session holds is `Send` — `StreamDialer`
     // guarantees `Stream: Send`, the channels are `CriticalSectionRawMutex`
@@ -487,13 +500,14 @@ where
                 defmt::info!("MQTT background task starting");
 
                 crate::embedded::session::run_sessions(
-                    transport,
+                    dialer,
+                    host,
+                    port,
                     topics,
                     connection_settings,
                     Settings::default(),
                     events,
                     actions,
-                    delay,
                     runtime,
                 )
                 .await

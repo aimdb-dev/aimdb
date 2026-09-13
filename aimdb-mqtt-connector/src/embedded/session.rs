@@ -1,79 +1,26 @@
-//! The broker transport seam for the [`Embedded`](crate::connector::Embedded)
-//! backend.
+//! The broker session loop for the [`Embedded`](crate::connector::Embedded)
+//! backend: dial, run one MQTT session over the stream's two halves, wait,
+//! repeat.
 //!
-//! Built on `mountain-mqtt`'s own [`Connection`] rather than core's
-//! [`ByteStream`](aimdb_core::session::ByteStream): the MQTT client needs
-//! `receive_if_ready` — a non-blocking peek — which a byte stream does not
-//! express and a TLS session cannot provide (its readiness is two-layered;
-//! see the `tls` module). Wrapping core's trait would mean every
-//! TLS-like transport faking a capability, so the client's own seam is the
-//! honest one.
-//!
-//! A new runtime supplies MQTT by implementing this once. Anything offering
-//! `embedded_io_async::{Read, Write}` plus `ReadReady` — an lwIP socket, say —
-//! gets there through `mountain_mqtt::embedded_io_async::ConnectionEmbedded`
-//! with no protocol code to touch.
+//! Built on core's [`ByteStream`](aimdb_core::session::ByteStream) alone. The
+//! MQTT client used to need `receive_if_ready` — a non-blocking peek a byte
+//! stream cannot express and a TLS session cannot honestly provide — because
+//! the session polled. Nothing polls any more (design 053), so the peek is
+//! gone and with it the transport seam that existed to carry it: a runtime that
+//! can dial a [`StreamDialer`](aimdb_core::session::StreamDialer) can speak
+//! MQTT, with no protocol code and no `embedded-io-async` of its own.
 
-use aimdb_core::session::TransportResult;
 use core::future::Future;
-use mountain_mqtt::packet_client::Connection;
-
-/// Opens one broker connection per session.
-///
-/// The connector calls this once per reconnect cycle, so an implementation
-/// must be able to produce a fresh connection each time.
-pub trait BrokerTransport {
-    /// The connection this transport produces.
-    type Connection: Connection;
-
-    /// Open a connection to the broker.
-    fn connect(&self) -> impl Future<Output = TransportResult<Self::Connection>> + Send;
-}
-
-/// Bridges core's [`StreamDialer`](aimdb_core::session::StreamDialer) to
-/// [`BrokerTransport`] for any adapter whose stream also offers the
-/// `embedded-io-async` trio.
-///
-/// This is the path a new runtime takes: implement `StreamDialer` and delegate
-/// `Read`/`Write`/`ReadReady` on the stream, and MQTT follows with no code
-/// here. TLS does not come this way — its readiness is two-layered, so it
-/// implements [`BrokerTransport`] directly.
-pub struct SocketTransport<D> {
-    dialer: D,
-    host: alloc::string::String,
-    port: u16,
-}
-
-impl<D> SocketTransport<D> {
-    /// Dial `host:port` through `dialer` for each broker session.
-    pub fn new(dialer: D, host: impl Into<alloc::string::String>, port: u16) -> Self {
-        Self {
-            dialer,
-            host: host.into(),
-            port,
-        }
-    }
-}
-
-impl<D> BrokerTransport for SocketTransport<D>
-where
-    D: aimdb_core::session::StreamDialer + Sync,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
-{
-    type Connection = mountain_mqtt::embedded_io_async::ConnectionEmbedded<D::Stream>;
-
-    async fn connect(&self) -> TransportResult<Self::Connection> {
-        let stream = self.dialer.connect(&self.host, self.port).await?;
-        Ok(mountain_mqtt::embedded_io_async::ConnectionEmbedded::new(
-            stream,
-        ))
-    }
-}
 
 /// Bridges core's [`Delay`](aimdb_core::session::Delay) to the `DelayNs` the
 /// MQTT client wants, so the client's timeouts run on the adapter's clock.
+///
+/// Only the TLS path still needs it; it goes when TLS joins the same session
+/// loop as the plain path.
+#[cfg(feature = "embedded-tls")]
 pub(crate) struct ClientDelay<'a, D>(pub(crate) &'a D);
 
+#[cfg(feature = "embedded-tls")]
 impl<D> embedded_hal_async::delay::DelayNs for ClientDelay<'_, D>
 where
     D: aimdb_core::session::Delay,
@@ -122,33 +69,32 @@ impl<F: Future> Future for SendSession<F> {
     }
 }
 
-/// The broker session loop: connect, run MQTT until the session ends, wait,
-/// repeat. Never returns.
+/// Dial, run one session, wait, repeat. Never returns.
 ///
-/// One implementation for every transport. The manager re-subscribes
-/// `topics` on each connection, so inbound routing survives a reconnect.
+/// One implementation for every transport: the dialer supplies both the stream
+/// and the clock. `topics` is re-subscribed on each connection, so inbound
+/// routing survives a reconnect.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_sessions<T, D>(
-    transport: T,
+pub(crate) async fn run_sessions<D>(
+    dialer: D,
+    host: alloc::string::String,
+    port: u16,
     topics: alloc::vec::Vec<alloc::string::String>,
     connection_settings: mountain_mqtt::client::ConnectionSettings<'static>,
     settings: crate::embedded::manager::Settings,
     events: alloc::sync::Arc<crate::embedded::EventChannel>,
     actions: alloc::sync::Arc<crate::embedded::ActionChannel>,
-    delay: D,
     runtime: alloc::sync::Arc<dyn aimdb_core::RuntimeOps>,
 ) -> !
 where
-    T: BrokerTransport,
-    D: aimdb_core::session::Delay,
+    D: aimdb_core::session::StreamDialer + aimdb_core::session::Delay,
 {
-    use mountain_mqtt::client::ClientNoQueue;
+    use aimdb_core::session::{ByteStream, Delay};
     use mountain_mqtt::data::quality_of_service::QualityOfService;
     use mountain_mqtt::mqtt_manager::ConnectionId;
 
-    use crate::embedded::manager::{
-        handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState,
-    };
+    use crate::embedded::manager::MqttEvent;
+    use crate::embedded::session_loop::run_session;
 
     // Built once and borrowed for the loop; re-sent on every connection.
     let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics
@@ -156,58 +102,48 @@ where
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
 
-    let mut mqtt_buffer = [0u8; crate::embedded::BUFFER_SIZE];
     let mut connection_index = 0u32;
 
     loop {
-        let connection = match transport.connect().await {
-            Ok(connection) => connection,
+        let mut stream = match dialer.connect(&host, port).await {
+            Ok(stream) => stream,
             Err(_e) => {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("MQTT: connect failed, will retry");
-                delay.sleep(settings.reconnection_delay).await;
+                Delay::sleep(&dialer, settings.reconnection_delay).await;
                 continue;
             }
         };
 
-        let state = SessionState::new(now_ms(runtime.as_ref()));
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
 
-        let event_handler =
-            ChannelEventHandler::new(connection_id, &events, &state, runtime.as_ref());
-        let mut client = ClientNoQueue::new(
-            connection,
-            &mut mqtt_buffer,
-            mountain_mqtt::embedded_hal_async::DelayEmbedded::new(ClientDelay(&delay)),
-            settings.response_timeout.as_millis() as u32,
-            event_handler,
-        );
-
-        if let Err(error) = handle_messages(
+        // The halves live exactly as long as the session that reads and writes
+        // them, which is why borrowed halves are enough (design 053 §6.1).
+        let (rx, tx) = stream.split();
+        let error = run_session(
             connection_id,
-            &mut client,
-            &state,
+            rx,
+            tx,
             &connection_settings,
             &subscribe_topics,
             &events,
             &actions,
             &settings,
-            &delay,
+            &dialer,
             runtime.as_ref(),
         )
-        .await
-        {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("MQTT: session errored: {:?}", error);
-            events
-                .send(MqttEvent::Disconnected {
-                    connection_id,
-                    error,
-                })
-                .await;
-        }
+        .await;
 
-        delay.sleep(settings.reconnection_delay).await;
+        #[cfg(feature = "defmt")]
+        defmt::warn!("MQTT: session errored: {:?}", error);
+        events
+            .send(MqttEvent::Disconnected {
+                connection_id,
+                error,
+            })
+            .await;
+
+        Delay::sleep(&dialer, settings.reconnection_delay).await;
     }
 }
