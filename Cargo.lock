@@ -275,7 +275,6 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-time-driver",
- "embedded-hal-async",
  "embedded-io-async 0.7.0",
  "embedded-tls",
  "futures",

@@ -189,9 +189,7 @@ embedded-tls = { version = "0.19", default-features = false, optional = true, fe
     "p384",
 ] }
 embedded-io-async = { workspace = true, optional = true }
-embedded-hal-async = { workspace = true, optional = true }
 rand_core = { version = "0.6", default-features = false, optional = true }
-
 
 # Optional observability
 defmt = { workspace = true, optional = true }
