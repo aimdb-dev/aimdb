@@ -254,9 +254,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0069824828d8b3102324245a42618e65bab9c63fd2917ed52fa49e016d89cecf"
 dependencies = [
  "defmt 1.1.1",
- "embedded-hal-async",
- "embedded-io 0.7.1",
- "embedded-io-async 0.7.0",
  "heapless 0.8.0",
 ]
 

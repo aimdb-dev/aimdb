@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ByteStream::split` for `EmbassyTcpStream` and `EmbassyUart`.** The TCP
+  stream delegates to `embassy-net`'s own lock-free `TcpSocket::split` — both
+  halves are a copy of the socket's `io` handle — and a stream whose socket has
+  already gone still yields halves, which report `TransportError::Closed` on
+  use exactly as the unsplit methods do. `EmbassyUart` simply hands back the two
+  halves it was built from. Like the rest of this module the halves are
+  force-`Send` under the single-core cooperative-executor invariant, since
+  `TcpReader`/`TcpWriter` are `!Send`.
+
 - **`Delay` for `EmbassyTcpDialer`** (feature `embassy-time`). The dialer
   supplies the session clock, so a connector generic over it needs no separate
   handle — which is what keeps the MQTT call sites unchanged.

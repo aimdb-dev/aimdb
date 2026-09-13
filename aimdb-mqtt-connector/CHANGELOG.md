@@ -9,6 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **The embedded session is event-driven: nothing polls** (design 053). The
+  loop used to wake every 10 ms to ask three sources whether they had work,
+  which on a battery node is the only state that normally runs — and the
+  "non-blocking peek" it polled with could block indefinitely, parking the loop
+  and with it the pings, the liveness check and every queued publish. Both were
+  one problem. The stream is now split into halves driven by three futures in
+  one `select`: a reader that lifts bytes off the socket, a writer that drains
+  encoded packets, and the session itself selecting on two channels and one
+  timer. Measured against the loop it replaces: **5 wakes in 3 seconds where
+  the poll cost ~300**, and a QoS 1 publish no longer spins at 1 kHz waiting
+  inline for its PUBACK — the acknowledgement arrives through the read half
+  like any other packet while the ping deadline keeps running.
+
+  Two consequences worth knowing about. A partial packet is now "not enough
+  yet" rather than a parked loop, because packets are reassembled incrementally
+  instead of being read to a length the peer promised. And **the largest MQTT
+  packet the session can receive is 3584 bytes** (previously 4096): the
+  reassembly buffer, the read scratch and the inbound slot are carved out of
+  the same total the old single buffer cost, rather than added to it. Outbound
+  packets are encoded to exactly their own size on the heap the action channel
+  already uses, so they gain no fixed cap.
+
+- **TLS runs that same session** (design 053 §6.6). `mqtts://` was a loop of
+  its own because the MQTT client wanted a readiness peek that a TLS session
+  cannot answer honestly — its readiness is two-layered, since bytes on the
+  wire may decrypt to no application data at all. Nothing peeks any more, so
+  the bespoke `Connection`, the readiness probe onto the raw socket underneath
+  the TLS session, and the single `RefCell` that wrapped the whole socket so
+  both could reach it are all gone. What replaces them is one lock per
+  direction behind a cloneable handle, which is what lets `embedded-tls`'s
+  reader and writer run at once. TLS is now two adapter types and a handshake.
+
+- **`Settings::poll_interval` is removed.** There is no poll to pace. The other
+  fields are unchanged, and `ping_interval`, `connection_event_max_interval`
+  and `stabilisation_interval` now arm real deadlines rather than being
+  compared against a 10 ms tick.
+
+- **`BrokerTransport` and `SocketTransport` are removed** from
+  `embedded::session`. They existed to carry the readiness peek that a
+  `ByteStream` could not express; with the peek gone, a runtime that can dial a
+  `StreamDialer` can speak MQTT with no protocol code and no
+  `embedded-io-async` of its own. `MqttConnector::new(..).transport(..)` and
+  `.tls(..)` are untouched — this only affects code naming those two items
+  directly.
+
+- **The `D::Stream: embedded_io_async::{Read, Write, ReadReady}` bounds are
+  gone** from the connector's builders. A relaxation, so no caller breaks: the
+  connector now reaches a stream only through core's byte-stream traits.
+
+- **The `mountain-mqtt` dependency is the codec alone** (design 053 §6.7). It
+  moves to `aimdb-mountain-mqtt` 0.5.1 — upstream `main` with a zero-line
+  source delta — with `default-features = false` and **no features**, `defmt`
+  added back on the defmt leg alone. What this crate takes from it is the
+  sans-io half: the packet types, the readers and writers, the client state
+  machine. The driver half — the incremental reader, the loop, the in-flight
+  tracking — lives here now, so `embedded-hal-async` leaves the crate entirely
+  and `embedded-io-async` moves to the `embedded-tls` feature, the only place
+  that still names those traits. A Makefile guard asserts the dependency's
+  subtree stays codec-only.
+
+- **At-most-once delivery is unchanged, but a publish fails later.** An action
+  is still taken off the queue before it is performed and still dropped if the
+  session ends, logged with its topic. What changed is *when* a publish counts
+  as failed: it no longer blocks the loop waiting for its acknowledgement, so a
+  slow broker no longer stops pings, and only one QoS 1 publish is in flight at
+  a time — the action arm simply parks until the PUBACK lands.
+
 - **The backend split is std vs `no_std`, not Tokio vs Embassy.** The embedded
   backend runs on any target whose adapter supplies a `StreamDialer`, so a new
   platform costs one adapter crate and no change here. Features rename

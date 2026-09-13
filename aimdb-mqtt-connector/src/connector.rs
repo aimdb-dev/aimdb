@@ -177,7 +177,6 @@ where
         + Send
         + Sync
         + 'static,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     fn build<'a>(
         &'a self,
@@ -199,7 +198,6 @@ where
         + Send
         + Sync
         + 'static,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     fn build<'a>(
         &'a self,

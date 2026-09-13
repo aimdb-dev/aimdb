@@ -577,6 +577,35 @@ fn write_error(error: PacketWriteError) -> Error {
 mod tests {
     use super::*;
 
+    /// Halves that never do anything: enough to build the session future and
+    /// measure it without polling it.
+    struct NullRead;
+    struct NullWrite;
+
+    impl ByteRead for NullRead {
+        async fn read(&mut self, _buf: &mut [u8]) -> aimdb_core::session::TransportResult<usize> {
+            core::future::pending().await
+        }
+    }
+
+    impl ByteWrite for NullWrite {
+        async fn write_all(&mut self, _buf: &[u8]) -> aimdb_core::session::TransportResult<()> {
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> aimdb_core::session::TransportResult<()> {
+            Ok(())
+        }
+    }
+
+    struct NullDelay;
+
+    impl Delay for NullDelay {
+        fn sleep(&self, _d: Duration) -> impl core::future::Future<Output = ()> + Send {
+            core::future::pending()
+        }
+    }
+
     #[test]
     fn the_buffer_budget_is_what_the_old_loop_cost() {
         // Criterion 7: the reassembly buffer plus the read scratch plus one
@@ -593,6 +622,51 @@ mod tests {
         // Stabilisation and the response timeout arm independently.
         assert_eq!(next_deadline(0, true, 100, 500, Some(50), None), 50);
         assert_eq!(next_deadline(0, true, 100, 500, None, Some(20)), 20);
+    }
+
+    /// Criterion 7, as an enforced bound rather than an argument: the session
+    /// task's footprint must not grow past what the polled loop cost.
+    ///
+    /// That loop held one `BUFFER_SIZE` packet buffer plus its client; this one
+    /// holds the reassembly buffer, the read scratch and one inbound slot,
+    /// which `the_buffer_budget_is_what_the_old_loop_cost` pins at exactly
+    /// `BUFFER_SIZE` between them. What this adds is a ceiling on everything
+    /// else — client state, channel overhead, the three futures' frames —
+    /// measured at 6184 bytes when written.
+    ///
+    /// The bound is `BUFFER_SIZE * 2` rather than that measurement: a few dozen
+    /// bytes either way is codegen, and a test that fails on a toolchain bump
+    /// teaches people to raise it rather than to look. Another buffer of any
+    /// consequence does not fit underneath it.
+    #[test]
+    fn the_session_future_has_not_outgrown_the_loop_it_replaced() {
+        let events = EventChannel::new();
+        let actions = ActionChannel::new();
+        let settings = Settings::default();
+        let connection_settings = ConnectionSettings::unauthenticated("size-probe");
+        let runtime = aimdb_core::executor::test_support::NoopRuntimeOps;
+
+        // Built, never polled: `size_of_val` on the future is the whole point.
+        let session = run_session(
+            ConnectionId::new(0),
+            NullRead,
+            NullWrite,
+            &connection_settings,
+            &[],
+            &events,
+            &actions,
+            &settings,
+            &NullDelay,
+            &runtime,
+        );
+
+        let size = core::mem::size_of_val(&session);
+        assert!(
+            size <= BUFFER_SIZE * 2,
+            "the session future is {size} bytes, over the {} allowed — has a \
+             buffer been added rather than carved out of BUFFER_SIZE?",
+            BUFFER_SIZE * 2
+        );
     }
 
     #[test]

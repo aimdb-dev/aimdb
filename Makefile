@@ -29,7 +29,8 @@ RED := \033[0;31m
 SYNC_NO_STD_FORBIDDEN := tokio|libc
 # The embedded MQTT backend runs on any target with a `StreamDialer`, so no
 # executor, network stack, adapter or logger may reach its graph.
-MQTT_EMBEDDED_FORBIDDEN := embassy-net|embassy-executor|embassy-time|static_cell|aimdb-embassy-adapter|defmt
+MQTT_EMBEDDED_FORBIDDEN := embassy-net|embassy-executor|embassy-time|static_cell|aimdb-embassy-adapter|defmt|embedded-hal-async
+MQTT_DEPENDENCY_FORBIDDEN := embedded-io|embedded-hal|tokio
 NC := \033[0m # No Color
 
 ## Show available commands
@@ -515,6 +516,16 @@ test-embedded:
 		printf '%s\n' "$$out" | grep -iE '$(MQTT_EMBEDDED_FORBIDDEN)'; exit 1; \
 	fi
 	@printf "$(BLUE)✓ embedded MQTT graph is free of $(MQTT_EMBEDDED_FORBIDDEN)$(NC)\n"
+	@printf "$(YELLOW)  → Asserting the MQTT dependency is codec-only$(NC)\n"
+	@out=$$(cargo tree -p aimdb-mountain-mqtt --target thumbv7em-none-eabihf -e normal 2>&1) || { \
+		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
+		printf '%s\n' "$$out"; exit 1; \
+	}; \
+	if printf '%s\n' "$$out" | grep -qiE '$(MQTT_DEPENDENCY_FORBIDDEN)'; then \
+		printf "$(RED)✗ the MQTT dependency pulled a driver crate$(NC)\n"; \
+		printf '%s\n' "$$out" | grep -iE '$(MQTT_DEPENDENCY_FORBIDDEN)'; exit 1; \
+	fi
+	@printf "$(BLUE)✓ mountain-mqtt is the codec alone$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy bundle) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"

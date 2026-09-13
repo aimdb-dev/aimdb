@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ByteStream::split`, with `ByteRead` / `ByteWrite`** (design 053 §6.1).
+  Borrows a stream into independently usable read and write halves, so a
+  session can run a reader and a writer concurrently in one `select` — which a
+  single `&mut` stream cannot express at all. Borrowed halves are enough: both
+  live in the same stack frame, which is why this needs nothing owned or
+  `'static` and why the objection design 052 recorded against `connector-io`
+  does not apply. `read`/`write_all`/`flush` stay for the handshake and for
+  callers that never split. The MQTT connector's event-driven session is the
+  first consumer; the Embassy and Tokio adapters implement it.
+- **The cancellation contract is written down** (design 053 §6.2). `read` is
+  cancel-safe on both adapters AimDB ships — dropping the future consumes
+  nothing, verified per layer and end to end over a drip transport — but that
+  is documented as a property of those transports rather than a promise of the
+  trait, so a reader that cannot resume mid-packet is still free to implement
+  it. `write_all` is cancel-safe **nowhere** and must never sit in a `select`
+  arm: a partial write desynchronises the framing above it with nothing to
+  resync on.
+
 - **Runtime-neutral I/O layer (`session::io`, feature `connector-session`).**
   `ByteStream`/`StreamDialer`/`StreamListener`/`Datagram`/`DatagramBinder`/`Delay`
   sit below `Connection`, so an adapter owns sockets and clocks while a connector

@@ -231,7 +231,6 @@ where
         + Send
         + Sync
         + 'static,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     Box::pin(async move {
         let topics = inbound_topics(db);
@@ -268,7 +267,6 @@ where
         + Send
         + Sync
         + 'static,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     Box::pin(async move {
         let topics = inbound_topics(db);
@@ -400,7 +398,6 @@ where
         + Send
         + Sync
         + 'static,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
     let events: Arc<EventChannel> = Arc::new(EventChannel::new());
@@ -458,7 +455,6 @@ where
         + Send
         + Sync
         + 'static,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     match host_ip_literal(&broker.host) {
         Some(core::net::IpAddr::V6(_)) => {
