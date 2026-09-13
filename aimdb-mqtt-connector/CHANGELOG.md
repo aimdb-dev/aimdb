@@ -102,7 +102,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes a convenience bundle over it. TLS splits the same way: `embedded-tls`
   is runtime-neutral, `embassy-tls` adds the SNTP time source a board with no
   RTC needs. Modules follow: `tokio_client` → `native`, `embassy_client` →
-  `embedded` (both kept as deprecated re-exports for one release).
+  `embedded`, renamed outright with no compatibility re-export. A shim would
+  have been theatre: the builders those modules held are gone too, so the old
+  import fails either way. Failing at the module boundary — `unresolved import
+  ... could not find 'tokio_client'` — at least points at the line to change,
+  where a module alias would have resolved and then failed on a type the caller
+  never named.
 - **One constructor.** `MqttConnector::new(url)` is unconditional, and the
   transport — or its absence — picks the backend, so both compile into one
   binary. Previously the two inherent `new`s collided with `E0034` whenever

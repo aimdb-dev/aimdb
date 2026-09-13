@@ -128,15 +128,6 @@ pub mod embedded;
 #[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]
 pub(crate) mod sntp_codec;
 
-// Deprecated module names, kept for one release so existing imports keep
-// working. The modules no longer name a runtime.
-#[cfg(feature = "embedded")]
-#[deprecated(since = "0.7.0", note = "renamed to `embedded`")]
-pub use crate::embedded as embassy_client;
-#[cfg(feature = "std")]
-#[deprecated(since = "0.7.0", note = "renamed to `native`")]
-pub use crate::native as tokio_client;
-
 #[cfg(feature = "embedded")]
 pub use connector::Embedded;
 #[cfg(feature = "embedded-tls")]
