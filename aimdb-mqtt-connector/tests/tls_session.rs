@@ -129,7 +129,7 @@ async fn build_tls_db(
 ) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
-    use aimdb_mqtt_connector::MqttConnector;
+    use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
     use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
     let connector = MqttConnector::new(format!("mqtts://{BROKER_HOST}:{port}"))
@@ -153,7 +153,6 @@ async fn build_tls_db(
     });
 
     if let Some((every, qos)) = publish {
-        let destination = format!("mqtt://sensors/uptime?qos={qos}");
         builder.configure::<u64>("uptime", move |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .source(move |_ctx, producer| async move {
@@ -164,7 +163,8 @@ async fn build_tls_db(
                         tokio::time::sleep(every).await;
                     }
                 })
-                .link_to(&destination)
+                .link_to("mqtt://sensors/uptime")
+                .with_qos(qos)
                 .with_serializer(|_ctx, value: &u64| Ok(value.to_string().into_bytes()))
                 .finish();
         });

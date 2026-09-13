@@ -72,7 +72,7 @@ async fn build_db(
 ) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
-    use aimdb_mqtt_connector::MqttConnector;
+    use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
     use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
     let connector = MqttConnector::new(format!("mqtt://127.0.0.1:{port}"))
@@ -96,7 +96,6 @@ async fn build_db(
     });
 
     if let Some((every, qos)) = publish {
-        let destination = format!("mqtt://sensors/uptime?qos={qos}");
         builder.configure::<u64>("uptime", move |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .source(move |_ctx, producer| async move {
@@ -107,7 +106,8 @@ async fn build_db(
                         tokio::time::sleep(every).await;
                     }
                 })
-                .link_to(&destination)
+                .link_to("mqtt://sensors/uptime")
+                .with_qos(qos)
                 .with_serializer(|_ctx, value: &u64| Ok(value.to_string().into_bytes()))
                 .finish();
         });
@@ -387,5 +387,46 @@ async fn every_qos1_push_is_acknowledged() {
         log.pushed_qos1.len(),
         log.pushed_qos1.len() - log.pubacks.len(),
         delivered.load(Ordering::Relaxed),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The build-time QoS warning can actually see what it warns about.
+// ---------------------------------------------------------------------------
+
+/// `warn_unsupported_qos` scans `collect_outbound_routes("mqtt")` for a `qos`
+/// entry in each route's query config. That scan is the part that can silently
+/// find nothing — a scheme filter that does not match, or a config key that
+/// never lands — leaving a warning that compiles and never fires. This asserts
+/// the shape it depends on, mirroring the private function exactly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_qos2_route_is_visible_to_the_build_time_scan() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let dialer = CountingDialer::new();
+    let (db, _runner) = build_db(port, dialer, Some((Duration::from_secs(60), 2))).await;
+
+    let routes = db.collect_outbound_routes("mqtt");
+    assert!(
+        !routes.is_empty(),
+        "the mqtt scheme must match, or the scan sees no routes at all"
+    );
+
+    let flagged: Vec<(&str, &str)> = routes
+        .iter()
+        .filter_map(|route| {
+            route
+                .config
+                .iter()
+                .find(|(k, _)| k == "qos")
+                .map(|(_, v)| (route.topic.as_str(), v.as_str()))
+        })
+        .collect();
+
+    assert_eq!(
+        flagged,
+        vec![("sensors/uptime", "2")],
+        "the scan must see the route's topic and its qos option; got {flagged:?}"
     );
 }

@@ -285,6 +285,14 @@ MQTT Quality of Service levels are configured using integers:
 - **QoS 1**: Commands, important events (default)
 - **QoS 2**: Critical state changes, financial transactions
 
+> **Backend note:** only the `std` (`rumqttc`) backend implements QoS 2. On the
+> `embedded` backend a `qos=2` route publishes at QoS 1 (at-least-once) and logs
+> a warning naming that route at startup, so the same route gives a weaker
+> guarantee there. Design for at-least-once if the route has to run on both.
+>
+> Set QoS with `.with_qos(n)` on the link — a `?qos=` query in the link URL is
+> stripped during parsing and has no effect.
+
 ## Error Handling
 
 ```rust

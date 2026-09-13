@@ -138,7 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loop names no executor. `Settings` is `core::time::Duration` and lost its
   dead `address`/`port` fields.
 - **Two protocol backends behind one type.** `Native` is `rumqttc` (QoS 0–2,
-  rustls); `Embedded<D>` is `mountain-mqtt` over a caller-supplied transport.
+  rustls); `Embedded<D>` is `mountain-mqtt` over a caller-supplied transport
+  (QoS 0–1 — a `qos=2` route publishes at QoS 1, and the build now names each
+  such route in a warning, since the same route gets exactly-once on `Native`).
   The Tokio path is unchanged; Embassy callers now write
   `MqttConnector::new(url).transport(EmbassyNet::tcp(..))`, or
   `.tls(EmbassyNet::tcp(..), opts)` for `mqtts://`, instead of passing the

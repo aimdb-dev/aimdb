@@ -212,6 +212,7 @@ where
 {
     Box::pin(async move {
         let topics = inbound_topics(db);
+        warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if broker.tls {
             return Err(build_err("mqtts:// broker URLs require .tls(...)"));
@@ -248,6 +249,7 @@ where
 {
     Box::pin(async move {
         let topics = inbound_topics(db);
+        warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if !broker.tls {
             return Err(build_err(".tls(...) requires an mqtts:// broker URL"));
@@ -511,14 +513,51 @@ where
 
 /// Map a QoS level to mountain-mqtt's `QualityOfService`.
 ///
-/// `2` downgrades to 1 (the client implements no exactly-once); anything above
-/// 2 is rejected, as `Native` rejects it.
+/// `2` downgrades to 1 — this client implements no exactly-once handshake,
+/// where [`Native`](crate::connector::Native) honours the same route URL
+/// exactly. [`warn_unsupported_qos`] is what says so, once per route at build.
+/// Anything above 2 is rejected, as `Native` rejects it.
 fn map_qos(qos: u8) -> Result<QualityOfService, PublishError> {
     match qos {
         0 => Ok(QualityOfService::Qos0),
         1 => Ok(QualityOfService::Qos1),
         2 => Ok(QualityOfService::Qos1),
         _ => Err(PublishError::UnsupportedQoS),
+    }
+}
+
+/// Name, at build, every outbound route asking for a QoS this backend cannot
+/// give.
+///
+/// Checked here rather than in [`map_qos`] because `map_qos` runs per publish:
+/// warning there would repeat at the route's own rate for the life of the
+/// process, and latching it to fire once would hide the message whenever the
+/// first publish beats the logger into place. The route set is fixed at build,
+/// so once per offending route — naming the route, while the caller is still
+/// reading startup output — is both quieter and more use than either.
+///
+/// Both facades fire: they are independent, and neither covers the other.
+/// `log_warn!` reaches `tracing`/`log` when this backend runs on a host,
+/// `defmt` reaches an MCU.
+fn warn_unsupported_qos(db: &aimdb_core::builder::AimDb) {
+    for route in db.collect_outbound_routes("mqtt") {
+        let asked = route
+            .config
+            .iter()
+            .find(|(k, _)| k == "qos")
+            .and_then(|(_, v)| v.parse::<u8>().ok());
+
+        if asked == Some(2) {
+            aimdb_core::log_warn!(
+                "MQTT: route '{}' asks for qos=2; this backend publishes it at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
+                route.topic
+            );
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "MQTT: route '{}' asks qos=2; publishing at QoS 1 (at-least-once)",
+                route.topic.as_str()
+            );
+        }
     }
 }
 
