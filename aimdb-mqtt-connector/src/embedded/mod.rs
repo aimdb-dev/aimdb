@@ -4,7 +4,7 @@
 //! [`pump_source`] directly — the session channels are `Sync`, so nothing
 //! force-`Send` stands between them and the runner. This module contributes
 //! the connector builder, the `MqttSink`/`MqttSource` over those channels, and
-//! the `MqttOperations`/`FromApplicationMessage` glue.
+//! the actions and events that cross them.
 //!
 //! # Usage
 //!
@@ -54,12 +54,6 @@ use aimdb_embassy_adapter::connectors::into_box_future;
 use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 
-// Named only by the TLS path's `MqttOperations` impl, which goes with it.
-#[cfg(feature = "embedded-tls")]
-use mountain_mqtt::client::{Client, ClientError};
-#[cfg(feature = "embedded-tls")]
-use mountain_mqtt::mqtt_manager::{ConnectionId, MqttOperations};
-
 use crate::embedded::manager::{MqttEvent, Settings};
 
 #[cfg(feature = "embedded-tls")]
@@ -89,9 +83,10 @@ pub(crate) type ActionChannel =
 /// Inbound messages: broker session to pumps.
 pub(crate) type EventChannel = crate::embedded::manager::EventChannel<AimdbMqttEvent, CHANNEL_SIZE>;
 
-/// MQTT actions that can be performed
+/// What the pumps ask the session to put on the wire.
 ///
-/// Implements the `MqttOperations` trait required by mountain-mqtt-embassy.
+/// The session encodes each of these itself against the MQTT client state, so
+/// an action is data rather than a call: see `session_loop::perform`.
 #[derive(Clone)]
 pub enum AimdbMqttAction {
     /// Publish a message to a topic
@@ -106,80 +101,6 @@ pub enum AimdbMqttAction {
         topic: String,
         qos: QualityOfService,
     },
-}
-
-/// Implementation of MqttOperations trait for AimDB actions
-///
-/// Only the TLS path still needs this: the plain path drives `ClientState`
-/// directly and encodes each action itself (design 053 §6.4). It goes when TLS
-/// joins the same loop.
-///
-/// `is_retry` is part of the upstream trait and is always `false` here: the
-/// session performs each action exactly once and drops it if it fails (see
-/// `handle_messages`' "Delivery" note), so nothing is ever a second attempt.
-/// A failure is logged with its topic before it propagates, because it ends
-/// the session and takes the message with it.
-#[cfg(feature = "embedded-tls")]
-impl MqttOperations for AimdbMqttAction {
-    async fn perform<'a, 'b, C>(
-        &'b mut self,
-        client: &mut C,
-        _client_id: &'a str,
-        _connection_id: ConnectionId,
-        _is_retry: bool,
-    ) -> Result<(), ClientError>
-    where
-        C: Client<'a>,
-    {
-        match self {
-            Self::Publish {
-                topic,
-                payload,
-                qos,
-                retain,
-            } => {
-                #[cfg(feature = "defmt")]
-                defmt::debug!(
-                    "Publishing {} bytes to {} (QoS={:?})",
-                    payload.len(),
-                    topic.as_str(),
-                    qos
-                );
-
-                client
-                    .publish(topic, payload, *qos, *retain)
-                    .await
-                    .inspect_err(|_e| {
-                        #[cfg(feature = "defmt")]
-                        defmt::warn!(
-                            "MQTT: dropping publish of {} bytes to {}: {}",
-                            payload.len(),
-                            topic.as_str(),
-                            _e
-                        );
-                    })?;
-
-                #[cfg(feature = "defmt")]
-                defmt::info!("Published {} bytes to {}", payload.len(), topic.as_str());
-
-                Ok(())
-            }
-            Self::Subscribe { topic, qos } => {
-                #[cfg(feature = "defmt")]
-                defmt::info!("Subscribing to {} (QoS={:?})", topic.as_str(), qos);
-
-                client.subscribe(topic, *qos).await.inspect_err(|_e| {
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!("MQTT: dropping subscribe to {}: {}", topic.as_str(), _e);
-                })?;
-
-                #[cfg(feature = "defmt")]
-                defmt::info!("Subscribed to {}", topic.as_str());
-
-                Ok(())
-            }
-        }
-    }
 }
 
 /// MQTT events for received messages

@@ -473,14 +473,40 @@ fn perform(
             qos,
             retain,
         } => {
+            #[cfg(feature = "defmt")]
+            defmt::debug!(
+                "Publishing {} bytes to {} (QoS={:?})",
+                payload.len(),
+                topic.as_str(),
+                qos
+            );
             let packet = state
                 .publish_packet(&topic, &payload, qos, retain)
+                .inspect_err(|_e| {
+                    // The action is already off the channel, so a failure here
+                    // loses this message and ends the session — say which.
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!(
+                        "MQTT: dropping publish of {} bytes to {}: {}",
+                        payload.len(),
+                        topic.as_str(),
+                        _e
+                    );
+                })
                 .map_err(client_error)?;
             queue(outbound, encode(&packet)?);
             state.publish_update(&packet).map_err(client_error)?;
         }
         AimdbMqttAction::Subscribe { topic, qos } => {
-            let packet = state.subscribe_packet(&topic, qos).map_err(client_error)?;
+            #[cfg(feature = "defmt")]
+            defmt::info!("Subscribing to {} (QoS={:?})", topic.as_str(), qos);
+            let packet = state
+                .subscribe_packet(&topic, qos)
+                .inspect_err(|_e| {
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!("MQTT: dropping subscribe to {}: {}", topic.as_str(), _e);
+                })
+                .map_err(client_error)?;
             queue(outbound, encode(&packet)?);
             state.subscribe_update(&packet).map_err(client_error)?;
         }

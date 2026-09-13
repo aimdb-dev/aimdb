@@ -1,42 +1,46 @@
 //! The TLS transport for the embedded backend.
 //!
 //! `mqtts://` broker sessions: an `embedded-tls` 1.3 session over the caller's
-//! transport, presented to the MQTT layer as its own `Connection` — not
-//! `ConnectionEmbedded`, which needs a `ReadReady` a TLS session cannot give
-//! (see `TlsSession` below). Certificate verification is `rustpki` (pure Rust)
-//! against the application-embedded root CA, dated by the runtime's wall
-//! clock; entropy
-//! comes from the application-injected TRNG ([`TlsOptions::new`]).
+//! transport, split into halves the session loop reads and writes exactly as
+//! it does a plaintext socket. Certificate verification is `rustpki` (pure
+//! Rust) against the application-embedded root CA, dated by the runtime's wall
+//! clock; entropy comes from the application-injected TRNG
+//! ([`TlsOptions::new`]).
 //!
 //! The dialer resolves the host, so there is no network stack here: the same
 //! session runs on a host over the Tokio adapter's transport.
+//!
+//! # Why this path used to be different
+//!
+//! The MQTT client needed a non-blocking peek (`receive_if_ready`), which a
+//! TLS session cannot answer honestly: its readiness is two-layered, since
+//! bytes on the wire may decrypt to no application data at all. That forced a
+//! bespoke `Connection` here, a readiness probe onto the raw socket underneath
+//! the TLS session, and one `RefCell` wrapping the whole socket so both could
+//! reach it. Nothing polls any more, so the peek is gone and with it all
+//! three: TLS now differs from the plain path by two adapter types and a
+//! handshake.
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use core::future::Future;
 use core::net::IpAddr;
 
-use alloc::sync::Arc;
-
+use aimdb_core::session::{ByteRead, ByteStream, ByteWrite, TransportError, TransportResult};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embedded_tls::pki::CertVerifier;
 use embedded_tls::{
     Aes128GcmSha256, Certificate, CryptoProvider, CryptoRngCore, TlsConfig, TlsConnection,
-    TlsContext, TlsError, TlsVerifier,
+    TlsContext, TlsError, TlsReader, TlsVerifier, TlsWriter,
 };
 
-use embedded_io_async::Write as _;
-
-use crate::embedded::manager::{
-    handle_messages, now_ms, ChannelEventHandler, MqttEvent, SessionState, Settings,
-};
-use mountain_mqtt::client::{ClientNoQueue, ConnectionSettings};
+use crate::embedded::manager::{MqttEvent, Settings};
+use crate::embedded::session_loop::run_session;
+use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
-use mountain_mqtt::embedded_hal_async::DelayEmbedded;
-use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::mqtt_manager::ConnectionId;
-use mountain_mqtt::packet_client::Connection;
-
-use crate::embedded::{AimdbMqttEvent, BUFFER_SIZE, CHANNEL_SIZE, MAX_PROPERTIES};
 
 /// Room for the server's leaf certificate (DER) inside the verifier — 4 KB
 /// covers RSA-4096 leaves with headroom.
@@ -113,111 +117,167 @@ impl TlsOptions {
     }
 }
 
-/// The stream shared between the TLS session (its transport) and the
-/// MQTT-level readiness probe ([`TlsSession::receive_if_ready`]), which needs
-/// to ask the wire after the stream has been handed to `embedded-tls`.
+/// The socket's two halves behind one handle, so `embedded-tls` can clone a
+/// "socket" into its reader and its writer.
 ///
-/// Borrow discipline: the session task drives exactly one client operation at
-/// a time, so a `borrow_mut` held across an I/O `.await` can never overlap
-/// the probe's short `borrow` — both are called sequentially from the same
-/// loop.
-struct SharedStream<'r, S>(&'r RefCell<S>);
+/// [`TlsConnection::split`] requires `Socket: Clone` and hands a clone to each
+/// half, so the handle must tolerate one clone being read while another is
+/// written — which is exactly what the session does. **Separate locks per
+/// direction** make that safe by type: `TlsReader`'s impls require only
+/// `AsyncRead` and `TlsWriter`'s only `AsyncWrite`, so the reader only ever
+/// touches `rx` and the writer only `tx`. They never contend, and neither ever
+/// waits on the other.
+///
+/// The locks are async rather than `RefCell`s because a guard is held across
+/// the inner `.await`. A `RefCell` there would be either a panic waiting for
+/// the first genuinely concurrent read and write — which is what the session
+/// now does on every connection — or an `await_holding_refcell_ref` allow
+/// papering over it. Uncontended by construction, so the cost is an atomic
+/// apiece.
+///
+/// **The disjointness is an argument about a dependency**, and the one real
+/// risk here: an `embedded-tls` that let its reader write — to answer a
+/// KeyUpdate inline, say — would make the two halves contend at runtime.
+/// `tests/tls_duplex.rs` drives a concurrent read and write to completion so
+/// that shows up at a version bump rather than in the field.
+struct DuplexHandle<'a, Rx, Tx> {
+    rx: &'a Mutex<CriticalSectionRawMutex, Rx>,
+    tx: &'a Mutex<CriticalSectionRawMutex, Tx>,
+}
 
-impl<S> Clone for SharedStream<'_, S> {
+impl<Rx, Tx> Clone for DuplexHandle<'_, Rx, Tx> {
     fn clone(&self) -> Self {
-        Self(self.0)
+        Self {
+            rx: self.rx,
+            tx: self.tx,
+        }
     }
 }
 
-impl<S: embedded_io_async::ReadReady> SharedStream<'_, S> {
-    fn can_recv(&self) -> bool {
-        self.0.borrow_mut().read_ready().unwrap_or(false)
-    }
+impl<Rx, Tx> embedded_io_async::ErrorType for DuplexHandle<'_, Rx, Tx> {
+    type Error = embedded_io_async::ErrorKind;
 }
 
-impl<S: embedded_io_async::ErrorType> embedded_io_async::ErrorType for SharedStream<'_, S> {
-    type Error = S::Error;
-}
-
-// The held-across-await borrows below are safe by the struct-level borrow
-// discipline (sequential single-task use); a panic would mean a second client
-// operation ran concurrently, which the session loop cannot do.
-#[allow(clippy::await_holding_refcell_ref)]
-impl<S: embedded_io_async::Read> embedded_io_async::Read for SharedStream<'_, S> {
+impl<Rx, Tx> embedded_io_async::Read for DuplexHandle<'_, Rx, Tx>
+where
+    Rx: ByteRead,
+{
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.0.borrow_mut().read(buf).await
+        self.rx
+            .lock()
+            .await
+            .read(buf)
+            .await
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
     }
 }
 
-#[allow(clippy::await_holding_refcell_ref)]
-impl<S: embedded_io_async::Write> embedded_io_async::Write for SharedStream<'_, S> {
+impl<Rx, Tx> embedded_io_async::Write for DuplexHandle<'_, Rx, Tx>
+where
+    Tx: ByteWrite,
+{
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.0.borrow_mut().write(buf).await
+        self.tx
+            .lock()
+            .await
+            .write_all(buf)
+            .await
+            .map(|()| buf.len())
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.0.borrow_mut().flush().await
-    }
-}
-
-/// mountain-mqtt [`Connection`] over an open TLS session.
-///
-/// Not `ConnectionEmbedded`: that adapter needs `ReadReady`, which
-/// [`TlsConnection`] cannot offer — and TLS readiness is two-layered anyway.
-/// Data can be ready as already-decrypted plaintext left over from a record
-/// that carried more than one MQTT packet (`plaintext_remaining`), or as
-/// undecrypted bytes on the wire (`can_recv` on the shared socket). Checking
-/// both keeps coalesced packets flowing promptly.
-///
-/// Known limitation: wire bytes that decrypt to *no* application data
-/// (unsolicited session tickets, KeyUpdate) make `receive` wait for the next
-/// real record; if the broker stays silent, the keep-alive lapse tears the
-/// session down and the manager reconnects.
-struct TlsSession<'r, 'b, S>
-where
-    S: embedded_io_async::Read + embedded_io_async::Write,
-{
-    tls: TlsConnection<'b, SharedStream<'r, S>, Aes128GcmSha256>,
-    socket: SharedStream<'r, S>,
-    /// Decrypted-but-unread plaintext left in the TLS record buffer.
-    plaintext_remaining: usize,
-}
-
-impl<S> Connection for TlsSession<'_, '_, S>
-where
-    S: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
-{
-    async fn send(&mut self, buf: &[u8]) -> Result<(), PacketWriteError> {
-        self.tls
-            .write_all(buf)
+        self.tx
+            .lock()
             .await
-            .map_err(|_| PacketWriteError::ConnectionSend)?;
-        self.tls
             .flush()
             .await
-            .map_err(|_| PacketWriteError::ConnectionSend)
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
     }
+}
 
-    async fn receive(&mut self, buf: &mut [u8]) -> Result<(), PacketReadError> {
-        let mut filled = 0;
-        while filled < buf.len() {
-            let mut read_buffer = self
-                .tls
-                .read_buffered()
+/// Asserts that a TLS half's I/O future is `Send`.
+///
+/// `embedded-tls` holds a `Range<*const u8>` over its own record buffer across
+/// an await, so its futures are `!Send` by type even though nothing in them is
+/// shared: the pointers address the very buffer the future owns exclusively.
+///
+/// The session's three futures are polled as one task, and the TLS halves are
+/// reachable from nowhere else, so no value here is ever touched from two
+/// threads at once. A task that migrates between threads moves the whole of
+/// itself, which is exactly what `Send` on the composed future asserts — and
+/// the connector already asserts it, one level up, for the session as a whole
+/// ([`SendSession`](crate::embedded::session::SendSession)). This states the
+/// same thing at the point where the type system actually needs it.
+struct AssertSend<F>(F);
+
+// SAFETY: upheld by the single-task argument above.
+unsafe impl<F> Send for AssertSend<F> {}
+
+impl<F: Future> Future for AssertSend<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<F::Output> {
+        // SAFETY: a transparent projection; `AssertSend` is never moved out of.
+        unsafe { self.map_unchecked_mut(|s| &mut s.0) }.poll(cx)
+    }
+}
+
+/// The TLS session's read half, as the session loop's [`ByteRead`].
+///
+/// This pair is the whole of what TLS costs the loop: below them the session
+/// cannot tell a plaintext socket from a record stream, so both paths run the
+/// same three futures.
+struct TlsRead<'a, 'b, Rx, Tx>(TlsReader<'a, DuplexHandle<'b, Rx, Tx>, Aes128GcmSha256>);
+
+/// The TLS session's write half, as the session loop's [`ByteWrite`].
+struct TlsWrite<'a, 'b, Rx, Tx>(TlsWriter<'a, DuplexHandle<'b, Rx, Tx>, Aes128GcmSha256>);
+
+impl<'a, 'b, Rx, Tx> ByteRead for TlsRead<'a, 'b, Rx, Tx>
+where
+    // The socket handle outlives the TLS session borrowed from it.
+    'b: 'a,
+    Rx: ByteRead + Send + 'b,
+    Tx: ByteWrite + Send + 'b,
+{
+    fn read<'r>(
+        &'r mut self,
+        buf: &'r mut [u8],
+    ) -> impl Future<Output = TransportResult<usize>> + Send + 'r {
+        AssertSend(async move {
+            use embedded_io_async::Read as _;
+            self.0.read(buf).await.map_err(|_| TransportError::Io)
+        })
+    }
+}
+
+impl<'a, 'b, Rx, Tx> ByteWrite for TlsWrite<'a, 'b, Rx, Tx>
+where
+    'b: 'a,
+    Rx: ByteRead + Send + 'b,
+    Tx: ByteWrite + Send + 'b,
+{
+    fn write_all<'w>(
+        &'w mut self,
+        buf: &'w [u8],
+    ) -> impl Future<Output = TransportResult<()>> + Send + 'w {
+        AssertSend(async move {
+            use embedded_io_async::Write as _;
+            self.0
+                .write_all(buf)
                 .await
-                .map_err(|_| PacketReadError::ConnectionReceive)?;
-            filled += read_buffer.pop_into(&mut buf[filled..]);
-            self.plaintext_remaining = read_buffer.len();
-        }
-        Ok(())
+                .map_err(|_| TransportError::Closed)
+        })
     }
 
-    async fn receive_if_ready(&mut self, buf: &mut [u8]) -> Result<bool, PacketReadError> {
-        if self.plaintext_remaining == 0 && !self.socket.can_recv() {
-            return Ok(false);
-        }
-        self.receive(buf).await?;
-        Ok(true)
+    fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_ {
+        AssertSend(async move {
+            use embedded_io_async::Write as _;
+            self.0.flush().await.map_err(|_| TransportError::Closed)
+        })
     }
 }
 
@@ -299,7 +359,6 @@ pub(crate) async fn run_tls<D>(
 ) -> !
 where
     D: aimdb_core::session::StreamDialer + aimdb_core::session::Delay,
-    D::Stream: embedded_io_async::Read + embedded_io_async::Write + embedded_io_async::ReadReady,
 {
     let TlsOptions {
         rng,
@@ -309,9 +368,7 @@ where
         ..
     } = options;
 
-    let mut mqtt_buffer = [0u8; BUFFER_SIZE];
-
-    // Re-subscribed by `handle_messages` on every (re)connection, so inbound
+    // Re-subscribed by the session on every (re)connection, so inbound
     // routing survives reconnects. Built once — borrows `topics` for the loop.
     let subscribe_topics: Vec<(&str, QualityOfService)> = topics
         .iter()
@@ -339,7 +396,7 @@ where
             }
         }
 
-        let stream = match dialer.connect(&host, port).await {
+        let mut stream = match dialer.connect(&host, port).await {
             Ok(stream) => stream,
             Err(_e) => {
                 #[cfg(feature = "defmt")]
@@ -349,15 +406,20 @@ where
             }
         };
 
-        let stream = RefCell::new(stream);
-        let shared = SharedStream(&stream);
+        // One lock per direction, so the TLS reader and writer never contend.
+        let (rx, tx) = stream.split();
+        let rx = Mutex::new(rx);
+        let tx = Mutex::new(tx);
+        let handle = DuplexHandle { rx: &rx, tx: &tx };
 
         let tls_config = TlsConfig::new().with_server_name(&host);
-        let mut tls = TlsConnection::new(shared.clone(), &mut *read_buf, &mut *write_buf);
+        let mut tls = TlsConnection::new(handle.clone(), &mut *read_buf, &mut *write_buf);
         let provider = TrngProvider {
             rng: &mut *rng,
             verifier: CertVerifier::new(Certificate::X509(ca_der)),
         };
+        // The handshake reads and writes sequentially through one connection,
+        // so it needs no split and takes neither lock twice.
         if let Err(e) = tls.open(TlsContext::new(&tls_config, provider)).await {
             #[cfg(feature = "defmt")]
             defmt::warn!(
@@ -372,33 +434,16 @@ where
         #[cfg(feature = "defmt")]
         defmt::info!("MQTT-TLS: session established");
 
-        let connection = TlsSession {
-            tls,
-            socket: shared,
-            plaintext_remaining: 0,
-        };
-        let timeout_millis = settings.response_timeout.as_millis() as u32;
-
-        let state = SessionState::new(now_ms(runtime.as_ref()));
-
         let connection_id = ConnectionId::new(connection_index);
         connection_index += 1;
 
-        let event_handler: ChannelEventHandler<'_, AimdbMqttEvent, MAX_PROPERTIES, CHANNEL_SIZE> =
-            ChannelEventHandler::new(connection_id, &events, &state, runtime.as_ref());
-
-        let mut client = ClientNoQueue::new(
-            connection,
-            &mut mqtt_buffer,
-            DelayEmbedded::new(crate::embedded::session::ClientDelay(&delay)),
-            timeout_millis,
-            event_handler,
-        );
-
-        if let Err(error) = handle_messages(
+        // From here the session is the plain path's, byte for byte: the record
+        // layer is just another pair of halves.
+        let (tls_rx, tls_tx) = tls.split();
+        let error = run_session(
             connection_id,
-            &mut client,
-            &state,
+            TlsRead(tls_rx),
+            TlsWrite(tls_tx),
             &connection_settings,
             &subscribe_topics,
             &events,
@@ -407,17 +452,16 @@ where
             &delay,
             runtime.as_ref(),
         )
-        .await
-        {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("MQTT-TLS: session errored: {:?}", error);
-            events
-                .send(MqttEvent::Disconnected {
-                    connection_id,
-                    error,
-                })
-                .await;
-        }
+        .await;
+
+        #[cfg(feature = "defmt")]
+        defmt::warn!("MQTT-TLS: session errored: {:?}", error);
+        events
+            .send(MqttEvent::Disconnected {
+                connection_id,
+                error,
+            })
+            .await;
 
         aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
     }
@@ -436,4 +480,69 @@ pub(crate) fn host_ip_literal(host: &str) -> Option<IpAddr> {
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
     host.parse::<IpAddr>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::pin::pin;
+    use core::task::{Context, Poll};
+
+    /// A read half that never completes, so the reader's lock stays held.
+    struct PendingRead;
+
+    impl ByteRead for PendingRead {
+        async fn read(&mut self, _buf: &mut [u8]) -> TransportResult<usize> {
+            core::future::pending().await
+        }
+    }
+
+    /// A write half that completes immediately, recording what it was given.
+    struct RecordingWrite(Vec<u8>);
+
+    impl ByteWrite for RecordingWrite {
+        async fn write_all(&mut self, buf: &[u8]) -> TransportResult<()> {
+            self.0.extend_from_slice(buf);
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> TransportResult<()> {
+            Ok(())
+        }
+    }
+
+    /// §6.6's disjointness, as an assertion rather than an argument: a read
+    /// parked inside one clone of the handle must not hold up a write through
+    /// another. Over a single shared cell — what `SharedStream` was — this is
+    /// precisely the shape that panics; over two locks it simply works.
+    #[test]
+    fn a_parked_reader_does_not_hold_up_the_writer() {
+        let rx = Mutex::new(PendingRead);
+        let tx = Mutex::new(RecordingWrite(Vec::new()));
+        let handle = DuplexHandle { rx: &rx, tx: &tx };
+
+        // What `TlsConnection::split` does: a clone apiece.
+        let mut reader = handle.clone();
+        let mut writer = handle;
+
+        let mut cx = Context::from_waker(core::task::Waker::noop());
+
+        let mut buf = [0u8; 4];
+        let mut read = pin!(embedded_io_async::Read::read(&mut reader, &mut buf));
+        assert!(
+            matches!(read.as_mut().poll(&mut cx), Poll::Pending),
+            "the read must park — otherwise this test proves nothing"
+        );
+
+        let mut write = pin!(embedded_io_async::Write::write(&mut writer, b"ping"));
+        assert!(
+            matches!(write.as_mut().poll(&mut cx), Poll::Ready(Ok(4))),
+            "the write must complete while the read is parked"
+        );
+
+        assert!(
+            matches!(read.as_mut().poll(&mut cx), Poll::Pending),
+            "and the reader must be undisturbed by it"
+        );
+    }
 }

@@ -12,26 +12,6 @@
 
 use core::future::Future;
 
-/// Bridges core's [`Delay`](aimdb_core::session::Delay) to the `DelayNs` the
-/// MQTT client wants, so the client's timeouts run on the adapter's clock.
-///
-/// Only the TLS path still needs it; it goes when TLS joins the same session
-/// loop as the plain path.
-#[cfg(feature = "embedded-tls")]
-pub(crate) struct ClientDelay<'a, D>(pub(crate) &'a D);
-
-#[cfg(feature = "embedded-tls")]
-impl<D> embedded_hal_async::delay::DelayNs for ClientDelay<'_, D>
-where
-    D: aimdb_core::session::Delay,
-{
-    async fn delay_ns(&mut self, ns: u32) {
-        self.0
-            .sleep(core::time::Duration::from_nanos(u64::from(ns)))
-            .await
-    }
-}
-
 /// Asserts that a broker session future is `Send`.
 ///
 /// Everything the session holds is `Send`: [`StreamDialer`] guarantees

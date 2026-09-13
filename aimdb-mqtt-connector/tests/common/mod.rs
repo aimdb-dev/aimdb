@@ -7,7 +7,12 @@
 //! Compiled into each test binary, so not every item is used by all of them.
 #![allow(dead_code)]
 
+use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use aimdb_core::session::{Delay, StreamDialer, TransportResult};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -347,5 +352,280 @@ pub async fn fake_broker_concurrent(
             };
             serve(&mut socket, &seen, after).await;
         });
+    }
+}
+
+// ===========================================================================
+// The scripted broker: the same wire format as above, but the test decides
+// when each answer goes out (design 053's criteria 1, 2, 4 and 11).
+// ===========================================================================
+
+/// The topic the scripted broker pushes on.
+pub const SCRIPT_TOPIC: &str = "sensors/temperature";
+
+/// What the scripted broker saw, and when.
+#[derive(Default)]
+pub struct Log {
+    pub pings: usize,
+    /// Client publishes, as (topic, payload).
+    pub publishes: Vec<(String, Vec<u8>)>,
+    /// Pings that arrived while the broker was deliberately stalling.
+    pub pings_during_stall: usize,
+    /// Client publishes that arrived while the broker was stalling.
+    pub publishes_during_stall: usize,
+}
+
+/// Read one packet: header byte, varint remaining length, body.
+async fn read_one<S: tokio::io::AsyncRead + Unpin>(socket: &mut S) -> Option<(u8, Vec<u8>)> {
+    let mut byte = [0u8; 1];
+    socket.read_exact(&mut byte).await.ok()?;
+    let first = byte[0];
+
+    let mut remaining = 0usize;
+    let mut shift = 0;
+    loop {
+        socket.read_exact(&mut byte).await.ok()?;
+        remaining |= ((byte[0] & 0x7F) as usize) << shift;
+        if byte[0] & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+
+    let mut body = vec![0u8; remaining];
+    socket.read_exact(&mut body).await.ok()?;
+    Some((first, body))
+}
+
+/// How the scripted broker should misbehave after it has SUBACKed.
+#[derive(Clone, Copy)]
+pub enum Script {
+    /// Answer nothing but pings: an idle, healthy session.
+    Idle,
+    /// Push a PUBLISH split in two with `gap` between the halves.
+    SplitPublish { gap: Duration },
+    /// Hold every PUBACK back by `delay`.
+    SlowPuback { delay: Duration },
+    /// Push inbound PUBLISHes as fast as they will go, for `duration`.
+    Flood { duration: Duration },
+}
+
+/// The broker's write side.
+///
+/// While `hold` is `Some`, the broker has a packet half-written and must not
+/// put anything else on the wire: a byte stream carries packets in order, so
+/// injecting a PUBACK between the halves of a PUBLISH would corrupt the
+/// framing rather than test it. Held bytes go out behind the packet's tail —
+/// which is exactly what a sender whose peer is slow ends up doing.
+struct Wire<S> {
+    writer: tokio::io::WriteHalf<S>,
+    hold: Option<Vec<u8>>,
+}
+
+type Writer<S> = Arc<tokio::sync::Mutex<Wire<S>>>;
+
+async fn send<S: tokio::io::AsyncWrite>(writer: &Writer<S>, bytes: &[u8]) -> bool {
+    let mut wire = writer.lock().await;
+    match wire.hold.as_mut() {
+        Some(held) => {
+            held.extend_from_slice(bytes);
+            true
+        }
+        None => wire.writer.write_all(bytes).await.is_ok(),
+    }
+}
+
+/// Serve one already-accepted connection, following `script`.
+///
+/// Generic over the stream, so the same script runs over plain TCP and over a
+/// TLS session — which is what lets the TLS path be held to the same criteria.
+///
+/// The stream is split and every scripted delay runs in its own task, so the
+/// broker **never stops reading**. That is what makes the stall counters mean
+/// anything: a ping that arrives while the broker is stalling has to be read
+/// and counted while the stall is still open, not afterwards.
+pub async fn scripted_broker<S>(stream: S, log: Arc<Mutex<Log>>, script: Script)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    let (mut reader, writer) = tokio::io::split(stream);
+    let writer: Writer<S> = Arc::new(tokio::sync::Mutex::new(Wire { writer, hold: None }));
+
+    // Open while the broker is deliberately withholding something.
+    let stalling = Arc::new(AtomicUsize::new(0));
+
+    loop {
+        let Some((first, body)) = read_one(&mut reader).await else {
+            return;
+        };
+        let in_stall = stalling.load(Ordering::Relaxed) == 1;
+
+        match first >> 4 {
+            // CONNECT -> CONNACK
+            1 => {
+                if !send(&writer, &[0x20, 0x03, 0x00, 0x00, 0x00]).await {
+                    return;
+                }
+            }
+            // SUBSCRIBE -> SUBACK, then run the script.
+            8 => {
+                let packet_id = [body[0], body[1]];
+                if !send(
+                    &writer,
+                    &[0x90, 0x04, packet_id[0], packet_id[1], 0x00, 0x01],
+                )
+                .await
+                {
+                    return;
+                }
+
+                match script {
+                    Script::Idle | Script::SlowPuback { .. } => {}
+                    Script::SplitPublish { gap } => {
+                        // Half a packet, a long silence, then the rest. The
+                        // polled loop's `receive_if_ready` commits to reading
+                        // the whole packet and parks here.
+                        let writer = writer.clone();
+                        let stalling = stalling.clone();
+                        tokio::spawn(async move {
+                            let packet = publish(SCRIPT_TOPIC, b"21", true);
+                            let cut = packet.len() / 2;
+                            {
+                                let mut wire = writer.lock().await;
+                                if wire.writer.write_all(&packet[..cut]).await.is_err() {
+                                    return;
+                                }
+                                // Nothing else may reach the wire until the
+                                // tail does.
+                                wire.hold = Some(Vec::new());
+                            }
+                            stalling.store(1, Ordering::Relaxed);
+                            tokio::time::sleep(gap).await;
+                            stalling.store(0, Ordering::Relaxed);
+
+                            let mut wire = writer.lock().await;
+                            let held = wire.hold.take().unwrap_or_default();
+                            if wire.writer.write_all(&packet[cut..]).await.is_err() {
+                                return;
+                            }
+                            let _ = wire.writer.write_all(&held).await;
+                        });
+                    }
+                    Script::Flood { duration } => {
+                        let writer = writer.clone();
+                        tokio::spawn(async move {
+                            let deadline = tokio::time::Instant::now() + duration;
+                            let packet = publish(SCRIPT_TOPIC, b"7", true);
+                            while tokio::time::Instant::now() < deadline {
+                                // The lock is taken and released per packet, so
+                                // PUBACKs and PINGRESPs interleave with the
+                                // flood rather than queueing behind all of it.
+                                if !send(&writer, &packet).await {
+                                    return;
+                                }
+                                tokio::task::yield_now().await;
+                            }
+                        });
+                    }
+                }
+            }
+            // PUBLISH from the client.
+            3 => {
+                let Some((topic, payload, packet_id)) = parse_publish(first, &body, true) else {
+                    return;
+                };
+                {
+                    let mut log = log.lock().unwrap();
+                    log.publishes.push((topic, payload));
+                    if in_stall {
+                        log.publishes_during_stall += 1;
+                    }
+                }
+                if let Some(id) = packet_id {
+                    match script {
+                        // Acknowledge late, in its own task, with the stall
+                        // window open: a ping arriving meanwhile is the
+                        // assertion, and the read loop has to stay live to see
+                        // it.
+                        Script::SlowPuback { delay } => {
+                            let writer = writer.clone();
+                            let stalling = stalling.clone();
+                            tokio::spawn(async move {
+                                stalling.store(1, Ordering::Relaxed);
+                                tokio::time::sleep(delay).await;
+                                stalling.store(0, Ordering::Relaxed);
+                                send(&writer, &[0x40, 0x02, id[0], id[1]]).await;
+                            });
+                        }
+                        _ => {
+                            if !send(&writer, &[0x40, 0x02, id[0], id[1]]).await {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            // PINGREQ -> PINGRESP
+            12 => {
+                {
+                    let mut log = log.lock().unwrap();
+                    log.pings += 1;
+                    if in_stall {
+                        log.pings_during_stall += 1;
+                    }
+                }
+                if !send(&writer, &[0xD0, 0x00]).await {
+                    return;
+                }
+            }
+            14 => return,
+            _ => {}
+        }
+    }
+}
+
+// ===========================================================================
+// A dialer that counts what the session sleeps on.
+// ===========================================================================
+
+/// `TokioNet::tcp()` with a tally of every `Delay::sleep` the connector asks
+/// for. The connector takes its clock from the dialer, so this is the seam
+/// where "how often does the session wake?" is observable at all.
+#[derive(Clone)]
+pub struct CountingDialer {
+    inner: aimdb_tokio_adapter::net::TokioTcpDialer,
+    sleeps: Arc<AtomicUsize>,
+}
+
+impl CountingDialer {
+    pub fn new() -> Self {
+        Self {
+            inner: aimdb_tokio_adapter::net::TokioNet::tcp(),
+            sleeps: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// The running tally, shared with the dialer the connector holds.
+    pub fn sleeps(&self) -> Arc<AtomicUsize> {
+        self.sleeps.clone()
+    }
+}
+
+impl StreamDialer for CountingDialer {
+    type Stream = <aimdb_tokio_adapter::net::TokioTcpDialer as StreamDialer>::Stream;
+
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> impl Future<Output = TransportResult<Self::Stream>> + Send + 'a {
+        self.inner.connect(host, port)
+    }
+}
+
+impl Delay for CountingDialer {
+    fn sleep(&self, d: Duration) -> impl Future<Output = ()> + Send {
+        self.sleeps.fetch_add(1, Ordering::Relaxed);
+        Delay::sleep(&self.inner, d)
     }
 }
