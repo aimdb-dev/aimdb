@@ -223,9 +223,11 @@ impl aimdb_core::transport::Connector for MqttSink {
     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
         // `qos`/`retain` arrive via the URL query (passed through in
         // `protocol_options`); default to QoS 1 (legacy behaviour), no retain.
-        let qos = opt_u8(config, "qos")
-            .map(map_qos)
-            .unwrap_or(QualityOfService::Qos1);
+        let qos = match opt_u8(config, "qos").map(map_qos) {
+            Some(Ok(qos)) => qos,
+            Some(Err(e)) => return Box::pin(async move { Err(e) }),
+            None => QualityOfService::Qos1,
+        };
         let retain = opt_bool(config, "retain").unwrap_or(false);
         let topic = destination.to_string();
         let payload = payload.to_vec();
@@ -601,13 +603,18 @@ where
     Ok((actions, events, tasks))
 }
 
-/// Map a QoS level (0/1/2) to mountain-mqtt's `QualityOfService` (2 downgrades to 1).
-fn map_qos(qos: u8) -> QualityOfService {
+/// Map a QoS level to mountain-mqtt's `QualityOfService`.
+///
+/// `2` downgrades to 1: MQTT 5 exactly-once is not implemented by the client.
+/// Anything above 2 is not a QoS level at all and is rejected, as `Native`
+/// rejects it — a typo in a link URL should not silently publish at a
+/// different guarantee than asked for.
+fn map_qos(qos: u8) -> Result<QualityOfService, PublishError> {
     match qos {
-        0 => QualityOfService::Qos0,
-        1 => QualityOfService::Qos1,
-        2 => QualityOfService::Qos1, // Downgrade to QoS 1
-        _ => QualityOfService::Qos0, // Default to QoS 0
+        0 => Ok(QualityOfService::Qos0),
+        1 => Ok(QualityOfService::Qos1),
+        2 => Ok(QualityOfService::Qos1),
+        _ => Err(PublishError::UnsupportedQoS),
     }
 }
 

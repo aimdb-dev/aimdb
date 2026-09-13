@@ -76,12 +76,34 @@ fn varint(mut n: usize, out: &mut Vec<u8>) {
     }
 }
 
-/// Step `i` past a varint.
-fn skip_varint(body: &[u8], i: &mut usize) {
-    while *i < body.len() && body[*i] & 0x80 != 0 {
+/// Decode an MQTT variable-byte integer at `i`, stepping past it.
+///
+/// Returns the value, because every caller here wants it: each varint is a
+/// property block's length, and the block itself has to be stepped over too.
+fn take_varint(body: &[u8], i: &mut usize) -> Option<usize> {
+    let mut value = 0usize;
+    let mut shift = 0;
+    loop {
+        let byte = *body.get(*i)?;
         *i += 1;
+        value |= ((byte & 0x7f) as usize) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+        shift += 7;
+        // MQTT caps a variable-byte integer at four bytes.
+        if shift > 21 {
+            return None;
+        }
     }
-    *i += 1;
+}
+
+/// Step `i` past an MQTT 5 property block — its length varint, then the
+/// properties themselves.
+fn skip_properties(body: &[u8], i: &mut usize) -> Option<()> {
+    let len = take_varint(body, i)?;
+    *i += len;
+    Some(())
 }
 
 /// The protocol level a CONNECT declares: 4 is 3.1.1, 5 is MQTT 5.
@@ -104,10 +126,7 @@ fn connect_identity(body: &[u8], v5: bool) -> Option<(String, Option<(String, St
     let flags = *body.get(7)?;
     let mut i = 10;
     if v5 {
-        let start = i;
-        skip_varint(body, &mut i);
-        // The varint is the property block's length, which follows it.
-        i += *body.get(start)? as usize;
+        skip_properties(body, &mut i)?;
     }
 
     let client_id = take_field(body, &mut i)?;
@@ -130,7 +149,9 @@ fn suback(body: &[u8], v5: bool, topics: &mut Vec<String>) -> Vec<u8> {
     let packet_id = [body[0], body[1]];
     let mut i = 2;
     if v5 {
-        skip_varint(body, &mut i);
+        // Best-effort: this returns a SUBACK either way, and a malformed
+        // property block shows up as an unparsable topic below.
+        let _ = skip_properties(body, &mut i);
     }
 
     let mut granted = Vec::new();
@@ -190,7 +211,7 @@ fn parse_publish(first: u8, body: &[u8], v5: bool) -> Option<(String, Vec<u8>, O
     };
 
     if v5 {
-        skip_varint(body, &mut i);
+        skip_properties(body, &mut i)?;
     }
     Some((topic, body.get(i..)?.to_vec(), packet_id))
 }

@@ -29,8 +29,10 @@ unsafe impl defmt::Logger for HostTestLogger {
 fn defmt_panic() -> ! {
     core::panic!("defmt panic in host test")
 }
-// No `defmt::timestamp!` here: this config enables the adapter's `embassy-time`,
-// whose `defmt-timestamp-uptime` already defines `_defmt_timestamp`.
+// No `defmt::timestamp!` here: `embassy-net` links `embassy-time`, whose
+// `defmt-timestamp-uptime` defines `_defmt_timestamp`, so a second definition
+// is a duplicate-symbol link error. `tokio_broker` enables the same feature
+// but links no `embassy-time`, so it defines its own.
 
 /// Real wall-clock time; a frozen `now()` stalls the stack's timers and the
 /// session loop's reconnection delay.

@@ -28,8 +28,11 @@ unsafe impl defmt::Logger for HostTestLogger {
 fn defmt_panic() -> ! {
     core::panic!("defmt panic in host test")
 }
-// Nothing else defines `_defmt_timestamp` now that the connector pulls no
-// crate enabling `embassy-time/defmt-timestamp-uptime`.
+// This binary must define `_defmt_timestamp` itself. `embassy-time` would —
+// `defmt-timestamp-uptime` is enabled here, as it is for `embassy_broker` —
+// but nothing in this test references `embassy-time`, so its object never
+// reaches the link and the symbol would be undefined. `embassy_broker` pulls
+// it in through `embassy-net` and therefore must *not* define one.
 defmt::timestamp!("{=u64:us}", 0);
 
 /// Real wall-clock time; the session loop's delays are `embassy_time`'s until
