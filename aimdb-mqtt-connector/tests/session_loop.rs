@@ -312,3 +312,80 @@ async fn outbound_keeps_moving_under_an_inbound_flood() {
         delivered.load(Ordering::Relaxed)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Every QoS 1 message the broker pushes must be acknowledged.
+// ---------------------------------------------------------------------------
+
+/// A burst of QoS 1 pushes arriving coalesced must be PUBACKed in full.
+///
+/// The session encodes one PUBACK per message into `outbound`, a 4-slot channel
+/// drained by the write half — and the write half only runs when the session
+/// loop parks. `drain_packets` does not park on its own while the event channel
+/// has room, so a burst spanning more packets than the outbox holds is exactly
+/// the case where responses have nowhere to go. Queueing them with `.await` is
+/// what makes the loop park there, letting the writer drain.
+///
+/// This matters because a lost PUBACK is unrecoverable: by the time it would be
+/// dropped the client state has already retired the message, so nothing
+/// retries, and the session is clean-start so no reconnect replays it. The
+/// broker would hold each one against its in-flight window while the connection
+/// still looked healthy — pings keep the liveness watchdog satisfied — so the
+/// node would go deaf on inbound with no error and no reconnect.
+///
+/// Failed at 19 of 40 while every packet went out through `try_send`-and-forget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_qos1_push_is_acknowledged() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log = Arc::new(Mutex::new(Log::default()));
+
+    // Enough to span several 256-byte reads: ~9 of these packets fit per read,
+    // and the outbox holds 4.
+    const PUSHED: u16 = 40;
+
+    let dialer = CountingDialer::new();
+    let (db, runner) = build_db(port, dialer, None).await;
+    let mut inbound = db
+        .consumer::<u64>("temperature")
+        .expect("temperature consumer")
+        .subscribe();
+
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let counting = {
+        let delivered = delivered.clone();
+        async move {
+            while inbound.recv().await.is_ok() {
+                delivered.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    };
+
+    tokio::select! {
+        _ = runner.run() => panic!("the session loop returned"),
+        _ = serve_one(listener, log.clone(), Script::FloodQos1 { count: PUSHED }) => {
+            panic!("the broker returned")
+        }
+        _ = counting => panic!("the inbound record closed"),
+        // Long enough that anything merely slow has finished.
+        _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+    }
+
+    let log = log.lock().unwrap();
+    assert_eq!(
+        log.pushed_qos1.len(),
+        PUSHED as usize,
+        "the broker must have pushed the whole burst"
+    );
+    assert_eq!(
+        log.pubacks.len(),
+        log.pushed_qos1.len(),
+        "the client acknowledged {} of {} QoS 1 messages — {} went unacknowledged, \
+         and the broker holds each against its in-flight window for the life of \
+         the connection (delivered to the app: {})",
+        log.pubacks.len(),
+        log.pushed_qos1.len(),
+        log.pushed_qos1.len() - log.pubacks.len(),
+        delivered.load(Ordering::Relaxed),
+    );
+}

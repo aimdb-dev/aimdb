@@ -192,7 +192,7 @@ async fn client_loop<D: Delay>(
             properties,
         );
         state.connect(&connect).map_err(client_error)?;
-        queue(outbound, encode(&connect)?);
+        queue(outbound, encode(&connect)?).await;
     }
 
     loop {
@@ -224,10 +224,9 @@ async fn client_loop<D: Delay>(
         if connected && now.saturating_sub(last_ping_ms) >= ping_interval {
             last_ping_ms = now;
             let ping = state.send_ping().map_err(client_error)?;
-            // A ping dropped because the write half is backed up is not worth
-            // ending the session over: the next deadline tries again, and if
-            // the link really is gone the liveness window closes it.
-            queue(outbound, encode(&ping)?);
+            // The one packet worth dropping rather than waiting for — see
+            // `queue_lossy`.
+            queue_lossy(outbound, encode(&ping)?);
         }
 
         // Subscriptions go out one at a time: `ClientStateNoQueue` tracks a
@@ -235,7 +234,7 @@ async fn client_loop<D: Delay>(
         if connected && !state.waiting_for_responses() && next_topic < subscribe_topics.len() {
             let (topic, qos) = subscribe_topics[next_topic];
             let packet = state.subscribe_packet(topic, qos).map_err(client_error)?;
-            queue(outbound, encode(&packet)?);
+            queue(outbound, encode(&packet)?).await;
             state.subscribe_update(&packet).map_err(client_error)?;
             next_topic += 1;
             // `continue` skips the bottom-of-loop bookkeeping, so arm the
@@ -290,7 +289,7 @@ async fn client_loop<D: Delay>(
                 .await?;
             }
             Either3::Second(action) => {
-                perform(action, &mut state, outbound)?;
+                perform(action, &mut state, outbound).await?;
             }
             // The timer fired: the top of the loop re-evaluates every deadline.
             Either3::Third(()) => {}
@@ -342,7 +341,7 @@ async fn drain_packets<const N: usize>(
         reader.consume(total);
 
         if let Some(bytes) = response {
-            queue(outbound, bytes);
+            queue(outbound, bytes).await;
         }
 
         // Every packet the state accepted proves the broker is alive.
@@ -426,7 +425,7 @@ impl Received {
 ///
 /// Sent before the state update, as upstream does: a state that believes a
 /// publish is in flight when it is not parks the action arm forever.
-fn perform(
+async fn perform(
     action: AimdbMqttAction,
     state: &mut ClientStateNoQueue,
     outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>,
@@ -459,7 +458,7 @@ fn perform(
                     );
                 })
                 .map_err(client_error)?;
-            queue(outbound, encode(&packet)?);
+            queue(outbound, encode(&packet)?).await;
             state.publish_update(&packet).map_err(client_error)?;
         }
         AimdbMqttAction::Subscribe { topic, qos } => {
@@ -472,7 +471,7 @@ fn perform(
                     defmt::warn!("MQTT: dropping subscribe to {}: {}", topic.as_str(), _e);
                 })
                 .map_err(client_error)?;
-            queue(outbound, encode(&packet)?);
+            queue(outbound, encode(&packet)?).await;
             state.subscribe_update(&packet).map_err(client_error)?;
         }
     }
@@ -491,15 +490,33 @@ fn encode<P: Write>(packet: &P) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-/// Queue encoded bytes for the write half.
+/// Queue encoded bytes for the write half, waiting for a slot.
 ///
-/// Never blocks — blocking would park the loop that has to notice the link is
-/// gone. A ping or PUBACK dropped because the write half is backed up is
-/// recovered by the next deadline or by redelivery.
-fn queue(outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>, bytes: Vec<u8>) {
+/// Everything the protocol obliges us to send goes through here: CONNECT,
+/// SUBSCRIBE, PUBLISH and the PUBACKs answering QoS 1 delivery. None of those
+/// can be dropped — the state machine has already committed to them, so a
+/// discarded packet leaves our state and the wire disagreeing, with nothing to
+/// resync on.
+///
+/// Waiting cannot deadlock: [`write_out`] is this channel's only consumer and
+/// is a sibling arm of the same `select`, so parking here is what lets it run.
+/// It is also the backpressure — a peer that stops reading stops us encoding.
+async fn queue(outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>, bytes: Vec<u8>) {
+    outbound.send(bytes).await;
+}
+
+/// Queue encoded bytes only if the write half is keeping up, dropping them if
+/// it is not.
+///
+/// For pings alone. A ping carries no state — `send_ping` bumps a counter but
+/// arms no response deadline — so a dropped one costs nothing and the next
+/// ping deadline tries again; if the link really is gone, the liveness window
+/// closes the session. Parking on a ping would be worse than skipping it: the
+/// loop that has to notice the link is gone would be the thing stuck.
+fn queue_lossy(outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>, bytes: Vec<u8>) {
     if outbound.try_send(bytes).is_err() {
         #[cfg(feature = "defmt")]
-        defmt::warn!("MQTT: write queue full, packet dropped");
+        defmt::warn!("MQTT: write queue full, ping dropped");
     }
 }
 

@@ -85,6 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slow broker no longer stops pings, and only one QoS 1 publish is in flight at
   a time — the action arm simply parks until the PUBACK lands.
 
+  Everything the protocol obliges the session to send — CONNECT, SUBSCRIBE,
+  PUBLISH, and the PUBACKs answering QoS 1 delivery — waits for a slot in the
+  write queue rather than being discarded when it is full, which is also where
+  the session takes backpressure from a peer that has stopped reading. Only
+  pings are still dropped on a full queue: a ping arms no response deadline, so
+  skipping one costs nothing and the next deadline reissues it, whereas parking
+  on one would stall the loop that has to notice the link is gone.
+
 - **The backend split is std vs `no_std`, not Tokio vs Embassy.** The embedded
   backend runs on any target whose adapter supplies a `StreamDialer`, so a new
   platform costs one adapter crate and no change here. Features rename

@@ -194,6 +194,23 @@ fn publish(topic: &str, payload: &[u8], v5: bool) -> Vec<u8> {
     packet
 }
 
+/// An MQTT 5 QoS 1 PUBLISH, which obliges the receiver to answer with a PUBACK
+/// carrying `packet_id`. [`publish`] builds the QoS 0 form, which obliges
+/// nothing.
+fn publish_qos1(topic: &str, payload: &[u8], packet_id: u16) -> Vec<u8> {
+    let mut rest = Vec::new();
+    rest.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+    rest.extend_from_slice(topic.as_bytes());
+    rest.extend_from_slice(&packet_id.to_be_bytes());
+    rest.push(0x00); // no properties
+    rest.extend_from_slice(payload);
+
+    let mut packet = vec![0x32]; // PUBLISH, QoS 1
+    varint(rest.len(), &mut packet);
+    packet.extend_from_slice(&rest);
+    packet
+}
+
 /// Decode a PUBLISH the client sent: topic, payload, and the packet id that is
 /// present only above QoS 0.
 fn parse_publish(first: u8, body: &[u8], v5: bool) -> Option<(String, Vec<u8>, Option<[u8; 2]>)> {
@@ -366,6 +383,11 @@ pub struct Log {
     pub pings_during_stall: usize,
     /// Client publishes that arrived while the broker was stalling.
     pub publishes_during_stall: usize,
+    /// QoS 1 PUBLISHes the broker pushed, by packet id.
+    pub pushed_qos1: Vec<u16>,
+    /// PUBACKs the client sent back, by packet id. Short of `pushed_qos1`
+    /// means the client received a message and never acknowledged it.
+    pub pubacks: Vec<u16>,
 }
 
 /// Read one packet: header byte, varint remaining length, body.
@@ -401,6 +423,9 @@ pub enum Script {
     SlowPuback { delay: Duration },
     /// Push inbound PUBLISHes as fast as they will go, for `duration`.
     Flood { duration: Duration },
+    /// Push `count` QoS 1 PUBLISHes in a single write, so they reach the client
+    /// coalesced and it has to answer every one with a PUBACK.
+    FloodQos1 { count: u16 },
 }
 
 /// The broker's write side.
@@ -516,6 +541,21 @@ where
                             }
                         });
                     }
+                    Script::FloodQos1 { count } => {
+                        let writer = writer.clone();
+                        let log = log.clone();
+                        tokio::spawn(async move {
+                            // One write, so the burst reaches the client as
+                            // few large reads rather than one packet per read
+                            // — which is the case the outbox has to survive.
+                            let mut burst = Vec::new();
+                            for id in 1..=count {
+                                burst.extend_from_slice(&publish_qos1(SCRIPT_TOPIC, b"7", id));
+                                log.lock().unwrap().pushed_qos1.push(id);
+                            }
+                            send(&writer, &burst).await;
+                        });
+                    }
                 }
             }
             // PUBLISH from the client.
@@ -552,6 +592,15 @@ where
                             }
                         }
                     }
+                }
+            }
+            // PUBACK from the client, answering a QoS 1 push.
+            4 => {
+                if let (Some(hi), Some(lo)) = (body.first(), body.get(1)) {
+                    log.lock()
+                        .unwrap()
+                        .pubacks
+                        .push(u16::from_be_bytes([*hi, *lo]));
                 }
             }
             // PINGREQ -> PINGRESP
