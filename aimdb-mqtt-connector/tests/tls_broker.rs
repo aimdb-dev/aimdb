@@ -170,3 +170,72 @@ async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root
         seen.subscribed_topics()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Buffer floors, checked at build rather than on the device.
+// ---------------------------------------------------------------------------
+
+/// Build a connector with the given buffer sizes and return the build error.
+///
+/// Nothing listens on the port: both checks run before anything is dialled, so
+/// a passing build here would hang rather than fail, which is the point.
+async fn build_error_with_buffers(read: usize, write: usize) -> String {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_mqtt_connector::{MqttConnector, TlsOptions};
+    use aimdb_tokio_adapter::net::TokioNet;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let rng: &'static mut (dyn embedded_tls::CryptoRngCore + Send) =
+        Box::leak(Box::new(rand::rngs::StdRng::from_entropy()));
+    let ca_der: &'static [u8] = Box::leak(vec![0u8; 32].into_boxed_slice());
+    let read_buf: &'static mut [u8] = Box::leak(vec![0u8; read].into_boxed_slice());
+    let write_buf: &'static mut [u8] = Box::leak(vec![0u8; write].into_boxed_slice());
+
+    let connector = MqttConnector::new(format!("mqtts://{BROKER_HOST}:1"))
+        .tls(
+            TokioNet::tcp(),
+            TlsOptions::new(rng, ca_der, read_buf, write_buf),
+        )
+        .with_client_id("tls-buffer-floor");
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+    builder.configure::<u64>("temperature", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt://sensors/temperature")
+            .with_deserializer(|_ctx, _d: &[u8]| Ok(0u64))
+            .finish();
+    });
+
+    let Err(err) = builder.build().await else {
+        panic!("a {read}-byte read / {write}-byte write buffer must be refused");
+    };
+    err.to_string()
+}
+
+/// A read buffer under the 16 640 a TLS 1.3 peer may fill is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undersized_read_buffer_fails_the_build() {
+    let message = build_error_with_buffers(4_096, 4_096).await;
+    assert!(
+        message.contains("read buffer") && message.contains("16 640"),
+        "the error should name the read buffer and its floor, got: {message}"
+    );
+}
+
+/// A write buffer at or under `embedded-tls`'s per-record overhead is refused.
+///
+/// `embedded-tls` guards this with a `debug_assert!`, which a release build —
+/// every firmware build — strips: past it the writer underflows
+/// `len - TLS_RECORD_OVERHEAD` and copies off the end of the buffer. Catching it
+/// at build turns a panic on the device into a message at startup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undersized_write_buffer_fails_the_build() {
+    let message = build_error_with_buffers(16_640, 128).await;
+    assert!(
+        message.contains("write buffer") && message.contains("128"),
+        "the error should name the write buffer and the record overhead, got: {message}"
+    );
+}

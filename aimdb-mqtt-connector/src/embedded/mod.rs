@@ -45,7 +45,7 @@ use crate::embedded::manager::Settings;
 #[cfg(feature = "embedded-tls")]
 pub use crate::embedded::tls::TlsOptions;
 #[cfg(feature = "embedded-tls")]
-use crate::embedded::tls::{host_ip_literal, READ_BUF_MIN};
+use crate::embedded::tls::{host_ip_literal, READ_BUF_MIN, WRITE_BUF_MIN};
 
 /// Maximum number of pending MQTT actions and events
 pub(crate) const CHANNEL_SIZE: usize = 32;
@@ -475,6 +475,11 @@ where
     if options.read_buf.len() < READ_BUF_MIN {
         return Err(build_err(
             "TLS read buffer too small — a TLS 1.3 peer may send 16 KB records; provide at least 16 640 bytes",
+        ));
+    }
+    if options.write_buf.len() < WRITE_BUF_MIN {
+        return Err(build_err(
+            "TLS write buffer too small — each record costs 128 bytes of overhead, and below that the writer runs off the end of the buffer; provide at least 256 bytes, or 4 096 for MQTT-sized writes in one record",
         ));
     }
 

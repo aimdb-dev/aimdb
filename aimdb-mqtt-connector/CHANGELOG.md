@@ -117,6 +117,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honour credentials in the URL authority (`mqtt://user:pass@host`), and on
   both the setter takes precedence over them — it is the only way to name a
   password that is not URL-safe.
+- **An undersized TLS write buffer is refused at `build()`.** It joins the read
+  buffer, which was already checked. Not for symmetry: `embedded-tls` encodes
+  the handshake into whichever buffer is larger, and the read-buffer floor makes
+  that the read buffer, so a small write buffer only splits application data
+  across more records — legal, merely chatty. The floor is underneath that.
+  `embedded-tls` guards `len > TLS_RECORD_OVERHEAD` (128 bytes) with a
+  `debug_assert!`, which a release build — every firmware build — strips, and
+  past it `len - TLS_RECORD_OVERHEAD` underflows and the writer copies off the
+  end of the buffer; at exactly the overhead it computes a zero-length payload
+  and stops making progress. A panic or a hang on the device, in other words,
+  now a named error at startup. Both floors have tests.
 - **`with_keep_alive(Duration)`, and a session cadence derived from it.** The
   CONNECT used to promise whatever nobody had chosen — `rumqttc` hard-coded
   30 s, the embedded path sent mountain-mqtt's 60 s because

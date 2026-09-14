@@ -36,6 +36,10 @@ const CERT_BUFFER_SIZE: usize = 4096;
 /// any record larger than the buffer, so `build()` rejects a smaller one.
 pub(crate) const READ_BUF_MIN: usize = 16_640;
 
+/// Minimum TLS record write buffer, at twice `embedded-tls`'s 128-byte
+/// per-record overhead.
+pub(crate) const WRITE_BUF_MIN: usize = 256;
+
 /// TLS materials for a `mqtts://` broker connection.
 ///
 /// All references are `'static`: the session outlives `build()`, so the buffers
