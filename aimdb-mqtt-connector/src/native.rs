@@ -24,6 +24,7 @@ pub(crate) fn build<'a>(
     broker_url: &'a str,
     client_id: Option<&'a str>,
     credentials: Option<&'a (String, String)>,
+    keep_alive_secs: u16,
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
     Box::pin(async move {
         // Build a router from the inbound routes purely to drive the MQTT
@@ -36,15 +37,17 @@ pub(crate) fn build<'a>(
         log_info!("MQTT subscribing to {} topics", router.resource_ids().len());
 
         // Connect, subscribe, and hand back the raw event loop.
-        let (client, event_loop) =
-            MqttConnectorImpl::build_internal(broker_url, client_id, credentials, router)
-                .await
-                .map_err(|e| {
-                    aimdb_core::DbError::runtime_error(format!(
-                        "Failed to build MQTT connector: {}",
-                        e
-                    ))
-                })?;
+        let (client, event_loop) = MqttConnectorImpl::build_internal(
+            broker_url,
+            client_id,
+            credentials,
+            keep_alive_secs,
+            router,
+        )
+        .await
+        .map_err(|e| {
+            aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", e))
+        })?;
 
         let mut futures: Vec<BoxFuture> = Vec::new();
 
@@ -80,6 +83,7 @@ impl MqttConnectorImpl {
         broker_url: &str,
         client_id: Option<&str>,
         credentials: Option<&(String, String)>,
+        keep_alive_secs: u16,
         router: Router,
     ) -> Result<(Arc<AsyncClient>, EventLoop), String> {
         // Parse the broker URL - we accept it with or without a topic
@@ -111,7 +115,10 @@ impl MqttConnectorImpl {
 
         let mut mqtt_opts = MqttOptions::new(client_id, host, port);
 
-        mqtt_opts.set_keep_alive(Duration::from_secs(30));
+        // The same promise the embedded backend makes, from the same setter:
+        // the two backends used to disagree here (30 s against 60 s) for one
+        // route URL.
+        mqtt_opts.set_keep_alive(Duration::from_secs(keep_alive_secs.into()));
 
         // `with_credentials` wins over anything in the URL's authority, which
         // is the only way to name a password that is not URL-safe.
@@ -345,7 +352,8 @@ mod tests {
     async fn test_connector_creation_with_router() {
         let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, None, router).await;
+            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, None, 60, router)
+                .await;
         assert!(connector.is_ok());
     }
 
@@ -353,7 +361,8 @@ mod tests {
     async fn test_connector_with_port() {
         let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, None, router).await;
+            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, None, 60, router)
+                .await;
         assert!(connector.is_ok());
     }
 
@@ -361,7 +370,7 @@ mod tests {
     async fn test_invalid_url() {
         let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("not-a-valid-url", None, None, router).await;
+            MqttConnectorImpl::build_internal("not-a-valid-url", None, None, 60, router).await;
         assert!(connector.is_err());
     }
 
@@ -374,6 +383,7 @@ mod tests {
             "mqtts://hub-sub:secret@broker.example.com:8883",
             None,
             None,
+            60,
             router,
         )
         .await;
@@ -401,9 +411,14 @@ mod tests {
     #[tokio::test]
     async fn test_connector_mqtt_url_needs_no_tls_backend() {
         let router = RouterBuilder::new().build();
-        let connector =
-            MqttConnectorImpl::build_internal("mqtt://broker.example.com:1883", None, None, router)
-                .await;
+        let connector = MqttConnectorImpl::build_internal(
+            "mqtt://broker.example.com:1883",
+            None,
+            None,
+            60,
+            router,
+        )
+        .await;
         assert!(connector.is_ok());
     }
 }

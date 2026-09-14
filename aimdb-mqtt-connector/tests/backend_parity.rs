@@ -332,6 +332,89 @@ async fn the_setter_overrides_url_credentials_on_both_backends() {
     }
 }
 
+/// Both backends promise the broker the same keep-alive, and `with_keep_alive`
+/// is what sets it.
+///
+/// They used to disagree on an unset default — `rumqttc` hard-coded 30 s while
+/// the embedded path sent mountain-mqtt's 60 s — for one and the same route
+/// URL. The embedded session additionally pinged every 2 s regardless, an
+/// inherited constant unrelated to what it had promised.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_backends_promise_the_keep_alive_they_were_given() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("mqtt://127.0.0.1:{port}");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let keep_alive = Duration::from_secs(45);
+    let native = MqttConnector::new(url.clone())
+        .with_client_id("ka-native")
+        .with_keep_alive(keep_alive);
+    let embedded = MqttConnector::new(url)
+        .transport(TokioNet::tcp())
+        .with_client_id("ka-embedded")
+        .with_keep_alive(keep_alive);
+
+    let (_native_db, native_runner) = build_db(native, 1).await;
+    let (_embedded_db, embedded_runner) = build_db(embedded, 2).await;
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), None);
+    let seen_for_wait = seen.clone();
+
+    tokio::select! {
+        _ = native_runner.run() => panic!("the native runner returned"),
+        _ = embedded_runner.run() => panic!("the embedded runner returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = async {
+            while seen_for_wait.lock().unwrap().keep_alives.len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        } => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            panic!("watchdog: saw {:?}", seen.lock().unwrap().keep_alives);
+        }
+    }
+
+    let seen = seen.lock().unwrap();
+    for (n, promised) in seen.keep_alives.iter().enumerate() {
+        assert_eq!(
+            *promised, 45,
+            "connection {n} ({}) promised a keep-alive it was not given",
+            seen.client_ids[n]
+        );
+    }
+}
+
+/// A keep-alive too short to halve is refused at build, not quietly adjusted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keep_alive_below_the_floor_fails_the_build() {
+    // Port 1 is never listened on here: the build must fail on the keep-alive
+    // before anything is dialled.
+    let connector = MqttConnector::new("mqtt://127.0.0.1:1")
+        .transport(TokioNet::tcp())
+        .with_keep_alive(Duration::from_secs(1));
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+    builder.configure::<u64>("outbound", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .source(|_ctx, producer| async move { producer.produce(1) })
+            .link_to(OUTBOUND)
+            .with_serializer(|_ctx, v: &u64| Ok(v.to_string().into_bytes()))
+            .finish();
+    });
+
+    let Err(err) = builder.build().await else {
+        panic!("a 1s keep-alive must be refused");
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains("keep-alive") && message.contains("10"),
+        "the error should name the floor, got: {message}"
+    );
+}
+
 /// A **hostname** is a broker address on both backends.
 ///
 /// Resolving `host` is the dialer's job on every adapter, so `.transport(..)`

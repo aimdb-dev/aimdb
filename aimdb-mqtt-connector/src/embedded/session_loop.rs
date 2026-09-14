@@ -176,8 +176,11 @@ async fn client_loop<D: Delay>(
         // Topic aliases are declined: honouring them would mean storing the
         // server's topic names for the life of the connection.
         let _ = properties.push(ConnectProperty::TopicAliasMaximum(0.into()));
+        // Ours, not `connection_settings.keep_alive()`: that field has no
+        // setter, so it is always mountain-mqtt's own 60 s constant. The
+        // cadence below is derived from the value we actually send.
         let connect: Connect<'_, 1, 0> = Connect::new(
-            connection_settings.keep_alive(),
+            settings.keep_alive_secs,
             *connection_settings.username(),
             *connection_settings.password(),
             connection_settings.client_id(),

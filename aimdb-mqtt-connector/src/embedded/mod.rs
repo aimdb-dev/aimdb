@@ -191,6 +191,7 @@ pub(crate) fn build_plain<'a, D>(
     broker_url: &'a str,
     client_id: Option<&'a str>,
     credentials: Option<&'a (String, String)>,
+    keep_alive_secs: u16,
     dialer: &'a D,
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
 where
@@ -216,6 +217,7 @@ where
             connection_settings,
             dialer.clone(),
             topics,
+            Settings::from_keep_alive_secs(keep_alive_secs),
             db.runtime_ops(),
         )?;
         Ok(collect_pumps(db, actions, events, manager_tasks))
@@ -229,6 +231,7 @@ pub(crate) fn build_tls<'a, D>(
     broker_url: &'a str,
     client_id: Option<&'a str>,
     credentials: Option<&'a (String, String)>,
+    keep_alive_secs: u16,
     backend: &'a crate::connector::EmbeddedTls<D>,
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
 where
@@ -259,6 +262,7 @@ where
             connection_settings,
             backend.dialer.clone(),
             topics,
+            Settings::from_keep_alive_secs(keep_alive_secs),
             db.runtime_ops(),
         )?;
         Ok(collect_pumps(db, actions, events, manager_tasks))
@@ -384,6 +388,7 @@ fn setup_manager<D>(
     connection_settings: ConnectionSettings<'static>,
     dialer: D,
     topics: Vec<String>,
+    settings: Settings,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> Result<ManagerSetup, aimdb_core::DbError>
 where
@@ -418,7 +423,7 @@ where
                     port,
                     topics,
                     connection_settings,
-                    Settings::default(),
+                    settings,
                     events,
                     actions,
                     runtime,
@@ -440,6 +445,7 @@ fn setup_tls_manager<D>(
     connection_settings: ConnectionSettings<'static>,
     dialer: D,
     topics: Vec<String>,
+    settings: Settings,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> Result<ManagerSetup, aimdb_core::DbError>
 where
@@ -502,7 +508,7 @@ where
                         port,
                         topics,
                         connection_settings,
-                        Settings::default(),
+                        settings,
                         events,
                         actions,
                         delay,

@@ -22,6 +22,8 @@ pub struct Seen {
     pub client_ids: Vec<String>,
     /// The username/password each CONNECT carried, when it carried any.
     pub credentials: Vec<Option<(String, String)>>,
+    /// The keep-alive each CONNECT promised, in seconds.
+    pub keep_alives: Vec<u16>,
     pub subscribes: Vec<Vec<String>>,
     pub published: Vec<(String, Vec<u8>)>,
 }
@@ -117,6 +119,12 @@ fn take_field(body: &[u8], i: &mut usize) -> Option<String> {
     let field = String::from_utf8_lossy(body.get(*i + 2..*i + 2 + len)?).into_owned();
     *i += 2 + len;
     Some(field)
+}
+
+/// The keep-alive a CONNECT promises: bytes 8-9 of the variable header, after
+/// the protocol name, level and flags.
+fn connect_keep_alive(body: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes([*body.get(8)?, *body.get(9)?]))
 }
 
 /// The identity a CONNECT carries: client id, then the credentials its flags
@@ -268,6 +276,9 @@ where
                     if let Some((id, credentials)) = connect_identity(&body, v5) {
                         seen.client_ids.push(id);
                         seen.credentials.push(credentials);
+                    }
+                    if let Some(keep_alive) = connect_keep_alive(&body) {
+                        seen.keep_alives.push(keep_alive);
                     }
                 }
                 let ack: &[u8] = if v5 {
