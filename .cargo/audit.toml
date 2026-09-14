@@ -28,4 +28,5 @@ ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki: URI name constraints
     "RUSTSEC-2026-0099", # rustls-webpki: name constraints vs wildcard names
     "RUSTSEC-2026-0104", # rustls-webpki: panic in CRL parsing
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via rumqttc)
 ]
