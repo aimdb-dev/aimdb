@@ -1,142 +1,89 @@
-//! MQTT client management and lifecycle
+//! The `rumqttc` backend: one broker connection, QoS 0–2, platform trust roots.
 //!
-//! This module provides a client pool that:
-//! - Manages a single MQTT broker connection
-//! - Automatic event loop spawning
-//! - Thread-safe access from multiple consumers
-//! - Explicit lifecycle management (user controls when clients are created)
+//! `rumqttc` owns its socket, TLS and reconnect, so this module contributes
+//! only the connect-and-subscribe step and the `MqttSink`/`MqttEventLoopSource`
+//! adapters that core's pumps drive.
 
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::router::{Router, RouterBuilder};
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 use aimdb_core::{log_debug, log_error, log_info};
-use aimdb_core::{pump_sink, pump_source, BoxFut, ConnectorBuilder, Payload, Source};
+use aimdb_core::{pump_sink, pump_source, BoxFut, Payload, Source};
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// MQTT connector for a single broker connection with router-based dispatch
-///
-/// Each connector manages ONE MQTT broker connection. The router determines
-/// how incoming messages are dispatched to AimDB producers.
-///
-/// # Usage Pattern
-///
-/// The connector collects routes from the database during build() and
-/// automatically subscribes to all required MQTT topics.
-pub struct MqttConnectorBuilder {
-    broker_url: String,
-    client_id: Option<String>,
-}
-
-impl MqttConnectorBuilder {
-    /// Create a new MQTT connector builder
-    ///
-    /// If no client ID is explicitly set via `with_client_id()`, a random
-    /// UUID-based client ID will be generated automatically when the connector
-    /// is built.
-    ///
-    /// # Arguments
-    /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
-    pub fn new(broker_url: impl Into<String>) -> Self {
-        Self {
-            broker_url: broker_url.into(),
-            client_id: None,
-        }
-    }
-
-    /// Set the MQTT client ID
-    ///
-    /// The client ID should be unique for each client connecting to the broker.
-    /// It's used for session persistence and message delivery guarantees.
-    ///
-    /// If not set, a random UUID-based client ID will be generated automatically.
-    ///
-    /// # Arguments
-    /// * `client_id` - Unique identifier for this client
-    pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
-        self.client_id = Some(client_id.into());
-        self
-    }
-}
-
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-impl ConnectorBuilder for MqttConnectorBuilder {
-    fn build<'a>(
-        &'a self,
-        db: &'a aimdb_core::builder::AimDb,
-    ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
-        Box::pin(async move {
-            // Build a router from the inbound routes purely to drive the MQTT
-            // subscriptions + channel-capacity sizing in `build_internal`. The
-            // routing `Router` that fans incoming frames out to producers is
-            // (re)built by `pump_source` from the same `collect_inbound_routes`.
-            let inbound_routes = db.collect_inbound_routes("mqtt");
-            let router = RouterBuilder::from_routes(inbound_routes).build();
+/// Connect, subscribe, and collect the data-plane futures for the `rumqttc`
+/// backend.
+pub(crate) fn build<'a>(
+    db: &'a aimdb_core::builder::AimDb,
+    broker_url: &'a str,
+    client_id: Option<&'a str>,
+    credentials: Option<&'a (String, String)>,
+    keep_alive_secs: u16,
+) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
+    Box::pin(async move {
+        // Build a router from the inbound routes purely to drive the MQTT
+        // subscriptions + channel-capacity sizing in `build_internal`. The
+        // routing `Router` that fans incoming frames out to producers is
+        // (re)built by `pump_source` from the same `collect_inbound_routes`.
+        let inbound_routes = db.collect_inbound_routes("mqtt");
+        let router = RouterBuilder::from_routes(inbound_routes).build();
 
-            log_info!("MQTT subscribing to {} topics", router.resource_ids().len());
+        log_info!("MQTT subscribing to {} topics", router.resource_ids().len());
 
-            // Connect, subscribe, and hand back the raw event loop.
-            let (client, event_loop) =
-                MqttConnectorImpl::build_internal(&self.broker_url, self.client_id.clone(), router)
-                    .await
-                    .map_err(|e| {
-                        aimdb_core::DbError::runtime_error(format!(
-                            "Failed to build MQTT connector: {}",
-                            e
-                        ))
-                    })?;
+        // Connect, subscribe, and hand back the raw event loop.
+        let (client, event_loop) = MqttConnectorImpl::build_internal(
+            broker_url,
+            client_id,
+            credentials,
+            keep_alive_secs,
+            router,
+        )
+        .await
+        .map_err(|e| {
+            aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", e))
+        })?;
 
-            let mut futures: Vec<BoxFuture> = Vec::new();
+        let mut futures: Vec<BoxFuture> = Vec::new();
 
-            // Inbound: one multiplexed reader future fanning publishes out to producers.
-            futures.extend(pump_source(
-                db,
-                "mqtt",
-                MqttEventLoopSource {
-                    event_loop,
-                    broker_key: self.broker_url.clone(),
-                },
-            ));
+        // Inbound: one multiplexed reader future fanning publishes out to producers.
+        futures.extend(pump_source(
+            db,
+            "mqtt",
+            MqttEventLoopSource {
+                event_loop,
+                broker_key: broker_url.to_string(),
+            },
+        ));
 
-            // Outbound: one publisher future per outbound route.
-            futures.extend(pump_sink(db, "mqtt", Arc::new(MqttSink { client })));
+        // Outbound: one publisher future per outbound route.
+        futures.extend(pump_sink(db, "mqtt", Arc::new(MqttSink { client })));
 
-            Ok(futures)
-        })
-    }
-
-    fn scheme(&self) -> &str {
-        "mqtt"
-    }
+        Ok(futures)
+    })
 }
 
-/// Internal MQTT connector build helpers.
-///
-/// A namespace for the broker-connection setup invoked from
-/// [`MqttConnectorBuilder::build`]; the data-plane loops themselves live in the
-/// reusable `pump_sink` / `pump_source` helpers + the `MqttSink` /
-/// `MqttEventLoopSource` adapters below.
+/// The broker-connection setup invoked from `build`; the data-plane loops
+/// themselves are core's `pump_sink` / `pump_source`.
 pub struct MqttConnectorImpl;
 
 impl MqttConnectorImpl {
-    /// Connect to the broker and subscribe to all configured topics (internal).
+    /// Connect to the broker and subscribe to every topic in `router`, sizing
+    /// the send channel from the route count.
     ///
-    /// Creates the MQTT client, sizes the send-channel from the route count, and
-    /// subscribes to every topic in `router`. Returns the shared client (for the
-    /// outbound `pump_sink`) plus the raw event loop (handed to a
-    /// [`MqttEventLoopSource`] for the inbound `pump_source`).
-    ///
-    /// # Arguments
-    /// * `broker_url` - Broker URL (mqtt://host:port or mqtts://host:port)
-    /// * `client_id` - Optional client ID (if None, generates UUID-based ID)
-    /// * `router` - Routes used only for the subscription list + capacity sizing
+    /// Returns the shared client (for the outbound `pump_sink`) plus the raw
+    /// event loop (for [`MqttEventLoopSource`] and the inbound `pump_source`).
+    /// A `None` `client_id` generates a UUID-based one.
     async fn build_internal(
         broker_url: &str,
-        client_id: Option<String>,
+        client_id: Option<&str>,
+        credentials: Option<&(String, String)>,
+        keep_alive_secs: u16,
         router: Router,
     ) -> Result<(Arc<AsyncClient>, EventLoop), String> {
         // Parse the broker URL - we accept it with or without a topic
@@ -162,17 +109,31 @@ impl MqttConnectorImpl {
         log_info!("Creating MQTT client for {}:{}", host, port);
 
         // Use provided client_id or generate a UUID-based one
-        let client_id = client_id.unwrap_or_else(|| format!("aimdb-{}", uuid::Uuid::new_v4()));
+        let client_id = client_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("aimdb-{}", uuid::Uuid::new_v4()));
 
         let mut mqtt_opts = MqttOptions::new(client_id, host, port);
 
-        mqtt_opts.set_keep_alive(Duration::from_secs(30));
+        // The same promise the embedded backend makes, from the same setter:
+        // the two backends used to disagree here (30 s against 60 s) for one
+        // route URL.
+        mqtt_opts.set_keep_alive(Duration::from_secs(keep_alive_secs.into()));
 
-        // Add credentials if provided
-        if let (Some(ref username), Some(ref password)) =
-            (&connector_url.username, &connector_url.password)
-        {
-            mqtt_opts.set_credentials(username, password);
+        // `with_credentials` wins over anything in the URL's authority, which
+        // is the only way to name a password that is not URL-safe.
+        match (
+            credentials,
+            &connector_url.username,
+            &connector_url.password,
+        ) {
+            (Some((username, password)), _, _) => {
+                mqtt_opts.set_credentials(username, password);
+            }
+            (None, Some(username), Some(password)) => {
+                mqtt_opts.set_credentials(username, password);
+            }
+            _ => {}
         }
 
         // mqtts:// selects the TLS transport; rumqttc otherwise speaks plain TCP
@@ -237,10 +198,8 @@ impl MqttConnectorImpl {
 
 /// Pure outbound publish adapter driven by `pump_sink`.
 ///
-/// Wraps the shared rumqttc client. `qos`/`retain` come from the route's protocol
-/// options (threaded through by `pump_sink` via [`ConnectorConfig::from_query`]),
-/// interpreted with MQTT's legacy defaults — **QoS 1 (`AtLeastOnce`)** when
-/// unspecified, no retain — so the wire stays byte-identical to the old loop.
+/// Wraps the shared rumqttc client. `qos`/`retain` come from the route's
+/// protocol options, defaulting to **QoS 1 (`AtLeastOnce`)** and no retain.
 struct MqttSink {
     client: Arc<AsyncClient>,
 }
@@ -302,16 +261,13 @@ impl Connector for MqttSink {
 
 /// Inbound frame source driven by `pump_source`.
 ///
-/// Yields `(topic, payload)` for each incoming MQTT publish. The inner poll loop
-/// discards non-publish packets — keeping QoS handshakes and keepalive flowing —
-/// and backs off 5s on a connection error before retrying, reproducing the old
-/// hand-rolled event-loop future exactly. It never yields `None`: the reader runs
-/// for the lifetime of the connector.
+/// Yields `(topic, payload)` for each incoming MQTT publish, discarding other
+/// packets and backing off 5s on a connection error. Never yields `None`: the
+/// reader runs for the lifetime of the connector.
 struct MqttEventLoopSource {
     event_loop: EventLoop,
-    /// Only ever used to name the broker in an error line. One `String` per
-    /// connection, held for its lifetime — no longer feature-gated, because the
-    /// facade decides its own gating and a `#[cfg]` here could not follow it.
+    /// Only ever used to name the broker in an error line. Ungated, because the
+    /// logging facade decides its own gating.
     broker_key: String,
 }
 
@@ -353,9 +309,9 @@ fn tls_configuration() -> Result<rumqttc::TlsConfiguration, String> {
     Ok(rumqttc::TlsConfiguration::Native)
 }
 
-/// Built by hand rather than via `TlsConfiguration::default()`, which does the
-/// same work and then `expect`s on failure. A panic on the connect path is
-/// undefined behaviour across an FFI boundary; a returned error is a status.
+/// Built by hand rather than via `TlsConfiguration::default()`, which `expect`s
+/// on failure: a panic on the connect path is undefined behaviour across an FFI
+/// boundary.
 #[cfg(all(feature = "tokio-rustls", not(feature = "tokio-native-tls")))]
 fn tls_configuration() -> Result<rumqttc::TlsConfiguration, String> {
     use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
@@ -396,7 +352,8 @@ mod tests {
     async fn test_connector_creation_with_router() {
         let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, router).await;
+            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, None, 60, router)
+                .await;
         assert!(connector.is_ok());
     }
 
@@ -404,14 +361,16 @@ mod tests {
     async fn test_connector_with_port() {
         let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, router).await;
+            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, None, 60, router)
+                .await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_invalid_url() {
         let router = RouterBuilder::new().build();
-        let connector = MqttConnectorImpl::build_internal("not-a-valid-url", None, router).await;
+        let connector =
+            MqttConnectorImpl::build_internal("not-a-valid-url", None, None, 60, router).await;
         assert!(connector.is_err());
     }
 
@@ -423,6 +382,8 @@ mod tests {
         let connector = MqttConnectorImpl::build_internal(
             "mqtts://hub-sub:secret@broker.example.com:8883",
             None,
+            None,
+            60,
             router,
         )
         .await;
@@ -450,8 +411,14 @@ mod tests {
     #[tokio::test]
     async fn test_connector_mqtt_url_needs_no_tls_backend() {
         let router = RouterBuilder::new().build();
-        let connector =
-            MqttConnectorImpl::build_internal("mqtt://broker.example.com:1883", None, router).await;
+        let connector = MqttConnectorImpl::build_internal(
+            "mqtt://broker.example.com:1883",
+            None,
+            None,
+            60,
+            router,
+        )
+        .await;
         assert!(connector.is_ok());
     }
 }

@@ -21,14 +21,15 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use aimdb_core::session::{
-    ByteStream, Datagram, DatagramBinder, PeerInfo, StreamDialer, StreamListener, TransportError,
-    TransportResult,
+    ByteRead, ByteStream, ByteWrite, Datagram, DatagramBinder, PeerInfo, StreamDialer,
+    StreamListener, TransportError, TransportResult,
 };
 
 use embassy_futures::yield_now;
+use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{IpEndpoint, IpListenEndpoint, Stack};
+use embassy_net::{IpAddress, IpEndpoint, IpListenEndpoint, Stack};
 use embedded_io_async::Write as _;
 
 use crate::SendFutureWrapper;
@@ -206,6 +207,118 @@ impl ByteStream for EmbassyTcpStream {
             socket.flush().await.map_err(|_| TransportError::Closed)
         })
     }
+
+    /// Borrow the socket's own halves, which `embassy-net` hands out lock-free.
+    ///
+    /// A stream whose socket is already gone still has to produce halves, so
+    /// each carries the `Option` and reports [`TransportError::Closed`] on use.
+    fn split(&mut self) -> (impl ByteRead + Send + '_, impl ByteWrite + Send + '_) {
+        let (rx, tx) = match self.socket.as_mut() {
+            Some(socket) => {
+                let (rx, tx) = socket.split();
+                (Some(rx), Some(tx))
+            }
+            None => (None, None),
+        };
+        (EmbassyTcpReader(rx), EmbassyTcpWriter(tx))
+    }
+}
+
+/// The read half of a split [`EmbassyTcpStream`]; `None` once the socket is
+/// gone.
+struct EmbassyTcpReader<'s>(Option<embassy_net::tcp::TcpReader<'s>>);
+
+/// The write half of a split [`EmbassyTcpStream`]; `None` once the socket is
+/// gone.
+struct EmbassyTcpWriter<'s>(Option<embassy_net::tcp::TcpWriter<'s>>);
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant,
+// which is what already makes `EmbassyTcpStream` itself `Send`.
+unsafe impl Send for EmbassyTcpReader<'_> {}
+// SAFETY: as above.
+unsafe impl Send for EmbassyTcpWriter<'_> {}
+
+impl ByteRead for EmbassyTcpReader<'_> {
+    fn read<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+    ) -> impl Future<Output = TransportResult<usize>> + Send + 'a {
+        SendFutureWrapper(async move {
+            let rx = self.0.as_mut().ok_or(TransportError::Closed)?;
+            rx.read(buf).await.map_err(|_| TransportError::Io)
+        })
+    }
+}
+
+impl ByteWrite for EmbassyTcpWriter<'_> {
+    fn write_all<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> impl Future<Output = TransportResult<()>> + Send + 'a {
+        SendFutureWrapper(async move {
+            let tx = self.0.as_mut().ok_or(TransportError::Closed)?;
+            tx.write_all(buf).await.map_err(|_| TransportError::Closed)
+        })
+    }
+
+    fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_ {
+        SendFutureWrapper(async move {
+            let tx = self.0.as_mut().ok_or(TransportError::Closed)?;
+            tx.flush().await.map_err(|_| TransportError::Closed)
+        })
+    }
+}
+
+// `embedded-io-async` by delegation, so a protocol client that consumes those
+// traits (mountain-mqtt, embedded-tls) sees the type it expects. `ReadReady` is
+// the one `ByteStream` cannot express, and the socket has it.
+impl embedded_io_async::ErrorType for EmbassyTcpStream {
+    type Error = embedded_io_async::ErrorKind;
+}
+
+impl embedded_io_async::Read for EmbassyTcpStream {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::Read::read(socket, buf)
+            .await
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
+}
+
+impl embedded_io_async::Write for EmbassyTcpStream {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::Write::write(socket, buf)
+            .await
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::Write::flush(socket)
+            .await
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
+}
+
+impl embedded_io_async::ReadReady for EmbassyTcpStream {
+    fn read_ready(&mut self) -> Result<bool, Self::Error> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(embedded_io_async::ErrorKind::BrokenPipe)?;
+        embedded_io_async::ReadReady::read_ready(socket)
+            .map_err(|_| embedded_io_async::ErrorKind::Other)
+    }
 }
 
 /// Dials TCP connections over one caller-owned socket.
@@ -216,9 +329,44 @@ impl ByteStream for EmbassyTcpStream {
 /// [`TransportError::Busy`]. For a second *concurrent* connection call
 /// [`EmbassyNet::tcp`] again with its own buffers, which is the only way to get
 /// a second socket.
+///
+/// Holds the stack as well as the socket because [`StreamDialer::connect`]
+/// takes a host *string*: resolving it is the dialer's job, and on Embassy that
+/// means a DNS query the stack owns.
 #[derive(Clone)]
 pub struct EmbassyTcpDialer {
+    stack: Stack<'static>,
     slot: Arc<TcpSocketSlot>,
+}
+
+// SAFETY: single-core cooperative Embassy executor — see the module invariant.
+// The `Arc<TcpSocketSlot>` is already `Send`/`Sync` on that invariant; `Stack`
+// is the `!Send` half, exactly as in `EmbassyUdpBinder` below.
+unsafe impl Send for EmbassyTcpDialer {}
+// SAFETY: same invariant.
+unsafe impl Sync for EmbassyTcpDialer {}
+
+impl EmbassyTcpDialer {
+    /// Turn a host into an address to dial.
+    ///
+    /// An IP literal is never queried, so a stack with no DNS server configured
+    /// still dials literals. A name goes to the resolver, `A` first and `AAAA`
+    /// only if that answers nothing — the order `getaddrinfo` reports, so a
+    /// connector sees one behaviour across adapters. Every failure is
+    /// [`TransportError::Io`], matching `TokioTcpDialer`.
+    async fn resolve(&self, host: &str) -> TransportResult<IpAddress> {
+        if let Ok(addr) = host.parse::<core::net::IpAddr>() {
+            return Ok(addr.into());
+        }
+        for qtype in [DnsQueryType::A, DnsQueryType::Aaaa] {
+            if let Ok(addrs) = self.stack.dns_query(host, qtype).await {
+                if let Some(addr) = addrs.first().copied() {
+                    return Ok(addr);
+                }
+            }
+        }
+        Err(TransportError::Io)
+    }
 }
 
 impl StreamDialer for EmbassyTcpDialer {
@@ -230,10 +378,10 @@ impl StreamDialer for EmbassyTcpDialer {
         port: u16,
     ) -> impl Future<Output = TransportResult<Self::Stream>> + Send + 'a {
         SendFutureWrapper(async move {
-            // Resolution belongs to the adapter: IP literals here, hostnames
-            // once embassy-net's `dns` feature is on.
-            let addr: core::net::IpAddr = host.parse().map_err(|_| TransportError::Io)?;
-            let endpoint = IpEndpoint::new(addr.into(), port);
+            // Resolution belongs to the adapter, so the socket is only taken
+            // once there is somewhere to dial — a name that does not resolve
+            // must not hold the slot against a concurrent literal dial.
+            let endpoint = IpEndpoint::new(self.resolve(host).await?, port);
 
             let Some(socket) = self.slot.take() else {
                 return Err(TransportError::Busy);
@@ -519,6 +667,7 @@ impl EmbassyNet {
         tx_buffer: &'static mut [u8],
     ) -> EmbassyTcpDialer {
         EmbassyTcpDialer {
+            stack,
             slot: Arc::new(TcpSocketSlot::new(TcpSocket::new(
                 stack, rx_buffer, tx_buffer,
             ))),
@@ -559,6 +708,15 @@ impl EmbassyNet {
     }
 }
 
+/// The dialer is also the clock, so a connector generic over it needs no
+/// separate handle.
+#[cfg(feature = "embassy-time")]
+impl aimdb_core::session::Delay for EmbassyTcpDialer {
+    fn sleep(&self, d: core::time::Duration) -> impl Future<Output = ()> + Send {
+        EmbassyDelay.sleep(d)
+    }
+}
+
 /// [`Delay`](aimdb_core::session::Delay) over `embassy_time::Timer`, which is
 /// `Send` and allocates nothing.
 ///
@@ -584,6 +742,7 @@ impl aimdb_core::session::Delay for EmbassyDelay {
 fn _transports_are_send() {
     fn assert_send<T: Send>() {}
     assert_send::<EmbassyTcpStream>();
+    assert_send::<EmbassyTcpDialer>();
     assert_send::<TcpSocketSlot>();
     assert_send::<EmbassyTcpListener<2>>();
     assert_send::<EmbassyUdpSocket>();

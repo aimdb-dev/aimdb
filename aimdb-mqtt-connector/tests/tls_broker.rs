@@ -1,0 +1,241 @@
+//! `mqtts://` on the host: the embedded backend against a local broker whose
+//! self-signed certificate is pinned as the root CA (`_test-tls-broker`).
+//!
+//! The same `embedded-tls` session an MCU runs, over `TokioNet::tcp()`, clocked
+//! by the runtime's wall clock with no SNTP task.
+#![cfg(feature = "_test-tls-broker")]
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use rand::SeedableRng as _;
+use tokio::net::TcpListener;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::TlsAcceptor;
+
+mod common;
+use common::{serve_stream, AfterSuback, Seen};
+
+// Each test binary defines these exactly once.
+#[defmt::global_logger]
+struct HostTestLogger;
+unsafe impl defmt::Logger for HostTestLogger {
+    fn acquire() {}
+    unsafe fn flush() {}
+    unsafe fn release() {}
+    unsafe fn write(_bytes: &[u8]) {}
+}
+#[defmt::panic_handler]
+fn defmt_panic() -> ! {
+    core::panic!("defmt panic in host test")
+}
+defmt::timestamp!("{=u64:us}", 0);
+
+/// The name the certificate is issued for, and the name the client verifies.
+/// A hostname rather than an IP literal, which `rustpki` matches only through
+/// the narrower CN fallback.
+const BROKER_HOST: &str = "localhost";
+
+/// A self-signed certificate for `localhost`, as (server chain, key, root CA in
+/// DER) — the same bytes on both sides, which is what "pinned" means.
+fn self_signed() -> (
+    CertificateDer<'static>,
+    PrivateKeyDer<'static>,
+    &'static [u8],
+) {
+    let cert = rcgen::generate_simple_self_signed(vec![BROKER_HOST.to_string()])
+        .expect("generate self-signed certificate");
+    let der = cert.cert.der().to_vec();
+    let key = PrivateKeyDer::try_from(cert.key_pair.serialize_der()).expect("server key");
+    // `&'static` because `TlsOptions` holds the trust root for the session's
+    // whole life; one leak per test process.
+    let ca: &'static [u8] = Box::leak(der.clone().into_boxed_slice());
+    (CertificateDer::from(der), key, ca)
+}
+
+/// Accept TLS connections and serve the same fake MQTT broker over them.
+async fn tls_broker(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    seen: Arc<Mutex<Seen>>,
+    push: Option<(&'static str, &'static [u8])>,
+) {
+    loop {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        let acceptor = acceptor.clone();
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            let Ok(mut stream) = acceptor.accept(socket).await else {
+                return;
+            };
+            let after = AfterSuback {
+                hang_up: false,
+                push,
+            };
+            serve_stream(&mut stream, &seen, after).await;
+        });
+    }
+}
+
+/// A `mqtts://` session completes and round-trips a record, verified against
+/// the pinned root and clocked by `SystemTime` — no SNTP anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root() {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_mqtt_connector::{MqttConnector, TlsOptions};
+    use aimdb_tokio_adapter::net::TokioNet;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let (chain, key, ca_der) = self_signed();
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![chain], key)
+        .expect("server config");
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    // `TlsOptions` holds `&'static mut` buffers and RNG: on a board these are
+    // `StaticCell`s, here one leak apiece.
+    let rng: &'static mut (dyn embedded_tls::CryptoRngCore + Send) =
+        Box::leak(Box::new(rand::rngs::StdRng::from_entropy()));
+    let read_buf: &'static mut [u8] = Box::leak(vec![0u8; 16_640].into_boxed_slice());
+    let write_buf: &'static mut [u8] = Box::leak(vec![0u8; 4_096].into_boxed_slice());
+
+    let connector = MqttConnector::new(format!("mqtts://{BROKER_HOST}:{port}"))
+        .tls(
+            TokioNet::tcp(),
+            TlsOptions::new(rng, ca_der, read_buf, write_buf),
+        )
+        .with_client_id("tls-host-smoke");
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+    builder.configure::<u64>("temperature", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt://sensors/temperature")
+            .with_deserializer(|_ctx, data: &[u8]| {
+                core::str::from_utf8(data)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .ok_or_else(|| String::from("bad payload"))
+            })
+            .finish();
+    });
+
+    let (db, runner) = builder.build().await.expect("build db");
+    let mut inbound = db
+        .consumer::<u64>("temperature")
+        .expect("temperature consumer")
+        .subscribe();
+
+    let broker = tls_broker(
+        listener,
+        acceptor,
+        seen.clone(),
+        Some(("sensors/temperature", b"23")),
+    );
+
+    let received = tokio::select! {
+        _ = runner.run() => panic!("the session loop returned"),
+        _ = broker => panic!("the broker returned"),
+        value = inbound.recv() => value.expect("inbound record"),
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            let seen = seen.lock().unwrap();
+            panic!(
+                "watchdog: {} connects, {:?} subscribed — the handshake never completed",
+                seen.connects,
+                seen.subscribed_topics()
+            );
+        }
+    };
+
+    assert_eq!(
+        received, 23,
+        "the message must arrive through the TLS session"
+    );
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.connects, 1, "exactly one MQTT session over TLS");
+    assert!(
+        seen.subscribed_topics().contains(&"sensors/temperature"),
+        "the session must subscribe over TLS; saw {:?}",
+        seen.subscribed_topics()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Buffer floors, checked at build rather than on the device.
+// ---------------------------------------------------------------------------
+
+/// Build a connector with the given buffer sizes and return the build error.
+///
+/// Nothing listens on the port: both checks run before anything is dialled, so
+/// a passing build here would hang rather than fail, which is the point.
+async fn build_error_with_buffers(read: usize, write: usize) -> String {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_mqtt_connector::{MqttConnector, TlsOptions};
+    use aimdb_tokio_adapter::net::TokioNet;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let rng: &'static mut (dyn embedded_tls::CryptoRngCore + Send) =
+        Box::leak(Box::new(rand::rngs::StdRng::from_entropy()));
+    let ca_der: &'static [u8] = Box::leak(vec![0u8; 32].into_boxed_slice());
+    let read_buf: &'static mut [u8] = Box::leak(vec![0u8; read].into_boxed_slice());
+    let write_buf: &'static mut [u8] = Box::leak(vec![0u8; write].into_boxed_slice());
+
+    let connector = MqttConnector::new(format!("mqtts://{BROKER_HOST}:1"))
+        .tls(
+            TokioNet::tcp(),
+            TlsOptions::new(rng, ca_der, read_buf, write_buf),
+        )
+        .with_client_id("tls-buffer-floor");
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+    builder.configure::<u64>("temperature", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt://sensors/temperature")
+            .with_deserializer(|_ctx, _d: &[u8]| Ok(0u64))
+            .finish();
+    });
+
+    let Err(err) = builder.build().await else {
+        panic!("a {read}-byte read / {write}-byte write buffer must be refused");
+    };
+    err.to_string()
+}
+
+/// A read buffer under the 16 640 a TLS 1.3 peer may fill is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undersized_read_buffer_fails_the_build() {
+    let message = build_error_with_buffers(4_096, 4_096).await;
+    assert!(
+        message.contains("read buffer") && message.contains("16 640"),
+        "the error should name the read buffer and its floor, got: {message}"
+    );
+}
+
+/// A write buffer at or under `embedded-tls`'s per-record overhead is refused.
+///
+/// `embedded-tls` guards this with a `debug_assert!`, which a release build —
+/// every firmware build — strips: past it the writer underflows
+/// `len - TLS_RECORD_OVERHEAD` and copies off the end of the buffer. Catching it
+/// at build turns a panic on the device into a message at startup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undersized_write_buffer_fails_the_build() {
+    let message = build_error_with_buffers(16_640, 128).await;
+    assert!(
+        message.contains("write buffer") && message.contains("128"),
+        "the error should name the write buffer and the record overhead, got: {message}"
+    );
+}

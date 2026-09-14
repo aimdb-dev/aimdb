@@ -25,6 +25,11 @@ tokio-runtime = ["tokio", "tokio-util", "std"]
 # runtime-neutral I/O traits, so connector crates need no tokio dependency.
 net = ["tokio-runtime", "aimdb-core/connector-session", "tokio/net", "tokio/io-util"]
 
+# `embedded_io_async::{Read, Write, ReadReady}` on the `net` streams, so a
+# protocol client written against those traits (mountain-mqtt, embedded-tls)
+# runs on a host over `TokioNet::tcp()`.
+embedded-io = ["net", "dep:embedded-io-async"]
+
 # Observability features
 tracing = ["aimdb-core/tracing", "dep:tracing"]
 observability = ["aimdb-core/observability", "tokio-runtime"]
@@ -50,6 +55,10 @@ tokio = { workspace = true, optional = true, features = [
 # per-message allocation. broadcast/watch expose no public poll API, so the
 # reader round-trips the receiver through a stored, reused future.
 tokio-util = { version = "0.7", optional = true, default-features = false }
+
+# `std` supplies `From<std::io::ErrorKind>`, so Tokio's error detail survives
+# instead of collapsing to `Other`.
+embedded-io-async = { workspace = true, optional = true, features = ["std"] }
 
 # `RuntimeOps::log` forwards to the `log` facade; the binary picks the backend.
 log = "0.4"
