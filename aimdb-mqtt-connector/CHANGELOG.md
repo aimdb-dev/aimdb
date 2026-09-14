@@ -113,8 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary. Previously the two inherent `new`s collided with `E0034` whenever
   both features were on. Broker URL, client id and credentials moved onto
   `MqttConnector` itself, so `with_client_id` / `with_credentials` work on
-  either backend; `with_credentials` now reaches `rumqttc` too, taking
-  precedence over the URL authority.
+  either backend; `with_credentials` now reaches `rumqttc` too. Both backends
+  honour credentials in the URL authority (`mqtt://user:pass@host`), and on
+  both the setter takes precedence over them — it is the only way to name a
+  password that is not URL-safe.
 - **`.tls(dialer, options)` replaces `.tls(stack, options)`.** The dialer
   resolves the host, so TLS needs no network stack: DNS, the socket buffers and
   the SNTP task all leave the TLS path. The certificate-validity clock comes

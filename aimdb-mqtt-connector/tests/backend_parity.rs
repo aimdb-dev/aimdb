@@ -233,6 +233,105 @@ async fn with_credentials_reaches_the_wire_on_both_backends() {
     }
 }
 
+/// Credentials in the broker URL's authority reach the wire on both backends.
+///
+/// The sibling above covers the explicit setter. This one covers
+/// `mqtt://user:pass@host`, which the embedded backend used to parse for its
+/// host and port and then drop — producing an unauthenticated CONNECT, a
+/// rejecting broker, and a silent reconnect loop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn url_credentials_reach_the_wire_on_both_backends() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("mqtt://hub:s3cret@127.0.0.1:{port}");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let native = MqttConnector::new(url.clone()).with_client_id("url-creds-native");
+    let embedded = MqttConnector::new(url)
+        .transport(TokioNet::tcp())
+        .with_client_id("url-creds-embedded");
+
+    let (_native_db, native_runner) = build_db(native, 1).await;
+    let (_embedded_db, embedded_runner) = build_db(embedded, 2).await;
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), None);
+    let seen_for_wait = seen.clone();
+
+    tokio::select! {
+        _ = native_runner.run() => panic!("the native runner returned"),
+        _ = embedded_runner.run() => panic!("the embedded runner returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = async {
+            while seen_for_wait.lock().unwrap().credentials.len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        } => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            panic!("watchdog: saw {:?}", seen.lock().unwrap().credentials);
+        }
+    }
+
+    let seen = seen.lock().unwrap();
+    let expected = Some((String::from("hub"), String::from("s3cret")));
+    for (n, credentials) in seen.credentials.iter().enumerate() {
+        assert_eq!(
+            *credentials, expected,
+            "connection {n} ({}) dropped the URL's credentials",
+            seen.client_ids[n]
+        );
+    }
+}
+
+/// The explicit setter overrides what the URL carries, on both backends.
+///
+/// `with_credentials` is the only way to name a password that is not URL-safe,
+/// so it has to win rather than merely fill a gap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_setter_overrides_url_credentials_on_both_backends() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("mqtt://urluser:urlpass@127.0.0.1:{port}");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let native = MqttConnector::new(url.clone())
+        .with_client_id("override-native")
+        .with_credentials("hub", "s3cret");
+    let embedded = MqttConnector::new(url)
+        .transport(TokioNet::tcp())
+        .with_client_id("override-embedded")
+        .with_credentials("hub", "s3cret");
+
+    let (_native_db, native_runner) = build_db(native, 1).await;
+    let (_embedded_db, embedded_runner) = build_db(embedded, 2).await;
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), None);
+    let seen_for_wait = seen.clone();
+
+    tokio::select! {
+        _ = native_runner.run() => panic!("the native runner returned"),
+        _ = embedded_runner.run() => panic!("the embedded runner returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = async {
+            while seen_for_wait.lock().unwrap().credentials.len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        } => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            panic!("watchdog: saw {:?}", seen.lock().unwrap().credentials);
+        }
+    }
+
+    let seen = seen.lock().unwrap();
+    let expected = Some((String::from("hub"), String::from("s3cret")));
+    for (n, credentials) in seen.credentials.iter().enumerate() {
+        assert_eq!(
+            *credentials, expected,
+            "connection {n} ({}) let the URL win over the setter",
+            seen.client_ids[n]
+        );
+    }
+}
+
 /// A **hostname** is a broker address on both backends.
 ///
 /// Resolving `host` is the dialer's job on every adapter, so `.transport(..)`

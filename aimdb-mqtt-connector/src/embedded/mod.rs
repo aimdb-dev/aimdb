@@ -217,7 +217,8 @@ where
         if broker.tls {
             return Err(build_err("mqtts:// broker URLs require .tls(...)"));
         }
-        let connection_settings = static_connection_settings(client_id, credentials);
+        let connection_settings =
+            static_connection_settings(client_id, credentials, broker.credentials.as_ref());
 
         let (actions, events, manager_tasks) = setup_manager(
             &broker,
@@ -258,7 +259,8 @@ where
             .options
             .take()
             .ok_or_else(|| build_err("TLS materials already taken; build() ran twice"))?;
-        let connection_settings = static_connection_settings(client_id, credentials);
+        let connection_settings =
+            static_connection_settings(client_id, credentials, broker.credentials.as_ref());
 
         let (actions, events, manager_tasks) = setup_tls_manager(
             &broker,
@@ -307,6 +309,9 @@ struct BrokerUrl {
     tls: bool,
     host: String,
     port: u16,
+    /// Credentials from the URL authority (`mqtt://user:pass@host`), which
+    /// `MqttConnector::with_credentials` overrides.
+    credentials: Option<(String, String)>,
 }
 
 fn build_err(msg: &str) -> aimdb_core::DbError {
@@ -316,7 +321,10 @@ fn build_err(msg: &str) -> aimdb_core::DbError {
 }
 
 /// Parse the broker URL into transport + host + port (`mqtt://` 1883,
-/// `mqtts://` 8883).
+/// `mqtts://` 8883), plus any credentials in the authority.
+///
+/// A username without a password is ignored rather than sent half-formed,
+/// which is what the `rumqttc` backend does with the same URL.
 fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> {
     // Add a dummy topic if none, so parsing succeeds.
     let mut url = broker_url.to_string();
@@ -330,14 +338,24 @@ fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> 
         _ => return Err(build_err("Broker URL scheme must be mqtt:// or mqtts://")),
     };
     let port = connector_url.port.unwrap_or(if tls { 8883 } else { 1883 });
+    let credentials = match (connector_url.username, connector_url.password) {
+        (Some(username), Some(password)) => Some((username, password)),
+        _ => None,
+    };
     Ok(BrokerUrl {
         tls,
         host: connector_url.host,
         port,
+        credentials,
     })
 }
 
 /// Build the `ConnectionSettings<'static>` for MQTT CONNECT.
+///
+/// `credentials` is what the connector was given; `url_credentials` is what the
+/// broker URL's authority carried. The explicit setter wins, as it does on the
+/// `rumqttc` backend — it is the only way to name a password that is not
+/// URL-safe.
 ///
 /// The identity strings are leaked to reach `'static` — the session task is
 /// `'static`, so what it borrows must be too — giving each connector its own
@@ -352,13 +370,14 @@ fn parse_broker_url(broker_url: &str) -> Result<BrokerUrl, aimdb_core::DbError> 
 fn static_connection_settings(
     client_id: Option<&str>,
     credentials: Option<&(String, String)>,
+    url_credentials: Option<&(String, String)>,
 ) -> ConnectionSettings<'static> {
     fn leak(s: &str) -> &'static str {
         Box::leak(s.to_string().into_boxed_str())
     }
 
     let client_id = leak(client_id.unwrap_or("aimdb-client"));
-    match credentials {
+    match credentials.or(url_credentials) {
         Some((username, password)) => {
             ConnectionSettings::authenticated(client_id, leak(username), leak(password).as_bytes())
         }
