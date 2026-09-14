@@ -125,6 +125,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `mountain-mqtt-embassy` fork is absorbed and dropped.** Its state,
   event handler and message pump live in `embedded::manager`, with the mutex
   and the clock as this crate's choices rather than the fork's.
+- **The fork's `MqttEvent` goes with it, and `embedded::manager` is now
+  private.** The fork reported `Connected`, `ConnectionStable`, `Disconnected`,
+  `SubscriptionGrantedBelowMaximumQos`,
+  `PublishedMessageHadNoMatchingSubscribers` and `NoSubscriptionExisted` over a
+  channel the *application* held. In AimDB `pump_source` owns that end and a
+  record has no connection-state callback, so all six were constructed and then
+  dropped on the floor — along with `Settings::stabilisation_interval` and the
+  `stable_at` deadline in the session loop, whose sole output was
+  `ConnectionStable`. `ConnectionId` went too: it threaded through four
+  signatures only to populate those events. The event channel now carries the
+  application message itself. `embedded::manager` and `embedded::session` are
+  `pub(crate)`, which also withdraws `Settings` — public, documented, and never
+  reachable, since both build paths hard-code `Settings::default()`. Session
+  cadence stays a crate-internal constant; making it a knob is a separate
+  change. Disconnects are unaffected: `defmt` already reported them next to the
+  event, and still does.
 - **Session channels use `CriticalSectionRawMutex` in an `Arc`.** They are
   therefore `Sync`, so `MqttSink` and `MqttSource` are plain `Connector` /
   `Source` impls and the `EmbassySink`/`EmbassySource` force-`Send` spine is

@@ -62,9 +62,7 @@ where
 {
     use aimdb_core::session::{ByteStream, Delay};
     use mountain_mqtt::data::quality_of_service::QualityOfService;
-    use mountain_mqtt::mqtt_manager::ConnectionId;
 
-    use crate::embedded::manager::MqttEvent;
     use crate::embedded::session_loop::run_session;
 
     // Built once and borrowed for the loop; re-sent on every connection.
@@ -72,8 +70,6 @@ where
         .iter()
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
-
-    let mut connection_index = 0u32;
 
     loop {
         let mut stream = match dialer.connect(&host, port).await {
@@ -86,14 +82,10 @@ where
             }
         };
 
-        let connection_id = ConnectionId::new(connection_index);
-        connection_index += 1;
-
         // The halves live exactly as long as the session that reads and writes
         // them, which is why borrowed halves are enough.
         let (rx, tx) = stream.split();
         let error = run_session(
-            connection_id,
             rx,
             tx,
             &connection_settings,
@@ -108,12 +100,8 @@ where
 
         #[cfg(feature = "defmt")]
         defmt::warn!("MQTT: session errored: {:?}", error);
-        events
-            .send(MqttEvent::Disconnected {
-                connection_id,
-                error,
-            })
-            .await;
+        #[cfg(not(feature = "defmt"))]
+        let _ = error;
 
         Delay::sleep(&dialer, settings.reconnection_delay).await;
     }

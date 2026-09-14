@@ -22,11 +22,10 @@ use embedded_tls::{
     TlsContext, TlsError, TlsReader, TlsVerifier, TlsWriter,
 };
 
-use crate::embedded::manager::{MqttEvent, Settings};
+use crate::embedded::manager::Settings;
 use crate::embedded::session_loop::run_session;
 use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
-use mountain_mqtt::mqtt_manager::ConnectionId;
 
 /// Room for the server's leaf certificate (DER) inside the verifier — 4 KB
 /// covers RSA-4096 leaves with headroom.
@@ -340,8 +339,6 @@ where
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
 
-    let mut connection_index = 0u32;
-
     loop {
         // Certificate validity needs real time. Take it from the runtime when
         // it has a wall clock; otherwise wait for whatever feeds `WallClock`
@@ -399,14 +396,10 @@ where
         #[cfg(feature = "defmt")]
         defmt::info!("MQTT-TLS: session established");
 
-        let connection_id = ConnectionId::new(connection_index);
-        connection_index += 1;
-
         // From here the session is the plain path's, byte for byte: the record
         // layer is just another pair of halves.
         let (tls_rx, tls_tx) = tls.split();
         let error = run_session(
-            connection_id,
             TlsRead(tls_rx),
             TlsWrite(tls_tx),
             &connection_settings,
@@ -421,12 +414,8 @@ where
 
         #[cfg(feature = "defmt")]
         defmt::warn!("MQTT-TLS: session errored: {:?}", error);
-        events
-            .send(MqttEvent::Disconnected {
-                connection_id,
-                error,
-            })
-            .await;
+        #[cfg(not(feature = "defmt"))]
+        let _ = error;
 
         aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
     }

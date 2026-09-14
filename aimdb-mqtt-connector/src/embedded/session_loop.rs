@@ -27,11 +27,10 @@ use mountain_mqtt::codec::write::Write;
 use mountain_mqtt::data::property::ConnectProperty;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::error::{PacketReadError, PacketWriteError};
-use mountain_mqtt::mqtt_manager::ConnectionId;
 use mountain_mqtt::packets::connect::Connect;
 use mountain_mqtt::packets::packet_generic::PacketGeneric;
 
-use crate::embedded::manager::{now_ms, Error, FromApplicationMessage, MqttEvent, Settings};
+use crate::embedded::manager::{now_ms, Error, FromApplicationMessage, Settings};
 use crate::embedded::packet_reader::PacketReader;
 use crate::embedded::{
     ActionChannel, AimdbMqttAction, AimdbMqttEvent, EventChannel, BUFFER_SIZE, MAX_PROPERTIES,
@@ -60,7 +59,6 @@ type Chunk = heapless::Vec<u8, RX_CHUNK>;
 /// survives.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_session<R, W, D>(
-    connection_id: ConnectionId,
     rx: R,
     tx: W,
     connection_settings: &ConnectionSettings<'static>,
@@ -82,7 +80,6 @@ where
     let outbound: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
 
     let session = client_loop(
-        connection_id,
         &inbound,
         &outbound,
         connection_settings,
@@ -146,7 +143,6 @@ fn receive_failed() -> Error {
 /// Everything the session knows, in one future: state, framing, deadlines.
 #[allow(clippy::too_many_arguments)]
 async fn client_loop<D: Delay>(
-    connection_id: ConnectionId,
     inbound: &Channel<CriticalSectionRawMutex, Chunk, 1>,
     outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>,
     connection_settings: &ConnectionSettings<'static>,
@@ -159,7 +155,6 @@ async fn client_loop<D: Delay>(
 ) -> Result<Infallible, Error> {
     let ping_interval = settings.ping_interval.as_millis() as u64;
     let max_silence = settings.connection_event_max_interval.as_millis() as u64;
-    let stabilisation = settings.stabilisation_interval.as_millis() as u64;
     let response_timeout = settings.response_timeout.as_millis() as u64;
 
     let mut state = ClientStateNoQueue::new();
@@ -172,7 +167,6 @@ async fn client_loop<D: Delay>(
     // answers a CONNECT, SUBSCRIBE or QoS 1 PUBLISH is caught by
     // `response_timeout` rather than only by the liveness window.
     let mut waiting_since: Option<u64> = Some(start);
-    let mut stable_at: Option<u64> = None;
     let mut connected = false;
     let mut next_topic = 0usize;
 
@@ -209,15 +203,6 @@ async fn client_loop<D: Delay>(
         if let Some(since) = waiting_since {
             if now.saturating_sub(since) > response_timeout {
                 return Err(Error::Client(ClientError::TimeoutOnResponsePacket));
-            }
-        }
-
-        if let Some(at) = stable_at {
-            if now >= at {
-                stable_at = None;
-                events
-                    .send(MqttEvent::ConnectionStable { connection_id })
-                    .await;
             }
         }
 
@@ -268,7 +253,6 @@ async fn client_loop<D: Delay>(
             connected,
             last_ping_ms + ping_interval,
             last_ack_ms + max_silence,
-            stable_at,
             waiting_since.map(|since| since + response_timeout),
         ));
 
@@ -278,14 +262,11 @@ async fn client_loop<D: Delay>(
                 drain_packets(
                     &mut reader,
                     &mut state,
-                    connection_id,
                     outbound,
                     events,
                     runtime,
                     &mut last_ack_ms,
                     &mut connected,
-                    &mut stable_at,
-                    stabilisation,
                 )
                 .await?;
             }
@@ -309,14 +290,11 @@ async fn client_loop<D: Delay>(
 async fn drain_packets<const N: usize>(
     reader: &mut PacketReader<N>,
     state: &mut ClientStateNoQueue,
-    connection_id: ConnectionId,
     outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>,
     events: &EventChannel,
     runtime: &dyn RuntimeOps,
     last_ack_ms: &mut u64,
     connected: &mut bool,
-    stable_at: &mut Option<u64>,
-    stabilisation: u64,
 ) -> Result<(), Error> {
     while let Some(total) = reader.framed_len().map_err(client_error)? {
         // The packet borrows the reader's buffer, so everything that outlives
@@ -337,7 +315,7 @@ async fn drain_packets<const N: usize>(
             };
 
             let event = state.receive(packet).map_err(client_error)?;
-            (response, Received::of(event, connection_id)?)
+            (response, Received::of(event)?)
         };
         reader.consume(total);
 
@@ -352,8 +330,6 @@ async fn drain_packets<const N: usize>(
         // does, so there is no need to inspect packet types for it.
         if !*connected && matches!(state, ClientStateNoQueue::Connected(_)) {
             *connected = true;
-            *stable_at = Some(now_ms(runtime) + stabilisation);
-            events.send(MqttEvent::Connected { connection_id }).await;
         }
 
         if let Received::Event(event) = received {
@@ -368,15 +344,12 @@ async fn drain_packets<const N: usize>(
 enum Received {
     /// An acknowledgement: liveness only, nothing to forward.
     Ack,
-    /// Something the application asked to hear about.
-    Event(MqttEvent<AimdbMqttEvent>),
+    /// A message for `pump_source` to route.
+    Event(AimdbMqttEvent),
 }
 
 impl Received {
-    fn of(
-        event: ClientStateReceiveEvent<'_, '_, MAX_PROPERTIES>,
-        connection_id: ConnectionId,
-    ) -> Result<Self, Error> {
+    fn of(event: ClientStateReceiveEvent<'_, '_, MAX_PROPERTIES>) -> Result<Self, Error> {
         Ok(match event {
             ClientStateReceiveEvent::Ack => Self::Ack,
 
@@ -390,28 +363,18 @@ impl Received {
                 let message = publish.into();
                 let event = AimdbMqttEvent::from_application_message(&message)
                     .map_err(|e| Error::Client(ClientError::EventHandler(e)))?;
-                Self::Event(MqttEvent::ApplicationEvent {
-                    connection_id,
-                    event,
-                })
+                Self::Event(event)
             }
 
-            ClientStateReceiveEvent::SubscriptionGrantedBelowMaximumQos {
-                granted_qos,
-                maximum_qos,
-            } => Self::Event(MqttEvent::SubscriptionGrantedBelowMaximumQos {
-                connection_id,
-                granted_qos,
-                maximum_qos,
-            }),
-
-            ClientStateReceiveEvent::PublishedMessageHadNoMatchingSubscribers => {
-                Self::Event(MqttEvent::PublishedMessageHadNoMatchingSubscribers { connection_id })
-            }
-
-            ClientStateReceiveEvent::NoSubscriptionExisted => {
-                Self::Event(MqttEvent::NoSubscriptionExisted { connection_id })
-            }
+            // Liveness, and nothing else. The broker is telling us a
+            // subscription was granted below the QoS asked for, that a publish
+            // matched no subscriber, or that an unsubscribe named a
+            // subscription it did not hold. AimDB has nowhere to deliver any of
+            // that: `pump_source` owns the channel an application would have
+            // read it from, and a record has no connection-state callback.
+            ClientStateReceiveEvent::SubscriptionGrantedBelowMaximumQos { .. }
+            | ClientStateReceiveEvent::PublishedMessageHadNoMatchingSubscribers
+            | ClientStateReceiveEvent::NoSubscriptionExisted => Self::Ack,
 
             ClientStateReceiveEvent::Disconnect { disconnect } => {
                 return Err(Error::Client(ClientError::Disconnected(
@@ -527,15 +490,11 @@ fn next_deadline(
     connected: bool,
     ping_at: u64,
     liveness_at: u64,
-    stable_at: Option<u64>,
     response_at: Option<u64>,
 ) -> u64 {
     let mut earliest = liveness_at;
     if connected {
         earliest = earliest.min(ping_at);
-    }
-    if let Some(at) = stable_at {
-        earliest = earliest.min(at);
     }
     if let Some(at) = response_at {
         earliest = earliest.min(at);
@@ -594,12 +553,11 @@ mod tests {
     #[test]
     fn the_earliest_armed_deadline_wins() {
         // Liveness only, before the connection is up.
-        assert_eq!(next_deadline(0, false, 100, 500, None, None), 500);
+        assert_eq!(next_deadline(0, false, 100, 500, None), 500);
         // Once connected the ping is usually nearest.
-        assert_eq!(next_deadline(0, true, 100, 500, None, None), 100);
-        // Stabilisation and the response timeout arm independently.
-        assert_eq!(next_deadline(0, true, 100, 500, Some(50), None), 50);
-        assert_eq!(next_deadline(0, true, 100, 500, None, Some(20)), 20);
+        assert_eq!(next_deadline(0, true, 100, 500, None), 100);
+        // The response timeout arms independently.
+        assert_eq!(next_deadline(0, true, 100, 500, Some(20)), 20);
     }
 
     /// A ceiling on the session task's footprint. The bound is loose enough to
@@ -614,7 +572,6 @@ mod tests {
 
         // Built, never polled: `size_of_val` on the future is the whole point.
         let session = run_session(
-            ConnectionId::new(0),
             NullRead,
             NullWrite,
             &connection_settings,
@@ -638,6 +595,6 @@ mod tests {
     #[test]
     fn a_deadline_in_the_past_still_sleeps_a_tick() {
         // Never zero: a zero-length sleep would spin the loop.
-        assert_eq!(next_deadline(1_000, true, 100, 500, None, None), 1);
+        assert_eq!(next_deadline(1_000, true, 100, 500, None), 1);
     }
 }

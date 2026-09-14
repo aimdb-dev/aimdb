@@ -6,8 +6,8 @@
 //!
 //! See the crate docs for a usage example.
 
-pub mod manager;
-pub mod session;
+pub(crate) mod manager;
+pub(crate) mod session;
 
 // The session's own machinery: incremental framing, and the three futures that
 // replace the polled loop.
@@ -40,7 +40,7 @@ use aimdb_embassy_adapter::connectors::into_box_future;
 use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 
-use crate::embedded::manager::{MqttEvent, Settings};
+use crate::embedded::manager::Settings;
 
 #[cfg(feature = "embedded-tls")]
 pub use crate::embedded::tls::TlsOptions;
@@ -173,17 +173,8 @@ struct MqttSource {
 impl aimdb_core::session::Source for MqttSource {
     fn next(&mut self) -> aimdb_core::BoxFut<'_, Option<(String, Payload)>> {
         Box::pin(async move {
-            loop {
-                match self.events.receive().await {
-                    MqttEvent::ApplicationEvent {
-                        event: AimdbMqttEvent::MessageReceived { topic, payload },
-                        ..
-                    } => return Some((topic, payload)),
-                    // Connection lifecycle events carry no record data; skip
-                    // and keep draining.
-                    _ => continue,
-                }
-            }
+            let AimdbMqttEvent::MessageReceived { topic, payload } = self.events.receive().await;
+            Some((topic, payload))
         })
     }
 }
