@@ -53,8 +53,10 @@ pub(crate) const CHANNEL_SIZE: usize = 32;
 /// Buffer size for MQTT packets (4KB)
 pub(crate) const BUFFER_SIZE: usize = 4096;
 
-/// Maximum properties in MQTT packets
-pub(crate) const MAX_PROPERTIES: usize = 16;
+/// Maximum properties on any received packet. Exceeding it ends the session, so
+/// the headroom is for user properties on an inbound publish, which the
+/// publishing peer chooses — broker CONNACKs use about ten.
+pub(crate) const MAX_PROPERTIES: usize = 32;
 
 /// The runner's collected future type.
 type EmbassyBoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;

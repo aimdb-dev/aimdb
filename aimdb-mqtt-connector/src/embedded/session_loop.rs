@@ -595,6 +595,75 @@ mod tests {
         );
     }
 
+    /// A v5 PUBLISH on topic `t` carrying `n` user properties.
+    fn publish_with_properties(n: usize) -> Vec<u8> {
+        fn varint(mut n: usize, out: &mut Vec<u8>) {
+            loop {
+                let mut byte = (n % 128) as u8;
+                n /= 128;
+                if n > 0 {
+                    byte |= 128;
+                }
+                out.push(byte);
+                if n == 0 {
+                    return;
+                }
+            }
+        }
+
+        // Each one is `0x26` then two length-prefixed strings.
+        let mut properties = Vec::new();
+        for _ in 0..n {
+            properties.extend_from_slice(&[0x26, 0x00, 0x01, b'k', 0x00, 0x01, b'v']);
+        }
+
+        let mut rest = Vec::new();
+        rest.extend_from_slice(&1u16.to_be_bytes());
+        rest.push(b't');
+        varint(properties.len(), &mut rest);
+        rest.extend_from_slice(&properties);
+        rest.extend_from_slice(b"x");
+
+        let mut packet = alloc::vec![0x30u8];
+        varint(rest.len(), &mut packet);
+        packet.extend_from_slice(&rest);
+        packet
+    }
+
+    /// The property cap is where `MAX_PROPERTIES` says, and one past it is an
+    /// error rather than a silent truncation.
+    ///
+    /// The cap applies to every received packet, and on an inbound publish it
+    /// is the *publishing peer* who decides how many properties to attach. One
+    /// too many ends the session, so a retained publish over the cap is
+    /// replayed on every resubscribe and reconnect-loops the connector — the
+    /// same shape as an over-large packet.
+    #[test]
+    fn one_property_past_the_cap_is_refused_rather_than_truncated() {
+        let mut reader = PacketReader::<4096>::new();
+
+        let at_cap = publish_with_properties(MAX_PROPERTIES);
+        reader.feed(&at_cap).expect("feed");
+        let total = reader.framed_len().expect("framing").expect("complete");
+        assert!(
+            reader.parse::<MAX_PROPERTIES, 0, 0>(total).is_ok(),
+            "a publish at the cap must parse"
+        );
+        reader.consume(total);
+
+        let over_cap = publish_with_properties(MAX_PROPERTIES + 1);
+        reader.feed(&over_cap).expect("feed");
+        let total = reader.framed_len().expect("framing").expect("complete");
+        assert_eq!(
+            reader
+                .parse::<MAX_PROPERTIES, 0, 0>(total)
+                .err()
+                .map(|e| alloc::format!("{e:?}")),
+            Some(alloc::string::String::from("TooManyProperties")),
+            "one property past the cap must be refused, not quietly dropped"
+        );
+    }
+
     #[test]
     fn a_deadline_in_the_past_still_sleeps_a_tick() {
         // Never zero: a zero-length sleep would spin the loop.
