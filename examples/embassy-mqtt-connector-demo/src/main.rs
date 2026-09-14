@@ -28,45 +28,40 @@
 //!
 //! ## Running
 //!
-//! 1. Start an MQTT broker on your network:
+//! 1. Start the bench broker on a machine the board can reach over the LAN.
+//!    It enforces authentication on both listeners, so a CONNECT that lost its
+//!    credentials is refused rather than quietly accepted:
 //! ```bash
-//! docker run -d -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
+//! cd ../../dev/mosquitto && ./gen-certs.sh && docker compose up -d
 //! ```
 //!
-//! 2. Subscribe to sensor data:
+//! 2. Put the address and credentials it prints into the constants below.
+//!
+//! 3. Build and flash from this directory — its `.cargo/config.toml` selects
+//!    the thumbv8m target and the probe-rs runner:
 //! ```bash
-//! mosquitto_sub -h <broker-ip> -t 'sensors/#' -v
+//! cargo run --release
 //! ```
 //!
-//! 3. Send commands to device:
+//! 4. Watch the traffic, and send the board a command:
 //! ```bash
-//! mosquitto_pub -h <broker-ip> -t 'commands/temp/indoor' -m '{"action":"read","sensor_id":"indoor-001"}'
-//! ```
-//!
-//! 4. Update MQTT_BROKER_IP constant below to match your broker
-//!
-//! 5. Flash to target:
-//! ```bash
-//! cargo run --example embassy-mqtt-connector-demo --features embassy-runtime,tracing
+//! mosquitto_sub -h <broker> -p 1883 -u aimdb -P aimdb-bench -t 'sensors/#' -v
+//! mosquitto_pub -h <broker> -p 1883 -u aimdb -P aimdb-bench \
+//!     -t commands/temp/indoor -m '{"action":"read","sensor_id":"indoor-001"}'
 //! ```
 //!
 //! ## TLS (`mqtts://`)
 //!
-//! Build with `--features tls` to connect to a TLS broker instead: the URL
-//! becomes `mqtts://` (hostname, resolved via DNS), the CONNECT authenticates
-//! with `MQTT_CREDENTIALS`, and certificate time comes from SNTP
-//! automatically. Before building:
+//! `--features tls` switches the same demo to port 8883. The dialer resolves
+//! the host, `embedded-tls` verifies the broker against the CA compiled in at
+//! `ca.der`, and — this board having no RTC — certificate validity is dated by
+//! the connector's own SNTP task, so the first handshake waits for a time sync.
 //!
-//! 1. Set `MQTT_BROKER_HOST` (prefer a DNS name; an IPv4 literal needs the
-//!    certificate to pin that IP in its CN — the `dev/mosquitto` bench CA
-//!    does) and `MQTT_CREDENTIALS` below.
-//! 2. Drop the broker's root CA in DER form at the crate root; for the dev
-//!    bench:
-//! ```bash
-//! openssl x509 -in ../../dev/mosquitto/config/certs/ca.crt -outform der -out ca.der
-//! ```
-//! 3. Build and flash from this directory (its `.cargo/config.toml` selects
-//!    the thumbv8m target and the probe-rs runner):
+//! `gen-certs.sh` writes `ca.der` into this directory. `MQTT_BROKER_HOST` must
+//! then be the same string the script was given: it is what the certificate is
+//! verified against, and `embedded-tls` reads only `DNS:` SANs (an `IP:` SAN is
+//! skipped), which is why the script puts even an IPv4 literal in as one.
+//!
 //! ```bash
 //! cargo run --release --features tls
 //! ```
@@ -123,6 +118,10 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
 
 // ============================================================================
 // TEMPERATURE PRODUCERS (platform-specific due to embassy-time)
+//
+// Each cycles its readings endlessly rather than stopping after a fixed
+// count: reconnect, re-subscribe and ping cadence only become observable
+// while something is still publishing.
 // ============================================================================
 
 /// Indoor temperature sensor producer
@@ -130,7 +129,7 @@ async fn indoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Tempera
     let log = ctx.log();
     log.info("🏠 Starting INDOOR temperature producer...\n");
 
-    for i in 0..5 {
+    for i in (0..5).cycle() {
         let temp = Temperature::new("indoor-001", 22.0 + (i as f32 * 0.5)); // Indoor temps: 22-24°C
 
         log.info(&alloc::format!(
@@ -142,8 +141,6 @@ async fn indoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Tempera
 
         Timer::after(Duration::from_secs(2)).await;
     }
-
-    log.info("✅ Indoor producer finished");
 }
 
 /// Outdoor temperature sensor producer
@@ -151,7 +148,7 @@ async fn outdoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temper
     let log = ctx.log();
     log.info("🌳 Starting OUTDOOR temperature producer...\n");
 
-    for i in 0..5 {
+    for i in (0..5).cycle() {
         let temp = Temperature::new("outdoor-001", 5.0 + (i as f32 * 1.0)); // Outdoor temps: 5-9°C (cold!)
 
         log.info(&alloc::format!(
@@ -163,8 +160,6 @@ async fn outdoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temper
 
         Timer::after(Duration::from_secs(2)).await;
     }
-
-    log.info("✅ Outdoor producer finished");
 }
 
 /// Server room temperature sensor producer
@@ -172,7 +167,7 @@ async fn server_room_temp_producer(ctx: RuntimeContext, temperature: Producer<Te
     let log = ctx.log();
     log.info("🖥️  Starting SERVER ROOM temperature producer...\n");
 
-    for i in 0..5 {
+    for i in (0..5).cycle() {
         let temp = Temperature::new("server-room-001", 18.0 + (i as f32 * 0.2)); // Server room: 18-19°C (cooled)
 
         log.info(&alloc::format!(
@@ -184,37 +179,29 @@ async fn server_room_temp_producer(ctx: RuntimeContext, temperature: Producer<Te
 
         Timer::after(Duration::from_secs(2)).await;
     }
-
-    log.info("✅ Server room producer finished");
 }
 
 // ============================================================================
 // MQTT CONFIGURATION
 // ============================================================================
 
-/// MQTT broker IP address (modify for your network)
-#[cfg(not(feature = "tls"))]
-const MQTT_BROKER_IP: &str = "192.168.1.10";
-
-/// MQTT broker port
-#[cfg(not(feature = "tls"))]
-const MQTT_BROKER_PORT: u16 = 1883;
-
-/// TLS broker host (modify for your broker). Prefer a DNS name; an IPv4
-/// literal verifies only when the certificate pins that IP in its CN, as
-/// the dev bench CA does (`dev/mosquitto`).
-#[cfg(feature = "tls")]
+/// Where the broker is on your network — an IPv4 literal or a DNS name.
+///
+/// On a `tls` build this is also what the certificate is verified against, so
+/// it must match the host `dev/mosquitto/gen-certs.sh` was given.
 const MQTT_BROKER_HOST: &str = "192.168.1.10";
 
-/// TLS MQTT broker port
+/// Broker port: 1883 plain, 8883 TLS.
+#[cfg(not(feature = "tls"))]
+const MQTT_BROKER_PORT: u16 = 1883;
 #[cfg(feature = "tls")]
-const MQTT_BROKER_TLS_PORT: u16 = 8883;
+const MQTT_BROKER_PORT: u16 = 8883;
 
-/// Credentials for MQTT CONNECT (`None` connects unauthenticated).
-#[cfg(feature = "tls")]
-const MQTT_CREDENTIALS: Option<(&str, &str)> = None; // Some(("user", "password"))
+/// MQTT CONNECT credentials, which travel in the broker URL below.
+const MQTT_USERNAME: &str = "aimdb";
+const MQTT_PASSWORD: &str = "aimdb-bench";
 
-/// The broker's root CA, DER-encoded (see the TLS section in the module doc).
+/// The broker's root CA, DER-encoded. `gen-certs.sh` writes it here.
 #[cfg(feature = "tls")]
 static MQTT_CA_DER: &[u8] = include_bytes!("../ca.der");
 
@@ -354,12 +341,21 @@ async fn main(spawner: Spawner) {
     // Create AimDB database with Embassy adapter
     let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
 
-    // Build MQTT broker URL (the scheme selects the transport)
+    // Build the broker URL. The scheme selects the transport; the authority
+    // carries the credentials, which both backends read.
+    //
+    // Nothing un-escapes this string on the way to the CONNECT, so a password
+    // needing percent-encoding (`@`, `:`, `/`) belongs in
+    // `.with_credentials(..)` on the builder below instead.
     use alloc::format;
     #[cfg(not(feature = "tls"))]
-    let broker_url = format!("mqtt://{}:{}", MQTT_BROKER_IP, MQTT_BROKER_PORT);
+    let scheme = "mqtt";
     #[cfg(feature = "tls")]
-    let broker_url = format!("mqtts://{}:{}", MQTT_BROKER_HOST, MQTT_BROKER_TLS_PORT);
+    let scheme = "mqtts";
+    let broker_url = format!(
+        "{}://{}:{}@{}:{}",
+        scheme, MQTT_USERNAME, MQTT_PASSWORD, MQTT_BROKER_HOST, MQTT_BROKER_PORT
+    );
 
     // ── AimX-over-serial: serve this db over USART3 (ST-LINK VCP, PD8=TX/PD9=RX) ──
     // A *second* connector alongside MQTT. With no extra cabling on a Nucleo-H563ZI
@@ -414,7 +410,7 @@ async fn main(spawner: Spawner) {
         static MQTT_TX: StaticCell<[u8; 4096]> = StaticCell::new();
         static TLS_READ_BUF: StaticCell<[u8; 16_640]> = StaticCell::new();
         static TLS_WRITE_BUF: StaticCell<[u8; 4_096]> = StaticCell::new();
-        let mqtt = MqttConnector::new(&broker_url)
+        MqttConnector::new(&broker_url)
             .tls(
                 EmbassyNet::tcp(*stack, MQTT_RX.init([0; 4096]), MQTT_TX.init([0; 4096])),
                 TlsOptions::new(
@@ -425,11 +421,7 @@ async fn main(spawner: Spawner) {
                 )
                 .with_sntp(stack, "pool.ntp.org"),
             )
-            .with_client_id("embassy-demo-001");
-        match MQTT_CREDENTIALS {
-            Some((username, password)) => mqtt.with_credentials(username, password),
-            None => mqtt,
-        }
+            .with_client_id("embassy-demo-001")
     };
 
     let mut builder = AimDbBuilder::new()
@@ -501,7 +493,12 @@ async fn main(spawner: Spawner) {
     info!("✅ Database configured with multi-sensor MQTT:");
     info!("   OUTBOUND: sensors/temp/indoor, outdoor, server_room");
     info!("   INBOUND:  commands/temp/indoor, outdoor");
-    info!("   Broker:   {}", broker_url.as_str());
+    // Without the authority: the URL carries the password, and this line goes
+    // to the RTT log.
+    info!(
+        "   Broker:   {}://{}:{}",
+        scheme, MQTT_BROKER_HOST, MQTT_BROKER_PORT
+    );
     info!("   SERIAL (read-only AimX over USART3 / ST-LINK VCP):");
     info!(
         "     aimdb --features transport-serial --connect serial:///dev/ttyACM0?baud=115200 record list"
@@ -510,12 +507,12 @@ async fn main(spawner: Spawner) {
     #[cfg(not(feature = "tls"))]
     {
         info!(
-            "Subscribe: mosquitto_sub -h {} -t 'sensors/#' -v",
-            MQTT_BROKER_IP
+            "Subscribe: mosquitto_sub -h {} -u {} -P <password> -t 'sensors/#' -v",
+            MQTT_BROKER_HOST, MQTT_USERNAME
         );
         info!(
-            "Command:   mosquitto_pub -h {} -t 'commands/temp/indoor' \\",
-            MQTT_BROKER_IP
+            "Command:   mosquitto_pub -h {} -u {} -P <password> -t 'commands/temp/indoor' \\",
+            MQTT_BROKER_HOST, MQTT_USERNAME
         );
         info!("             -m '{{\"action\":\"read\",\"sensor_id\":\"test\"}}'");
     }

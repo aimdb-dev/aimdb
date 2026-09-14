@@ -16,7 +16,8 @@ The connector (`aimdb-mqtt-connector`, feature `embassy-runtime`) provides:
 - ✅ Async MQTT publishing with mountain-mqtt
 - ✅ Channel-based architecture for background task communication
 - ✅ Automatic reconnection handling
-- ✅ QoS 0/1/2 support
+- ✅ QoS 0 and 1 (a `qos=2` route publishes at QoS 1 and is warned about at
+  startup — only the `std`/rumqttc backend implements exactly-once)
 - ✅ `no_std` compatible (works in embedded environments)
 
 ## API Usage Pattern
@@ -88,16 +89,16 @@ DNS, optional MQTT username/password, and an automatic SNTP time sync that
 gates the first handshake (certificate validity needs real time — the board
 has no RTC battery).
 
-1. In `src/main.rs`, set `MQTT_BROKER_HOST` and, if the broker requires it,
-   `MQTT_CREDENTIALS`. Prefer a DNS name: an IPv4 literal verifies only when
-   the certificate pins that IP in its CN (the repo's `dev/mosquitto` bench
-   CA does; public CAs won't issue such certs). IPv6 literals are rejected
-   at build.
-2. Drop the broker's root CA next to `Cargo.toml`, DER-encoded — for the
-   `dev/mosquitto` bench broker:
+1. Mint the bench CA and start the broker. The script writes `ca.der` into
+   this directory and prints the constants to copy:
    ```bash
-   openssl x509 -in ../../dev/mosquitto/config/certs/ca.crt -outform der -out ca.der
+   cd ../../dev/mosquitto && ./gen-certs.sh && docker compose up -d
    ```
+2. In `src/main.rs`, set `MQTT_BROKER_HOST`, `MQTT_USERNAME` and
+   `MQTT_PASSWORD` to what the script printed. The host must match the string
+   the script was given: it is what the certificate is verified against, and
+   `embedded-tls` reads only `DNS:` SANs, which is why the script puts even an
+   IPv4 literal in as one. IPv6 literals are rejected at build.
 3. Build (and flash) from this directory, so its `.cargo/config.toml`
    selects the thumbv8m target and probe-rs runner:
    ```bash
@@ -115,7 +116,7 @@ You can test the MQTT connector implementation using the Tokio runtime version:
 
 ```bash
 # In aimdb-mqtt-connector directory
-cargo test --features tokio-runtime
+cargo test --features std
 
 # Check Embassy features compile
 cargo check --features embassy-runtime
