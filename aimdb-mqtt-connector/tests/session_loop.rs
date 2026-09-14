@@ -59,6 +59,14 @@ async fn serve_one(listener: TcpListener, log: Arc<Mutex<Log>>, script: Script) 
     scripted_broker(socket, log, script).await;
 }
 
+/// The shortest keep-alive `with_keep_alive` accepts, so the ping interval the
+/// session derives from it — half, see `Settings::from_keep_alive_secs` — is as
+/// short as a test can ask for. Every window below is written against it.
+const TEST_KEEP_ALIVE: Duration = Duration::from_secs(10);
+
+/// What the session derives from [`TEST_KEEP_ALIVE`].
+const TEST_PING_INTERVAL: Duration = Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // The database under test.
 // ---------------------------------------------------------------------------
@@ -77,7 +85,8 @@ async fn build_db(
 
     let connector = MqttConnector::new(format!("mqtt://127.0.0.1:{port}"))
         .transport(dialer)
-        .with_client_id("session-loop");
+        .with_client_id("session-loop")
+        .with_keep_alive(TEST_KEEP_ALIVE);
 
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
@@ -131,8 +140,8 @@ async fn an_idle_session_wakes_at_the_ping_cadence() {
     let (_db, runner) = build_db(port, dialer, None).await;
 
     // Long enough to span several of the old loop's 10 ms polls, and to cover
-    // the 2 s ping cadence at least once.
-    const WINDOW: Duration = Duration::from_secs(3);
+    // the derived ping cadence at least once.
+    const WINDOW: Duration = TEST_PING_INTERVAL.saturating_add(Duration::from_secs(2));
 
     tokio::select! {
         _ = runner.run() => panic!("the session loop returned"),
@@ -166,9 +175,9 @@ async fn a_partial_packet_stops_neither_pings_nor_publishes() {
     let port = listener.local_addr().unwrap().port();
     let log = Arc::new(Mutex::new(Log::default()));
 
-    // Longer than the 2 s ping interval, so a ping falls due while the packet
-    // is half-delivered — the case the polled loop wedges on.
-    const GAP: Duration = Duration::from_millis(2_600);
+    // Longer than the derived ping interval, so a ping falls due while the
+    // packet is half-delivered — the case the polled loop wedges on.
+    const GAP: Duration = TEST_PING_INTERVAL.saturating_add(Duration::from_millis(600));
 
     let dialer = CountingDialer::new();
     let (db, runner) = build_db(port, dialer, Some((Duration::from_millis(100), 0))).await;
@@ -223,7 +232,7 @@ async fn a_slow_puback_does_not_block_the_ping() {
 
     // Again longer than the ping interval: the old loop waited for this PUBACK
     // inline, at 1 kHz, with the ping behind it.
-    const ACK_DELAY: Duration = Duration::from_millis(2_600);
+    const ACK_DELAY: Duration = TEST_PING_INTERVAL.saturating_add(Duration::from_millis(600));
 
     let dialer = CountingDialer::new();
     let (_db, runner) = build_db(port, dialer, Some((Duration::from_millis(100), 1))).await;

@@ -201,6 +201,8 @@ const MQTT_BROKER_PORT: u16 = 8883;
 const MQTT_USERNAME: &str = "aimdb";
 const MQTT_PASSWORD: &str = "aimdb-bench";
 
+const MQTT_KEEP_ALIVE: core::time::Duration = core::time::Duration::from_secs(10);
+
 /// The broker's root CA, DER-encoded. `gen-certs.sh` writes it here.
 #[cfg(feature = "tls")]
 static MQTT_CA_DER: &[u8] = include_bytes!("../ca.der");
@@ -397,6 +399,7 @@ async fn main(spawner: Spawner) {
                 MQTT_TX.init([0; 4096]),
             ))
             .with_client_id("embassy-demo-001")
+            .with_keep_alive(MQTT_KEEP_ALIVE)
     };
 
     // `mqtts://` dials through the same transport as `mqtt://`; the adapter
@@ -422,6 +425,7 @@ async fn main(spawner: Spawner) {
                 .with_sntp(stack, "pool.ntp.org"),
             )
             .with_client_id("embassy-demo-001")
+            .with_keep_alive(MQTT_KEEP_ALIVE)
     };
 
     let mut builder = AimDbBuilder::new()

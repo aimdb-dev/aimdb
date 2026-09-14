@@ -54,6 +54,14 @@ embassy_time_driver::time_driver_impl!(static HOST_CLOCK: HostClock = HostClock)
 /// The name the certificate is issued for, and the name the client verifies.
 const BROKER_HOST: &str = "localhost";
 
+/// The shortest keep-alive `with_keep_alive` accepts, so the ping interval the
+/// session derives from it — half, see `Settings::from_keep_alive_secs` — is as
+/// short as a test can ask for. Every window below is written against it.
+const TEST_KEEP_ALIVE: Duration = Duration::from_secs(10);
+
+/// What the session derives from [`TEST_KEEP_ALIVE`].
+const TEST_PING_INTERVAL: Duration = Duration::from_secs(5);
+
 /// A self-signed certificate for `localhost`, as (server chain, key, root CA).
 fn self_signed() -> (
     CertificateDer<'static>,
@@ -134,7 +142,8 @@ async fn build_tls_db(
 
     let connector = MqttConnector::new(format!("mqtts://{BROKER_HOST}:{port}"))
         .tls(dialer, options)
-        .with_client_id("tls-session");
+        .with_client_id("tls-session")
+        .with_keep_alive(TEST_KEEP_ALIVE);
 
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
@@ -186,7 +195,7 @@ async fn an_idle_tls_session_wakes_at_the_ping_cadence() {
     let sleeps = dialer.sleeps();
     let (_db, runner) = build_tls_db(port, dialer, options, None).await;
 
-    const WINDOW: Duration = Duration::from_secs(3);
+    const WINDOW: Duration = TEST_PING_INTERVAL.saturating_add(Duration::from_secs(2));
 
     tokio::select! {
         _ = runner.run() => panic!("the session loop returned"),
@@ -217,10 +226,10 @@ async fn a_partial_packet_over_tls_stops_neither_pings_nor_publishes() {
     let (listener, acceptor, options, port) = tls_setup();
     let log = Arc::new(Mutex::new(Log::default()));
 
-    // Longer than the 2 s ping interval, so a ping falls due while the MQTT
+    // Longer than the derived ping interval, so a ping falls due while the MQTT
     // packet is half-delivered — here, half of it inside a complete TLS record
     // and the rest in a later one.
-    const GAP: Duration = Duration::from_millis(2_600);
+    const GAP: Duration = TEST_PING_INTERVAL.saturating_add(Duration::from_millis(600));
 
     let dialer = CountingDialer::new();
     let (db, runner) =
@@ -275,7 +284,7 @@ async fn a_slow_puback_over_tls_does_not_block_the_ping() {
     let (listener, acceptor, options, port) = tls_setup();
     let log = Arc::new(Mutex::new(Log::default()));
 
-    const ACK_DELAY: Duration = Duration::from_millis(2_600);
+    const ACK_DELAY: Duration = TEST_PING_INTERVAL.saturating_add(Duration::from_millis(600));
 
     let dialer = CountingDialer::new();
     let (_db, runner) =

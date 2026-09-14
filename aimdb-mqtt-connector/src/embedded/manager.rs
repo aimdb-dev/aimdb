@@ -69,8 +69,11 @@ pub struct Settings {
     pub connection_event_max_interval: Duration,
     /// Wait between a failed session and the next dial.
     pub reconnection_delay: Duration,
-    /// Maximum round-trip wait for a packet that expects a response. A bound on
-    /// broker latency, unrelated to the keep-alive.
+    /// Maximum round-trip wait for a packet that expects one — CONNACK, SUBACK,
+    /// or the PUBACK of a QoS 1 publish. A whole keep-alive, which puts it
+    /// between the ping interval and the liveness window: a ping is never
+    /// racing an outstanding acknowledgement, and the acknowledgement always
+    /// gives up before the session does.
     pub response_timeout: Duration,
 }
 
@@ -85,8 +88,10 @@ impl Settings {
             keep_alive_secs,
             ping_interval: keep_alive / 2,
             connection_event_max_interval: keep_alive * 3 / 2,
+            // Backoff between dials, not a cadence: nothing about the
+            // keep-alive says how long to wait before trying again.
             reconnection_delay: Duration::from_millis(2_000),
-            response_timeout: Duration::from_millis(5_000),
+            response_timeout: keep_alive,
         }
     }
 }
@@ -123,6 +128,14 @@ mod tests {
                 s.connection_event_max_interval > s.ping_interval * 2,
                 "one lost ping must not be enough to abandon the session"
             );
+            // Strictly ordered, so no two deadlines can come due together: a
+            // ping never races an outstanding acknowledgement, and that
+            // acknowledgement gives up before the whole session does.
+            assert!(
+                s.ping_interval < s.response_timeout
+                    && s.response_timeout < s.connection_event_max_interval,
+                "ping < response < liveness must hold at every keep-alive"
+            );
         }
     }
 
@@ -132,6 +145,7 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.keep_alive_secs, 60);
         assert_eq!(s.ping_interval, Duration::from_secs(30));
+        assert_eq!(s.response_timeout, Duration::from_secs(60));
         assert_eq!(s.connection_event_max_interval, Duration::from_secs(90));
     }
 }

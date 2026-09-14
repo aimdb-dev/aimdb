@@ -50,10 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direction behind a cloneable handle, which is what lets `embedded-tls`'s
   reader and writer run at once. TLS is now two adapter types and a handshake.
 
-- **`Settings::poll_interval` is removed.** There is no poll to pace. The other
-  fields are unchanged, and `ping_interval`, `connection_event_max_interval`
-  and `stabilisation_interval` now arm real deadlines rather than being
-  compared against a 10 ms tick.
+- **`Settings::poll_interval` is removed.** There is no poll to pace. What
+  remains arms real deadlines rather than being compared against a 10 ms tick —
+  and is derived from the keep-alive rather than set field by field; see
+  `with_keep_alive` below.
 
 - **`BrokerTransport` and `SocketTransport` are removed** from
   `embedded::session`. They existed to carry the readiness peek that a
@@ -117,6 +117,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honour credentials in the URL authority (`mqtt://user:pass@host`), and on
   both the setter takes precedence over them — it is the only way to name a
   password that is not URL-safe.
+- **`with_keep_alive(Duration)`, and a session cadence derived from it.** The
+  CONNECT used to promise whatever nobody had chosen — `rumqttc` hard-coded
+  30 s, the embedded path sent mountain-mqtt's 60 s because
+  `ConnectionSettings::keep_alive` has no setter — while the embedded session
+  pinged every 2 s regardless, an interval inherited from the absorbed fork's
+  polled loop. One route URL, two different promises, and a client talking 30×
+  more often than it had said it would. Both backends now send the keep-alive
+  they were given (60 s by default), and the embedded session derives the rest
+  from it: ping at half, give up on an unanswered CONNACK/SUBACK/PUBACK at one,
+  abandon the session after one and a half — the same multiple MQTT gives the
+  broker for dropping a silent client, so both sides give up together. Strictly
+  ordered, so no two deadlines ever come due at once. Keep-alive is the only
+  cadence knob because the others are not independent of it: noticing a link
+  that died silently means sending something and waiting, so the detection
+  window *is* the ping interval. Values under 10 s, and the 0 that means "no
+  keep-alive" in MQTT, are refused at `build()` rather than silently adjusted.
 - **`.tls(dialer, options)` replaces `.tls(stack, options)`.** The dialer
   resolves the host, so TLS needs no network stack: DNS, the socket buffers and
   the SNTP task all leave the TLS path. The certificate-validity clock comes
