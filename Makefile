@@ -639,6 +639,45 @@ publish-check:
 	@printf "$(BLUE)ℹ  Other crates cannot be fully validated until dependencies are published.$(NC)\n"
 	@printf "$(BLUE)   Run 'make publish' to publish all crates in dependency order.$(NC)\n"
 
+# Topological publish order over normal + build dependencies (issue #242).
+# Verified against `cargo metadata`: every crate is listed after everything it
+# depends on. Dev-dependencies are deliberately excluded from the ordering —
+# they form cycles (aimdb-tokio-adapter <-> aimdb-uds-connector, and four more
+# through aimdb-client), and every workspace-internal one is now path-only, so
+# Cargo drops it from the packaged manifest.
+PUBLISH_ORDER := \
+	aimdb-codegen \
+	aimdb-derive \
+	aimdb-core \
+	aimdb-data-contracts \
+	aimdb-embassy-adapter \
+	aimdb-persistence \
+	aimdb-tokio-adapter \
+	aimdb-uds-connector \
+	aimdb-knx-connector \
+	aimdb-mqtt-connector \
+	aimdb-persistence-sqlite \
+	aimdb-serial-connector \
+	aimdb-sync \
+	aimdb-tcp-connector \
+	aimdb-wasm-adapter \
+	aimdb-websocket-connector \
+	aimdb-client \
+	aimdb-cli \
+	aimdb-mcp
+
+# Crates published without a verification build.
+#
+# `aimdb-embassy-adapter` needs embassy-sync's `poll_next_message` /
+# `poll_changed`. Those are merged upstream but absent from the released 0.8.0,
+# so the workspace supplies them through `[patch.crates-io]` (Cargo.toml).
+# Patches are never published, and the vendored copy carries the same `0.8.0`
+# version number as the registry release, so no version mismatch flags it: the
+# packaged crate's `embassy-sync` feature cannot build for a downstream user
+# until a release carries those APIs. Drop this entry — and the patch — once
+# one does (issue #242).
+PUBLISH_NO_VERIFY := aimdb-embassy-adapter aimdb-wasm-adapter
+
 publish:
 	@printf "$(GREEN)Publishing AimDB crates to crates.io...$(NC)\n"
 	@printf "$(YELLOW)⚠  This will publish crates in dependency order$(NC)\n"
@@ -654,69 +693,21 @@ publish:
 	else \
 		printf "$(BLUE)Running in CI mode - skipping confirmation$(NC)\n"; \
 	fi
-	@printf "$(YELLOW)  → Publishing aimdb-derive (1/16)$(NC)\n"
-	@cargo publish -p aimdb-derive
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-codegen (2/16)$(NC)\n"
-	@cargo publish -p aimdb-codegen
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-core (3/16)$(NC)\n"
-	@cargo publish -p aimdb-core
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-data-contracts (4/16)$(NC)\n"
-	@cargo publish -p aimdb-data-contracts
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-tokio-adapter (5/16)$(NC)\n"
-	@cargo publish -p aimdb-tokio-adapter
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-embassy-adapter (6/16)$(NC)\n"
-	@cargo publish -p aimdb-embassy-adapter --no-verify
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-client (7/16)$(NC)\n"
-	@cargo publish -p aimdb-client
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-sync (8/16)$(NC)\n"
-	@cargo publish -p aimdb-sync
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence (9/16)$(NC)\n"
-	@cargo publish -p aimdb-persistence
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-persistence-sqlite (10/16)$(NC)\n"
-	@cargo publish -p aimdb-persistence-sqlite
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mqtt-connector (11/16)$(NC)\n"
-	@cargo publish -p aimdb-mqtt-connector
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-knx-connector (12/16)$(NC)\n"
-	@cargo publish -p aimdb-knx-connector
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-websocket-connector (13/16)$(NC)\n"
-	@cargo publish -p aimdb-websocket-connector
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-wasm-adapter (14/16)$(NC)\n"
-	@cargo publish -p aimdb-wasm-adapter --no-verify
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-cli (15/16)$(NC)\n"
-	@cargo publish -p aimdb-cli
-	@printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"
-	@sleep 10
-	@printf "$(YELLOW)  → Publishing aimdb-mcp (16/16)$(NC)\n"
-	@cargo publish -p aimdb-mcp
-	@printf "$(GREEN)✓ All 16 crates published successfully!$(NC)\n"
+	@total=$(words $(PUBLISH_ORDER)); i=0; \
+	for pkg in $(PUBLISH_ORDER); do \
+		i=$$((i + 1)); \
+		flags=""; \
+		case " $(PUBLISH_NO_VERIFY) " in \
+			*" $$pkg "*) flags="--no-verify";; \
+		esac; \
+		printf "$(YELLOW)  → Publishing $$pkg ($$i/$$total)$(NC)\n"; \
+		cargo publish -p "$$pkg" $$flags || exit 1; \
+		if [ "$$i" -lt "$$total" ]; then \
+			printf "$(YELLOW)  → Waiting 10s for crates.io propagation...$(NC)\n"; \
+			sleep 10; \
+		fi; \
+	done
+	@printf "$(GREEN)✓ All $(words $(PUBLISH_ORDER)) crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
 
 ## Drift guards
