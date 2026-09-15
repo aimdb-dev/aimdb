@@ -72,8 +72,8 @@ tokio-test = { workspace = true }
 futures = { workspace = true }
 
 # For drain integration tests
-aimdb-client = { version = "0.6.0", path = "../aimdb-client" }
+aimdb-client = { path = "../aimdb-client" }
 # Stands up the AimX UDS server (`UdsServer`) the drain tests connect to.
-aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector" }
+aimdb-uds-connector = { path = "../aimdb-uds-connector" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
