@@ -31,7 +31,7 @@ net = ["tokio-runtime", "aimdb-core/connector-session", "tokio/net", "tokio/io-u
 embedded-io = ["net", "dep:embedded-io-async"]
 
 # Observability features
-tracing = ["aimdb-core/tracing", "dep:tracing"]
+tracing = ["aimdb-core/tracing"]
 observability = ["aimdb-core/observability", "tokio-runtime"]
 
 # Testing features
@@ -62,9 +62,6 @@ embedded-io-async = { workspace = true, optional = true, features = ["std"] }
 
 # `RuntimeOps::log` forwards to the `log` facade; the binary picks the backend.
 log = "0.4"
-
-# Observability (optional)
-tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 # For async testing

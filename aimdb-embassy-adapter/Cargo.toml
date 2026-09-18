@@ -60,9 +60,6 @@ aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = fal
     "alloc",
 ] }
 
-# Stream trait for bidirectional connectors (minimal, no_std compatible)
-futures-core = { version = "0.3", default-features = false }
-
 # Generic framed `Connection` over async UART halves (feature `connector-io`).
 embedded-io-async = { workspace = true, optional = true }
 

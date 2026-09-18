@@ -37,10 +37,6 @@ aimdb-client = { version = "0.7.0", path = "../../aimdb-client", features = [
     "observability",
 ] }
 aimdb-codegen = { version = "0.3.0", path = "../../aimdb-codegen" }
-aimdb-core = { version = "2.0.0", path = "../../aimdb-core", features = [
-    "std",
-    "observability",
-] }
 
 # Async runtime
 tokio = { version = "1.48", features = [

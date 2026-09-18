@@ -22,7 +22,6 @@ derive = ["aimdb-derive"]
 std = [
     "alloc",              # std includes alloc
     "serde",
-    "anyhow",
     "remote",
     # AimX remote access now rides the shared session engine: `with_remote_access`
     # builds the `session::aimx` server, so std pulls in the connector-session module.
@@ -99,7 +98,6 @@ serde = { workspace = true, optional = true }
 
 # Error handling (thiserror 2.x is no_std-capable; DbError derives it on every target)
 thiserror = { version = "2.0.16", default-features = false }
-anyhow = { workspace = true, optional = true }
 # `raw_value` lets the connector-session `EnvelopeCodec` splice an already-
 # serialized record-value `Payload` into a JSON envelope without re-escaping.
 # Only compiled when `serde_json` is pulled in (std /
