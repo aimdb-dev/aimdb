@@ -31,6 +31,9 @@ SYNC_NO_STD_FORBIDDEN := tokio|libc
 # executor, network stack, adapter or logger may reach its graph.
 MQTT_EMBEDDED_FORBIDDEN := embassy-net|embassy-executor|embassy-time|static_cell|aimdb-embassy-adapter|defmt|embedded-hal-async
 MQTT_DEPENDENCY_FORBIDDEN := embedded-io|embedded-hal|tokio
+# The guards below grep `cargo tree`'s stdout only — never `2>&1`. Cargo writes
+# progress to stderr, so on a cold cache "Downloaded embedded-hal-nb v1.0.0"
+# matches these patterns and fails the build.
 NC := \033[0m # No Color
 
 ## Show available commands
@@ -105,10 +108,12 @@ build:
 	@printf "$(YELLOW)  → Building sync wrapper (no_std)$(NC)\n"
 	cargo build --package aimdb-sync --no-default-features
 	@printf "$(YELLOW)  → Asserting no std-only crates in sync wrapper (no_std)$(NC)\n"
-	@out=$$(cargo tree -p aimdb-sync --no-default-features -e features,no-dev 2>&1) || { \
+	@err=$$(mktemp); \
+	out=$$(cargo tree -p aimdb-sync --no-default-features -e features,no-dev 2>$$err) || { \
 		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
-		printf '%s\n' "$$out"; exit 1; \
+		cat $$err; rm -f $$err; exit 1; \
 	}; \
+	rm -f $$err; \
 	if printf '%s\n' "$$out" | grep -qiE '$(SYNC_NO_STD_FORBIDDEN)'; then \
 		printf "$(RED)✗ a std-only crate leaked into the no_std build$(NC)\n"; \
 		printf '%s\n' "$$out" | grep -iE '$(SYNC_NO_STD_FORBIDDEN)'; exit 1; \
@@ -508,20 +513,24 @@ test-embedded:
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (runtime-neutral embedded backend) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embedded"
 	@printf "$(YELLOW)  → Asserting no runtime crates in the embedded MQTT backend$(NC)\n"
-	@out=$$(cargo tree -p aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -e features,no-dev 2>&1) || { \
+	@err=$$(mktemp); \
+	out=$$(cargo tree -p aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -e features,no-dev 2>$$err) || { \
 		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
-		printf '%s\n' "$$out"; exit 1; \
+		cat $$err; rm -f $$err; exit 1; \
 	}; \
+	rm -f $$err; \
 	if printf '%s\n' "$$out" | grep -qiE '$(MQTT_EMBEDDED_FORBIDDEN)'; then \
 		printf "$(RED)✗ a runtime crate leaked into the embedded MQTT graph$(NC)\n"; \
 		printf '%s\n' "$$out" | grep -iE '$(MQTT_EMBEDDED_FORBIDDEN)'; exit 1; \
 	fi
 	@printf "$(BLUE)✓ embedded MQTT graph is free of $(MQTT_EMBEDDED_FORBIDDEN)$(NC)\n"
 	@printf "$(YELLOW)  → Asserting the MQTT dependency is codec-only$(NC)\n"
-	@out=$$(cargo tree -p aimdb-mountain-mqtt --target thumbv7em-none-eabihf -e normal 2>&1) || { \
+	@err=$$(mktemp); \
+	out=$$(cargo tree -p aimdb-mountain-mqtt --target thumbv7em-none-eabihf -e normal 2>$$err) || { \
 		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
-		printf '%s\n' "$$out"; exit 1; \
+		cat $$err; rm -f $$err; exit 1; \
 	}; \
+	rm -f $$err; \
 	if printf '%s\n' "$$out" | grep -qiE '$(MQTT_DEPENDENCY_FORBIDDEN)'; then \
 		printf "$(RED)✗ the MQTT dependency pulled a driver crate$(NC)\n"; \
 		printf '%s\n' "$$out" | grep -iE '$(MQTT_DEPENDENCY_FORBIDDEN)'; exit 1; \
