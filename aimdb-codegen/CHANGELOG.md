@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-18
+
 ### Added
 
 - **Issue #177 - generated postcard records now have a true into-slice codec.**
@@ -20,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - Emitted task scaffolds now use `Producer<T>` / `Consumer<T>` (no `, TokioAdapter` second parameter) and emitted doc tables show the same form, matching the M14 cleanup in `aimdb-core` (Design 029). Regenerate downstream scaffolds after upgrading.
-- Emitted `configure_schema` signature changed from `<R: Spawn + 'static>` to `<R: RuntimeAdapter + 'static>`; emitted prelude now imports `aimdb_executor::RuntimeAdapter` instead of `Spawn` (Issue #88). Regenerate downstream schemas.
+- Emitted `configure_schema` is no longer generic over the runtime: `fn configure_schema(builder: &mut AimDbBuilder)` (was `<R: Spawn + 'static>`), following the removal of `R` from core's object graph (Issue #131). The emitted prelude imports from `aimdb_core` only — the `aimdb_executor` import is gone with the crate (Issue #88, design 038 §3.1). Regenerate downstream schemas.
 
 ## [0.2.0] - 2026-05-22
 
