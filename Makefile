@@ -60,7 +60,7 @@ help:
 	@printf "    security             Run all security checks (deny + audit)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Release Management:$(NC)\n"
-	@printf "    publish-check        Test crates.io publish (dry-run, no git commit required)\n"
+	@printf "    publish-check        Dry-run the full publish set (no git commit required)\n"
 	@printf "    publish              Publish all crates to crates.io (requires clean git state)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)WASM Commands:$(NC)\n"
@@ -626,18 +626,26 @@ security: deny audit
 	@printf "$(BLUE)✓ Known vulnerabilities checked$(NC)\n"
 
 ## Release Management commands
+# Dry-runs the whole publish set, not one crate. Passing every package to a
+# single `cargo publish` invocation lets Cargo resolve the workspace's internal
+# `path` + `version` deps against the siblings being packaged alongside them, so
+# a not-yet-published `aimdb-core 2.0.0` no longer fails the check — that needs
+# Cargo >= 1.83, and the toolchain is pinned well above it.
+#
+# Two phases because `--no-verify` is per-invocation, not per-package:
+#   1. package every crate (manifest, metadata, file list, version resolution)
+#   2. verification-build the ones that compile on the host
 publish-check:
-	@printf "$(GREEN)Testing crates.io publish readiness...$(NC)\n"
-	@printf "$(YELLOW)Note: cargo package requires dependencies to exist on crates.io.$(NC)\n"
-	@printf "$(YELLOW)      Only aimdb-derive (no deps) will fully validate before first publish.$(NC)\n"
-	@printf "$(YELLOW)      This is expected behavior - actual publish will work in order.$(NC)\n"
+	@printf "$(GREEN)Testing crates.io publish readiness ($(words $(PUBLISH_ORDER)) crates)...$(NC)\n"
 	@printf "\n"
-	@printf "$(YELLOW)  → Testing aimdb-derive (full validation)$(NC)\n"
-	@cargo publish --dry-run -p aimdb-derive
-	@printf "$(GREEN)✓ aimdb-derive is ready to publish!$(NC)\n"
+	@printf "$(YELLOW)  → Phase 1/2: packaging all $(words $(PUBLISH_ORDER)) crates (cross-resolved)$(NC)\n"
+	@cargo publish --dry-run --no-verify $(foreach p,$(PUBLISH_ORDER),-p $(p))
 	@printf "\n"
-	@printf "$(BLUE)ℹ  Other crates cannot be fully validated until dependencies are published.$(NC)\n"
-	@printf "$(BLUE)   Run 'make publish' to publish all crates in dependency order.$(NC)\n"
+	@printf "$(YELLOW)  → Phase 2/2: verification builds ($(words $(PUBLISH_VERIFIABLE)) crates)$(NC)\n"
+	@cargo publish --dry-run $(foreach p,$(PUBLISH_VERIFIABLE),-p $(p))
+	@printf "\n"
+	@printf "$(GREEN)✓ All $(words $(PUBLISH_ORDER)) crates are ready to publish!$(NC)\n"
+	@printf "$(BLUE)ℹ  $(PUBLISH_HOST_UNBUILDABLE) was packaged but not verification-built (wasm32-only).$(NC)\n"
 
 # Topological publish order over normal + build dependencies (issue #242).
 # Verified against `cargo metadata`: every crate is listed after everything it
@@ -665,6 +673,21 @@ PUBLISH_ORDER := \
 	aimdb-client \
 	aimdb-cli \
 	aimdb-mcp
+
+# Crates `publish-check`'s verification phase leaves out, because
+# `cargo publish` verifies on the host and these cannot build there.
+#
+# `aimdb-wasm-adapter`'s default `wasm-runtime` feature is a deliberate
+# `compile_error!` off wasm32 (its web-sys bridge futures are !Send), so the
+# host verification build can never succeed. Nothing in the workspace depends on
+# it, so phase 1 still packages it — manifest, metadata and version resolution
+# stay covered — and only the build is skipped.
+#
+# Narrower than PUBLISH_NO_VERIFY below on purpose: `aimdb-embassy-adapter` does
+# verify on the host, and skips verification at publish time for an unrelated
+# reason (see there).
+PUBLISH_HOST_UNBUILDABLE := aimdb-wasm-adapter
+PUBLISH_VERIFIABLE := $(filter-out $(PUBLISH_HOST_UNBUILDABLE),$(PUBLISH_ORDER))
 
 # Crates published without a verification build.
 #
