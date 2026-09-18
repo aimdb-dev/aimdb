@@ -59,15 +59,15 @@ _test-embassy-loopback = [
 ]
 
 [dependencies]
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
 
-aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+aimdb-embassy-adapter = { version = "0.7.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # Test-only: the loopback harness stands up two real stacks (see
 # `_test-embassy-loopback`). The crate itself names no socket type.
 embassy-net = { workspace = true, optional = true }
 
-aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
+aimdb-tokio-adapter = { version = "0.7.0", path = "../aimdb-tokio-adapter", optional = true }
 
 # test-only (see `_test-embassy-loopback`)
 embassy-net-driver-channel = { version = "0.4.0", optional = true }

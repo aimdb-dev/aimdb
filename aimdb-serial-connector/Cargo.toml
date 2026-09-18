@@ -66,7 +66,7 @@ defmt = ["dep:defmt", "aimdb-core/defmt"]
 [dependencies]
 # AimX protocol (codec + dispatch) and the generic session connectors live in
 # core; this crate contributes only the serial transport triple + sugar.
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
 # Shared framing (no_std). `alloc` enables the `encode_vec`/`decode_vec` helpers.
 cobs = { workspace = true, features = ["alloc"] }
 
@@ -75,11 +75,11 @@ tokio = { workspace = true, optional = true, features = ["io-util"] }
 tokio-serial = { workspace = true, optional = true }
 
 # --- embassy half (no_std) ---
-aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+aimdb-embassy-adapter = { version = "0.7.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 embedded-io-async = { workspace = true, optional = true }
 
 # --- test-only ---
-aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter", optional = true }
+aimdb-tokio-adapter = { version = "0.7.0", path = "../aimdb-tokio-adapter", optional = true }
 
 # --- logging ---
 defmt = { workspace = true, optional = true }

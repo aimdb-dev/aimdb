@@ -137,8 +137,8 @@ _test-embassy-broker = [
 ]
 
 [dependencies]
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
-aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
+aimdb-embassy-adapter = { version = "0.7.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # Error handling (std only)
 thiserror = { workspace = true, optional = true }
