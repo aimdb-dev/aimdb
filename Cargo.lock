@@ -276,7 +276,6 @@ dependencies = [
  "futures",
  "heapless 0.8.0",
  "rand 0.8.6",
- "rand_core 0.6.4",
  "rcgen",
  "rumqttc",
  "rustls-native-certs",
