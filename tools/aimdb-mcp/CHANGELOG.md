@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-18
+
 ### Changed (breaking)
 
 - **Tools take an `endpoint` (a `scheme://` URL), not a `socket_path` (Issue #123).** Every tool's `socket_path` parameter is renamed `endpoint` and now accepts any endpoint URL — `unix://PATH`, `serial://DEVICE?baud=N` (with the `transport-serial` feature), or a bare path (the `unix://` shorthand). The startup `--socket <PATH>` flag is now `--connect <ENDPOINT>`, and the `AIMDB_SOCKET` env var is now `AIMDB_CONNECT` (resolution order: explicit `endpoint` → `--connect` → `AIMDB_CONNECT`). The connection pool is keyed by endpoint URL, and public-mode SSRF stripping now strips `endpoint`. `get_instance_info`'s result field `socket_path` is renamed `endpoint`; `discover_instances` (Unix-socket discovery) keeps `socket_path`. New `transport-serial` feature (off by default; pulls libudev) adds the serial transport to the resolver.
@@ -139,7 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.8.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[0.9.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.8.0]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.7.0...aimdb-mcp-v0.8.0
 [0.7.0]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.6.1...aimdb-mcp-v0.7.0
 [0.6.1]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.6.0...aimdb-mcp-v0.6.1

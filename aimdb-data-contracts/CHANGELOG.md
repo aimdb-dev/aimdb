@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-18
+
 ### Changed (breaking) — Design 041: capability traits as first-class verbs
 
 - **`Simulatable` reshaped for compile-time-only simulation.** `simulate<R>(config: &SimulationConfig, ...)` → `simulate<R>(params: &Self::Params, ...)` with a new associated `type Params`. `SimulationConfig` (including its runtime `enabled` gate) and `SimulationParams` are removed; `SimProfile<P> { interval_ms, params }` and off-the-shelf `RandomWalkParams` replace them (`type Params = RandomWalkParams` is the migration path for existing scalar-walk impls). `simulatable` now also requires `aimdb-core` (for the new `SimulatableRegistrarExt`) and `rand` drops the `std_rng` feature (RNG is always caller-supplied).

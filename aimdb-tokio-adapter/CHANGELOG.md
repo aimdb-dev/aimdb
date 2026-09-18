@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-18
+
 ### Changed (breaking)
 
 - **`TokioNet::listen` yields `std::io::Result` instead of `TransportResult`.**
@@ -144,7 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[0.7.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.6.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0

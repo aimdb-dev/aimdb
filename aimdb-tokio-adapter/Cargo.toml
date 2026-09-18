@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-tokio-adapter"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version.workspace = true
 authors.workspace = true
@@ -31,7 +31,7 @@ net = ["tokio-runtime", "aimdb-core/connector-session", "tokio/net", "tokio/io-u
 embedded-io = ["net", "dep:embedded-io-async"]
 
 # Observability features
-tracing = ["aimdb-core/tracing", "dep:tracing"]
+tracing = ["aimdb-core/tracing"]
 observability = ["aimdb-core/observability", "tokio-runtime"]
 
 # Testing features
@@ -39,7 +39,7 @@ test-utils = ["aimdb-core/test-utils", "tokio-runtime"]
 
 [dependencies]
 # Core AimDB types - std version for Tokio (for DbError integration)
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
 
@@ -62,9 +62,6 @@ embedded-io-async = { workspace = true, optional = true, features = ["std"] }
 
 # `RuntimeOps::log` forwards to the `log` facade; the binary picks the backend.
 log = "0.4"
-
-# Observability (optional)
-tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 # For async testing

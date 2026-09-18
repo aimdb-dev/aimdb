@@ -30,14 +30,14 @@ observability = ["aimdb-core/observability"]
 [dependencies]
 # Core AimDB types (no std, no tokio — the connector-session engines and the
 # AimX codec cross-compile to wasm32; the bridge rides `run_client`)
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false, features = [
     "alloc",
     "connector-session",
     "remote",
 ] }
 
 # Data contracts (alloc only — no std)
-aimdb-data-contracts = { version = "0.4.0", path = "../aimdb-data-contracts", default-features = false, features = [
+aimdb-data-contracts = { version = "0.2.0", path = "../aimdb-data-contracts", default-features = false, features = [
     "alloc",
 ] }
 

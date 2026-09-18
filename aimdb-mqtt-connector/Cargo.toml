@@ -20,12 +20,9 @@ std = [
     "aimdb-core/std",
     "aimdb-core/alloc",
     "aimdb-core/connector-session",
-    "thiserror",
     "tokio",
     "rumqttc",
     "uuid",
-    "async-stream",
-    "futures-util",
 ]
 # Deprecated alias for `std`, kept so existing manifests keep working.
 tokio-runtime = ["std"]
@@ -76,7 +73,6 @@ embassy-runtime = [
 embedded-tls = [
     "embedded",
     "dep:embedded-tls",
-    "dep:rand_core",
     "dep:embedded-io-async",
 ]
 
@@ -137,11 +133,8 @@ _test-embassy-broker = [
 ]
 
 [dependencies]
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
-aimdb-embassy-adapter = { version = "0.6.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
-
-# Error handling (std only)
-thiserror = { workspace = true, optional = true }
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
+aimdb-embassy-adapter = { version = "0.7.0", path = "../aimdb-embassy-adapter", default-features = false, optional = true }
 
 # UUID generation for client IDs (std only)
 uuid = { version = "1.0", features = ["v4"], optional = true }
@@ -157,11 +150,6 @@ rumqttc = { version = "0.25", optional = true, default-features = false }
 # `TlsConfiguration::default()` loads these too, but `expect`s on failure — and
 # a panic on the connect path is what an FFI consumer cannot afford.
 rustls-native-certs = { version = "0.8", optional = true }
-async-stream = { version = "0.3", optional = true }
-futures-util = { version = "0.3", optional = true, default-features = false, features = [
-    "alloc",
-] }
-futures-core = { version = "0.3", default-features = false }
 
 # Embassy runtime dependencies (no_std). Only embassy-sync still comes from the
 # local checkout — see the workspace `[patch.crates-io]` for why.
@@ -189,7 +177,6 @@ embedded-tls = { version = "0.19", default-features = false, optional = true, fe
     "p384",
 ] }
 embedded-io-async = { workspace = true, optional = true }
-rand_core = { version = "0.6", default-features = false, optional = true }
 
 # Optional observability
 defmt = { workspace = true, optional = true }

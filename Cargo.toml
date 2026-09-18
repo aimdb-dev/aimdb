@@ -57,7 +57,7 @@ default-members = ["aimdb-core"]
 debug = 2
 
 [workspace.package]
-version = "1.1.0"
+version = "2.0.0"
 edition = "2021"
 # The compiler we build and test with, and so the only one we can honestly
 # promise consumers. Bump it together with rust-toolchain.toml.

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-18
+
 ### Changed (breaking) — Design 047
 
 - **`query` honors MQTT pattern semantics.** The `*` → SQL `%` rewrite is gone:
@@ -59,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/aimdb-persistence-sqlite-v0.1.1...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.1.1]: https://github.com/aimdb-dev/aimdb/compare/aimdb-persistence-sqlite-v0.1.0...aimdb-persistence-sqlite-v0.1.1
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/aimdb-persistence-sqlite-v0.1.0

@@ -23,7 +23,7 @@ log = ["aimdb-core/log"]
 # AimX protocol (codec + dispatch) and the generic session connectors live in
 # core; this crate contributes only the UDS transport triple + sugar. UDS is
 # Linux/std-only, so there is no Embassy half.
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", features = [
     "std",
     "connector-session",
 ] }
