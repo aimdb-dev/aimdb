@@ -1222,7 +1222,7 @@ impl AimDb {
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
         let mut routes = Vec::new();
 
-        for entry in &self.inner.storages {
+        for (i, entry) in self.inner.storages.iter().enumerate() {
             let outbound_links = entry.record.outbound_connectors();
 
             for link in outbound_links {
@@ -1231,11 +1231,15 @@ impl AimDb {
                     continue;
                 }
 
+                // config must carry the record index
+                let mut config = link.config.clone();
+                config.push(("record_index".to_string(), i.to_string()));
+
                 // Create the fused source using the stored factory
                 routes.push(OutboundRoute {
                     topic: link.url.resource_id().to_string(),
                     source: link.create_source(self),
-                    config: link.config.clone(),
+                    config,
                 });
             }
         }

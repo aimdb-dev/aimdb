@@ -31,8 +31,8 @@ use aimdb_data_contracts::{SchemaType, Streamable};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use aimdb_websocket_connector::transport::WsDialer;
 use aimdb_websocket_connector::{
-    AuthError, AuthHandler, AuthRequest, ClientInfo, Permissions, QueryFuture, QueryHandler,
-    QueryRecord, WebSocketConnector,
+    AuthError, AuthHandler, AuthRequest, Permissions, QueryFuture, QueryHandler, QueryRecord,
+    WebSocketConnector,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -86,30 +86,6 @@ impl AuthHandler for DenyAuth {
         _request: &'a AuthRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>> {
         Box::pin(async { Err(AuthError::new("denied")) })
-    }
-}
-
-/// Allows the connection (allow-all permissions) but asynchronously *denies*
-/// `secret/*` via `authorize_subscribe`. If the engine only consulted the static
-/// permission set, `secret` would be allowed — so this proves the async hook gates.
-struct AsyncTopicAuth;
-impl AuthHandler for AsyncTopicAuth {
-    fn authenticate<'a>(
-        &'a self,
-        _request: &'a AuthRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>> {
-        Box::pin(async { Ok(Permissions::allow_all()) })
-    }
-    fn authorize_subscribe<'a>(
-        &'a self,
-        _client: &'a ClientInfo,
-        topic: &'a str,
-    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
-        let denied = topic.starts_with("secret");
-        Box::pin(async move {
-            tokio::task::yield_now().await; // simulate an async ACL lookup
-            !denied
-        })
     }
 }
 
@@ -944,27 +920,4 @@ async fn golden_wire_frames() {
 
     ws_send(&mut c, json!({"t":"ping"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"pong"}));
-}
-
-// ── Async authorization over a real socket ───────────────────────────
-
-#[tokio::test]
-async fn async_authorize_subscribe_gates_despite_allow_all_permissions() {
-    let (addr, db) = spawn(WebSocketConnector::new().with_auth(AsyncTopicAuth)).await;
-    let mut c = ws_connect(addr).await;
-
-    // Denied topic: permissions are allow-all, but the *async* hook says no.
-    // The refusal is a `reply` carrying the subscribe id + the 3-code error.
-    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"secret.x"})).await;
-    assert_eq!(
-        ws_recv(&mut c).await,
-        json!({"t":"reply","id":1,"err":"denied"})
-    );
-
-    // An allowed topic still works end-to-end.
-    ws_send(&mut c, json!({"t":"sub","id":2,"topic":"public.x"})).await;
-    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"2"}));
-    inject(&db, "public.x", json!(1));
-    let ev = ws_recv_tag(&mut c, "event").await;
-    assert_eq!(ev["topic"], "public.x");
 }

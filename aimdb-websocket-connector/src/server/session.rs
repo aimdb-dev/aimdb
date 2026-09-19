@@ -55,18 +55,22 @@ pub trait QueryHandler: Send + Sync + 'static {
 // ════════════════════════════════════════════════════════════════════
 
 /// Provides the current serialized values covered by a subscription pattern for
-/// late-join snapshots (one `(topic, value)` pair per covered record — a
+/// late-join snapshots (one `(topic, record id, value)` tuple per covered record — a
 /// wildcard pattern may cover several; an exact topic matches itself).
+/// The returned snapshots need record id, different clients may have different
+/// read permissions to different records
 pub trait SnapshotProvider: Send + Sync + 'static {
     /// Return the latest serialized values for every topic matching `pattern`.
-    fn snapshots(&self, pattern: &str) -> Vec<(String, Vec<u8>)>;
+    /// As record keyw now rule the broadcasting instead of topic,
+    /// return must be tuple of (record index, topic, payload)
+    fn snapshots(&self, pattern: &str) -> Vec<(usize, String, Vec<u8>)>;
 }
 
 /// A snapshot provider that always returns nothing (late-join disabled or no data).
 pub struct NoSnapshot;
 
 impl SnapshotProvider for NoSnapshot {
-    fn snapshots(&self, _pattern: &str) -> Vec<(String, Vec<u8>)> {
+    fn snapshots(&self, _pattern: &str) -> Vec<(usize, String, Vec<u8>)> {
         Vec::new()
     }
 }
