@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-client",
  "aimdb-codegen",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-client"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "aimdb-serial-connector",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-codegen"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -133,10 +133,9 @@ dependencies = [
 
 [[package]]
 name = "aimdb-core"
-version = "1.2.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-derive",
- "anyhow",
  "async-channel",
  "defmt 1.1.1",
  "futures",
@@ -157,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.4.0"
+version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "aimdb-derive",
@@ -171,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-derive"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -180,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-embassy-adapter"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "critical-section",
@@ -194,7 +193,6 @@ dependencies = [
  "embassy-time-driver",
  "embedded-io-async 0.7.0",
  "futures",
- "futures-core",
  "heapless 0.9.3",
  "rand 0.10.1",
  "tracing",
@@ -228,11 +226,10 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mcp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aimdb-client",
  "aimdb-codegen",
- "aimdb-core",
  "anyhow",
  "chrono",
  "clap",
@@ -249,65 +246,49 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mountain-mqtt"
-version = "0.2.1"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5035a7a126cd374a5e1e83dcbb04d5d5361d28084f32f59710c6f144b5b26349"
+checksum = "0069824828d8b3102324245a42618e65bab9c63fd2917ed52fa49e016d89cecf"
 dependencies = [
- "defmt 0.3.100",
- "embedded-hal-async",
- "embedded-io 0.7.1",
- "embedded-io-async 0.7.0",
+ "defmt 1.1.1",
  "heapless 0.8.0",
 ]
 
 [[package]]
-name = "aimdb-mountain-mqtt-embassy"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69ab4d7bdbef7a5e8a95edda95652887c2de8898a4fe1771345d8791ec127d3c"
-dependencies = [
- "aimdb-mountain-mqtt",
- "defmt 1.1.1",
- "embassy-net",
- "embassy-sync",
- "embassy-time",
-]
-
-[[package]]
 name = "aimdb-mqtt-connector"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
  "aimdb-mountain-mqtt",
- "aimdb-mountain-mqtt-embassy",
  "aimdb-tokio-adapter",
- "async-stream",
+ "critical-section",
  "defmt 1.1.1",
- "embassy-executor",
+ "embassy-futures 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "embassy-net",
+ "embassy-net-driver-channel",
  "embassy-sync",
  "embassy-time",
+ "embassy-time-driver",
  "embedded-io-async 0.7.0",
  "embedded-tls",
- "futures-core",
- "futures-util",
+ "futures",
  "heapless 0.8.0",
- "rand_core 0.6.4",
+ "rand 0.8.6",
+ "rcgen",
  "rumqttc",
  "rustls-native-certs",
  "serde",
- "static_cell",
- "thiserror 2.0.17",
  "tokio",
+ "tokio-rustls",
  "tokio-test",
  "uuid",
 ]
 
 [[package]]
 name = "aimdb-persistence"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -319,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-persistence-sqlite"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aimdb-persistence",
  "rusqlite",
@@ -382,11 +363,12 @@ dependencies = [
 
 [[package]]
 name = "aimdb-tokio-adapter"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
  "aimdb-uds-connector",
+ "embedded-io-async 0.7.0",
  "futures",
  "log",
  "serde",
@@ -394,7 +376,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -429,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-websocket-connector"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -800,9 +781,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.0"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -1899,11 +1880,10 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "pin-project-lite",
 ]
 
@@ -2298,7 +2278,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello-mailbox"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -2308,7 +2288,7 @@ dependencies = [
 
 [[package]]
 name = "hello-mailbox-async"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -2317,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "hello-single-latest"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -2326,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "hello-single-latest-async"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -2335,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "hello-spmc-ring"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -2344,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "hello-spmc-ring-async"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -3188,6 +3168,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64 0.22.1",
+ "serde_core",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3366,6 +3356,7 @@ version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
 dependencies = [
+ "libc",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
 ]
@@ -3416,6 +3407,9 @@ name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+dependencies = [
+ "getrandom 0.2.16",
+]
 
 [[package]]
 name = "rand_core"
@@ -3433,8 +3427,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
 
 [[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
+]
+
+[[package]]
 name = "readme-quickstart"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -3654,15 +3661,15 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.37"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "758025cb5fccfd3bc2fd74708fd4682be41d99e5dff73c377c0646c6012c73a4"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
  "rustls-pki-types",
- "rustls-webpki 0.103.13",
+ "rustls-webpki 0.103.15",
  "subtle",
  "zeroize",
 ]
@@ -3710,9 +3717,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -4058,9 +4065,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
@@ -4185,7 +4192,7 @@ dependencies = [
 
 [[package]]
 name = "sync-api-demo"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -4356,6 +4363,7 @@ dependencies = [
  "deranged",
  "num-conv",
  "powerfmt",
+ "serde_core",
  "time-core",
 ]
 
@@ -4404,7 +4412,7 @@ dependencies = [
 
 [[package]]
 name = "tokio-knx-connector-demo"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-knx-connector",
@@ -4431,7 +4439,7 @@ dependencies = [
 
 [[package]]
 name = "tokio-mqtt-connector-demo"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -5675,6 +5683,15 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yoke"

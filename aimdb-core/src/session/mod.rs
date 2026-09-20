@@ -49,8 +49,8 @@ pub use connector::{SessionClientConnector, SessionServerConnector};
 pub use endpoint::{split_host_port, split_host_port_opt, EndpointError};
 #[cfg(feature = "connector-session")]
 pub use io::{
-    ByteStream, Datagram, DatagramBinder, Delay, FrameFault, FramedConnection, Framer,
-    FramerFactory, FramingDialer, FramingListener, IoError, OneShot, OneShotDialer,
+    ByteRead, ByteStream, ByteWrite, Datagram, DatagramBinder, Delay, FrameFault, FramedConnection,
+    Framer, FramerFactory, FramingDialer, FramingListener, IoError, OneShot, OneShotDialer,
     OneShotListener, StreamDialer, StreamListener,
 };
 #[cfg(feature = "connector-session")]

@@ -588,8 +588,9 @@ use aimdb_serial_connector::SerialServer;
 
 // NEW: the adapter owns the socket. The TCP buffers mountain-mqtt used to
 // allocate internally are now yours, in statics, like the TCP connector
-// already does. `EmbassyNet` also resolves hostnames when embassy-net's
-// `dns` feature is on.
+// already does. `EmbassyNet::tcp` resolves hostnames through `stack`, as
+// `TokioNet::tcp()` does through the OS — so give the stack a DNS server and
+// one more `StackResources` slot for the resolver socket.
 static MQTT_RX: StaticCell<[u8; 4096]> = StaticCell::new();
 static MQTT_TX: StaticCell<[u8; 4096]> = StaticCell::new();
 let mqtt_net = EmbassyNet::tcp(stack, MQTT_RX.init([0; 4096]), MQTT_TX.init([0; 4096]));

@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-18
+
 ### Added
+
+- **`ByteStream::split`, with `ByteRead` / `ByteWrite`.**
+  Borrows a stream into independently usable read and write halves, so a
+  session can run a reader and a writer concurrently in one `select` — which a
+  single `&mut` stream cannot express at all. Borrowed halves are enough: both
+  live in the same stack frame, which is why this needs nothing owned or
+  `'static` and why the objection design 052 recorded against `connector-io`
+  does not apply. `read`/`write_all`/`flush` stay for the handshake and for
+  callers that never split. The MQTT connector's event-driven session is the
+  first consumer; the Embassy and Tokio adapters implement it.
+- **The cancellation contract is written down.** `read` is
+  cancel-safe on both adapters AimDB ships — dropping the future consumes
+  nothing, verified per layer and end to end over a drip transport — but that
+  is documented as a property of those transports rather than a promise of the
+  trait, so a reader that cannot resume mid-packet is still free to implement
+  it. `write_all` is cancel-safe **nowhere** and must never sit in a `select`
+  arm: a partial write desynchronises the framing above it with nothing to
+  resync on.
 
 - **Runtime-neutral I/O layer (`session::io`, feature `connector-session`).**
   `ByteStream`/`StreamDialer`/`StreamListener`/`Datagram`/`DatagramBinder`/`Delay`
@@ -682,8 +702,8 @@ warning fires if you exceed 1000 interned keys.
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v1.2.0...HEAD
-[1.2.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v1.2.0
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/aimdb-dev/aimdb/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0

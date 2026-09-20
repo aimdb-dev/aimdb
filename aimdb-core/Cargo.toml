@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-core"
-version = "1.2.0"
+version = "2.0.0"
 edition = "2021"
 rust-version.workspace = true
 license.workspace = true
@@ -22,7 +22,6 @@ derive = ["aimdb-derive"]
 std = [
     "alloc",              # std includes alloc
     "serde",
-    "anyhow",
     "remote",
     # AimX remote access now rides the shared session engine: `with_remote_access`
     # builds the `session::aimx` server, so std pulls in the connector-session module.
@@ -72,7 +71,7 @@ test-utils = ["std"]
 
 [dependencies]
 # Derive macros (optional)
-aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
+aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }
@@ -99,7 +98,6 @@ serde = { workspace = true, optional = true }
 
 # Error handling (thiserror 2.x is no_std-capable; DbError derives it on every target)
 thiserror = { version = "2.0.16", default-features = false }
-anyhow = { workspace = true, optional = true }
 # `raw_value` lets the connector-session `EnvelopeCodec` splice an already-
 # serialized record-value `Payload` into a JSON envelope without re-escaping.
 # Only compiled when `serde_json` is pulled in (std /

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-18
+
 ### Added
 
 - **`#[derive(Linkable)]` proc-macro** (design 041 §3.3). Emits a JSON `aimdb_data_contracts::Linkable` impl (`serde_json::to_vec`/`from_slice` via the `__private` re-export, same foreign-crate-path pattern as `migration_chain!`) — replaces the hand-written `from_bytes`/`to_bytes` boilerplate every JSON-wire type repeated. `no_std + alloc` compatible; binary wire formats (e.g. KNX DPT codecs) still implement `Linkable` by hand.
@@ -38,5 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/v0.1.0

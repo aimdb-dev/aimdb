@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-client"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version.workspace = true
 license.workspace = true
@@ -26,7 +26,7 @@ transport-tcp = ["dep:aimdb-tcp-connector", "aimdb-tokio-adapter/net"]
 # Core dependencies - protocol types from aimdb-core. `connector-session`
 # exposes the shared session engine (`run_client`/`ClientHandle`) plus the AimX
 # codec that the engine-based client (`crate::engine`) builds on.
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", features = [
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", features = [
     "std",
     "connector-session",
 ] }
@@ -50,7 +50,7 @@ tokio = { version = "1", features = ["net", "io-util", "macros", "fs"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # Supplies the `TimeOps` clock the engine-based client hands to `run_client`
 # (reconnect backoff / keepalive). This client always drives the engine on tokio.
-aimdb-tokio-adapter = { version = "0.6.0", path = "../aimdb-tokio-adapter" }
+aimdb-tokio-adapter = { version = "0.7.0", path = "../aimdb-tokio-adapter" }
 
 # Error handling
 anyhow = "1"

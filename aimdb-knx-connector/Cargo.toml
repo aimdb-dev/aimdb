@@ -66,7 +66,7 @@ log = ["aimdb-core/log"]
 defmt = ["aimdb-core/defmt", "knx-pico/defmt"]
 
 [dependencies]
-aimdb-core = { version = "1.1.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
 
 # aimdb-dev fork: upstream 0.3.0 panics on an npdu_length=1 telegram. A patch
 # won't do — patches aren't published, so dependants resolve back to upstream.

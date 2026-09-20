@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-cli"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version.workspace = true
 authors.workspace = true
@@ -17,14 +17,14 @@ path = "src/main.rs"
 
 [dependencies]
 # AimDB client library
-aimdb-client = { version = "0.6.0", path = "../../aimdb-client" }
-aimdb-codegen = { version = "0.2.0", path = "../../aimdb-codegen" }
+aimdb-client = { version = "0.7.0", path = "../../aimdb-client" }
+aimdb-codegen = { version = "0.3.0", path = "../../aimdb-codegen" }
 
 # Core dependencies - reuse protocol types from aimdb-core.
 # `observability` keeps the optional RecordMetadata fields (signal_stats,
 # stage_profiling, buffer metrics) in the client-side struct — without it
 # serde silently drops them from `record list --format json` output.
-aimdb-core = { version = "1.1.0", path = "../../aimdb-core", features = [
+aimdb-core = { version = "2.0.0", path = "../../aimdb-core", features = [
     "std",
     "observability",
 ] }

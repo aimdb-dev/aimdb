@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-18
+
 ### Changed (breaking)
 
 - **`TokioNet::listen` yields `std::io::Result` instead of `TransportResult`.**
@@ -25,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ByteStream::split` for `TokioByteStream`.** Through `tokio::io::split`,
+  which costs a lock: the halves share the stream behind a mutex taken inside
+  each `poll`. It is never held across an await, so it cannot deadlock, but it
+  is a serialisation point the native `TcpStream::split` does not have. The
+  native one is unreachable here — the type is generic over `S`, so an impl
+  specialised to `TcpStream` would overlap the blanket one.
+- **`Delay` for `TokioTcpDialer`.** The dialer supplies the session clock,
+  which — together with the `Clone` it already derived — is what lets the
+  embedded MQTT backend run on a host unchanged.
+- **`embedded-io` feature — the `embedded-io-async` trio on the `net` streams.**
+  `TokioByteStream<S>` implements `Read`/`Write` for any
+  `AsyncRead`/`AsyncWrite`, and `ReadReady` on `TokioByteStream<TcpStream>` via
+  a non-destructive `poll_peek`. Lets `mountain-mqtt` and `embedded-tls` run on
+  a host over `TokioNet::tcp()`.
 - **`net` feature — Tokio behind core's neutral I/O traits.** `TokioNet::tcp`,
   `listen`, `udp` and `delay()` supply `StreamDialer`/`StreamListener`/
   `DatagramBinder`/`Delay`, with `TokioByteStream<S>` covering any
@@ -130,7 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[0.7.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.6.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aimdb-dev/aimdb/compare/v0.3.0...v0.4.0

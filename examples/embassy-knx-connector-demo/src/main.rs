@@ -217,7 +217,7 @@ async fn main(spawner: Spawner) {
 
     let config = embassy_net::Config::dhcpv4(Default::default());
 
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
     static STACK_CELL: StaticCell<embassy_net::Stack<'static>> = StaticCell::new();
 
     let (stack_obj, runner) =
