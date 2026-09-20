@@ -45,7 +45,7 @@ pub struct WsDispatch {
     pub(crate) late_join: bool,
     pub(crate) runtime_ctx: aimdb_core::RuntimeContext,
 
-    /// This one is needed for building WsSession
+    /// Record key in registration order
     pub(crate) records: Arc<Vec<String>>,
 }
 

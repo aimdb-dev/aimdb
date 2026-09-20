@@ -3,11 +3,9 @@
 //! The [`AuthHandler`] trait provides pluggable auth hooks for:
 //!
 //! 1. **Connection upgrade** — `authenticate()`: resolve per-client permissions into bitmasks
-//!    which are carried into outbound routes and checked for before message broadcasting.
+//!    which checked for before message broadcasting.
 //!    `authenticate()` does not gate topic subscription, so clients could claim unregistered topics,
 //!    and receive nothing during their lifetime.
-//!    However, `authenticate()` does deny a client's subscription if the client is granted no
-//!    permissions.
 //! 2. **Inbound writes** — `authorize_write()`: gate which records a client may write to.
 //!
 //! The default implementation ([`NoAuth`]) allows all operations.
@@ -93,10 +91,10 @@ impl Permissions {
     /// Writes target a single concrete record, so `key` is never a wildcard
     /// here and plain [`topic_matches`](aimdb_core::topic_matches) is the right
     /// check (a wildcard write key would resolve to no record downstream).
-    pub fn can_write(&self, key: &str) -> bool {
+    pub fn can_write(&self, topic: &str) -> bool {
         self.write_patterns
             .iter()
-            .any(|p| aimdb_core::topic_matches(p, key))
+            .any(|p| aimdb_core::topic_matches(p, topic))
     }
 }
 
