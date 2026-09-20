@@ -55,8 +55,8 @@ pub trait QueryHandler: Send + Sync + 'static {
 // ════════════════════════════════════════════════════════════════════
 
 /// Provides the current serialized values covered by a subscription pattern for
-/// late-join snapshots (one `(topic, record id, value)` tuple per covered record — a
-/// wildcard pattern may cover several; an exact topic matches itself).
+/// late-join snapshots (one `(record id, topic, value)` tuple per covered pair of record - topic
+/// — a wildcard pattern may cover several; an exact topic may match several records).
 /// The returned snapshots need record id, different clients may have different
 /// read permissions to different records
 pub trait SnapshotProvider: Send + Sync + 'static {
