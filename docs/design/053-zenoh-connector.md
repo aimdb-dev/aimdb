@@ -36,9 +36,26 @@
   - Criterion 3 runs on a `current_thread` runtime (§9).
   - The native `ros2://` path ships without waiting for the embedded backend
     (§11).
+- **rev 6, 2026-09-23.** The upstream claims are checked too: rmw_zenoh,
+  zenoh-cpp, zenoh-nostd, `zenoh`, `cdr-encoding`, `xxhash-rust`, ros2cli,
+  rclpy and REP 2000, at the commits in §13. Where running code settled a
+  question, the claim is marked **[verified]**. The changes:
+  - Spikes S3, S4 and S5 are answered offline (§10).
+  - §5.2 is corrected on two points that would not have compiled or worked:
+    - one leaked `Resources` cannot be reused across reconnects;
+    - the shim's link must own its socket (issue #11).
+  - The `Send` gap upstream is wider than a mutex swap (§5.2).
+  - Serial is issue #9 and still open; #11 is a lifetime bug (§5.2).
+  - rmw_zenoh's default depth is 42, which corrects rev 5's §6 wording.
+    Rolling vendors zenoh-c 1.10.1, not 1.8.0 (§3).
+  - REP 2000 lists `rmw_zenoh_cpp` as Tier 1 for Kilted and has no Lyrical
+    section yet (§1).
+  - Humble keys carry a placeholder hash, not none (§2).
+  - The native publisher mirrors rmw_zenoh's congestion control (§5.1).
 
 Nothing is implemented. **[checked]** marks a claim read from upstream source at
-the commits listed in §13. **[spike]** marks a question only a running system can
+the commits listed in §13; **[verified]** marks one confirmed by reading or
+running code at those commits. **[spike]** marks a question only a running system can
 answer; §10 collects them.
 **Predecessors:** [052 — Runtime-neutral connectors](052-runtime-neutral-connectors.md)
 (this connector is written in 052's shape from the start),
@@ -74,8 +91,12 @@ Direct-from-MCU ROS is v2.
 
 Two upstream facts make this worth doing now:
 
-- `rmw_zenoh_cpp` is a **Tier 1** middleware in ROS 2 Lyrical on all platforms
-  and architectures, alongside Fast DDS and Cyclone (REP 2000 table). A robot that
+- `rmw_zenoh_cpp` is a **Tier 1** middleware on all platforms and architectures,
+  alongside Fast DDS and Cyclone. **[verified]** REP 2000 lists this for
+  **Kilted** (`rep-2000.rst:1239`, master @ `11ca24a`). REP 2000 has no Lyrical
+  section yet, and the Lyrical release page states no tier. Lyrical still
+  ships `rmw_zenoh` with zenoh 1.8.0 (its changelog). Jazzy's REP 2000 table
+  has no Zenoh row, although `rmw_zenoh` has a `jazzy` branch. A robot that
   runs it needs only a Zenoh router between it and us. We don't need a bridge process,
   a DDS stack or an XRCE agent.
 - Zenoh is the same protocol on a microcontroller and in the cloud. DDS splits
@@ -113,7 +134,11 @@ serves two schemes, which can share **one** Zenoh session:
   This is v2 (§4.9). Until then MCU data reaches ROS through a gateway (§4.8).
 - Services and actions (liveliness entity kinds `SS`/`SC`, Zenoh queryables).
 - `TRANSIENT_LOCAL`. The native backend gets it in v1.1 (§6).
-- Humble, which has no REP-2016 type hashes in its keys.
+- Humble. It has no REP-2016 type hashes. **[verified]** rmw_zenoh's `humble`
+  branch still builds the same key shape, with the literal
+  `TypeHashNotSupported` in the hash segment (`rmw_publisher_data.cpp:75`). So
+  support would mostly be a per-distro constant, and it is left out for scope,
+  not feasibility.
 - Consuming the ROS graph. We announce our own entities and never build a graph
   cache.
 - A `.msg` importer or any other code generation. ROS types are written by hand
@@ -125,25 +150,38 @@ serves two schemes, which can share **one** Zenoh session:
 - Shared memory, Zenoh storages as an AimDB persistence backend, and AimX sessions
   over Zenoh.
 
-## 3. What rmw_zenoh expects on the wire **[checked]**
+## 3. What rmw_zenoh expects on the wire **[verified]**
+
+Read at `rolling` @ `1f7c62a` and on the `jazzy`, `kilted` and `lyrical`
+branches. The GID hash was also run (S3, §10).
 
 | Element | Format |
 |---|---|
-| Data key | `<domain_id>/<fully_qualified_name>/<type_name>/<type_hash>`, e.g. `0/chatter/std_msgs::msg::dds_::String_/RIHS01_df668c74…` |
-| Payload | CDR (`DDS_CDR`, i.e. XCDR1) with the 4-byte encapsulation header, in host byte order. That is little-endian on every target AimDB ships |
-| Attachment | **Required.** A subscriber that receives a sample without one logs `Unable to obtain attachment` and drops it (`rmw_subscription_data.cpp`). 33 bytes: sequence number `i64` LE (per publisher, starting at 1), source timestamp `i64` LE (ns since Unix epoch), `0x10` (GID length), 16-byte GID |
+| Data key | `<domain_id>/<fully_qualified_name>/<type_name>/<type_hash>`, e.g. `0/chatter/std_msgs::msg::dds_::String_/RIHS01_df668c74…`. Leading and trailing slashes are stripped from the name (`liveliness_utils.cpp:95`). The type name is `<pkg>::msg::dds_::<Name>_` (`type_support_common.cpp:46`) |
+| Payload | CDR (`DDS_CDR`, i.e. XCDR1) with the 4-byte encapsulation header, in host byte order (Fast-CDR `DEFAULT_ENDIAN`, `cdr.cpp:27`). That is little-endian on every target AimDB ships |
+| Attachment | **Required.** A subscriber that receives a sample without one logs `Unable to obtain attachment` and drops it (`rmw_subscription_data.cpp:417`). 33 bytes, written by zenoh-cpp's `ext::Serializer`: sequence number `i64` LE (per publisher, starting at 1), then source timestamp `i64` LE (ns since Unix epoch). Next comes `0x10`: the serializer writes `std::array` as a sequence, so a LEB128 length precedes it (zenoh-cpp `1.8.0-4-gaf381b4`, `serialization.hxx:237`). Last is the 16-byte GID |
 | GID | XXH3-128 of the entity's full liveliness key expression; `low64` then `high64`, each LE |
 | Node token | `@ros2_lv/<domain>/<zid>/<node_id>/<node_id>/NN/<enclave>/<namespace>/<node_name>` |
 | Pub/sub token | `@ros2_lv/<domain>/<zid>/<node_id>/<entity_id>/MP\|MS/<enclave>/<namespace>/<node_name>/<topic>/<type_name>/<type_hash>/<qos>` |
 | Name mangling | `/` becomes `%`; an empty enclave or namespace is `%` |
-| QoS field | `<rel>:<dur>:<hist>,<depth>:<dl_s>,<dl_ns>:<ls_s>,<ls_ns>:<lv>,<lv_s>,<lv_ns>`. Each component is empty when it equals rmw_zenoh's default, so depth 10 with everything else default is `::,10:,:,:,,` |
+| QoS field | `<rel>:<dur>:<hist>,<depth>:<dl_s>,<dl_ns>:<ls_s>,<ls_ns>:<lv>,<lv_s>,<lv_ns>`. Each component is empty when it equals rmw_zenoh's default: `KEEP_LAST`, depth **42**, `RELIABLE`, `VOLATILE`, `AUTOMATIC` (`qos.cpp`, the same on all three distros). So depth 10 with everything else default is `::,10:,:,:,,`, and only depth 42 gives the all-empty `::,:,:,:,,` |
 
 Differences between distros and dependencies:
-- Jazzy and Lyrical produce identical keys and tokens for plain message types. Lyrical
-  adds an optional trailing `/backends:…` token segment, which appears only for
-  `rosidl::Buffer`-carrying types. We never emit it.
-- Both distros vendor zenoh-c 1.8.0. The vendored router is built with
+- Jazzy, Kilted and Lyrical produce identical keys and tokens for plain message
+  types. Lyrical adds an optional trailing `/backends:…` token segment, which
+  appears only for `rosidl::Buffer`-carrying types. We never emit it.
+  **[verified]**: Jazzy and Kilted have no backends code, and the Jazzy→Lyrical
+  diff of `liveliness_utils.cpp` is otherwise only the backend escaping.
+- Jazzy, Kilted and Lyrical vendor zenoh-c 1.8.0 plus fixes (commit `05bd370`,
+  zenoh `2687c51`). **Rolling has moved to zenoh-c 1.10.1** plus fixes
+  (`07b0d43`), so S2 has to cover both. All four build the router with
   `zenoh/transport_serial`, which matters once zenoh-nostd gains serial (§5.2).
+- **Subscribers are zenoh-ext `AdvancedSubscriber`s** (`rmw_subscription_data.cpp:434`).
+  For a `VOLATILE` subscriber they use default options and receive a plain
+  `put` like any subscriber. A `TRANSIENT_LOCAL` subscriber also asks
+  publishers it detects through liveliness for history. Our v1 publishers
+  have no cache and are not detectable, so such a subscriber, rviz on `/map`
+  for example, gets live samples but no history until v1.1 (§6).
 
 Two consequences shape the design.
 
@@ -468,9 +506,9 @@ interface is unchanged. CI verifies that per distro (§9) rather than assuming i
   keep the door open for the hash check below.
 - **Constants** in the `.msg` are not on the wire and are left out.
 - **Nested types** are other `RosMessage` types, usually from `aimdb-ros2-msgs`.
-- **The hash** is copied once from the robot. `ros2 topic info -v` on Jazzy and later
-  should print it for any active topic (**[spike S4]**: confirm before
-  documenting). rmw_zenoh also carries it in every data key.
+- **The hash** is copied once from the robot. `ros2 topic info -v` prints it for
+  any active topic as `Topic type hash: RIHS01_…` on Jazzy, Kilted, Lyrical and
+  Rolling (**[verified]**, S4 in §10). rmw_zenoh also carries it in every data key.
 
 The type mapping, as the docs will print it:
 
@@ -648,7 +686,8 @@ topology: a Zenoh client on the flight controller and a router on the companion
 computer. It is deferred until these three are true:
 
 1. zenoh-nostd has a liveliness-token API (§5.2), upstream or in our published fork.
-2. The session's own ZID is reachable, since the token needs it (**[spike S5]**).
+2. The session's own ZID is reachable, since the token needs it. S5 (§10) found
+   it is not, and names the one-line upstream fix.
 3. The MCU has a wall-clock source for the attachment timestamp, or `0` is accepted
    as documented degradation (§3).
 
@@ -766,9 +805,17 @@ The last command logs `spindle: 1200 rpm, enabled=true` in the gateway.
 - Uses `session.liveliness().declare_token(..)` for tokens and `put(..).attachment(..)`
   for data. Tokens are declared before the first publish. On session loss the
   router withdraws them, so the node leaves `ros2 node list` by itself.
-- Pin a zenoh release that is wire-compatible with the router rmw_zenoh vendors
-  (zenoh-c 1.8.0 in Jazzy and Lyrical). Zenoh promises 1.x wire compatibility, and
-  the interop test must prove it (**[spike S2]**).
+- **[verified]** `session.liveliness().declare_token(..)` and the put
+  builder's `.attachment(..)` exist in `zenoh` 1.8.0 (`api/liveliness.rs:114`,
+  `api/builders/sample.rs:56`).
+- Publisher options mirror rmw_zenoh's (`rmw_publisher_data.cpp:942`):
+  - Zenoh `reliability` follows the QoS reliability.
+  - Congestion control is `DROP`, or `BLOCK` for `RELIABLE` with `KEEP_ALL`.
+- Pin a zenoh release that is wire-compatible with the router rmw_zenoh vendors:
+  zenoh-c 1.8.0 in Jazzy, Kilted and Lyrical, and 1.10.1 in Rolling (§3). The
+  latest `zenoh` on crates.io is 1.10.1. Zenoh promises 1.x wire
+  compatibility, and the interop test must prove it for both routers
+  (**[spike S2]**).
 - Cost: a large dependency tree, kept behind the `std` feature and never reachable
   from `embedded`. The same CI guard pattern as design 041's `rand` tracer applies.
 
@@ -779,13 +826,26 @@ for route tables and payload handoff, like every AimDB connector. In v1 this
 backend serves `zenoh://` only (§4.8, §4.9).
 
 **Transport.** zenoh-nostd abstracts I/O behind `ZLinkManager::connect(Endpoint)`
-and `ZLink::split(&mut self) -> (Tx<'_>, Rx<'_>)` **[checked]**. Core's
-`ByteStream::split(&mut self)` also yields borrowed, concurrently pollable halves
-(design 052). The shapes line up, so the shim is thin:
-- `connect` parses `tcp/host:port` and calls `StreamDialer::connect(host, port)`;
+and `ZLink::split(&mut self) -> (Tx<'_>, Rx<'_>)` **[verified]** (`io/link.rs`).
+Core's `ByteStream::split(&mut self)` also yields borrowed, concurrently
+pollable halves (design 052). The shapes line up, so the shim is thin:
+- `connect` reads `Endpoint::protocol()` / `address()` for `tcp/host:port` and
+  calls `StreamDialer::connect(host, port)`;
 - `read_exact` loops over `ByteRead::read`;
 - `is_streamed = true`;
+- `mtu()`, which `ZLinkInfo` also requires, returns the configured buffer size;
 - `listen` is refused (client mode only).
+
+**The shim's link must own its socket.** `ZLinkManager::Link<'a>` may borrow the
+manager. If it does, and the borrowed type has a `Drop` impl, a per-connection
+`Resources` fails the drop check. **[verified]** by two mock links compiled at
+`e88f73a`. A link that borrows the manager and implements `Drop` reproduces
+zenoh-nostd **issue #11** exactly: `E0597: resources does not live long
+enough`. Upstream's own Embassy link does that by wrapping `TcpSocket<'a>`, so
+its examples fall back to `StaticCell` macros that connect only once. A link
+that *owns* its socket compiles. AimDB's `StreamDialer::Stream` is owned, with
+no lifetime (`session/io.rs:103`), so the shim wraps it by value and never
+borrows the dialer.
 
 The backend is therefore generic over any 052 dialer: `EmbassyNet::tcp` today,
 `TokioNet::tcp()` for host tests, and a FreeRTOS `LwipNet` later.
@@ -797,28 +857,40 @@ The backend is therefore generic over any 052 dialer: `EmbassyNet::tcp` today,
    publishes into `put`.
 4. On error, back off through `Delay`, reconnect and re-declare.
 
-The session borrows a `Resources` value for `'res`. It is allocated once at build
-and leaked with `Box::leak`, as the MQTT embedded backend already leaks its
-build-time strings (`embedded/mod.rs:373`), and every reconnect
-reuses it.
+**`Resources` is per connection, not leaked once.** `session_connect` takes
+`&'res mut Resources<'res, Config>` (`api/session.rs:84`). That borrows the value
+for its whole lifetime, so a leaked `&'static mut Resources` can back exactly one
+session. **[verified]**: reusing it in a reconnect loop fails with `E0499`.
+Instead, `Resources` is a local of the loop body. Each iteration creates it,
+connects, runs, and drops it. This compiles with an owned link, with and without
+`alloc`, **[verified]**. It stays inside the one session future, which is boxed
+once at build, so nothing is leaked. With an array `Buff`, a reconnect costs no
+heap allocation. With a `Vec` `Buff`, it costs one per connect.
+
+**Subscriber keys must be `'static`.** `declare_subscriber` takes
+`&'static keyexpr` (`api/session/sub.rs:226`). The connector leaks each distinct
+inbound key once at build with `Box::leak`, as the MQTT embedded backend already
+leaks its build-time strings (`embedded/mod.rs:373`), and re-declares the same
+keys after every reconnect. `put` takes a borrowed key, so outbound needs no leak.
 
 **What upstream constrains** (**[checked]** at `main` e88f73a, tag 0.2.0, and
 branch `dev/0.3.0`):
 
 | Finding | Consequence | Plan |
 |---|---|---|
-| Not on crates.io; git tag `0.2.0` only; no commits on `main` since 2026-06-26; a large `dev/0.3.0` branch is open | A published AimDB crate cannot take a git dependency. **Blocks v1** | Ask upstream to publish. Meanwhile, do what `aimdb-mountain-mqtt` did: publish a zero-delta fork `aimdb-zenoh-nostd` pinned to a tag, and retire it when upstream releases |
-| No liveliness-token API. `DeclareToken`/`UndeclareToken` exist in `zenoh-proto` only | An MCU cannot announce itself to the ROS graph. **Blocks v2 only** (§4.9) | A small upstream PR: `session.liveliness().declare_token(ke)`, modelled on `put`. Off the v1 critical path |
-| Session state is behind `embassy_sync` `NoopRawMutex`; the link traits carry no `+ Send` | The session future is `!Send`, so the runner cannot box it without force-`Send` | Short term, use `aimdb-embassy-adapter::connectors::into_box_future`. That keeps the connector crate free of `unsafe`, but it makes `embedded` Embassy-bound for now: force-`Send` is sound only on a single-core cooperative executor. **[verified]** MQTT is not quite the precedent. It uses `into_box_future` only for its SNTP task (`embedded/mod.rs:533`). Its session tasks go through the connector's own `unsafe { SendSession::new(..) }` (`embedded/session.rs:21`, plus `AssertSend` in `tls.rs:189`). That is sound for MQTT, whose streams really are `Send`, and it keeps MQTT's backend runtime-neutral. It would not be sound over zenoh-nostd's `NoopRawMutex` state, and it breaks criterion 7. Upstream, propose `CriticalSectionRawMutex` and return-position `+ Send` (052 §5.1's rule); then the backend becomes runtime-neutral |
+| Not on crates.io (`zenoh-nostd`, `zenoh-proto` and `zenoh-sansio` all 404); git tag `0.2.0` = `main` @ `e88f73a`, whose workspace `Cargo.toml` still says `0.1.0`; no commits on `main` since 2026-06-26; `dev/0.3.0` is 31 commits and roughly +9.5k lines ahead | A published AimDB crate cannot take a git dependency. **Blocks v1** | Ask upstream to publish. Meanwhile, do what `aimdb-mountain-mqtt` did: publish a zero-delta fork `aimdb-zenoh-nostd` pinned to a tag, and retire it when upstream releases |
+| No liveliness-token API on `main` or `dev/0.3.0`. `DeclareToken`/`UndeclareToken` exist in `zenoh-proto` only (`msgs/declare.rs:27`) | An MCU cannot announce itself to the ROS graph. **Blocks v2 only** (§4.9) | A small upstream PR: `session.liveliness().declare_token(ke)`, modelled on `put`. Off the v1 critical path |
+| The session future is `!Send` for three separate reasons, **[verified]** with an `assert_send` probe: <ul><li>session and driver state sit behind `embassy_sync` `NoopRawMutex` (`api/session.rs:59`, `io/driver.rs:22`);</li><li>the link and transport traits return `impl Future` / `impl Iterator` with no `+ Send`, for example `ZTransportLinkRx::recv` (`io/transport/traits.rs:63`);</li><li>stored callbacks are `dyn ZDynCallback` without `+ Send`.</li></ul> | The session future is `!Send`, so the runner cannot box it without force-`Send` | Short term, use `aimdb-embassy-adapter::connectors::into_box_future`. That keeps the connector crate free of `unsafe`, but it makes `embedded` Embassy-bound for now: force-`Send` is sound only on a single-core cooperative executor. **[verified]** MQTT is not quite the precedent. It uses `into_box_future` only for its SNTP task (`embedded/mod.rs:533`). Its session tasks go through the connector's own `unsafe { SendSession::new(..) }` (`embedded/session.rs:21`, plus `AssertSend` in `tls.rs:189`). That is sound for MQTT, whose streams really are `Send`, and it keeps MQTT's backend runtime-neutral. It would not be sound over zenoh-nostd's `NoopRawMutex` state, and it breaks criterion 7. Upstream, all three have to change before the backend becomes runtime-neutral: `CriticalSectionRawMutex`, `+ Send` on every return-position `impl Trait` in the link and transport traits (052 §5.1's rule), and `+ Send` on the callback objects. A mutex swap alone is not enough |
 | Uses `embassy-time` directly (`Timer`, `Instant`) | Every target needs an `embassy-time` driver. Host tests need one too, which the MQTT tests already supply | Accept. A FreeRTOS adapter must ship a driver |
 | `embassy-sync` 0.7.2, while the workspace is patched to 0.8.0 | Two copies in the firmware image | Measure flash; offer upstream a version bump |
-| `Interest` not implemented on `main`; publisher interest lands on `dev/0.3.0` | The client sends every put to the router whether or not anyone subscribes. That costs bandwidth, not correctness | Whether the router accepts token declarations without it matters for v2 only: **[spike S1]** |
-| No serial link (issue #11; fixed on a branch) | TCP only, so no UART to `rmw_zenohd` yet, even though that router vendors the serial transport | Follow up once merged |
-| The inbound `Sample` drops the attachment | An MCU could not read sequence number, timestamp or GID from ROS publishers | Irrelevant in v1, where the MCU never subscribes to ROS directly |
+| `Interest` not implemented on `main`: the publisher's interest is a `TODO` (`api/session/pub.rs:98`). Publisher interest is declared on `dev/0.3.0` (`pub.rs:125`). Tracked upstream as issue #10 (open) | The client sends every put to the router whether or not anyone subscribes. That costs bandwidth, not correctness | Whether the router accepts token declarations without it matters for v2 only: **[spike S1]** |
+| No serial link. Upstream tracks it as **issue #9, still open**. No branch implements it: the `Endpoint` parser knows `serial`, but no platform crate has a serial link. rev 4's "issue #11, fixed on a branch" was wrong. #11 is the `Resources` lifetime bug above, and the `issue/11` branch merged as PR #13 with example workarounds only | TCP only, so no UART to `rmw_zenohd` yet, even though that router vendors the serial transport | Follow #9. A serial link is a `ZLinkManager` impl, which AimDB's serial connector could supply over its own `ByteStream` without waiting for upstream |
+| The inbound `Sample` drops the attachment: it holds only key and payload (`api/sample.rs:6`) | An MCU could not read sequence number, timestamp or GID from ROS publishers | Irrelevant in v1, where the MCU never subscribes to ROS directly |
 | MSRV 1.91, edition 2024; license EPL-2.0 OR Apache-2.0 | Compatible with our pinned 1.98 and Apache-2.0 | — |
 
 **Fallback.** If zenoh-nostd stalls, zenoh-pico over FFI is the known-good path.
-It is C, it is mature, and `rmw_zenoh_pico` already runs micro-ROS on it. It costs a
+It is C, it is mature, and `rmw_zenoh_pico` reportedly runs micro-ROS on it (not
+checked for rev 6: the repository was not found under the names tried). It costs a
 C toolchain in the firmware build and `unsafe` FFI in a connector, and it
 contradicts the pure-Rust story. Keep it as the plan B, not the plan.
 
@@ -846,8 +918,9 @@ subscriber **[checked]**. The advertised QoS in a token is therefore information
 `ros2 topic info -v` shows it, and nothing negotiates on it.
 
 **Default: rmw's own default profile.** Every `ros2://` link advertises
-`KEEP_LAST`, depth 10, `RELIABLE`, `VOLATILE`. That is the all-empty QoS string
-`::,10:,:,:,,` from §3, the same as a default `rclcpp` publisher. rev 4 derived
+`KEEP_LAST`, depth 10, `RELIABLE`, `VOLATILE`. That is the same as a
+default-constructed `rclcpp` publisher. rmw_zenoh's own default depth is 42, so
+the token's QoS field is `::,10:,:,:,,` (§3), not all-empty. rev 4 derived
 the default from the record's buffer instead. That was dropped because
 **[verified]** routes carry no buffer config: `OutboundRoute`, `RouteMeta`
 (§4.6) and the router know nothing about the record behind them. Adding the
@@ -862,7 +935,7 @@ with `Ros2LinkExt` (§4.3):
 | `SpmcRing { capacity }` | `KEEP_LAST`, depth = capacity, `VOLATILE` | Telemetry |
 | `SingleLatest` | `KEEP_LAST`, depth 1, `VOLATILE` in v1 | The natural home for latched topics (`/robot_description`, `/map`). `TRANSIENT_LOCAL` needs zenoh-ext's `AdvancedPublisher` cache, so it comes in v1.1 |
 | `Mailbox` (inbound) | `KEEP_LAST`, depth 1 | Command topics: the latest instruction wins |
-| Reliability | `RELIABLE` over TCP links; `BEST_EFFORT` as an override | rmw_zenoh itself only uses a non-reliable transport when UDP endpoints are configured |
+| Reliability | `RELIABLE` by default; `BEST_EFFORT` as an override | rmw_zenoh maps it to the Zenoh publisher's `reliability` (§5.1). A best-effort publication only travels over a best-effort link, such as UDP, if the session has one configured |
 
 If the buffer-derived default is still wanted later, it is one more field
 on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
@@ -981,20 +1054,34 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
 
 ## 10. Open questions
 
-The two-day spike (§11 step 1) is meant to answer S2–S4, which carry v1's risk. S1
-and S5 matter only for v2.
+rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
+(§11 step 1) now has to answer **S2 only** for v1. S1 matters only for v2.
 
 - **S1 (v2).** Does `rmw_zenohd` accept `DeclareToken` from a zenoh-nostd client
   on `main`, without Interest? Does the node then appear in `ros2 node list`?
 - **S2.** Is zenoh-nostd 0.2 wire-compatible with the zenoh-c 1.8 router, and is the
-  pinned `zenoh` crate?
-- **S3.** Does rmw_zenoh's "simplified" XXH3-128 produce the same output as
-  `xxhash-rust`'s `xxh3_128`? A GID from `ros2 topic info -v` settles it.
-- **S4.** Does `ros2 topic info -v` print the type hash on Jazzy, Kilted and Lyrical?
-  If not, what is the simplest documented way for a user to read it (for example
-  from rmw_zenoh's data key via `z_sub`)?
-- **S5 (v2).** How do we get the session's own ZID from zenoh-nostd? The token
-  needs it. Its driver exposes the *peer's* ZID.
+  pinned `zenoh` crate? It also has to be checked against Rolling's 1.10.1
+  router (§3).
+- **S3. Answered: yes.** rmw_zenoh's `simplified_xxhash3.cpp`, compiled
+  unchanged, and `xxhash-rust` 0.8.18's `xxh3_128` give identical
+  `(low64, high64)` for 603 inputs. Those cover every length from 0 to 600
+  bytes, which spans all of XXH3's size classes, plus realistic node and
+  publisher tokens. A GID read from a live `ros2 topic info -v` stays in
+  criterion 1 as the end-to-end check.
+- **S4. Answered: yes, on Jazzy, Kilted, Lyrical and Rolling.**
+  `ros2 topic info -v` prints each endpoint through rclpy's endpoint-info
+  `__str__`, which includes `Topic type hash: RIHS01_<hex>`. That is
+  `topic_endpoint_info.py:197` on Kilted, and `endpoint_info.py:203` on
+  Lyrical, where the file moved. Jazzy's `type_hash.py` formats the value as
+  `RIHS01_`. rmw_zenoh's data key is the fallback, since it carries the hash on
+  every distro (§3).
+- **S5 (v2). Answered: not reachable today.** The session's own ZID is
+  generated with `uhlc::ID::rand()` inside `TransportLinkManager`
+  (`io/transport.rs:93`). The constructor that takes a ZID is `pub(crate)`, and
+  no getter exists on `main` or `dev/0.3.0`. `Driver::zid()` returns the
+  *peer's* (`other_zid`). The fix is a one-line upstream accessor, or a
+  `with_zid` constructor that lets AimDB choose the ZID it puts in its tokens.
+  It joins the liveliness PR in §11 step 6.
 - **Q6.** Should v1 resolve relative topic names against the node namespace, or
   keep fully qualified names only as proposed?
 - **Q7.** Publish the `aimdb-zenoh-nostd` fork now, or ship the embedded backend as
@@ -1012,12 +1099,12 @@ and S5 matter only for v2.
 
 | # | Step | Depends on |
 |---|---|---|
-| 1 | **Spike (about 2 days).** Two parts: (a) with the `zenoh` crate, a hand-built token plus a `put` with an attachment, seen by `ros2 topic echo`, `ros2 node list` and `ros2 topic info -v`; (b) a zenoh-nostd `put` on the host reaching a zenoh 1.8 subscriber through `rmw_zenohd`. Answers S2–S4 | — |
+| 1 | **Spike (about 2 days).** Two parts: (a) with the `zenoh` crate, a hand-built token plus a `put` with an attachment, seen by `ros2 topic echo`, `ros2 node list` and `ros2 topic info -v`; (b) a zenoh-nostd `put` on the host reaching a zenoh 1.8 subscriber through `rmw_zenohd`, and the same against Rolling's 1.10.1 router. Answers S2. S3 and S4 were answered in rev 6, and part (a) now only confirms them live | — |
 | 2 | `aimdb-cdr`; `Linkable::WIRE_FORMAT` and `LinkCodec::WIRE_FORMAT` with the recorded `aimdb.wire_format`; `RosMessage` and `#[derive(RosMessage)]`; `link_codecs::Cdr` (all additive, in data-contracts and aimdb-derive) | — |
 | 3 | `profile/` module and its golden tests (criterion 1) | 1 |
 | 4 | Core `RouteMeta`, the `_with_meta` accessors and `aimdb.topic_provider` (§4.6); `Shared`, `ZenohConnector`, `Ros2Connector` and the registry on the native backend; interop CI (criteria 2, 8, 9). **This ships v1's ROS feature on its own** | 2, 3 |
 | 5 | Embedded backend (`zenoh://` only): gateway interop on host first (criterion 3), then STM32H5 (criteria 4, 5) | 1, 4 |
-| 6 | Upstream: a crates.io publish and `Send` cleanliness for v1, or the fork. The liveliness API PR, which is v2 prep and off the critical path | 1 |
+| 6 | Upstream. For v1, a crates.io publish or the fork. The rest is v2 prep and off the critical path: `Send` cleanliness (all three causes in §5.2), the liveliness API PR, and an own-ZID accessor (S5) | 1 |
 | 7 | `aimdb-ros2-msgs`: the internal generation script, the four packages, and the per-distro hash CI (criterion 10) | 2 |
 | 8 | Docs: design 012 connector-guide section, a BYOC tutorial built on this connector, an "AimDB and ROS 2" page, and the manufacturing-cell demo | 4, 5 |
 
@@ -1032,8 +1119,9 @@ publishable.
 zenoh-nostd beyond spike part (b). A std gateway speaking `ros2://`, plus
 `zenoh://` between std AimDB peers, is a complete release. Steps 5 and 6 then
 gate only the MCU half, and zenoh-nostd's publishing question (Q7) never holds
-up the ROS feature. The two upstream items, S2–S4 and the zenoh-nostd publish,
-are the only known blockers. The rev 5 corrections each have an in-design fix.
+up the ROS feature. After rev 6, the only known blockers are two upstream
+items: S2 (wire compatibility with both vendored routers) and the zenoh-nostd
+publish. The rev 5 and rev 6 corrections each have an in-design fix.
 
 On the roadmap, v1 lands after the conformance suite and doubles as BYOC tutorial
 material. v2 (§4.9) is sequenced separately once its three preconditions hold.
@@ -1054,14 +1142,34 @@ material. v2 (§4.9) is sequenced separately once its three preconditions hold.
 
 ## 13. Sources read
 
-- `ros2/rmw_zenoh`: `rolling` @ `1f7c62a` (2026-09-23), plus the `jazzy` and
-  `lyrical` branches. Files: `docs/design.md`;
-  `rmw_zenoh_cpp/src/detail/{liveliness_utils,attachment_helpers,rmw_publisher_data,rmw_subscription_data,cdr,type_support,qos}.cpp`;
+- `ros2/rmw_zenoh`: `rolling` @ `1f7c62a` (2026-09-23), `jazzy` @ `224e568`,
+  `kilted` @ `0ceb68a`, `lyrical` @ `4e17ccf`, and `humble`. Files: `docs/design.md`;
+  `rmw_zenoh_cpp/src/detail/{liveliness_utils,attachment_helpers,rmw_publisher_data,rmw_subscription_data,cdr,type_support,type_support_common,qos,simplified_xxhash3}.cpp`;
   `zenoh_cpp_vendor/CMakeLists.txt`.
+- `eclipse-zenoh/zenoh-cpp` @ `af381b4` (`1.8.0-4`, the Jazzy/Lyrical vendored
+  commit): `include/zenoh/api/ext/serialization.hxx`.
 - `eclipse-zenoh/zenoh-nostd`: `main` @ `e88f73a` (tag `0.2.0`, 2026-06-26),
-  branches `dev/0.3.0` and `issue/11`. Files: `crates/zenoh-nostd/src/io/{link,driver}.rs`,
-  `src/api/session/{run,put,pub}.rs`, `crates/zenoh-proto/src/msgs/declare.rs`.
-- `cdr-encoding` 0.11.0 and `xxhash-rust` 0.8.18 (crates.io sources).
+  branches `dev/0.3.0` @ `912882e` and `issue/11` (merged as PR #13). Files:
+  `crates/zenoh-nostd/src/{io/link.rs,io/driver.rs,io/transport.rs,io/transport/traits.rs,resources.rs,api/session.rs,api/sample.rs}`,
+  `src/api/session/{run,put,pub,sub}.rs`, `crates/zenoh-proto/src/{endpoint.rs,msgs/declare.rs,msgs/fields.rs}`,
+  and the upstream issue list (#9 serial, #10 Interest, #11 lifetimes).
+- `zenoh` 1.8.0, `cdr-encoding` 0.11.0 (the latest; its `std::io` /
+  `std::marker` imports are unconditional) and `xxhash-rust` 0.8.18
+  (`#![no_std]`), all crates.io sources.
+- `ros2/ros2cli` (`ros2topic/verb/info.py`) and `ros2/rclpy`
+  (`topic_endpoint_info.py`, `endpoint_info.py`, `type_hash.py`) on `jazzy`,
+  `kilted`, `lyrical` and `rolling`.
+- `ros-infrastructure/rep` master @ `11ca24a` (`rep-2000.rst`) and
+  `ros2/ros2_documentation` @ `617ded6` (`Release-Lyrical-Luth.rst` and the
+  Lyrical changelog).
+- rev 6 ran four offline checks:
+  - rmw_zenoh's XXH3 compiled against `xxhash-rust` (S3);
+  - a leaked-`Resources` reconnect loop, which fails with `E0499`;
+  - owned and borrowing mock links, where the borrowing one reproduces issue
+    #11;
+  - `assert_send` on the session future.
+
+  The last three were compiled inside zenoh-nostd @ `e88f73a` on rustc 1.98.0.
 - AimDB @ `e759cbe`: `aimdb-core/src/{builder.rs,connector.rs,typed_api.rs,router.rs,session/io.rs,session/pump.rs,session/client.rs,executor.rs}`,
   `aimdb-data-contracts/src/{lib.rs,linkable.rs,link_codec.rs,streamable.rs}`,
   `aimdb-derive/src/lib.rs`, `aimdb-codegen/src/rust.rs`,
@@ -1073,4 +1181,3 @@ material. v2 (§4.9) is sequenced separately once its three preconditions hold.
 - rev 5 also ran two checks on the pinned rustc 1.98.0. One confirmed that a
   generic inline-const assert passes `cargo check` and fails `cargo build`. The
   other read trybuild 1.0.121's mode selection (`src/cargo.rs:97`).
-- ROS 2 Lyrical release page (REP 2000 middleware table).
