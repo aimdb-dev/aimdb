@@ -536,7 +536,7 @@ The additions instead:
 3. **A reserved config key for topic providers.** `OutboundConnectorBuilder::finish`
    appends `("aimdb.topic_provider", "true")` when `.with_topic_provider(..)` was
    called. The provider itself is fused into the route's source at `finish()`
-   (`typed_api.rs:977`), so nothing else downstream can see it. This rides the
+   (`typed_api.rs:979`), so nothing else downstream can see it. This rides the
    existing `with_config` vector, so no struct changes. The per-link wire format
    from §4.4 uses the same mechanism under `aimdb.wire_format`. Both keys live
    in the `aimdb.` namespace, which connectors must not use for their own options.
