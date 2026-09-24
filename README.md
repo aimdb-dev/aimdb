@@ -26,7 +26,7 @@ AimDB is the data ingestion layer for distributed systems: typed contracts, safe
 
 ## The problem
 
-Every distributed system has an ingestion layer, and it is usually the most fragile part.
+Every distributed system has an ingestion layer and it is usually the most fragile part.
 
 - **Formats drift.** A firmware team renames a field and the dashboard goes quiet three days later.
 - **Fleets never update at once.** Devices in the field run last year's firmware next to this week's release.
