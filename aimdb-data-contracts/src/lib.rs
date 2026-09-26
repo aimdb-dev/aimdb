@@ -76,7 +76,7 @@ mod link_codec;
 mod linkable;
 
 #[cfg(feature = "linkable")]
-pub use link_codec::{link_codecs, LinkCodec, LinkCodecBuilderExt};
+pub use link_codec::{link_codecs, LinkCodec, LinkCodecBuilderExt, WireFormat};
 
 #[cfg(feature = "linkable")]
 pub use linkable::{LinkCodecRegistrarExt, LinkableRegistrarExt};
@@ -269,6 +269,10 @@ pub trait Linkable: SchemaType + Sized {
     /// performance fallback, not a correctness failure: the connector pipeline
     /// retries that value through [`to_bytes`](Self::to_bytes).
     const ENCODE_BUFFER_CAPACITY: Option<usize> = None;
+
+    /// What [`to_bytes`](Self::to_bytes) / [`from_bytes`](Self::from_bytes) speak.
+    /// Recorded on links that use this impl as their codec.
+    const WIRE_FORMAT: WireFormat = WireFormat::Unspecified;
 
     /// Deserialize from bytes (e.g., MQTT payload).
     ///

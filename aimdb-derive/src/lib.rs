@@ -73,6 +73,9 @@ pub fn derive_linkable(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl ::aimdb_data_contracts::Linkable for #name {
+            const WIRE_FORMAT: ::aimdb_data_contracts::WireFormat =
+                ::aimdb_data_contracts::WireFormat::Json;
+
             fn from_bytes(
                 data: &[u8],
             ) -> Result<Self, ::aimdb_data_contracts::__private::alloc::string::String> {

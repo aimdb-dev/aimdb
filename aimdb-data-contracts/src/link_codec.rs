@@ -25,8 +25,52 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use aimdb_core::connector::SerializeError;
+use aimdb_core::connector::{SerializeError, WIRE_FORMAT_KEY};
 use aimdb_core::typed_api::{InboundConnectorBuilder, OutboundConnectorBuilder};
+
+/// The encoding a [`Linkable`](crate::Linkable) or [`LinkCodec`] speaks.
+///
+/// Codec verbs record it in the link config under
+/// [`WIRE_FORMAT_KEY`] so connectors can check it at build time.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireFormat {
+    /// Not declared; nothing is recorded.
+    Unspecified,
+    /// JSON.
+    Json,
+    /// Postcard.
+    Postcard,
+    /// OMG CDR (XCDR1) with encapsulation header, as used by ROS 2.
+    Cdr,
+}
+
+impl WireFormat {
+    /// The value recorded under [`WIRE_FORMAT_KEY`]; `None` for `Unspecified`.
+    pub const fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Unspecified => None,
+            Self::Json => Some("json"),
+            Self::Postcard => Some("postcard"),
+            Self::Cdr => Some("cdr"),
+        }
+    }
+
+    /// Reads the format recorded in a link config; `Unspecified` if absent or
+    /// unknown.
+    pub fn recorded_in(config: &[(String, String)]) -> Self {
+        let value = config
+            .iter()
+            .find(|(key, _)| key == WIRE_FORMAT_KEY)
+            .map(|(_, value)| value.as_str());
+        match value {
+            Some("json") => Self::Json,
+            Some("postcard") => Self::Postcard,
+            Some("cdr") => Self::Cdr,
+            _ => Self::Unspecified,
+        }
+    }
+}
 
 /// A wire codec selected for one inbound or outbound record link.
 ///
@@ -46,6 +90,9 @@ pub trait LinkCodec<T>: Clone + Send + Sync + 'static {
     /// `None` keeps the route on owned serialization. `Some(n)` installs the
     /// scratch serializer alongside the mandatory owned fallback.
     const ENCODE_BUFFER_CAPACITY: Option<usize> = None;
+
+    /// What this codec puts on the wire, recorded on each link it is installed on.
+    const WIRE_FORMAT: WireFormat = WireFormat::Unspecified;
 
     /// Decode one connector payload into a record.
     fn decode(&self, bytes: &[u8]) -> Result<T, String>;
@@ -91,6 +138,7 @@ where
     T: crate::Linkable,
 {
     const ENCODE_BUFFER_CAPACITY: Option<usize> = T::ENCODE_BUFFER_CAPACITY;
+    const WIRE_FORMAT: WireFormat = T::WIRE_FORMAT;
 
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         T::from_bytes(bytes)
@@ -110,6 +158,8 @@ impl<T> LinkCodec<T> for link_codecs::Json
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
+    const WIRE_FORMAT: WireFormat = WireFormat::Json;
+
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         serde_json::from_slice(bytes).map_err(|error| error.to_string())
     }
@@ -134,6 +184,7 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
     const ENCODE_BUFFER_CAPACITY: Option<usize> = Some(N);
+    const WIRE_FORMAT: WireFormat = WireFormat::Postcard;
 
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         postcard::from_bytes(bytes).map_err(|error| error.to_string())
@@ -164,7 +215,8 @@ where
     ///
     /// Calling this method again replaces the complete codec strategy. In
     /// particular, an owned-only codec clears any scratch serializer installed
-    /// by an earlier bounded codec.
+    /// by an earlier bounded codec. The codec's [`WireFormat`] is recorded
+    /// under [`WIRE_FORMAT_KEY`].
     fn with_link_codec<C>(self, codec: C) -> Self
     where
         C: LinkCodec<T>;
@@ -178,7 +230,7 @@ where
     where
         C: LinkCodec<T>,
     {
-        match C::ENCODE_BUFFER_CAPACITY {
+        let builder = match C::ENCODE_BUFFER_CAPACITY {
             Some(capacity) => {
                 let scratch_codec = codec.clone();
                 self.with_serializer(move |_ctx, value| codec.encode(value))
@@ -189,6 +241,11 @@ where
             None => self
                 .with_serializer(move |_ctx, value| codec.encode(value))
                 .clear_serializer_into(),
+        };
+        // After the setters, which clear any earlier record.
+        match C::WIRE_FORMAT.as_str() {
+            Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
+            None => builder,
         }
     }
 }
@@ -201,7 +258,11 @@ where
     where
         C: LinkCodec<T>,
     {
-        self.with_deserializer(move |_ctx, bytes| codec.decode(bytes))
+        let builder = self.with_deserializer(move |_ctx, bytes| codec.decode(bytes));
+        match C::WIRE_FORMAT.as_str() {
+            Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
+            None => builder,
+        }
     }
 }
 
@@ -630,6 +691,102 @@ mod tests {
                 postcard_in.lock().expect("Postcard capture lock").as_ref(),
                 Some(&reading)
             );
+        });
+    }
+
+    #[test]
+    fn wire_format_round_trips_through_link_config() {
+        use super::WireFormat;
+        use aimdb_core::connector::WIRE_FORMAT_KEY;
+
+        for format in [WireFormat::Json, WireFormat::Postcard, WireFormat::Cdr] {
+            let config = vec![(
+                WIRE_FORMAT_KEY.to_string(),
+                format.as_str().expect("named format").to_string(),
+            )];
+            assert_eq!(WireFormat::recorded_in(&config), format);
+        }
+        assert_eq!(WireFormat::Unspecified.as_str(), None);
+        assert_eq!(WireFormat::recorded_in(&[]), WireFormat::Unspecified);
+        let unknown = vec![(WIRE_FORMAT_KEY.to_string(), "xml".to_string())];
+        assert_eq!(WireFormat::recorded_in(&unknown), WireFormat::Unspecified);
+    }
+
+    #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
+    #[test]
+    fn codec_verbs_record_the_last_codecs_wire_format() {
+        use super::WireFormat;
+        use crate::LinkableRegistrarExt;
+        use aimdb_core::connector::WIRE_FORMAT_KEY;
+
+        futures::executor::block_on(async {
+            let reading = Reading {
+                value: 1.0,
+                sequence: 1,
+            };
+            let mut builder = AimDbBuilder::new()
+                .runtime(Arc::new(NoopRuntimeOps))
+                .with_connector(NoopConnector);
+            builder.configure::<Reading>("reading.formats", |registrar| {
+                registrar.buffer_raw(Box::new(CannedBuffer { value: reading }));
+                registrar.linked_to_with("test://json", link_codecs::Json);
+                registrar.linked_to_with("test://postcard", link_codecs::Postcard::<64>);
+                // `Reading`'s own Linkable declares no format.
+                registrar.linked_to("test://default");
+                registrar
+                    .link_to("test://replaced")
+                    .with_link_codec(link_codecs::Postcard::<64>)
+                    .with_link_codec(link_codecs::Json)
+                    .finish();
+                registrar
+                    .link_to("test://custom-after-codec")
+                    .with_link_codec(link_codecs::Json)
+                    .with_serializer(|_ctx, _value| Ok(Vec::new()))
+                    .finish();
+            });
+            builder.configure::<Reading>("reading.formats.in", |registrar| {
+                registrar.buffer_raw(Box::new(CapturingBuffer {
+                    latest: Arc::new(std::sync::Mutex::new(None)),
+                }));
+                registrar.linked_from_with("test://json-in", link_codecs::Json);
+                registrar.linked_from("test://default-in");
+            });
+            let (db, _runner) = builder.build().await.expect("build");
+
+            let mut formats: Vec<(String, WireFormat, usize)> = db
+                .collect_outbound_routes_with_meta("test")
+                .into_iter()
+                .map(|(_, meta)| meta)
+                .chain(
+                    db.collect_inbound_routes_with_meta("test")
+                        .into_iter()
+                        .map(|(_, meta)| meta),
+                )
+                .map(|meta| {
+                    let records = meta
+                        .config
+                        .iter()
+                        .filter(|(key, _)| key == WIRE_FORMAT_KEY)
+                        .count();
+                    (meta.topic, WireFormat::recorded_in(&meta.config), records)
+                })
+                .collect();
+            formats.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let expected = [
+                ("custom-after-codec", WireFormat::Unspecified, 0),
+                ("default", WireFormat::Unspecified, 0),
+                ("default-in", WireFormat::Unspecified, 0),
+                ("json", WireFormat::Json, 1),
+                ("json-in", WireFormat::Json, 1),
+                ("postcard", WireFormat::Postcard, 1),
+                ("replaced", WireFormat::Json, 1),
+            ];
+            let actual: Vec<(&str, WireFormat, usize)> = formats
+                .iter()
+                .map(|(topic, format, n)| (topic.as_str(), *format, *n))
+                .collect();
+            assert_eq!(actual, expected);
         });
     }
 }
