@@ -52,6 +52,22 @@
     section yet (§1).
   - Humble keys carry a placeholder hash, not none (§2).
   - The native publisher mirrors rmw_zenoh's congestion control (§5.1).
+- **rev 7, 2026-09-26.** The domain ID and node namespace get an API, following
+  ROS's layering: the domain is set per session on `Ros2Connector`, and the
+  namespace per node on `Ros2Node` (§4.2). Q6 is answered: topics stay fully
+  qualified (§4.3, §10). Review findings are folded in too:
+  - Core's serializer setters clear the recorded wire format, so a custom
+    serializer after a codec verb now warns (§4.3, §4.4, §4.6).
+  - The `WIRE_FORMAT` const-assert becomes a `build()` check (§4.3, §9).
+  - `aimdb-cdr` decodes both byte orders (§4.4).
+  - The wildcard, `SchemaType::NAME` and `RouteMeta` duplication consequences
+    are written down (§4.3, §4.4, §4.6).
+
+  - `aimdb-ros2-msgs` is postponed to a later phase. In v1 every ROS type,
+    standard or custom, is hand-written with the derive (§4.5).
+
+  The changes are in the scope list, §2, §4.2–4.6, §4.10, §8, §9, §10, §11 and
+  §12.
 
 Nothing is implemented. **[checked]** marks a claim read from upstream source at
 the commits listed in §13; **[verified]** marks one confirmed by reading or
@@ -64,13 +80,15 @@ answer; §10 collects them.
 (`RosMessage` follows the one-verb-per-contract rule; its connector-side
 registration follows `Streamable`'s precedent).
 **Scope:**
-- New crates `aimdb-zenoh-connector`, `aimdb-cdr` and `aimdb-ros2-msgs`.
+- New crates `aimdb-zenoh-connector` and `aimdb-cdr`. A prebuilt
+  `aimdb-ros2-msgs` is a later phase (§4.5).
 - Additive changes to `aimdb-data-contracts`: `RosMessage`, `Linkable::WIRE_FORMAT`,
   `LinkCodec::WIRE_FORMAT` (recorded on each link), and `link_codecs::Cdr`.
 - A new `#[derive(RosMessage)]` in `aimdb-derive`.
 - Additive changes to `aimdb-core`: two new route accessors that return
   a new `#[non_exhaustive]` `RouteMeta` (the record's `TypeId` and the link
-  config), plus a reserved `aimdb.topic_provider` config key. The existing
+  config), plus a reserved `aimdb.topic_provider` config key, and serializer
+  setters that clear the reserved `aimdb.wire_format` key. The existing
   `OutboundRoute`, `ConnectorLink` and `collect_*_routes` are left alone (§4.6).
 - `aimdb-codegen` is not touched.
 
@@ -142,7 +160,9 @@ serves two schemes, which can share **one** Zenoh session:
 - Consuming the ROS graph. We announce our own entities and never build a graph
   cache.
 - A `.msg` importer or any other code generation. ROS types are written by hand
-  with a derive, or taken from `aimdb-ros2-msgs` (§4.5).
+  with a derive (§4.5).
+- A prebuilt message crate (`aimdb-ros2-msgs`). It is postponed to a later phase
+  (§4.5).
 - Auto-exposing every record of a type. Topics belong to instances, not types, and
   writes into the plant stay explicit (§8).
 - DDS robots. A robot on the default `rmw_fastrtps_cpp` needs
@@ -224,14 +244,9 @@ split is the precedent (`aimdb-mqtt-connector/src/connector.rs`).
 
 ### 4.2 User-facing API
 
-Common ROS types come ready-made from `aimdb-ros2-msgs` (§4.5):
-
-```rust
-use aimdb_ros2_msgs::sensor_msgs::Temperature;
-```
-
-A custom type from the robot team's package is a hand-written struct with one
-derive:
+In v1 every ROS type is a hand-written struct with one derive. That covers
+standard interfaces such as `sensor_msgs/Temperature` and custom types from the
+robot team's package alike (§4.5):
 
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize, RosMessage)]
@@ -297,6 +312,36 @@ let mut builder = AimDbBuilder::new()
     .with_connector(ros2);
 ```
 
+**Domain ID and namespace.** These follow ROS's own layering. The domain belongs to
+the context, which is one session here. The namespace belongs to the node.
+
+```rust
+let ros2 = Ros2Connector::new("tcp/192.168.10.5:7447",
+        Ros2Node::new("cell4_gateway").namespace("/cell4"))
+    .domain_id(7)
+    .register::<Temperature>();
+
+// Shared session: the domain goes on the ROS view, since `zenoh://` has none.
+let ros2 = zenoh.ros2(Ros2Node::new("cell4_gateway").namespace("/cell4")).domain_id(7);
+```
+
+- **The domain resolves the way rcl resolves it.** An explicit `.domain_id(n)` wins.
+  Without one, the connector reads `ROS_DOMAIN_ID`, and falls back to `0` when that
+  is unset. **[checked]**: rcl reads the variable only when no domain was set
+  (`rcl/src/rcl/init.c:152`, `domain_id.c:25`), and rmw_zenoh stores one domain per
+  context (`rmw_init.cpp:66`). Reading the environment matters because the domain is
+  the first segment of every key and token. A gateway pinned to `0` while the robot
+  runs on `7` fails silently, like a wrong type hash (§3). A `ROS_DOMAIN_ID` that is
+  not an integer fails `build()`, as it fails `rcl_init`.
+- **The domain is on the connector, not on `Ros2Node`.** If several nodes per
+  session arrive later (§4.7), they cannot disagree on a domain that rmw_zenoh keeps
+  per context anyway.
+- **The namespace is set in code** or from the application's config. AimDB is not
+  started by `ros2 launch`, so `--ros-args -r __ns:=…` is not parsed. The default
+  is the root namespace. The namespace changes the node's identity (its tokens and
+  `ros2 node list`), not its topics (§4.3).
+- **The enclave** is always the default (`%` in tokens) in v1.
+
 `Ros2Connector` and `.ros2(..)` exist only with the `std` feature. On an embedded
 build, a `ros2://` link fails `build()` with core's unregistered-scheme error, and
 the connector docs point to §4.8.
@@ -321,7 +366,9 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
   records sharing a key would each receive every sample N times. MQTT dedupes the same way through
   `RouterBuilder::resource_ids()`. The route topic is the one
   `collect_inbound_routes` resolves, so an inbound `with_topic_resolver` is
-  honoured.
+  honoured. The cost: a record linked to `aimdb/*/state` gets the payload but not
+  the concrete key it arrived on, so it cannot tell `cell4` from `cell5`. A record
+  that needs to know links one concrete key per record.
 - No tokens, no attachment, no type in the key. CDR over `zenoh://` is allowed
   (`linked_to_with(url, Cdr::<256>)`) for non-ROS consumers that want it. It will
   not reach ROS, and the docs say so.
@@ -329,10 +376,13 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
 **`ros2://<topic>`: a ROS topic**
 
 - The resource is the fully qualified topic name without its leading slash, so
-  `ros2://cell4/temperature` is `/cell4/temperature`. v1 does not resolve relative
-  names against the node namespace. **[verified]**: `LinkAddress::parse` keeps
-  `/` and strips leading slashes, so `ros2:///cell4/temperature` is the same
-  topic.
+  `ros2://cell4/temperature` is `/cell4/temperature`. Topics are never resolved
+  against the node namespace: a node in `/cell4` linked to `ros2://temperature`
+  publishes `/temperature`. The URL could not express the difference anyway.
+  **[verified]**: `LinkAddress::parse` keeps `/` and strips leading slashes, so
+  `ros2:///cell4/temperature` is the same topic, and an absolute name cannot be
+  told from a relative one. The connector docs say this, since ROS users will
+  expect a namespace to prefix topics.
 - Direction comes from the link. `linked_to` makes AimDB a ROS publisher (`MP`
   token); `linked_from` makes it a subscriber (`MS` token). No method names the
   role. The scheme names the protocol, as `mqtt://` and `knx://` already do.
@@ -347,13 +397,14 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
 | Mistake | Caught | How |
 |---|---|---|
 | `.register::<T>()` on a type that isn't a `RosMessage` | compile time | `register` is bounded on `T: RosMessage` |
-| `.register::<T>()` on a hand-implemented `RosMessage` whose `Linkable` is not CDR | `cargo build` (not `cargo check`) | `register` contains `const { assert!(matches!(T::WIRE_FORMAT, WireFormat::Cdr)) }` (§4.4). `matches!` rather than `==`, because `PartialEq` is not usable in const context. The derive always emits CDR, so derived types cannot hit this. **[verified on 1.98.0]**: a const in a generic function is evaluated at monomorphization, so the check fails `cargo build`, while `cargo check` and rust-analyzer stay silent. The binary still cannot ship with the mistake, and the docs say where it surfaces |
+| `.register::<T>()` on a hand-implemented `RosMessage` whose `Linkable` is not CDR | `build()` | `register` checks `T::WIRE_FORMAT` (§4.4), and `build()` reports the mismatch with the type's name. The derive always emits CDR, so only hand-written impls can hit this. rev 5's inline-const assert was dropped in rev 7. It fired on `cargo build` but not on `cargo check` or in rust-analyzer, and it needed a special trybuild setup, all for a rare mistake |
 | A malformed `type` or `hash` in `#[ros(..)]` | compile time | The derive validates `pkg/msg/Name` and `RIHS01_` + 64 hex |
 | A malformed type name or hash in a hand-written impl | `build()` | Checked at registration, so the error names the type |
 | A `ros2://` link on a type that was never registered | `build()` | The route's `TypeId` (from `RouteMeta`, §4.6) is missing from the registry |
 | A `ros2://` link with a non-CDR codec: `linked_to_with(url, Json)`, or `.with_link_codec(Postcard::<N>)` on the long form | `build()` | Every codec verb records its `LinkCodec::WIRE_FORMAT` in the link config (§4.4), and the connector refuses anything other than `cdr`, read from `RouteMeta::config` |
 | A `ros2://` outbound link with `.with_topic_provider(..)` | `build()` | A provider can send a value to a topic that has no precomputed key, token or GID. `finish()` records `aimdb.topic_provider` in the link config (§4.6), so the connector refuses it |
-| A topic that breaks ROS name rules | `build()` | The profile's name validator |
+| A topic, node name or namespace that breaks ROS name rules | `build()` | The profile's name validator |
+| A `ROS_DOMAIN_ID` that is not an integer | `build()` | Parsed once at build, as `rcl_init` does (§4.2) |
 | `ros2://` links with no `Ros2Connector` registered | `build()` | Core's existing refusal for a scheme no connector claims. **[verified]**: it is recorded when the link is finished (`typed_api.rs:930`) and reported by `build()`, so `with_connector` must come before `configure`, as every example here does |
 
 Two gaps remain that the design cannot close.
@@ -363,8 +414,8 @@ Two gaps remain that the design cannot close.
    serializer, and a connector cannot inspect a closure. Such a link carries no
    recorded wire format, so the connector **warns** at `build()` rather than
    refusing it. That keeps it the documented escape hatch that voids the
-   guarantee. A `with_serializer` placed *after* a codec verb overrides the
-   serializer but keeps the recorded format, so the warning cannot see that case.
+   guarantee. The warning also covers a `with_serializer` placed *after* a codec
+   verb, because the serializer setters clear the recorded format (§4.4).
 2. **Hand-written field layout.** CDR is positional. A struct whose fields are out
    of order or wrongly typed relative to the `.msg` (`f32` for `float64`) decodes
    garbage or fails to decode at runtime. Nothing catches that at compile time in
@@ -426,7 +477,13 @@ pub enum WireFormat { Unspecified, Json, Postcard, Cdr }
 **`#[derive(RosMessage)]`**, in `aimdb-derive` and re-exported by
 `aimdb-data-contracts` under `ros2`, takes `#[ros(type = "pkg/msg/Name", hash = "RIHS01_…")]`
 and emits three impls, so the user writes none by hand:
-- `SchemaType`, with `NAME` set to the ROS type (`cell_msgs/msg/SpindleCommand`);
+- `SchemaType`, with `NAME` set to the ROS type (`cell_msgs/msg/SpindleCommand`).
+  Existing `NAME`s are plain identifiers such as `"temperature"`. **[verified]**
+  that its consumers treat it as an opaque string, so the slashes are harmless:
+  the WebSocket `StreamableRegistry` and the WASM schema registry key on it
+  (`registry.rs:35`, `schema_registry.rs:114`), and it is `Observable::SIGNAL`'s
+  default (`lib.rs:218`). ROS type names are globally unique, which suits the
+  WebSocket registry's refusal of two types under one name;
 - `Linkable` as CDR through `aimdb-cdr`, with `WIRE_FORMAT = Cdr`, a bounded
   `encode_into`, and `ENCODE_BUFFER_CAPACITY` (overridable with
   `#[ros(encode_capacity = N)]`);
@@ -457,6 +514,15 @@ the blessed design-045 path, not an escape hatch. Without this record,
 and no connector in the tree rejects unknown keys, so the extra entry is inert
 everywhere else.
 
+**The record follows the serializer.** Core's `with_serializer`,
+`with_serializer_into` and `with_deserializer` remove any recorded
+`aimdb.wire_format`. The codec verbs install their serializer through those same
+setters (**[verified]** `linkable.rs:44`, `link_codec.rs:184`), then record the
+format. So a link carries a format exactly when a codec verb was the last to set
+its serializer. A custom serializer anywhere after it leaves no format, and the
+connector warns (§4.3). Removing the entry, rather than appending a second one,
+means no reader has to know which duplicate wins.
+
 **CDR becomes the type's default format everywhere.** An MQTT link on a
 `RosMessage` type also sends CDR unless it names another codec
 (`linked_to_with(url, Json)`, design 045). For a type that exists to mirror a ROS
@@ -470,7 +536,10 @@ opposite case: CDR on a link whose type's default is something else. It advertis
 crate behind RustDDS and `ros2-client`, is std-only **[checked]**: it imports
 `std::io` and `std::marker`. The new `aimdb-cdr` crate provides serde for XCDR1:
 - `no_std`, with `alloc` optional;
-- little-endian;
+- encodes little-endian, as rmw_zenoh does on every target AimDB ships (§3);
+- decodes both byte orders, taken from the encapsulation header (`CDR_LE` or
+  `CDR_BE`), since a big-endian ROS host sends big-endian CDR under the same
+  type. Any other representation ID is a decode error;
 - the encapsulation header;
 - alignment measured from the end of that header;
 - strings as a `u32` length that includes the NUL;
@@ -480,32 +549,18 @@ It is a few hundred lines, tested against golden bytes captured from
 `ros2 topic pub`. An upstream `no_std` PR to `cdr-encoding` is worth offering, but
 not worth waiting for.
 
-### 4.5 Getting ROS types: prebuilt or hand-written, no codegen
+### 4.5 Getting ROS types: hand-written, no codegen
 
-There are two paths, and neither runs a generator on the user's machine.
-
-**Prebuilt: `aimdb-ros2-msgs`.** This new crate covers the interfaces plant
-integrations use most:
-- `builtin_interfaces` (`Time`, `Duration`);
-- `std_msgs` (`Header` and the primitive wrappers);
-- `sensor_msgs` (`Temperature`, `JointState`, `Imu`, `FluidPressure`, `Range`, …);
-- `geometry_msgs` (`Pose`, `Twist`, `Transform` and their stamped forms).
-
-The crate is `no_std`, CDR-only, and each type is behind a per-package feature so
-firmware links only what it uses. We produce it once per ROS distro with an
-internal script run against a real ROS install. That script lives in the AimDB
-repo's tooling, not in any published crate. A hash is derived from the interface
-definition, so it should be stable across Jazzy, Kilted and Lyrical wherever the
-interface is unchanged. CI verifies that per distro (§9) rather than assuming it. Users `cargo add` the crate and are done.
-
-**Hand-written: custom interfaces.** The robot team's own messages
-(`cell_msgs/…`) are usually few and small. The user writes the struct with
-`#[derive(RosMessage)]` (§4.4):
+In v1 there is one path, and it runs no generator. A cell usually touches a
+handful of interfaces, standard and custom, and each is a short struct. The user
+writes it with `#[derive(RosMessage)]` (§4.4):
 - **Field order** follows the `.msg` exactly. CDR is positional.
 - **Field names** should match the `.msg` too. They do not affect the wire, but they
   keep the door open for the hash check below.
 - **Constants** in the `.msg` are not on the wire and are left out.
-- **Nested types** are other `RosMessage` types, usually from `aimdb-ros2-msgs`.
+- **Nested types** are other hand-written `RosMessage` types. A stamped message
+  therefore also needs `std_msgs/Header` and `builtin_interfaces/Time`, two
+  short structs written once per project (§4.10 shows them).
 - **The hash** is copied once from the robot. `ros2 topic info -v` prints it for
   any active topic as `Topic type hash: RIHS01_…` on Jazzy, Kilted, Lyrical and
   Rolling (**[verified]**, S4 in §10). rmw_zenoh also carries it in every data key.
@@ -531,6 +586,15 @@ types via associated consts. If it computes the hash and compares it with the
 pasted one, a wrong field order, a wrong type or a stale hash all become compile
 errors. That closes both gaps from §4.3. It is deferred until usage shows it is
 needed.
+
+**Later phase: a prebuilt `aimdb-ros2-msgs`.** A crate of the common interfaces
+(`builtin_interfaces`, `std_msgs`, `sensor_msgs`, `geometry_msgs`) would spare
+users the hand-written standard types. It is postponed because it brings its own
+upkeep: an internal generation script run against a real ROS install, per-package
+features, and a CI job in a ROS image that checks every shipped type's hash and
+decoding per distro. That is worth doing once v1 shows which interfaces users
+actually hand-write. Nothing in v1 has to change for it: the crate would contain
+only `#[derive(RosMessage)]` types.
 
 ### 4.6 Changes to core (all additive)
 
@@ -564,6 +628,10 @@ The additions instead:
    }
    ```
 
+   For outbound routes, `topic` and `config` repeat what `OutboundRoute` already
+   carries. That is deliberate: one shape serves both directions, and a connector
+   reads route facts from `RouteMeta` alone.
+
 2. **Two new accessors** that pair each route with its `RouteMeta`:
    - `collect_outbound_routes_with_meta(scheme) -> Vec<(OutboundRoute, RouteMeta)>`;
    - `collect_inbound_routes_with_meta(scheme) -> Vec<(IngestFn, RouteMeta)>`.
@@ -578,6 +646,11 @@ The additions instead:
    existing `with_config` vector, so no struct changes. The per-link wire format
    from §4.4 uses the same mechanism under `aimdb.wire_format`. Both keys live
    in the `aimdb.` namespace, which connectors must not use for their own options.
+
+4. **Serializer setters clear the recorded wire format.** `with_serializer`,
+   `with_serializer_into` and `with_deserializer` remove any `aimdb.wire_format`
+   entry (§4.4). No signature changes, and links without the key behave as
+   before.
 
 `Ros2Connector` therefore does not use core's `pump_sink` / `pump_source`,
 because those call the old accessors. It drives its own pumps over the `_with_meta`
@@ -711,11 +784,23 @@ at implementation time.
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_data_contracts::{link_codecs::Json, LinkCodecRegistrarExt, LinkableRegistrarExt, RosMessage};
 use aimdb_mqtt_connector::MqttConnector;
-use aimdb_ros2_msgs::{builtin_interfaces::Time, sensor_msgs::Temperature, std_msgs::Header};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use aimdb_zenoh_connector::{Ros2Connector, Ros2Node};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+// Standard interfaces, mirrored by hand like any other (§4.5).
+#[derive(Clone, Debug, Serialize, Deserialize, RosMessage)]
+#[ros(type = "builtin_interfaces/msg/Time", hash = "RIHS01_<…>")]
+pub struct Time { pub sec: i32, pub nanosec: u32 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, RosMessage)]
+#[ros(type = "std_msgs/msg/Header", hash = "RIHS01_<…>")]
+pub struct Header { pub stamp: Time, pub frame_id: String }
+
+#[derive(Clone, Debug, Serialize, Deserialize, RosMessage)]
+#[ros(type = "sensor_msgs/msg/Temperature", hash = "RIHS01_<…>")]
+pub struct Temperature { pub header: Header, pub temperature: f64, pub variance: f64 }
 
 /// Mirrored by hand from cell_msgs/msg/SpindleCommand.msg (§4.5).
 #[derive(Clone, Debug, Serialize, Deserialize, RosMessage)]
@@ -978,8 +1063,8 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
 - **A `.msg` codegen importer** (rev 2). It gets field layout and hashes right
   mechanically, but it adds a tool, vendored inputs, provenance files and a
   drift-check CI job to every user's repo. That is a lot of ceremony for the
-  handful of custom messages a cell usually has. The prebuilt crate covers the
-  common types, and the derive covers the rest. The derive's future hash check
+  handful of messages a cell usually has. The derive covers all of them in v1,
+  and a prebuilt crate for the common ones can follow (§4.5). The derive's future hash check
   (§4.5) recovers most of codegen's safety without any of its workflow.
 - **`ros2://` on the MCU in v1** (rev 1–3). It would make the MCU a ROS node
   directly, but it put three open upstream items on the critical path:
@@ -1001,7 +1086,8 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
 
 1. **Golden profile tests.** Data keys, node and entity tokens, QoS strings and
    GIDs are byte-equal to values captured from a real rmw_zenoh on Jazzy and Lyrical
-   (`ros2 topic info -v`, and the router's admin space for tokens).
+   (`ros2 topic info -v`, and the router's admin space for tokens). The captures
+   include a non-zero domain and a namespaced node.
 2. **Interop CI (native).** In Docker (`ros:lyrical` plus rmw_zenoh), a `ros2://`
    outbound link arrives in `ros2 topic echo` with correct values.
    `ros2 topic info -v` lists the publisher with the right node, type, QoS and GID.
@@ -1023,7 +1109,8 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
    `cargo check -p aimdb-zenoh-connector --no-default-features --features embedded --target thumbv7em-none-eabihf`
    passes. Flash and RAM are recorded against the MQTT embedded build.
 6. **`aimdb-cdr`.** Round-trip and golden-byte tests pass for primitives, strings,
-   sequences, fixed arrays and nested types. A fuzzed decode never panics.
+   sequences, fixed arrays and nested types, and big-endian golden bytes decode to
+   the same values. A fuzzed decode never panics.
 7. **No `unsafe` in the connector.** The connector crate has no `unsafe impl` (052
    criterion 2). Until zenoh-nostd is `Send`-clean, the only force-`Send` is the
    adapter's `into_box_future`. The MQTT connector does not meet that criterion
@@ -1035,20 +1122,15 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
    unregistered-scheme error.
 9. **Refusals.** Every row of §4.3's guarantee table has a test:
    - The two compile-time rows are `trybuild` UI tests.
-   - The `WIRE_FORMAT` row is a `trybuild` test too, but its batch must also
-     contain a `pass` case. trybuild runs `cargo check` otherwise (1.0.121,
-     `cargo.rs:97`), and `cargo check` never evaluates the const (§4.3).
-   - The six build-time rows assert the `build()` error.
-   - The custom-serializer gap has a test asserting the warning.
+   - The eight build-time rows assert the `build()` error.
+   - The domain's precedence (explicit, then `ROS_DOMAIN_ID`, then `0`) has a test
+     per step.
+   - The custom-serializer gap has a test asserting the warning, both alone and
+     with `with_serializer` placed after a codec verb.
 
    A *wrong* but well-formed hash is covered by a test that documents it as
    silence, so nobody mistakes that behaviour for a connector bug.
-10. **`aimdb-ros2-msgs` matches ROS.** A CI job in a ROS image checks every shipped
-    type, for each supported distro (Jazzy, Kilted, Lyrical), in two ways:
-    - its hash equals the one ROS reports;
-    - a message published with `ros2 topic pub` decodes into the Rust type with
-      the expected values, and the reverse direction round-trips.
-11. **The derive.** `trybuild` tests cover malformed `type` and `hash` attributes,
+10. **The derive.** `trybuild` tests cover malformed `type` and `hash` attributes,
     and golden tests cover the DDS-name mangling and every row of §4.5's mapping
     table.
 
@@ -1082,8 +1164,9 @@ rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
   *peer's* (`other_zid`). The fix is a one-line upstream accessor, or a
   `with_zid` constructor that lets AimDB choose the ZID it puts in its tokens.
   It joins the liveliness PR in §11 step 6.
-- **Q6.** Should v1 resolve relative topic names against the node namespace, or
-  keep fully qualified names only as proposed?
+- **Q6. Answered (rev 7): fully qualified only.** The namespace sets the node's
+  identity, not its topics (§4.2, §4.3). The link URL cannot tell an absolute
+  name from a relative one.
 - **Q7.** Publish the `aimdb-zenoh-nostd` fork now, or ship the embedded backend as
   unpublished (git-only) until upstream releases?
 - **Q8.** Should plain `zenoh://` links carry a contract fingerprint in Zenoh's
@@ -1105,12 +1188,10 @@ rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
 | 4 | Core `RouteMeta`, the `_with_meta` accessors and `aimdb.topic_provider` (§4.6); `Shared`, `ZenohConnector`, `Ros2Connector` and the registry on the native backend; interop CI (criteria 2, 8, 9). **This ships v1's ROS feature on its own** | 2, 3 |
 | 5 | Embedded backend (`zenoh://` only): gateway interop on host first (criterion 3), then STM32H5 (criteria 4, 5) | 1, 4 |
 | 6 | Upstream. For v1, a crates.io publish or the fork. The rest is v2 prep and off the critical path: `Send` cleanliness (all three causes in §5.2), the liveliness API PR, and an own-ZID accessor (S5) | 1 |
-| 7 | `aimdb-ros2-msgs`: the internal generation script, the four packages, and the per-distro hash CI (criterion 10) | 2 |
-| 8 | Docs: design 012 connector-guide section, a BYOC tutorial built on this connector, an "AimDB and ROS 2" page, and the manufacturing-cell demo | 4, 5 |
+| 7 | Docs: design 012 connector-guide section, a BYOC tutorial built on this connector, an "AimDB and ROS 2" page, and the manufacturing-cell demo | 4, 5 |
 
-Steps 2, 3 and 7 are pure and additive and can land early. Step 7 can also ship
-ahead of the connector: the message types are useful on their own over `mqtt://`
-with CDR. The effort estimate is unverified until the spike: roughly 4–6 weeks for
+Steps 2 and 3 are pure and additive and can land early. `aimdb-ros2-msgs` is
+not in the table: it is a later phase (§4.5). The effort estimate is unverified until the spike: roughly 4–6 weeks for
 one engineer, and the rev 4 scope cut should put it toward the low end. Most of the
 remaining variance is in steps 5 and 6, because both depend on zenoh-nostd being
 publishable.
@@ -1131,7 +1212,8 @@ material. v2 (§4.9) is sequenced separately once its three preconditions hold.
 - Existing connectors, the Tokio and Embassy adapters, and the 052 traits are
   untouched.
 - `aimdb-core` gains one `#[non_exhaustive]` struct (`RouteMeta`), two accessors
-  and one reserved config key. No existing public struct gains a field.
+  and one reserved config key. Its serializer setters also clear the reserved
+  `aimdb.wire_format` key. No existing public struct gains a field.
 - `aimdb-data-contracts` gains two defaulted associated consts (`Linkable` and
   `LinkCodec`) and two features, both off by default. The codec verbs also
   record `aimdb.wire_format` on each link, which connectors that do not read
@@ -1159,6 +1241,8 @@ material. v2 (§4.9) is sequenced separately once its three preconditions hold.
 - `ros2/ros2cli` (`ros2topic/verb/info.py`) and `ros2/rclpy`
   (`topic_endpoint_info.py`, `endpoint_info.py`, `type_hash.py`) on `jazzy`,
   `kilted`, `lyrical` and `rolling`.
+- `ros2/rcl` `rolling` (`rcl/src/rcl/{init,domain_id}.c`) and rmw_zenoh's
+  `rmw_init.cpp`, for domain resolution (rev 7, §4.2).
 - `ros-infrastructure/rep` master @ `11ca24a` (`rep-2000.rst`) and
   `ros2/ros2_documentation` @ `617ded6` (`Release-Lyrical-Luth.rst` and the
   Lyrical changelog).
