@@ -113,8 +113,8 @@ pub use executor::{BoxFuture, ExecutorError, ExecutorResult, LogLevel, RuntimeOp
 pub use buffer::JsonReader;
 pub use buffer::Reader;
 pub use buffer::TryProduceError;
-pub use builder::OutboundRoute;
 pub use builder::{AimDb, AimDbBuilder};
+pub use builder::{OutboundRoute, RouteMeta};
 pub use connector::ConnectorBuilder;
 pub use transport::{Connector, ConnectorConfig, PublishError};
 pub use typed_api::{

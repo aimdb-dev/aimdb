@@ -444,6 +444,16 @@ impl fmt::Display for ConnectorUrl {
     }
 }
 
+/// Link config key naming the wire format of the link's codec (e.g. `"cdr"`).
+///
+/// Recorded by codec verbs and removed by the serializer/deserializer setters,
+/// so it is present only when a known codec installed the current serializer.
+/// Keys prefixed `aimdb.` are reserved; connectors must not use them.
+pub const WIRE_FORMAT_KEY: &str = "aimdb.wire_format";
+
+/// Link config key set to `"true"` on outbound links with a topic provider.
+pub const TOPIC_PROVIDER_KEY: &str = "aimdb.topic_provider";
+
 /// Configuration for a connector link
 ///
 /// Stores the parsed URL, configuration, and the fused source factory until

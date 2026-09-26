@@ -47,6 +47,19 @@ pub struct OutboundRoute {
     pub config: Vec<(String, String)>,
 }
 
+/// Per-route facts paired with each route by
+/// [`AimDb::collect_outbound_routes_with_meta`] and
+/// [`AimDb::collect_inbound_routes_with_meta`].
+#[non_exhaustive]
+pub struct RouteMeta {
+    /// Resolved topic: the URL resource, or the inbound topic resolver's result.
+    pub topic: String,
+    /// `TypeId` of the record the route belongs to.
+    pub type_id: TypeId,
+    /// The link's configuration options.
+    pub config: Vec<(String, String)>,
+}
+
 /// One registered record: its key, concrete type, and type-erased storage.
 struct RecordEntry {
     key: StringKey,
@@ -1175,22 +1188,33 @@ impl AimDb {
         &self,
         scheme: &str,
     ) -> Vec<(String, crate::connector::IngestFn)> {
+        self.collect_inbound_routes_with_meta(scheme)
+            .into_iter()
+            .map(|(ingest, meta)| (meta.topic, ingest))
+            .collect()
+    }
+
+    /// Like [`collect_inbound_routes`](Self::collect_inbound_routes), paired
+    /// with each route's [`RouteMeta`].
+    pub fn collect_inbound_routes_with_meta(
+        &self,
+        scheme: &str,
+    ) -> Vec<(crate::connector::IngestFn, RouteMeta)> {
         let mut routes = Vec::new();
 
         for entry in &self.inner.storages {
-            let inbound_links = entry.record.inbound_connectors();
-
-            for link in inbound_links {
-                // Filter by scheme
+            for link in entry.record.inbound_connectors() {
                 if link.url.scheme() != scheme {
                     continue;
                 }
 
                 // Resolve topic: dynamic (from resolver) or static (from URL)
-                let topic = link.resolve_topic();
-
-                // Create the fused ingest callback using the stored factory
-                routes.push((topic, link.create_ingest(self)));
+                let meta = RouteMeta {
+                    topic: link.resolve_topic(),
+                    type_id: entry.type_id,
+                    config: link.config.clone(),
+                };
+                routes.push((link.create_ingest(self), meta));
             }
         }
 
@@ -1220,23 +1244,38 @@ impl AimDb {
     /// # Arguments
     /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
+        self.collect_outbound_routes_with_meta(scheme)
+            .into_iter()
+            .map(|(route, _)| route)
+            .collect()
+    }
+
+    /// Like [`collect_outbound_routes`](Self::collect_outbound_routes), paired
+    /// with each route's [`RouteMeta`].
+    pub fn collect_outbound_routes_with_meta(
+        &self,
+        scheme: &str,
+    ) -> Vec<(OutboundRoute, RouteMeta)> {
         let mut routes = Vec::new();
 
         for entry in &self.inner.storages {
-            let outbound_links = entry.record.outbound_connectors();
-
-            for link in outbound_links {
-                // Filter by scheme
+            for link in entry.record.outbound_connectors() {
                 if link.url.scheme() != scheme {
                     continue;
                 }
 
-                // Create the fused source using the stored factory
-                routes.push(OutboundRoute {
-                    topic: link.url.resource_id().to_string(),
+                let topic = link.url.resource_id().to_string();
+                let meta = RouteMeta {
+                    topic: topic.clone(),
+                    type_id: entry.type_id,
+                    config: link.config.clone(),
+                };
+                let route = OutboundRoute {
+                    topic,
                     source: link.create_source(self),
                     config: link.config.clone(),
-                });
+                };
+                routes.push((route, meta));
             }
         }
 
