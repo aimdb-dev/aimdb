@@ -326,10 +326,6 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 auth: self.auth.clone(),
                 late_join: self.late_join,
                 runtime_ctx: db.runtime_ctx(),
-
-                // WsDispatch needs this for WsSession,
-                // so WsSession could avoid calling `db.record_list()` when handling record.query
-                records: records.clone(),
             });
 
             // ── Outbound: the shared `pump_sink` drives records → bus ───────
@@ -371,7 +367,6 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
 // ════════════════════════════════════════════════════════════════════
 
 /// Wrapper for SnapshotCache
-/// The struct hold
 struct DynMapSnapshot(SnapshotCache);
 
 impl SnapshotProvider for DynMapSnapshot {

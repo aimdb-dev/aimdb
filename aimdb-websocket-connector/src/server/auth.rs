@@ -6,7 +6,7 @@
 //!    which checked for before message broadcasting.
 //!    `authenticate()` does not gate topic subscription, so clients could claim unregistered topics,
 //!    and receive nothing during their lifetime.
-//! 2. **Inbound writes** — `authorize_write()`: gate which records a client may write to.
+//! 2. **Inbound writes** — `authorize_write()`: gate which topic a client may write to.
 //!
 //! The default implementation ([`NoAuth`]) allows all operations.
 
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 
+use aimdb_core::remote::QueryRecord;
 use axum::http::HeaderMap;
 
 // ════════════════════════════════════════════════════════════════════
@@ -54,7 +55,7 @@ pub struct ClientInfo {
 pub struct Permissions {
     /// Record name patterns the client may read from.
     pub read_patterns: Vec<String>,
-    /// Record name patterns the client may write to.
+    /// Topic patterns the client may write to.
     pub write_patterns: Vec<String>,
 }
 
@@ -116,11 +117,7 @@ pub struct RecordsBits {
 impl RecordsBits {
     pub fn new(length: usize) -> Self {
         let blocks = length.div_ceil(8);
-        let masks: Vec<u8> = if length > 0 {
-            (0..blocks).into_iter().map(|_| 0u8).collect()
-        } else {
-            Vec::new()
-        };
+        let masks: Vec<u8> = vec![0u8; blocks];
         Self { length, masks }
     }
 
@@ -128,6 +125,7 @@ impl RecordsBits {
         self.length
     }
 
+    /// Simply check for length of the bitmap
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
@@ -151,36 +149,32 @@ impl RecordsBits {
         };
 
         // Bit index inside the block,
-        let block_index = self.block_index(index);
-        let offset = Self::offset(index, block_index);
+        let block_index = Self::block_index(index);
+        let offset = Self::offset(index);
         let mask = 1u8 << offset;
         self.masks[block_index] & mask != 0
     }
 
-    /// Set record at `index` accessible, our-of-index returns `false`
+    /// Set record at `index` accessible, out-of-index returns `false`
     pub fn set(&mut self, index: usize) -> bool {
         if index >= self.length {
             return false;
         };
 
         // Bit index inside the block,
-        let block_index = self.block_index(index);
-        let offset = Self::offset(index, block_index);
+        let block_index = Self::block_index(index);
+        let offset = Self::offset(index);
         let mask = 1u8 << offset;
         self.masks[block_index] |= mask;
         true
     }
 
-    fn block_index(&self, index: usize) -> usize {
+    fn block_index(index: usize) -> usize {
         index / 8
     }
 
-    fn offset(index: usize, block_index: usize) -> usize {
-        index - block_index * 8
-    }
-
-    pub fn has_permissions(&self) -> bool {
-        self.masks.iter().any(|v| *v > 0)
+    fn offset(index: usize) -> usize {
+        index % 8
     }
 }
 
@@ -264,6 +258,19 @@ pub trait AuthHandler: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(async move { client.permissions.can_write(topic) })
     }
+
+    /// Keeps records having key matched grants
+    /// `records` are from a [QueryHandlerFn](aimdb_core::remote::QueryHandlerFn)
+    fn authorize_query_record<'a>(
+        &'a self,
+        client: &'a ClientInfo,
+        records: Vec<QueryRecord>,
+    ) -> Vec<QueryRecord> {
+        records
+            .into_iter()
+            .filter(|r| client.permissions.can_read(&r.topic))
+            .collect()
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -306,8 +313,33 @@ mod tests {
         assert!(records_bits.is_allowed(11));
         assert!(!records_bits.is_allowed(10));
 
-        // Ouf of index
-        assert!(!records_bits.set(21));
+        // Out of index
+        assert!(!records_bits.set(20));
+    }
+
+    #[test]
+    fn records_bits_boundaries() {
+        // Length on a byte boundary: exactly two blocks, no spare one
+        let mut records_bits = RecordsBits::new(16);
+        assert_eq!(records_bits.masks.len(), 2);
+
+        // First and last bit of each block
+        for i in [0, 7, 8, 15] {
+            assert!(records_bits.set(i));
+            assert!(records_bits.is_allowed(i));
+        }
+        assert!(!records_bits.is_allowed(1));
+        assert!(!records_bits.is_allowed(14));
+
+        // `len` is the first out-of-range index, for both set and read
+        assert!(!records_bits.set(16));
+        assert!(!records_bits.is_allowed(16));
+
+        // Zero records: nothing to set or read, no panic
+        let mut empty = RecordsBits::new(0);
+        assert!(empty.masks.is_empty());
+        assert!(!empty.set(0));
+        assert!(!empty.is_allowed(0));
     }
 
     #[test]

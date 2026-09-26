@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking, API)
+
+- **`ConnectorConfig` gains `record_index: Option<usize>`**, the id of the
+  record an outbound publish comes from — its registration index, the same
+  `record_id` `AimDb::list_records` reports. A topic alone cannot identify the
+  record, since several records may publish on one topic (or on topics a
+  `TopicProvider` picks per value), so a connector enforcing per-record
+  authorization needs the index at publish time; the WebSocket connector uses it
+  to gate delivery against each client's granted records. The struct is not
+  `#[non_exhaustive]`, so code building a `ConnectorConfig` with a struct
+  literal must add the field (or use `..Default::default()`); it defaults to
+  `None`.
+
+- **`AimDb::collect_outbound_routes` stamps each route with its record index**,
+  appending `("record_index", "<id>")` to `OutboundRoute::config`, and
+  `ConnectorConfig::from_query` parses that pair into `record_index` rather than
+  passing it on in `protocol_options`. `record_index` is therefore a reserved
+  config key: a value set through `with_config("record_index", …)` is
+  overridden by the stamped one, which is appended last.
+
 ## [2.0.0] - 2026-09-18
 
 ### Added

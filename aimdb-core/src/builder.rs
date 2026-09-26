@@ -64,6 +64,9 @@ struct RecordEntry {
 pub struct AimDbInner {
     /// Record entries, indexed by `RecordId`. Order matches registration
     /// order. Immutable after build().
+    ///
+    /// Per-client authorization is based on index of RecordEntry in `storage`
+    /// Never reorder, remove, or `swap_remove` entries as these could break current logic.
     storages: Vec<RecordEntry>,
 
     /// Name → RecordId lookup (control plane)
@@ -1223,6 +1226,13 @@ impl AimDb {
         let mut routes = Vec::new();
 
         for (i, entry) in self.inner.storages.iter().enumerate() {
+            // i and RecordId must match
+            debug_assert_eq!(
+                self.inner.by_key.get(&entry.key).map(|id| id.index()),
+                Some(i),
+                "record storage order diverges from RecordId for key {}",
+                entry.key.as_str()
+            );
             let outbound_links = entry.record.outbound_connectors();
 
             for link in outbound_links {

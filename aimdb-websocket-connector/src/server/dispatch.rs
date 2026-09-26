@@ -13,7 +13,7 @@
 //! engine emissions; this session only supplies the snapshot bytes and the
 //! subscription stream.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN};
@@ -44,9 +44,6 @@ pub struct WsDispatch {
     pub(crate) auth: Arc<dyn AuthHandler>,
     pub(crate) late_join: bool,
     pub(crate) runtime_ctx: aimdb_core::RuntimeContext,
-
-    /// Record key in registration order
-    pub(crate) records: Arc<Vec<String>>,
 }
 
 impl Dispatch for WsDispatch {
@@ -86,7 +83,6 @@ impl Dispatch for WsDispatch {
             late_join: self.late_join,
             runtime_ctx: self.runtime_ctx.clone(),
             info,
-            records: self.records.clone(),
         })
     }
 }
@@ -103,7 +99,6 @@ struct WsSession {
     late_join: bool,
     runtime_ctx: aimdb_core::RuntimeContext,
     info: Arc<ClientInfo>,
-    records: Arc<Vec<String>>,
 }
 
 impl Session for WsSession {
@@ -152,10 +147,11 @@ impl Session for WsSession {
         &'a mut self,
         topic: &'a str,
     ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
-        // A client authorized for zero records must be denied
-        if !self.info.record_perms.has_permissions() {
+        // Deny subscription for no-grant clients,
+        // as clients having grants could have empty permission bitmap.
+        if self.info.permissions.read_patterns.is_empty() {
             return Box::pin(async move { Err(RpcError::Denied) });
-        };
+        }
 
         Box::pin(async move {
             // Register on the shared bus; the engine owns and drops the stream.
@@ -203,16 +199,8 @@ impl WsSession {
     /// `{records, total}` result: a plugged-in
     /// [`QueryHandler`] wins; otherwise delegate to the Extensions-registered
     /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`.
-    /// Final query outputs are results of:
-    /// 1. Query handler got passed in pattern name;
-    /// 2. Outputs from the query handler got filtered again by allow records
-    ///    which incorporate per-client permissions.
-    ///
-    /// Behaviors:
-    /// - A client having no permission, or granted permissions and pattern name not overlapping,
-    ///   will have its query denied;
-    /// - A client having permissions and pattern name overlapping, may have partial query output,
-    ///   meaning the pattern name partially covers the query outputs.
+    /// A client having no grant will have its query denied.
+    /// Grants allow clients to query both live and persist records.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
         let name = params
             .get("name")
@@ -226,17 +214,10 @@ impl WsSession {
         let start = params.get("start").and_then(|v| v.as_u64());
         let end = params.get("end").and_then(|v| v.as_u64());
 
-        // Allowed record keys, filtered by both query name and record bitmasks
-        let allowed_names: HashSet<String> = self
-            .records
-            .iter()
-            .enumerate()
-            .filter(|(i, _r)| self.info.record_perms.is_allowed(*i))
-            .filter(|(_i, r)| aimdb_core::topic_matches(&name, r.as_str()))
-            .map(|(_i, r)| r.clone())
-            .collect();
-
-        if allowed_names.is_empty() {
+        // No-grant clients have their requests denied
+        // Grant clients whose perms matching persisted records,
+        // but matching no live records, are not denied
+        if self.info.permissions.read_patterns.is_empty() {
             return Err(RpcError::Denied);
         };
 
@@ -271,31 +252,22 @@ impl WsSession {
                 RpcError::Internal
             })?;
 
-            serde_json::from_value::<Vec<QueryRecord>>(
-                values
-                    .get_mut("records")
-                    .map(Value::take)
-                    .unwrap_or(Value::Null),
-            )
-            .map_err(|_e| {
-                #[cfg(feature = "tracing")]
-                tracing::warn!(
-                    "record.query failed converting from json to QueryRecord: {}",
-                    _e
-                );
-                RpcError::Internal
-            })?
+            // The QueryHandlerFn returns json, so that needs to be parsed back to Vec<QueryRecord>
+            // so the output could be filtered by per-client grant.
+            // A malformed json is QueryHandlerFn bug and surfaces as `Internal`
+            match values.get_mut("records").map(Value::take) {
+                None | Some(Value::Null) => Vec::new(),
+                Some(r) => serde_json::from_value::<Vec<QueryRecord>>(r).map_err(|_e| {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("record.query handler returned malformed records: {}", _e);
+                    RpcError::Internal
+                })?,
+            }
         };
 
-        // Query results need to be filtered by allowed record keys
-        // the results could be:
-        // - empty: if client is allowed to query, but nothing to query
-        // - partial: if the name partially matches the permission bitmasks, e.g. allowed names
-        // - full: if the name totally matches the allowed names
-        let records: Vec<QueryRecord> = records
-            .into_iter()
-            .filter(|r| allowed_names.contains(&r.topic))
-            .collect();
+        // Query results need to be filtered by grant patterns,
+        // This ensures that clients could query reach persist records in store,
+        let records = self.auth.authorize_query_record(&self.info, records);
 
         Ok(serde_json::json!({ "records": records, "total": records.len() }))
     }

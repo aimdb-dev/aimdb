@@ -52,14 +52,15 @@ impl Connector for WsBusSink {
                         .insert((index, dest.clone()), bytes.clone());
                 }
                 self.client_mgr.broadcast(&dest, index, &bytes).await;
+                Ok(())
             } else {
                 #[cfg(feature = "tracing")]
                 tracing::warn!(
                     "WsBusSink.publish for dest {} not fired due to null record_index",
                     &dest
                 );
-            };
-            Ok(())
+                Err(PublishError::InvalidDestination)
+            }
         })
     }
 }

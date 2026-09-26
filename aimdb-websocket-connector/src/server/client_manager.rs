@@ -38,7 +38,7 @@ struct SubEntry {
     dropped: AtomicU64,
 
     /// A bit mask encodes what record that the client could read from.
-    /// `SubEntry` is created when a client subcribes to a topic, so it ultimatly
+    /// `SubEntry` is created when a client subscribes to a topic, so it ultimately
     /// could carry a bit of `ClientInfo`
     record_perms: Arc<RecordsBits>,
 }

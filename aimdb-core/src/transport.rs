@@ -57,8 +57,9 @@ impl ConnectorConfig {
     /// per-route configuration through to [`Connector::publish`] without changing
     /// the `publish` signature.
     ///
-    /// Only the protocol-agnostic `timeout_ms` is lifted into the typed field;
-    /// every other key is passed through verbatim in
+    /// Only the protocol-agnostic `timeout_ms` and `record_index` (stamped by
+    /// `AimDb::collect_outbound_routes`; the last occurrence wins) are lifted
+    /// into typed fields; every other key is passed through verbatim in
     /// [`protocol_options`](ConnectorConfig::protocol_options) for the
     /// connector to interpret with its own defaults.
     pub fn from_query(query: &[(String, String)]) -> ConnectorConfig {

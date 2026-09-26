@@ -36,6 +36,8 @@ pub type QueryFuture<'a> =
 /// records. The trait is async to support database I/O.
 pub trait QueryHandler: Send + Sync + 'static {
     /// Execute a history query and return `(records, total_count)`.
+    /// `total_count` is limited to the handler's pattern match count,
+    /// and could be further restricted by clients' [`Permissions.read_patterns`].
     ///
     /// - `pattern` — topic pattern (MQTT wildcards, `"*"` for all)
     /// - `from` / `to` — time range (inclusive; units are the handler's
@@ -61,7 +63,7 @@ pub trait QueryHandler: Send + Sync + 'static {
 /// read permissions to different records
 pub trait SnapshotProvider: Send + Sync + 'static {
     /// Return the latest serialized values for every topic matching `pattern`.
-    /// As record keyw now rule the broadcasting instead of topic,
+    /// As record keys now rule the broadcasting instead of topic,
     /// return must be tuple of (record index, topic, payload)
     fn snapshots(&self, pattern: &str) -> Vec<(usize, String, Vec<u8>)>;
 }

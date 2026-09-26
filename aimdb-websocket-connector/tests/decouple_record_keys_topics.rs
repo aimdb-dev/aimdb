@@ -1,8 +1,14 @@
 //! `AimDb::collect_outbound_routes` over the `ws` scheme.
+//! Record keys and ws topics are decoupled (#215).
+//! Grants described record keys.
 //!
 //! Connectors call this during `build()` to spawn one publisher task per
 //! configured `link_to("ws://…")`. The returned order must track record
 //! registration order, since record ids index into it.
+//!
+//! Several behaviors tested: per-record gating, late-join snapshots,
+//! `record.list` and `record.query`, zero-grant denial, and topic-based
+//! write grants;
 
 #![cfg(feature = "server")]
 
@@ -11,9 +17,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aimdb_core::builder::AimDb;
 use aimdb_core::connector::TopicProvider;
 use aimdb_core::remote::QueryHandlerFn;
+use aimdb_core::{builder::AimDb, remote::QueryHandlerParams};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -81,6 +87,21 @@ async fn ws_recv(c: &mut WsClient) -> Value {
     }
 }
 
+async fn try_ws_recv(c: &mut WsClient) -> Result<Value, String> {
+    loop {
+        match timeout(Duration::from_secs(3), c.next())
+            .await
+            .map_err(|_| "recv timed out".to_string())
+        {
+            Ok(Some(Ok(Message::Text(t)))) => return Ok(serde_json::from_str(&t).unwrap()),
+            Ok(Some(Ok(Message::Binary(b)))) => return Ok(serde_json::from_slice(&b).unwrap()),
+            Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => continue,
+            Err(_) => Err("recv timed out".to_string()),
+            other => Err(format!("unexpected ws frame: {other:?}")),
+        }?
+    }
+}
+
 /// Read frames until one has `"t" == tag`; panics on timeout.
 async fn ws_recv_tag(c: &mut WsClient, tag: &str) -> Value {
     for _ in 0..50 {
@@ -90,6 +111,17 @@ async fn ws_recv_tag(c: &mut WsClient, tag: &str) -> Value {
         }
     }
     panic!("no '{tag}' frame arrived");
+}
+
+/// Similar to ws_recv_tag return Err instead of panic
+async fn try_ws_recv_tag(c: &mut WsClient, tag: &str) -> Result<Value, String> {
+    for _ in 0..50 {
+        let v = try_ws_recv(c).await?;
+        if v["t"] == tag {
+            return Ok(v);
+        }
+    }
+    Err("not found".to_string())
 }
 
 /// Wait until the server is accepting connections at `addr`.
@@ -236,9 +268,56 @@ enum GrantType {
     Distinct,
     Injected,
     WritePublic,
+    OldRecord,
+    PublicAndOld,
+    None,
 }
 
-async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bool) -> AimDb {
+/// Different option for handle to test record.query
+enum CustomQueryHandler {
+    All,
+    NoRecord,
+    Malformed,
+}
+
+impl CustomQueryHandler {
+    pub fn get_handler_fn(self) -> QueryHandlerFn {
+        match self {
+            Self::All => {
+                let handler: QueryHandlerFn = Box::new(|p: QueryHandlerParams| {
+                    Box::pin(async move {
+                        // Tuple of key, value, timestamp
+                        let all = [
+                            ("public.ledger", 1, 1),
+                            ("secret.sensor", 2, 2),
+                            ("old.sensor", 3, 3),
+                        ];
+                        let records: Vec<_> = all
+                            .iter()
+                            .filter(|(key, _, _)| aimdb_core::topic_matches(&p.name, key))
+                            .map(|(key, payload, ts)| json!({"topic": key, "payload": payload, "ts": ts}))
+                            .collect();
+                        let total = records.len();
+                        Ok(json!({"records": records, "total": total}))
+                    })
+                });
+                handler
+            }
+            Self::NoRecord => Box::new(|_| Box::pin(async move { Ok(json!({"total": 0})) })),
+            Self::Malformed => {
+                Box::new(|_| Box::pin(async move { Ok(json!({"records": "malformed"})) }))
+            }
+        }
+    }
+}
+
+/// Test fixture for several testing scenarios
+async fn test_fixture(
+    addr: SocketAddr,
+    grant_type: GrantType,
+    query_handler: Option<CustomQueryHandler>,
+) -> AimDb {
+    // Different pair of record - topic
     let keys_topics = [
         ("public.ledger", "public_info"),
         ("public.data", "public_info"),
@@ -246,8 +325,10 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
         ("secret.sensor", "secret_info"),
     ];
 
+    // Different grant scenarios
     let mut sb = match grant_type {
         GrantType::Fixed => {
+            // One fixed grant for all clients
             let perms = Permissions {
                 read_patterns: vec!["public.#".to_string()],
                 write_patterns: vec![],
@@ -262,6 +343,7 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
                 )
         }
         GrantType::Distinct => {
+            // Two type of grants for different type of clients
             let perms_public = Permissions {
                 read_patterns: vec!["public.#".to_string()],
                 write_patterns: vec![],
@@ -284,6 +366,7 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
                 )
         }
         GrantType::Injected => {
+            // Grant for TopicProvider tests
             let perms = Permissions {
                 read_patterns: vec!["injected.granted".to_string()],
                 write_patterns: vec![],
@@ -298,9 +381,55 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
                 )
         }
         GrantType::WritePublic => {
+            // Grants for client writing tests
             let perms = Permissions {
                 read_patterns: vec!["public.#".to_string()],
-                write_patterns: vec!["cfg".to_string()],
+                write_patterns: vec!["writable_topic".to_string()],
+            };
+            AimDbBuilder::new()
+                .runtime(Arc::new(TokioAdapter))
+                .with_connector(
+                    WebSocketConnector::new()
+                        .with_auth(FixedGrant(perms))
+                        .bind(addr)
+                        .path("/ws"),
+                )
+        }
+        GrantType::None => {
+            // No permission granted
+            let perms = Permissions {
+                read_patterns: vec![],
+                write_patterns: vec![],
+            };
+            AimDbBuilder::new()
+                .runtime(Arc::new(TokioAdapter))
+                .with_connector(
+                    WebSocketConnector::new()
+                        .with_auth(FixedGrant(perms))
+                        .bind(addr)
+                        .path("/ws"),
+                )
+        }
+        GrantType::PublicAndOld => {
+            // Grants over both a live record and an unregistered, persisted one
+            let perms = Permissions {
+                read_patterns: vec!["public.#".to_string(), "old.#".to_string()],
+                write_patterns: vec![],
+            };
+            AimDbBuilder::new()
+                .runtime(Arc::new(TokioAdapter))
+                .with_connector(
+                    WebSocketConnector::new()
+                        .with_auth(FixedGrant(perms))
+                        .bind(addr)
+                        .path("/ws"),
+                )
+        }
+        GrantType::OldRecord => {
+            // Access to unregistered records but persist in store
+            let perms = Permissions {
+                read_patterns: vec!["old.#".to_string()],
+                write_patterns: vec![],
             };
             AimDbBuilder::new()
                 .runtime(Arc::new(TokioAdapter))
@@ -323,7 +452,7 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
         });
     });
 
-    // Extrat key for TopicProvider test
+    // Extra keys for TopicProvider test
     for key in ["injected.granted", "injected.denied"] {
         sb.configure::<Inject>(key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 64 }) // don't coalesce successive values
@@ -341,7 +470,7 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
     sb.configure::<Msg>("cfg", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .link_from("ws://cfg")
+            .link_from("ws://writable_topic")
             .with_deserializer(|_ctx, d: &[u8]| {
                 serde_json::from_slice::<Msg>(d).map_err(|e| e.to_string())
             })
@@ -349,19 +478,10 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
     });
 
     // For query handler test
-    if query_handler {
-        let handler: QueryHandlerFn = Box::new(|_| {
-            Box::pin(async {
-                Ok(json!({
-                    "records": [
-                        {"topic": "public.ledger", "payload": 1, "ts": 1},
-                        {"topic": "secret.sensor", "payload": 2, "ts": 2},
-                    ]
-                }))
-            })
-        });
-        sb.extensions_mut().insert(handler);
-    }
+    if let Some(custom_handler) = query_handler {
+        let handler_fn = custom_handler.get_handler_fn();
+        sb.extensions_mut().insert(handler_fn);
+    };
 
     let (server_db, server_runner) = sb.build().await.expect("build server db");
     tokio::spawn(server_runner.run());
@@ -374,7 +494,7 @@ async fn test_fixture(addr: SocketAddr, grant_type: GrantType, query_handler: bo
 #[tokio::test]
 async fn authentication_by_record_keys() {
     let addr = free_addr();
-    let _server_db = test_fixture(addr, GrantType::Fixed, false).await;
+    let _server_db = test_fixture(addr, GrantType::Fixed, None).await;
 
     // Connect client
     let mut client = ws_connect(addr).await;
@@ -409,7 +529,7 @@ async fn authentication_by_record_keys() {
 #[tokio::test]
 async fn client_receives_only_records_in_perms() {
     let addr = free_addr();
-    let server_db = test_fixture(addr, GrantType::Fixed, false).await;
+    let server_db = test_fixture(addr, GrantType::Fixed, None).await;
 
     // Connect client
     let mut client = ws_connect(addr).await;
@@ -446,7 +566,7 @@ async fn client_receives_only_records_in_perms() {
 #[tokio::test]
 async fn late_join_client_receives_only_records_in_perms() {
     let addr = free_addr();
-    let server_db = test_fixture(addr, GrantType::Fixed, false).await;
+    let server_db = test_fixture(addr, GrantType::Fixed, None).await;
 
     // A client as watcher, just for testing, no need in real use
     let mut watcher = ws_connect(addr).await;
@@ -480,7 +600,7 @@ async fn late_join_client_receives_only_records_in_perms() {
     let ev = ws_recv_tag(&mut watcher, "event").await;
     assert_eq!(ev["data"], json!({"v": 3}));
 
-    // Late joinning client
+    // Late joining client
     let mut client = ws_connect(addr).await;
     ws_send(
         &mut client,
@@ -521,14 +641,14 @@ async fn late_join_client_receives_only_records_in_perms() {
 #[tokio::test]
 async fn clients_disjoint_grants() {
     let addr = free_addr();
-    let server_db = test_fixture(addr, GrantType::Distinct, false).await;
+    let server_db = test_fixture(addr, GrantType::Distinct, None).await;
 
     // A client with no authorization will be denied
     assert!(try_ws_connect_with(addr, "&data_type=not_exist")
         .await
         .is_err());
 
-    // Different clients could have diffent grants
+    // Different clients could have different grants
     let mut client_public = ws_connect_with(addr, "&data_type=public").await;
     ws_send(
         &mut client_public,
@@ -542,40 +662,40 @@ async fn clients_disjoint_grants() {
     let ack = ws_recv_tag(&mut client_public, "subscribed").await;
     assert_eq!(ack["sub"], "1");
 
-    // Client subscribed to secret_info will receive nothing from public_info
+    // Client with grant to secret.#, even subscribing to public_info,
+    // will receive nothing when server broadcasts to public.ledger
     let mut client_secret = ws_connect_with(addr, "&data_type=secret").await;
     ws_send(
         &mut client_secret,
         json!({
             "t": "sub",
             "id": 2,
-            "topic": "secret_info",
+            "topic": "public_info",
         }),
     )
     .await;
     let ack = ws_recv_tag(&mut client_secret, "subscribed").await;
     assert_eq!(ack["sub"], "2");
 
-    // Server broadcast to different records
+    // Server broadcast to public.ledger
     let _ = server_db.set_record_from_json("public.ledger", json!({"v": 1}));
-    let _ = server_db.set_record_from_json("secret.sensor", json!({"v": 2}));
 
     // Public client receive public.ledger
     let ev = ws_recv_tag(&mut client_public, "event").await;
     assert_eq!(ev["data"], json!({"v": 1}));
 
-    // Secret client does not receive public.ledger
-    // let ev = try_ws_recv_tag(&mut client_secret, "event").await;
-    // assert!(ev.is_err());
-    let ev = ws_recv_tag(&mut client_secret, "event").await;
-    println!("ev {:?}", ev);
-    assert_eq!(ev["data"], json!({"v": 2}));
+    // Secret client receives nothing
+    let ev = try_ws_recv_tag(&mut client_secret, "event").await;
+    assert!(ev.is_err());
+    if let Err(s) = ev {
+        assert_eq!(s.as_str(), "recv timed out")
+    };
 }
 
 #[tokio::test]
 async fn client_wildcard_subscription_receives_public_only() {
     let addr = free_addr();
-    let server_db = test_fixture(addr, GrantType::Fixed, false).await;
+    let server_db = test_fixture(addr, GrantType::Fixed, None).await;
 
     let mut client = ws_connect(addr).await;
     ws_send(
@@ -620,7 +740,7 @@ async fn client_wildcard_subscription_receives_public_only() {
 #[tokio::test]
 async fn topic_provider_injects_for_unsubscribed_client() {
     let addr = free_addr();
-    let server_db = test_fixture(addr, GrantType::Injected, false).await;
+    let server_db = test_fixture(addr, GrantType::Injected, None).await;
 
     let mut client = ws_connect(addr).await;
     ws_send(
@@ -682,7 +802,7 @@ async fn topic_provider_injects_for_unsubscribed_client() {
 #[tokio::test]
 async fn record_query_uphold_record_grant() {
     let addr = free_addr();
-    let _server_db = test_fixture(addr, GrantType::Fixed, true).await;
+    let _server_db = test_fixture(addr, GrantType::Fixed, Some(CustomQueryHandler::All)).await;
 
     let mut client = ws_connect(addr).await;
     ws_send(
@@ -716,7 +836,7 @@ async fn record_query_uphold_record_grant() {
         "public.ledger".to_string()
     );
 
-    // Query for not allow records got denied
+    // Query for not allow records returns none
     ws_send(
         &mut client,
         json!({
@@ -728,13 +848,151 @@ async fn record_query_uphold_record_grant() {
     )
     .await;
     let reply = ws_recv_tag(&mut client, "reply").await;
-    assert_eq!(reply["err"], "denied".to_string());
+    assert_eq!(reply["id"], 2);
+    assert_eq!(reply["ok"]["total"], 0);
+}
+
+#[tokio::test]
+async fn record_query_denied_for_no_grant() {
+    let addr = free_addr();
+    let _server_db = test_fixture(addr, GrantType::None, None).await;
+
+    let mut client = ws_connect(addr).await;
+
+    ws_send(
+        &mut client,
+        json!({
+            "t": "req",
+            "id": 2,
+            "method": "record.query",
+            "params": {"name": "secret.#"},
+        }),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut client, "reply").await;
+    assert_eq!(reply["err"], "denied");
+}
+
+#[tokio::test]
+async fn subscribe_denied_for_no_grant() {
+    let addr = free_addr();
+    let _server_db = test_fixture(addr, GrantType::None, None).await;
+
+    let mut client = ws_connect(addr).await;
+    ws_send(
+        &mut client,
+        json!({
+            "t": "sub",
+            "id": 1,
+            "topic": "#",
+        }),
+    )
+    .await;
+
+    // The refusal is a `reply` carrying the subscribe id
+    let reply = ws_recv_tag(&mut client, "reply").await;
+    assert_eq!(reply, json!({"t": "reply", "id": 1, "err": "denied"}));
+}
+
+#[tokio::test]
+async fn subscribe_accepted_for_grant_matching_no_registered_record() {
+    let addr = free_addr();
+    let server_db = test_fixture(addr, GrantType::OldRecord, None).await;
+
+    // Grant `old.#` matches no registered record: the client still subscribes
+    let mut client = ws_connect(addr).await;
+    ws_send(
+        &mut client,
+        json!({
+            "t": "sub",
+            "id": 1,
+            "topic": "#",
+        }),
+    )
+    .await;
+    let ack = ws_recv_tag(&mut client, "subscribed").await;
+    assert_eq!(ack["sub"], "1");
+
+    // ...but stays silent, as no granted record ever publishes
+    let _ = server_db.set_record_from_json("public.ledger", json!({"v": 1}));
+    let ev = try_ws_recv_tag(&mut client, "event").await;
+    assert_eq!(ev, Err("recv timed out".to_string()));
+}
+
+#[tokio::test]
+async fn record_query_returns_unregistered_record_in_store() {
+    let addr = free_addr();
+    let _server_db = test_fixture(addr, GrantType::OldRecord, Some(CustomQueryHandler::All)).await;
+
+    let mut client = ws_connect(addr).await;
+
+    ws_send(
+        &mut client,
+        json!({
+            "t": "req",
+            "id": 1,
+            "method": "record.query",
+            "params": {"name": "old.#"},
+        }),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut client, "reply").await;
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["ok"]["total"], 1);
+    assert_eq!(reply["ok"]["records"][0]["topic"], "old.sensor");
+    assert_eq!(reply["ok"]["records"][0]["payload"], 3);
+
+    // Still cannot read
+    ws_send(
+        &mut client,
+        json!({
+            "t": "req",
+            "id": 1,
+            "method": "record.query",
+            "params": {"name": "public.#"},
+        }),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut client, "reply").await;
+    assert_eq!(reply["ok"]["total"], 0);
+}
+
+#[tokio::test]
+async fn record_query_returns_partial_rows_across_grants() {
+    let addr = free_addr();
+    let _server_db =
+        test_fixture(addr, GrantType::PublicAndOld, Some(CustomQueryHandler::All)).await;
+
+    let mut client = ws_connect(addr).await;
+
+    // `#` matches all three stored rows; the grants cover two of them,
+    // one from a live record and one from an unregistered record
+    ws_send(
+        &mut client,
+        json!({
+            "t": "req",
+            "id": 1,
+            "method": "record.query",
+            "params": {"name": "#"},
+        }),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut client, "reply").await;
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["ok"]["total"], 2);
+    let topics: Vec<&str> = reply["ok"]["records"]
+        .as_array()
+        .expect("records array")
+        .iter()
+        .map(|r| r["topic"].as_str().unwrap())
+        .collect();
+    assert_eq!(topics, ["public.ledger", "old.sensor"]);
 }
 
 #[tokio::test]
 async fn no_write_patterns_got_denied() {
     let addr = free_addr();
-    let server_db = test_fixture(addr, GrantType::Fixed, true).await;
+    let server_db = test_fixture(addr, GrantType::Fixed, Some(CustomQueryHandler::All)).await;
 
     let mut client = ws_connect(addr).await;
     ws_send(
@@ -769,7 +1027,7 @@ async fn no_write_patterns_got_denied() {
 #[tokio::test]
 async fn write_patterns_uphold_topic() {
     let addr = free_addr();
-    let server_db = test_fixture(addr, GrantType::WritePublic, true).await;
+    let server_db = test_fixture(addr, GrantType::WritePublic, Some(CustomQueryHandler::All)).await;
 
     let mut client = ws_connect(addr).await;
     ws_send(
@@ -777,7 +1035,7 @@ async fn write_patterns_uphold_topic() {
         json!({
             "t": "sub",
             "id": 1,
-            "topic": "cfg",
+            "topic": "writable_topic",
         }),
     )
     .await;
@@ -788,7 +1046,7 @@ async fn write_patterns_uphold_topic() {
         &mut client,
         json!({
             "t": "write",
-            "topic": "cfg",
+            "topic": "writable_topic",
             "payload": {"v": 1},
         }),
     )
@@ -799,4 +1057,73 @@ async fn write_patterns_uphold_topic() {
     assert_eq!(ws_recv(&mut client).await, json!({"t":"pong"}));
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(server_db.try_latest_as_json("cfg"), Some(json!({"v": 1})));
+}
+
+#[tokio::test]
+async fn query_handler_returns_empty_handled_as_empty() {
+    let addr = free_addr();
+    let _server_db = test_fixture(addr, GrantType::Fixed, Some(CustomQueryHandler::NoRecord)).await;
+
+    let mut client = ws_connect(addr).await;
+    ws_send(
+        &mut client,
+        json!({
+            "t": "sub",
+            "id": 1,
+            "topic": "#",
+        }),
+    )
+    .await;
+    let ack = ws_recv_tag(&mut client, "subscribed").await;
+    assert_eq!(ack["sub"], "1");
+
+    // Query for all returned allowed records
+    ws_send(
+        &mut client,
+        json!({
+            "t": "req",
+            "id": 1,
+            "method": "record.query",
+            "params": {"name": "#"},
+        }),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut client, "reply").await;
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["ok"]["total"], 0);
+}
+
+#[tokio::test]
+async fn query_handler_malformed_handled_as_err() {
+    let addr = free_addr();
+    let _server_db =
+        test_fixture(addr, GrantType::Fixed, Some(CustomQueryHandler::Malformed)).await;
+
+    let mut client = ws_connect(addr).await;
+    ws_send(
+        &mut client,
+        json!({
+            "t": "sub",
+            "id": 1,
+            "topic": "#",
+        }),
+    )
+    .await;
+    let ack = ws_recv_tag(&mut client, "subscribed").await;
+    assert_eq!(ack["sub"], "1");
+
+    // Query for all returned allowed records
+    ws_send(
+        &mut client,
+        json!({
+            "t": "req",
+            "id": 1,
+            "method": "record.query",
+            "params": {"name": "#"},
+        }),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut client, "reply").await;
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["err"], "internal".to_string());
 }
