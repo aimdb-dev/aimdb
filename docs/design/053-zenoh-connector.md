@@ -68,6 +68,10 @@
 
   The changes are in the scope list, §2, §4.2–4.6, §4.10, §8, §9, §10, §11 and
   §12.
+- **rev 8, 2026-09-26.** hiroz, a native Rust ROS 2 stack on Zenoh, is
+  assessed. Our traits stay independent of it. Its crates serve as test oracles
+  for CDR bytes and rmw_zenoh keys, and its prebuilt messages are a follow-up
+  (§4.4, §4.5, §8, §9, §13).
 
 Nothing is implemented. **[checked]** marks a claim read from upstream source at
 the commits listed in §13; **[verified]** marks one confirmed by reading or
@@ -546,7 +550,9 @@ crate behind RustDDS and `ros2-client`, is std-only **[checked]**: it imports
 - sequences with a `u32` count; fixed arrays without one.
 
 It is a few hundred lines, tested against golden bytes captured from
-`ros2 topic pub`. An upstream `no_std` PR to `cdr-encoding` is worth offering, but
+`ros2 topic pub`, and byte for byte against `hiroz-cdr` as a dev-dependency.
+`hiroz-cdr` itself does not fit: it needs std and `zenoh-buffers`, has no
+bounded encode path, and rejects big-endian input. An upstream `no_std` PR to `cdr-encoding` is worth offering, but
 not worth waiting for.
 
 ### 4.5 Getting ROS types: hand-written, no codegen
@@ -595,6 +601,11 @@ features, and a CI job in a ROS image that checks every shipped type's hash and
 decoding per distro. That is worth doing once v1 shows which interfaces users
 actually hand-write. Nothing in v1 has to change for it: the crate would contain
 only `#[derive(RosMessage)]` types.
+
+**Follow-up: hiroz's messages.** `hiroz-msgs` already ships the common interfaces,
+generated from `.msg` files. A std-only `hiroz` feature on the connector could
+wrap them in a `HirozMsg<T>` that implements `Linkable` and `RosMessage`. That
+may replace `aimdb-ros2-msgs`, and it keeps hiroz out of `aimdb-data-contracts`.
 
 ### 4.6 Changes to core (all additive)
 
@@ -1078,6 +1089,15 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
 - **Plain Zenoh only, and let users run `zenoh-bridge-ros2dds`.** This works with
   DDS robots, but AimDB entities stay invisible to the ROS graph and every user maps
   types and keys by hand.
+- **Building on hiroz** (`ZettaScaleLabs/hiroz`), either by adopting its
+  message traits or by running the std side on its node API. Its traits live in
+  std crates that depend on `zenoh`, its CDR traits have no bounded encode path,
+  and it is at 0.2. `RosMessage` has to stay in the `no_std` contracts crate
+  under 2.x semver. The type identity already matches: hiroz's `type_name()` is
+  our `ROS_TYPE_NAME`, and both carry the RIHS01 hash. So v1 uses hiroz as a
+  test oracle (§9). Its `hiroz-schema` computes RIHS01 hashes and is the
+  starting point for §4.5's hash check. A std backend built on hiroz, which
+  would bring services, actions and `TRANSIENT_LOCAL`, is a v2 question.
 - **micro-ROS.** An XRCE agent and a C stack. Not our architecture.
 - **An `rmw_aimdb` plugin.** A huge C surface that would make AimDB ROS middleware
   instead of the typed layer beside it.
@@ -1087,7 +1107,8 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
 1. **Golden profile tests.** Data keys, node and entity tokens, QoS strings and
    GIDs are byte-equal to values captured from a real rmw_zenoh on Jazzy and Lyrical
    (`ros2 topic info -v`, and the router's admin space for tokens). The captures
-   include a non-zero domain and a namespaced node.
+   include a non-zero domain and a namespaced node. Until they exist, the same
+   values are cross-checked against `hiroz-protocol`.
 2. **Interop CI (native).** In Docker (`ros:lyrical` plus rmw_zenoh), a `ros2://`
    outbound link arrives in `ros2 topic echo` with correct values.
    `ros2 topic info -v` lists the publisher with the right node, type, QoS and GID.
@@ -1110,7 +1131,8 @@ on the `#[non_exhaustive]` `RouteMeta`, with no new accessor.
    passes. Flash and RAM are recorded against the MQTT embedded build.
 6. **`aimdb-cdr`.** Round-trip and golden-byte tests pass for primitives, strings,
    sequences, fixed arrays and nested types, and big-endian golden bytes decode to
-   the same values. A fuzzed decode never panics.
+   the same values. Little-endian output equals `hiroz-cdr`'s. A fuzzed decode
+   never panics.
 7. **No `unsafe` in the connector.** The connector crate has no `unsafe impl` (052
    criterion 2). Until zenoh-nostd is `Send`-clean, the only force-`Send` is the
    adapter's `into_box_future`. The MQTT connector does not meet that criterion
@@ -1262,6 +1284,8 @@ material. v2 (§4.9) is sequenced separately once its three preconditions hold.
   `aimdb-embassy-adapter/src/{connectors.rs,net.rs}`, and
   `aimdb-mqtt-connector/src/{connector.rs,native.rs,link_ext.rs,embedded/{mod,session,tls}.rs}`
   and `tests/tokio_broker.rs`.
+- `ZettaScaleLabs/hiroz` @ `c503843` (2026-09-23), rev 8: `hiroz-cdr`,
+  `hiroz-protocol`, `hiroz-schema`, `hiroz-msgs`, and `hiroz/src/{msg,ros_msg}.rs`.
 - rev 5 also ran two checks on the pinned rustc 1.98.0. One confirmed that a
   generic inline-const assert passes `cargo check` and fails `cargo build`. The
   other read trybuild 1.0.121's mode selection (`src/cargo.rs:97`).
